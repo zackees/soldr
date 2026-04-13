@@ -37,7 +37,7 @@ RUSTC_WRAPPER=soldr cargo build
 
 ## Design goals
 
-- **Invisible caching**: `RUSTC_WRAPPER=soldr` and forget it. Daemon auto-starts. No manual setup.
+- **Invisible caching**: `RUSTC_WRAPPER` defaults to `zccache` if not set. Daemon auto-starts. No manual setup.
 - **One cache**: Tools and compilation artifacts in a single `~/.soldr/` directory.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **No cargo wrapping**: soldr wraps `rustc`, not `cargo`. You keep all your cargo flags. No flag-forwarding nightmares.

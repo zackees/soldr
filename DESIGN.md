@@ -30,7 +30,7 @@ These are detected automatically. No mode flags.
 
 ### 1. Invisible by default
 
-The compilation cache should require zero thought. Set `RUSTC_WRAPPER=soldr` once and forget it. The daemon auto-starts on first invocation, auto-evicts old entries, and never prompts.
+The compilation cache should require zero thought. `RUSTC_WRAPPER` defaults to `zccache` if not explicitly set — no configuration needed. The daemon auto-starts on first invocation, auto-evicts old entries, and never prompts.
 
 ### 2. Pre-built first, always
 

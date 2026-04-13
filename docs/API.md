@@ -227,7 +227,7 @@ Default: latest. CI pipelines should pin.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `RUSTC_WRAPPER` | Set to `soldr` to enable compilation caching | (unset) |
+| `RUSTC_WRAPPER` | Set to `soldr` to enable compilation caching | `zccache` |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `SOLDR_MAX_CACHE_SIZE` | Maximum build cache size | `2GB` |
 | `SOLDR_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `warn` |
