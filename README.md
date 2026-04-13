@@ -43,6 +43,7 @@ soldr build
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Drop-in**: Works as `RUSTC_WRAPPER` for existing cargo workflows, or as a standalone CLI.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
+- **MSVC by default on Windows**: Always targets `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`) unless `rust-toolchain.toml` explicitly says otherwise. MSVC links against `vcruntime140.dll` which ships with every modern Windows install. The GNU target requires shipping `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` — extra baggage for no benefit. This matches the Rust ecosystem default (rustup, cargo-binstall, and nearly all published release binaries target MSVC). crgx gets this wrong by baking the target at compile time, causing it to look for GNU binaries when compiled under MSYS2.
 
 ## Architecture
 
