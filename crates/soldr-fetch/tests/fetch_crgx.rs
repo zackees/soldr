@@ -11,8 +11,10 @@ use soldr_fetch::{fetch_tool, VersionSpec};
 
 #[tokio::test]
 async fn fetch_crgx_and_run() {
-    // Fetch crgx (latest) for the current platform
-    let result = fetch_tool("crgx", &VersionSpec::Latest)
+    const CRGX_VERSION: &str = "0.1.0";
+
+    // Fetch a pinned crgx release for the current platform.
+    let result = fetch_tool("crgx", &VersionSpec::Exact(CRGX_VERSION.into()))
         .await
         .expect("failed to fetch crgx");
 
