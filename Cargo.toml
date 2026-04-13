@@ -1,0 +1,8 @@
+[package]
+name = "soldr"
+version = "0.1.0"
+edition = "2021"
+description = "soldr"
+license = "BSD-3-Clause"
+keywords = ["rust", "install", "build", "cache", "tool"]
+repository = "https://github.com/zackees/soldr"
