@@ -11,6 +11,11 @@
 
 This document describes the current hardening posture and the policy direction for future work tracked in issue [#7](https://github.com/zackees/soldr/issues/7).
 
+Related documentation:
+
+- [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md)
+- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md)
+
 ## Current hardening
 
 The repository currently enforces several baseline controls:
@@ -70,6 +75,7 @@ Current state:
 - release assets are published to GitHub Releases with a generated checksum manifest
 - release assets are attested in GitHub Actions prior to publication
 - immutable releases and protected tag settings still depend on repository configuration outside the git tree
+- current user-facing verification guidance is checksum verification plus `gh attestation verify`
 
 Planned state, tracked in issue `#7`:
 

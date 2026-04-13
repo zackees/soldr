@@ -107,6 +107,12 @@ Built on lessons from:
 - [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) - pre-built binary resolution
 - [sccache](https://github.com/mozilla/sccache) - the original Rust compilation cache
 
+## Security And Verification
+
+- [SECURITY.md](./SECURITY.md) describes the current hardening posture and release policy.
+- [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md) explains how to verify published release artifacts.
+- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts.
+
 ## License
 
 BSD-3-Clause
