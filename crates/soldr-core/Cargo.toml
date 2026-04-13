@@ -10,3 +10,7 @@ description = "Shared types, config, and cache layout for soldr"
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
