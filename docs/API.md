@@ -2,224 +2,142 @@
 
 ## Overview
 
-soldr is two things in one binary:
+soldr is a single front door for Rust tool execution and Rust builds.
 
-1. **A tool fetcher**: `soldr <tool> [args]` downloads and runs any crate binary instantly
-2. **A compilation cache**: `RUSTC_WRAPPER=soldr` makes cargo cache every rustc invocation
+It has three invocation modes:
 
-These two roles are detected automatically based on how soldr is invoked.
+1. `soldr cargo ...`
+   Delegates to the real Cargo binary while wiring soldr into the build path.
+2. `soldr <tool> [args...]`
+   Fetches and runs a Rust CLI tool binary.
+3. `soldr rustc ...`
+   Internal wrapper mode used during builds after `soldr cargo ...` sets `RUSTC_WRAPPER=soldr`.
+
+The primary user experience is `soldr cargo ...`.
 
 ---
 
 ## Invocation Modes
 
-### Mode 1: Tool Fetcher (default)
+### Mode 1: Cargo Front Door
 
+```bash
+soldr cargo build --release
+soldr cargo test
+soldr cargo run -- --help
 ```
+
+Behavior:
+
+- Resolve the real `cargo` binary through `rustup`
+- Resolve the matching real `rustc` binary through `rustup`
+- Set `RUSTC_WRAPPER` to the current `soldr` executable
+- Delegate to Cargo with the exact flags the user passed
+
+This is the normal build entry point.
+
+### Mode 2: Tool Fetcher
+
+```bash
 soldr <tool>[@<version>] [tool-args...]
 ```
 
-Fetch a pre-built binary for `<tool>` and execute it with `[tool-args...]`.
+Examples:
 
 ```bash
-soldr maturin build --release          # fetch maturin, run it
-soldr cargo-dylint                      # fetch cargo-dylint, run it
-soldr rustfmt src/main.rs              # fetch rustfmt, run it
-soldr maturin@1.7.0 build              # fetch specific version
+soldr maturin build --release
+soldr cargo-dylint check
+soldr rustfmt src/main.rs
+soldr maturin@1.7.0 build
 ```
 
-**Resolution order:**
-1. Local cache (`~/.soldr/bin/`) — instant if previously fetched
-2. Binstall metadata from crate's `Cargo.toml` (`[package.metadata.binstall]`)
-3. GitHub Releases (standard naming conventions)
+Resolution order:
+
+1. Local cache in `~/.soldr/bin/`
+2. Binstall metadata
+3. GitHub Releases
 4. QuickInstall registry
-5. `cargo install` from source (last resort, requires Rust toolchain)
+5. `cargo install` as a last resort
 
-**Target resolution (Windows):**
-- Always `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`)
-- Unless `rust-toolchain.toml` explicitly specifies a GNU target
-- Never baked at compile time; always resolved at runtime
+### Mode 3: Internal Wrapper Mode
 
-**Caching:**
-- `soldr tool` — fetches latest, checks for updates every 24h
-- `soldr tool@1.2.3` — exact version, cached forever
-- `soldr tool@latest` — force re-check for latest version
+Wrapper mode is entered when Cargo invokes soldr as the configured `RUSTC_WRAPPER`.
 
-### Mode 2: Compilation Cache (RUSTC_WRAPPER)
+Typical shape:
 
-```bash
-export RUSTC_WRAPPER=soldr
-cargo build --release
+```text
+soldr /path/to/rustc --crate-name foo ...
 ```
 
-When cargo sets `RUSTC_WRAPPER=soldr`, cargo invokes `soldr rustc <args>` for every compilation unit. soldr detects this (first arg is a path ending in `rustc` or equals `rustc`) and acts as a transparent compilation cache:
+In this mode, soldr should act as the transparent build-assistance layer around `rustc`.
 
-1. Hash the inputs (source files, flags, dependencies, rustc version)
-2. Check `~/.soldr/cache/` for a matching artifact
-3. Cache hit → return cached `.o` / `.rlib` / `.rmeta` (~1ms)
-4. Cache miss → invoke real `rustc`, store output, return it
+Current implementation status:
 
-**This is invisible to the user.** No flag forwarding, no cargo wrapping. Cargo does its thing, soldr silently caches. Exactly how sccache works.
+- Wrapper-mode passthrough to real `rustc` exists
+- Cache and daemon behavior are still being implemented
 
-**Auto-start daemon:** The first RUSTC_WRAPPER invocation starts the cache daemon if it's not running. No manual `soldr start` needed.
+---
 
-### Mode Detection
+## Mode Detection
 
-When soldr is invoked, it determines its mode:
+When soldr starts, it decides its mode in this order:
 
-```
-argv[1] ends with "rustc" or is "rustc"
-  → Mode 2: Compilation cache (RUSTC_WRAPPER)
-
-argv[1] is a built-in command (status, clean, config, cache, version, help)
-  → Run built-in
-
-argv[1] is anything else
-  → Mode 1: Tool fetcher (fetch + run)
-```
+1. If `argv[1]` looks like `rustc` or a path to `rustc`, enter wrapper mode.
+2. Otherwise, parse CLI commands with Clap.
+3. `cargo` is a first-class built-in subcommand.
+4. Any unknown first argument is treated as a tool name to fetch and run.
 
 ---
 
 ## Built-in Commands
 
+### `soldr cargo`
+
+Run Cargo through soldr's front door.
+
+```bash
+soldr cargo build --release
+soldr cargo test --workspace
+soldr cargo check -p soldr-cli
+```
+
 ### `soldr status`
 
-Show cache statistics and daemon state.
-
-```
-$ soldr status
-soldr 0.1.0
-
-Daemon:        running (pid 12345)
-Tool cache:    ~/.soldr/bin/ (14 tools, 89 MB)
-Build cache:   ~/.soldr/cache/ (2,341 artifacts, 412 MB)
-
-Recent tools:
-  maturin 1.7.4      (cached 2h ago)
-  cargo-dylint 3.1.0  (cached 5d ago)
-  rustfmt 1.7.1       (cached 12d ago)
-
-Build cache hit rate: 94% (last 24h)
-```
+Show cache and target information.
 
 ### `soldr clean`
 
 Clear caches.
 
-```bash
-soldr clean              # clear everything (tools + build cache)
-soldr clean --tools      # clear only tool cache
-soldr clean --cache      # clear only build cache
-soldr clean --older 30d  # clear entries older than 30 days
-```
-
 ### `soldr config`
 
-View or set configuration.
-
-```bash
-soldr config                          # show current config
-soldr config set cache-dir /tmp/soldr # override cache directory
-soldr config set max-cache-size 2GB   # limit build cache size
-```
-
-**Config file:** `~/.soldr/config.toml`
-
-```toml
-[cache]
-dir = "~/.soldr"
-max_size = "2GB"
-eviction = "lru"
-
-[fetch]
-# Registries to search for pre-built binaries
-registries = ["github", "quickinstall"]
-# Allow source compilation as fallback
-allow_build = true
-
-[daemon]
-# Auto-start daemon on first RUSTC_WRAPPER invocation
-auto_start = true
-```
+Show or set configuration.
 
 ### `soldr cache`
 
-Direct cache inspection (for debugging).
-
-```bash
-soldr cache list                   # list cached artifacts
-soldr cache inspect <hash>         # show details for a cached artifact
-soldr cache export <path>          # export cache for sharing/CI
-soldr cache import <path>          # import cache from another machine
-```
+Inspect build-cache state.
 
 ### `soldr version`
 
-```
-$ soldr version
-soldr 0.1.0
-```
-
-### `soldr help`
-
-```
-$ soldr help
-soldr — Instant tools. Instant builds.
-
-Usage:
-  soldr <tool>[@version] [args...]   Fetch and run a crate binary
-  RUSTC_WRAPPER=soldr cargo build    Transparent compilation caching
-
-Commands:
-  status    Show cache stats and daemon state
-  clean     Clear caches
-  config    View or set configuration
-  cache     Inspect and manage build cache
-  version   Print version
-  help      Show this help
-
-Examples:
-  soldr maturin build --release      Fetch maturin, run it
-  soldr rustfmt src/main.rs          Fetch rustfmt, run it
-  soldr maturin@1.7.0 build          Pin to a specific version
-  soldr clean --older 30d            Evict stale cache entries
-
-Cache directory: ~/.soldr/
-Config file:     ~/.soldr/config.toml
-```
+Print soldr version.
 
 ---
 
-## Install
+## Help Surface
 
-```bash
-# One-liner (Linux/macOS)
-curl -fsSL https://soldr.dev/install.sh | sh
+```text
+Usage:
+  soldr <COMMAND>
+  soldr <TOOL>[@version] [args...]
 
-# One-liner (Windows PowerShell)
-irm https://soldr.dev/install.ps1 | iex
-
-# pip (all platforms)
-pip install soldr
-
-# npm (all platforms)
-npm install -g soldr
-
-# Cargo (from source)
-cargo install soldr-cli
-
-# cargo-binstall (pre-built binary)
-cargo binstall soldr-cli
+Commands:
+  cargo    Run Cargo through soldr
+  status   Show cache status and tool info
+  clean    Clear caches
+  config   Show or set configuration
+  cache    Inspect the compilation cache
+  version  Show version
 ```
-
-All install methods support `--version`:
-```bash
-curl -fsSL https://soldr.dev/install.sh | sh -s -- --version 0.1.0
-pip install soldr==0.1.0
-npm install -g soldr@0.1.0
-```
-
-Default: latest. CI pipelines should pin.
 
 ---
 
@@ -227,59 +145,48 @@ Default: latest. CI pipelines should pin.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `RUSTC_WRAPPER` | Set to `soldr` to enable compilation caching | `zccache` |
+| `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
-| `SOLDR_MAX_CACHE_SIZE` | Maximum build cache size | `2GB` |
-| `SOLDR_LOG` | Log level (`error`, `warn`, `info`, `debug`, `trace`) | `warn` |
-| `SOLDR_NO_DAEMON` | Disable daemon, run cache in-process | `false` |
-| `SOLDR_OFFLINE` | No network access, only use local cache | `false` |
+| `SOLDR_LOG` | Log level | `warn` |
+| `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
+
+`RUSTC_WRAPPER=soldr cargo build` remains a valid low-level integration path, but it is no longer the preferred user-facing workflow.
 
 ---
 
-## Cache Directory Layout
+## Cache Layout
 
-```
+```text
 ~/.soldr/
-├── config.toml              # User configuration
-├── bin/                     # Fetched tool binaries
-│   ├── maturin-1.7.4/       # One dir per tool@version
-│   │   └── maturin(.exe)
-│   ├── cargo-dylint-3.1.0/
-│   │   └── cargo-dylint(.exe)
-│   └── ...
-├── cache/                   # Compilation artifacts
-│   ├── ab/cd/ef012345...    # Content-addressed by input hash
-│   └── ...
-├── daemon.pid               # Daemon PID file
-└── daemon.sock              # Daemon IPC socket (Unix) / named pipe (Windows)
+|-- bin/
+|   `-- <tool>-<version>/
+|-- cache/
+|-- config.toml
+`-- daemon.*
 ```
 
 ---
 
-## GitHub Action
+## GitHub Actions
 
 ```yaml
-- name: Setup soldr
-  run: curl -fsSL https://soldr.dev/install.sh | sh
-
-- name: Build with caching
-  env:
-    RUSTC_WRAPPER: soldr
-  run: cargo build --release
+- name: Build through soldr
+  run: soldr cargo build --release
 ```
 
-No separate action needed. Just install + set the env var. Cargo does the rest, soldr caches invisibly.
+For bootstrap verification of another Rust project:
+
+```yaml
+- name: Build third-party project through soldr
+  run: soldr cargo build --locked --target ${{ matrix.target }}
+```
 
 ---
 
-## Comparison
+## Summary
 
-| Feature | soldr | sccache | crgx | cargo-binstall |
-|---|---|---|---|---|
-| Compilation caching | Yes (RUSTC_WRAPPER) | Yes | No | No |
-| Tool fetching | Yes (first-class) | No | Yes | Yes |
-| Pre-built binary download | Yes | No | Yes | Yes |
-| Daemon auto-start | Yes | Manual | N/A | N/A |
-| MSVC default on Windows | Yes | N/A | No (compile-time) | Yes (tries both) |
-| Single cache directory | Yes | Separate | Separate | Separate |
-| pip/npm install | Yes | No | No | No |
+The key design rule is simple:
+
+- users build through `soldr cargo ...`
+- soldr uses wrapper mode internally
+- users do not need to manually wire `RUSTC_WRAPPER` for the common path

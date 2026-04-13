@@ -1,5 +1,18 @@
 #!/bin/bash
 
-set -e
-echo "Running unittests"
-uv run pytest -n auto tests -v --durations=0
+set -euo pipefail
+
+run_step() {
+  local name="$1"
+  shift
+  printf '\n==> %s\n' "$name"
+  "$@"
+}
+
+run_step "Build workspace" cargo build --workspace --locked
+run_step "Run library tests" cargo test --workspace --lib --locked
+run_step "Run CLI smoke tests" cargo test -p soldr-cli --test cli --locked
+run_step "Run fetch integration test" cargo test -p soldr-fetch --test fetch_crgx --locked
+run_step "Run Python wrapper tests" uv run pytest -n auto tests -v --durations=0
+
+printf '\nPipeline complete.\n'
