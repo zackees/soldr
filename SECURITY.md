@@ -14,6 +14,7 @@ This document describes the current hardening posture and the policy direction f
 Related documentation:
 
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md)
+- [docs/RELEASE_GOVERNANCE_CHECKLIST.md](./docs/RELEASE_GOVERNANCE_CHECKLIST.md)
 - [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md)
 
 ## Current hardening
