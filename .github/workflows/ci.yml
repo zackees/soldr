@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+          - name: macOS x64
+            runner: macos-15-intel
+          - name: Windows x64
+            runner: windows-2025
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.85
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace
+        run: cargo build --workspace --locked
+
+      - name: Run library tests
+        run: cargo test --workspace --lib --locked
+
+      - name: Run CLI smoke tests
+        run: cargo test -p soldr-cli --test cli --locked
+
+      - name: Run fetch integration test
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked

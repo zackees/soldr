@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+            binary: soldr
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            binary: soldr
+          - name: macOS x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+            binary: soldr
+          - name: macOS ARM64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            archive: tar.gz
+            binary: soldr
+          - name: Windows x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            archive: zip
+            binary: soldr.exe
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            binary: soldr.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.85
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+
+      - name: Package tarball
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          name="soldr-${version}-${{ matrix.target }}"
+          mkdir -p dist/package
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/package/${{ matrix.binary }}"
+          tar -C dist/package -czf "dist/${name}.tar.gz" "${{ matrix.binary }}"
+
+      - name: Package zip
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          $name = "soldr-$version-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path dist\package | Out-Null
+          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "dist\package\${{ matrix.binary }}"
+          Compress-Archive -Path "dist\package\${{ matrix.binary }}" -DestinationPath "dist\$name.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: soldr-${{ matrix.target }}
+          path: dist/soldr-*
+
+  publish:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-24.04
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: soldr-*
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

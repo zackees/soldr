@@ -10,8 +10,14 @@ description = "Binary resolution and download for soldr (the crgx half)"
 [dependencies]
 soldr-core = { workspace = true }
 reqwest = { workspace = true }
-tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
+zip = { workspace = true }
+flate2 = { workspace = true }
+tar = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
 tempfile = { workspace = true }
