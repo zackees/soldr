@@ -1,7 +1,7 @@
 //! Integration test: bootstrap crgx via soldr-fetch.
 //!
 //! This proves the full chain:
-//!   soldr detects target (MSVC on Windows) → queries crates.io →
+//!   soldr resolves the active project target → queries crates.io →
 //!   downloads from GitHub Releases → extracts → binary runs.
 //!
 //! Requires network access. Run with:

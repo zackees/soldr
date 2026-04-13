@@ -4,7 +4,7 @@
 //! 1. Local cache (`~/.soldr/bin/<tool>-<version>/`)
 //! 2. GitHub Releases (repository URL from crates.io)
 
-use soldr_core::{Arch, Os, SoldrError, SoldrPaths, TargetTriple};
+use soldr_core::{Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -35,7 +35,10 @@ pub struct FetchResult {
 }
 
 /// Fetch a tool binary for the current platform.
-pub async fn fetch_tool(crate_name: &str, version: &VersionSpec) -> Result<FetchResult, SoldrError> {
+pub async fn fetch_tool(
+    crate_name: &str,
+    version: &VersionSpec,
+) -> Result<FetchResult, SoldrError> {
     let paths = SoldrPaths::new()?;
     fetch_tool_with_paths(crate_name, version, &paths).await
 }
@@ -62,7 +65,7 @@ pub async fn fetch_tool_with_paths(
     // 3. Get release metadata from GitHub
     let release = fetch_release(&repo, version).await?;
 
-    // 4. Check cache for the resolved version (handles Latest → concrete version)
+    // 4. Check cache for the resolved version (handles Latest -> concrete version)
     if let Some(r) = check_cache(paths, crate_name, &release.version, &target)? {
         return Ok(r);
     }
@@ -71,9 +74,14 @@ pub async fn fetch_tool_with_paths(
     let asset = match_asset(&release.assets, &target)?;
 
     // 6. Download and extract
-    let binary_path =
-        download_and_extract(paths, crate_name, &release.version, &asset.download_url, &target)
-            .await?;
+    let binary_path = download_and_extract(
+        paths,
+        crate_name,
+        &release.version,
+        &asset.download_url,
+        &target,
+    )
+    .await?;
 
     Ok(FetchResult {
         binary_path,
@@ -150,13 +158,16 @@ async fn resolve_repo(crate_name: &str) -> Result<RepoInfo, SoldrError> {
         )));
     }
 
-    let text = resp.text().await.map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
     let body: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
 
-    let repo_url = body["crate"]["repository"]
-        .as_str()
-        .ok_or_else(|| SoldrError::ToolNotFound(format!("{crate_name}: no repository on crates.io")))?;
+    let repo_url = body["crate"]["repository"].as_str().ok_or_else(|| {
+        SoldrError::ToolNotFound(format!("{crate_name}: no repository on crates.io"))
+    })?;
 
     parse_github_url(repo_url)
 }
@@ -190,7 +201,11 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
             repo.owner, repo.repo
         ),
         VersionSpec::Exact(v) => {
-            let tag = if v.starts_with('v') { v.clone() } else { format!("v{v}") };
+            let tag = if v.starts_with('v') {
+                v.clone()
+            } else {
+                format!("v{v}")
+            };
             format!(
                 "https://api.github.com/repos/{}/{}/releases/tags/{tag}",
                 repo.owner, repo.repo
@@ -212,7 +227,10 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
         )));
     }
 
-    let text = resp.text().await.map_err(|e| SoldrError::Network(e.to_string()))?;
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
     let body: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
 
@@ -237,7 +255,10 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
 }
 
 /// Pick the best asset for our target triple.
-fn match_asset<'a>(assets: &'a [AssetInfo], target: &TargetTriple) -> Result<&'a AssetInfo, SoldrError> {
+fn match_asset<'a>(
+    assets: &'a [AssetInfo],
+    target: &TargetTriple,
+) -> Result<&'a AssetInfo, SoldrError> {
     let os_keywords: &[&str] = match target.os {
         Os::Windows => &["windows", "win64", "win"],
         Os::MacOs => &["macos", "darwin", "apple", "osx"],
@@ -254,7 +275,7 @@ fn match_asset<'a>(assets: &'a [AssetInfo], target: &TargetTriple) -> Result<&'a
     for asset in assets {
         let name = asset.name.to_lowercase();
 
-        // Must match OS and arch
+        // Must match OS and arch.
         if !os_keywords.iter().any(|k| name.contains(k)) {
             continue;
         }
@@ -262,17 +283,36 @@ fn match_asset<'a>(assets: &'a [AssetInfo], target: &TargetTriple) -> Result<&'a
             continue;
         }
 
-        // Skip source archives
+        // Skip source archives.
         if name.contains("src") || name.contains("source") {
             continue;
         }
-        // Skip GNU on Windows — MSVC only
-        if target.os == Os::Windows && name.contains("gnu") {
+
+        // Respect the resolved ABI/libc instead of assuming Windows is always MSVC.
+        if target.os == Os::Windows && target.env == Env::Msvc && name.contains("gnu") {
+            continue;
+        }
+        if target.os == Os::Windows && target.env == Env::Gnu && name.contains("msvc") {
+            continue;
+        }
+        if target.os == Os::Linux && target.env == Env::Musl && name.contains("gnu") {
+            continue;
+        }
+        if target.os == Os::Linux && target.env == Env::Gnu && name.contains("musl") {
             continue;
         }
 
         let mut score: u32 = 1;
         if target.os == Os::Windows && name.contains("msvc") {
+            score += 10;
+        }
+        if target.os == Os::Windows && target.env == Env::Gnu && name.contains("gnu") {
+            score += 10;
+        }
+        if target.os == Os::Linux && target.env == Env::Musl && name.contains("musl") {
+            score += 10;
+        }
+        if target.os == Os::Linux && target.env == Env::Gnu && name.contains("gnu") {
             score += 10;
         }
         if name.ends_with(target.archive_ext()) {
@@ -284,8 +324,9 @@ fn match_asset<'a>(assets: &'a [AssetInfo], target: &TargetTriple) -> Result<&'a
         }
     }
 
-    best.map(|(a, _)| a)
-        .ok_or_else(|| SoldrError::ToolNotFound(format!("no asset matches target {}", target.triple())))
+    best.map(|(a, _)| a).ok_or_else(|| {
+        SoldrError::ToolNotFound(format!("no asset matches target {}", target.triple()))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -330,11 +371,11 @@ async fn download_and_extract(
     } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
         extract_tar_gz(&bytes, &binary_path, &bin_name)?;
     } else {
-        // Assume raw binary
+        // Assume raw binary.
         std::fs::write(&binary_path, &bytes)?;
     }
 
-    // Make executable on Unix
+    // Make executable on Unix.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -348,7 +389,8 @@ async fn download_and_extract(
 
 fn extract_zip(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrError> {
     let reader = std::io::Cursor::new(data);
-    let mut archive = zip::ZipArchive::new(reader).map_err(|e| SoldrError::Archive(e.to_string()))?;
+    let mut archive =
+        zip::ZipArchive::new(reader).map_err(|e| SoldrError::Archive(e.to_string()))?;
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -382,14 +424,16 @@ fn extract_tar_gz(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrE
     let mut archive = tar::Archive::new(gz);
     let base_name = bin_name.trim_end_matches(".exe");
 
-    for entry in archive.entries().map_err(|e| SoldrError::Archive(e.to_string()))? {
+    for entry in archive
+        .entries()
+        .map_err(|e| SoldrError::Archive(e.to_string()))?
+    {
         let mut entry = entry.map_err(|e| SoldrError::Archive(e.to_string()))?;
-        let path = entry.path().map_err(|e| SoldrError::Archive(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| SoldrError::Archive(e.to_string()))?;
 
-        let file_name = path
-            .file_name()
-            .and_then(|f| f.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
 
         if file_name == bin_name || file_name == base_name {
             let mut out = std::fs::File::create(dest)?;
@@ -401,4 +445,64 @@ fn extract_tar_gz(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrE
     Err(SoldrError::Archive(format!(
         "{bin_name} not found in tar.gz archive"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn asset(name: &str) -> AssetInfo {
+        AssetInfo {
+            name: name.to_string(),
+            download_url: format!("https://example.com/{name}"),
+        }
+    }
+
+    #[test]
+    fn match_asset_prefers_windows_gnu_when_requested() {
+        let assets = vec![
+            asset("tool-x86_64-pc-windows-msvc.zip"),
+            asset("tool-x86_64-pc-windows-gnu.zip"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            env: Env::Gnu,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-pc-windows-gnu.zip");
+    }
+
+    #[test]
+    fn match_asset_prefers_windows_msvc_when_requested() {
+        let assets = vec![
+            asset("tool-x86_64-pc-windows-msvc.zip"),
+            asset("tool-x86_64-pc-windows-gnu.zip"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            env: Env::Msvc,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-pc-windows-msvc.zip");
+    }
+
+    #[test]
+    fn match_asset_prefers_linux_musl_when_requested() {
+        let assets = vec![
+            asset("tool-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("tool-x86_64-unknown-linux-musl.tar.gz"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            env: Env::Musl,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-unknown-linux-musl.tar.gz");
+    }
 }
