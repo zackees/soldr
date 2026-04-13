@@ -37,7 +37,7 @@ permissions:
 
 jobs:
   bootstrap-e2e:
-    name: Build soldr and bootstrap third-party app
+    name: Build soldr and bootstrap third-party app (${{ inputs.target }})
     runs-on: ${{ inputs.runner }}
 
     steps:
