@@ -1,0 +1,19 @@
+#!/bin/bash
+set -e
+
+# Check if UV is not found
+if ! command -v uv &> /dev/null; then
+  # If Darwin (macOS), use brew to install UV
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    brew install uv
+  else
+    # If it's Windows, use pip to install UV, else use pip3
+    if [[ "$OSTYPE" == "msys" ]]; then
+      pip install uv
+    else
+      pip3 install uv
+    fi
+  fi
+fi
+
+uv sync --group dev
