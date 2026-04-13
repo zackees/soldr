@@ -10,38 +10,37 @@ In soldering, flux removes the oxide so the joint bonds clean. soldr removes the
 
 - **Compilation caching** (the zccache half): When your build invokes `rustc` hundreds of times, soldr caches every compilation unit. Second builds finish in milliseconds, not minutes.
 
-```
-# Instead of:
-#   cargo binstall maturin        # tool install
-#   export RUSTC_WRAPPER=zccache  # cache setup
-#   zccache start                 # daemon
-#   cargo build                   # build
+```bash
+# Fetch and run any Rust tool instantly:
+soldr maturin build --release
+soldr cargo-dylint check
+soldr rustfmt src/main.rs
 
-# Just:
-soldr build
+# Transparent compilation caching (invisible to you):
+export RUSTC_WRAPPER=soldr
+cargo build --release            # soldr caches every rustc call
 ```
 
 ## How it works
 
 ```
-soldr build
-  |
-  +-- Need maturin? -----> check local cache --> fetch pre-built binary (2s)
-  +-- Need cargo-dylint? -> check local cache --> fetch pre-built binary (2s)
-  |
+soldr maturin build --release
+  +-- maturin cached? --> run instantly
+  +-- not cached?     --> download pre-built binary (2s) --> run
+
+RUSTC_WRAPPER=soldr cargo build
   +-- rustc invocation #1 -> cache miss -> compile -> store artifact
   +-- rustc invocation #2 -> cache hit  -> return cached .rlib (1ms)
   +-- rustc invocation #N -> cache hit  -> return cached .o (1ms)
-  |
   +-- Done. (1.6s warm, 9.8s cold)
 ```
 
 ## Design goals
 
-- **Zero config**: `soldr build` just works. No `RUSTC_WRAPPER`, no daemon management, no PATH hacks.
+- **Invisible caching**: `RUSTC_WRAPPER=soldr` and forget it. Daemon auto-starts. No manual setup.
 - **One cache**: Tools and compilation artifacts in a single `~/.soldr/` directory.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
-- **Drop-in**: Works as `RUSTC_WRAPPER` for existing cargo workflows, or as a standalone CLI.
+- **No cargo wrapping**: soldr wraps `rustc`, not `cargo`. You keep all your cargo flags. No flag-forwarding nightmares.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
 - **MSVC by default on Windows**: Always targets `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`) unless `rust-toolchain.toml` explicitly says otherwise. MSVC links against `vcruntime140.dll` which ships with every modern Windows install. The GNU target requires shipping `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` — extra baggage for no benefit. This matches the Rust ecosystem default (rustup, cargo-binstall, and nearly all published release binaries target MSVC). crgx gets this wrong by baking the target at compile time, causing it to look for GNU binaries when compiled under MSYS2.
 
@@ -63,7 +62,7 @@ soldr/
 | `soldr-core` | Cache paths, config, version types |
 | `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
 | `soldr-cache` | Wrap rustc, hash inputs, store/retrieve compiled artifacts. The compilation cache daemon. |
-| `soldr-cli` | `soldr build`, `soldr run <tool>`, `soldr status`, `soldr clean`. Manages the daemon lifecycle. |
+| `soldr-cli` | Mode detection, built-in commands (`status`, `clean`, `config`), tool fetch dispatch. |
 
 ## Prior art
 
