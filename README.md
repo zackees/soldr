@@ -110,6 +110,7 @@ Built on lessons from:
 ## Security And Verification
 
 - [SECURITY.md](./SECURITY.md) describes the current hardening posture and release policy.
+- [RELEASE.md](./RELEASE.md) documents the intended maximum-security release setup and owner workflow.
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md) explains how to verify published release artifacts.
 - [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts.
 
