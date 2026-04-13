@@ -14,19 +14,23 @@ If those settings drift, the workflow may remain correct while the operational r
 
 The intended release-governance state is:
 
-- release tags are protected by rulesets
+- release tags are protected by rulesets or an explicit platform constraint is documented
 - the normal release path goes through the validated workflow
 - the `release` environment exists and requires explicit approval
 - immutable GitHub Releases are enabled
+- GitHub Actions requires full-SHA pinning for third-party actions
+- `main` is protected with pull-request and required-check enforcement
 - maintainers can audit these settings without guessing where they live
 
 ## Current Observed Repository State
 
 Observed on April 13, 2026 via GitHub API:
 
-- no repository rulesets
-- no GitHub environments
-- `main` branch is not protected
+- no repository rulesets for release tags
+- the `release` environment exists and requires approval from `@zackees`
+- `main` branch protection requires pull requests, conversation resolution, linear history, and the current CI plus per-target e2e checks
+- immutable GitHub Releases are enabled
+- GitHub Actions requires full-SHA pinning for third-party actions
 - no published GitHub Releases yet
 
 Those observations were produced with:
@@ -35,10 +39,12 @@ Those observations were produced with:
 gh api repos/zackees/soldr/rulesets
 gh api repos/zackees/soldr/environments
 gh api repos/zackees/soldr/branches/main/protection
+gh api repos/zackees/soldr/actions/permissions
+gh api repos/zackees/soldr/immutable-releases
 gh api repos/zackees/soldr/releases?per_page=5
 ```
 
-The branch-protection query currently returns `404 Branch not protected`, which is itself the signal that branch protection is absent.
+The tag-ruleset query still returns an empty list. That is intentional for now: GitHub rejected a repository-ruleset bypass entry for the built-in `github-actions` integration on this personal repository, which means a true workflow-only tag rule needs either a different repository ownership model or a dedicated installed GitHub App.
 
 ## Audit Steps
 
@@ -56,6 +62,12 @@ What to look for:
 - protection against moving or deleting release tags
 - restrictions that make the validated workflow the normal release path
 
+Current limitation:
+
+- On this personal repository, GitHub rejected a bypass actor for the built-in `github-actions` integration when attempting to create a workflow-only release-tag ruleset.
+- Do not replace this with a maintainer-user bypass or PAT-backed workaround and call it equivalent. That would weaken the workflow-only release intent.
+- If strict workflow-only tags are required, solve this with repository-ownership changes or a dedicated installed GitHub App whose token is used by the release workflow.
+
 ### 2. Check The Release Environment
 
 Confirm that the `release` environment exists:
@@ -67,9 +79,10 @@ gh api repos/zackees/soldr/environments
 What to look for:
 
 - an environment named `release`
-- documented approval policy for release promotion
+- required reviewer `@zackees`
+- `protected_branches: true` and `custom_branch_policies: false`
 
-Some approval details may need to be verified in the GitHub UI if they are not exposed cleanly by the API surface available to maintainers.
+The validated release workflow already targets `environment: release`, so this environment is part of the actual publication path rather than a dormant setting.
 
 ### 3. Check Branch Protection Or Equivalent Rulesets
 
@@ -81,10 +94,33 @@ gh api repos/zackees/soldr/branches/main/protection
 
 What to look for:
 
-- protection is present, or
-- an equivalent ruleset is enforcing the same control path
+- pull requests are required for `main`
+- the required-check list includes:
+  - `Lint`
+  - `Linux x64`
+  - `macOS x64`
+  - `Windows x64`
+  - each per-target bootstrap badge check from `build-*`
+- force pushes and deletions are blocked
+- linear history and conversation resolution are enabled
 
-### 4. Check Published Releases
+If the e2e workflow template changes job names, re-audit the required check list. The branch rule now depends on those contexts being stable and target-specific.
+
+### 4. Check GitHub Actions Policy
+
+Confirm that repository Actions settings require SHA pinning:
+
+```bash
+gh api repos/zackees/soldr/actions/permissions
+```
+
+What to look for:
+
+- `enabled: true`
+- `allowed_actions: "all"` or a narrower documented allowlist
+- `sha_pinning_required: true`
+
+### 5. Check Published Releases
 
 Confirm that releases are being created through the validated workflow path:
 
@@ -98,16 +134,20 @@ What to look for:
 - releases correspond to expected version tags
 - the release inventory matches the workflow outputs
 
-### 5. Check Immutable Releases
+### 6. Check Immutable Releases
 
 Immutable releases are configured in repository or organization settings rather than in this repository's source tree.
 
-What to verify in the GitHub UI:
+Verify with:
 
-- immutable releases are enabled for the repository or governing organization
+```bash
+gh api repos/zackees/soldr/immutable-releases
+```
+
+What to look for:
+
+- `enabled: true`
 - maintainers understand how draft release creation and publication interact with immutability
-
-Until immutable releases are enabled, treat artifact attestations and checksum verification as stronger than release-page mutability guarantees.
 
 ## Operational Rule
 
