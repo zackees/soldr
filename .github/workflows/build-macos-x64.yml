@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     uses: ./.github/workflows/_bootstrap-e2e.yml
@@ -14,4 +17,4 @@ jobs:
       runner: macos-15-intel
       target: x86_64-apple-darwin
       binary_name: soldr
-
+      source_ref: ${{ github.sha }}

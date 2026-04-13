@@ -143,7 +143,10 @@ fn run_cargo_front_door(args: &[String]) -> Result<i32, SoldrError> {
     command.args(args);
     command.env("RUSTC_WRAPPER", current_exe);
     command.env("RUSTC", rustc);
-    command.env("PATH", prepend_path(&cargo_bin_dir, existing_path.as_deref())?);
+    command.env(
+        "PATH",
+        prepend_path(&cargo_bin_dir, existing_path.as_deref())?,
+    );
 
     let status = command.status()?;
     Ok(status.code().unwrap_or(1))

@@ -12,6 +12,9 @@ on:
       binary_name:
         required: true
         type: string
+      source_ref:
+        required: true
+        type: string
       soldr_toolchain:
         required: false
         type: string
@@ -38,17 +41,18 @@ jobs:
     runs-on: ${{ inputs.runner }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
+          ref: ${{ inputs.source_ref }}
           path: soldr
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: ${{ inputs.third_party_repo }}
           ref: ${{ inputs.third_party_ref }}
           path: ${{ inputs.third_party_path }}
 
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
           toolchain: ${{ inputs.soldr_toolchain }}
           targets: ${{ inputs.target }}
@@ -61,7 +65,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
           workspaces: |
             soldr -> target
@@ -105,7 +109,7 @@ jobs:
         run: |
           & "${{ steps.soldr_binary.outputs.path }}" cargo build --locked --target "${{ inputs.target }}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: soldr-${{ inputs.target }}
           path: ${{ steps.soldr_binary.outputs.path }}
