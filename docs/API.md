@@ -54,10 +54,12 @@ soldr maturin@1.7.0 build
 Resolution order:
 
 1. Local cache in `~/.soldr/bin/`
-2. Binstall metadata
-3. GitHub Releases
-4. QuickInstall registry
-5. `cargo install` as a last resort
+2. crates.io repository lookup
+3. GitHub Releases for that repository
+
+Current implementation note:
+
+- the broader binstall/QuickInstall/`cargo install` fallback chain is planned behavior, not the current shipped fetch path
 
 ### Mode 3: Internal Wrapper Mode
 
