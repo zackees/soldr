@@ -517,8 +517,8 @@ mod tests {
         )
         .unwrap();
 
-        let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
+        let _target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         #[cfg(target_os = "windows")]
-        assert_eq!(target.triple(), "x86_64-pc-windows-msvc");
+        assert_eq!(_target.triple(), "x86_64-pc-windows-msvc");
     }
 }

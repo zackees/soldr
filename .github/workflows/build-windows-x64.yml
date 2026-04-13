@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     uses: ./.github/workflows/_bootstrap-e2e.yml
@@ -14,4 +17,4 @@ jobs:
       runner: windows-2025
       target: x86_64-pc-windows-msvc
       binary_name: soldr.exe
-
+      source_ref: ${{ github.sha }}

@@ -19,7 +19,10 @@ fn version_command_prints_workspace_version() {
     assert!(output.status.success(), "version command failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), format!("soldr {}", env!("CARGO_PKG_VERSION")));
+    assert_eq!(
+        stdout.trim(),
+        format!("soldr {}", env!("CARGO_PKG_VERSION"))
+    );
 }
 
 #[test]
@@ -51,7 +54,10 @@ fn cargo_front_door_runs_real_cargo() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stdout.contains("cargo"), "unexpected cargo output: {stdout}");
+    assert!(
+        stdout.contains("cargo"),
+        "unexpected cargo output: {stdout}"
+    );
     assert!(
         !stderr.contains("soldr: fetching cargo"),
         "cargo front door should not fetch cargo: {stderr}"
@@ -70,5 +76,8 @@ fn rustc_wrapper_mode_passes_through_to_rustc() {
     assert!(output.status.success(), "wrapper mode failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("rustc"), "unexpected rustc output: {stdout}");
+    assert!(
+        stdout.contains("rustc"),
+        "unexpected rustc output: {stdout}"
+    );
 }
