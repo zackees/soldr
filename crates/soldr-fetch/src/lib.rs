@@ -195,24 +195,72 @@ fn parse_github_url(url: &str) -> Result<RepoInfo, SoldrError> {
 async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<ReleaseInfo, SoldrError> {
     let client = http_client()?;
 
-    let url = match version {
-        VersionSpec::Latest => format!(
-            "https://api.github.com/repos/{}/{}/releases/latest",
-            repo.owner, repo.repo
-        ),
+    let release = match version {
+        VersionSpec::Latest => {
+            let url = format!(
+                "https://api.github.com/repos/{}/{}/releases/latest",
+                repo.owner, repo.repo
+            );
+            fetch_release_value(&client, repo, &url).await?
+        }
         VersionSpec::Exact(v) => {
             let tag = if v.starts_with('v') {
                 v.clone()
             } else {
                 format!("v{v}")
             };
-            format!(
+            let url = format!(
                 "https://api.github.com/repos/{}/{}/releases/tags/{tag}",
                 repo.owner, repo.repo
-            )
+            );
+            match fetch_release_value(&client, repo, &url).await {
+                Ok(release) => release,
+                Err(SoldrError::ToolNotFound(_)) => {
+                    fetch_release_by_listing(&client, repo, &tag).await?
+                }
+                Err(err) => return Err(err),
+            }
         }
     };
 
+    parse_release_info(release)
+}
+
+async fn fetch_release_value(
+    client: &reqwest::Client,
+    repo: &RepoInfo,
+    url: &str,
+) -> Result<serde_json::Value, SoldrError> {
+    let resp = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(SoldrError::ToolNotFound(format!(
+            "no release found for {}/{}",
+            repo.owner, repo.repo
+        )));
+    }
+
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))
+}
+
+async fn fetch_release_by_listing(
+    client: &reqwest::Client,
+    repo: &RepoInfo,
+    tag: &str,
+) -> Result<serde_json::Value, SoldrError> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/releases?per_page=30",
+        repo.owner, repo.repo
+    );
     let resp = client
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -231,9 +279,26 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
         .text()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
-    let body: serde_json::Value =
+    let releases: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
+    let matched = releases
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|release| {
+                release["tag_name"]
+                    .as_str()
+                    .map(|release_tag| release_tag == tag)
+                    .unwrap_or(false)
+            })
+        })
+        .cloned();
 
+    matched.ok_or_else(|| {
+        SoldrError::ToolNotFound(format!("no release found for {}/{}", repo.owner, repo.repo))
+    })
+}
+
+fn parse_release_info(body: serde_json::Value) -> Result<ReleaseInfo, SoldrError> {
     let tag = body["tag_name"]
         .as_str()
         .ok_or_else(|| SoldrError::Other("no tag_name in release".into()))?;
