@@ -1,0 +1,12 @@
+[package]
+name = "soldr-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared types, config, and cache layout for soldr"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }

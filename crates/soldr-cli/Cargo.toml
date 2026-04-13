@@ -1,0 +1,21 @@
+[package]
+name = "soldr-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for soldr — instant tools, instant builds"
+
+[dependencies]
+soldr-core = { workspace = true }
+soldr-fetch = { workspace = true }
+soldr-cache = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[[bin]]
+name = "soldr"
+path = "src/main.rs"

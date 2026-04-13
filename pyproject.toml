@@ -1,0 +1,38 @@
+[build-system]
+requires = ["maturin>=1.7,<2"]
+build-backend = "maturin"
+
+[project]
+name = "soldr"
+dynamic = ["version"]
+description = "Instant tools. Instant builds. One command."
+readme = "README.md"
+license = "BSD-3-Clause"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+]
+keywords = ["rust", "build", "cache", "install", "tools"]
+
+[dependency-groups]
+dev = [
+    "maturin>=1.7,<2",
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.maturin]
+manifest-path = "crates/soldr-cli/Cargo.toml"
+module-name = "soldr._native"
+python-source = "src"
+features = []
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
