@@ -26,7 +26,7 @@ cargo fmt --all -- --check             # Check Rust formatting
 
 # Python (linting/testing the PyPI wrapper)
 ./lint                                 # ruff, black, isort, flake8, pylint, mypy
-./test                                 # pytest -n auto
+./test                                 # full build + test pipeline
 
 # Maturin (Python+Rust packaging)
 uv run maturin develop                 # Build & install in venv

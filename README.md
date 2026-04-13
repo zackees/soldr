@@ -36,7 +36,7 @@ When you run `soldr`, the tool should do the obvious thing:
 - pick MSVC on Windows by default
 - fetch the tool you asked for
 - cache it locally
-- carry `zccache` along for transparent `rustc` caching
+- carry `zccache` along for transparent `rustc` caching without manual wrapper setup
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
@@ -45,37 +45,37 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 - **Compilation caching** (the zccache half): When your build invokes `rustc` hundreds of times, soldr caches every compilation unit. Second builds finish in milliseconds, not minutes.
 
 ```bash
+# Build through soldr's front door:
+soldr cargo build --release
+soldr cargo test
+
 # Fetch and run any Rust tool instantly:
 soldr maturin build --release
 soldr cargo-dylint check
 soldr rustfmt src/main.rs
-
-# Transparent compilation caching (invisible to you):
-export RUSTC_WRAPPER=soldr
-cargo build --release            # soldr caches every rustc call
 ```
 
 ## How it works
 
-```
+```text
+soldr cargo build --release
+  +-- resolve the real cargo binary
+  +-- wire soldr's wrapper path internally
+  +-- delegate to cargo with your existing flags
+
 soldr maturin build --release
   +-- maturin cached? --> run instantly
   +-- not cached?     --> download pre-built binary (2s) --> run
-
-RUSTC_WRAPPER=soldr cargo build
-  +-- rustc invocation #1 -> cache miss -> compile -> store artifact
-  +-- rustc invocation #2 -> cache hit  -> return cached .rlib (1ms)
-  +-- rustc invocation #N -> cache hit  -> return cached .o (1ms)
-  +-- Done. (1.6s warm, 9.8s cold)
 ```
 
 ## Design goals
 
 - **One obvious command**: Fetch tools, pick the right Windows target, and enable build caching through the same entry point.
-- **Invisible caching**: `RUSTC_WRAPPER` defaults to `zccache` if not set. Daemon auto-starts. No manual setup.
+- **Front-door builds**: `soldr cargo ...` is the primary build UX.
+- **Invisible caching**: soldr wires its build-assistance internals for you. No manual `RUSTC_WRAPPER` setup in the common case.
 - **One cache**: Tools and compilation artifacts in a single `~/.soldr/` directory.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
-- **No cargo wrapping**: soldr wraps `rustc`, not `cargo`. You keep all your cargo flags. No flag-forwarding nightmares.
+- **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
 - **MSVC by default on Windows**: Always targets `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`) unless `rust-toolchain.toml` explicitly says otherwise. MSVC links against `vcruntime140.dll` which ships with every modern Windows install. The GNU target requires shipping `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` with every binary, which is extra baggage for no benefit. This matches the Rust ecosystem default: rustup, cargo-binstall, and nearly all published release binaries target MSVC. crgx gets this wrong by baking the target at compile time, causing it to look for GNU binaries when compiled under MSYS2.
 
@@ -97,7 +97,7 @@ soldr/
 | `soldr-core` | Cache paths, config, version types |
 | `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
 | `soldr-cache` | Wrap rustc, hash inputs, store/retrieve compiled artifacts. The compilation cache daemon. |
-| `soldr-cli` | Mode detection, built-in commands (`status`, `clean`, `config`), tool fetch dispatch. |
+| `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`), tool fetch dispatch. |
 
 ## Prior art
 
