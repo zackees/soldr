@@ -231,9 +231,7 @@ async fn fetch_release_value(
     repo: &RepoInfo,
     url: &str,
 ) -> Result<serde_json::Value, SoldrError> {
-    let resp = client
-        .get(url)
-        .header("Accept", "application/vnd.github+json")
+    let resp = github_request(client, url)
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -261,9 +259,7 @@ async fn fetch_release_by_listing(
         "https://api.github.com/repos/{}/{}/releases?per_page=30",
         repo.owner, repo.repo
     );
-    let resp = client
-        .get(&url)
-        .header("Accept", "application/vnd.github+json")
+    let resp = github_request(client, &url)
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -317,6 +313,21 @@ fn parse_release_info(body: serde_json::Value) -> Result<ReleaseInfo, SoldrError
         .collect();
 
     Ok(ReleaseInfo { version, assets })
+}
+
+fn github_request<'a>(client: &'a reqwest::Client, url: &'a str) -> reqwest::RequestBuilder {
+    let mut request = client
+        .get(url)
+        .header("Accept", "application/vnd.github+json");
+
+    if let Some(token) = std::env::var("GITHUB_TOKEN")
+        .ok()
+        .or_else(|| std::env::var("GH_TOKEN").ok())
+    {
+        request = request.bearer_auth(token);
+    }
+
+    request
 }
 
 /// Pick the best asset for our target triple.
