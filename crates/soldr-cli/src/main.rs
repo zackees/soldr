@@ -147,9 +147,38 @@ fn run_cargo_front_door(args: &[String]) -> Result<i32, SoldrError> {
         "PATH",
         prepend_path(&cargo_bin_dir, existing_path.as_deref())?,
     );
+    if let Some(target) = default_cargo_build_target(args)? {
+        command.env("CARGO_BUILD_TARGET", target);
+    }
 
     let status = command.status()?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrError> {
+    if !cfg!(windows) {
+        return Ok(None);
+    }
+    if cargo_args_specify_target(args) || std::env::var_os("CARGO_BUILD_TARGET").is_some() {
+        return Ok(None);
+    }
+
+    Ok(Some(soldr_core::TargetTriple::detect()?.triple()))
+}
+
+fn cargo_args_specify_target(args: &[String]) -> bool {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--target" {
+            return true;
+        }
+        if arg.starts_with("--target=") {
+            return true;
+        }
+    }
+    false
 }
 
 fn prepend_path(
@@ -190,5 +219,33 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
         (name.to_string(), VersionSpec::parse(version))
     } else {
         (spec.to_string(), VersionSpec::Latest)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cargo_args_specify_target;
+
+    #[test]
+    fn cargo_args_detect_explicit_target_flag() {
+        assert!(cargo_args_specify_target(&[
+            "build".into(),
+            "--target".into(),
+            "x86_64-pc-windows-msvc".into(),
+        ]));
+        assert!(cargo_args_specify_target(&[
+            "build".into(),
+            "--target=x86_64-pc-windows-msvc".into(),
+        ]));
+    }
+
+    #[test]
+    fn cargo_args_ignore_target_after_passthrough_separator() {
+        assert!(!cargo_args_specify_target(&[
+            "test".into(),
+            "--".into(),
+            "--target".into(),
+            "ignored".into(),
+        ]));
     }
 }

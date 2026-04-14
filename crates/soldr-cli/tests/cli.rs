@@ -1,4 +1,10 @@
 use std::process::Command;
+#[cfg(windows)]
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 fn rustup_which(tool: &str) -> String {
     let output = Command::new("rustup")
@@ -79,5 +85,70 @@ fn rustc_wrapper_mode_passes_through_to_rustc() {
     assert!(
         stdout.contains("rustc"),
         "unexpected rustc output: {stdout}"
+    );
+}
+
+#[cfg(windows)]
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    fs::create_dir_all(&dir).expect("failed to create temp dir");
+    dir
+}
+
+#[cfg(windows)]
+fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&existing));
+    std::env::join_paths(paths).expect("failed to join PATH")
+}
+
+#[cfg(windows)]
+#[test]
+fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
+    let fake_tools = unique_temp_dir("fake-tools");
+    fs::write(
+        fake_tools.join("cargo.cmd"),
+        "@echo off\r\necho fake cargo should not be used 1>&2\r\nexit /b 1\r\n",
+    )
+    .expect("failed to write fake cargo.cmd");
+    fs::write(
+        fake_tools.join("rustc.cmd"),
+        "@echo off\r\necho fake rustc should not be used 1>&2\r\nexit /b 1\r\n",
+    )
+    .expect("failed to write fake rustc.cmd");
+
+    let target_dir = unique_temp_dir("target-dir");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("windows-msvc-default");
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .current_dir(&fixture)
+        .env("PATH", prepend_to_path(&fake_tools))
+        .env("CARGO_TARGET_DIR", &target_dir)
+        .output()
+        .expect("failed to run soldr cargo build");
+
+    assert!(
+        output.status.success(),
+        "soldr cargo build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let artifact = target_dir
+        .join("x86_64-pc-windows-msvc")
+        .join("debug")
+        .join("windows-msvc-default.exe");
+    assert!(
+        artifact.exists(),
+        "expected MSVC target artifact at {}",
+        artifact.display()
     );
 }
