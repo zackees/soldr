@@ -2,7 +2,7 @@
 
 This document describes the current external trust boundaries for `soldr`.
 
-It is a factual inventory of what the project trusts today, not a claim that every trust edge is already ideal.
+It records both the factual inventory of what the project trusts today and the current repo policy for which of those trust edges are acceptable on the `0.5.x` line.
 
 ## Controlled Inputs
 
@@ -27,6 +27,16 @@ Even with a validated release workflow, the release path still depends on extern
   - Published crate versions are immutable, but the transport and index are still external.
 - GitHub APIs and GitHub Releases
   - The release workflow uses GitHub services to create releases, publish assets, and store attestations.
+
+## Audit: What The Published Release Artifacts Depend On
+
+Based on the committed release workflow in `.github/workflows/release.yml`:
+
+- the published `soldr` release archives are built from the repository source tree plus Rust dependencies resolved through Cargo
+- the workflow does not explicitly download and repackage third-party release binaries into the published `soldr` archives
+- the release path still depends on external services and package sources such as GitHub-hosted runners, `rustup`, crates.io, and GitHub APIs
+- the live `apt` install and pinned third-party repository checkout are part of release-gating validation, not packaged release contents
+- the managed `zccache` download path is runtime behavior in `soldr`, not an input to building the published `soldr` release artifacts
 
 ## E2E Validation External Dependencies
 
@@ -64,7 +74,7 @@ It does not yet enforce:
 - upstream artifact attestations
 - mirrored internal copies of third-party tool binaries
 
-## Current Policy Direction
+## Current Policy Decisions
 
 Current repo policy is:
 
@@ -72,11 +82,27 @@ Current repo policy is:
 - make external trust edges explicit in documentation
 - treat floating workflow refs as unacceptable
 - prefer exact commit or version selection where possible
+- `0.5.x` does not claim hermetic builds
+- the documented release-time dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt` in the bootstrap e2e path, and the pinned third-party bootstrap repository are acceptable for `0.5.x`
+- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are accepted future hardening work, but they are not blockers for the current `0.5.x` release line
+- the pinned third-party bootstrap checkout is acceptable for current validation, but it must not be described as mirrored or hermetic
+- release verification for `soldr` covers the published `soldr` artifacts and their provenance, not every external input used during CI
 
-Open follow-up decisions are tracked in:
+## Current Runtime Fetch Policy
+
+Current `0.5.x` policy for runtime-fetched binaries is:
+
+- `soldr` fetching a third-party tool is a convenience/bootstrap path, not a repository-side trust guarantee
+- a successful fetch currently means crates.io metadata and GitHub Releases produced a matching archive for the selected target and `soldr` extracted it successfully
+- `soldr` does not currently enforce maintainer allowlists, repo-managed checksums, upstream signatures, upstream attestations, or mirrored copies before executing a fetched tool
+- the managed `zccache` path is pinned to a repo-chosen version, but it still uses the same direct GitHub Release download model and is not independently checksum- or attestation-verified by `soldr` itself today
+- stronger runtime trust enforcement is accepted follow-up work, but it is not part of the current `0.5.x` trust claim
+
+Open follow-up implementation issues are tracked in:
 
 - [#11](https://github.com/zackees/soldr/issues/11) for repository and release-governance settings
-- [#13](https://github.com/zackees/soldr/issues/13) for hermeticity and runtime trust hardening
+- [#41](https://github.com/zackees/soldr/issues/41) for reducing live external release inputs
+- [#42](https://github.com/zackees/soldr/issues/42) for fetched-binary trust enforcement
 
 ## Practical Reading Of This Document
 
@@ -84,6 +110,6 @@ If you are deciding whether to trust a published `soldr` release:
 
 - trust the validated GitHub workflow run and artifact attestation for the released commit
 - separately evaluate whether the remaining external build inputs are acceptable for your threat model
-- separately evaluate whether `soldr` fetching third-party tool binaries at runtime is acceptable for your threat model
+- separately evaluate whether `soldr` fetching third-party tool binaries at runtime is acceptable for your threat model, because that remains an upstream trust decision on `0.5.x`
 
 Those are related but distinct trust decisions.

@@ -45,7 +45,7 @@ When you run `soldr`, the tool should do the obvious thing:
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
-- **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse.
+- **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
 - **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring; zccache's artifact store still uses its current default cache root.
 
@@ -104,7 +104,7 @@ soldr/
 | Crate | Role |
 |---|---|
 | `soldr-core` | Cache paths, config, version types |
-| `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
+| `soldr-fetch` | Resolve crate binaries from crates.io metadata and GitHub Releases. Download and cache. |
 | `soldr-cache` | zccache integration helpers, cache policy, session plumbing. |
 | `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`, `cache`), tool fetch dispatch. |
 
@@ -121,7 +121,7 @@ Built on lessons from:
 - [SECURITY.md](./SECURITY.md) describes the current hardening posture and release policy.
 - [RELEASE.md](./RELEASE.md) documents the intended maximum-security release setup and owner workflow.
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md) explains how to verify published release artifacts.
-- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts.
+- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts, including the current `0.5.x` limits of runtime fetched-binary trust.
 
 ## License
 

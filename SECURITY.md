@@ -33,6 +33,8 @@ The repository currently enforces several baseline controls:
 
 These controls reduce drift, but they do not make the full release pipeline hermetic.
 
+The current `0.5.x` line does not claim hermetic builds, and it does not claim that third-party binaries fetched later by `soldr` are repository-verified just because `soldr` downloaded them.
+
 ## What is pinned
 
 The repo aims to pin security-relevant inputs wherever practical:
@@ -86,6 +88,14 @@ Current verification policy:
 - SBOM publication is not currently required for the release line
 - reproducible-build claims are not currently made for `soldr`
 - no extra signed release metadata is currently published beyond `SHA256SUMS` and GitHub provenance attestations
+
+Current hermeticity and runtime-trust policy:
+
+- `0.5.x` release verification covers published `soldr` artifacts, not every external input used during CI
+- `0.5.x` does not claim hermetic builds; documented dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt`, and the pinned bootstrap test repository remain acceptable for this release line
+- Cargo/toolchain/package mirroring or vendoring is deferred hardening tracked in issue [#41](https://github.com/zackees/soldr/issues/41)
+- runtime third-party binary fetches are a convenience/bootstrap path on `0.5.x`, not a repository-side trust guarantee
+- stronger trust enforcement for fetched binaries is tracked in issue [#42](https://github.com/zackees/soldr/issues/42)
 
 Planned state, tracked in issue `#7`:
 
