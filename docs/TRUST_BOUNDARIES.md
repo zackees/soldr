@@ -27,6 +27,9 @@ Even with a validated release workflow, the release path still depends on extern
   - Published crate versions are immutable, but the transport and index are still external.
 - GitHub APIs and GitHub Releases
   - The release workflow uses GitHub services to create releases, publish assets, and store attestations.
+- PyPI
+  - Optional hardened wheel publication relies on PyPI's Trusted Publishing and package hosting.
+  - The project already has an existing `soldr` PyPI record whose ownership and publisher settings live outside this repository.
 
 ## E2E Validation External Dependencies
 

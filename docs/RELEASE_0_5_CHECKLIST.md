@@ -101,7 +101,38 @@ Required checks after publication:
 - a human cannot create, move, or delete the release tag manually
 - the release cannot be mutated after publication because immutable releases are enabled
 
-Recommended verification commands:
+## 6. Enable Trusted PyPI Publishing If `0.5.0` Will Ship Wheels
+
+If PyPI is part of `0.5.0`, configure the existing `soldr` project for Trusted Publishing before the final release.
+
+Required setup:
+
+- add the GitHub Actions trusted publisher on PyPI for:
+  - owner: `zackees`
+  - repository: `soldr`
+  - workflow: `.github/workflows/release.yml`
+  - environment: `release`
+- confirm the existing `soldr` PyPI project is the correct project and that stale pre-Trusted-Publishing metadata will be superseded by the next upload
+
+Recommended rehearsal:
+
+- use TestPyPI first with the same workflow and `publish_pypi=true`
+- pass `pypi_repository_url=https://test.pypi.org/legacy/`
+- treat this as a real publish rehearsal, not a `dry_run`, because OIDC publish cannot be fully exercised in the workflow's dry-run path
+
+Recommended command path:
+
+```bash
+gh workflow run release.yml \
+  --ref release \
+  -f version=v0.5.0-rc1 \
+  -f commit_sha=<40-char-sha> \
+  -f dry_run=false \
+  -f publish_pypi=true \
+  -f pypi_repository_url=https://test.pypi.org/legacy/
+```
+
+Recommended GitHub-release verification commands:
 
 ```bash
 gh release view v0.5.0-rc1 --repo zackees/soldr
@@ -110,13 +141,14 @@ gh attestation verify soldr-v0.5.0-rc1-x86_64-unknown-linux-gnu.tar.gz \
   --signer-workflow zackees/soldr/.github/workflows/release.yml
 ```
 
-## 6. Audit The First Published Release
+## 7. Audit The First Published Release
 
 After `v0.5.0-rc1`, confirm that reality matches the docs:
 
 - [RELEASE.md](../RELEASE.md)
 - [RELEASE_VERIFICATION.md](./RELEASE_VERIFICATION.md)
 - [RELEASE_GOVERNANCE_CHECKLIST.md](./RELEASE_GOVERNANCE_CHECKLIST.md)
+- [PYPI_TRUSTED_PUBLISHING.md](./PYPI_TRUSTED_PUBLISHING.md)
 - [TRUST_BOUNDARIES.md](./TRUST_BOUNDARIES.md)
 
 Anything discovered during the RC must become either:
@@ -125,7 +157,7 @@ Anything discovered during the RC must become either:
 - a GitHub settings fix
 - an explicit documented limitation
 
-## 7. Decide Go Or No-Go For `v0.5.0`
+## 8. Decide Go Or No-Go For `v0.5.0`
 
 Ship `v0.5.0` only when all of these are true:
 
@@ -133,9 +165,10 @@ Ship `v0.5.0` only when all of these are true:
 - the release workflow has passed in dry-run and real-release modes
 - the first RC was verified with checksums and attestations
 - the protected-tag and immutable-release controls behaved as expected
+- if PyPI is in scope, Trusted Publishing was exercised successfully against TestPyPI or PyPI with the hardened wheel set
 - the remaining policy questions are closed or explicitly deferred in writing
 
-## 8. Gate `1.0.0-rc`
+## 9. Gate `1.0.0-rc`
 
 Do not cut `1.0.0-rc` until:
 

@@ -35,8 +35,11 @@ The remaining work before the attested secure `0.5` release is operational rathe
 - exercise the full release path with a rehearsal and first release candidate
 - verify that humans cannot mint, move, or delete release tags in practice
 - finish policy decisions around SBOMs, reproducibility, and hermeticity
+- register the existing `soldr` PyPI project for Trusted Publishing if hardened wheel upload is in scope for `0.5.0`
 
 `1.0.0-rc` is intentionally reserved for the point where the zccache-style compilation cache is actually integrated rather than merely planned.
+
+crates.io publication is not part of the current release direction. `soldr` is being released as a hardened binary tool, not as a promised Rust library API surface.
 
 ## Recommended Final Model
 
@@ -148,6 +151,7 @@ The release workflow now does this:
 6. Use that App token to create the tag.
 7. Use that same App token to create the GitHub Release.
 8. Attach checksums and build provenance attestations.
+9. Optionally build hardened platform wheels and publish them to PyPI through OIDC Trusted Publishing.
 
 The release workflow must not use:
 

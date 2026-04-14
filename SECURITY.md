@@ -25,7 +25,6 @@ The repository currently enforces several baseline controls:
 - CI and release builds use `cargo ... --locked`.
 - CI now enforces `cargo fmt --check` and `cargo clippy -D warnings`.
 - No Cargo `git` dependencies are currently used; dependencies resolve from crates.io.
-- Published crates.io versions are immutable and cannot be overwritten, only yanked.
 - Third-party GitHub Actions in the repository workflows are pinned to full commit SHAs.
 - The e2e third-party source input is pinned to an exact Git commit in the workflow inputs.
 - Releases are promoted by `workflow_dispatch` for an exact commit SHA instead of publishing immediately on tag push.
@@ -80,8 +79,11 @@ Current state:
 - release tags are created through a GitHub App-backed workflow path
 - release assets are published to GitHub Releases with a generated checksum manifest
 - release assets are attested in GitHub Actions prior to publication
+- the release workflow can also build hardened PyPI wheels, but enabling PyPI upload still requires Trusted Publisher registration on the existing `soldr` PyPI project
 - immutable releases and protected tag settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
+
+The current distribution direction for `0.5.x` is GitHub Releases plus optional PyPI wheels. crates.io publication is intentionally out of scope because the project is not promising a stable Rust source/library API.
 
 Remaining follow-up decisions before the attested secure `0.5` release, tracked in issues `#12` and `#13`:
 
