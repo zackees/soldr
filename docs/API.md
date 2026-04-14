@@ -33,7 +33,8 @@ Behavior:
 - Resolve the real `cargo` binary through `rustup`
 - Resolve the matching real `rustc` binary through `rustup`
 - Fetch a pinned managed `zccache` release when caching is enabled
-- Set `RUSTC_WRAPPER` to the managed `zccache` binary
+- Set `RUSTC_WRAPPER` to the current soldr binary
+- Pass the managed `zccache` binary path into wrapper mode through the environment
 - Start a per-build zccache session on zccache's current default daemon endpoint
 - Delegate to Cargo with the exact flags the user passed
 
@@ -86,8 +87,9 @@ In this mode, soldr should act as the transparent build-assistance layer around 
 
 Current implementation status:
 
-- Wrapper-mode passthrough to real `rustc` exists
-- The normal cache-enabled build path uses managed `zccache` instead of soldr wrapper mode
+- Wrapper mode still transparently resolves the real `rustc`
+- The normal cache-enabled build path now runs through soldr wrapper mode and delegates into managed `zccache`
+- If caching is disabled, wrapper mode falls through to real `rustc` without zccache involvement
 
 ---
 
@@ -121,7 +123,7 @@ Show cache and target information.
 
 ### `soldr clean`
 
-Clear the managed local zccache artifact cache.
+Clear the managed local zccache artifact cache and remove soldr's zccache session state directory.
 
 ### `soldr config`
 
@@ -161,6 +163,7 @@ Commands:
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
+| `SOLDR_ZCCACHE_BIN` | Managed zccache binary path passed from soldr front door into wrapper mode | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `SOLDR_LOG` | Log level | `warn` |
@@ -204,5 +207,6 @@ For bootstrap verification of another Rust project:
 The key design rule is simple:
 
 - users build through `soldr cargo ...`
-- soldr uses managed zccache internally for cache-enabled Rust builds
+- soldr owns the wrapper slot on the common path
+- soldr delegates cache-enabled wrapper invocations into managed zccache
 - users do not need to manually wire `RUSTC_WRAPPER` for the common path

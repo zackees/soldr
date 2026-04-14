@@ -20,8 +20,9 @@ soldr aims for the same outcome in the Rust toolchain world.
 
 Current release line:
 
-- `0.5.x` is the secure front-door and tool-fetch release line
-- `1.0.0-rc` remains reserved for the point where the built-in zccache integration and cache command surface are fully rounded out
+- `0.5.x` is the secure front-door, tool-fetch, and built-in zccache-backed cache release line
+- `1.0.0-rc` remains reserved for broader release hardening and bootstrap validation
+
 ## Why soldr exists
 
 On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.
@@ -66,7 +67,8 @@ soldr rustfmt src/main.rs
 soldr cargo build --release
   +-- resolve the real cargo binary
   +-- fetch/start managed zccache when cache is enabled
-  +-- set zccache as the compiler wrapper for this build
+  +-- set soldr as the compiler wrapper for this build
+  +-- have soldr wrapper mode delegate to managed zccache
   +-- delegate to cargo with your existing flags
 
 soldr maturin build --release
@@ -79,6 +81,7 @@ soldr maturin build --release
 - **One obvious command**: Fetch tools, pick the right Windows target, and run through managed zccache through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
+- **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state instead of placeholder behavior.
 - **One cache boundary, eventually**: soldr keeps its own tools and zccache session state in `~/.soldr/`. Current zccache artifacts still live in zccache's default cache root until upstream exposes a supported cache-dir override.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
@@ -94,7 +97,7 @@ soldr/
 |   |-- soldr-fetch/     # Binary resolution + download (the crgx half)
 |   |-- soldr-cache/     # Compilation caching (the zccache half)
 |   `-- soldr-cli/       # CLI entry point + daemon
-|-- src/soldr/           # Python package (PyO3 bindings)
+|-- src/soldr/           # Python package (maturin bin bindings)
 `-- tests/
 ```
 

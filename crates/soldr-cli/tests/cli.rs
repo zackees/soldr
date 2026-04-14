@@ -26,6 +26,169 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+fn fake_script_path(dir: &PathBuf, name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return dir.join(format!("{name}.cmd"));
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(name)
+    }
+}
+
+fn write_fake_script(path: &PathBuf, body: &str) {
+    #[cfg(windows)]
+    {
+        fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, body).expect("failed to write fake script");
+        let mut perms = fs::metadata(path)
+            .expect("failed to stat fake script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).expect("failed to chmod fake script");
+    }
+}
+
+fn fake_cargo_script(log_path: &PathBuf) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID%>>\"{}\"\n\
+             if defined RUSTC_WRAPPER (\n\
+             call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
+             ) else (\n\
+             call \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
+             )\n\
+             exit /b %ERRORLEVEL%\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}}\" >> \"{}\"\n\
+             if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
+               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
+             else\n\
+               \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
+             fi\n",
+            log_path.display()
+        )
+    }
+}
+
+fn fake_rustc_script(log_path: &PathBuf) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo rustc %*>>\"{}\"\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"rustc $*\" >> \"{}\"\n",
+            log_path.display()
+        )
+    }
+}
+
+fn fake_zccache_script(log_path: &PathBuf) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             if \"%~1\"==\"start\" (\n\
+               echo zccache start>>\"{0}\"\n\
+               exit /b 0\n\
+             )\n\
+             if \"%~1\"==\"session-start\" (\n\
+               echo zccache session-start>>\"{0}\"\n\
+               if not \"%~4\"==\"\" type nul > \"%~4\"\n\
+               echo {{\"session_id\":\"test-session\"}}\n\
+               exit /b 0\n\
+             )\n\
+             if \"%~1\"==\"session-end\" (\n\
+               echo zccache session-end %~2>>\"{0}\"\n\
+               echo hits: 1\n\
+               exit /b 0\n\
+             )\n\
+             if \"%~1\"==\"status\" (\n\
+               echo hits=7\n\
+               exit /b 0\n\
+             )\n\
+             if \"%~1\"==\"clear\" (\n\
+               echo zccache clear>>\"{0}\"\n\
+               exit /b 0\n\
+             )\n\
+             set \"rustc=%~1\"\n\
+             shift\n\
+             echo zccache wrapper %rustc% %*>>\"{0}\"\n\
+             call \"%rustc%\" %*\n\
+             exit /b %ERRORLEVEL%\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+               start)\n\
+                 echo \"zccache start\" >> \"{0}\"\n\
+                 exit 0\n\
+                 ;;\n\
+               session-start)\n\
+                 echo \"zccache session-start\" >> \"{0}\"\n\
+                 : > \"$4\"\n\
+                 echo '{{\"session_id\":\"test-session\"}}'\n\
+                 exit 0\n\
+                 ;;\n\
+               session-end)\n\
+                 echo \"zccache session-end $2\" >> \"{0}\"\n\
+                 echo 'hits: 1'\n\
+                 exit 0\n\
+                 ;;\n\
+               status)\n\
+                 echo 'hits=7'\n\
+                 exit 0\n\
+                 ;;\n\
+               clear)\n\
+                 echo \"zccache clear\" >> \"{0}\"\n\
+                 exit 0\n\
+                 ;;\n\
+             esac\n\
+             rustc=\"$1\"\n\
+             shift\n\
+             echo \"zccache wrapper $rustc $*\" >> \"{0}\"\n\
+             \"$rustc\" \"$@\"\n",
+            log_path.display()
+        )
+    }
+}
+
+fn install_fake_toolchain(log_path: &PathBuf) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = unique_temp_dir("fake-toolchain");
+    let cargo = fake_script_path(&dir, "cargo");
+    let rustc = fake_script_path(&dir, "rustc");
+    let zccache = fake_script_path(&dir, "zccache");
+    write_fake_script(&cargo, &fake_cargo_script(log_path));
+    write_fake_script(&rustc, &fake_rustc_script(log_path));
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (cargo, rustc, zccache)
+}
+
 #[test]
 fn version_command_prints_workspace_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -133,6 +296,119 @@ fn cargo_subcommand_rejects_no_cache_flag() {
 }
 
 #[test]
+fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
+    let cache_root = unique_temp_dir("cargo-default-cache");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cargo build with fake zccache");
+
+    assert!(
+        output.status.success(),
+        "cache-enabled front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo wrapper="),
+        "fake cargo did not record wrapper env: {log}"
+    );
+    assert!(
+        log.contains(env!("CARGO_BIN_EXE_soldr")),
+        "soldr should own the wrapper slot in cache-enabled mode: {log}"
+    );
+    assert!(
+        log.contains("cache=1"),
+        "cache-enabled front door should propagate cache flag: {log}"
+    );
+    assert!(
+        log.contains("zccache start"),
+        "managed zccache should be started for cache-enabled builds: {log}"
+    );
+    assert!(
+        log.contains("zccache session-start"),
+        "managed zccache session should start before cargo runs: {log}"
+    );
+    assert!(
+        log.contains("zccache wrapper"),
+        "wrapper mode should dispatch into zccache on cache-enabled builds: {log}"
+    );
+    assert!(
+        log.contains("rustc ") && log.contains("--crate-name demo"),
+        "real rustc invocation should still happen through the wrapper path: {log}"
+    );
+    assert!(
+        log.contains("zccache session-end test-session"),
+        "managed zccache session should end after cargo finishes: {log}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("soldr: zccache session summary"),
+        "expected zccache session summary in stderr: {stderr}"
+    );
+
+    let journal = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("last-session.jsonl");
+    assert!(
+        journal.exists(),
+        "expected session journal at {}",
+        journal.display()
+    );
+}
+
+#[test]
+fn no_cache_bypasses_wrapper_and_zccache() {
+    let cache_root = unique_temp_dir("cargo-no-cache-fake");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["--no-cache", "cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr --no-cache cargo build with fake tools");
+
+    assert!(
+        output.status.success(),
+        "no-cache front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cache=0"),
+        "no-cache front door should propagate cache disable flag: {log}"
+    );
+    assert!(
+        !log.contains("zccache start"),
+        "no-cache front door should not start zccache: {log}"
+    );
+    assert!(
+        !log.contains(env!("CARGO_BIN_EXE_soldr")),
+        "no-cache front door should not set soldr as wrapper: {log}"
+    );
+    assert!(
+        log.contains("rustc ") && log.contains("--crate-name demo"),
+        "no-cache front door should call rustc directly: {log}"
+    );
+}
+
+#[test]
 fn rustc_wrapper_mode_passes_through_to_rustc() {
     let rustc = rustup_which("rustc");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -177,6 +453,90 @@ fn status_reports_cache_control_defaults() {
     assert!(
         stdout.contains("not fetched yet"),
         "status should explain unfetched managed zccache state: {stdout}"
+    );
+}
+
+#[test]
+fn cache_command_reports_managed_zccache_status() {
+    let cache_root = unique_temp_dir("cache-command");
+    let log_path = cache_root.join("tool.log");
+    let (_, _, zccache) = install_fake_toolchain(&log_path);
+    let journal = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("last-session.jsonl");
+    fs::create_dir_all(journal.parent().expect("journal parent missing"))
+        .expect("failed to create journal dir");
+    fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("cache")
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cache");
+
+    assert!(output.status.success(), "cache command failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("soldr zccache state dir:"),
+        "cache command missing state dir: {stdout}"
+    );
+    assert!(
+        stdout.contains("last session journal:"),
+        "cache command missing journal path: {stdout}"
+    );
+    assert!(
+        stdout.contains("(present)"),
+        "cache command should report present journal: {stdout}"
+    );
+    assert!(
+        stdout.contains("zccache: hits=7"),
+        "cache command should surface managed zccache status output: {stdout}"
+    );
+}
+
+#[test]
+fn clean_clears_managed_zccache_and_state_dir() {
+    let cache_root = unique_temp_dir("clean-command");
+    let log_path = cache_root.join("tool.log");
+    let (_, _, zccache) = install_fake_toolchain(&log_path);
+    let state_dir = cache_root.join("cache").join("zccache");
+    let journal = state_dir.join("logs").join("last-session.jsonl");
+    fs::create_dir_all(journal.parent().expect("journal parent missing"))
+        .expect("failed to create journal dir");
+    fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("clean")
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr clean");
+
+    assert!(output.status.success(), "clean command failed");
+    assert!(
+        !state_dir.exists(),
+        "clean should remove soldr zccache state dir at {}",
+        state_dir.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("cleared zccache artifact cache"),
+        "clean should report artifact cache cleanup: {stdout}"
+    );
+    assert!(
+        stdout.contains("removed soldr zccache state dir:"),
+        "clean should report state dir cleanup: {stdout}"
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("zccache clear"),
+        "clean should call managed zccache clear: {log}"
     );
 }
 
