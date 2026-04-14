@@ -71,6 +71,32 @@ fn cargo_front_door_runs_real_cargo() {
 }
 
 #[test]
+fn cargo_front_door_consumes_no_cache_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "--no-cache", "--version"])
+        .output()
+        .expect("failed to run soldr cargo --no-cache --version");
+
+    assert!(
+        output.status.success(),
+        "cargo front door with --no-cache failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("cargo"),
+        "unexpected cargo output with --no-cache: {stdout}"
+    );
+    assert!(
+        !stderr.contains("unexpected argument '--no-cache'"),
+        "--no-cache should be consumed by soldr, not forwarded to cargo: {stderr}"
+    );
+}
+
+#[test]
 fn rustc_wrapper_mode_passes_through_to_rustc() {
     let rustc = rustup_which("rustc");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -85,6 +111,26 @@ fn rustc_wrapper_mode_passes_through_to_rustc() {
     assert!(
         stdout.contains("rustc"),
         "unexpected rustc output: {stdout}"
+    );
+}
+
+#[test]
+fn status_reports_cache_control_defaults() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("status")
+        .output()
+        .expect("failed to run soldr status");
+
+    assert!(output.status.success(), "status command failed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("cache dir:"),
+        "status missing cache dir: {stdout}"
+    );
+    assert!(
+        stdout.contains("cache default: enabled"),
+        "status missing cache default: {stdout}"
     );
 }
 
