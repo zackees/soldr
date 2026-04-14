@@ -76,7 +76,6 @@ Current repo policy is:
 Open follow-up decisions are tracked in:
 
 - [#11](https://github.com/zackees/soldr/issues/11) for repository and release-governance settings
-- [#12](https://github.com/zackees/soldr/issues/12) for verification and reproducibility policy
 - [#13](https://github.com/zackees/soldr/issues/13) for hermeticity and runtime trust hardening
 
 ## Practical Reading Of This Document
