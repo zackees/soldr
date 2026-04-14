@@ -18,6 +18,11 @@ That is the same reason [uv](https://github.com/astral-sh/uv) is compelling. uv 
 
 soldr aims for the same outcome in the Rust toolchain world.
 
+Current release line:
+
+- `0.5.x` is the secure front-door and tool-fetch release line
+- `1.0.0-rc` is reserved for the point where the zccache-style compilation cache is actually integrated
+
 ## Why soldr exists
 
 On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.
@@ -36,13 +41,13 @@ When you run `soldr`, the tool should do the obvious thing:
 - pick MSVC on Windows by default
 - fetch the tool you asked for
 - cache it locally
-- carry `zccache` along for transparent `rustc` caching without manual wrapper setup
+- prepare the front door that will eventually carry zccache-style transparent `rustc` caching without manual wrapper setup
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse.
 
-- **Compilation caching** (the zccache half): When your build invokes `rustc` hundreds of times, soldr caches every compilation unit. Second builds finish in milliseconds, not minutes.
+- **Compilation caching** (the zccache half): planned, but not integrated yet in the current `0.5.x` line.
 
 ```bash
 # Build through soldr's front door:
@@ -70,9 +75,9 @@ soldr maturin build --release
 
 ## Design goals
 
-- **One obvious command**: Fetch tools, pick the right Windows target, and enable build caching through the same entry point.
+- **One obvious command**: Fetch tools, pick the right Windows target, and eventually enable build caching through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
-- **Invisible caching**: soldr wires its build-assistance internals for you. No manual `RUSTC_WRAPPER` setup in the common case.
+- **Invisible caching**: the wrapper plumbing exists now; actual compilation cache behavior is still future work.
 - **One cache**: Tools and compilation artifacts in a single `~/.soldr/` directory.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
@@ -96,7 +101,7 @@ soldr/
 |---|---|
 | `soldr-core` | Cache paths, config, version types |
 | `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
-| `soldr-cache` | Wrap rustc, hash inputs, store/retrieve compiled artifacts. The compilation cache daemon. |
+| `soldr-cache` | Reserved for the future compilation-cache implementation; not yet integrated in the current release line. |
 | `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`), tool fetch dispatch. |
 
 ## Prior art

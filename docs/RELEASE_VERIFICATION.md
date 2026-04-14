@@ -9,9 +9,11 @@ It is intentionally limited to what the repository currently implements.
 For a normal `soldr` release:
 
 - the release workflow is started manually with an explicit version and exact commit SHA
-- that exact commit must be reachable from `main`
+- that exact commit must be reachable from the protected `release` branch
 - the workflow re-runs lint, workspace build, tests, integration, and all supported e2e bootstrap jobs for that exact commit
 - release archives are built from that exact commit
+- the version tag is protected by repository rulesets and created through the release workflow path
+- the published GitHub Release is immutable once published
 - a SHA-256 checksum manifest is published with the release assets
 - GitHub build provenance attestations are generated for the published assets
 
@@ -19,13 +21,11 @@ For a normal `soldr` release:
 
 The current release flow does not yet claim all of the following:
 
-- immutable GitHub Releases
-- protected release-tag rulesets enforced outside the git tree
 - SBOM publication
 - independently reproduced builds by a second builder
 - fully hermetic inputs for rustup, crates.io, OS packages, or third-party test inputs
 
-Those follow-up items are tracked in issues [#11](https://github.com/zackees/soldr/issues/11), [#12](https://github.com/zackees/soldr/issues/12), and [#13](https://github.com/zackees/soldr/issues/13).
+Those follow-up items are tracked in issues [#12](https://github.com/zackees/soldr/issues/12) and [#13](https://github.com/zackees/soldr/issues/13).
 
 ## Release Asset Names
 
@@ -107,7 +107,9 @@ Offline verification is not yet the primary documented path for `soldr`, but it 
 
 GitHub CLI also has `gh release verify`, which verifies release-level attestations.
 
-We do not currently document that as the primary verification path for `soldr` because immutable releases and the surrounding release-governance settings are still tracked separately. Today, the repository's strongest implemented verification path is:
+Because `soldr` now uses protected release tags and immutable GitHub Releases, `gh release verify` is a reasonable supplementary check.
+
+We still document per-artifact verification as the primary path because it validates the exact archive you downloaded. Today, the strongest explicit verification path for `soldr` is:
 
 1. checksum verification
 2. artifact attestation verification with `gh attestation verify`
