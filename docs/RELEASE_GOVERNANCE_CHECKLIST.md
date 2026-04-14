@@ -26,9 +26,12 @@ The intended release-governance state is:
 
 Observed on April 13, 2026 via GitHub API:
 
-- no repository rulesets for release tags
+- an active repository tag ruleset protects `refs/tags/v*.*.*`
+- the release-tag ruleset blocks tag creation, update, and deletion
+- the release GitHub App is the only bypass actor for that ruleset
 - the `release` environment exists and requires approval from `@zackees`
 - `main` branch protection requires pull requests, conversation resolution, linear history, and the current CI plus per-target e2e checks
+- `release` branch protection requires the same validation gate before promotion
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
 - no published GitHub Releases yet
@@ -37,14 +40,16 @@ Those observations were produced with:
 
 ```bash
 gh api repos/zackees/soldr/rulesets
+gh api repos/zackees/soldr/rulesets/15033379
 gh api repos/zackees/soldr/environments
 gh api repos/zackees/soldr/branches/main/protection
+gh api repos/zackees/soldr/branches/release/protection
 gh api repos/zackees/soldr/actions/permissions
 gh api repos/zackees/soldr/immutable-releases
 gh api repos/zackees/soldr/releases?per_page=5
 ```
 
-The tag-ruleset query still returns an empty list. That is intentional for now: GitHub rejected a repository-ruleset bypass entry for the built-in `github-actions` integration on this personal repository, which means a true workflow-only tag rule needs either a different repository ownership model or a dedicated installed GitHub App.
+The ruleset now exists and is active. The critical detail is not just that a tag ruleset exists, but that the only bypass actor is the dedicated release GitHub App rather than a human maintainer or a PAT-backed workaround.
 
 ## Audit Steps
 
@@ -59,14 +64,17 @@ gh api repos/zackees/soldr/rulesets
 What to look for:
 
 - a ruleset that applies to release tag patterns such as `v*`
+- the ruleset is active
+- tag creation, update, and deletion are all blocked by default
+- the only bypass actor is the dedicated release GitHub App
 - protection against moving or deleting release tags
 - restrictions that make the validated workflow the normal release path
 
-Current limitation:
+Current constraint:
 
-- On this personal repository, GitHub rejected a bypass actor for the built-in `github-actions` integration when attempting to create a workflow-only release-tag ruleset.
-- Do not replace this with a maintainer-user bypass or PAT-backed workaround and call it equivalent. That would weaken the workflow-only release intent.
-- If strict workflow-only tags are required, solve this with repository-ownership changes or a dedicated installed GitHub App whose token is used by the release workflow.
+- On this personal repository, the built-in `github-actions` integration was not suitable as the bypass actor for a workflow-only tag rule.
+- The current secure model uses a dedicated installed GitHub App instead.
+- Do not replace the App bypass with a maintainer-user bypass or PAT-backed workaround and call it equivalent.
 
 ### 2. Check The Release Environment
 
@@ -86,15 +94,17 @@ The validated release workflow already targets `environment: release`, so this e
 
 ### 3. Check Branch Protection Or Equivalent Rulesets
 
-Confirm that the default branch is protected either by branch protection or a ruleset-based equivalent:
+Confirm that both `main` and `release` are protected either by branch protection or a ruleset-based equivalent:
 
 ```bash
 gh api repos/zackees/soldr/branches/main/protection
+gh api repos/zackees/soldr/branches/release/protection
 ```
 
 What to look for:
 
 - pull requests are required for `main`
+- `release` is also protected and requires the same validation gate
 - the required-check list includes:
   - `Lint`
   - `Linux x64`
