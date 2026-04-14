@@ -16,6 +16,16 @@ on:
         required: false
         default: true
         type: boolean
+      publish_pypi:
+        description: Build hardened wheel artifacts and publish them to PyPI via Trusted Publishing
+        required: false
+        default: false
+        type: boolean
+      pypi_repository_url:
+        description: Optional alternate upload endpoint such as https://test.pypi.org/legacy/
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: write
@@ -49,6 +59,8 @@ jobs:
           set -euo pipefail
           version='${{ inputs.version }}'
           commit_sha='${{ inputs.commit_sha }}'
+          publish_pypi='${{ inputs.publish_pypi }}'
+          pypi_repository_url='${{ inputs.pypi_repository_url }}'
 
           if [[ "${GITHUB_REF_NAME}" != "release" ]]; then
             echo "validated releases must be dispatched from release" >&2
@@ -62,6 +74,11 @@ jobs:
 
           if [[ ! "$commit_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "commit_sha must be a full 40-character commit SHA" >&2
+            exit 1
+          fi
+
+          if [[ "$publish_pypi" != "true" && -n "$pypi_repository_url" ]]; then
+            echo "pypi_repository_url requires publish_pypi=true" >&2
             exit 1
           fi
 
@@ -312,6 +329,115 @@ jobs:
           name: release-soldr-${{ matrix.target }}
           path: dist/soldr-*
 
+  build-pypi:
+    name: PyPI ${{ matrix.name }}
+    if: ${{ inputs.publish_pypi }}
+    needs:
+      - prepare
+      - lint
+      - test
+      - e2e-linux-x64
+      - e2e-linux-arm64
+      - e2e-linux-x64-musl
+      - e2e-linux-arm64-musl
+      - e2e-macos-x64
+      - e2e-macos-arm64
+      - e2e-windows-x64
+      - e2e-windows-arm64
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - name: Linux ARM64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macOS x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macOS ARM64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - name: Windows x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+
+      - name: Install maturin
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "maturin>=1.7,<2"
+
+      - name: Install maturin
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          py -3 -m pip install --upgrade pip
+          py -3 -m pip install "maturin>=1.7,<2"
+
+      - name: Build hardened wheel
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m maturin build \
+            --release \
+            --locked \
+            --compatibility pypi \
+            --target "${{ matrix.target }}" \
+            --out dist
+
+      - name: Build hardened wheel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          py -3 -m maturin build `
+            --release `
+            --locked `
+            --compatibility pypi `
+            --target "${{ matrix.target }}" `
+            --out dist
+
+      - name: Smoke test wheel
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          . .venv/bin/activate
+          python -m pip install dist/*.whl
+          soldr --version
+
+      - name: Smoke test wheel
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          py -3 -m venv .venv
+          .\.venv\Scripts\python.exe -m pip install dist\*.whl
+          .\.venv\Scripts\soldr.exe --version
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: pypi-soldr-${{ matrix.target }}
+          path: dist/*.whl
+
   publish:
     name: Attest and publish release assets
     needs:
@@ -370,6 +496,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${{ needs.prepare.outputs.version }}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
             --draft \
             --generate-notes \
             --target "${{ needs.prepare.outputs.commit_sha }}" \
@@ -382,4 +509,42 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "${{ needs.prepare.outputs.version }}" --draft=false
+          gh release edit "${{ needs.prepare.outputs.version }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false
+
+  publish-pypi:
+    name: Publish hardened PyPI wheels
+    if: ${{ inputs.publish_pypi && !inputs.dry_run }}
+    needs:
+      - prepare
+      - build-pypi
+      - publish
+    runs-on: ubuntu-24.04
+    environment: release
+
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: dist
+          pattern: pypi-soldr-*
+          merge-multiple: true
+
+      - name: Show Python distributions
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -1 dist
+
+      - name: Publish wheel set to PyPI
+        if: ${{ inputs.pypi_repository_url == '' }}
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          packages-dir: dist
+
+      - name: Publish wheel set to alternate index
+        if: ${{ inputs.pypi_repository_url != '' }}
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          repository-url: ${{ inputs.pypi_repository_url }}
+          packages-dir: dist
