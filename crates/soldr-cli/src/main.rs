@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use soldr_core::SoldrError;
+use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 
 #[derive(Parser)]
@@ -55,29 +55,33 @@ async fn run() -> Result<(), SoldrError> {
 
     match cli.command {
         Commands::Cargo { args } => {
-            std::process::exit(run_cargo_front_door(&args, cache_enabled)?);
+            std::process::exit(run_cargo_front_door(&args, cache_enabled).await?);
         }
         Commands::Status => {
             println!("soldr {}", soldr_core::version());
             let target = soldr_core::TargetTriple::detect()?;
             let paths = soldr_core::SoldrPaths::new()?;
+            let zccache_dir = soldr_cache::zccache_dir(&paths);
             println!("target: {target}");
+            println!("root dir: {}", paths.root.display());
             println!("cache dir: {}", paths.cache.display());
             println!("cache default: enabled");
             println!(
                 "cache mode: {}",
                 if cache_enabled { "enabled" } else { "disabled" }
             );
-            println!("build cache: control plane wired; artifact cache not yet implemented");
+            println!("zccache version: {}", soldr_fetch::MANAGED_ZCCACHE_VERSION);
+            println!("soldr zccache state dir: {}", zccache_dir.display());
+            print_zccache_status(&paths)?;
         }
         Commands::Clean => {
-            println!("(clean not yet implemented)");
+            clear_zccache_cache()?;
         }
         Commands::Config => {
             println!("(config not yet implemented)");
         }
         Commands::Cache => {
-            println!("(cache not yet implemented)");
+            print_zccache_status(&SoldrPaths::new()?)?;
         }
         Commands::Version => {
             println!("soldr {}", soldr_core::version());
@@ -146,19 +150,25 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
+async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
+    if cargo_args_use_reserved_no_cache(args) {
+        return Err(SoldrError::Other(
+            "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
+        ));
+    }
+
     let cargo = resolve_toolchain_binary("cargo")?;
     let rustc = resolve_toolchain_binary("rustc")?;
-    let current_exe = std::env::current_exe()?;
     let cargo_bin_dir = cargo
         .parent()
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
         .to_path_buf();
     let existing_path = std::env::var_os("PATH");
+    let paths = SoldrPaths::new()?;
+    paths.ensure_dirs()?;
 
     let mut command = std::process::Command::new(cargo);
     command.args(args);
-    command.env("RUSTC_WRAPPER", current_exe);
     command.env("RUSTC", rustc);
     command.env(
         soldr_cache::CACHE_ENABLED_ENV_VAR,
@@ -172,7 +182,16 @@ fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, Sol
         command.env("CARGO_BUILD_TARGET", target);
     }
 
+    let session = if cache_enabled {
+        Some(prepare_zccache_build(&mut command, &paths).await?)
+    } else {
+        None
+    };
+
     let status = command.status()?;
+    if let Some(session) = session {
+        finish_zccache_build(&session)?;
+    }
     Ok(status.code().unwrap_or(1))
 }
 
@@ -196,6 +215,18 @@ fn cargo_args_specify_target(args: &[String]) -> bool {
             return true;
         }
         if arg.starts_with("--target=") {
+            return true;
+        }
+    }
+    false
+}
+
+fn cargo_args_use_reserved_no_cache(args: &[String]) -> bool {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--no-cache" {
             return true;
         }
     }
@@ -243,9 +274,129 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
     }
 }
 
+struct ZccacheBuildSession {
+    binary_path: std::path::PathBuf,
+    session_id: String,
+}
+
+async fn prepare_zccache_build(
+    cargo: &mut std::process::Command,
+    paths: &SoldrPaths,
+) -> Result<ZccacheBuildSession, SoldrError> {
+    let fetch = soldr_fetch::fetch_zccache_with_paths(paths).await?;
+    let zccache_dir = soldr_cache::zccache_dir(paths);
+    std::fs::create_dir_all(&zccache_dir)?;
+    std::fs::create_dir_all(zccache_dir.join("logs"))?;
+    if fetch.cached {
+        eprintln!(
+            "soldr: using managed zccache {}",
+            soldr_fetch::MANAGED_ZCCACHE_VERSION
+        );
+    } else {
+        eprintln!(
+            "soldr: fetched managed zccache {}",
+            soldr_fetch::MANAGED_ZCCACHE_VERSION
+        );
+    }
+
+    run_zccache_command(&fetch.binary_path, &["start"])?;
+
+    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    let journal_path = journal_path.display().to_string();
+    let session_json = run_zccache_command(
+        &fetch.binary_path,
+        &["session-start", "--stats", "--journal", &journal_path],
+    )?;
+    let session_id =
+        soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to parse zccache session id from output: {}",
+                session_json.stdout.trim()
+            ))
+        })?;
+
+    cargo.env("RUSTC_WRAPPER", &fetch.binary_path);
+    cargo.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
+
+    Ok(ZccacheBuildSession {
+        binary_path: fetch.binary_path,
+        session_id,
+    })
+}
+
+fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
+    let output = run_zccache_command(&session.binary_path, &["session-end", &session.session_id])?;
+    let stdout = output.stdout.trim();
+    if !stdout.is_empty() {
+        eprintln!("soldr: zccache session summary");
+        eprintln!("{stdout}");
+    }
+    Ok(())
+}
+
+fn clear_zccache_cache() -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    if let Some(fetch) = soldr_fetch::cached_zccache_binary(&paths)? {
+        let _ = run_zccache_command(&fetch.binary_path, &["clear"])?;
+        println!("cleared zccache cache");
+    } else {
+        println!(
+            "managed zccache {} not fetched yet",
+            soldr_fetch::MANAGED_ZCCACHE_VERSION
+        );
+    }
+    Ok(())
+}
+
+fn print_zccache_status(paths: &SoldrPaths) -> Result<(), SoldrError> {
+    match soldr_fetch::cached_zccache_binary(paths)? {
+        Some(fetch) => {
+            println!("zccache binary: {}", fetch.binary_path.display());
+            let output = run_zccache_command(&fetch.binary_path, &["status"])?;
+            let stdout = output.stdout.trim();
+            if stdout.is_empty() {
+                println!("zccache status: no output");
+            } else {
+                for line in stdout.lines() {
+                    println!("zccache: {line}");
+                }
+            }
+        }
+        None => {
+            println!(
+                "zccache binary: not fetched yet (will fetch managed zccache {} on the first cache-enabled build)",
+                soldr_fetch::MANAGED_ZCCACHE_VERSION
+            );
+        }
+    }
+    Ok(())
+}
+
+struct CommandOutput {
+    stdout: String,
+}
+
+fn run_zccache_command(
+    binary: &std::path::Path,
+    args: &[&str],
+) -> Result<CommandOutput, SoldrError> {
+    let output = std::process::Command::new(binary).args(args).output()?;
+    if !output.status.success() {
+        return Err(SoldrError::Other(format!(
+            "zccache {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+
+    Ok(CommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{cargo_args_specify_target, parse_tool_spec};
+    use super::{cargo_args_specify_target, cargo_args_use_reserved_no_cache, parse_tool_spec};
     use soldr_fetch::VersionSpec;
 
     #[test]
@@ -268,6 +419,19 @@ mod tests {
             "--".into(),
             "--target".into(),
             "ignored".into(),
+        ]));
+    }
+
+    #[test]
+    fn cargo_args_reject_reserved_no_cache_before_passthrough_separator() {
+        assert!(cargo_args_use_reserved_no_cache(&[
+            "build".into(),
+            "--no-cache".into(),
+        ]));
+        assert!(!cargo_args_use_reserved_no_cache(&[
+            "test".into(),
+            "--".into(),
+            "--no-cache".into(),
         ]));
     }
 

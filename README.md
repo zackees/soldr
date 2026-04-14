@@ -18,6 +18,10 @@ That is the same reason [uv](https://github.com/astral-sh/uv) is compelling. uv 
 
 soldr aims for the same outcome in the Rust toolchain world.
 
+Current release line:
+
+- `0.5.x` is the secure front-door and tool-fetch release line
+- `1.0.0-rc` remains reserved for the point where the built-in zccache integration and cache command surface are fully rounded out
 ## Why soldr exists
 
 On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.
@@ -36,13 +40,13 @@ When you run `soldr`, the tool should do the obvious thing:
 - pick MSVC on Windows by default
 - fetch the tool you asked for
 - cache it locally
-- carry `zccache` along for transparent `rustc` caching without manual wrapper setup
+- fetch and manage zccache so Rust builds get transparent caching without manual wrapper setup
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse.
 
-- **Compilation caching** (the zccache half): When your build invokes `rustc` hundreds of times, soldr caches every compilation unit. Second builds finish in milliseconds, not minutes.
+- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring; zccache's artifact store still uses its current default cache root.
 
 ```bash
 # Build through soldr's front door:
@@ -61,7 +65,8 @@ soldr rustfmt src/main.rs
 ```text
 soldr cargo build --release
   +-- resolve the real cargo binary
-  +-- wire soldr's wrapper path internally
+  +-- fetch/start managed zccache when cache is enabled
+  +-- set zccache as the compiler wrapper for this build
   +-- delegate to cargo with your existing flags
 
 soldr maturin build --release
@@ -71,10 +76,10 @@ soldr maturin build --release
 
 ## Design goals
 
-- **One obvious command**: Fetch tools, pick the right Windows target, and enable build caching through the same entry point.
+- **One obvious command**: Fetch tools, pick the right Windows target, and run through managed zccache through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
-- **Invisible caching**: soldr wires its build-assistance internals for you. No manual `RUSTC_WRAPPER` setup in the common case.
-- **One cache**: Tools and compilation artifacts in a single `~/.soldr/` directory.
+- **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
+- **One cache boundary, eventually**: soldr keeps its own tools and zccache session state in `~/.soldr/`. Current zccache artifacts still live in zccache's default cache root until upstream exposes a supported cache-dir override.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
@@ -97,8 +102,8 @@ soldr/
 |---|---|
 | `soldr-core` | Cache paths, config, version types |
 | `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
-| `soldr-cache` | Wrap rustc, hash inputs, store/retrieve compiled artifacts. The compilation cache daemon. |
-| `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`), tool fetch dispatch. |
+| `soldr-cache` | zccache integration helpers, cache policy, session plumbing. |
+| `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`, `cache`), tool fetch dispatch. |
 
 ## Prior art
 
