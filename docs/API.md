@@ -1,5 +1,9 @@
 # soldr API Reference
 
+This file is the CLI reference for `soldr`.
+
+For the product-level support contract about what counts as a supported external API, see [API_BOUNDARY.md](./API_BOUNDARY.md).
+
 ## Overview
 
 soldr is a single front door for Rust tool execution and Rust builds.
@@ -14,6 +18,15 @@ It has three invocation modes:
    Low-level passthrough wrapper mode for explicit `RUSTC_WRAPPER=soldr` usage.
 
 The primary user experience is `soldr cargo ...`.
+
+## Machine-Facing Support Level
+
+Current support policy:
+
+- the supported external integration surface is invoking the `soldr` executable through documented commands and flags
+- the internal Rust crates are not a supported public API
+- wrapper mode and internal environment variables are operational mechanics, not a general-purpose API contract
+- human-oriented command output is not yet the stable machine-facing protocol; explicit structured output is future work tracked in [#44](https://github.com/zackees/soldr/issues/44)
 
 ---
 
