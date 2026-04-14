@@ -90,15 +90,16 @@ For `soldr cargo ...`:
 
 1. Resolve real `cargo` via `rustup`
 2. Resolve matching real `rustc` via `rustup`
-3. Set `RUSTC_WRAPPER=soldr`
-4. Delegate to Cargo with unchanged user flags
+3. Set `RUSTC_WRAPPER` to the current soldr binary
+4. Start managed zccache and pass its binary/session state through the environment
+5. Delegate to Cargo with unchanged user flags
 
 For wrapper mode:
 
 1. Detect `rustc` invocation shape
 2. Resolve the real `rustc`
-3. Perform cache logic when implemented
-4. Fall through to the real compiler
+3. Delegate cache-enabled builds into the managed zccache binary
+4. Fall through to the real compiler when caching is disabled or unavailable
 
 ---
 
@@ -174,9 +175,10 @@ all resolve quickly from cache or pre-built binaries.
 
 Done when:
 
-- wrapper mode hashes compiler inputs
-- cache hits avoid recompilation
-- daemon behavior is stable across platforms
+- `soldr cargo ...` enables managed zccache by default
+- `soldr --no-cache cargo ...` cleanly bypasses the cache path
+- wrapper mode routes cache-enabled builds into managed zccache instead of pure pass-through
+- cache commands report and manage real zccache state
 
 ### Phase 4: Bootstrap Validation
 

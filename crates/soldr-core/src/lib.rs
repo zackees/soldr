@@ -1,5 +1,8 @@
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 use thiserror::Error;
 
 // ---------------------------------------------------------------------------
@@ -304,6 +307,8 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
 // Paths - ~/.soldr/ layout
 // ---------------------------------------------------------------------------
 
+pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
+
 pub struct SoldrPaths {
     pub root: PathBuf,
     pub bin: PathBuf,
@@ -313,7 +318,8 @@ pub struct SoldrPaths {
 
 impl SoldrPaths {
     pub fn new() -> Result<Self, SoldrError> {
-        let root = home_dir()?.join(".soldr");
+        let root = soldr_root_from_env_var(std::env::var_os(SOLDR_CACHE_DIR_ENV_VAR).as_deref())
+            .unwrap_or_else(|| home_dir().map(|home| home.join(".soldr")))?;
         Ok(Self::with_root(root))
     }
 
@@ -331,6 +337,14 @@ impl SoldrPaths {
         std::fs::create_dir_all(&self.cache)?;
         Ok(())
     }
+}
+
+fn soldr_root_from_env_var(value: Option<&OsStr>) -> Option<Result<PathBuf, SoldrError>> {
+    let value = value?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(Ok(PathBuf::from(value)))
 }
 
 fn home_dir() -> Result<PathBuf, SoldrError> {
@@ -437,6 +451,19 @@ mod tests {
         assert!(paths.root.ends_with(".soldr"));
         assert!(paths.bin.ends_with("bin"));
         assert!(paths.cache.ends_with("cache"));
+    }
+
+    #[test]
+    fn soldr_root_override_uses_env_path() {
+        let root = soldr_root_from_env_var(Some(OsStr::new("C:\\temp\\soldr-cache-root")))
+            .unwrap()
+            .unwrap();
+        assert_eq!(root, PathBuf::from("C:\\temp\\soldr-cache-root"));
+    }
+
+    #[test]
+    fn soldr_root_override_ignores_empty_env() {
+        assert!(soldr_root_from_env_var(Some(OsStr::new(""))).is_none());
     }
 
     #[test]
