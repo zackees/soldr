@@ -25,6 +25,7 @@ The primary user experience is `soldr cargo ...`.
 soldr cargo build --release
 soldr cargo test
 soldr cargo run -- --help
+soldr cargo --no-cache build
 ```
 
 Behavior:
@@ -32,7 +33,14 @@ Behavior:
 - Resolve the real `cargo` binary through `rustup`
 - Resolve the matching real `rustc` binary through `rustup`
 - Set `RUSTC_WRAPPER` to the current `soldr` executable
+- Enable the soldr compilation-cache path by default
 - Delegate to Cargo with the exact flags the user passed
+
+Current cache-control behavior:
+
+- caching is enabled by default for `soldr cargo ...`
+- `soldr cargo --no-cache ...` disables soldr's compilation-cache path for that invocation
+- wrapper mode still falls through to real `rustc` while artifact caching is implemented in follow-up work
 
 This is the normal build entry point.
 
@@ -101,6 +109,7 @@ Run Cargo through soldr's front door.
 soldr cargo build --release
 soldr cargo test --workspace
 soldr cargo check -p soldr-cli
+soldr cargo --no-cache test
 ```
 
 ### `soldr status`
@@ -148,6 +157,7 @@ Commands:
 | Variable | Purpose | Default |
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
+| `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
