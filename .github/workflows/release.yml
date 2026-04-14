@@ -448,6 +448,13 @@ jobs:
 
   publish:
     name: Attest and publish release assets
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.result == 'success' &&
+        needs.build.result == 'success' &&
+        (needs.build-pypi.result == 'success' || needs.build-pypi.result == 'skipped')
+      }}
     needs:
       - prepare
       - build
