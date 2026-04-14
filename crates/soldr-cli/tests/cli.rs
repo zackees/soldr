@@ -1,9 +1,7 @@
-#[cfg(windows)]
-use std::path::Path;
 use std::process::Command;
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,7 +24,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn fake_script_path(dir: &PathBuf, name: &str) -> PathBuf {
+fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(windows)]
     {
         return dir.join(format!("{name}.cmd"));
@@ -37,7 +35,7 @@ fn fake_script_path(dir: &PathBuf, name: &str) -> PathBuf {
     }
 }
 
-fn write_fake_script(path: &PathBuf, body: &str) {
+fn write_fake_script(path: &Path, body: &str) {
     #[cfg(windows)]
     {
         fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
@@ -55,7 +53,7 @@ fn write_fake_script(path: &PathBuf, body: &str) {
     }
 }
 
-fn fake_cargo_script(log_path: &PathBuf) -> String {
+fn fake_cargo_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {
         format!(
@@ -85,7 +83,7 @@ fn fake_cargo_script(log_path: &PathBuf) -> String {
     }
 }
 
-fn fake_rustc_script(log_path: &PathBuf) -> String {
+fn fake_rustc_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {
         format!(
@@ -104,7 +102,7 @@ fn fake_rustc_script(log_path: &PathBuf) -> String {
     }
 }
 
-fn fake_zccache_script(log_path: &PathBuf) -> String {
+fn fake_zccache_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {
         format!(
@@ -178,7 +176,7 @@ fn fake_zccache_script(log_path: &PathBuf) -> String {
     }
 }
 
-fn install_fake_toolchain(log_path: &PathBuf) -> (PathBuf, PathBuf, PathBuf) {
+fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let dir = unique_temp_dir("fake-toolchain");
     let cargo = fake_script_path(&dir, "cargo");
     let rustc = fake_script_path(&dir, "rustc");
