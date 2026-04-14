@@ -78,6 +78,15 @@ Current state:
 - immutable releases and protected tag settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
 
+Current verification policy:
+
+- checksum verification plus `gh attestation verify` is the official user-facing verification story
+- GitHub CLI is the primary documented attestation-verification tool
+- offline attestation bundles may be archived, but separate Sigstore tooling is not required for the normal verification path
+- SBOM publication is not currently required for the release line
+- reproducible-build claims are not currently made for `soldr`
+- no extra signed release metadata is currently published beyond `SHA256SUMS` and GitHub provenance attestations
+
 Planned state, tracked in issue `#7`:
 
 - release tags created only after full validation passes for the exact release commit
