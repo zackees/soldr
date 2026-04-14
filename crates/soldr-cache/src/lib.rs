@@ -132,7 +132,10 @@ mod tests {
     #[test]
     fn zccache_dir_lives_under_soldr_cache_root() {
         let paths = SoldrPaths::with_root(Path::new("C:\\soldr-root").to_path_buf());
-        assert_eq!(zccache_dir(&paths), paths.root.join("cache").join("zccache"));
+        assert_eq!(
+            zccache_dir(&paths),
+            paths.root.join("cache").join("zccache")
+        );
     }
 
     #[test]
@@ -160,6 +163,11 @@ mod tests {
     #[test]
     fn session_journal_path_uses_logs_directory() {
         let path = session_journal_path(Path::new("C:\\soldr-root\\cache\\zccache"));
-        assert_eq!(path, Path::new("C:\\soldr-root\\cache\\zccache").join("logs").join("last-session.jsonl"));
+        assert_eq!(
+            path,
+            Path::new("C:\\soldr-root\\cache\\zccache")
+                .join("logs")
+                .join("last-session.jsonl")
+        );
     }
 }
