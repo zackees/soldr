@@ -62,18 +62,36 @@ pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
 }
 
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
-    let repo = RepoInfo {
-        owner: "zackees".to_string(),
-        repo: "zccache".to_string(),
-    };
-    fetch_repo_binary_with_paths(
-        "zccache",
-        &["zccache", "zccache-daemon", "zccache-fp"],
-        &repo,
-        &VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.into()),
+    paths.ensure_dirs()?;
+    let target = TargetTriple::detect()?;
+    let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
+
+    if let Some(result) = check_cache(
         paths,
+        "zccache",
+        MANAGED_ZCCACHE_VERSION,
+        &binary_names,
+        &target,
+    )? {
+        return Ok(result);
+    }
+
+    let download_url = managed_zccache_download_url(MANAGED_ZCCACHE_VERSION, &target);
+    let binary_path = download_and_extract(
+        paths,
+        "zccache",
+        MANAGED_ZCCACHE_VERSION,
+        &download_url,
+        &target,
+        &binary_names,
     )
-    .await
+    .await?;
+
+    Ok(FetchResult {
+        binary_path,
+        version: MANAGED_ZCCACHE_VERSION.to_string(),
+        cached: false,
+    })
 }
 
 pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, SoldrError> {
@@ -108,7 +126,7 @@ async fn fetch_repo_binary_with_paths(
         }
     }
 
-    let release = fetch_release(&repo, version).await?;
+    let release = fetch_release(repo, version).await?;
 
     if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, &target)? {
         return Ok(r);
@@ -371,6 +389,13 @@ fn release_tag_candidates(version: &str) -> Vec<String> {
     tags.sort();
     tags.dedup();
     tags
+}
+
+fn managed_zccache_download_url(version: &str, target: &TargetTriple) -> String {
+    format!(
+        "https://github.com/zackees/zccache/releases/download/{version}/zccache-{version}-{}.tar.gz",
+        target.triple()
+    )
 }
 
 fn parse_release_info(body: serde_json::Value) -> Result<ReleaseInfo, SoldrError> {
@@ -714,6 +739,19 @@ mod tests {
         assert_eq!(
             release_tag_candidates("v1.2.8"),
             vec!["1.2.8".to_string(), "v1.2.8".to_string()]
+        );
+    }
+
+    #[test]
+    fn managed_zccache_download_url_uses_target_triple() {
+        let target = TargetTriple {
+            arch: Arch::Aarch64,
+            os: Os::MacOs,
+            env: Env::None,
+        };
+        assert_eq!(
+            managed_zccache_download_url("1.2.8", &target),
+            "https://github.com/zackees/zccache/releases/download/1.2.8/zccache-1.2.8-aarch64-apple-darwin.tar.gz"
         );
     }
 }
