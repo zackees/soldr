@@ -1,9 +1,11 @@
 use std::process::Command;
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
+#[cfg(windows)]
+use std::path::Path;
 
 fn rustup_which(tool: &str) -> String {
     let output = Command::new("rustup")
