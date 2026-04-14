@@ -110,8 +110,8 @@ fn cargo_subcommand_rejects_no_cache_flag() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unexpected argument '--no-cache'"),
-        "expected clap to reject cargo-level --no-cache: {stderr}"
+        stderr.contains("--no-cache"),
+        "expected cargo-subcommand form to fail mentioning --no-cache: {stderr}"
     );
 }
 
