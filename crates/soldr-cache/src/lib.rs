@@ -23,6 +23,10 @@ pub const CACHE_DISABLED_VALUE: &str = "0";
 /// Per-build session identifier recognized by zccache.
 pub const ZCCACHE_SESSION_ID_ENV_VAR: &str = "ZCCACHE_SESSION_ID";
 
+/// Managed zccache binary path propagated from the soldr front door into
+/// wrapper-mode children.
+pub const ZCCACHE_BINARY_ENV_VAR: &str = "SOLDR_ZCCACHE_BIN";
+
 pub fn cache_enabled_env_value(enabled: bool) -> &'static str {
     if enabled {
         CACHE_ENABLED_VALUE
