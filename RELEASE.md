@@ -37,7 +37,7 @@ The remaining work before the attested secure `0.5` release is operational rathe
 - finish policy decisions around SBOMs, reproducibility, and hermeticity
 - register the existing `soldr` PyPI project for Trusted Publishing if hardened wheel upload is in scope for `0.5.0`
 
-`1.0.0-rc` is intentionally reserved for the point where the zccache-style compilation cache is actually integrated rather than merely planned.
+`1.0.0-rc` remains intentionally reserved for broader release hardening and bootstrap validation beyond the `0.5.x` built-in zccache release line.
 
 crates.io publication is not part of the current release direction. `soldr` is being released as a hardened binary tool, not as a promised Rust library API surface.
 

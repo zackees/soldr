@@ -2,6 +2,10 @@ use clap::{Parser, Subcommand};
 use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 
+const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
+const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
+const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
+
 #[derive(Parser)]
 #[command(name = "soldr", version, about = "Instant tools. Instant builds.")]
 struct Cli {
@@ -61,7 +65,6 @@ async fn run() -> Result<(), SoldrError> {
             println!("soldr {}", soldr_core::version());
             let target = soldr_core::TargetTriple::detect()?;
             let paths = soldr_core::SoldrPaths::new()?;
-            let zccache_dir = soldr_cache::zccache_dir(&paths);
             println!("target: {target}");
             println!("root dir: {}", paths.root.display());
             println!("cache dir: {}", paths.cache.display());
@@ -71,7 +74,6 @@ async fn run() -> Result<(), SoldrError> {
                 if cache_enabled { "enabled" } else { "disabled" }
             );
             println!("zccache version: {}", soldr_fetch::MANAGED_ZCCACHE_VERSION);
-            println!("soldr zccache state dir: {}", zccache_dir.display());
             print_zccache_status(&paths)?;
         }
         Commands::Clean => {
@@ -121,17 +123,21 @@ fn report_and_exit(error: SoldrError) -> i32 {
 }
 
 fn is_rustc_path(arg: &str) -> bool {
-    arg == "rustc"
-        || arg.ends_with("/rustc")
-        || arg.ends_with("\\rustc")
-        || arg.ends_with("rustc.exe")
+    if arg == "rustc" {
+        return true;
+    }
+
+    std::path::Path::new(arg)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        == Some("rustc")
 }
 
 fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
     if soldr_cache::cache_enabled_in_current_process() {
-        // The actual artifact cache will slot in here in a follow-up slice.
-        // For now, cache-enabled and cache-disabled wrapper mode both
-        // delegate to the real rustc without modifying outputs.
+        if let Some(zccache) = zccache_binary_override() {
+            return run_wrapper_through_zccache(raw_args, &zccache);
+        }
     }
 
     let rustc = raw_args
@@ -145,6 +151,17 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
 
     let status = std::process::Command::new(rustc)
         .args(&raw_args[2..])
+        .status()?;
+
+    Ok(status.code().unwrap_or(1))
+}
+
+fn run_wrapper_through_zccache(
+    raw_args: &[String],
+    zccache: &std::path::Path,
+) -> Result<i32, SoldrError> {
+    let status = std::process::Command::new(zccache)
+        .args(&raw_args[1..])
         .status()?;
 
     Ok(status.code().unwrap_or(1))
@@ -245,6 +262,10 @@ fn prepend_path(
 }
 
 fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
+    if let Some(path) = toolchain_binary_override(tool) {
+        return Ok(path);
+    }
+
     let output = std::process::Command::new("rustup")
         .args(["which", tool])
         .output()?;
@@ -283,7 +304,7 @@ async fn prepare_zccache_build(
     cargo: &mut std::process::Command,
     paths: &SoldrPaths,
 ) -> Result<ZccacheBuildSession, SoldrError> {
-    let fetch = soldr_fetch::fetch_zccache_with_paths(paths).await?;
+    let fetch = fetch_managed_zccache(paths).await?;
     let zccache_dir = soldr_cache::zccache_dir(paths);
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
@@ -315,7 +336,8 @@ async fn prepare_zccache_build(
             ))
         })?;
 
-    cargo.env("RUSTC_WRAPPER", &fetch.binary_path);
+    cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
+    cargo.env(soldr_cache::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
     cargo.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
 
     Ok(ZccacheBuildSession {
@@ -336,10 +358,20 @@ fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError>
 
 fn clear_zccache_cache() -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
-    if let Some(fetch) = soldr_fetch::cached_zccache_binary(&paths)? {
+    let zccache_dir = soldr_cache::zccache_dir(&paths);
+    let mut cleared_anything = false;
+
+    if let Some(fetch) = cached_managed_zccache(&paths)? {
         let _ = run_zccache_command(&fetch.binary_path, &["clear"])?;
-        println!("cleared zccache cache");
-    } else {
+        println!("cleared zccache artifact cache");
+        cleared_anything = true;
+    }
+    if zccache_dir.exists() {
+        std::fs::remove_dir_all(&zccache_dir)?;
+        println!("removed soldr zccache state dir: {}", zccache_dir.display());
+        cleared_anything = true;
+    }
+    if !cleared_anything {
         println!(
             "managed zccache {} not fetched yet",
             soldr_fetch::MANAGED_ZCCACHE_VERSION
@@ -349,7 +381,20 @@ fn clear_zccache_cache() -> Result<(), SoldrError> {
 }
 
 fn print_zccache_status(paths: &SoldrPaths) -> Result<(), SoldrError> {
-    match soldr_fetch::cached_zccache_binary(paths)? {
+    let zccache_dir = soldr_cache::zccache_dir(paths);
+    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    println!("soldr zccache state dir: {}", zccache_dir.display());
+    println!(
+        "last session journal: {} ({})",
+        journal_path.display(),
+        if journal_path.exists() {
+            "present"
+        } else {
+            "missing"
+        }
+    );
+
+    match cached_managed_zccache(paths)? {
         Some(fetch) => {
             println!("zccache binary: {}", fetch.binary_path.display());
             let output = run_zccache_command(&fetch.binary_path, &["status"])?;
@@ -392,6 +437,58 @@ fn run_zccache_command(
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
     })
+}
+
+fn toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
+    let env_var = match tool {
+        "cargo" => TEST_CARGO_BIN_ENV_VAR,
+        "rustc" => TEST_RUSTC_BIN_ENV_VAR,
+        _ => return None,
+    };
+    non_empty_env_path(env_var)
+}
+
+fn zccache_binary_override() -> Option<std::path::PathBuf> {
+    non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR)
+        .or_else(|| non_empty_env_path(soldr_cache::ZCCACHE_BINARY_ENV_VAR))
+}
+
+fn non_empty_env_path(env_var: &str) -> Option<std::path::PathBuf> {
+    let value = std::env::var_os(env_var)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(value.into())
+}
+
+fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
+    std::env::current_exe().map_err(SoldrError::from)
+}
+
+async fn fetch_managed_zccache(paths: &SoldrPaths) -> Result<soldr_fetch::FetchResult, SoldrError> {
+    if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
+        return Ok(soldr_fetch::FetchResult {
+            binary_path,
+            version: soldr_fetch::MANAGED_ZCCACHE_VERSION.to_string(),
+            cached: true,
+        });
+    }
+
+    soldr_fetch::fetch_zccache_with_paths(paths).await
+}
+
+fn cached_managed_zccache(
+    paths: &SoldrPaths,
+) -> Result<Option<soldr_fetch::FetchResult>, SoldrError> {
+    if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
+        return Ok(Some(soldr_fetch::FetchResult {
+            binary_path,
+            version: soldr_fetch::MANAGED_ZCCACHE_VERSION.to_string(),
+            cached: true,
+        }));
+    }
+
+    soldr_fetch::cached_zccache_binary(paths)
 }
 
 #[cfg(test)]

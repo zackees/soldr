@@ -18,7 +18,7 @@ Decide what `0.5` means for the user-facing CLI.
 Required decision:
 
 - the `0.5` release line is the front-door build and tool-fetch line
-- compilation caching is explicitly out of scope for `0.5`
+- built-in zccache-backed compilation caching is part of the front-door `0.5.x` line
 - `status`, `clean`, `config`, and `cache` must not be presented as complete features unless implemented
 
 Do not ship `0.5` with placeholder commands presented as finished behavior.
@@ -172,8 +172,8 @@ Ship `v0.5.0` only when all of these are true:
 
 Do not cut `1.0.0-rc` until:
 
-- zccache-style compilation caching is actually integrated
-- the wrapper does real cache lookup and store work
-- the public cache commands describe real behavior instead of placeholders
+- `soldr cargo ...` enables managed zccache by default with `--no-cache` as the explicit opt-out
+- the cache-enabled wrapper path delegates through managed zccache instead of acting as pure rustc pass-through
+- the public cache commands describe and manage real behavior instead of placeholders
 
 If those are not true, stay on the `0.5.x` line.
