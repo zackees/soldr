@@ -5,6 +5,9 @@ use soldr_fetch::VersionSpec;
 #[derive(Parser)]
 #[command(name = "soldr", version, about = "Instant tools. Instant builds.")]
 struct Cli {
+    /// Disable soldr's compilation cache for this invocation
+    #[arg(long)]
+    no_cache: bool,
     #[command(subcommand)]
     command: Commands,
 }
@@ -13,9 +16,6 @@ struct Cli {
 enum Commands {
     /// Run Cargo through soldr's front door
     Cargo {
-        /// Disable soldr's compilation cache for this invocation
-        #[arg(long)]
-        no_cache: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -51,10 +51,11 @@ async fn main() {
 
 async fn run() -> Result<(), SoldrError> {
     let cli = Cli::parse();
+    let cache_enabled = !cli.no_cache;
 
     match cli.command {
-        Commands::Cargo { no_cache, args } => {
-            std::process::exit(run_cargo_front_door(&args, !no_cache)?);
+        Commands::Cargo { args } => {
+            std::process::exit(run_cargo_front_door(&args, cache_enabled)?);
         }
         Commands::Status => {
             println!("soldr {}", soldr_core::version());
@@ -65,11 +66,7 @@ async fn run() -> Result<(), SoldrError> {
             println!("cache default: enabled");
             println!(
                 "cache mode: {}",
-                if soldr_cache::cache_enabled_in_current_process() {
-                    "enabled"
-                } else {
-                    "disabled"
-                }
+                if cache_enabled { "enabled" } else { "disabled" }
             );
             println!("build cache: control plane wired; artifact cache not yet implemented");
         }

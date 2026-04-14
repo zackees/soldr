@@ -25,7 +25,7 @@ The primary user experience is `soldr cargo ...`.
 soldr cargo build --release
 soldr cargo test
 soldr cargo run -- --help
-soldr cargo --no-cache build
+soldr --no-cache cargo build
 ```
 
 Behavior:
@@ -39,7 +39,7 @@ Behavior:
 Current cache-control behavior:
 
 - caching is enabled by default for `soldr cargo ...`
-- `soldr cargo --no-cache ...` disables soldr's compilation-cache path for that invocation
+- `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
 - wrapper mode still falls through to real `rustc` while artifact caching is implemented in follow-up work
 
 This is the normal build entry point.
@@ -109,7 +109,7 @@ Run Cargo through soldr's front door.
 soldr cargo build --release
 soldr cargo test --workspace
 soldr cargo check -p soldr-cli
-soldr cargo --no-cache test
+soldr --no-cache cargo test
 ```
 
 ### `soldr status`

@@ -53,7 +53,7 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 # Build through soldr's front door:
 soldr cargo build --release
 soldr cargo test
-soldr cargo --no-cache test
+soldr --no-cache cargo test
 
 # Fetch and run any Rust tool instantly:
 soldr maturin build --release
