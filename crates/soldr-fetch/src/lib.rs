@@ -34,6 +34,8 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.8";
+
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
     crate_name: &str,
@@ -50,36 +52,77 @@ pub async fn fetch_tool_with_paths(
     paths: &SoldrPaths,
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
-    let target = TargetTriple::detect()?;
+    let repo = resolve_repo(crate_name).await?;
+    fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, paths).await
+}
 
-    // 1. Check local cache (exact version only)
+pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    fetch_zccache_with_paths(&paths).await
+}
+
+pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
+    let repo = RepoInfo {
+        owner: "zackees".to_string(),
+        repo: "zccache".to_string(),
+    };
+    fetch_repo_binary_with_paths(
+        "zccache",
+        &["zccache", "zccache-daemon", "zccache-fp"],
+        &repo,
+        &VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.into()),
+        paths,
+    )
+    .await
+}
+
+pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, SoldrError> {
+    let target = TargetTriple::detect()?;
+    check_cache(
+        paths,
+        "zccache",
+        MANAGED_ZCCACHE_VERSION,
+        &["zccache", "zccache-daemon", "zccache-fp"],
+        &target,
+    )
+}
+
+async fn fetch_repo_binary_with_paths(
+    cache_name: &str,
+    binary_names: &[&str],
+    repo: &RepoInfo,
+    version: &VersionSpec,
+    paths: &SoldrPaths,
+) -> Result<FetchResult, SoldrError> {
+    paths.ensure_dirs()?;
+    let target = TargetTriple::detect()?;
+    if binary_names.is_empty() {
+        return Err(SoldrError::Other(format!(
+            "no binary names configured for {cache_name}"
+        )));
+    }
+
     if let VersionSpec::Exact(ref v) = version {
-        if let Some(r) = check_cache(paths, crate_name, v, &target)? {
+        if let Some(r) = check_cache(paths, cache_name, v, binary_names, &target)? {
             return Ok(r);
         }
     }
 
-    // 2. Resolve repository from crates.io
-    let repo = resolve_repo(crate_name).await?;
-
-    // 3. Get release metadata from GitHub
     let release = fetch_release(&repo, version).await?;
 
-    // 4. Check cache for the resolved version (handles Latest -> concrete version)
-    if let Some(r) = check_cache(paths, crate_name, &release.version, &target)? {
+    if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, &target)? {
         return Ok(r);
     }
 
-    // 5. Find matching asset for our target
     let asset = match_asset(&release.assets, &target)?;
 
-    // 6. Download and extract
     let binary_path = download_and_extract(
         paths,
-        crate_name,
+        cache_name,
         &release.version,
         &asset.download_url,
         &target,
+        binary_names,
     )
     .await?;
 
@@ -96,15 +139,28 @@ pub async fn fetch_tool_with_paths(
 
 fn check_cache(
     paths: &SoldrPaths,
-    crate_name: &str,
+    cache_name: &str,
     version: &str,
+    binary_names: &[&str],
     target: &TargetTriple,
 ) -> Result<Option<FetchResult>, SoldrError> {
-    let bin_name = format!("{crate_name}{}", target.binary_ext());
-    let tool_dir = paths.bin.join(format!("{crate_name}-{version}"));
+    let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
+    let bin_name = format!(
+        "{}{}",
+        binary_names
+            .first()
+            .ok_or_else(|| SoldrError::Other(format!(
+                "no binary names configured for {cache_name}"
+            )))?,
+        target.binary_ext()
+    );
     let binary_path = tool_dir.join(&bin_name);
 
-    if binary_path.exists() {
+    if binary_names.iter().all(|binary_name| {
+        tool_dir
+            .join(format!("{binary_name}{}", target.binary_ext()))
+            .exists()
+    }) {
         Ok(Some(FetchResult {
             binary_path,
             version: version.to_string(),
@@ -204,21 +260,25 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
             fetch_release_value(&client, repo, &url).await?
         }
         VersionSpec::Exact(v) => {
-            let tag = if v.starts_with('v') {
-                v.clone()
-            } else {
-                format!("v{v}")
-            };
-            let url = format!(
-                "https://api.github.com/repos/{}/{}/releases/tags/{tag}",
-                repo.owner, repo.repo
-            );
-            match fetch_release_value(&client, repo, &url).await {
-                Ok(release) => release,
-                Err(SoldrError::ToolNotFound(_)) => {
-                    fetch_release_by_listing(&client, repo, &tag).await?
+            let candidate_tags = release_tag_candidates(v);
+            let mut found = None;
+            for tag in &candidate_tags {
+                let url = format!(
+                    "https://api.github.com/repos/{}/{}/releases/tags/{tag}",
+                    repo.owner, repo.repo
+                );
+                match fetch_release_value(&client, repo, &url).await {
+                    Ok(release) => {
+                        found = Some(release);
+                        break;
+                    }
+                    Err(SoldrError::ToolNotFound(_)) => continue,
+                    Err(err) => return Err(err),
                 }
-                Err(err) => return Err(err),
+            }
+            match found {
+                Some(release) => release,
+                None => fetch_release_by_listing(&client, repo, &candidate_tags).await?,
             }
         }
     };
@@ -253,7 +313,7 @@ async fn fetch_release_value(
 async fn fetch_release_by_listing(
     client: &reqwest::Client,
     repo: &RepoInfo,
-    tag: &str,
+    tags: &[String],
 ) -> Result<serde_json::Value, SoldrError> {
     let url = format!(
         "https://api.github.com/repos/{}/{}/releases?per_page=30",
@@ -283,7 +343,7 @@ async fn fetch_release_by_listing(
             items.iter().find(|release| {
                 release["tag_name"]
                     .as_str()
-                    .map(|release_tag| release_tag == tag)
+                    .map(|release_tag| tags.iter().any(|tag| release_tag == tag))
                     .unwrap_or(false)
             })
         })
@@ -292,6 +352,25 @@ async fn fetch_release_by_listing(
     matched.ok_or_else(|| {
         SoldrError::ToolNotFound(format!("no release found for {}/{}", repo.owner, repo.repo))
     })
+}
+
+fn release_tag_candidates(version: &str) -> Vec<String> {
+    let mut tags = Vec::with_capacity(2);
+    let raw = version.trim();
+    if raw.is_empty() {
+        return tags;
+    }
+    tags.push(raw.to_string());
+    if let Some(stripped) = raw.strip_prefix('v') {
+        if !stripped.is_empty() {
+            tags.push(stripped.to_string());
+        }
+    } else {
+        tags.push(format!("v{raw}"));
+    }
+    tags.sort();
+    tags.dedup();
+    tags
 }
 
 fn parse_release_info(body: serde_json::Value) -> Result<ReleaseInfo, SoldrError> {
@@ -411,10 +490,11 @@ fn match_asset<'a>(
 
 async fn download_and_extract(
     paths: &SoldrPaths,
-    crate_name: &str,
+    cache_name: &str,
     version: &str,
     url: &str,
     target: &TargetTriple,
+    binary_names: &[&str],
 ) -> Result<PathBuf, SoldrError> {
     let client = http_client()?;
 
@@ -436,18 +516,27 @@ async fn download_and_extract(
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
 
-    let tool_dir = paths.bin.join(format!("{crate_name}-{version}"));
+    let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
+    let desired_binaries = desired_binary_names(binary_names, target);
     std::fs::create_dir_all(&tool_dir)?;
 
-    let bin_name = format!("{crate_name}{}", target.binary_ext());
-    let binary_path = tool_dir.join(&bin_name);
+    let main_binary_name = desired_binaries
+        .first()
+        .cloned()
+        .ok_or_else(|| SoldrError::Other(format!("no binary names configured for {cache_name}")))?;
+    let binary_path = tool_dir.join(&main_binary_name);
 
     if url.ends_with(".zip") {
-        extract_zip(&bytes, &binary_path, &bin_name)?;
+        extract_zip(&bytes, &tool_dir, &desired_binaries)?;
     } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
-        extract_tar_gz(&bytes, &binary_path, &bin_name)?;
+        extract_tar_gz(&bytes, &tool_dir, &desired_binaries)?;
     } else {
         // Assume raw binary.
+        if desired_binaries.len() != 1 {
+            return Err(SoldrError::Archive(format!(
+                "cannot extract multiple binaries from raw asset for {cache_name}"
+            )));
+        }
         std::fs::write(&binary_path, &bytes)?;
     }
 
@@ -455,18 +544,29 @@ async fn download_and_extract(
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&binary_path)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&binary_path, perms)?;
+        for binary_name in &desired_binaries {
+            let binary_path = tool_dir.join(binary_name);
+            let mut perms = std::fs::metadata(&binary_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&binary_path, perms)?;
+        }
     }
 
     Ok(binary_path)
 }
 
-fn extract_zip(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrError> {
+fn desired_binary_names(binary_names: &[&str], target: &TargetTriple) -> Vec<String> {
+    binary_names
+        .iter()
+        .map(|binary_name| format!("{binary_name}{}", target.binary_ext()))
+        .collect()
+}
+
+fn extract_zip(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
     let reader = std::io::Cursor::new(data);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|e| SoldrError::Archive(e.to_string()))?;
+    let mut found = std::collections::BTreeSet::new();
 
     for i in 0..archive.len() {
         let mut file = archive
@@ -482,23 +582,25 @@ fn extract_zip(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrErro
             .and_then(|f| f.to_str())
             .unwrap_or("");
 
-        if file_name == bin_name || file_name == bin_name.trim_end_matches(".exe") {
-            let mut out = std::fs::File::create(dest)?;
+        let wanted = binary_names.iter().find(|binary_name| {
+            file_name == *binary_name || file_name == binary_name.trim_end_matches(".exe")
+        });
+
+        if let Some(binary_name) = wanted {
+            let mut out = std::fs::File::create(dest_dir.join(binary_name))?;
             std::io::copy(&mut file, &mut out)?;
-            return Ok(());
+            found.insert(binary_name.clone());
         }
     }
 
-    Err(SoldrError::Archive(format!(
-        "{bin_name} not found in zip archive"
-    )))
+    ensure_all_binaries_found(binary_names, &found)
 }
 
-fn extract_tar_gz(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrError> {
+fn extract_tar_gz(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
     let reader = std::io::Cursor::new(data);
     let gz = flate2::read::GzDecoder::new(reader);
     let mut archive = tar::Archive::new(gz);
-    let base_name = bin_name.trim_end_matches(".exe");
+    let mut found = std::collections::BTreeSet::new();
 
     for entry in archive
         .entries()
@@ -511,16 +613,37 @@ fn extract_tar_gz(data: &[u8], dest: &Path, bin_name: &str) -> Result<(), SoldrE
 
         let file_name = path.file_name().and_then(|f| f.to_str()).unwrap_or("");
 
-        if file_name == bin_name || file_name == base_name {
-            let mut out = std::fs::File::create(dest)?;
+        let wanted = binary_names.iter().find(|binary_name| {
+            file_name == *binary_name || file_name == binary_name.trim_end_matches(".exe")
+        });
+
+        if let Some(binary_name) = wanted {
+            let mut out = std::fs::File::create(dest_dir.join(binary_name))?;
             std::io::copy(&mut entry, &mut out)?;
-            return Ok(());
+            found.insert(binary_name.clone());
         }
     }
 
-    Err(SoldrError::Archive(format!(
-        "{bin_name} not found in tar.gz archive"
-    )))
+    ensure_all_binaries_found(binary_names, &found)
+}
+
+fn ensure_all_binaries_found(
+    binary_names: &[String],
+    found: &std::collections::BTreeSet<String>,
+) -> Result<(), SoldrError> {
+    let missing = binary_names
+        .iter()
+        .filter(|binary_name| !found.contains(*binary_name))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(SoldrError::Archive(format!(
+            "missing binaries in archive: {}",
+            missing.join(", ")
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -580,5 +703,17 @@ mod tests {
 
         let selected = match_asset(&assets, &target).unwrap();
         assert_eq!(selected.name, "tool-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn release_tag_candidates_support_plain_and_v_prefixed_tags() {
+        assert_eq!(
+            release_tag_candidates("1.2.8"),
+            vec!["1.2.8".to_string(), "v1.2.8".to_string()]
+        );
+        assert_eq!(
+            release_tag_candidates("v1.2.8"),
+            vec!["1.2.8".to_string(), "v1.2.8".to_string()]
+        );
     }
 }

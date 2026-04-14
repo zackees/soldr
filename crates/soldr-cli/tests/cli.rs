@@ -1,5 +1,4 @@
 use std::process::Command;
-#[cfg(windows)]
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -13,6 +12,16 @@ fn rustup_which(tool: &str) -> String {
         .expect("failed to resolve tool with rustup");
     assert!(output.status.success(), "rustup which failed for {tool}");
     String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    fs::create_dir_all(&dir).expect("failed to create temp dir");
+    dir
 }
 
 #[test]
@@ -51,8 +60,10 @@ fn help_lists_phase_one_command_surface() {
 
 #[test]
 fn cargo_front_door_runs_real_cargo() {
+    let cache_root = unique_temp_dir("cargo-version");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["cargo", "--version"])
+        .args(["--no-cache", "cargo", "--version"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
         .expect("failed to run soldr cargo --version");
 
@@ -72,8 +83,10 @@ fn cargo_front_door_runs_real_cargo() {
 
 #[test]
 fn cargo_front_door_consumes_no_cache_flag() {
+    let cache_root = unique_temp_dir("cargo-no-cache");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["--no-cache", "cargo", "--version"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
         .expect("failed to run soldr --no-cache cargo --version");
 
@@ -98,8 +111,10 @@ fn cargo_front_door_consumes_no_cache_flag() {
 
 #[test]
 fn cargo_subcommand_rejects_no_cache_flag() {
+    let cache_root = unique_temp_dir("cargo-subcommand-no-cache");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["cargo", "--no-cache", "--version"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
         .expect("failed to run soldr cargo --no-cache --version");
 
@@ -135,8 +150,10 @@ fn rustc_wrapper_mode_passes_through_to_rustc() {
 
 #[test]
 fn status_reports_cache_control_defaults() {
+    let cache_root = unique_temp_dir("status");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .arg("status")
+        .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
         .expect("failed to run soldr status");
 
@@ -151,17 +168,14 @@ fn status_reports_cache_control_defaults() {
         stdout.contains("cache default: enabled"),
         "status missing cache default: {stdout}"
     );
-}
-
-#[cfg(windows)]
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time went backwards")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
-    fs::create_dir_all(&dir).expect("failed to create temp dir");
-    dir
+    assert!(
+        stdout.contains("zccache version:"),
+        "status missing zccache version: {stdout}"
+    );
+    assert!(
+        stdout.contains("not fetched yet"),
+        "status should explain unfetched managed zccache state: {stdout}"
+    );
 }
 
 #[cfg(windows)]
@@ -193,10 +207,11 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
         .join("fixtures")
         .join("windows-msvc-default");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["cargo", "build"])
+        .args(["--no-cache", "cargo", "build"])
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&fake_tools))
         .env("CARGO_TARGET_DIR", &target_dir)
+        .env("SOLDR_CACHE_DIR", unique_temp_dir("msvc-cache-root"))
         .output()
         .expect("failed to run soldr cargo build");
 
