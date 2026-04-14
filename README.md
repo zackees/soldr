@@ -1,26 +1,6 @@
-# soldr
+# soldr - `UV` but for rust.
 
 **Instant tools. Instant builds. One command.**
-
-soldr = [crgx](https://crgx.dev/) + [zccache](https://github.com/zackees/zccache) in a single tool.
-
-In soldering, flux removes the oxide so the joint bonds clean. soldr removes the friction between you and your build: no waiting for tool installs, no waiting for recompilation.
-
-The point of soldr is not to invent some brand-new primitive. The point is to combine the pieces that already work into one tool that people can actually rely on every day.
-
-[zccache](https://github.com/zackees/zccache) is already excellent. [crgx](https://crgx.dev/) already proved the value of instant Rust tooling. soldr turns those into one front door:
-
-- get the right Rust tool for the job
-- get the right Windows ABI without thinking about it
-- get transparent compilation caching without separate setup
-
-That is the same reason [uv](https://github.com/astral-sh/uv) is compelling. uv did not win because it invented packaging, virtual environments, or Python installation. It won because it made the whole workflow feel like one tool instead of a pile of separate ones.
-
-soldr aims for the same outcome in the Rust toolchain world.
-
-## Why soldr exists
-
-On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.
 
 The real problem is that the execution path is messy:
 
@@ -29,7 +9,7 @@ The real problem is that the execution path is messy:
 - GNU can leak in where MSVC should have been used
 - users end up debugging their toolchain instead of shipping code
 
-soldr exists to make that path boring.
+soldr exists to make that path boring. A rust bootstrapping tool that hydrates your dependency chain.
 
 When you run `soldr`, the tool should do the obvious thing:
 
@@ -42,7 +22,11 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse.
 
-- **Compilation caching** (the zccache half): When your build invokes `rustc` hundreds of times, soldr caches every compilation unit. Second builds finish in milliseconds, not minutes.
+# Insanely fast build cache
+
+Powered by [zccache](https://github.com/zackees/zccache) the fastest cpp + rs cache in existance.
+
+**caching not recommended for release builds**
 
 ```bash
 # Build through soldr's front door:
