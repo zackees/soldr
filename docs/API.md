@@ -26,7 +26,8 @@ Current support policy:
 - the supported external integration surface is invoking the `soldr` executable through documented commands and flags
 - the internal Rust crates are not a supported public API
 - wrapper mode and internal environment variables are operational mechanics, not a general-purpose API contract
-- human-oriented command output is not yet the stable machine-facing protocol; explicit structured output is future work tracked in [#44](https://github.com/zackees/soldr/issues/44)
+- human-oriented command output is not the stable machine-facing protocol
+- the first stable machine-facing protocol is the JSON mode on selected commands documented below
 
 ---
 
@@ -134,6 +135,12 @@ soldr --no-cache cargo test
 
 Show cache and target information.
 
+Stable machine-facing mode:
+
+```bash
+soldr status --json
+```
+
 ### `soldr clean`
 
 Clear the managed local zccache artifact cache and remove soldr's zccache session state directory.
@@ -146,9 +153,57 @@ Show or set configuration.
 
 Inspect managed zccache status.
 
+Stable machine-facing mode:
+
+```bash
+soldr cache --json
+```
+
 ### `soldr version`
 
 Print soldr version.
+
+Stable machine-facing mode:
+
+```bash
+soldr version --json
+```
+
+---
+
+## Structured JSON Output
+
+The supported JSON protocol currently exists on:
+
+- `soldr status --json`
+- `soldr cache --json`
+- `soldr version --json`
+
+The JSON response always includes:
+
+- `schema_version`
+- `command`
+
+Current schema version:
+
+- `schema_version: 1`
+
+Compatibility rules for schema version `1`:
+
+- existing fields keep their current meaning
+- fields may be added in later releases without changing `schema_version`
+- removing a field, renaming a field, or changing the meaning/type of an existing field requires a new schema version
+- human-readable stdout for commands without `--json` is not covered by this compatibility promise
+
+Example:
+
+```json
+{
+  "schema_version": 1,
+  "command": "version",
+  "soldr_version": "0.2.0-beta"
+}
+```
 
 ---
 
