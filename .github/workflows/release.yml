@@ -370,6 +370,7 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${{ needs.prepare.outputs.version }}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
             --draft \
             --generate-notes \
             --target "${{ needs.prepare.outputs.commit_sha }}" \
@@ -382,4 +383,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "${{ needs.prepare.outputs.version }}" --draft=false
+          gh release edit "${{ needs.prepare.outputs.version }}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft=false
