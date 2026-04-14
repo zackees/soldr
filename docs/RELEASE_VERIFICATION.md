@@ -38,7 +38,7 @@ The current release flow does not yet claim all of the following:
 - independently reproduced builds by a second builder
 - fully hermetic inputs for rustup, crates.io, OS packages, or third-party test inputs
 
-The release-governance and hermetic-input follow-up items remain tracked in issues [#11](https://github.com/zackees/soldr/issues/11) and [#13](https://github.com/zackees/soldr/issues/13). SBOM publication and independently reproduced builds are intentionally outside the current release claim.
+The release-governance and hermetic-input follow-up items remain tracked in issues [#11](https://github.com/zackees/soldr/issues/11), [#41](https://github.com/zackees/soldr/issues/41), and [#42](https://github.com/zackees/soldr/issues/42). SBOM publication and independently reproduced builds are intentionally outside the current release claim.
 
 ## Release Asset Names
 
