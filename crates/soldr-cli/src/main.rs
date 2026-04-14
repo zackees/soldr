@@ -13,6 +13,9 @@ struct Cli {
 enum Commands {
     /// Run Cargo through soldr's front door
     Cargo {
+        /// Disable soldr's compilation cache for this invocation
+        #[arg(long)]
+        no_cache: bool,
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -50,14 +53,25 @@ async fn run() -> Result<(), SoldrError> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Cargo { args } => {
-            std::process::exit(run_cargo_front_door(&args)?);
+        Commands::Cargo { no_cache, args } => {
+            std::process::exit(run_cargo_front_door(&args, !no_cache)?);
         }
         Commands::Status => {
             println!("soldr {}", soldr_core::version());
             let target = soldr_core::TargetTriple::detect()?;
+            let paths = soldr_core::SoldrPaths::new()?;
             println!("target: {target}");
-            println!("(status not yet implemented)");
+            println!("cache dir: {}", paths.cache.display());
+            println!("cache default: enabled");
+            println!(
+                "cache mode: {}",
+                if soldr_cache::cache_enabled_in_current_process() {
+                    "enabled"
+                } else {
+                    "disabled"
+                }
+            );
+            println!("build cache: control plane wired; artifact cache not yet implemented");
         }
         Commands::Clean => {
             println!("(clean not yet implemented)");
@@ -113,6 +127,12 @@ fn is_rustc_path(arg: &str) -> bool {
 }
 
 fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
+    if soldr_cache::cache_enabled_in_current_process() {
+        // The actual artifact cache will slot in here in a follow-up slice.
+        // For now, cache-enabled and cache-disabled wrapper mode both
+        // delegate to the real rustc without modifying outputs.
+    }
+
     let rustc = raw_args
         .get(1)
         .ok_or_else(|| SoldrError::Other("missing rustc path in wrapper mode".into()))?;
@@ -129,7 +149,7 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn run_cargo_front_door(args: &[String]) -> Result<i32, SoldrError> {
+fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
     let cargo = resolve_toolchain_binary("cargo")?;
     let rustc = resolve_toolchain_binary("rustc")?;
     let current_exe = std::env::current_exe()?;
@@ -143,6 +163,10 @@ fn run_cargo_front_door(args: &[String]) -> Result<i32, SoldrError> {
     command.args(args);
     command.env("RUSTC_WRAPPER", current_exe);
     command.env("RUSTC", rustc);
+    command.env(
+        soldr_cache::CACHE_ENABLED_ENV_VAR,
+        soldr_cache::cache_enabled_env_value(cache_enabled),
+    );
     command.env(
         "PATH",
         prepend_path(&cargo_bin_dir, existing_path.as_deref())?,
@@ -224,7 +248,8 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
 
 #[cfg(test)]
 mod tests {
-    use super::cargo_args_specify_target;
+    use super::{cargo_args_specify_target, parse_tool_spec};
+    use soldr_fetch::VersionSpec;
 
     #[test]
     fn cargo_args_detect_explicit_target_flag() {
@@ -247,5 +272,12 @@ mod tests {
             "--target".into(),
             "ignored".into(),
         ]));
+    }
+
+    #[test]
+    fn parse_tool_spec_defaults_to_latest_version() {
+        let (tool, version) = parse_tool_spec("maturin");
+        assert_eq!(tool, "maturin");
+        assert!(matches!(version, VersionSpec::Latest));
     }
 }
