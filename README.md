@@ -93,7 +93,7 @@ soldr/
 |   |-- soldr-fetch/     # Binary resolution + download (the crgx half)
 |   |-- soldr-cache/     # Compilation caching (the zccache half)
 |   `-- soldr-cli/       # CLI entry point + daemon
-|-- src/soldr/           # Python package (PyO3 bindings)
+|-- src/soldr/           # Python package (maturin bin bindings)
 `-- tests/
 ```
 
