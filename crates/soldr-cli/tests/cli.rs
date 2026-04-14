@@ -73,13 +73,13 @@ fn cargo_front_door_runs_real_cargo() {
 #[test]
 fn cargo_front_door_consumes_no_cache_flag() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["cargo", "--no-cache", "--version"])
+        .args(["--no-cache", "cargo", "--version"])
         .output()
-        .expect("failed to run soldr cargo --no-cache --version");
+        .expect("failed to run soldr --no-cache cargo --version");
 
     assert!(
         output.status.success(),
-        "cargo front door with --no-cache failed\nstdout:\n{}\nstderr:\n{}",
+        "cargo front door with top-level --no-cache failed\nstdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -93,6 +93,25 @@ fn cargo_front_door_consumes_no_cache_flag() {
     assert!(
         !stderr.contains("unexpected argument '--no-cache'"),
         "--no-cache should be consumed by soldr, not forwarded to cargo: {stderr}"
+    );
+}
+
+#[test]
+fn cargo_subcommand_rejects_no_cache_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "--no-cache", "--version"])
+        .output()
+        .expect("failed to run soldr cargo --no-cache --version");
+
+    assert!(
+        !output.status.success(),
+        "cargo subcommand form should no longer accept --no-cache"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--no-cache'"),
+        "expected clap to reject cargo-level --no-cache: {stderr}"
     );
 }
 
