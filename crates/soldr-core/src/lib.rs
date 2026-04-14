@@ -454,6 +454,14 @@ mod tests {
         assert_eq!(target.triple(), "x86_64-unknown-linux-musl");
     }
 
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn defaults_to_msvc_without_explicit_override() {
+        let dir = tempdir().unwrap();
+        let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
+        assert_eq!(target.triple(), "x86_64-pc-windows-msvc");
+    }
+
     #[test]
     fn detects_gnu_override_from_rust_toolchain_toml() {
         let dir = tempdir().unwrap();

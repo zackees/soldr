@@ -62,5 +62,10 @@ jobs:
       - name: Run CLI smoke tests
         run: cargo test -p soldr-cli --test cli --locked
 
+      - name: Verify Windows defaults to MSVC under Git Bash
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash .github/scripts/windows-msys-default-msvc.sh
+
       - name: Run fetch integration test
         run: cargo test -p soldr-fetch --test fetch_crgx --locked
