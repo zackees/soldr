@@ -11,6 +11,11 @@ on:
         description: Exact commit SHA to validate and release
         required: true
         type: string
+      dry_run:
+        description: Validate the full release flow without creating a release tag or publishing assets
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: write
@@ -45,8 +50,8 @@ jobs:
           version='${{ inputs.version }}'
           commit_sha='${{ inputs.commit_sha }}'
 
-          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-            echo "validated releases must be dispatched from main" >&2
+          if [[ "${GITHUB_REF_NAME}" != "release" ]]; then
+            echo "validated releases must be dispatched from release" >&2
             exit 1
           fi
 
@@ -60,9 +65,9 @@ jobs:
             exit 1
           fi
 
-          git fetch origin main --depth=1
+          git fetch origin release --depth=1
           git rev-parse --verify "${commit_sha}^{commit}" >/dev/null
-          git merge-base --is-ancestor "$commit_sha" origin/main
+          git merge-base --is-ancestor "$commit_sha" origin/release
 
           if git ls-remote --exit-code --tags origin "$version" >/dev/null 2>&1; then
             echo "tag $version already exists" >&2
@@ -322,6 +327,23 @@ jobs:
           pattern: soldr-*
           merge-multiple: true
 
+      - name: Create GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: soldr
+
+      - name: Verify GitHub App token
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name'
+
       - name: Generate release checksums
         shell: bash
         run: |
@@ -333,9 +355,17 @@ jobs:
         with:
           subject-checksums: dist/soldr-${{ needs.prepare.outputs.version }}-SHA256SUMS.txt
 
+      - name: Stop after dry run validation
+        if: inputs.dry_run
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "dry run complete: release gating, artifact build, attestation, and GitHub App authentication all succeeded"
+
       - name: Create draft GitHub Release
+        if: ${{ !inputs.dry_run }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -346,8 +376,9 @@ jobs:
             --title "${{ needs.prepare.outputs.version }}"
 
       - name: Publish GitHub Release
+        if: ${{ !inputs.dry_run }}
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         shell: bash
         run: |
           set -euo pipefail
