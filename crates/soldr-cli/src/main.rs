@@ -1,10 +1,12 @@
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
+const JSON_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Parser)]
 #[command(name = "soldr", version, about = "Instant tools. Instant builds.")]
@@ -24,15 +26,27 @@ enum Commands {
         args: Vec<String>,
     },
     /// Show cache status and tool info
-    Status,
+    Status {
+        /// Emit the stable machine-facing JSON form for this command
+        #[arg(long)]
+        json: bool,
+    },
     /// Clear caches
     Clean,
     /// Show or set configuration
     Config,
     /// Inspect the compilation cache
-    Cache,
+    Cache {
+        /// Emit the stable machine-facing JSON form for this command
+        #[arg(long)]
+        json: bool,
+    },
     /// Show version
-    Version,
+    Version {
+        /// Emit the stable machine-facing JSON form for this command
+        #[arg(long)]
+        json: bool,
+    },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -61,20 +75,13 @@ async fn run() -> Result<(), SoldrError> {
         Commands::Cargo { args } => {
             std::process::exit(run_cargo_front_door(&args, cache_enabled).await?);
         }
-        Commands::Status => {
-            println!("soldr {}", soldr_core::version());
-            let target = soldr_core::TargetTriple::detect()?;
-            let paths = soldr_core::SoldrPaths::new()?;
-            println!("target: {target}");
-            println!("root dir: {}", paths.root.display());
-            println!("cache dir: {}", paths.cache.display());
-            println!("cache default: enabled");
-            println!(
-                "cache mode: {}",
-                if cache_enabled { "enabled" } else { "disabled" }
-            );
-            println!("zccache version: {}", soldr_fetch::MANAGED_ZCCACHE_VERSION);
-            print_zccache_status(&paths)?;
+        Commands::Status { json } => {
+            let output = collect_status_output(cache_enabled)?;
+            if json {
+                print_json(&output)?;
+            } else {
+                print_status_output(&output);
+            }
         }
         Commands::Clean => {
             clear_zccache_cache()?;
@@ -82,11 +89,21 @@ async fn run() -> Result<(), SoldrError> {
         Commands::Config => {
             println!("(config not yet implemented)");
         }
-        Commands::Cache => {
-            print_zccache_status(&SoldrPaths::new()?)?;
+        Commands::Cache { json } => {
+            let output = collect_cache_output()?;
+            if json {
+                print_json(&output)?;
+            } else {
+                print_cache_output(&output);
+            }
         }
-        Commands::Version => {
-            println!("soldr {}", soldr_core::version());
+        Commands::Version { json } => {
+            let output = version_output();
+            if json {
+                print_json(&output)?;
+            } else {
+                println!("soldr {}", output.soldr_version);
+            }
         }
         Commands::External(args) => {
             if args.is_empty() {
@@ -380,40 +397,170 @@ fn clear_zccache_cache() -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn print_zccache_status(paths: &SoldrPaths) -> Result<(), SoldrError> {
+#[derive(Serialize)]
+struct VersionOutput {
+    schema_version: u32,
+    command: &'static str,
+    soldr_version: String,
+}
+
+#[derive(Serialize)]
+struct StatusOutput {
+    schema_version: u32,
+    command: &'static str,
+    soldr_version: String,
+    target: String,
+    root_dir: String,
+    cache_dir: String,
+    cache_default_enabled: bool,
+    cache_enabled_for_invocation: bool,
+    managed_zccache_version: &'static str,
+    zccache: ZccacheStatusSnapshot,
+}
+
+#[derive(Serialize)]
+struct CacheOutput {
+    schema_version: u32,
+    command: &'static str,
+    soldr_version: String,
+    managed_zccache_version: &'static str,
+    zccache: ZccacheStatusSnapshot,
+}
+
+#[derive(Serialize)]
+struct ZccacheStatusSnapshot {
+    state_dir: String,
+    journal_path: String,
+    journal_present: bool,
+    binary_path: Option<String>,
+    binary_fetched: bool,
+    status_lines: Vec<String>,
+    status_empty: bool,
+}
+
+fn version_output() -> VersionOutput {
+    VersionOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "version",
+        soldr_version: soldr_core::version().to_string(),
+    }
+}
+
+fn collect_status_output(cache_enabled: bool) -> Result<StatusOutput, SoldrError> {
+    let target = soldr_core::TargetTriple::detect()?;
+    let paths = SoldrPaths::new()?;
+    Ok(StatusOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "status",
+        soldr_version: soldr_core::version().to_string(),
+        target: target.to_string(),
+        root_dir: paths.root.display().to_string(),
+        cache_dir: paths.cache.display().to_string(),
+        cache_default_enabled: true,
+        cache_enabled_for_invocation: cache_enabled,
+        managed_zccache_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+        zccache: collect_zccache_status(&paths)?,
+    })
+}
+
+fn collect_cache_output() -> Result<CacheOutput, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    Ok(CacheOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "cache",
+        soldr_version: soldr_core::version().to_string(),
+        managed_zccache_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+        zccache: collect_zccache_status(&paths)?,
+    })
+}
+
+fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, SoldrError> {
     let zccache_dir = soldr_cache::zccache_dir(paths);
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
-    println!("soldr zccache state dir: {}", zccache_dir.display());
+    let journal_present = journal_path.exists();
+
+    match cached_managed_zccache(paths)? {
+        Some(fetch) => {
+            let output = run_zccache_command(&fetch.binary_path, &["status"])?;
+            let stdout = output.stdout.trim();
+            let status_lines = stdout.lines().map(str::to_owned).collect();
+            Ok(ZccacheStatusSnapshot {
+                state_dir: zccache_dir.display().to_string(),
+                journal_path: journal_path.display().to_string(),
+                journal_present,
+                binary_path: Some(fetch.binary_path.display().to_string()),
+                binary_fetched: true,
+                status_lines,
+                status_empty: stdout.is_empty(),
+            })
+        }
+        None => Ok(ZccacheStatusSnapshot {
+            state_dir: zccache_dir.display().to_string(),
+            journal_path: journal_path.display().to_string(),
+            journal_present,
+            binary_path: None,
+            binary_fetched: false,
+            status_lines: Vec::new(),
+            status_empty: false,
+        }),
+    }
+}
+
+fn print_status_output(output: &StatusOutput) {
+    println!("soldr {}", output.soldr_version);
+    println!("target: {}", output.target);
+    println!("root dir: {}", output.root_dir);
+    println!("cache dir: {}", output.cache_dir);
+    println!("cache default: enabled");
+    println!(
+        "cache mode: {}",
+        if output.cache_enabled_for_invocation {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    println!("zccache version: {}", output.managed_zccache_version);
+    print_zccache_status_snapshot(&output.zccache);
+}
+
+fn print_cache_output(output: &CacheOutput) {
+    print_zccache_status_snapshot(&output.zccache);
+}
+
+fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
+    println!("soldr zccache state dir: {}", snapshot.state_dir);
     println!(
         "last session journal: {} ({})",
-        journal_path.display(),
-        if journal_path.exists() {
+        snapshot.journal_path,
+        if snapshot.journal_present {
             "present"
         } else {
             "missing"
         }
     );
 
-    match cached_managed_zccache(paths)? {
-        Some(fetch) => {
-            println!("zccache binary: {}", fetch.binary_path.display());
-            let output = run_zccache_command(&fetch.binary_path, &["status"])?;
-            let stdout = output.stdout.trim();
-            if stdout.is_empty() {
-                println!("zccache status: no output");
-            } else {
-                for line in stdout.lines() {
-                    println!("zccache: {line}");
-                }
+    if let Some(binary_path) = &snapshot.binary_path {
+        println!("zccache binary: {binary_path}");
+        if snapshot.status_empty {
+            println!("zccache status: no output");
+        } else {
+            for line in &snapshot.status_lines {
+                println!("zccache: {line}");
             }
         }
-        None => {
-            println!(
-                "zccache binary: not fetched yet (will fetch managed zccache {} on the first cache-enabled build)",
-                soldr_fetch::MANAGED_ZCCACHE_VERSION
-            );
-        }
+    } else {
+        println!(
+            "zccache binary: not fetched yet (will fetch managed zccache {} on the first cache-enabled build)",
+            soldr_fetch::MANAGED_ZCCACHE_VERSION
+        );
     }
+}
+
+fn print_json<T: Serialize>(value: &T) -> Result<(), SoldrError> {
+    serde_json::to_writer_pretty(std::io::stdout(), value)
+        .map_err(|e| SoldrError::Other(format!("failed to serialize JSON output: {e}")))?;
+    println!();
     Ok(())
 }
 

@@ -10,7 +10,7 @@ Current repo policy is:
 - the supported external surface is the `soldr` executable, not the internal Rust workspace crates
 - there is no supported public Rust crate API, C ABI, or FFI surface
 - there is no supported long-running daemon or local service protocol today
-- the first future machine-facing API should be explicit CLI commands with structured JSON output, tracked in [#44](https://github.com/zackees/soldr/issues/44)
+- the first supported machine-facing API is explicit CLI commands with structured JSON output on selected commands
 
 ## What Is Supported Today
 
@@ -19,9 +19,12 @@ Supported use today means invoking the `soldr` binary as a subprocess through do
 - `soldr cargo ...`
 - `soldr <tool>[@version] ...`
 - `soldr status`
+- `soldr status --json`
 - `soldr cache`
+- `soldr cache --json`
 - `soldr clean`
 - `soldr version`
+- `soldr version --json`
 
 The current CLI reference lives in [API.md](./API.md).
 
@@ -34,13 +37,14 @@ The following are implementation details and may change without a semver promise
 - undocumented environment variables or wrapper-mode conventions
 - the exact on-disk cache/session layout beyond what is explicitly documented for users
 - human-oriented stdout/stderr wording unless a command is explicitly documented as structured and stable
+- commands that do not explicitly document `--json` as a supported protocol surface
 
 ## Future Direction
 
 The intended progression is:
 
 1. Keep `soldr` binary-first.
-2. Add explicit JSON output for selected commands that need automation support.
+2. Expand explicit JSON output only for selected commands that need automation support.
 3. Version that structured output as an external protocol.
 4. Only consider a daemon or other long-running local protocol if a real use case appears that the CLI cannot serve cleanly.
 
