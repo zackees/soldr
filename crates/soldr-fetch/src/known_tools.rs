@@ -126,6 +126,15 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("mozilla", "sccache")),
         tag_prefix: None,
     },
+    // Self-trampoline: `soldr --as <version>` fetches this entry so an older
+    // soldr binary can handle the rest of the invocation.
+    ToolSpec {
+        crate_name: "soldr",
+        cargo_subcommand: None,
+        binary_name: "soldr",
+        repo: Some(("zackees", "soldr")),
+        tag_prefix: None,
+    },
 ];
 
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {

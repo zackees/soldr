@@ -8,6 +8,13 @@ const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
 
+/// Pin a specific soldr version to handle this invocation. Explicit
+/// `--as <version>` flag takes precedence over this env var.
+const SOLDR_AS_ENV_VAR: &str = "SOLDR_AS";
+/// Sentinel that the currently-running soldr was itself invoked by another
+/// soldr through `--as`. Prevents infinite hand-offs.
+const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
+
 #[derive(Parser)]
 #[command(name = "soldr", version, about = "Instant tools. Instant builds.")]
 struct Cli {
@@ -100,14 +107,57 @@ async fn main() {
         std::process::exit(run_rustc_wrapper(&raw_args).unwrap_or_else(report_and_exit));
     }
 
-    if let Err(e) = run().await {
-        eprintln!("soldr: {e}");
-        std::process::exit(1);
+    // `--as <version>` trampoline. Peeled off before clap so the fetched
+    // older soldr parses its own argv on its own terms.
+    let (pinned_version, trampoline_args) = match extract_as_pin(&raw_args[1..]) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("soldr: {e}");
+            std::process::exit(1);
+        }
+    };
+    let pinned_version = pinned_version.or_else(|| {
+        std::env::var(SOLDR_AS_ENV_VAR)
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    });
+
+    if let Some(version) = pinned_version {
+        if should_trampoline(&version) {
+            std::process::exit(
+                run_trampoline(&version, &trampoline_args)
+                    .await
+                    .unwrap_or_else(report_and_exit),
+            );
+        }
+        // Short-circuit: requested version == current. Continue with args
+        // that have `--as <ver>` stripped.
+        std::process::exit(
+            run_with_args(&raw_args[0], &trampoline_args)
+                .await
+                .unwrap_or_else(report_and_exit),
+        );
     }
+
+    let rc = run_with_args(&raw_args[0], &raw_args[1..])
+        .await
+        .unwrap_or_else(report_and_exit);
+    std::process::exit(rc);
 }
 
-async fn run() -> Result<(), SoldrError> {
-    let cli = Cli::parse();
+async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
+    let mut argv: Vec<String> = Vec::with_capacity(args.len() + 1);
+    argv.push(prog.to_string());
+    argv.extend(args.iter().cloned());
+    // Use parse_from (not try_parse_from) so clap handles --help / --version /
+    // usage errors with its built-in exit(0) / exit(2), matching the original
+    // invocation path's UX exactly.
+    let cli = Cli::parse_from(argv);
+    run_cli(cli).await.map(|_| 0)
+}
+
+async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     let cache_enabled = !cli.no_cache;
 
     match cli.command {
@@ -197,6 +247,113 @@ async fn run() -> Result<(), SoldrError> {
 fn report_and_exit(error: SoldrError) -> i32 {
     eprintln!("soldr: {error}");
     1
+}
+
+/// Extract `--as <version>` or `--as=<version>` from the leading flag
+/// region of the user's argv. Stops scanning at the first non-flag
+/// positional (conventionally the subcommand), so a `--as` appearing
+/// after `cargo` belongs to cargo and is left alone.
+fn extract_as_pin(args: &[String]) -> Result<(Option<String>, Vec<String>), SoldrError> {
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    let mut version: Option<String> = None;
+    let mut before_subcommand = true;
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if !before_subcommand {
+            out.push(arg.clone());
+            continue;
+        }
+        if arg == "--as" {
+            let value = iter.next().ok_or_else(|| {
+                SoldrError::Other("--as requires a version argument, e.g. --as 0.5.2".into())
+            })?;
+            if version.is_some() {
+                return Err(SoldrError::Other("--as specified more than once".into()));
+            }
+            if value.is_empty() {
+                return Err(SoldrError::Other(
+                    "--as version argument must not be empty".into(),
+                ));
+            }
+            version = Some(value.clone());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--as=") {
+            if version.is_some() {
+                return Err(SoldrError::Other("--as specified more than once".into()));
+            }
+            if value.is_empty() {
+                return Err(SoldrError::Other(
+                    "--as= requires a version, e.g. --as=0.5.2".into(),
+                ));
+            }
+            version = Some(value.to_string());
+            continue;
+        }
+        if arg == "--" {
+            before_subcommand = false;
+            out.push(arg.clone());
+            continue;
+        }
+        if arg.starts_with('-') {
+            out.push(arg.clone());
+            continue;
+        }
+        before_subcommand = false;
+        out.push(arg.clone());
+    }
+    Ok((version, out))
+}
+
+/// True when the requested version is different from this binary's. A match
+/// short-circuits the trampoline so the current in-process soldr handles it.
+fn should_trampoline(requested: &str) -> bool {
+    let current = env!("CARGO_PKG_VERSION");
+    normalize_version(requested) != normalize_version(current)
+}
+
+fn normalize_version(v: &str) -> String {
+    v.trim().trim_start_matches('v').to_string()
+}
+
+async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrError> {
+    if let Ok(prior) = std::env::var(SOLDR_TRAMPOLINING_ENV_VAR) {
+        return Err(SoldrError::Other(format!(
+            "refusing to trampoline again: this process was already reached via `--as` from soldr {prior}. Drop the inner --as flag."
+        )));
+    }
+
+    eprintln!("soldr: trampolining to soldr@{version}...");
+    let result =
+        soldr_fetch::fetch_tool("soldr", &VersionSpec::Exact(normalize_version(version))).await?;
+
+    if result.cached {
+        eprintln!(
+            "soldr: using cached soldr v{} at {}",
+            result.version,
+            result.binary_path.display()
+        );
+    } else {
+        eprintln!(
+            "soldr: downloaded soldr v{} to {}",
+            result.version,
+            result.binary_path.display()
+        );
+    }
+
+    let status = std::process::Command::new(&result.binary_path)
+        .args(args)
+        .env(SOLDR_TRAMPOLINING_ENV_VAR, env!("CARGO_PKG_VERSION"))
+        .status()
+        .map_err(|e| {
+            SoldrError::Other(format!(
+                "failed to exec soldr v{} at {}: {e}",
+                result.version,
+                result.binary_path.display()
+            ))
+        })?;
+
+    Ok(status.code().unwrap_or(1))
 }
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
@@ -778,8 +935,8 @@ fn cached_managed_zccache(
 #[cfg(test)]
 mod tests {
     use super::{
-        cargo_args_specify_target, cargo_args_use_reserved_no_cache, first_cargo_subcommand,
-        parse_tool_spec,
+        cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
+        first_cargo_subcommand, normalize_version, parse_tool_spec, should_trampoline,
     };
     use soldr_fetch::VersionSpec;
 
@@ -882,5 +1039,102 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
             assert_eq!(spec.cargo_subcommand, None);
         }
+    }
+
+    #[test]
+    fn soldr_itself_is_registered_for_self_trampoline() {
+        let spec = soldr_fetch::lookup_by_crate("soldr")
+            .expect("soldr should be registered in known_tools for --as trampoline");
+        assert_eq!(spec.binary_name, "soldr");
+        assert_eq!(spec.repo, Some(("zackees", "soldr")));
+        assert_eq!(spec.cargo_subcommand, None);
+    }
+
+    #[test]
+    fn extract_as_pin_extracts_space_separated_flag_before_subcommand() {
+        let (version, rest) = extract_as_pin(&[
+            "--as".into(),
+            "0.5.2".into(),
+            "cargo".into(),
+            "build".into(),
+        ])
+        .unwrap();
+        assert_eq!(version, Some("0.5.2".into()));
+        assert_eq!(rest, vec!["cargo".to_string(), "build".into()]);
+    }
+
+    #[test]
+    fn extract_as_pin_extracts_equals_form() {
+        let (version, rest) =
+            extract_as_pin(&["--as=0.5.2".into(), "cargo".into(), "build".into()]).unwrap();
+        assert_eq!(version, Some("0.5.2".into()));
+        assert_eq!(rest, vec!["cargo".to_string(), "build".into()]);
+    }
+
+    #[test]
+    fn extract_as_pin_preserves_other_leading_flags() {
+        let (version, rest) = extract_as_pin(&[
+            "--no-cache".into(),
+            "--as".into(),
+            "0.5.2".into(),
+            "cargo".into(),
+        ])
+        .unwrap();
+        assert_eq!(version, Some("0.5.2".into()));
+        assert_eq!(rest, vec!["--no-cache".to_string(), "cargo".into()]);
+    }
+
+    #[test]
+    fn extract_as_pin_ignores_flag_after_subcommand() {
+        let args = vec!["cargo".into(), "--as".into(), "0.5.2".into()];
+        let (version, rest) = extract_as_pin(&args).unwrap();
+        assert_eq!(version, None);
+        assert_eq!(rest, args);
+    }
+
+    #[test]
+    fn extract_as_pin_ignores_flag_after_passthrough_separator() {
+        let args = vec!["cargo".into(), "--".into(), "--as".into(), "0.5.2".into()];
+        let (version, rest) = extract_as_pin(&args).unwrap();
+        assert_eq!(version, None);
+        assert_eq!(rest, args);
+    }
+
+    #[test]
+    fn extract_as_pin_rejects_missing_value() {
+        let err = extract_as_pin(&["--as".into()]).unwrap_err();
+        assert!(err.to_string().contains("requires a version"));
+    }
+
+    #[test]
+    fn extract_as_pin_rejects_empty_value() {
+        let err = extract_as_pin(&["--as".into(), "".into()]).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+        let err2 = extract_as_pin(&["--as=".into()]).unwrap_err();
+        assert!(err2.to_string().contains("requires a version"));
+    }
+
+    #[test]
+    fn extract_as_pin_rejects_duplicate_flag() {
+        let err =
+            extract_as_pin(&["--as".into(), "0.5.2".into(), "--as=0.4.0".into()]).unwrap_err();
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn normalize_version_strips_leading_v() {
+        assert_eq!(normalize_version("0.5.2"), "0.5.2");
+        assert_eq!(normalize_version("v0.5.2"), "0.5.2");
+        assert_eq!(normalize_version("  v0.5.2 "), "0.5.2");
+    }
+
+    #[test]
+    fn should_trampoline_matches_current_version_as_no_op() {
+        assert!(!should_trampoline(env!("CARGO_PKG_VERSION")));
+        assert!(!should_trampoline(&format!(
+            "v{}",
+            env!("CARGO_PKG_VERSION")
+        )));
+        assert!(should_trampoline("0.0.0-not-this-version"));
     }
 }
