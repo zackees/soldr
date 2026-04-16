@@ -870,7 +870,14 @@ mod tests {
 
     #[test]
     fn top_level_tools_are_not_cargo_subcommands() {
-        for crate_name in ["cross", "mdbook", "cbindgen"] {
+        for crate_name in [
+            "cross",
+            "mdbook",
+            "cbindgen",
+            "wasm-pack",
+            "trunk",
+            "sccache",
+        ] {
             let spec = soldr_fetch::lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
             assert_eq!(spec.cargo_subcommand, None);
