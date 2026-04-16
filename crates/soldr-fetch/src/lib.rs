@@ -8,6 +8,13 @@ pub mod known_tools;
 
 pub use known_tools::{lookup_by_cargo_subcommand, lookup_by_crate, ToolSpec, KNOWN_TOOLS};
 
+pub mod trust;
+
+pub use trust::{
+    sha256_of, verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome,
+    CHECKSUMS_FILE_ENV_VAR, TRUST_MODE_ENV_VAR,
+};
+
 use soldr_core::{Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple};
 use std::path::{Path, PathBuf};
 
@@ -643,6 +650,31 @@ async fn download_and_extract(
         .bytes()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
+
+    // Integrity + trust enforcement (issue #42). Compute sha256 and consult
+    // the pinned-checksum store before writing anything to disk.
+    let asset_name = url
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(url);
+    let digest = trust::sha256_of(&bytes);
+    let store = trust::PinnedChecksumStore::from_env()?;
+    let mode = trust::TrustMode::from_env();
+    match trust::verify_download(cache_name, version, asset_name, &digest, &store, mode)? {
+        trust::VerifyOutcome::Verified { sha256 } => {
+            eprintln!(
+                "soldr: trust: verified {cache_name} v{version} {asset_name} sha256={sha256}"
+            );
+        }
+        trust::VerifyOutcome::Unverified { sha256 } => {
+            eprintln!(
+                "soldr: trust: unverified {cache_name} v{version} {asset_name} sha256={sha256} (set {} to pin; run with {}=strict to require pins)",
+                trust::CHECKSUMS_FILE_ENV_VAR,
+                trust::TRUST_MODE_ENV_VAR
+            );
+        }
+    }
 
     let tool_dir = paths.bin.join(format!("{cache_name}-{version}"));
     let desired_binaries = desired_binary_names(binary_names, target);
