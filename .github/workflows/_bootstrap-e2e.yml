@@ -15,10 +15,6 @@ on:
       source_ref:
         required: true
         type: string
-      soldr_toolchain:
-        required: false
-        type: string
-        default: "1.94.1"
       third_party_repo:
         required: false
         type: string
@@ -54,7 +50,6 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
-          toolchain: ${{ inputs.soldr_toolchain }}
           targets: ${{ inputs.target }}
 
       - name: Install musl tools

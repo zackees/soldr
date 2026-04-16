@@ -22,9 +22,11 @@ Those positions are deliberate. They may be revisited later, but they are the cu
 For a normal `soldr` release:
 
 - the release workflow is started manually with an explicit version and exact commit SHA
-- that exact commit must be reachable from `main`
+- that exact commit must be reachable from the protected `release` branch
 - the workflow re-runs lint, workspace build, tests, integration, and all supported e2e bootstrap jobs for that exact commit
 - release archives are built from that exact commit
+- the version tag is protected by repository rulesets and created through the release workflow path
+- the published GitHub Release is immutable once published
 - a SHA-256 checksum manifest is published with the release assets
 - GitHub build provenance attestations are generated for the published assets
 
@@ -32,8 +34,6 @@ For a normal `soldr` release:
 
 The current release flow does not yet claim all of the following:
 
-- immutable GitHub Releases
-- protected release-tag rulesets enforced outside the git tree
 - SBOM publication
 - independently reproduced builds by a second builder
 - fully hermetic inputs for rustup, crates.io, OS packages, or third-party test inputs
