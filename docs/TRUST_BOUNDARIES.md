@@ -47,12 +47,28 @@ The bootstrap e2e jobs currently trust additional external systems:
 
 - Ubuntu package repositories
   - musl validation jobs install `musl-tools` from live `apt` repositories
+  - the install command uses `--no-install-recommends`, a retry loop, and logs the resolved `musl-tools` version for auditability; the set of installed packages is therefore the declared set, not an open-ended recommended expansion
 - third-party source repository hosting
   - the e2e workflow checks out a pinned commit of `zackees/running-process` from GitHub
 - third-party Rust toolchain installation
   - the e2e workflow reads the third-party project's `rust-toolchain.toml` and installs that toolchain through `rustup`
 
 These inputs are pinned where possible, but they are not yet mirrored or fully hermetic.
+
+## Hermetic Inputs Hardening Status
+
+Tracked by #41. Concrete narrowings already in place:
+
+- the `musl-tools` install uses `--no-install-recommends` so the Ubuntu package surface is exactly what the release path declares
+- the `musl-tools` install logs its resolved version so the exact package contents are visible in workflow logs
+- the `musl-tools` install retries on transient apt failures rather than either flapping or pulling unrelated extras
+
+Still deferred (acceptable follow-up, not blockers for the current line):
+
+- a `cargo vendor` or mirrored-registry strategy for crates.io resolution during release
+- a mirrored or prebuilt-image strategy for Rust toolchain acquisition during release
+- a mirror for the pinned third-party bootstrap repository checkout
+- replacement of the live `apt` repository with a prebuilt image or pinned-package snapshot
 
 ## Runtime Tool-Fetch Trust Boundaries
 
