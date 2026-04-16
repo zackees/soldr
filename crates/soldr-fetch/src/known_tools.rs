@@ -50,6 +50,35 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("taiki-e", "cargo-llvm-cov")),
         tag_prefix: None,
     },
+    // Phase 3 — dev ergonomics.
+    ToolSpec {
+        crate_name: "cargo-udeps",
+        cargo_subcommand: "udeps",
+        binary_name: "cargo-udeps",
+        repo: Some(("est31", "cargo-udeps")),
+        tag_prefix: None,
+    },
+    ToolSpec {
+        crate_name: "cargo-semver-checks",
+        cargo_subcommand: "semver-checks",
+        binary_name: "cargo-semver-checks",
+        repo: Some(("obi1kenobi", "cargo-semver-checks")),
+        tag_prefix: None,
+    },
+    ToolSpec {
+        crate_name: "cargo-expand",
+        cargo_subcommand: "expand",
+        binary_name: "cargo-expand",
+        repo: Some(("dtolnay", "cargo-expand")),
+        tag_prefix: None,
+    },
+    ToolSpec {
+        crate_name: "cargo-watch",
+        cargo_subcommand: "watch",
+        binary_name: "cargo-watch",
+        repo: Some(("watchexec", "cargo-watch")),
+        tag_prefix: None,
+    },
 ];
 
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {

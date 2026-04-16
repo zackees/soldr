@@ -857,4 +857,14 @@ mod tests {
             assert!(spec.crate_name.starts_with("cargo-"));
         }
     }
+
+    #[test]
+    fn known_subcommand_registry_recognizes_phase_three_tools() {
+        for sub in ["udeps", "semver-checks", "expand", "watch"] {
+            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+                .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
+            assert_eq!(spec.cargo_subcommand, sub);
+            assert!(spec.crate_name.starts_with("cargo-"));
+        }
+    }
 }
