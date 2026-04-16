@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.75"
 license = "BSD-3-Clause"
@@ -16,9 +16,9 @@ repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 
 [workspace.dependencies]
-soldr-core = { path = "crates/soldr-core", version = "0.6.0" }
-soldr-fetch = { path = "crates/soldr-fetch", version = "0.6.0" }
-soldr-cache = { path = "crates/soldr-cache", version = "0.6.0" }
+soldr-core = { path = "crates/soldr-core", version = "0.7.0" }
+soldr-fetch = { path = "crates/soldr-fetch", version = "0.7.0" }
+soldr-cache = { path = "crates/soldr-cache", version = "0.7.0" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
@@ -27,6 +27,8 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 blake3 = "1"
+sha2 = "0.10"
+hex = "0.4"
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 tempfile = "3"
 zip = "2"
