@@ -57,8 +57,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+          # Narrower input surface per #41:
+          # - --no-install-recommends prevents apt from pulling in optional deps,
+          #   so the exact package set is what the release path declares.
+          # - a small retry loop makes transient apt/mirror errors recoverable
+          #   without weakening the installed set.
+          # - the resolved package version is logged so it is auditable from
+          #   the workflow run.
+          attempts=0
+          max_attempts=3
+          until sudo apt-get update; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get update failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          attempts=0
+          until sudo apt-get install -y --no-install-recommends musl-tools; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get install musl-tools failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
