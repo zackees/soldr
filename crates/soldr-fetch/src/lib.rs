@@ -2,7 +2,11 @@
 //!
 //! Resolution chain (Phase 1 MVP):
 //! 1. Local cache (`~/.soldr/bin/<tool>-<version>/`)
-//! 2. GitHub Releases (repository URL from crates.io)
+//! 2. GitHub Releases (repository URL from crates.io, or override from `known_tools`)
+
+pub mod known_tools;
+
+pub use known_tools::{lookup_by_cargo_subcommand, lookup_by_crate, ToolSpec, KNOWN_TOOLS};
 
 use soldr_core::{Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple};
 use std::path::{Path, PathBuf};
@@ -52,8 +56,28 @@ pub async fn fetch_tool_with_paths(
     paths: &SoldrPaths,
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
+
+    if let Some(spec) = lookup_by_crate(crate_name) {
+        let repo = match spec.repo {
+            Some((owner, name)) => RepoInfo {
+                owner: owner.to_string(),
+                repo: name.to_string(),
+            },
+            None => resolve_repo(crate_name).await?,
+        };
+        return fetch_repo_binary_with_paths(
+            spec.crate_name,
+            &[spec.binary_name],
+            &repo,
+            version,
+            spec.tag_prefix,
+            paths,
+        )
+        .await;
+    }
+
     let repo = resolve_repo(crate_name).await?;
-    fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, paths).await
+    fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, None, paths).await
 }
 
 pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
@@ -110,6 +134,7 @@ async fn fetch_repo_binary_with_paths(
     binary_names: &[&str],
     repo: &RepoInfo,
     version: &VersionSpec,
+    tag_prefix: Option<&str>,
     paths: &SoldrPaths,
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
@@ -126,7 +151,7 @@ async fn fetch_repo_binary_with_paths(
         }
     }
 
-    let release = fetch_release(repo, version).await?;
+    let release = fetch_release(repo, version, tag_prefix).await?;
 
     if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, &target)? {
         return Ok(r);
@@ -266,19 +291,28 @@ fn parse_github_url(url: &str) -> Result<RepoInfo, SoldrError> {
 }
 
 /// Fetch release metadata (asset list) from GitHub.
-async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<ReleaseInfo, SoldrError> {
+async fn fetch_release(
+    repo: &RepoInfo,
+    version: &VersionSpec,
+    tag_prefix: Option<&str>,
+) -> Result<ReleaseInfo, SoldrError> {
     let client = http_client()?;
 
     let release = match version {
-        VersionSpec::Latest => {
-            let url = format!(
-                "https://api.github.com/repos/{}/{}/releases/latest",
-                repo.owner, repo.repo
-            );
-            fetch_release_value(&client, repo, &url).await?
-        }
+        VersionSpec::Latest => match tag_prefix {
+            // Monorepo releases: `/releases/latest` may pick a sibling tool;
+            // instead list releases and take the newest whose tag matches.
+            Some(prefix) => fetch_latest_by_prefix(&client, repo, prefix).await?,
+            None => {
+                let url = format!(
+                    "https://api.github.com/repos/{}/{}/releases/latest",
+                    repo.owner, repo.repo
+                );
+                fetch_release_value(&client, repo, &url).await?
+            }
+        },
         VersionSpec::Exact(v) => {
-            let candidate_tags = release_tag_candidates(v);
+            let candidate_tags = release_tag_candidates(v, tag_prefix);
             let mut found = None;
             for tag in &candidate_tags {
                 let url = format!(
@@ -301,7 +335,59 @@ async fn fetch_release(repo: &RepoInfo, version: &VersionSpec) -> Result<Release
         }
     };
 
-    parse_release_info(release)
+    parse_release_info(release, tag_prefix)
+}
+
+async fn fetch_latest_by_prefix(
+    client: &reqwest::Client,
+    repo: &RepoInfo,
+    prefix: &str,
+) -> Result<serde_json::Value, SoldrError> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/releases?per_page=60",
+        repo.owner, repo.repo
+    );
+    let resp = github_request(client, &url)
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+
+    if !resp.status().is_success() {
+        return Err(SoldrError::ToolNotFound(format!(
+            "no release found for {}/{}",
+            repo.owner, repo.repo
+        )));
+    }
+
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let releases: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| SoldrError::Other(e.to_string()))?;
+
+    let matched = releases
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|release| {
+                let is_prerelease = release["prerelease"].as_bool().unwrap_or(false);
+                if is_prerelease {
+                    return false;
+                }
+                release["tag_name"]
+                    .as_str()
+                    .map(|tag| tag.starts_with(prefix))
+                    .unwrap_or(false)
+            })
+        })
+        .cloned();
+
+    matched.ok_or_else(|| {
+        SoldrError::ToolNotFound(format!(
+            "no release with tag prefix {prefix:?} found for {}/{}",
+            repo.owner, repo.repo
+        ))
+    })
 }
 
 async fn fetch_release_value(
@@ -372,12 +458,15 @@ async fn fetch_release_by_listing(
     })
 }
 
-fn release_tag_candidates(version: &str) -> Vec<String> {
-    let mut tags = Vec::with_capacity(2);
+fn release_tag_candidates(version: &str, tag_prefix: Option<&str>) -> Vec<String> {
+    let mut tags = Vec::with_capacity(4);
     let raw = version.trim();
     if raw.is_empty() {
         return tags;
     }
+    let bare = raw.trim_start_matches('v').to_string();
+
+    // Core bare + v-prefixed variants.
     tags.push(raw.to_string());
     if let Some(stripped) = raw.strip_prefix('v') {
         if !stripped.is_empty() {
@@ -386,6 +475,13 @@ fn release_tag_candidates(version: &str) -> Vec<String> {
     } else {
         tags.push(format!("v{raw}"));
     }
+
+    // Monorepo-style tags: e.g. `cargo-audit/v0.21.0`.
+    if let Some(prefix) = tag_prefix {
+        tags.push(format!("{prefix}{bare}"));
+        tags.push(format!("{prefix}v{bare}"));
+    }
+
     tags.sort();
     tags.dedup();
     tags
@@ -398,11 +494,18 @@ fn managed_zccache_download_url(version: &str, target: &TargetTriple) -> String 
     )
 }
 
-fn parse_release_info(body: serde_json::Value) -> Result<ReleaseInfo, SoldrError> {
+fn parse_release_info(
+    body: serde_json::Value,
+    tag_prefix: Option<&str>,
+) -> Result<ReleaseInfo, SoldrError> {
     let tag = body["tag_name"]
         .as_str()
         .ok_or_else(|| SoldrError::Other("no tag_name in release".into()))?;
-    let version = tag.trim_start_matches('v').to_string();
+    let stripped = match tag_prefix {
+        Some(prefix) => tag.strip_prefix(prefix).unwrap_or(tag),
+        None => tag,
+    };
+    let version = stripped.trim_start_matches('v').to_string();
 
     let assets = body["assets"]
         .as_array()
@@ -733,13 +836,42 @@ mod tests {
     #[test]
     fn release_tag_candidates_support_plain_and_v_prefixed_tags() {
         assert_eq!(
-            release_tag_candidates("1.2.8"),
+            release_tag_candidates("1.2.8", None),
             vec!["1.2.8".to_string(), "v1.2.8".to_string()]
         );
         assert_eq!(
-            release_tag_candidates("v1.2.8"),
+            release_tag_candidates("v1.2.8", None),
             vec!["1.2.8".to_string(), "v1.2.8".to_string()]
         );
+    }
+
+    #[test]
+    fn release_tag_candidates_include_monorepo_prefix_variants() {
+        let candidates = release_tag_candidates("0.21.0", Some("cargo-audit/"));
+        assert!(candidates.contains(&"0.21.0".to_string()));
+        assert!(candidates.contains(&"v0.21.0".to_string()));
+        assert!(candidates.contains(&"cargo-audit/0.21.0".to_string()));
+        assert!(candidates.contains(&"cargo-audit/v0.21.0".to_string()));
+    }
+
+    #[test]
+    fn parse_release_info_strips_monorepo_tag_prefix() {
+        let body = serde_json::json!({
+            "tag_name": "cargo-audit/v0.21.0",
+            "assets": [],
+        });
+        let info = parse_release_info(body, Some("cargo-audit/")).unwrap();
+        assert_eq!(info.version, "0.21.0");
+    }
+
+    #[test]
+    fn parse_release_info_strips_nextest_prefix() {
+        let body = serde_json::json!({
+            "tag_name": "cargo-nextest-0.9.100",
+            "assets": [],
+        });
+        let info = parse_release_info(body, Some("cargo-nextest-")).unwrap();
+        assert_eq!(info.version, "0.9.100");
     }
 
     #[test]
