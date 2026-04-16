@@ -25,6 +25,45 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Run rustc from the active toolchain
+    Rustc {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run rustfmt from the active toolchain
+    Rustfmt {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run clippy-driver from the active toolchain
+    #[command(name = "clippy-driver")]
+    ClippyDriver {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run rustdoc from the active toolchain
+    Rustdoc {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run rust-gdb from the active toolchain
+    #[command(name = "rust-gdb")]
+    RustGdb {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run rust-lldb from the active toolchain
+    #[command(name = "rust-lldb")]
+    RustLldb {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run rust-analyzer from the active toolchain
+    #[command(name = "rust-analyzer")]
+    RustAnalyzer {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Show cache status and tool info
     Status {
         /// Emit the stable machine-facing JSON form for this command
@@ -57,7 +96,7 @@ async fn main() {
     // RUSTC_WRAPPER mode: cargo passes `soldr /path/to/rustc <args...>`
     // Must be checked before clap parsing.
     let raw_args: Vec<String> = std::env::args().collect();
-    if raw_args.len() > 1 && is_rustc_path(&raw_args[1]) {
+    if raw_args.len() > 1 && is_wrapper_invocation(&raw_args[1]) {
         std::process::exit(run_rustc_wrapper(&raw_args).unwrap_or_else(report_and_exit));
     }
 
@@ -74,6 +113,27 @@ async fn run() -> Result<(), SoldrError> {
     match cli.command {
         Commands::Cargo { args } => {
             std::process::exit(run_cargo_front_door(&args, cache_enabled).await?);
+        }
+        Commands::Rustc { args } => {
+            std::process::exit(run_toolchain_passthrough("rustc", &args)?);
+        }
+        Commands::Rustfmt { args } => {
+            std::process::exit(run_toolchain_passthrough("rustfmt", &args)?);
+        }
+        Commands::ClippyDriver { args } => {
+            std::process::exit(run_toolchain_passthrough("clippy-driver", &args)?);
+        }
+        Commands::Rustdoc { args } => {
+            std::process::exit(run_toolchain_passthrough("rustdoc", &args)?);
+        }
+        Commands::RustGdb { args } => {
+            std::process::exit(run_toolchain_passthrough("rust-gdb", &args)?);
+        }
+        Commands::RustLldb { args } => {
+            std::process::exit(run_toolchain_passthrough("rust-lldb", &args)?);
+        }
+        Commands::RustAnalyzer { args } => {
+            std::process::exit(run_toolchain_passthrough("rust-analyzer", &args)?);
         }
         Commands::Status { json } => {
             let output = collect_status_output(cache_enabled)?;
@@ -139,37 +199,57 @@ fn report_and_exit(error: SoldrError) -> i32 {
     1
 }
 
-fn is_rustc_path(arg: &str) -> bool {
-    if arg == "rustc" {
-        return true;
-    }
+/// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
+/// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
+/// passes: `soldr <toolchain-binary> <rustc-args...>`
+const WRAPPER_PASSTHROUGH_TOOLS: &[&str] = &["rustc", "clippy-driver"];
 
-    std::path::Path::new(arg)
+fn is_wrapper_invocation(arg: &str) -> bool {
+    let stem = std::path::Path::new(arg)
         .file_stem()
         .and_then(std::ffi::OsStr::to_str)
-        == Some("rustc")
+        .unwrap_or(arg);
+
+    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
 }
 
 fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
-    if soldr_cache::cache_enabled_in_current_process() {
+    let tool_arg = raw_args
+        .get(1)
+        .ok_or_else(|| SoldrError::Other("missing tool path in wrapper mode".into()))?;
+
+    let tool_stem = std::path::Path::new(tool_arg.as_str())
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(tool_arg);
+
+    // Only route through zccache for actual rustc invocations, not
+    // clippy-driver or other workspace wrappers.
+    if tool_stem == "rustc" && soldr_cache::cache_enabled_in_current_process() {
         if let Some(zccache) = zccache_binary_override() {
             return run_wrapper_through_zccache(raw_args, &zccache);
         }
     }
 
-    let rustc = raw_args
-        .get(1)
-        .ok_or_else(|| SoldrError::Other("missing rustc path in wrapper mode".into()))?;
-    let rustc = if rustc == "rustc" {
-        resolve_toolchain_binary("rustc")?
+    // Resolve the tool binary. If it's already a full path, use it
+    // directly. Otherwise resolve via rustup.
+    let tool_path: std::path::PathBuf = if std::path::Path::new(tool_arg.as_str()).is_absolute() {
+        tool_arg.into()
     } else {
-        rustc.into()
+        resolve_toolchain_binary(tool_stem)?
     };
 
-    let status = std::process::Command::new(rustc)
+    let status = std::process::Command::new(tool_path)
         .args(&raw_args[2..])
         .status()?;
 
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Run a rustup-managed toolchain binary with pass-through args.
+fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
+    let binary = resolve_toolchain_binary(tool)?;
+    let status = std::process::Command::new(binary).args(args).status()?;
     Ok(status.code().unwrap_or(1))
 }
 
