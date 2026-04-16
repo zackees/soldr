@@ -201,7 +201,7 @@ Example:
 {
   "schema_version": 1,
   "command": "version",
-  "soldr_version": "0.2.0-beta"
+  "soldr_version": "0.6.0"
 }
 ```
 
