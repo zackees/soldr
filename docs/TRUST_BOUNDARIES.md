@@ -47,12 +47,28 @@ The bootstrap e2e jobs currently trust additional external systems:
 
 - Ubuntu package repositories
   - musl validation jobs install `musl-tools` from live `apt` repositories
+  - the install command uses `--no-install-recommends`, a retry loop, and logs the resolved `musl-tools` version for auditability; the set of installed packages is therefore the declared set, not an open-ended recommended expansion
 - third-party source repository hosting
   - the e2e workflow checks out a pinned commit of `zackees/running-process` from GitHub
 - third-party Rust toolchain installation
   - the e2e workflow reads the third-party project's `rust-toolchain.toml` and installs that toolchain through `rustup`
 
 These inputs are pinned where possible, but they are not yet mirrored or fully hermetic.
+
+## Hermetic Inputs Hardening Status
+
+Tracked by #41. Concrete narrowings already in place:
+
+- the `musl-tools` install uses `--no-install-recommends` so the Ubuntu package surface is exactly what the release path declares
+- the `musl-tools` install logs its resolved version so the exact package contents are visible in workflow logs
+- the `musl-tools` install retries on transient apt failures rather than either flapping or pulling unrelated extras
+
+Still deferred (acceptable follow-up, not blockers for the current line):
+
+- a `cargo vendor` or mirrored-registry strategy for crates.io resolution during release
+- a mirrored or prebuilt-image strategy for Rust toolchain acquisition during release
+- a mirror for the pinned third-party bootstrap repository checkout
+- replacement of the live `apt` repository with a prebuilt image or pinned-package snapshot
 
 ## Runtime Tool-Fetch Trust Boundaries
 
@@ -69,10 +85,16 @@ That means the runtime tool-fetch path currently trusts:
 - GitHub repository ownership and release contents for the target tool
 - HTTPS transport to those services
 
+Integrity enforcement that is in place today:
+
+- SHA-256 is always computed on the downloaded archive and printed to stderr
+- user-supplied per-asset SHA-256 pins from `SOLDR_CHECKSUMS_FILE` are enforced as hard errors on mismatch
+- `SOLDR_TRUST_MODE=strict` refuses any fetch without a matching pin
+
 It does not yet enforce:
 
 - maintainer allowlists
-- per-tool checksums committed in this repo
+- repo-committed default checksums for tools shipped in the `known_tools` registry
 - upstream signatures
 - upstream artifact attestations
 - mirrored internal copies of third-party tool binaries
@@ -93,19 +115,37 @@ Current repo policy is:
 
 ## Current Runtime Fetch Policy
 
-Current `0.5.x` policy for runtime-fetched binaries is:
+As of the `0.6.x` line, `soldr` enforces integrity on every third-party fetch:
 
-- `soldr` fetching a third-party tool is a convenience/bootstrap path, not a repository-side trust guarantee
-- a successful fetch currently means crates.io metadata and GitHub Releases produced a matching archive for the selected target and `soldr` extracted it successfully
-- `soldr` does not currently enforce maintainer allowlists, repo-managed checksums, upstream signatures, upstream attestations, or mirrored copies before executing a fetched tool
-- the managed `zccache` path is pinned to a repo-chosen version, but it still uses the same direct GitHub Release download model and is not independently checksum- or attestation-verified by `soldr` itself today
-- stronger runtime trust enforcement is accepted follow-up work, but it is not part of the current `0.5.x` trust claim
+- every downloaded archive has its SHA-256 computed before extraction; the digest is printed to stderr so a human or CI log grep can audit what actually installed
+- users can pin per-asset SHA-256 values in a TOML file at the path named by `SOLDR_CHECKSUMS_FILE`; any pin mismatch is a hard error regardless of mode
+- `SOLDR_TRUST_MODE=strict` refuses to install any tool that does not have a matching pin
+- `SOLDR_TRUST_MODE=permissive` (the default) installs and emits a `trust: unverified` warning when no pin is available; this preserves the convenience/bootstrap path while making the trust state legible
+- the managed `zccache` download goes through the same verification path as any other fetch
+
+Example pin file layout:
+
+```toml
+[[tool]]
+tool = "cargo-nextest"
+version = "0.9.100"
+asset = "cargo-nextest-0.9.100-x86_64-pc-windows-msvc.zip"
+sha256 = "0123...cdef"   # 64-char lowercase hex
+```
+
+What is still deferred:
+
+- maintainer allowlists (limiting which crate/repo pairs `soldr` will even attempt to fetch)
+- upstream signature or attestation verification
+- mirrored internal copies of third-party tool binaries
+
+Those remain acceptable future hardening work and are tracked on the issues linked below.
 
 Open follow-up implementation issues are tracked in:
 
 - [#11](https://github.com/zackees/soldr/issues/11) for repository and release-governance settings
 - [#41](https://github.com/zackees/soldr/issues/41) for reducing live external release inputs
-- [#42](https://github.com/zackees/soldr/issues/42) for fetched-binary trust enforcement
+- [#42](https://github.com/zackees/soldr/issues/42) for fetched-binary trust enforcement (checksum enforcement landed; allowlist/signature work still open)
 
 ## Practical Reading Of This Document
 

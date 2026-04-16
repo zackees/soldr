@@ -17,6 +17,9 @@ tempfile = { workspace = true }
 zip = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
+toml = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
