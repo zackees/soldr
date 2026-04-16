@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::process::Command;
 use std::{
     fs,
@@ -201,6 +202,22 @@ fn version_command_prints_workspace_version() {
         stdout.trim(),
         format!("soldr {}", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn version_command_emits_versioned_json() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["version", "--json"])
+        .output()
+        .expect("failed to run soldr version --json");
+
+    assert!(output.status.success(), "version --json command failed");
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("version --json did not return JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["command"], "version");
+    assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
 }
 
 #[test]
@@ -455,6 +472,38 @@ fn status_reports_cache_control_defaults() {
 }
 
 #[test]
+fn status_json_reports_stable_machine_fields() {
+    let cache_root = unique_temp_dir("status-json");
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["status", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr status --json");
+
+    assert!(output.status.success(), "status --json command failed");
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("status --json did not return JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["command"], "status");
+    assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(json["cache_default_enabled"], true);
+    assert_eq!(json["cache_enabled_for_invocation"], true);
+    assert_eq!(json["managed_zccache_version"], "1.2.8");
+    assert_eq!(json["root_dir"], cache_root.display().to_string());
+    assert_eq!(
+        json["cache_dir"],
+        cache_root.join("cache").display().to_string()
+    );
+    assert_eq!(json["zccache"]["binary_fetched"], false);
+    assert_eq!(json["zccache"]["journal_present"], false);
+    assert!(
+        json["target"].as_str().is_some(),
+        "status JSON missing target"
+    );
+}
+
+#[test]
 fn cache_command_reports_managed_zccache_status() {
     let cache_root = unique_temp_dir("cache-command");
     let log_path = cache_root.join("tool.log");
@@ -497,6 +546,46 @@ fn cache_command_reports_managed_zccache_status() {
 }
 
 #[test]
+fn cache_json_reports_managed_zccache_status() {
+    let cache_root = unique_temp_dir("cache-command-json");
+    let log_path = cache_root.join("tool.log");
+    let (_, _, zccache) = install_fake_toolchain(&log_path);
+    let journal = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("last-session.jsonl");
+    fs::create_dir_all(journal.parent().expect("journal parent missing"))
+        .expect("failed to create journal dir");
+    fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cache", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cache --json");
+
+    assert!(output.status.success(), "cache --json command failed");
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("cache --json did not return JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["command"], "cache");
+    assert_eq!(json["managed_zccache_version"], "1.2.8");
+    assert_eq!(json["zccache"]["journal_present"], true);
+    assert_eq!(json["zccache"]["binary_fetched"], true);
+    assert_eq!(
+        json["zccache"]["journal_path"],
+        journal.display().to_string()
+    );
+    assert_eq!(
+        json["zccache"]["status_lines"][0],
+        Value::String("hits=7".to_string())
+    );
+}
+
+#[test]
 fn clean_clears_managed_zccache_and_state_dir() {
     let cache_root = unique_temp_dir("clean-command");
     let log_path = cache_root.join("tool.log");
@@ -535,6 +624,25 @@ fn clean_clears_managed_zccache_and_state_dir() {
     assert!(
         log.contains("zccache clear"),
         "clean should call managed zccache clear: {log}"
+    );
+}
+
+#[test]
+fn clean_rejects_json_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["clean", "--json"])
+        .output()
+        .expect("failed to run soldr clean --json");
+
+    assert!(
+        !output.status.success(),
+        "clean --json should be rejected because JSON is not supported there"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--json"),
+        "expected clap to reject clean --json: {stderr}"
     );
 }
 

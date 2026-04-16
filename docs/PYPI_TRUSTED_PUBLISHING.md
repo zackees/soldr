@@ -11,7 +11,7 @@ As of April 14, 2026:
 - the release workflow can build hardened `soldr` wheels when `publish_pypi=true`
 - the workflow can publish those wheels through `pypa/gh-action-pypi-publish` in a dedicated OIDC job
 - the existing PyPI project `soldr` already exists
-- that PyPI project currently shows a stale `0.1.0` upload that predates Trusted Publishing
+- the current public PyPI `0.1.0` file details say `Uploaded using Trusted Publishing? No`
 
 The next secure PyPI release should replace that stale packaging path with the real wheel set built from the validated release workflow.
 
@@ -47,12 +47,12 @@ The environment field is optional in PyPI, but it should be filled in here becau
 
 ## Repo-Side Workflow Inputs
 
-The release workflow now supports these PyPI-related inputs:
+The release workflow supports these PyPI-related inputs:
 
 - `publish_pypi=true`
 - `pypi_repository_url=...` for alternate endpoints such as TestPyPI
 
-If `publish_pypi=false`, the workflow keeps its previous GitHub-release-only behavior.
+If `publish_pypi=false`, the workflow keeps its GitHub-release-only behavior.
 
 If `publish_pypi=true`, the workflow:
 
@@ -85,4 +85,4 @@ This uses a real publish path instead of `dry_run=true`, because the OIDC publis
 
 The repo-side work can be completed without additional secrets.
 
-The first unavoidable manual stop is PyPI-side publisher registration on the existing `soldr` project. Until that is done, the PyPI publish job will not be able to mint a trusted upload token.
+If the PyPI trusted publisher has not been registered yet, that PyPI-side publisher registration is the remaining manual stop. Until that is done, the PyPI publish job will not be able to mint a trusted upload token.

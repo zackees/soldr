@@ -35,6 +35,8 @@ The repository currently enforces several baseline controls:
 
 These controls reduce drift, but they do not make the full release pipeline hermetic.
 
+The current `0.5.x` line does not claim hermetic builds, and it does not claim that third-party binaries fetched later by `soldr` are repository-verified just because `soldr` downloaded them.
+
 ## What is pinned
 
 The repo aims to pin security-relevant inputs wherever practical:
@@ -83,7 +85,24 @@ Current state:
 - immutable releases and protected tag settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
 
-The current distribution direction for `0.5.x` is GitHub Releases plus optional PyPI wheels. crates.io publication is intentionally out of scope because the project is not promising a stable Rust source/library API.
+Current verification policy:
+
+- checksum verification plus `gh attestation verify` is the official user-facing verification story
+- GitHub CLI is the primary documented attestation-verification tool
+- offline attestation bundles may be archived, but separate Sigstore tooling is not required for the normal verification path
+- SBOM publication is not currently required for the release line
+- reproducible-build claims are not currently made for `soldr`
+- no extra signed release metadata is currently published beyond `SHA256SUMS` and GitHub provenance attestations
+
+Current hermeticity and runtime-trust policy:
+
+- `0.5.x` release verification covers published `soldr` artifacts, not every external input used during CI
+- `0.5.x` does not claim hermetic builds; documented dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt`, and the pinned bootstrap test repository remain acceptable for this release line
+- Cargo/toolchain/package mirroring or vendoring is deferred hardening tracked in issue [#41](https://github.com/zackees/soldr/issues/41)
+- runtime third-party binary fetches are a convenience/bootstrap path on `0.5.x`, not a repository-side trust guarantee
+- stronger trust enforcement for fetched binaries is tracked in issue [#42](https://github.com/zackees/soldr/issues/42)
+
+Planned state, tracked in issue `#7`:
 
 Remaining follow-up decisions before the attested secure `0.5` release, tracked in issues `#12` and `#13`:
 

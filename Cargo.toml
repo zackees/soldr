@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.75"
 license = "BSD-3-Clause"
@@ -16,9 +16,9 @@ repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 
 [workspace.dependencies]
-soldr-core = { path = "crates/soldr-core", version = "0.5.0" }
-soldr-fetch = { path = "crates/soldr-fetch", version = "0.5.0" }
-soldr-cache = { path = "crates/soldr-cache", version = "0.5.0" }
+soldr-core = { path = "crates/soldr-core", version = "0.6.0" }
+soldr-fetch = { path = "crates/soldr-fetch", version = "0.6.0" }
+soldr-cache = { path = "crates/soldr-cache", version = "0.6.0" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

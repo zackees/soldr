@@ -382,26 +382,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m venv .build-venv
-          . .build-venv/bin/activate
-          python -m pip install --upgrade pip
-          python -m pip install "maturin>=1.7,<2"
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "maturin>=1.7,<2"
 
       - name: Install maturin
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          py -3 -m venv .build-venv
-          .\.build-venv\Scripts\python.exe -m pip install --upgrade pip
-          .\.build-venv\Scripts\python.exe -m pip install "maturin>=1.7,<2"
+          py -3 -m pip install --upgrade pip
+          py -3 -m pip install "maturin>=1.7,<2"
 
       - name: Build hardened wheel
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          . .build-venv/bin/activate
-          python -m maturin build \
+          python3 -m maturin build \
             --release \
             --locked \
             --compatibility pypi \
@@ -412,7 +408,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          .\.build-venv\Scripts\python.exe -m maturin build `
+          py -3 -m maturin build `
             --release `
             --locked `
             --compatibility pypi `
@@ -434,11 +430,7 @@ jobs:
         shell: pwsh
         run: |
           py -3 -m venv .venv
-          $wheel = (Get-ChildItem dist\*.whl | Select-Object -First 1).FullName
-          if (-not $wheel) {
-            throw "No wheel found in dist"
-          }
-          .\.venv\Scripts\python.exe -m pip install $wheel
+          .\.venv\Scripts\python.exe -m pip install dist\*.whl
           .\.venv\Scripts\soldr.exe --version
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -537,11 +529,7 @@ jobs:
       - build-pypi
       - publish
     runs-on: ubuntu-24.04
-    environment:
-      name: release
-      url: https://pypi.org/project/soldr/
-    permissions:
-      id-token: write
+    environment: release
 
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4

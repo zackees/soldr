@@ -22,6 +22,7 @@ Current release line:
 
 - `0.5.x` is the secure front-door, tool-fetch, and built-in zccache-backed cache release line
 - `1.0.0-rc` remains reserved for broader release hardening and bootstrap validation
+- the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
 
 ## Why soldr exists
 
@@ -45,7 +46,7 @@ When you run `soldr`, the tool should do the obvious thing:
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
-- **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse.
+- **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
 - **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring; zccache's artifact store still uses its current default cache root.
 
@@ -96,7 +97,7 @@ soldr/
 |   |-- soldr-core/      # Shared types, config, cache directory layout
 |   |-- soldr-fetch/     # Binary resolution + download (the crgx half)
 |   |-- soldr-cache/     # Compilation caching (the zccache half)
-|   `-- soldr-cli/       # CLI entry point + daemon
+|   `-- soldr-cli/       # CLI entry point + wrapper mode
 |-- src/soldr/           # Python package (maturin bin bindings)
 `-- tests/
 ```
@@ -104,9 +105,11 @@ soldr/
 | Crate | Role |
 |---|---|
 | `soldr-core` | Cache paths, config, version types |
-| `soldr-fetch` | Resolve crate binaries from binstall metadata, GitHub Releases, QuickInstall. Download, verify, cache. |
+| `soldr-fetch` | Resolve crate binaries from crates.io metadata and GitHub Releases. Download and cache. |
 | `soldr-cache` | zccache integration helpers, cache policy, session plumbing. |
 | `soldr-cli` | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`, `cache`), tool fetch dispatch. |
+
+These workspace crates are implementation details. They are not a supported public Rust library API.
 
 ## Prior art
 
@@ -119,9 +122,11 @@ Built on lessons from:
 ## Security And Verification
 
 - [SECURITY.md](./SECURITY.md) describes the current hardening posture and release policy.
+- [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md) defines the supported machine-facing integration boundary.
+- [docs/PYPI_TRUSTED_PUBLISHING.md](./docs/PYPI_TRUSTED_PUBLISHING.md) describes the optional Trusted Publishing path for hardened PyPI wheels.
 - [RELEASE.md](./RELEASE.md) documents the intended maximum-security release setup and owner workflow.
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md) explains how to verify published release artifacts.
-- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts.
+- [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts, including the current `0.5.x` limits of runtime fetched-binary trust.
 
 ## License
 

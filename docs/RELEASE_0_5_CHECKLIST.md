@@ -25,18 +25,18 @@ Do not ship `0.5` with placeholder commands presented as finished behavior.
 
 ## 2. Freeze The `0.5` Security Claim
 
-Resolve the open policy questions in:
+Confirm the documented policy decisions in:
 
 - issue [#12](https://github.com/zackees/soldr/issues/12) for verification, SBOM, and reproducibility policy
-- issue [#13](https://github.com/zackees/soldr/issues/13) for hermeticity and runtime trust policy
+- issue [#13](https://github.com/zackees/soldr/issues/13) for hermeticity and runtime trust policy, with implementation follow-up in [#41](https://github.com/zackees/soldr/issues/41) and [#42](https://github.com/zackees/soldr/issues/42)
 
-Minimum decisions needed before `0.5`:
+Current decisions for `0.5`:
 
-- whether checksum plus `gh attestation verify` is the official verification story
-- whether SBOM generation is required for `0.5`
-- whether reproducible-build claims are in scope for `0.5`
-- whether vendoring or mirroring Cargo, toolchain, or OS-package inputs is required now or deferred
-- what trust statement applies to third-party binaries fetched by `soldr` at runtime
+- checksum plus `gh attestation verify` is the official user-facing verification story
+- SBOM generation is not required for `0.5`
+- reproducible-build claims are out of scope for `0.5`
+- `0.5.x` does not claim hermetic builds; vendoring or mirroring Cargo, toolchain, OS-package, and pinned bootstrap-test inputs is deferred hardening tracked in [#41](https://github.com/zackees/soldr/issues/41)
+- third-party binaries fetched by `soldr` at runtime remain an upstream trust decision on `0.5.x`, not a repository-side trust guarantee; stronger enforcement is tracked in [#42](https://github.com/zackees/soldr/issues/42)
 
 ## 3. Rehearse The Release Path
 

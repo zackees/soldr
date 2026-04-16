@@ -4,6 +4,19 @@ This document describes how to verify a published `soldr` release today.
 
 It is intentionally limited to what the repository currently implements.
 
+## Verification Policy
+
+The current `soldr` verification policy is:
+
+- the official user-facing verification path is checksum verification plus `gh attestation verify`
+- GitHub CLI is the primary documented tool for attestation verification
+- Sigstore-compatible offline verification remains possible through downloaded attestation bundles, but it is not the primary documented path
+- `soldr` does not currently require or publish SBOMs for the release line
+- `soldr` does not currently claim independently reproducible builds
+- `soldr` does not currently publish extra signed metadata beyond the checksum manifest and GitHub provenance attestations
+
+Those positions are deliberate. They may be revisited later, but they are the current release policy rather than open questions.
+
 ## What The Current Release Flow Guarantees
 
 For a normal `soldr` release:
@@ -25,7 +38,7 @@ The current release flow does not yet claim all of the following:
 - independently reproduced builds by a second builder
 - fully hermetic inputs for rustup, crates.io, OS packages, or third-party test inputs
 
-Those follow-up items are tracked in issues [#12](https://github.com/zackees/soldr/issues/12) and [#13](https://github.com/zackees/soldr/issues/13).
+The release-governance and hermetic-input follow-up items remain tracked in issues [#11](https://github.com/zackees/soldr/issues/11), [#41](https://github.com/zackees/soldr/issues/41), and [#42](https://github.com/zackees/soldr/issues/42). SBOM publication and independently reproduced builds are intentionally outside the current release claim.
 
 ## Release Asset Names
 
@@ -62,7 +75,9 @@ The checksum step tells you the file you downloaded matches the checksum manifes
 
 ## Step 2: Verify The Artifact Attestation
 
-Use GitHub CLI's attestation support to verify the artifact provenance:
+Use GitHub CLI's attestation support to verify the artifact provenance.
+
+This is the primary documented verification path for `soldr`:
 
 ```bash
 gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz \
@@ -90,7 +105,7 @@ This validates that GitHub has a matching attestation for the artifact and that 
 
 It does not, by itself, prove that every external input used during the build was mirrored or hermetic. For the current trust boundary inventory, see [TRUST_BOUNDARIES.md](./TRUST_BOUNDARIES.md).
 
-## Optional: Offline Verification
+## Optional: Offline Verification And Sigstore-Compatible Bundles
 
 GitHub CLI also supports downloading attestation bundles and verifying them offline.
 
@@ -101,15 +116,15 @@ gh attestation download soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz --repo zack
 gh attestation trusted-root
 ```
 
-Offline verification is not yet the primary documented path for `soldr`, but it remains available if you want to archive bundles and trusted roots alongside release artifacts.
+Offline verification is not the primary documented path for `soldr`, but it remains available if you want to archive bundles and trusted roots alongside release artifacts.
+
+This is also the nearest current equivalent to a Sigstore-style workflow for this repository. We do not require users to install separate Sigstore tooling as part of the normal `soldr` verification story.
 
 ## About `gh release verify`
 
 GitHub CLI also has `gh release verify`, which verifies release-level attestations.
 
-Because `soldr` now uses protected release tags and immutable GitHub Releases, `gh release verify` is a reasonable supplementary check.
-
-We still document per-artifact verification as the primary path because it validates the exact archive you downloaded. Today, the strongest explicit verification path for `soldr` is:
+We do not currently document that as the primary verification path for `soldr` because immutable releases and the surrounding release-governance settings are still tracked separately. Today, the repository's official verification path is:
 
 1. checksum verification
 2. artifact attestation verification with `gh attestation verify`
