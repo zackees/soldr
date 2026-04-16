@@ -104,6 +104,28 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("mozilla", "cbindgen")),
         tag_prefix: None,
     },
+    // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
+    ToolSpec {
+        crate_name: "wasm-pack",
+        cargo_subcommand: None,
+        binary_name: "wasm-pack",
+        repo: Some(("rustwasm", "wasm-pack")),
+        tag_prefix: None,
+    },
+    ToolSpec {
+        crate_name: "trunk",
+        cargo_subcommand: None,
+        binary_name: "trunk",
+        repo: Some(("trunk-rs", "trunk")),
+        tag_prefix: None,
+    },
+    ToolSpec {
+        crate_name: "sccache",
+        cargo_subcommand: None,
+        binary_name: "sccache",
+        repo: Some(("mozilla", "sccache")),
+        tag_prefix: None,
+    },
 ];
 
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {
@@ -172,7 +194,14 @@ mod tests {
 
     #[test]
     fn top_level_tools_are_registered_without_cargo_subcommand() {
-        for crate_name in ["cross", "mdbook", "cbindgen"] {
+        for crate_name in [
+            "cross",
+            "mdbook",
+            "cbindgen",
+            "wasm-pack",
+            "trunk",
+            "sccache",
+        ] {
             let spec = lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
             assert_eq!(spec.cargo_subcommand, None);
