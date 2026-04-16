@@ -853,7 +853,7 @@ mod tests {
         for sub in ["nextest", "deny", "audit", "llvm-cov"] {
             let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
                 .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
-            assert_eq!(spec.cargo_subcommand, sub);
+            assert_eq!(spec.cargo_subcommand, Some(sub));
             assert!(spec.crate_name.starts_with("cargo-"));
         }
     }
@@ -863,8 +863,17 @@ mod tests {
         for sub in ["udeps", "semver-checks", "expand", "watch"] {
             let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
                 .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
-            assert_eq!(spec.cargo_subcommand, sub);
+            assert_eq!(spec.cargo_subcommand, Some(sub));
             assert!(spec.crate_name.starts_with("cargo-"));
+        }
+    }
+
+    #[test]
+    fn top_level_tools_are_not_cargo_subcommands() {
+        for crate_name in ["cross", "mdbook", "cbindgen"] {
+            let spec = soldr_fetch::lookup_by_crate(crate_name)
+                .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
+            assert_eq!(spec.cargo_subcommand, None);
         }
     }
 }
