@@ -22,12 +22,24 @@ The release model should satisfy all of these properties:
 These controls are already in place:
 
 - `main` is protected with required CI and e2e checks
+- `release` is protected with the same required validation gates
 - the `release` environment exists and requires approval from `@zackees`
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
 - the validated release workflow exists in `.github/workflows/release.yml`
+- a dedicated GitHub App is used for release publication
+- release tags matching `refs/tags/v*.*.*` are protected by a repository ruleset whose only bypass actor is the release GitHub App
 
-The remaining gap is protected workflow-only release tags.
+The remaining work before the attested secure `0.5` release is operational rather than architectural:
+
+- exercise the full release path with a rehearsal and first release candidate
+- verify that humans cannot mint, move, or delete release tags in practice
+- finish policy decisions around SBOMs, reproducibility, and hermeticity
+- register the existing `soldr` PyPI project for Trusted Publishing if hardened wheel upload is in scope for `0.5.0`
+
+`1.0.0-rc` remains intentionally reserved for broader release hardening and bootstrap validation beyond the `0.5.x` built-in zccache release line.
+
+crates.io publication is not part of the current release direction. `soldr` is being released as a hardened binary tool, not as a promised Rust library API surface.
 
 ## Recommended Final Model
 
@@ -127,9 +139,9 @@ The owner should remain the required reviewer for the `release` environment.
 
 That means the human decides when a release is authorized, while the machine identity performs tag issuance and publication.
 
-## Future Workflow Changes
+## Current Workflow Behavior
 
-Once the GitHub App exists, the release workflow should be updated to do this:
+The release workflow now does this:
 
 1. Accept a version and exact commit SHA.
 2. Verify the commit SHA is on `release`.
@@ -139,6 +151,7 @@ Once the GitHub App exists, the release workflow should be updated to do this:
 6. Use that App token to create the tag.
 7. Use that same App token to create the GitHub Release.
 8. Attach checksums and build provenance attestations.
+9. Optionally build hardened platform wheels and publish them to PyPI through OIDC Trusted Publishing.
 
 The release workflow must not use:
 
@@ -147,16 +160,17 @@ The release workflow must not use:
 
 ## Future Agent Instructions
 
-If a future agent is asked to finish the maximum-security release flow, the agent should:
+If a future agent is asked to audit or extend the release flow, the agent should:
 
 1. Read this file.
-2. Check issue `#18` for the release-tag governance problem.
-3. Confirm whether the GitHub App has been created and installed.
-4. Confirm whether the `release` branch exists and is protected.
-5. Confirm whether a tag ruleset protects `v*.*.*` and only the App may bypass it.
-6. Only then modify `.github/workflows/release.yml` to use the App token for tag and release creation.
+2. Audit the live GitHub-side controls before trusting the checked-in docs.
+3. Confirm whether the GitHub App remains installed and scoped only to this repository.
+4. Confirm whether `release` still exists and is protected.
+5. Confirm whether a tag ruleset still protects `v*.*.*` and only the App may bypass it.
+6. Check issues `#12` and `#13` for the remaining `0.5` policy decisions.
+7. Only then modify `.github/workflows/release.yml` or the verification docs.
 
-If the GitHub App or ruleset is missing, the agent should stop and report the missing GitHub-side prerequisites instead of faking the policy in code.
+If the live GitHub-side controls drift from the documented trust model, the agent should stop and report the drift instead of assuming the release posture is still intact.
 
 ## Verification Checklist
 
@@ -173,7 +187,7 @@ After the final setup is complete, verify all of these:
 
 - [README.md](./README.md)
 - [SECURITY.md](./SECURITY.md)
+- [docs/RELEASE_0_5_CHECKLIST.md](./docs/RELEASE_0_5_CHECKLIST.md)
 - [docs/RELEASE_GOVERNANCE_CHECKLIST.md](./docs/RELEASE_GOVERNANCE_CHECKLIST.md)
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md)
 - [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md)
-
