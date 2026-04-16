@@ -281,6 +281,11 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
 
+    // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
+    // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
+    // PATH so cargo's subcommand dispatch finds it.
+    let extra_bin_dirs = ensure_known_subcommand_tool(args, &paths).await?;
+
     let mut command = std::process::Command::new(cargo);
     command.args(args);
     command.env("RUSTC", rustc);
@@ -288,10 +293,10 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         soldr_cache::CACHE_ENABLED_ENV_VAR,
         soldr_cache::cache_enabled_env_value(cache_enabled),
     );
-    command.env(
-        "PATH",
-        prepend_path(&cargo_bin_dir, existing_path.as_deref())?,
-    );
+    let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
+    path_dirs.push(cargo_bin_dir);
+    path_dirs.extend(extra_bin_dirs);
+    command.env("PATH", prepend_paths(&path_dirs, existing_path.as_deref())?);
     if let Some(target) = default_cargo_build_target(args)? {
         command.env("CARGO_BUILD_TARGET", target);
     }
@@ -347,15 +352,67 @@ fn cargo_args_use_reserved_no_cache(args: &[String]) -> bool {
     false
 }
 
-fn prepend_path(
-    dir: &std::path::Path,
+fn prepend_paths(
+    dirs: &[std::path::PathBuf],
     existing_path: Option<&std::ffi::OsStr>,
 ) -> Result<std::ffi::OsString, SoldrError> {
-    let mut paths = vec![dir.to_path_buf()];
+    let mut paths: Vec<std::path::PathBuf> = dirs.to_vec();
     if let Some(existing_path) = existing_path {
         paths.extend(std::env::split_paths(existing_path));
     }
     std::env::join_paths(paths).map_err(|e| SoldrError::Other(format!("invalid PATH: {e}")))
+}
+
+/// Return the first positional argument (skipping flags) of the cargo
+/// front-door args, which is conventionally the cargo subcommand.
+fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
+    for arg in args {
+        if arg == "--" {
+            break;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return Some(arg.as_str());
+    }
+    None
+}
+
+async fn ensure_known_subcommand_tool(
+    args: &[String],
+    paths: &SoldrPaths,
+) -> Result<Vec<std::path::PathBuf>, SoldrError> {
+    let Some(sub) = first_cargo_subcommand(args) else {
+        return Ok(Vec::new());
+    };
+    let Some(spec) = soldr_fetch::lookup_by_cargo_subcommand(sub) else {
+        return Ok(Vec::new());
+    };
+
+    eprintln!("soldr: fetching {}...", spec.crate_name);
+    let result =
+        soldr_fetch::fetch_tool_with_paths(spec.crate_name, &VersionSpec::Latest, paths).await?;
+
+    if result.cached {
+        eprintln!(
+            "soldr: using cached {} v{}",
+            spec.crate_name, result.version
+        );
+    } else {
+        eprintln!("soldr: downloaded {} v{}", spec.crate_name, result.version);
+    }
+
+    let dir = result
+        .binary_path
+        .parent()
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for fetched {}",
+                spec.crate_name
+            ))
+        })?
+        .to_path_buf();
+    Ok(vec![dir])
 }
 
 fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
@@ -720,7 +777,10 @@ fn cached_managed_zccache(
 
 #[cfg(test)]
 mod tests {
-    use super::{cargo_args_specify_target, cargo_args_use_reserved_no_cache, parse_tool_spec};
+    use super::{
+        cargo_args_specify_target, cargo_args_use_reserved_no_cache, first_cargo_subcommand,
+        parse_tool_spec,
+    };
     use soldr_fetch::VersionSpec;
 
     #[test]
@@ -764,5 +824,37 @@ mod tests {
         let (tool, version) = parse_tool_spec("maturin");
         assert_eq!(tool, "maturin");
         assert!(matches!(version, VersionSpec::Latest));
+    }
+
+    #[test]
+    fn first_cargo_subcommand_skips_leading_flags() {
+        assert_eq!(
+            first_cargo_subcommand(&["--verbose".into(), "nextest".into(), "run".into()]),
+            Some("nextest")
+        );
+        assert_eq!(
+            first_cargo_subcommand(&["nextest".into(), "run".into()]),
+            Some("nextest")
+        );
+        assert_eq!(first_cargo_subcommand(&["--help".into()]), None);
+        assert_eq!(first_cargo_subcommand(&[]), None);
+    }
+
+    #[test]
+    fn first_cargo_subcommand_stops_at_passthrough_separator() {
+        assert_eq!(
+            first_cargo_subcommand(&["--".into(), "nextest".into()]),
+            None
+        );
+    }
+
+    #[test]
+    fn known_subcommand_registry_recognizes_phase_two_tools() {
+        for sub in ["nextest", "deny", "audit", "llvm-cov"] {
+            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+                .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
+            assert_eq!(spec.cargo_subcommand, sub);
+            assert!(spec.crate_name.starts_with("cargo-"));
+        }
     }
 }
