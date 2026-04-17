@@ -55,20 +55,22 @@ The bootstrap e2e jobs currently trust additional external systems:
 
 These inputs are pinned where possible, but they are not yet mirrored or fully hermetic.
 
-## Hermetic Inputs Hardening Status
+## Hermetic Inputs: Final `0.5.x` Stance
 
-Tracked by #41. Concrete narrowings already in place:
+Concrete narrowings in place:
 
 - the `musl-tools` install uses `--no-install-recommends` so the Ubuntu package surface is exactly what the release path declares
 - the `musl-tools` install logs its resolved version so the exact package contents are visible in workflow logs
 - the `musl-tools` install retries on transient apt failures rather than either flapping or pulling unrelated extras
 
-Still deferred (acceptable follow-up, not blockers for the current line):
+Explicitly out of scope for `0.5.x` (not planned; any revisit is scoped to a future `1.0.0-rc` hardening milestone):
 
 - a `cargo vendor` or mirrored-registry strategy for crates.io resolution during release
 - a mirrored or prebuilt-image strategy for Rust toolchain acquisition during release
 - a mirror for the pinned third-party bootstrap repository checkout
 - replacement of the live `apt` repository with a prebuilt image or pinned-package snapshot
+
+The attested release artifact — built from an exact commit SHA on the protected `release` branch, with GitHub build-provenance attestation and a `SHA256SUMS` manifest — is the user-facing trust guarantee for `0.5.x`. Narrowing the live CI input surface below that attestation-based guarantee is not a project goal on this line.
 
 ## Runtime Tool-Fetch Trust Boundaries
 
@@ -109,7 +111,7 @@ Current repo policy is:
 - prefer exact commit or version selection where possible
 - `0.5.x` does not claim hermetic builds
 - the documented release-time dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt` in the bootstrap e2e path, and the pinned third-party bootstrap repository are acceptable for `0.5.x`
-- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are accepted future hardening work, but they are not blockers for the current `0.5.x` release line
+- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are explicitly out of scope for `0.5.x`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
 - the pinned third-party bootstrap checkout is acceptable for current validation, but it must not be described as mirrored or hermetic
 - release verification for `soldr` covers the published `soldr` artifacts and their provenance, not every external input used during CI
 
@@ -141,11 +143,11 @@ What is still deferred:
 
 Those remain acceptable future hardening work and are tracked on the issues linked below.
 
-Open follow-up implementation issues are tracked in:
+Open follow-up implementation issues:
 
 - [#11](https://github.com/zackees/soldr/issues/11) for repository and release-governance settings
-- [#41](https://github.com/zackees/soldr/issues/41) for reducing live external release inputs
-- [#42](https://github.com/zackees/soldr/issues/42) for fetched-binary trust enforcement (checksum enforcement landed; allowlist/signature work still open)
+
+Previously tracked, now closed: [#41](https://github.com/zackees/soldr/issues/41) (reducing live external release inputs — closed as out of scope for `0.5.x`), [#42](https://github.com/zackees/soldr/issues/42) (fetched-binary trust enforcement — checksum enforcement landed in `0.6.x`).
 
 ## Practical Reading Of This Document
 
