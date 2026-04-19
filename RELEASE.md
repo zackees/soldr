@@ -1,18 +1,18 @@
 # Release Guide
 
-This document memorializes the intended high-security release flow for `soldr`.
+This document records the release model `soldr` uses today.
 
 It is written for two audiences:
 
-- the repository owner, who must configure the GitHub-side controls
-- a future agent, who must understand what the release workflow is supposed to enforce
+- the repository owner, who configures the GitHub-side controls
+- a future agent, who needs to understand what the release workflow is supposed to enforce
 
 ## Goal
 
 The release model should satisfy all of these properties:
 
-- releases are triggered intentionally by the owner
-- the machine validates the exact release commit before publication
+- releases are triggered intentionally by a reviewed version-bump merge on `main`
+- the machine validates the exact merged commit before publication
 - release tags such as `v1.2.3` are minted only by trusted automation
 - humans cannot manually create, move, or delete release tags
 - published release assets are immutable, attestable, and verifiable
@@ -22,54 +22,29 @@ The release model should satisfy all of these properties:
 These controls are already in place:
 
 - `main` is protected with required CI and e2e checks
-- `release` is protected with the same required validation gates
 - the `release` environment exists and requires approval from `@zackees`
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
-- the validated release workflow exists in `.github/workflows/release.yml`
+- `.github/workflows/release-auto.yml` is the only release workflow
 - a dedicated GitHub App is used for release publication
 - release tags matching `refs/tags/v*.*.*` are protected by a repository ruleset whose only bypass actor is the release GitHub App
 
-The remaining work before the attested secure `0.5` release is operational rather than architectural:
-
-- exercise the full release path with a rehearsal and first release candidate
-- verify that humans cannot mint, move, or delete release tags in practice
-- finish policy decisions around SBOMs, reproducibility, and hermeticity
-- register the existing `soldr` PyPI project for Trusted Publishing if hardened wheel upload is in scope for `0.5.0`
-
-`1.0.0-rc` remains intentionally reserved for broader release hardening and bootstrap validation beyond the `0.5.x` built-in zccache release line.
-
 crates.io publication is not part of the current release direction. `soldr` is being released as a hardened binary tool, not as a promised Rust library API surface.
 
-## Recommended Final Model
+## Current Release Model
 
-The strongest GitHub-native model for this repository is:
+The current GitHub-native release model is:
 
-1. A human starts the release intentionally.
-2. The workflow validates an exact commit on the protected `release` branch.
-3. The workflow reruns lint, build, tests, integration, and e2e gates.
-4. The owner approves the `release` environment.
-5. A dedicated GitHub App creates the `v*.*.*` tag and GitHub Release.
-6. Humans are blocked from minting or retargeting release tags directly.
+1. A reviewed PR bumps the workspace version in `Cargo.toml`.
+2. That PR is merged to protected `main`.
+3. `.github/workflows/release-auto.yml` triggers from that push.
+4. The workflow confirms the workspace version actually changed.
+5. The workflow reruns lint, build, tests, integration, and e2e gates on the merged commit.
+6. Final publication pauses in the `release` environment.
+7. A dedicated GitHub App creates the `v*.*.*` tag and GitHub Release.
+8. The same workflow publishes hardened PyPI wheels through Trusted Publishing.
 
-`workflow_dispatch` is the release authorization step.
-
-The GitHub App is the machine identity that performs the irreversible tag-creation step.
-
-## Autonomous Publish Model
-
-If the repository decides that a future agent should be able to cut a release from `main`, use `.github/workflows/release-auto.yml`.
-
-That workflow intentionally changes the authorization model:
-
-1. An agent dispatches the workflow from the protected `main` branch.
-2. The workflow derives `vX.Y.Z` directly from `Cargo.toml`.
-3. The workflow validates the `main` branch head instead of asking the caller for a commit SHA.
-4. The workflow reruns the same lint, test, packaging, and e2e gate.
-5. The workflow uses the release GitHub App to mint the protected tag and GitHub Release.
-6. The workflow performs final publication through the `release` environment, because the release GitHub App credentials are scoped there.
-
-This is weaker than the maximum-security owner-approved model because it derives the version and target commit directly from `main` instead of requiring an explicit release SHA. It is not equivalent to the stronger trust model above.
+The intentional authorization step is the reviewed version-bump merge. The `release` environment remains the publish-time credential boundary.
 
 ## Why A GitHub App Is Needed
 
@@ -85,20 +60,18 @@ That means:
 
 These are the concrete steps the owner must perform in GitHub.
 
-### 1. Create A Protected `release` Branch
-
-The branch should be the only branch from which release commits are promoted.
+### 1. Keep `main` Protected
 
 Desired branch policy:
 
 - no direct human pushes
-- pull-request or automation-only updates
+- pull-request-only updates
 - linear history enabled
 - force pushes disabled
 - deletions disabled
 - required checks enabled
 
-The release workflow should later validate that the target SHA is on `release`.
+The release workflow assumes that any version bump reaching `main` has already passed the required validation gate.
 
 ### 2. Create A Dedicated GitHub App
 
@@ -122,7 +95,7 @@ Suggested configuration:
 - secret: `RELEASE_APP_PRIVATE_KEY`
 - variable: `RELEASE_APP_ID`
 
-Store these on the `release` environment if possible, not as broad repository-wide secrets.
+Store these on the `release` environment, not as broad repository-wide secrets.
 
 ### 4. Install The App On This Repository
 
@@ -148,25 +121,27 @@ Do not use:
 
 Those weaken the trust model.
 
-### 6. Keep The `release` Environment As The Human Approval Gate
+### 6. Keep The `release` Environment As The Publish Boundary
 
 The owner should remain the required reviewer for the `release` environment.
 
-That means the human decides when a release is authorized, while the machine identity performs tag issuance and publication.
+That keeps the GitHub App credentials and the PyPI Trusted Publisher identity scoped to the final publication stage instead of the entire workflow.
 
 ## Current Workflow Behavior
 
 The release workflow now does this:
 
-1. Accept a version and exact commit SHA.
-2. Verify the commit SHA is on `release`.
-3. Rerun the full release gate on that exact commit.
-4. Pause on the `release` environment for approval.
-5. Mint a GitHub App installation token inside the workflow.
-6. Use that App token to create the tag.
-7. Use that same App token to create the GitHub Release.
-8. Attach checksums and build provenance attestations.
-9. Optionally build hardened platform wheels and publish them to PyPI through OIDC Trusted Publishing.
+1. Trigger on pushes to `main` where `Cargo.toml` changed.
+2. Derive `vX.Y.Z` directly from `[workspace.package]` in `Cargo.toml`.
+3. Stop early if the version did not change from the previous `main` commit.
+4. Refuse to continue if the tag or GitHub Release already exists.
+5. Rerun the full lint, test, packaging, and e2e gate on the merged commit.
+6. Build the signed release archives and hardened wheel set.
+7. Pause on the `release` environment.
+8. Mint a GitHub App installation token inside the workflow.
+9. Use that App token to create the tag and GitHub Release.
+10. Attach checksums and build provenance attestations.
+11. Publish the wheel set to PyPI through OIDC Trusted Publishing.
 
 The release workflow must not use:
 
@@ -180,11 +155,11 @@ If a future agent is asked to audit or extend the release flow, the agent should
 1. Read this file.
 2. Audit the live GitHub-side controls before trusting the checked-in docs.
 3. Confirm whether the GitHub App remains installed and scoped only to this repository.
-4. Confirm whether `release` still exists and is protected.
-5. Confirm whether a tag ruleset still protects `v*.*.*` and only the App may bypass it.
-6. Check issues `#12` and `#13` for the remaining `0.5` policy decisions.
-7. Decide whether the task wants the owner-approved path in `.github/workflows/release.yml` or the main-driven path in `.github/workflows/release-auto.yml`.
-8. Only then modify the relevant workflow or the verification docs.
+4. Confirm whether `main` still requires pull requests and the expected validation checks.
+5. Confirm whether the `release` environment still exists and gates publication.
+6. Confirm whether a tag ruleset still protects `v*.*.*` and only the App may bypass it.
+7. Check issues `#12` and `#13` for the remaining `0.5` policy decisions.
+8. Only then modify `.github/workflows/release-auto.yml` or the verification docs.
 
 If the live GitHub-side controls drift from the documented trust model, the agent should stop and report the drift instead of assuming the release posture is still intact.
 
@@ -194,8 +169,8 @@ After the final setup is complete, verify all of these:
 
 - a human cannot manually create `v1.2.3`
 - a human cannot move `v1.2.3` to a different commit
-- the release workflow can create `v1.2.3` after approval
-- the workflow refuses SHAs not on `release`
+- the release workflow can create `v1.2.3` after the `release` environment approves
+- the workflow refuses duplicate tags and duplicate releases
 - published release assets are immutable
 - checksums and provenance attestations are attached
 

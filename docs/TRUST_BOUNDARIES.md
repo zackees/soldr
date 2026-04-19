@@ -33,7 +33,7 @@ Even with a validated release workflow, the release path still depends on extern
 
 ## Audit: What The Published Release Artifacts Depend On
 
-Based on the committed release workflow in `.github/workflows/release.yml`:
+Based on the committed release workflow in `.github/workflows/release-auto.yml`:
 
 - the published `soldr` release archives are built from the repository source tree plus Rust dependencies resolved through Cargo
 - the workflow does not explicitly download and repackage third-party release binaries into the published `soldr` archives
@@ -70,7 +70,7 @@ Explicitly out of scope for `0.5.x` (not planned; any revisit is scoped to a fut
 - a mirror for the pinned third-party bootstrap repository checkout
 - replacement of the live `apt` repository with a prebuilt image or pinned-package snapshot
 
-The attested release artifact — built from an exact commit SHA on the protected `release` branch, with GitHub build-provenance attestation and a `SHA256SUMS` manifest — is the user-facing trust guarantee for `0.5.x`. Narrowing the live CI input surface below that attestation-based guarantee is not a project goal on this line.
+The attested release artifact - built from the reviewed `main` commit that bumped the workspace version, published through the `release` environment, with GitHub build-provenance attestation and a `SHA256SUMS` manifest - is the user-facing trust guarantee for `0.5.x`. Narrowing the live CI input surface below that attestation-based guarantee is not a project goal on this line.
 
 ## Runtime Tool-Fetch Trust Boundaries
 

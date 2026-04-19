@@ -1,23 +1,11 @@
 name: Autonomous Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      dry_run:
-        description: Validate the autonomous release flow without publishing the GitHub Release or PyPI wheels
-        required: false
-        default: false
-        type: boolean
-      publish_pypi:
-        description: Publish hardened wheel artifacts to PyPI or TestPyPI after the GitHub Release
-        required: false
-        default: true
-        type: boolean
-      pypi_repository_url:
-        description: Optional alternate upload endpoint such as https://test.pypi.org/legacy/
-        required: false
-        default: ""
-        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
 
 permissions:
   contents: write
@@ -30,9 +18,10 @@ concurrency:
 
 jobs:
   prepare:
-    name: Validate main branch head
+    name: Detect release version bump
     runs-on: ubuntu-24.04
     outputs:
+      should_release: ${{ steps.validate.outputs.should_release }}
       version: ${{ steps.validate.outputs.version }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
 
@@ -48,21 +37,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          publish_pypi='${{ inputs.publish_pypi }}'
-          pypi_repository_url='${{ inputs.pypi_repository_url }}'
+          before_sha='${{ github.event.before }}'
+          commit_sha='${{ github.sha }}'
 
           if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-            echo "autonomous releases must be dispatched from main" >&2
-            exit 1
-          fi
-
-          if [[ "$publish_pypi" != "true" && -n "$pypi_repository_url" ]]; then
-            echo "pypi_repository_url requires publish_pypi=true" >&2
+            echo "autonomous releases must run from main" >&2
             exit 1
           fi
 
           git fetch origin main --depth=1
-          commit_sha="$(git rev-parse HEAD)"
           git merge-base --is-ancestor "$commit_sha" origin/main
 
           cargo_version="$(
@@ -72,6 +55,26 @@ jobs:
           if [[ -z "$cargo_version" ]]; then
             echo "failed to derive workspace version from Cargo.toml" >&2
             exit 1
+          fi
+
+          previous_version=""
+          if [[ "$before_sha" =~ ^0+$ ]]; then
+            previous_version=""
+          elif git rev-parse --verify "${before_sha}^{commit}" >/dev/null 2>&1; then
+            previous_version="$(
+              git show "${before_sha}:Cargo.toml" |
+                sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' |
+                head -n1
+            )"
+          fi
+
+          if [[ "$cargo_version" == "$previous_version" ]]; then
+            {
+              echo "should_release=false"
+              echo "version=v${cargo_version}"
+              echo "commit_sha=$commit_sha"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           version="v${cargo_version}"
@@ -92,6 +95,7 @@ jobs:
           fi
 
           {
+            echo "should_release=true"
             echo "version=$version"
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
@@ -99,6 +103,7 @@ jobs:
   lint:
     name: Lint
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -121,6 +126,7 @@ jobs:
   test:
     name: ${{ matrix.name }}
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     env:
       GH_TOKEN: ${{ github.token }}
@@ -153,12 +159,18 @@ jobs:
       - name: Run CLI smoke tests
         run: cargo test -p soldr-cli --test cli --locked
 
+      - name: Verify Windows defaults to MSVC under Git Bash
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash .github/scripts/windows-msys-default-msvc.sh
+
       - name: Run fetch integration test
         run: cargo test -p soldr-fetch --test fetch_crgx --locked
 
   e2e-linux-x64:
-    name: E2E Linux x64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: ubuntu-24.04
@@ -167,8 +179,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-linux-arm64:
-    name: E2E Linux ARM64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: ubuntu-24.04-arm
@@ -177,8 +190,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-linux-x64-musl:
-    name: E2E Linux x64 musl
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: ubuntu-24.04
@@ -187,8 +201,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-linux-arm64-musl:
-    name: E2E Linux ARM64 musl
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: ubuntu-24.04-arm
@@ -197,8 +212,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-macos-x64:
-    name: E2E macOS x64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: macos-15-intel
@@ -207,8 +223,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-macos-arm64:
-    name: E2E macOS ARM64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: macos-15
@@ -217,8 +234,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-windows-x64:
-    name: E2E Windows x64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-2025
@@ -227,8 +245,9 @@ jobs:
       source_ref: ${{ needs.prepare.outputs.commit_sha }}
 
   e2e-windows-arm64:
-    name: E2E Windows ARM64
+    name: build
     needs: prepare
+    if: needs.prepare.outputs.should_release == 'true'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-11-arm
@@ -250,6 +269,7 @@ jobs:
       - e2e-macos-arm64
       - e2e-windows-x64
       - e2e-windows-arm64
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -326,7 +346,6 @@ jobs:
 
   build-pypi:
     name: PyPI ${{ matrix.name }}
-    if: ${{ inputs.publish_pypi }}
     needs:
       - prepare
       - lint
@@ -339,6 +358,7 @@ jobs:
       - e2e-macos-arm64
       - e2e-windows-x64
       - e2e-windows-arm64
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -403,9 +423,10 @@ jobs:
     if: >-
       ${{
         always() &&
+        needs.prepare.outputs.should_release == 'true' &&
         needs.prepare.result == 'success' &&
         needs.build.result == 'success' &&
-        (needs.build-pypi.result == 'success' || needs.build-pypi.result == 'skipped')
+        needs.build-pypi.result == 'success'
       }}
     needs:
       - prepare
@@ -449,15 +470,7 @@ jobs:
         with:
           subject-checksums: dist/soldr-${{ needs.prepare.outputs.version }}-SHA256SUMS.txt
 
-      - name: Stop after dry run validation
-        if: inputs.dry_run
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "dry run complete: autonomous release build, attestation, and GitHub App authentication all succeeded"
-
       - name: Create draft GitHub Release
-        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         shell: bash
@@ -471,7 +484,6 @@ jobs:
             --title "${{ needs.prepare.outputs.version }}"
 
       - name: Publish GitHub Release
-        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         shell: bash
@@ -483,7 +495,7 @@ jobs:
 
   publish-pypi:
     name: Publish hardened PyPI wheels
-    if: ${{ inputs.publish_pypi && !inputs.dry_run }}
+    if: needs.prepare.outputs.should_release == 'true'
     needs:
       - prepare
       - build-pypi
@@ -505,14 +517,6 @@ jobs:
           ls -1 dist
 
       - name: Publish wheel set to PyPI
-        if: ${{ inputs.pypi_repository_url == '' }}
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
-          packages-dir: dist
-
-      - name: Publish wheel set to alternate index
-        if: ${{ inputs.pypi_repository_url != '' }}
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          repository-url: ${{ inputs.pypi_repository_url }}
           packages-dir: dist

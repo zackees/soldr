@@ -15,7 +15,7 @@ If those settings drift, the workflow may remain correct while the operational r
 The intended release-governance state is:
 
 - release tags are protected by rulesets or an explicit platform constraint is documented
-- the normal release path goes through the validated workflow
+- the normal release path goes through `.github/workflows/release-auto.yml`
 - the `release` environment exists and requires explicit approval
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
@@ -31,7 +31,6 @@ Observed on April 13, 2026 via GitHub API:
 - the release GitHub App is the only bypass actor for that ruleset
 - the `release` environment exists and requires approval from `@zackees`
 - `main` branch protection requires pull requests, conversation resolution, linear history, and the current CI plus per-target e2e checks
-- `release` branch protection requires the same validation gate before promotion
 - immutable GitHub Releases are enabled
 - GitHub Actions requires full-SHA pinning for third-party actions
 - no published GitHub Releases yet
@@ -43,7 +42,6 @@ gh api repos/zackees/soldr/rulesets
 gh api repos/zackees/soldr/rulesets/15033379
 gh api repos/zackees/soldr/environments
 gh api repos/zackees/soldr/branches/main/protection
-gh api repos/zackees/soldr/branches/release/protection
 gh api repos/zackees/soldr/actions/permissions
 gh api repos/zackees/soldr/immutable-releases
 gh api repos/zackees/soldr/releases?per_page=5
@@ -94,23 +92,21 @@ The validated release workflow already targets `environment: release`, so this e
 
 ### 3. Check Branch Protection Or Equivalent Rulesets
 
-Confirm that both `main` and `release` are protected either by branch protection or a ruleset-based equivalent:
+Confirm that `main` is protected either by branch protection or a ruleset-based equivalent:
 
 ```bash
 gh api repos/zackees/soldr/branches/main/protection
-gh api repos/zackees/soldr/branches/release/protection
 ```
 
 What to look for:
 
 - pull requests are required for `main`
-- `release` is also protected and requires the same validation gate
 - the required-check list includes:
   - `Lint`
   - `Linux x64`
   - `macOS x64`
   - `Windows x64`
-  - each per-target bootstrap badge check from `build-*`
+  - each per-target bootstrap badge check emitted from `ci.yml`
 - force pushes and deletions are blocked
 - linear history and conversation resolution are enabled
 

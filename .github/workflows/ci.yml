@@ -1,11 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - main
-    paths-ignore:
-      - README.md
   pull_request:
     paths-ignore:
       - README.md
@@ -73,3 +68,75 @@ jobs:
 
       - name: Run fetch integration test
         run: cargo test -p soldr-fetch --test fetch_crgx --locked
+
+  e2e-linux-x64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-linux-arm64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-gnu
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-linux-x64-musl:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-musl
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-linux-arm64-musl:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-musl
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-macos-x64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: macos-15-intel
+      target: x86_64-apple-darwin
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-macos-arm64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: macos-15
+      target: aarch64-apple-darwin
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
+
+  e2e-windows-x64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: windows-2025
+      target: x86_64-pc-windows-msvc
+      binary_name: soldr.exe
+      source_ref: ${{ github.sha }}
+
+  e2e-windows-arm64:
+    name: build
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: windows-11-arm
+      target: aarch64-pc-windows-msvc
+      binary_name: soldr.exe
+      source_ref: ${{ github.sha }}

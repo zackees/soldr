@@ -2,14 +2,15 @@
 
 This document is the concrete execution list for the first attested secure `soldr 0.5` release.
 
-It assumes the current repository state on April 13, 2026:
+It assumes the current repository state on April 19, 2026:
 
-- the validated release workflow exists in `.github/workflows/release.yml`
-- the workflow requires an exact commit SHA on `release`
+- `.github/workflows/release-auto.yml` is the only release workflow
+- the workflow derives the version directly from `Cargo.toml` on `main`
 - publication uses a dedicated GitHub App
 - `v*.*.*` tags are protected by repository rulesets
 - immutable GitHub Releases are enabled
-- `main` and `release` are protected
+- `main` is protected
+- final publication happens through the `release` environment
 
 ## 1. Freeze The `0.5` Product Surface
 
@@ -40,30 +41,20 @@ Current decisions for `0.5`:
 
 ## 3. Rehearse The Release Path
 
-Before the first public `0.5` tag, run a dry-run rehearsal from `release`.
+Before the first public `0.5` tag, rehearse with a reviewed release-candidate version bump on `main`.
 
 Inputs to choose:
 
-- candidate version such as `v0.5.0-rc1`
-- exact commit SHA on `release`
+- candidate version such as `0.5.0-rc1`
+- the exact PR that bumps `[workspace.package].version`
 
 Required checks:
 
-- the workflow rejects SHAs not reachable from `release`
-- the workflow completes lint, test, packaging, and e2e gates for the exact SHA
-- the `release` environment approval gate triggers as expected
+- the PR passes lint, test, and all supported e2e bootstrap jobs
+- after merge, `release-auto.yml` starts automatically from the `main` push
+- the workflow reaches the `release` environment approval gate
 - the GitHub App token step succeeds
 - checksums and provenance attestation steps succeed
-
-Recommended command path:
-
-```bash
-gh workflow run release.yml \
-  --ref release \
-  -f version=v0.5.0-rc1 \
-  -f commit_sha=<40-char-sha> \
-  -f dry_run=true
-```
 
 ## 4. Verify The Governance Controls Manually
 
@@ -73,7 +64,6 @@ Before the first real release, verify the controls that live outside the git tre
 gh api repos/zackees/soldr/rulesets
 gh api repos/zackees/soldr/environments
 gh api repos/zackees/soldr/branches/main/protection
-gh api repos/zackees/soldr/branches/release/protection
 gh api repos/zackees/soldr/immutable-releases
 ```
 
@@ -82,12 +72,12 @@ Success criteria:
 - the `v*.*.*` tag ruleset is active
 - only the release GitHub App can bypass that ruleset
 - `release` still requires approval from `@zackees`
-- `main` and `release` still require the expected checks
+- `main` still requires the expected checks
 - immutable releases remain enabled
 
 ## 5. Cut A Real Release Candidate
 
-After the dry run passes, create the first real release candidate through the workflow.
+After the rehearsal passes, merge the first real release-candidate version bump.
 
 Recommended first tag:
 
@@ -110,27 +100,9 @@ Required setup:
 - add the GitHub Actions trusted publisher on PyPI for:
   - owner: `zackees`
   - repository: `soldr`
-  - workflow: `.github/workflows/release.yml`
+  - workflow: `.github/workflows/release-auto.yml`
   - environment: `release`
 - confirm the existing `soldr` PyPI project is the correct project and that stale pre-Trusted-Publishing metadata will be superseded by the next upload
-
-Recommended rehearsal:
-
-- use TestPyPI first with the same workflow and `publish_pypi=true`
-- pass `pypi_repository_url=https://test.pypi.org/legacy/`
-- treat this as a real publish rehearsal, not a `dry_run`, because OIDC publish cannot be fully exercised in the workflow's dry-run path
-
-Recommended command path:
-
-```bash
-gh workflow run release.yml \
-  --ref release \
-  -f version=v0.5.0-rc1 \
-  -f commit_sha=<40-char-sha> \
-  -f dry_run=false \
-  -f publish_pypi=true \
-  -f pypi_repository_url=https://test.pypi.org/legacy/
-```
 
 Recommended GitHub-release verification commands:
 
@@ -138,7 +110,7 @@ Recommended GitHub-release verification commands:
 gh release view v0.5.0-rc1 --repo zackees/soldr
 gh attestation verify soldr-v0.5.0-rc1-x86_64-unknown-linux-gnu.tar.gz \
   --repo zackees/soldr \
-  --signer-workflow zackees/soldr/.github/workflows/release.yml
+  --signer-workflow zackees/soldr/.github/workflows/release-auto.yml
 ```
 
 ## 7. Audit The First Published Release
@@ -162,10 +134,10 @@ Anything discovered during the RC must become either:
 Ship `v0.5.0` only when all of these are true:
 
 - the intended `0.5` CLI surface is clearly scoped and honestly documented
-- the release workflow has passed in dry-run and real-release modes
+- the release workflow has passed from a reviewed version-bump merge
 - the first RC was verified with checksums and attestations
 - the protected-tag and immutable-release controls behaved as expected
-- if PyPI is in scope, Trusted Publishing was exercised successfully against TestPyPI or PyPI with the hardened wheel set
+- if PyPI is in scope, Trusted Publishing was exercised successfully with the hardened wheel set
 - the remaining policy questions are closed or explicitly deferred in writing
 
 ## 9. Gate `1.0.0-rc`

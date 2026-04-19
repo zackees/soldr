@@ -21,10 +21,11 @@ Those positions are deliberate. They may be revisited later, but they are the cu
 
 For a normal `soldr` release:
 
-- the release workflow is started manually with an explicit version and exact commit SHA
-- that exact commit must be reachable from the protected `release` branch
+- a reviewed version bump is merged to protected `main`
+- `.github/workflows/release-auto.yml` derives the tag directly from `Cargo.toml` at that merged commit
 - the workflow re-runs lint, workspace build, tests, integration, and all supported e2e bootstrap jobs for that exact commit
 - release archives are built from that exact commit
+- final publication happens in the `release` environment
 - the version tag is protected by repository rulesets and created through the release workflow path
 - the published GitHub Release is immutable once published
 - a SHA-256 checksum manifest is published with the release assets
@@ -89,7 +90,7 @@ For stricter identity validation, also pin the signer workflow:
 ```bash
 gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz \
   --repo zackees/soldr \
-  --signer-workflow zackees/soldr/.github/workflows/release.yml
+  --signer-workflow zackees/soldr/.github/workflows/release-auto.yml
 ```
 
 This validates that GitHub has a matching attestation for the artifact and that the attestation was produced by the expected repository and workflow.
