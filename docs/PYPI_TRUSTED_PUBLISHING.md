@@ -30,6 +30,15 @@ For `soldr`, the intended trusted identity is:
 
 Using the existing `release` environment keeps the PyPI publish step behind the same manual approval gate as the immutable GitHub release path.
 
+The unattended path in `.github/workflows/release-auto.yml` is a second trusted identity:
+
+- owner: `zackees`
+- repository: `soldr`
+- workflow: `.github/workflows/release-auto.yml`
+- environment: leave blank
+
+That second publisher is required if autonomous releases should also publish to PyPI, because PyPI binds Trusted Publishers to a specific workflow filename.
+
 ## Owner Setup On PyPI
 
 These steps must be performed in the PyPI web UI by a maintainer of the `soldr` project.
@@ -44,6 +53,13 @@ These steps must be performed in the PyPI web UI by a maintainer of the `soldr` 
    - environment name: `release`
 
 The environment field is optional in PyPI, but it should be filled in here because the repo already uses `release` as the human approval boundary.
+
+If autonomous releases are enabled, add a second publisher with:
+
+- repository owner: `zackees`
+- repository name: `soldr`
+- workflow filename: `.github/workflows/release-auto.yml`
+- environment name: leave empty
 
 ## Repo-Side Workflow Inputs
 
@@ -62,6 +78,20 @@ If `publish_pypi=true`, the workflow:
 4. Publishes the wheel set to PyPI from a dedicated Linux job with `id-token: write`.
 
 No source distribution is published in this path. The current design is wheel-only because the project is prioritizing hardened binary distribution rather than source release through package registries.
+
+The unattended workflow supports the same release surfaces but derives the version from `Cargo.toml` and the target commit from the `main` branch head:
+
+```bash
+gh workflow run release-auto.yml --ref main
+```
+
+Dry-run rehearsal remains available:
+
+```bash
+gh workflow run release-auto.yml \
+  --ref main \
+  -f dry_run=true
+```
 
 ## Recommended Rehearsal
 

@@ -56,6 +56,21 @@ The strongest GitHub-native model for this repository is:
 
 The GitHub App is the machine identity that performs the irreversible tag-creation step.
 
+## Autonomous Publish Model
+
+If the repository decides that a future agent should be able to cut a release without waiting for the owner, use `.github/workflows/release-auto.yml`.
+
+That workflow intentionally changes the authorization model:
+
+1. An agent dispatches the workflow from the protected `main` branch.
+2. The workflow derives `vX.Y.Z` directly from `Cargo.toml`.
+3. The workflow validates the `main` branch head instead of asking the caller for a commit SHA.
+4. The workflow reruns the same lint, test, packaging, and e2e gate.
+5. The workflow uses the release GitHub App to mint the protected tag and GitHub Release.
+6. The workflow optionally publishes the hardened wheel set to PyPI without a manual environment stop.
+
+This is weaker than the maximum-security owner-approved model because it removes the `release` environment approval boundary. It exists specifically for unattended publication, not because it is equivalent to the stronger trust model above.
+
 ## Why A GitHub App Is Needed
 
 On this personal repository, GitHub would not let the built-in `github-actions` integration be used as the bypass actor for a release-tag ruleset.
@@ -168,7 +183,8 @@ If a future agent is asked to audit or extend the release flow, the agent should
 4. Confirm whether `release` still exists and is protected.
 5. Confirm whether a tag ruleset still protects `v*.*.*` and only the App may bypass it.
 6. Check issues `#12` and `#13` for the remaining `0.5` policy decisions.
-7. Only then modify `.github/workflows/release.yml` or the verification docs.
+7. Decide whether the task wants the owner-approved path in `.github/workflows/release.yml` or the unattended path in `.github/workflows/release-auto.yml`.
+8. Only then modify the relevant workflow or the verification docs.
 
 If the live GitHub-side controls drift from the documented trust model, the agent should stop and report the drift instead of assuming the release posture is still intact.
 

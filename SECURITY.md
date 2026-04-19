@@ -28,6 +28,7 @@ The repository currently enforces several baseline controls:
 - Third-party GitHub Actions in the repository workflows are pinned to full commit SHAs.
 - The e2e third-party source input is pinned to an exact Git commit in the workflow inputs.
 - Releases are promoted by `workflow_dispatch` for an exact commit SHA instead of publishing immediately on tag push.
+- An unattended `workflow_dispatch` path now exists in `.github/workflows/release-auto.yml` for agents that should release the `main` branch head without manual input selection.
 - Release assets are attested in GitHub Actions before publication.
 - Release publication uses a dedicated GitHub App instead of `GITHUB_TOKEN` or a PAT.
 - Release tags matching `v*.*.*` are protected by a repository ruleset.
@@ -76,6 +77,7 @@ When a pinned dependency, action, or external input is updated, the change shoul
 Current state:
 
 - releases are validated in GitHub Actions from an exact commit SHA
+- unattended releases can also be promoted from the protected `main` branch head by `.github/workflows/release-auto.yml`, which derives the version from `Cargo.toml`
 - the release workflow re-runs lint, build, test, integration, and e2e checks before publishing
 - the release commit must be reachable from the protected `release` branch
 - release tags are created through a GitHub App-backed workflow path
@@ -84,6 +86,12 @@ Current state:
 - the release workflow can also build hardened PyPI wheels, but enabling PyPI upload still requires Trusted Publisher registration on the existing `soldr` PyPI project
 - immutable releases and protected tag settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
+
+Autonomous-release tradeoff:
+
+- `.github/workflows/release-auto.yml` keeps the GitHub App tag-creation path, pinned actions, full validation gate, checksums, and attestations
+- `.github/workflows/release-auto.yml` intentionally omits the `release` environment approval gate so an agent can publish without waiting for a human
+- `.github/workflows/release.yml` remains the stronger owner-approved path when that manual authorization boundary matters more than autonomy
 
 Current verification policy:
 
