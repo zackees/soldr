@@ -201,7 +201,7 @@ Example:
 {
   "schema_version": 1,
   "command": "version",
-  "soldr_version": "0.7.0"
+  "soldr_version": "0.7.1"
 }
 ```
 
@@ -231,6 +231,7 @@ Commands:
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
+| `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable wrapper injection with `none` / empty | unset |
 | `SOLDR_ZCCACHE_BIN` | Managed zccache binary path passed from soldr front door into wrapper mode | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
@@ -238,6 +239,7 @@ Commands:
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
 
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow.
+When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of its managed zccache. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
 
 ---
 

@@ -55,6 +55,8 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 soldr cargo build --release
 soldr cargo test
 soldr --no-cache cargo test
+SOLDR_RUSTC_WRAPPER=sccache soldr cargo build
+SOLDR_RUSTC_WRAPPER=none soldr cargo build
 
 # Fetch and run any Rust tool instantly:
 soldr maturin build --release
