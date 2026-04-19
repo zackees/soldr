@@ -26,7 +26,7 @@ The repository currently enforces several baseline controls:
 - CI now enforces `cargo fmt --check` and `cargo clippy -D warnings`.
 - No Cargo `git` dependencies are currently used; dependencies resolve from crates.io.
 - Third-party GitHub Actions in the repository workflows are pinned to full commit SHAs.
-- The e2e third-party source input is pinned to an exact Git commit in the workflow inputs.
+- The e2e bootstrap fixture input is pinned to an exact Git commit in the workflow inputs.
 - Releases are promoted from reviewed version bumps on `main` through `.github/workflows/release-auto.yml`.
 - Release assets are attested in GitHub Actions before publication.
 - Release publication uses a dedicated GitHub App instead of `GITHUB_TOKEN` or a PAT.
@@ -66,7 +66,7 @@ Security-relevant versioning and pinning should follow these rules:
 
 - Cargo dependency changes must update `Cargo.lock`.
 - Workflow action upgrades should be explicit pull requests that update SHAs, not floating major tags.
-- Third-party test inputs should remain pinned to exact commits.
+- Bootstrap fixture inputs should remain pinned to exact commits.
 - Release toolchain changes should be explicit and reviewed.
 
 When a pinned dependency, action, or external input is updated, the change should be visible in git history and reviewed like code.
@@ -105,7 +105,7 @@ Hermeticity and runtime-trust policy (final for `0.5`):
 
 - `0.5.x` release verification covers published `soldr` artifacts, not every external input used during CI
 - `0.5.x` does not claim hermetic builds; documented dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt`, and the pinned bootstrap test repository are accepted as the final input set for this line
-- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are explicitly out of scope for `0.5`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
+- Cargo vendoring, toolchain mirroring, OS-package mirroring, and bootstrap fixture source mirroring are explicitly out of scope for `0.5`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
 - SBOMs are not required for `0.5`; GitHub provenance attestations plus `SHA256SUMS` are the verification story
 - reproducible-build claims are not made for `0.5`
 - runtime third-party binary trust is enforced as of `0.6.x` via SHA-256 pinning and `SOLDR_TRUST_MODE=strict` (originally tracked in [#42](https://github.com/zackees/soldr/issues/42), closed)

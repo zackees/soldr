@@ -18,15 +18,19 @@ on:
       third_party_repo:
         required: false
         type: string
-        default: "zackees/running-process"
+        default: "zackees/soldr"
       third_party_ref:
         required: false
         type: string
-        default: "b4e005318ce320bcbd652df3aa8381f4ab95fea7"
+        default: "0c8daefe4a4ac526b491fade590b32636340dce1"
       third_party_path:
         required: false
         type: string
-        default: "third_party/running-process"
+        default: "third_party/bootstrap-fixture"
+      third_party_build_dir:
+        required: false
+        type: string
+        default: "crates/soldr-cli/tests/fixtures/windows-msvc-default"
 
 permissions:
   contents: read
@@ -89,7 +93,7 @@ jobs:
         with:
           workspaces: |
             soldr -> target
-            ${{ inputs.third_party_path }} -> target
+            ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }} -> target
 
       - name: Build soldr-cli
         shell: pwsh
@@ -101,11 +105,23 @@ jobs:
         id: third_party_toolchain
         shell: pwsh
         run: |
-          $toolchainFile = Join-Path $env:GITHUB_WORKSPACE "${{ inputs.third_party_path }}/rust-toolchain.toml"
+          $checkoutRoot = Join-Path $env:GITHUB_WORKSPACE "${{ inputs.third_party_path }}"
+          $candidateFiles = @(
+            (Join-Path $checkoutRoot "${{ inputs.third_party_build_dir }}/rust-toolchain.toml"),
+            (Join-Path $checkoutRoot "rust-toolchain.toml")
+          )
+
+          $toolchainFile = $candidateFiles | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $toolchainFile) {
+            "channel=repo-default" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+
           $channelLine = Select-String -Path $toolchainFile -Pattern '^channel = "(.*)"$' | Select-Object -First 1
           if (-not $channelLine) {
             throw "failed to resolve third-party Rust toolchain from $toolchainFile"
           }
+
           $channel = $channelLine.Matches[0].Groups[1].Value
           rustup toolchain install $channel --profile minimal
           rustup target add --toolchain $channel "${{ inputs.target }}"
@@ -125,7 +141,7 @@ jobs:
 
       - name: Build third-party app through soldr
         shell: pwsh
-        working-directory: ${{ inputs.third_party_path }}
+        working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
         run: |
           & "${{ steps.soldr_binary.outputs.path }}" cargo build --locked --target "${{ inputs.target }}"
 

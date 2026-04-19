@@ -12,7 +12,7 @@ The repository directly controls:
 - the Cargo dependency graph recorded in `Cargo.lock`
 - the workflow definitions committed in `.github/workflows/`
 - the action revisions pinned by full commit SHA in those workflows
-- the exact third-party Git commit used by the current bootstrap e2e workflow
+- the exact pinned fixture commit used by the current bootstrap e2e workflow
 
 ## Release-Time External Dependencies
 
@@ -38,7 +38,7 @@ Based on the committed release workflow in `.github/workflows/release-auto.yml`:
 - the published `soldr` release archives are built from the repository source tree plus Rust dependencies resolved through Cargo
 - the workflow does not explicitly download and repackage third-party release binaries into the published `soldr` archives
 - the release path still depends on external services and package sources such as GitHub-hosted runners, `rustup`, crates.io, and GitHub APIs
-- the live `apt` install and pinned third-party repository checkout are part of release-gating validation, not packaged release contents
+- the live `apt` install and pinned bootstrap fixture checkout are part of release-gating validation, not packaged release contents
 - the managed `zccache` download path is runtime behavior in `soldr`, not an input to building the published `soldr` release artifacts
 
 ## E2E Validation External Dependencies
@@ -48,8 +48,8 @@ The bootstrap e2e jobs currently trust additional external systems:
 - Ubuntu package repositories
   - musl validation jobs install `musl-tools` from live `apt` repositories
   - the install command uses `--no-install-recommends`, a retry loop, and logs the resolved `musl-tools` version for auditability; the set of installed packages is therefore the declared set, not an open-ended recommended expansion
-- third-party source repository hosting
-  - the e2e workflow checks out a pinned commit of `zackees/running-process` from GitHub
+- GitHub repository hosting for the bootstrap fixture
+  - the e2e workflow checks out a pinned commit of `zackees/soldr` and builds `crates/soldr-cli/tests/fixtures/windows-msvc-default`
 - third-party Rust toolchain installation
   - the e2e workflow reads the third-party project's `rust-toolchain.toml` and installs that toolchain through `rustup`
 
@@ -67,7 +67,7 @@ Explicitly out of scope for `0.5.x` (not planned; any revisit is scoped to a fut
 
 - a `cargo vendor` or mirrored-registry strategy for crates.io resolution during release
 - a mirrored or prebuilt-image strategy for Rust toolchain acquisition during release
-- a mirror for the pinned third-party bootstrap repository checkout
+- a mirror for the pinned bootstrap fixture checkout
 - replacement of the live `apt` repository with a prebuilt image or pinned-package snapshot
 
 The attested release artifact - built from the reviewed `main` commit that bumped the workspace version, published through the `release` environment, with GitHub build-provenance attestation and a `SHA256SUMS` manifest - is the user-facing trust guarantee for `0.5.x`. Narrowing the live CI input surface below that attestation-based guarantee is not a project goal on this line.
@@ -110,9 +110,9 @@ Current repo policy is:
 - treat floating workflow refs as unacceptable
 - prefer exact commit or version selection where possible
 - `0.5.x` does not claim hermetic builds
-- the documented release-time dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt` in the bootstrap e2e path, and the pinned third-party bootstrap repository are acceptable for `0.5.x`
-- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are explicitly out of scope for `0.5.x`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
-- the pinned third-party bootstrap checkout is acceptable for current validation, but it must not be described as mirrored or hermetic
+- the documented release-time dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt` in the bootstrap e2e path, and the pinned bootstrap fixture checkout are acceptable for `0.5.x`
+- Cargo vendoring, toolchain mirroring, OS-package mirroring, and bootstrap fixture source mirroring are explicitly out of scope for `0.5.x`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
+- the pinned bootstrap fixture checkout is acceptable for current validation, but it must not be described as mirrored or hermetic
 - release verification for `soldr` covers the published `soldr` artifacts and their provenance, not every external input used during CI
 
 ## Current Runtime Fetch Policy
