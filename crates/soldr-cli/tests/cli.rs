@@ -177,6 +177,34 @@ fn fake_zccache_script(log_path: &Path) -> String {
     }
 }
 
+fn fake_custom_wrapper_script(log_path: &Path, wrapper_name: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"rustc=%~1\"\n\
+             shift\n\
+             echo {1} wrapper %rustc% %*>>\"{0}\"\n\
+             call \"%rustc%\" %*\n\
+             exit /b %ERRORLEVEL%\n",
+            log_path.display(),
+            wrapper_name
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             rustc=\"$1\"\n\
+             shift\n\
+             echo \"{1} wrapper $rustc $*\" >> \"{0}\"\n\
+             \"$rustc\" \"$@\"\n",
+            log_path.display(),
+            wrapper_name
+        )
+    }
+}
+
 fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let dir = unique_temp_dir("fake-toolchain");
     let cargo = fake_script_path(&dir, "cargo");
@@ -186,6 +214,16 @@ fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     write_fake_script(&rustc, &fake_rustc_script(log_path));
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (cargo, rustc, zccache)
+}
+
+fn install_fake_wrapper(log_path: &Path, wrapper_name: &str) -> PathBuf {
+    let dir = unique_temp_dir("fake-wrapper");
+    let wrapper = fake_script_path(&dir, wrapper_name);
+    write_fake_script(
+        &wrapper,
+        &fake_custom_wrapper_script(log_path, wrapper_name),
+    );
+    wrapper
 }
 
 #[test]
@@ -380,6 +418,97 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
+    let cache_root = unique_temp_dir("cargo-custom-wrapper");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let wrapper = install_fake_wrapper(&log_path, "sccache");
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_RUSTC_WRAPPER", &wrapper)
+        .output()
+        .expect("failed to run soldr cargo build with custom rustc wrapper");
+
+    assert!(
+        output.status.success(),
+        "custom-wrapper front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains(&format!("cargo wrapper={}", wrapper.display())),
+        "cargo should receive the custom wrapper path: {log}"
+    );
+    assert!(
+        log.contains("sccache wrapper"),
+        "custom wrapper should be invoked for rustc: {log}"
+    );
+    assert!(
+        !log.contains(env!("CARGO_BIN_EXE_soldr")),
+        "soldr should not stay in the wrapper slot when overridden: {log}"
+    );
+    assert!(
+        !log.contains("zccache start")
+            && !log.contains("zccache session-start")
+            && !log.contains("zccache wrapper")
+            && !log.contains("zccache session-end"),
+        "managed zccache should be skipped when using a custom wrapper: {log}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("soldr: zccache session summary"),
+        "custom wrapper path should not emit zccache session output: {stderr}"
+    );
+}
+
+#[test]
+fn empty_rustc_wrapper_override_disables_wrapper_injection() {
+    let cache_root = unique_temp_dir("cargo-wrapper-disabled");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_RUSTC_WRAPPER", "")
+        .output()
+        .expect("failed to run soldr cargo build with wrapper disabled");
+
+    assert!(
+        output.status.success(),
+        "wrapper-disabled front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo wrapper= rustc="),
+        "cargo should not receive a wrapper when override is empty: {log}"
+    );
+    assert!(
+        !log.contains("zccache start")
+            && !log.contains("zccache session-start")
+            && !log.contains("zccache wrapper")
+            && !log.contains("zccache session-end"),
+        "managed zccache should be skipped when wrapper injection is disabled: {log}"
+    );
+    assert!(
+        log.contains("rustc ") && log.contains("--crate-name demo"),
+        "rustc should still run directly when wrapper injection is disabled: {log}"
     );
 }
 
