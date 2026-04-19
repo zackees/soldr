@@ -1,0 +1,20 @@
+name: Build macOS ARM64
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - README.md
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: macos-15
+      target: aarch64-apple-darwin
+      binary_name: soldr
+      source_ref: ${{ github.sha }}

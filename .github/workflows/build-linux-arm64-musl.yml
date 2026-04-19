@@ -1,0 +1,20 @@
+name: Build Linux ARM64 musl
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - README.md
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-musl
+      binary_name: soldr
+      source_ref: ${{ github.sha }}
