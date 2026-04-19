@@ -30,14 +30,14 @@ For `soldr`, the intended trusted identity is:
 
 Using the existing `release` environment keeps the PyPI publish step behind the same manual approval gate as the immutable GitHub release path.
 
-The unattended path in `.github/workflows/release-auto.yml` is a second trusted identity:
+The main-driven path in `.github/workflows/release-auto.yml` is a second trusted identity:
 
 - owner: `zackees`
 - repository: `soldr`
 - workflow: `.github/workflows/release-auto.yml`
-- environment: leave blank
+- environment: `release`
 
-That second publisher is required if autonomous releases should also publish to PyPI, because PyPI binds Trusted Publishers to a specific workflow filename.
+That second publisher is required if `release-auto.yml` should also publish to PyPI, because PyPI binds Trusted Publishers to a specific workflow filename.
 
 ## Owner Setup On PyPI
 
@@ -59,7 +59,7 @@ If autonomous releases are enabled, add a second publisher with:
 - repository owner: `zackees`
 - repository name: `soldr`
 - workflow filename: `.github/workflows/release-auto.yml`
-- environment name: leave empty
+- environment name: `release`
 
 ## Repo-Side Workflow Inputs
 
@@ -68,7 +68,7 @@ The release workflow supports these PyPI-related inputs:
 - `publish_pypi=true`
 - `pypi_repository_url=...` for alternate endpoints such as TestPyPI
 
-If `publish_pypi=false`, the workflow keeps its GitHub-release-only behavior.
+The validated `release.yml` workflow now defaults `publish_pypi` to `true`. Set `publish_pypi=false` only when a GitHub-release-only run is intentional.
 
 If `publish_pypi=true`, the workflow:
 
@@ -79,7 +79,7 @@ If `publish_pypi=true`, the workflow:
 
 No source distribution is published in this path. The current design is wheel-only because the project is prioritizing hardened binary distribution rather than source release through package registries.
 
-The unattended workflow supports the same release surfaces but derives the version from `Cargo.toml` and the target commit from the `main` branch head:
+The `release-auto.yml` workflow supports the same release surfaces but derives the version from `Cargo.toml` and the target commit from the `main` branch head, then enters the `release` environment for final publication:
 
 ```bash
 gh workflow run release-auto.yml --ref main

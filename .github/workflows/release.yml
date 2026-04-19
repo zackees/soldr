@@ -19,7 +19,7 @@ on:
       publish_pypi:
         description: Build hardened wheel artifacts and publish them to PyPI via Trusted Publishing
         required: false
-        default: false
+        default: true
         type: boolean
       pypi_repository_url:
         description: Optional alternate upload endpoint such as https://test.pypi.org/legacy/
