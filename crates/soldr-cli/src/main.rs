@@ -7,6 +7,7 @@ const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
+const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -459,7 +460,7 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     }
 
     let session = if cache_enabled {
-        Some(prepare_zccache_build(&mut command, &paths).await?)
+        prepare_rustc_wrapper(&mut command, &paths).await?
     } else {
         None
     };
@@ -609,6 +610,54 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
 struct ZccacheBuildSession {
     binary_path: std::path::PathBuf,
     session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RustcWrapperMode {
+    ManagedZccache,
+    Custom(std::ffi::OsString),
+    Disabled,
+}
+
+fn rustc_wrapper_mode_from_env_var(value: Option<&std::ffi::OsStr>) -> RustcWrapperMode {
+    match value.and_then(std::ffi::OsStr::to_str) {
+        None => value
+            .map(|value| RustcWrapperMode::Custom(value.to_os_string()))
+            .unwrap_or(RustcWrapperMode::ManagedZccache),
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                RustcWrapperMode::Disabled
+            } else {
+                RustcWrapperMode::Custom(trimmed.into())
+            }
+        }
+    }
+}
+
+fn rustc_wrapper_mode() -> RustcWrapperMode {
+    rustc_wrapper_mode_from_env_var(std::env::var_os(RUSTC_WRAPPER_OVERRIDE_ENV_VAR).as_deref())
+}
+
+async fn prepare_rustc_wrapper(
+    cargo: &mut std::process::Command,
+    paths: &SoldrPaths,
+) -> Result<Option<ZccacheBuildSession>, SoldrError> {
+    match rustc_wrapper_mode() {
+        RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths).await.map(Some),
+        RustcWrapperMode::Custom(wrapper) => {
+            cargo.env("RUSTC_WRAPPER", wrapper);
+            cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
+            Ok(None)
+        }
+        RustcWrapperMode::Disabled => {
+            cargo.env_remove("RUSTC_WRAPPER");
+            cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
+            Ok(None)
+        }
+    }
 }
 
 async fn prepare_zccache_build(
@@ -936,9 +985,11 @@ fn cached_managed_zccache(
 mod tests {
     use super::{
         cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
-        first_cargo_subcommand, normalize_version, parse_tool_spec, should_trampoline,
+        first_cargo_subcommand, normalize_version, parse_tool_spec,
+        rustc_wrapper_mode_from_env_var, should_trampoline, RustcWrapperMode,
     };
     use soldr_fetch::VersionSpec;
+    use std::ffi::OsStr;
 
     #[test]
     fn cargo_args_detect_explicit_target_flag() {
@@ -974,6 +1025,33 @@ mod tests {
             "--".into(),
             "--no-cache".into(),
         ]));
+    }
+
+    #[test]
+    fn rustc_wrapper_override_defaults_to_managed_zccache() {
+        assert_eq!(
+            rustc_wrapper_mode_from_env_var(None),
+            RustcWrapperMode::ManagedZccache
+        );
+    }
+
+    #[test]
+    fn rustc_wrapper_override_disables_wrapper_for_empty_or_none() {
+        for value in ["", " ", "none", "NONE"] {
+            assert_eq!(
+                rustc_wrapper_mode_from_env_var(Some(OsStr::new(value))),
+                RustcWrapperMode::Disabled,
+                "expected {value:?} to disable wrapper injection"
+            );
+        }
+    }
+
+    #[test]
+    fn rustc_wrapper_override_uses_custom_wrapper_name() {
+        assert_eq!(
+            rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
+            RustcWrapperMode::Custom("sccache".into())
+        );
     }
 
     #[test]

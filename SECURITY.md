@@ -94,22 +94,14 @@ Current verification policy:
 - reproducible-build claims are not currently made for `soldr`
 - no extra signed release metadata is currently published beyond `SHA256SUMS` and GitHub provenance attestations
 
-Current hermeticity and runtime-trust policy:
+Hermeticity and runtime-trust policy (final for `0.5`):
 
 - `0.5.x` release verification covers published `soldr` artifacts, not every external input used during CI
-- `0.5.x` does not claim hermetic builds; documented dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt`, and the pinned bootstrap test repository remain acceptable for this release line
-- Cargo/toolchain/package mirroring or vendoring is deferred hardening tracked in issue [#41](https://github.com/zackees/soldr/issues/41)
-- runtime third-party binary fetches are a convenience/bootstrap path on `0.5.x`, not a repository-side trust guarantee
-- stronger trust enforcement for fetched binaries is tracked in issue [#42](https://github.com/zackees/soldr/issues/42)
-
-Planned state, tracked in issue `#7`:
-
-Remaining follow-up decisions before the attested secure `0.5` release, tracked in issues `#12` and `#13`:
-
-- whether `0.5` should publish SBOMs in addition to provenance attestations
-- whether `0.5` should claim reproducible builds and how that would be validated
-- whether release-time dependencies should be vendored or mirrored
-- what trust policy should apply to third-party binaries fetched by `soldr` at runtime
+- `0.5.x` does not claim hermetic builds; documented dependencies on GitHub-hosted runners, `rustup`, crates.io, GitHub APIs/Releases, live `apt`, and the pinned bootstrap test repository are accepted as the final input set for this line
+- Cargo vendoring, toolchain mirroring, OS-package mirroring, and third-party bootstrap source mirroring are explicitly out of scope for `0.5`; any revisit is scoped to a future `1.0.0-rc` hardening milestone
+- SBOMs are not required for `0.5`; GitHub provenance attestations plus `SHA256SUMS` are the verification story
+- reproducible-build claims are not made for `0.5`
+- runtime third-party binary trust is enforced as of `0.6.x` via SHA-256 pinning and `SOLDR_TRUST_MODE=strict` (originally tracked in [#42](https://github.com/zackees/soldr/issues/42), closed)
 
 `1.0.0-rc` remains gated on actual compilation-cache integration rather than release hardening alone.
 
