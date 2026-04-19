@@ -126,6 +126,7 @@ Built on lessons from:
 - [SECURITY.md](./SECURITY.md) describes the current hardening posture and release policy.
 - [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md) defines the supported machine-facing integration boundary.
 - [docs/PYPI_TRUSTED_PUBLISHING.md](./docs/PYPI_TRUSTED_PUBLISHING.md) describes the optional Trusted Publishing path for hardened PyPI wheels.
+- [`.github/workflows/release-auto.yml`](./.github/workflows/release-auto.yml) is the unattended release path for agents: it derives the version from `Cargo.toml` at the `main` branch head and publishes without the manual `release` environment stop.
 - [RELEASE.md](./RELEASE.md) documents the intended maximum-security release setup and owner workflow.
 - [docs/RELEASE_VERIFICATION.md](./docs/RELEASE_VERIFICATION.md) explains how to verify published release artifacts.
 - [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md) inventories the external systems and artifacts `soldr` currently trusts, including the current `0.5.x` limits of runtime fetched-binary trust.
