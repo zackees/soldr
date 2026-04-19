@@ -1,0 +1,20 @@
+name: Build Windows ARM64
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - README.md
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/_bootstrap-e2e.yml
+    with:
+      runner: windows-11-arm
+      target: aarch64-pc-windows-msvc
+      binary_name: soldr.exe
+      source_ref: ${{ github.sha }}
