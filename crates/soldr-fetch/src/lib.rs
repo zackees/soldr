@@ -46,7 +46,11 @@ pub struct FetchResult {
 }
 
 pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.15";
-const MANAGED_ZCCACHE_CRATE: &str = "zccache-cli";
+const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
+    ("zccache-cli", "zccache"),
+    ("zccache-daemon", "zccache-daemon"),
+    ("zccache-fingerprint", "zccache-fp"),
+];
 
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
@@ -96,7 +100,7 @@ pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
     let target = TargetTriple::detect()?;
-    let binary_names = ["zccache"];
+    let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
 
     if let Some(result) = check_cache(
         paths,
@@ -123,7 +127,7 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         paths,
         "zccache",
         MANAGED_ZCCACHE_VERSION,
-        &["zccache"],
+        &["zccache", "zccache-daemon", "zccache-fp"],
         &target,
     )
 }
@@ -137,50 +141,57 @@ fn install_zccache_from_crates_io(
     std::fs::create_dir_all(&tool_dir)?;
 
     let install_root = tempfile::tempdir_in(&paths.bin)?;
-    let install_status = std::process::Command::new("cargo")
-        .args([
-            "install",
-            MANAGED_ZCCACHE_CRATE,
-            "--version",
-            version,
-            "--locked",
-            "--root",
-        ])
-        .arg(install_root.path())
-        .args(["--bin", "zccache", "--force"])
-        .status()
-        .map_err(|e| {
-            SoldrError::Other(format!(
-                "failed to invoke cargo install for managed zccache: {e}"
-            ))
-        })?;
+    for (package_name, binary_name) in MANAGED_ZCCACHE_PACKAGES {
+        let install_status = std::process::Command::new("cargo")
+            .args([
+                "install",
+                package_name,
+                "--version",
+                version,
+                "--locked",
+                "--root",
+            ])
+            .arg(install_root.path())
+            .args(["--bin", binary_name, "--force"])
+            .status()
+            .map_err(|e| {
+                SoldrError::Other(format!(
+                    "failed to invoke cargo install for managed zccache package {package_name}: {e}"
+                ))
+            })?;
 
-    if !install_status.success() {
-        return Err(SoldrError::Other(format!(
-            "cargo install {MANAGED_ZCCACHE_CRATE} {version} failed with status {install_status}"
-        )));
-    }
+        if !install_status.success() {
+            return Err(SoldrError::Other(format!(
+                "cargo install {package_name} {version} failed with status {install_status}"
+            )));
+        }
 
-    let installed_binary = install_root
-        .path()
-        .join("bin")
-        .join(format!("zccache{}", target.binary_ext()));
-    if !installed_binary.exists() {
-        return Err(SoldrError::Other(format!(
-            "cargo install did not produce {}",
-            installed_binary.display()
-        )));
+        let installed_binary = install_root
+            .path()
+            .join("bin")
+            .join(format!("{binary_name}{}", target.binary_ext()));
+        if !installed_binary.exists() {
+            return Err(SoldrError::Other(format!(
+                "cargo install did not produce {}",
+                installed_binary.display()
+            )));
+        }
+
+        let cached_binary = tool_dir.join(format!("{binary_name}{}", target.binary_ext()));
+        std::fs::copy(&installed_binary, &cached_binary)?;
     }
 
     let cached_binary = tool_dir.join(format!("zccache{}", target.binary_ext()));
-    std::fs::copy(&installed_binary, &cached_binary)?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&cached_binary)?.permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&cached_binary, perms)?;
+        for (_, binary_name) in MANAGED_ZCCACHE_PACKAGES {
+            let cached_binary = tool_dir.join(format!("{binary_name}{}", target.binary_ext()));
+            let mut perms = std::fs::metadata(&cached_binary)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&cached_binary, perms)?;
+        }
     }
 
     Ok(cached_binary)
