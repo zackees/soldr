@@ -45,7 +45,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.8";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.14";
 
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
