@@ -45,7 +45,8 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.14";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.2.15";
+const MANAGED_ZCCACHE_CRATE: &str = "zccache-cli";
 
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
@@ -95,7 +96,7 @@ pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
     let target = TargetTriple::detect()?;
-    let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
+    let binary_names = ["zccache"];
 
     if let Some(result) = check_cache(
         paths,
@@ -107,16 +108,7 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
         return Ok(result);
     }
 
-    let download_url = managed_zccache_download_url(MANAGED_ZCCACHE_VERSION, &target);
-    let binary_path = download_and_extract(
-        paths,
-        "zccache",
-        MANAGED_ZCCACHE_VERSION,
-        &download_url,
-        &target,
-        &binary_names,
-    )
-    .await?;
+    let binary_path = install_zccache_from_crates_io(paths, MANAGED_ZCCACHE_VERSION, &target)?;
 
     Ok(FetchResult {
         binary_path,
@@ -131,9 +123,67 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         paths,
         "zccache",
         MANAGED_ZCCACHE_VERSION,
-        &["zccache", "zccache-daemon", "zccache-fp"],
+        &["zccache"],
         &target,
     )
+}
+
+fn install_zccache_from_crates_io(
+    paths: &SoldrPaths,
+    version: &str,
+    target: &TargetTriple,
+) -> Result<PathBuf, SoldrError> {
+    let tool_dir = paths.bin.join(format!("zccache-{version}"));
+    std::fs::create_dir_all(&tool_dir)?;
+
+    let install_root = tempfile::tempdir_in(&paths.bin)?;
+    let install_status = std::process::Command::new("cargo")
+        .args([
+            "install",
+            MANAGED_ZCCACHE_CRATE,
+            "--version",
+            version,
+            "--locked",
+            "--root",
+        ])
+        .arg(install_root.path())
+        .args(["--bin", "zccache", "--force"])
+        .status()
+        .map_err(|e| {
+            SoldrError::Other(format!(
+                "failed to invoke cargo install for managed zccache: {e}"
+            ))
+        })?;
+
+    if !install_status.success() {
+        return Err(SoldrError::Other(format!(
+            "cargo install {MANAGED_ZCCACHE_CRATE} {version} failed with status {install_status}"
+        )));
+    }
+
+    let installed_binary = install_root
+        .path()
+        .join("bin")
+        .join(format!("zccache{}", target.binary_ext()));
+    if !installed_binary.exists() {
+        return Err(SoldrError::Other(format!(
+            "cargo install did not produce {}",
+            installed_binary.display()
+        )));
+    }
+
+    let cached_binary = tool_dir.join(format!("zccache{}", target.binary_ext()));
+    std::fs::copy(&installed_binary, &cached_binary)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&cached_binary)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&cached_binary, perms)?;
+    }
+
+    Ok(cached_binary)
 }
 
 async fn fetch_repo_binary_with_paths(
@@ -492,13 +542,6 @@ fn release_tag_candidates(version: &str, tag_prefix: Option<&str>) -> Vec<String
     tags.sort();
     tags.dedup();
     tags
-}
-
-fn managed_zccache_download_url(version: &str, target: &TargetTriple) -> String {
-    format!(
-        "https://github.com/zackees/zccache/releases/download/{version}/zccache-{version}-{}.tar.gz",
-        target.triple()
-    )
 }
 
 fn parse_release_info(
@@ -904,18 +947,5 @@ mod tests {
         });
         let info = parse_release_info(body, Some("cargo-nextest-")).unwrap();
         assert_eq!(info.version, "0.9.100");
-    }
-
-    #[test]
-    fn managed_zccache_download_url_uses_target_triple() {
-        let target = TargetTriple {
-            arch: Arch::Aarch64,
-            os: Os::MacOs,
-            env: Env::None,
-        };
-        assert_eq!(
-            managed_zccache_download_url("1.2.8", &target),
-            "https://github.com/zackees/zccache/releases/download/1.2.8/zccache-1.2.8-aarch64-apple-darwin.tar.gz"
-        );
     }
 }
