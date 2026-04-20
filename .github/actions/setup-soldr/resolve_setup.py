@@ -108,6 +108,18 @@ def main() -> None:
     soldr_binary = "soldr.exe" if os.name == "nt" else "soldr"
     soldr_path = bin_dir / soldr_binary
 
+    for path in (
+        cache_root,
+        soldr_root,
+        soldr_root / "cache",
+        soldr_root / "bin",
+        cargo_home,
+        cargo_home / "bin",
+        rustup_home,
+        bin_dir,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+
     toolchain = load_toolchain_spec(
         workspace=workspace,
         toolchain_file=os.environ.get("INPUT_TOOLCHAIN_FILE", "rust-toolchain.toml"),
@@ -166,6 +178,7 @@ def main() -> None:
             "toolchain_channel": toolchain["channel"],
             "toolchain_profile": toolchain["profile"],
             "toolchain_source": toolchain["source"],
+            "toolchain": toolchain["channel"],
         }
     )
 

@@ -81,3 +81,46 @@ def test_toolchain_signature_payload_is_json_serializable() -> None:
     }
 
     assert json.loads(json.dumps(payload))["channel"] == "1.94.1"
+
+
+def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:
+    module = _load_module()
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    workspace.mkdir()
+    runner_temp.mkdir()
+
+    github_env = tmp_path / "github.env"
+    github_output = tmp_path / "github.output"
+    github_path = tmp_path / "github.path"
+
+    monkeypatch.setenv("ACTION_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("ACTION_OS", "Linux")
+    monkeypatch.setenv("ACTION_ARCH", "X64")
+    monkeypatch.setenv("INPUT_REPO", "zackees/soldr")
+    monkeypatch.setenv("INPUT_VERSION", "")
+    monkeypatch.setenv("INPUT_CACHE_DIR", "")
+    monkeypatch.setenv("INPUT_CACHE_KEY_SUFFIX", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN_FILE", "missing.toml")
+    monkeypatch.setenv("INPUT_TRUST_MODE", "")
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setenv("GITHUB_PATH", str(github_path))
+
+    module.main()
+
+    cache_root = runner_temp / "setup-soldr"
+    assert cache_root.is_dir()
+    assert (cache_root / "soldr").is_dir()
+    assert (cache_root / "soldr" / "cache").is_dir()
+    assert (cache_root / "soldr" / "bin").is_dir()
+    assert (cache_root / "cargo").is_dir()
+    assert (cache_root / "cargo" / "bin").is_dir()
+    assert (cache_root / "rustup").is_dir()
+    assert (cache_root / "bin").is_dir()
+
+    outputs = github_output.read_text(encoding="utf-8")
+    assert f"cache_root={cache_root}" in outputs
+    assert "toolchain=stable" in outputs

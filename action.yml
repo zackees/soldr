@@ -48,7 +48,7 @@ outputs:
     value: ${{ steps.cache-meta.outputs.cache_hit }}
   toolchain:
     description: Rust toolchain channel configured by the action.
-    value: ${{ steps.toolchain.outputs.toolchain }}
+    value: ${{ steps.resolve.outputs.toolchain }}
 runs:
   using: composite
   steps:
