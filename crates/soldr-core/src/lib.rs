@@ -385,7 +385,9 @@ pub fn probe_toolchain_binary(tool: &str, start_dir: Option<&Path>) -> Option<Pa
 
     rustup_toolchain_bin_dir(start_dir)
         .and_then(|dir| find_executable_in_dir(&dir, tool))
-        .or_else(|| cargo_home_bin_dir(start_dir).and_then(|dir| find_executable_in_dir(&dir, tool)))
+        .or_else(|| {
+            cargo_home_bin_dir(start_dir).and_then(|dir| find_executable_in_dir(&dir, tool))
+        })
         .or_else(|| path_bin_dir(tool).and_then(|dir| find_executable_in_dir(&dir, tool)))
 }
 
