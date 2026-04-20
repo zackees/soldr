@@ -90,7 +90,12 @@ def _write_outputs(values: dict[str, str]) -> None:
         return
     with open(output, "a", encoding="utf-8") as fh:
         for key, value in values.items():
-            fh.write(f"{key}={value}\n")
+            if "\n" in value:
+                # Use GitHub's heredoc delimiter form for multi-line outputs.
+                delimiter = f"ghadelim_{hashlib.sha256(value.encode()).hexdigest()[:16]}"
+                fh.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
+            else:
+                fh.write(f"{key}={value}\n")
 
 
 def main() -> None:
@@ -150,6 +155,20 @@ def main() -> None:
     if suffix:
         cache_key = f"{cache_key}-{_sanitize_fragment(suffix)}"
 
+    # Build-artifact cache (zccache compilation cache at ~/.zccache).
+    # Key shape: setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{sha}.
+    # Restore falls back through the same toolchain lineage and then any
+    # OS+arch cache, letting GitHub's own-branch -> PR base -> default branch
+    # restore order provide parent -> child lineage without user config.
+    github_sha = os.environ.get("GITHUB_SHA", "").strip() or "nosha"
+    build_cache_prefix = f"setup-soldr-buildcache-v1-{runner_os}-{runner_arch}"
+    build_cache_toolchain_prefix = f"{build_cache_prefix}-{digest}-"
+    build_cache_key = f"{build_cache_toolchain_prefix}{github_sha}"
+
+    if suffix:
+        sanitized_suffix = _sanitize_fragment(suffix)
+        build_cache_key = f"{build_cache_key}-{sanitized_suffix}"
+
     _write_env("SOLDR_CACHE_DIR", str(soldr_root))
     _write_env("CARGO_HOME", str(cargo_home))
     _write_env("RUSTUP_HOME", str(rustup_home))
@@ -168,6 +187,9 @@ def main() -> None:
             "cache_root": str(cache_root),
             "cache_key": cache_key,
             "cache_restore_prefix": f"{cache_prefix}-",
+            "build_cache_key": build_cache_key,
+            "build_cache_restore_key_toolchain": build_cache_toolchain_prefix,
+            "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
             "soldr_root": str(soldr_root),
             "cargo_home": str(cargo_home),
             "rustup_home": str(rustup_home),
