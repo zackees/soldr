@@ -6,65 +6,62 @@ It is intentionally PyPI-only. crates.io publication is not part of the current 
 
 ## Current State
 
-As of April 19, 2026:
-
 - `.github/workflows/release-auto.yml` is the only release workflow
 - that workflow always builds the hardened `soldr` wheel set as part of a real release
 - the workflow publishes those wheels through `pypa/gh-action-pypi-publish` in a dedicated OIDC job
 - the existing PyPI project `soldr` already exists
-
-The next secure PyPI release should come from the same validated workflow that created the GitHub Release.
+- PyPI is the source of truth used by the workflow's "should we publish?" gate
 
 ## Why This Uses Trusted Publishing
 
 PyPI Trusted Publishing avoids long-lived API tokens.
 
-The workflow receives a short-lived upload credential from PyPI using the GitHub Actions OIDC identity for a specific repository, workflow file, and optional environment.
+The workflow receives a short-lived upload credential from PyPI using the GitHub Actions OIDC identity for a specific repository and workflow file.
 
-For `soldr`, the intended trusted identity is:
+For `soldr`, the trusted identity is:
 
 - owner: `zackees`
 - repository: `soldr`
-- workflow: `.github/workflows/release-auto.yml`
-- environment: `release`
+- workflow: `release-auto.yml`
+- environment: blank
 
-Using the existing `release` environment keeps the PyPI publish step behind the same final approval boundary as GitHub Release publication.
+There is no environment gate in the unattended model.
 
 ## Owner Setup On PyPI
 
 These steps must be performed in the PyPI web UI by a maintainer of the `soldr` project.
 
-1. Open the `soldr` project on PyPI.
-2. Click `Manage`.
-3. Open the `Publishing` page in the project sidebar.
-4. Add a new GitHub Actions publisher with:
+1. Open https://pypi.org/manage/project/soldr/settings/publishing/.
+2. Add a new GitHub Actions publisher with:
    - repository owner: `zackees`
    - repository name: `soldr`
-   - workflow filename: `.github/workflows/release-auto.yml`
-   - environment name: `release`
+   - workflow filename: `release-auto.yml`
+   - environment name: leave blank
 
-The environment field is optional in PyPI, but it should be filled in here because the repo already uses `release` as the publish-time credential boundary.
+Do not register a publisher for any other workflow filename. Only `release-auto.yml` is authorized to publish.
 
 ## Repo-Side Workflow Behavior
 
-The release workflow now does this whenever a reviewed version bump lands on `main`:
+The release workflow runs whenever a reviewed version bump lands on `main` (it filters to `paths: Cargo.toml`):
 
 1. Derives the release version from `[workspace.package]` in `Cargo.toml`.
-2. Verifies that the version changed from the previous `main` commit.
-3. Builds hardened wheels on the supported platform runners.
-4. Smoke-tests the built wheel on each runner by installing it and running `soldr --version`.
-5. Publishes the GitHub Release.
+2. Refuses to publish unless that version is strictly greater than the latest version on PyPI.
+3. Reruns the full lint, test, packaging, and e2e gate on the merged commit.
+4. Builds the platform release archives and hardened wheel set.
+5. Creates the `vX.Y.Z` GitHub Release with checksums and a build provenance attestation (skipped if the git tag already exists, e.g. PyPI catch-up).
 6. Publishes the wheel set to PyPI from a dedicated Linux job with `id-token: write`.
 
 No source distribution is published in this path. The current design is wheel-only because the project is prioritizing hardened binary distribution rather than source release through package registries.
 
 ## Expected Manual Stops
 
-The repo-side work can be completed without additional secrets.
-
-The remaining manual dependencies are:
-
-- the PyPI trusted publisher must be registered
-- the `release` environment must approve the final publication jobs
+The only manual dependency is the PyPI Trusted Publisher registration above.
 
 Until the publisher is registered, the PyPI publish job will not be able to mint a trusted upload token.
+
+## Verification
+
+After a successful publish:
+
+- https://pypi.org/project/soldr/X.Y.Z/ shows `Uploaded using Trusted Publishing? Yes`
+- the wheel set on PyPI matches the artifacts attached to the corresponding `vX.Y.Z` GitHub Release
