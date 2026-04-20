@@ -275,13 +275,42 @@ impl ImplicitToolchainHomes {
 }
 
 fn cargo_home_bin_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
-    match std::env::var_os(CARGO_HOME_ENV_VAR) {
-        Some(value) if value.is_empty() => None,
-        Some(value) => Some(PathBuf::from(value).join("bin")),
-        None => ImplicitToolchainHomes::detect(start_dir)
-            .cargo_home
-            .map(|path| path.join("bin")),
+    non_empty_env_path(std::env::var_os(CARGO_HOME_ENV_VAR).as_deref())
+        .map(|path| path.join("bin"))
+        .or_else(|| {
+            ImplicitToolchainHomes::detect(start_dir)
+                .cargo_home
+                .map(|path| path.join("bin"))
+        })
+}
+
+fn rustup_home_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
+    non_empty_env_path(std::env::var_os(RUSTUP_HOME_ENV_VAR).as_deref())
+        .or_else(|| ImplicitToolchainHomes::detect(start_dir).rustup_home)
+}
+
+fn rustup_toolchain_bin_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
+    let toolchains_dir = rustup_home_dir(start_dir)?.join("toolchains");
+    let mut candidates = std::fs::read_dir(toolchains_dir)
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .map(|path| path.join("bin"))
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
     }
+}
+
+fn path_bin_dir(tool: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value).find(|dir| find_executable_in_dir(dir, tool).is_some())
+    })
 }
 
 fn rustup_toolchain_env_is_explicit(value: Option<&OsStr>) -> bool {
@@ -354,7 +383,12 @@ pub fn probe_toolchain_binary(tool: &str, start_dir: Option<&Path>) -> Option<Pa
         return None;
     }
 
-    cargo_home_bin_dir(start_dir).and_then(|dir| find_executable_in_dir(&dir, tool))
+    cargo_home_bin_dir(start_dir)
+        .and_then(|dir| find_executable_in_dir(&dir, tool))
+        .or_else(|| {
+            rustup_toolchain_bin_dir(start_dir).and_then(|dir| find_executable_in_dir(&dir, tool))
+        })
+        .or_else(|| path_bin_dir(tool).and_then(|dir| find_executable_in_dir(&dir, tool)))
 }
 
 fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
@@ -478,11 +512,15 @@ impl SoldrPaths {
 }
 
 fn soldr_root_from_env_var(value: Option<&OsStr>) -> Option<Result<PathBuf, SoldrError>> {
+    non_empty_env_path(value).map(Ok)
+}
+
+fn non_empty_env_path(value: Option<&OsStr>) -> Option<PathBuf> {
     let value = value?;
     if value.is_empty() {
         return None;
     }
-    Some(Ok(PathBuf::from(value)))
+    Some(PathBuf::from(value))
 }
 
 fn home_dir() -> Result<PathBuf, SoldrError> {
@@ -538,7 +576,124 @@ pub fn version() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{ffi::OsString, fs, sync::Mutex};
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
+        #[cfg(windows)]
+        {
+            dir.join(format!("{name}.bat"))
+        }
+        #[cfg(not(windows))]
+        {
+            dir.join(name)
+        }
+    }
+
+    fn write_fake_script(path: &Path, script: &str) {
+        fs::write(path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    fn fake_rustc_script(triple: &str) -> String {
+        format!(
+            "@echo off\r\n\
+             if \"%~1\"==\"--print\" if \"%~2\"==\"target-triple\" (\r\n\
+             echo {triple}\r\n\
+             exit /b 0\r\n\
+             )\r\n\
+             echo unexpected rustc args %* 1>&2\r\n\
+             exit /b 1\r\n"
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn fake_rustc_script(triple: &str) -> String {
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--print\" ] && [ \"$2\" = \"target-triple\" ]; then\n\
+                 printf '%s\\n' '{triple}'\n\
+                 exit 0\n\
+             fi\n\
+             echo \"unexpected rustc args: $*\" >&2\n\
+             exit 1\n"
+        )
+    }
+
+    #[cfg(windows)]
+    fn fake_failing_rustup_script(log_path: &Path) -> String {
+        format!(
+            "@echo off\r\n\
+             echo rustup %*>>\"{}\"\r\n\
+             echo rustup should not have been invoked 1>&2\r\n\
+             exit /b 1\r\n",
+            log_path.display()
+        )
+    }
+
+    #[cfg(not(windows))]
+    fn fake_failing_rustup_script(log_path: &Path) -> String {
+        format!(
+            "#!/bin/sh\n\
+             echo \"rustup $*\" >> \"{}\"\n\
+             echo \"rustup should not have been invoked\" >&2\n\
+             exit 1\n",
+            log_path.display()
+        )
+    }
+
+    fn assert_rustup_not_invoked(log_path: &Path) {
+        let log = fs::read_to_string(log_path).unwrap_or_default();
+        assert!(
+            log.trim().is_empty(),
+            "direct tool resolution should bypass rustup entirely: {log}"
+        );
+    }
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn test_version() {
@@ -744,5 +899,89 @@ mod tests {
         assert!(rustup_toolchain_env_is_explicit(Some(OsStr::new("stable"))));
         assert!(!rustup_toolchain_env_is_explicit(Some(OsStr::new(""))));
         assert!(!rustup_toolchain_env_is_explicit(None));
+    }
+
+    #[test]
+    fn resolve_runtime_rustc_prefers_path_before_rustup() {
+        let _env_lock = lock_env();
+        let dir = tempdir().unwrap();
+        let tool_dir = dir.path().join("tools");
+        fs::create_dir_all(&tool_dir).unwrap();
+        let log_path = dir.path().join("rustup.log");
+        let rustc = fake_script_path(&tool_dir, "rustc");
+        let rustup = fake_script_path(&tool_dir, "rustup");
+        write_fake_script(&rustc, &fake_rustc_script("x86_64-unknown-linux-gnu"));
+        write_fake_script(&rustup, &fake_failing_rustup_script(&log_path));
+
+        let _path = EnvVarGuard::set("PATH", std::env::join_paths([&tool_dir]).unwrap());
+        let _cargo_home = EnvVarGuard::remove(CARGO_HOME_ENV_VAR);
+        let _rustup_home = EnvVarGuard::remove(RUSTUP_HOME_ENV_VAR);
+        let _rustup_toolchain = EnvVarGuard::remove(RUSTUP_TOOLCHAIN_ENV_VAR);
+
+        assert_eq!(resolve_runtime_rustc(None), Some(rustc));
+        assert_rustup_not_invoked(&log_path);
+    }
+
+    #[test]
+    fn resolve_runtime_rustc_prefers_explicit_rustup_home_toolchain_before_rustup() {
+        let _env_lock = lock_env();
+        let dir = tempdir().unwrap();
+        let explicit_rustup_home = dir.path().join("explicit-rustup-home");
+        let rustc = fake_script_path(
+            &explicit_rustup_home
+                .join("toolchains")
+                .join("stable-test")
+                .join("bin"),
+            "rustc",
+        );
+        fs::create_dir_all(rustc.parent().unwrap()).unwrap();
+        write_fake_script(&rustc, &fake_rustc_script("aarch64-apple-darwin"));
+
+        let tool_dir = dir.path().join("tools");
+        fs::create_dir_all(&tool_dir).unwrap();
+        let log_path = dir.path().join("rustup.log");
+        let rustup = fake_script_path(&tool_dir, "rustup");
+        write_fake_script(&rustup, &fake_failing_rustup_script(&log_path));
+
+        let _path = EnvVarGuard::set("PATH", std::env::join_paths([&tool_dir]).unwrap());
+        let _cargo_home = EnvVarGuard::remove(CARGO_HOME_ENV_VAR);
+        let _rustup_home = EnvVarGuard::set(RUSTUP_HOME_ENV_VAR, &explicit_rustup_home);
+        let _rustup_toolchain = EnvVarGuard::remove(RUSTUP_TOOLCHAIN_ENV_VAR);
+
+        assert_eq!(resolve_runtime_rustc(None), Some(rustc));
+        assert_rustup_not_invoked(&log_path);
+    }
+
+    #[test]
+    fn resolve_runtime_rustc_prefers_repo_local_rustup_home_toolchain_before_rustup() {
+        let _env_lock = lock_env();
+        let dir = tempdir().unwrap();
+        let nested = dir.path().join("workspace").join("crate");
+        fs::create_dir_all(&nested).unwrap();
+
+        let rustc = fake_script_path(
+            &dir.path()
+                .join(".rustup")
+                .join("toolchains")
+                .join("stable-test")
+                .join("bin"),
+            "rustc",
+        );
+        fs::create_dir_all(rustc.parent().unwrap()).unwrap();
+        write_fake_script(&rustc, &fake_rustc_script("x86_64-pc-windows-msvc"));
+
+        let tool_dir = dir.path().join("tools");
+        fs::create_dir_all(&tool_dir).unwrap();
+        let log_path = dir.path().join("rustup.log");
+        let rustup = fake_script_path(&tool_dir, "rustup");
+        write_fake_script(&rustup, &fake_failing_rustup_script(&log_path));
+
+        let _path = EnvVarGuard::set("PATH", std::env::join_paths([&tool_dir]).unwrap());
+        let _cargo_home = EnvVarGuard::remove(CARGO_HOME_ENV_VAR);
+        let _rustup_home = EnvVarGuard::remove(RUSTUP_HOME_ENV_VAR);
+        let _rustup_toolchain = EnvVarGuard::remove(RUSTUP_TOOLCHAIN_ENV_VAR);
+
+        assert_eq!(resolve_runtime_rustc(Some(&nested)), Some(rustc));
+        assert_rustup_not_invoked(&log_path);
     }
 }
