@@ -1,0 +1,66 @@
+name: Setup Soldr Action
+
+on:
+  pull_request:
+    paths:
+      - action.yml
+      - install.sh
+      - rust-toolchain.toml
+      - Cargo.toml
+      - Cargo.lock
+      - .github/actions/setup-soldr/**
+      - .github/workflows/setup-soldr-action.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+          - name: macOS
+            runner: macos-15
+          - name: Windows
+            runner: windows-2025
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - id: setup
+        uses: ./
+        with:
+          cache: true
+
+      - name: Show action outputs
+        shell: pwsh
+        run: |
+          Write-Host "soldr-path=${{ steps.setup.outputs.soldr-path }}"
+          Write-Host "soldr-version=${{ steps.setup.outputs.soldr-version }}"
+          Write-Host "cache-dir=${{ steps.setup.outputs.cache-dir }}"
+          Write-Host "cache-hit=${{ steps.setup.outputs.cache-hit }}"
+          Write-Host "toolchain=${{ steps.setup.outputs.toolchain }}"
+
+      - name: Verify setup state
+        shell: pwsh
+        run: |
+          if (-not (Test-Path $env:SOLDR_CACHE_DIR)) { throw "missing SOLDR_CACHE_DIR" }
+          if (-not (Test-Path $env:CARGO_HOME)) { throw "missing CARGO_HOME" }
+          if (-not (Test-Path $env:RUSTUP_HOME)) { throw "missing RUSTUP_HOME" }
+          soldr version --json
+          cargo --version
+          rustc --version
+
+      - name: Build through soldr
+        shell: pwsh
+        run: soldr cargo build --package soldr-cli --release --locked
+
+      - name: Test through soldr
+        shell: pwsh
+        run: soldr cargo test -p soldr-cli --test cli --locked

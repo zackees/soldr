@@ -19,10 +19,67 @@ The same pattern applies to `cargo test`, `cargo check`, and similar Cargo invoc
 
 ## GitHub Actions
 
-No public one-line `uses: owner/repo@ref` Soldr action is verified in this repository today. The supported path is:
+This repository now ships a root GitHub Action for Soldr setup. The preferred GitHub Actions path is:
 
-1. install `soldr`
-2. replace `cargo ...` with `soldr cargo ...`
+1. use `zackees/soldr@<ref>` or `uses: ./` in the same repository
+2. let the action provision the Rust toolchain and restore the Soldr/Cargo/rustup cache root
+3. run `soldr cargo ...`
+
+When stable action tags exist, prefer a major tag such as `@v1`. Until then, pin a full commit SHA or an explicit release tag.
+
+### Preferred setup action path
+
+The root action:
+
+- installs one `soldr` binary
+- provisions the Rust toolchain without requiring a separate toolchain action
+- sets `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
+- restores and saves that runner-local root through GitHub cache when `cache: true`
+
+Example:
+
+```yaml
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: zackees/soldr@<ref>
+        with:
+          version: 0.7.4
+          cache: true
+
+      - run: soldr cargo build --locked --release
+      - run: soldr cargo test --locked
+```
+
+For same-repository testing, use:
+
+```yaml
+- uses: ./
+  with:
+    version: 0.7.4
+    cache: true
+```
+
+### What gets rehydrated today
+
+The action-managed cache root includes:
+
+- `SOLDR_CACHE_DIR`
+- `CARGO_HOME`
+- `RUSTUP_HOME`
+
+That means the Soldr binary, the Rust toolchain, cargo registry state, and Soldr-managed state are reusable on later runs.
+
+Current limitation: soldr still documents managed `zccache` artifact storage as following zccache's current supported/default behavior rather than a fully action-controlled custom artifact path, so the action should not claim more than that.
 
 ### Shortest CI path: install a released soldr
 
