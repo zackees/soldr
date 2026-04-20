@@ -72,6 +72,14 @@ Anything not registered falls through the generic External subcommand, which res
 - **Integrity is default**: every fetch records sha256. Pins are opt-in via `SOLDR_CHECKSUMS_FILE`; `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 - **Version independence**: Users install once and forget. CI should pin: `pip install soldr==X.Y.Z`.
 
+## Agent Completion Rules
+
+- **Finish on a branch**: When an agent completes a task, it must put the work on a dedicated branch rather than leaving it only in the local worktree.
+- **Push the branch**: The branch must be pushed to `origin` before the task is considered complete.
+- **Open a pull request**: The agent must create a PR for the branch when permissions allow.
+- **Always report the merge URL**: The final user-facing summary must include the PR URL the user should open to review and merge the work.
+- **Fallback if PR creation is blocked**: If the GitHub integration cannot open the PR directly, the agent must still push the branch and provide the exact GitHub URL the user needs to open or complete the PR manually.
+
 ## Toolchain
 
 - Rust 1.94.1 (rust-toolchain.toml), edition 2021, MSRV 1.75
