@@ -1,0 +1,226 @@
+name: _Cache Benchmark Build
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: false
+        type: string
+        default: ubuntu-24.04
+      target:
+        required: false
+        type: string
+        default: x86_64-unknown-linux-gnu
+      source_ref:
+        required: false
+        type: string
+        default: ""
+      cache_backend:
+        required: false
+        type: string
+        default: none
+      cache_shared_key:
+        required: false
+        type: string
+        default: ""
+      mutation:
+        required: false
+        type: string
+        default: none
+      save_cache:
+        required: false
+        type: boolean
+        default: true
+      upload_name:
+        required: false
+        type: string
+        default: cache-benchmark
+    outputs:
+      wall_seconds:
+        description: Wall-clock seconds for the cargo build step.
+        value: ${{ jobs.build.outputs.wall_seconds }}
+      timing_report:
+        description: Relative path to the latest cargo timing report.
+        value: ${{ jobs.build.outputs.timing_report }}
+      cache_hit:
+        description: Whether the cache backend restored an exact cache hit relevant to the benchmark.
+        value: ${{ jobs.build.outputs.cache_hit }}
+      cache_hit_detail:
+        description: Backend-specific cache-hit detail for job summaries and debugging.
+        value: ${{ jobs.build.outputs.cache_hit_detail }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      wall_seconds: ${{ steps.measure.outputs.wall_seconds }}
+      timing_report: ${{ steps.measure.outputs.timing_report }}
+      cache_hit: ${{ steps.cache_hit.outputs.value }}
+      cache_hit_detail: ${{ steps.cache_hit.outputs.detail }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          targets: ${{ inputs.target }}
+
+      - name: Restore Swatinem rust-cache
+        id: rust_cache
+        if: ${{ inputs.cache_backend == 'swatinem' }}
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          shared-key: ${{ inputs.cache_shared_key }}
+          add-job-id-key: "false"
+          save-if: ${{ inputs.save_cache }}
+
+      - name: Restore zccache
+        id: zccache
+        if: ${{ inputs.cache_backend == 'zccache' }}
+        uses: zackees/zccache@096f6ebb68a65d052514cf2612aa445d2be79261
+        with:
+          shared-key: ${{ inputs.cache_shared_key }}
+          save-cache: ${{ inputs.save_cache }}
+
+      - name: Apply benchmark mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${{ inputs.mutation }}" in
+            none)
+              ;;
+            soldr-cli)
+              printf '\n// cache benchmark mutation: soldr-cli\n' >> crates/soldr-cli/src/main.rs
+              ;;
+            soldr-core)
+              printf '\n// cache benchmark mutation: soldr-core\n' >> crates/soldr-core/src/lib.rs
+              ;;
+            *)
+              echo "unsupported benchmark mutation: ${{ inputs.mutation }}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Run timed cargo build
+        id: measure
+        shell: bash
+        env:
+          BENCH_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import time
+
+          target = os.environ["BENCH_TARGET"]
+          start = time.time()
+          subprocess.run(
+              [
+                  "cargo",
+                  "build",
+                  "--package",
+                  "soldr-cli",
+                  "--release",
+                  "--locked",
+                  "--target",
+                  target,
+                  "--timings",
+              ],
+              check=True,
+          )
+          elapsed = time.time() - start
+
+          timing_reports = sorted(
+              pathlib.Path("target/cargo-timings").glob("cargo-timing*.html"),
+              key=lambda path: path.stat().st_mtime,
+          )
+          timing_report = timing_reports[-1].as_posix() if timing_reports else ""
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"wall_seconds={elapsed:.2f}\n")
+              fh.write(f"timing_report={timing_report}\n")
+          PY
+
+      - name: Cleanup zccache
+        if: ${{ always() && inputs.cache_backend == 'zccache' }}
+        uses: zackees/zccache/action/cleanup@096f6ebb68a65d052514cf2612aa445d2be79261
+
+      - name: Compute cache-hit summary
+        id: cache_hit
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          value=false
+          detail="backend=${{ inputs.cache_backend }}"
+
+          case "${{ inputs.cache_backend }}" in
+            none)
+              detail="${detail};hit=n/a"
+              ;;
+            swatinem)
+              if [ "${{ steps.rust_cache.outputs.cache-hit }}" = "true" ]; then
+                value=true
+              fi
+              detail="${detail};exact_hit=${{ steps.rust_cache.outputs.cache-hit }}"
+              ;;
+            zccache)
+              if [ "${{ steps.zccache.outputs.cache-hit-compilation }}" = "true" ] || [ "${{ steps.zccache.outputs.cache-hit-target }}" = "true" ]; then
+                value=true
+              fi
+              detail="${detail};compilation=${{ steps.zccache.outputs.cache-hit-compilation }};target=${{ steps.zccache.outputs.cache-hit-target }};registry=${{ steps.zccache.outputs.cache-hit-registry }}"
+              ;;
+            *)
+              echo "unsupported cache backend: ${{ inputs.cache_backend }}" >&2
+              exit 1
+              ;;
+          esac
+
+          {
+            echo "value=$value"
+            echo "detail=$detail"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload timing artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.upload_name }}
+          if-no-files-found: warn
+          path: |
+            target/cargo-timings/*.html
+
+      - name: Write job summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "### Cache Benchmark Child Job"
+            echo ""
+            echo "- cache backend: \`${{ inputs.cache_backend }}\`"
+            echo "- mutation: \`${{ inputs.mutation }}\`"
+            if [ -n "${{ steps.measure.outputs.wall_seconds }}" ]; then
+              echo "- wall seconds: \`${{ steps.measure.outputs.wall_seconds }}\`"
+            fi
+            if [ -n "${{ steps.measure.outputs.timing_report }}" ]; then
+              echo "- timing report: \`${{ steps.measure.outputs.timing_report }}\`"
+            fi
+            echo "- cache hit summary: \`${{ steps.cache_hit.outputs.detail }}\`"
+            if [ "${{ inputs.cache_backend }}" = "swatinem" ]; then
+              echo "- rust-cache exact hit: \`${{ steps.rust_cache.outputs.cache-hit }}\`"
+            fi
+            if [ "${{ inputs.cache_backend }}" = "zccache" ]; then
+              echo "- zccache compilation hit: \`${{ steps.zccache.outputs.cache-hit-compilation }}\`"
+              echo "- zccache target hit: \`${{ steps.zccache.outputs.cache-hit-target }}\`"
+              echo "- zccache registry hit: \`${{ steps.zccache.outputs.cache-hit-registry }}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

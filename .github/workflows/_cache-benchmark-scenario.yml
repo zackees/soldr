@@ -1,0 +1,180 @@
+name: _Cache Benchmark Scenario
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: false
+        type: string
+        default: ubuntu-24.04
+      target:
+        required: false
+        type: string
+        default: x86_64-unknown-linux-gnu
+      source_ref:
+        required: false
+        type: string
+        default: ""
+      cache_backend:
+        required: true
+        type: string
+      mutation:
+        required: true
+        type: string
+      threshold_ratio:
+        required: true
+        type: string
+    outputs:
+      cold_seconds:
+        description: Cold control wall-clock duration.
+        value: ${{ jobs.compare.outputs.cold_seconds }}
+      warm_seconds:
+        description: Warm cached wall-clock duration.
+        value: ${{ jobs.compare.outputs.warm_seconds }}
+      speedup_ratio:
+        description: Cold divided by warm wall-clock time.
+        value: ${{ jobs.compare.outputs.speedup_ratio }}
+      cache_hit:
+        description: Whether the warm path restored the benchmark cache.
+        value: ${{ jobs.compare.outputs.cache_hit }}
+      cache_hit_detail:
+        description: Backend-specific cache-hit details.
+        value: ${{ jobs.compare.outputs.cache_hit_detail }}
+
+permissions:
+  contents: read
+
+jobs:
+  seed-cache:
+    name: Seed cache
+    uses: ./.github/workflows/_cache-benchmark-build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      target: ${{ inputs.target }}
+      source_ref: ${{ inputs.source_ref }}
+      cache_backend: ${{ inputs.cache_backend }}
+      cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
+      mutation: none
+      save_cache: true
+      upload_name: benchmark-seed-${{ inputs.cache_backend }}-${{ inputs.mutation }}
+
+  cold-control:
+    name: Cold control
+    uses: ./.github/workflows/_cache-benchmark-build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      target: ${{ inputs.target }}
+      source_ref: ${{ inputs.source_ref }}
+      cache_backend: none
+      cache_shared_key: ""
+      mutation: ${{ inputs.mutation }}
+      save_cache: false
+      upload_name: benchmark-cold-${{ inputs.mutation }}
+
+  warm-cache:
+    name: Warm cache
+    needs: seed-cache
+    uses: ./.github/workflows/_cache-benchmark-build.yml
+    with:
+      runner: ${{ inputs.runner }}
+      target: ${{ inputs.target }}
+      source_ref: ${{ inputs.source_ref }}
+      cache_backend: ${{ inputs.cache_backend }}
+      cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
+      mutation: ${{ inputs.mutation }}
+      save_cache: false
+      upload_name: benchmark-warm-${{ inputs.cache_backend }}-${{ inputs.mutation }}
+
+  compare:
+    name: Compare warm vs cold
+    needs:
+      - cold-control
+      - warm-cache
+    runs-on: ubuntu-24.04
+    outputs:
+      cold_seconds: ${{ steps.analyze.outputs.cold_seconds }}
+      warm_seconds: ${{ steps.analyze.outputs.warm_seconds }}
+      speedup_ratio: ${{ steps.analyze.outputs.speedup_ratio }}
+      cache_hit: ${{ steps.analyze.outputs.cache_hit }}
+      cache_hit_detail: ${{ steps.analyze.outputs.cache_hit_detail }}
+
+    steps:
+      - name: Analyze benchmark outputs
+        id: analyze
+        shell: bash
+        env:
+          CACHE_BACKEND: ${{ inputs.cache_backend }}
+          CACHE_HIT: ${{ needs.warm-cache.outputs.cache_hit }}
+          CACHE_HIT_DETAIL: ${{ needs.warm-cache.outputs.cache_hit_detail }}
+          COLD_SECONDS: ${{ needs.cold-control.outputs.wall_seconds }}
+          MUTATION: ${{ inputs.mutation }}
+          THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
+          WARM_SECONDS: ${{ needs.warm-cache.outputs.wall_seconds }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+
+          cache_backend = os.environ["CACHE_BACKEND"]
+          cache_hit = os.environ["CACHE_HIT"]
+          cache_hit_detail = os.environ["CACHE_HIT_DETAIL"]
+          mutation = os.environ["MUTATION"]
+          cold = float(os.environ["COLD_SECONDS"])
+          warm = float(os.environ["WARM_SECONDS"])
+          threshold = float(os.environ["THRESHOLD_RATIO"])
+          ratio = cold / warm if warm else float("inf")
+
+          summary = [
+              "### Cache Benchmark Comparison",
+              "",
+              f"- cache backend: `{cache_backend}`",
+              f"- mutation: `{mutation}`",
+              f"- cold wall seconds: `{cold:.2f}`",
+              f"- warm wall seconds: `{warm:.2f}`",
+              f"- warm cache hit: `{cache_hit}`",
+              f"- warm cache hit detail: `{cache_hit_detail}`",
+              f"- speedup ratio: `{ratio:.2f}x`",
+              f"- required ratio: `{threshold:.2f}x`",
+          ]
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"cold_seconds={cold:.2f}\n")
+              fh.write(f"warm_seconds={warm:.2f}\n")
+              fh.write(f"speedup_ratio={ratio:.2f}\n")
+              fh.write(f"cache_hit={cache_hit}\n")
+              fh.write(f"cache_hit_detail={cache_hit_detail}\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("\n".join(summary) + "\n")
+          PY
+
+      - name: Enforce expected warm-cache behavior
+        shell: bash
+        env:
+          CACHE_BACKEND: ${{ inputs.cache_backend }}
+          CACHE_HIT: ${{ steps.analyze.outputs.cache_hit }}
+          CACHE_HIT_DETAIL: ${{ steps.analyze.outputs.cache_hit_detail }}
+          SPEEDUP_RATIO: ${{ steps.analyze.outputs.speedup_ratio }}
+          THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import sys
+
+          cache_backend = os.environ["CACHE_BACKEND"]
+          cache_hit = os.environ["CACHE_HIT"]
+          cache_hit_detail = os.environ["CACHE_HIT_DETAIL"]
+          ratio = float(os.environ["SPEEDUP_RATIO"])
+          threshold = float(os.environ["THRESHOLD_RATIO"])
+
+          if cache_backend != "none" and cache_hit != "true":
+              sys.exit(
+                  f"warm benchmark did not restore the expected cache backend: {cache_hit_detail}"
+              )
+
+          if ratio < threshold:
+              sys.exit(
+                  f"warm benchmark failed threshold: observed {ratio:.2f}x, required {threshold:.2f}x"
+              )
+          PY
