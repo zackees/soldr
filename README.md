@@ -72,6 +72,19 @@ On runners without `rustup`, the action downloads and installs it into the cache
 
 For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). GitHub Marketplace publication still requires extracting this action into a separate public action repository because GitHub requires a single root `action.yml` and no workflow files in the published repository. The repo-contained extraction plan and intended `zackees/setup-soldr@v1` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md). Until that public repo exists, treat `zackees/soldr@<ref>` as the current contract and pin a full commit SHA or explicit release tag instead of assuming `@v1`. For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
 
+### CI cache lineage
+
+GitHub Actions caches are not shared across arbitrary sibling feature branches. A workflow run can restore caches from its own branch, the default branch, and for pull requests the PR base branch. It cannot directly restore caches created on another feature branch.
+
+That means Soldr treats `main` as the canonical warm-cache source:
+
+- CI runs on pushes to `main` so `main` continuously refreshes the shared dependency cache lineage.
+- Pull request runs restore from their exact cache when available, then fall back to the `main` cache lineage through branch-agnostic keys and restore prefixes.
+- Pull request merge-ref caches are treated as opportunistic rerun caches, not as the primary warm-cache strategy.
+- Cargo target metadata remains more conservative than registry / compilation caches because broad fallback there is easier to get wrong for changed source trees.
+
+In practice this is the idiomatic GitHub Actions pattern for fast feature-branch builds: keep the canonical cache keys stable enough for `main` to feed later PRs, and only use branch-specific cache state when correctness requires it.
+
 ## Why soldr exists
 
 On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.

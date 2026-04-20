@@ -4,6 +4,11 @@ on:
   pull_request:
     paths-ignore:
       - '*.md'
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '*.md'
 
 permissions:
   contents: read
@@ -21,6 +26,11 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # GitHub caches are branch-scoped. Save the canonical dependency cache
+          # only on the default branch, then let PRs restore from that lineage.
+          shared-key: workspace
+          save-if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -52,6 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Use the same stable cache lineage as lint so Linux/macOS/Windows PR
+          # jobs can restore from canonical main-branch caches on misses.
+          shared-key: workspace
+          save-if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
 
       - name: Build workspace
         run: cargo build --workspace --locked
@@ -77,6 +92,7 @@ jobs:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-linux-arm64:
@@ -86,6 +102,7 @@ jobs:
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-linux-x64-musl:
@@ -95,6 +112,7 @@ jobs:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-musl
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-linux-arm64-musl:
@@ -104,6 +122,7 @@ jobs:
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-musl
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-macos-x64:
@@ -114,6 +133,7 @@ jobs:
       runner: macos-15-intel
       target: x86_64-apple-darwin
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-macos-arm64:
@@ -123,6 +143,7 @@ jobs:
       runner: macos-15
       target: aarch64-apple-darwin
       binary_name: soldr
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-windows-x64:
@@ -132,6 +153,7 @@ jobs:
       runner: windows-2025
       target: x86_64-pc-windows-msvc
       binary_name: soldr.exe
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
 
   e2e-windows-arm64:
@@ -141,4 +163,5 @@ jobs:
       runner: windows-11-arm
       target: aarch64-pc-windows-msvc
       binary_name: soldr.exe
+      save_cache: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
       source_ref: ${{ github.sha }}
