@@ -324,6 +324,7 @@ fn install_fake_rustup_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf,
     (rustup, cargo, rustc, rustfmt)
 }
 
+#[cfg(windows)]
 fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![dir.to_path_buf()];
