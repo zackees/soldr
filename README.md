@@ -1,18 +1,19 @@
-# soldr - Rust
+# Soldr / Rust
+
+
+<img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/78b119ea-7c7c-49ce-aeb4-86ee085ddf82" />
+
+*A tool to download rust tool sets and aggressive cache your build. Instant warm compiles. Gh and local builds. Just add soldr before all your build commands*
 
 [![Linux x64](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml)
 [![Linux ARM64](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml)
 [![Linux x64 musl](https://github.com/zackees/soldr/actions/workflows/build-linux-x64-musl.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64-musl.yml)
 [![Linux ARM64 musl](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64-musl.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64-musl.yml)
+
 [![macOS x64](https://github.com/zackees/soldr/actions/workflows/build-macos-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-macos-x64.yml)
 [![macOS ARM64](https://github.com/zackees/soldr/actions/workflows/build-macos-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-macos-arm64.yml)
 [![Windows x64](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml)
 [![Windows ARM64](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml)
-
-<img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/78b119ea-7c7c-49ce-aeb4-86ee085ddf82" />
-
-
-
 
 **Instant tools. Instant builds. One command.**
 
