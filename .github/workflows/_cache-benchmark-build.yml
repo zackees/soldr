@@ -60,6 +60,8 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
+          toolchain: stable
+          profile: minimal
           targets: ${{ inputs.target }}
 
       - name: Restore Swatinem rust-cache

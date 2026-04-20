@@ -47,6 +47,26 @@ runs:
 
     - name: Save cargo registry cache
       if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-registry == 'true'
+      id: registry-save
+      shell: bash
+      run: |
+        set -euo pipefail
+        paths=(
+          "$HOME/.cargo/registry/index"
+          "$HOME/.cargo/registry/cache"
+          "$HOME/.cargo/git/db"
+        )
+        found=false
+        for path in "${paths[@]}"; do
+          if [ -e "$path" ]; then
+            found=true
+            break
+          fi
+        done
+        echo "found=$found" >> "$GITHUB_OUTPUT"
+
+    - name: Persist cargo registry cache
+      if: always() && steps.state.outputs.save-cache == 'true' && steps.state.outputs.cache-registry == 'true' && steps.registry-save.outputs.found == 'true'
       uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
       with:
         path: |
