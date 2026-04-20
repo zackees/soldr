@@ -25,6 +25,35 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+fn path_display_variants(path: &Path) -> Vec<String> {
+    let mut variants = vec![path.display().to_string()];
+    if let Ok(canonical) = fs::canonicalize(path) {
+        let canonical = canonical.display().to_string();
+        if !variants.contains(&canonical) {
+            variants.push(canonical);
+        }
+    }
+    variants
+}
+
+fn log_contains_toolchain_homes(
+    log: &str,
+    prefix: &str,
+    cargo_home: &Path,
+    rustup_home: &Path,
+) -> bool {
+    for cargo_home in path_display_variants(cargo_home) {
+        for rustup_home in path_display_variants(rustup_home) {
+            if log.contains(&format!(
+                "{prefix} cargo_home={cargo_home} rustup_home={rustup_home}"
+            )) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(windows)]
     {
@@ -714,42 +743,43 @@ fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
     }
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake rustup log");
-    let cargo_home = repo_cargo_home.display().to_string();
-    let rustup_home = repo_rustup_home.display().to_string();
     assert!(
-        log.contains(&format!(
-            "rustup which cargo cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which cargo",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
         "cargo resolution should use repo-local homes: {log}"
     );
     assert!(
-        log.contains(&format!(
-            "cargo cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(&log, "cargo", &repo_cargo_home, &repo_rustup_home),
         "cargo execution should inherit repo-local homes: {log}"
     );
     assert!(
-        log.contains(&format!(
-            "rustup which rustfmt cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which rustfmt",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
         "rustfmt resolution should use repo-local homes: {log}"
     );
     assert!(
-        log.contains(&format!(
-            "rustfmt cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(&log, "rustfmt", &repo_cargo_home, &repo_rustup_home),
         "rustfmt execution should inherit repo-local homes: {log}"
     );
     assert!(
-        log.contains(&format!(
-            "rustup which rustc cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which rustc",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
         "rustc resolution should use repo-local homes: {log}"
     );
     assert!(
-        log.contains(&format!(
-            "rustc cargo_home={cargo_home} rustup_home={rustup_home}"
-        )),
+        log_contains_toolchain_homes(&log, "rustc", &repo_cargo_home, &repo_rustup_home),
         "rustc execution should inherit repo-local homes: {log}"
     );
 }
