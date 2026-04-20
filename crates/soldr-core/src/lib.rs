@@ -8,6 +8,7 @@ use thiserror::Error;
 
 pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";
 pub const RUSTUP_HOME_ENV_VAR: &str = "RUSTUP_HOME";
+const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
 
 // ---------------------------------------------------------------------------
 // Target triple detection
@@ -273,6 +274,64 @@ impl ImplicitToolchainHomes {
     }
 }
 
+fn cargo_home_bin_dir(start_dir: Option<&Path>) -> Option<PathBuf> {
+    match std::env::var_os(CARGO_HOME_ENV_VAR) {
+        Some(value) if value.is_empty() => None,
+        Some(value) => Some(PathBuf::from(value).join("bin")),
+        None => ImplicitToolchainHomes::detect(start_dir)
+            .cargo_home
+            .map(|path| path.join("bin")),
+    }
+}
+
+fn rustup_toolchain_env_is_explicit(value: Option<&OsStr>) -> bool {
+    value.is_some_and(|value| !value.is_empty())
+}
+
+fn executable_exists(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(windows)]
+fn windows_pathexts() -> Vec<String> {
+    let pathext = std::env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+    pathext
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| ext.to_ascii_lowercase())
+        .collect()
+}
+
+fn find_executable_in_dir(dir: &Path, tool: &str) -> Option<PathBuf> {
+    let candidate = dir.join(tool);
+    if executable_exists(&candidate) {
+        return Some(candidate);
+    }
+
+    #[cfg(windows)]
+    {
+        let ext = candidate
+            .extension()
+            .and_then(OsStr::to_str)
+            .map(|ext| format!(".{}", ext.to_ascii_lowercase()));
+        if ext.is_some() {
+            return None;
+        }
+
+        for suffix in windows_pathexts() {
+            let suffixed = dir.join(format!("{tool}{suffix}"));
+            if executable_exists(&suffixed) {
+                return Some(suffixed);
+            }
+        }
+    }
+
+    None
+}
+
 fn find_dir_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Option<PathBuf> {
     let mut current = start_dir?.to_path_buf();
     loop {
@@ -288,6 +347,14 @@ fn find_dir_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Optio
 
 pub fn apply_implicit_toolchain_homes(command: &mut Command, start_dir: Option<&Path>) {
     ImplicitToolchainHomes::detect(start_dir).apply_to_command(command);
+}
+
+pub fn probe_toolchain_binary(tool: &str, start_dir: Option<&Path>) -> Option<PathBuf> {
+    if rustup_toolchain_env_is_explicit(std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR).as_deref()) {
+        return None;
+    }
+
+    cargo_home_bin_dir(start_dir).and_then(|dir| find_executable_in_dir(&dir, tool))
 }
 
 fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
@@ -311,6 +378,10 @@ fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
 }
 
 fn resolve_runtime_rustc(start_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(rustc) = probe_toolchain_binary("rustc", start_dir) {
+        return Some(rustc);
+    }
+
     let mut rustup = std::process::Command::new("rustup");
     apply_implicit_toolchain_homes(&mut rustup, start_dir);
     if let Some(start_dir) = start_dir {
@@ -666,5 +737,12 @@ mod tests {
             Some(OsStr::new("")),
         );
         assert_eq!(homes, ImplicitToolchainHomes::default());
+    }
+
+    #[test]
+    fn explicit_rustup_toolchain_env_disables_direct_probe() {
+        assert!(rustup_toolchain_env_is_explicit(Some(OsStr::new("stable"))));
+        assert!(!rustup_toolchain_env_is_explicit(Some(OsStr::new(""))));
+        assert!(!rustup_toolchain_env_is_explicit(None));
     }
 }

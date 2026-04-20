@@ -44,8 +44,8 @@ soldr --no-cache cargo build
 
 Behavior:
 
-- Resolve the real `cargo` binary through `rustup`
-- Resolve the matching real `rustc` binary through `rustup`
+- Prefer direct `cargo` and `rustc` binaries from repo-local or explicit `CARGO_HOME/bin`
+- Fall back to `rustup which <tool>` when no matching binary is present in that repo-contained toolchain location
 - Fetch a pinned managed `zccache` release when caching is enabled
 - Set `RUSTC_WRAPPER` to the current soldr binary
 - Pass the managed `zccache` binary path into wrapper mode through the environment
@@ -59,6 +59,7 @@ Current cache-control behavior:
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
 - zccache integration currently targets Rust builds through the cargo front door
 - zccache's current artifact store and daemon endpoint remain on zccache's default paths; soldr currently manages the session lifecycle and logs
+- if `RUSTUP_TOOLCHAIN` is explicitly set, soldr continues to ask `rustup` for the matching toolchain binary
 
 This is the normal build entry point.
 
@@ -101,7 +102,7 @@ In this mode, soldr should act as the transparent build-assistance layer around 
 
 Current implementation status:
 
-- Wrapper mode still transparently resolves the real `rustc`
+- Wrapper mode still transparently resolves the real `rustc`, preferring direct binaries before `rustup`
 - The normal cache-enabled build path now runs through soldr wrapper mode and delegates into managed `zccache`
 - If caching is disabled, wrapper mode falls through to real `rustc` without zccache involvement
 

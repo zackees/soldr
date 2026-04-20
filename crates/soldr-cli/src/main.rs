@@ -584,6 +584,11 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
         return Ok(path);
     }
 
+    let start_dir = std::env::current_dir().ok();
+    if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+        return Ok(path);
+    }
+
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["which", tool]);
     apply_implicit_toolchain_homes(&mut command);
