@@ -214,6 +214,29 @@ fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
     }
 }
 
+fn fake_failing_rustup_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo rustup %* cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME%>>\"{}\"\n\
+             echo rustup should not have been invoked 1>&2\n\
+             exit /b 1\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"rustup $* cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}}\" >> \"{}\"\n\
+             echo \"rustup should not have been invoked\" >&2\n\
+             exit 1\n",
+            log_path.display()
+        )
+    }
+}
+
 fn fake_zccache_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {
@@ -327,6 +350,16 @@ fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (cargo, rustc, zccache)
 }
 
+fn install_fake_version_toolchain(tool_dir: &Path, log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let cargo = fake_script_path(tool_dir, "cargo");
+    let rustc = fake_script_path(tool_dir, "rustc");
+    let rustfmt = fake_script_path(tool_dir, "rustfmt");
+    write_fake_script(&cargo, &fake_version_tool_script(log_path, "cargo"));
+    write_fake_script(&rustc, &fake_version_tool_script(log_path, "rustc"));
+    write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
+    (cargo, rustc, rustfmt)
+}
+
 fn install_fake_wrapper(log_path: &Path, wrapper_name: &str) -> PathBuf {
     let dir = unique_temp_dir("fake-wrapper");
     let wrapper = fake_script_path(&dir, wrapper_name);
@@ -351,6 +384,16 @@ fn install_fake_rustup_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf,
     write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
     write_fake_script(&rustup, &fake_rustup_script(log_path, &dir));
     (rustup, cargo, rustc, rustfmt)
+}
+
+fn install_failing_fake_rustup(log_path: &Path) -> PathBuf {
+    let dir = unique_temp_dir("fake-rustup-failure");
+    #[cfg(windows)]
+    let rustup = dir.join("rustup.bat");
+    #[cfg(not(windows))]
+    let rustup = fake_script_path(&dir, "rustup");
+    write_fake_script(&rustup, &fake_failing_rustup_script(log_path));
+    rustup
 }
 
 #[cfg(windows)]
@@ -781,6 +824,62 @@ fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
     assert!(
         log_contains_toolchain_homes(&log, "rustc", &repo_cargo_home, &repo_rustup_home),
         "rustc execution should inherit repo-local homes: {log}"
+    );
+}
+
+#[test]
+fn repo_local_cargo_bin_tools_work_without_rustup() {
+    let cache_root = unique_temp_dir("repo-local-cargo-bin");
+    let log_path = cache_root.join("tool.log");
+    let rustup = install_failing_fake_rustup(&log_path);
+    let repo_root = unique_temp_dir("repo-local-cargo-bin-root");
+    let repo_cargo_bin = repo_root.join(".cargo").join("bin");
+    let nested = repo_root.join("workspace").join("crate");
+    fs::create_dir_all(&repo_cargo_bin).expect("failed to create repo-local .cargo/bin");
+    fs::create_dir_all(&nested).expect("failed to create nested working dir");
+    install_fake_version_toolchain(&repo_cargo_bin, &log_path);
+
+    for args in [
+        vec!["--no-cache", "cargo", "--version"],
+        vec!["rustfmt", "--version"],
+        vec!["rustc", "--version"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+            .args(&args)
+            .current_dir(&nested)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run soldr with args {args:?}"));
+
+        assert!(
+            output.status.success(),
+            "soldr invocation failed for {:?}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.lines().any(|line| line.starts_with("cargo ")),
+        "expected repo-local cargo shim to run: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.starts_with("rustfmt ")),
+        "expected repo-local rustfmt shim to run: {log}"
+    );
+    assert!(
+        log.lines().any(|line| line.starts_with("rustc ")),
+        "expected repo-local rustc shim to run: {log}"
+    );
+    assert!(
+        !log.lines().any(|line| line.starts_with("rustup ")),
+        "repo-local .cargo/bin tools should bypass rustup entirely: {log}"
     );
 }
 
