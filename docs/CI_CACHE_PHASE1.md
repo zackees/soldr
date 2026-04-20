@@ -1,32 +1,57 @@
 # CI Cache Phase 1 Benchmark
 
-Issue [#122](https://github.com/zackees/soldr/issues/122) requires Linux x64 baseline measurements on GitHub-hosted runners before any broader CI cache work advances.
+Issue [#136](https://github.com/zackees/soldr/issues/136) moves the benchmark report away from hardcoded scenarios and the oversized command-reference page.
 
-Use `.github/workflows/cache-benchmark.yml` for that Phase 1 measurement. The workflow dispatch:
+The benchmark pipeline is now driven by [`benchmark.toml`](../benchmark.toml):
 
-- runs on `ubuntu-24.04` with target `x86_64-unknown-linux-gnu`
-- runs both cache backends in parallel: `Swatinem/rust-cache` and `zccache`
-- seeds each backend cache in one child job, then measures cold and warm builds for each selected scenario
-- measures only the `cargo build --package soldr-cli --release --locked --target <target>` wall time
-- uses Python `time.perf_counter()` around the cargo subprocess for the benchmark timing
-- uploads one top-level `cache-benchmark-summary` artifact containing `cache-benchmark-summary.json`
-- uploads one website-ready `cache-benchmark-www` artifact containing `index.html` and `latest.json`
-- deploys that same generated site bundle to GitHub Pages when the benchmark workflow runs on the default branch
-- renders the benchmark page with the actual `soldr ...` command under test as the first column, plus a reference table of common soldr commands such as `build`, `check`, `test`, `fmt`, and `clippy`
-- keeps the final workflow summary focused on percent less wall time than bare and the leader's advantage over the next-best cache backend
-- fails a compare job unless the warm path is at least the configured ratio faster than the cold control
+- competitors and their internal backend mapping live in the TOML file
+- benchmark profiles live in the TOML file
+- mutation scenarios live in the TOML file
+- the rendered page labels come from the same config
 
-Scenarios:
+`Cache Benchmark` reads that config and currently benchmarks three profile families on Linux x64:
+
+- `release`: `soldr cargo build --package soldr-cli --release --locked --target <target>`
+- `quick`: `soldr cargo check -p soldr-cli --locked --target <target>`
+- `lint`: `soldr cargo clippy --workspace --all-targets --locked --target <target> -- -D warnings`
+
+For each selected mutation and visible competitor, the workflow:
+
+- runs one cold control build without the cache backend
+- runs one seed build for the configured backend
+- applies the mutation and measures the warm build
+- writes raw per-run metrics into `cache-benchmark-results.json`
+- renders `cache-benchmark-summary.json` and the website bundle from the same TOML config
+
+Presentation changes from the previous version:
+
+- the public page now compares `soldr` vs `swatinem`
+- the wide `Result` column is gone
+- the giant command-reference table is gone
+- the page instead shows one compact comparison table plus a short benchmarked-command list
+- the page links to `latest.json` for raw detail
+
+Artifacts:
+
+- `cache-benchmark-raw`: raw benchmark rows in `cache-benchmark-results.json`
+- `cache-benchmark-summary`: rendered summary JSON in `cache-benchmark-summary.json`
+- `cache-benchmark-www`: static site bundle with `index.html` and `latest.json`
+
+Workflow dispatch inputs:
+
+- `scenario=all|soldr-cli|soldr-core`
+- `threshold_ratio=<float>`
+
+Scenarios from `benchmark.toml`:
 
 - `soldr-cli`: top-crate edit in `crates/soldr-cli/src/main.rs`
 - `soldr-core`: lower-crate edit in `crates/soldr-core/src/lib.rs`
-- `all`: runs both scenarios and writes both mutation summaries into the same top-level JSON artifact
 
-Recommended Phase 1 run:
+Recommended run:
 
 1. Dispatch `Cache Benchmark`.
-2. Leave `scenario=all`.
-3. Leave `threshold_ratio=10`.
-4. Open the `Phase 1 summary` job for the high-level percent deltas.
-5. Download the `cache-benchmark-summary` artifact if you need the raw wall times and cache-hit details.
-6. Download `cache-benchmark-www` if you want the static benchmark page bundle directly.
+2. Leave `scenario=all` unless you only need one mutation row set.
+3. Leave `threshold_ratio=10` unless you are intentionally tightening or loosening the warm-path gate.
+4. Open the workflow summary for the compact warm comparison table.
+5. Download `cache-benchmark-raw` for the full per-profile JSON rows.
+6. Download `cache-benchmark-www` if you want the rendered site bundle directly.

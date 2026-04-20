@@ -1,0 +1,47 @@
+[site]
+title = "soldr rendered benchmarks"
+default_threshold_ratio = 10.0
+default_target = "x86_64-unknown-linux-gnu"
+base_competitor = "swatinem"
+soldr_note = "soldr uses managed zccache internally."
+
+[competitors.soldr]
+label = "soldr"
+backend = "zccache"
+show = true
+
+[competitors.swatinem]
+label = "swatinem"
+backend = "swatinem"
+show = true
+
+[[profiles]]
+id = "release"
+label = "Release build"
+command = "soldr cargo build --package soldr-cli --release --locked --target {target}"
+cargo_args = ["build", "--package", "soldr-cli", "--release", "--locked", "--target", "{target}"]
+kind = "build"
+
+[[profiles]]
+id = "quick"
+label = "Quick check"
+command = "soldr cargo check -p soldr-cli --locked --target {target}"
+cargo_args = ["check", "-p", "soldr-cli", "--locked", "--target", "{target}"]
+kind = "build"
+
+[[profiles]]
+id = "lint"
+label = "Lint"
+command = "soldr cargo clippy --workspace --all-targets --locked --target {target} -- -D warnings"
+cargo_args = ["clippy", "--workspace", "--all-targets", "--locked", "--target", "{target}", "--", "-D", "warnings"]
+kind = "lint"
+
+[[mutations]]
+id = "soldr-cli"
+label = "Top-crate edit"
+path = "crates/soldr-cli/src/main.rs"
+
+[[mutations]]
+id = "soldr-core"
+label = "Lower-crate edit"
+path = "crates/soldr-core/src/lib.rs"

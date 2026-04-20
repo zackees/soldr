@@ -5,11 +5,11 @@ on:
     branches:
       - main
     paths-ignore:
-      - '*.md'
+      - "*.md"
   workflow_dispatch:
     inputs:
       scenario:
-        description: Which Phase 1 scenario set to run.
+        description: Which mutation scenario set to run.
         required: true
         type: choice
         default: all
@@ -27,106 +27,261 @@ permissions:
   contents: read
 
 jobs:
-  swatinem-soldr-cli:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-cli' }}
-    name: Swatinem / Top-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      source_ref: ${{ github.sha }}
-      cache_backend: swatinem
-      mutation: soldr-cli
-      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-
-  swatinem-soldr-core:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-core' }}
-    name: Swatinem / Lower-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      source_ref: ${{ github.sha }}
-      cache_backend: swatinem
-      mutation: soldr-core
-      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-
-  zccache-soldr-cli:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-cli' }}
-    name: zccache / Top-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      source_ref: ${{ github.sha }}
-      cache_backend: zccache
-      mutation: soldr-cli
-      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-
-  zccache-soldr-core:
-    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-core' }}
-    name: zccache / Lower-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      source_ref: ${{ github.sha }}
-      cache_backend: zccache
-      mutation: soldr-core
-      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-
-  summary:
-    if: ${{ always() }}
-    name: Phase 1 summary
-    needs:
-      - swatinem-soldr-cli
-      - swatinem-soldr-core
-      - zccache-soldr-cli
-      - zccache-soldr-core
+  benchmark:
+    name: Config-driven benchmark
     runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Resolve benchmark config
+        id: config
+        shell: bash
+        env:
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          INPUT_THRESHOLD_RATIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '' }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path(os.environ["BENCHMARK_CONFIG_PATH"]).read_text(encoding="utf-8"))
+          target = config["site"].get("default_target", "x86_64-unknown-linux-gnu")
+          threshold = os.environ["INPUT_THRESHOLD_RATIO"] or str(
+              config["site"].get("default_threshold_ratio", 10.0)
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"target={target}\n")
+              fh.write(f"threshold_ratio={threshold}\n")
+          PY
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          components: clippy
+          targets: ${{ steps.config.outputs.target }}
+
+      - name: Prepare zccache tool
+        uses: ./.github/actions/cache-benchmark-zccache
+        with:
+          cache-cargo-registry: "false"
+          cache-compilation: "false"
+          cache-target: "false"
+          save-cache: "false"
+
+      - name: Run configured benchmarks
+        shell: bash
+        env:
+          BENCHMARK_COMMAND_TARGET: ${{ steps.config.outputs.target }}
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
+          SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
+          THRESHOLD_RATIO: ${{ steps.config.outputs.threshold_ratio }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          import time
+          import tomllib
+          from pathlib import Path
+
+          class SafeFormatDict(dict):
+              def __missing__(self, key):
+                  return "{" + key + "}"
+
+
+          repo_root = Path.cwd()
+          config = tomllib.loads(Path(os.environ["BENCHMARK_CONFIG_PATH"]).read_text(encoding="utf-8"))
+          target = os.environ["BENCHMARK_COMMAND_TARGET"]
+          threshold = float(os.environ["THRESHOLD_RATIO"])
+          scenario = os.environ["SCENARIO"]
+          output_path = Path(os.environ["BENCHMARK_RESULTS_JSON"])
+
+          selected_mutations = [
+              mutation
+              for mutation in config["mutations"]
+              if scenario == "all" or mutation["id"] == scenario
+          ]
+          competitors = [
+              {"id": competitor_id, **competitor}
+              for competitor_id, competitor in config["competitors"].items()
+              if competitor.get("show", True)
+          ]
+          profiles = list(config["profiles"])
+
+          def render_parts(parts):
+              return [part.format_map(SafeFormatDict(target=target)) for part in parts]
+
+          def clean_workspace():
+              subprocess.run(
+                  ["git", "reset", "--hard", "HEAD"],
+                  cwd=repo_root,
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              subprocess.run(
+                  ["git", "clean", "-fdx"],
+                  cwd=repo_root,
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+
+          def reset_backend(backend):
+              if backend == "zccache":
+                  subprocess.run(["zccache", "stop"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  shutil.rmtree(Path.home() / ".zccache", ignore_errors=True)
+              subprocess.run(["cargo", "clean"], cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+          def apply_mutation(mutation):
+              mutation_path = repo_root / mutation["path"]
+              with mutation_path.open("a", encoding="utf-8") as handle:
+                  handle.write(f"\n// cache benchmark mutation: {mutation['id']}\n")
+
+          def run_cargo(profile, backend):
+              command = ["cargo", *render_parts(profile["cargo_args"])]
+              env = os.environ.copy()
+              env["CARGO_TERM_COLOR"] = "never"
+              env.pop("RUSTC_WRAPPER", None)
+              if backend == "zccache":
+                  subprocess.run(["zccache", "start"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  env["RUSTC_WRAPPER"] = "zccache"
+              start = time.perf_counter()
+              subprocess.run(command, cwd=repo_root, env=env, check=True)
+              return time.perf_counter() - start
+
+          results = []
+          failures = []
+          output_path.parent.mkdir(parents=True, exist_ok=True)
+
+          for mutation in selected_mutations:
+              for profile in profiles:
+                  for competitor in competitors:
+                      backend = competitor["backend"]
+                      result = {
+                          "competitor": competitor["id"],
+                          "profile": profile["id"],
+                          "mutation": mutation["id"],
+                          "result": "success",
+                          "cold_seconds": None,
+                          "warm_seconds": None,
+                          "saved_seconds": None,
+                          "speedup_ratio": None,
+                          "cache_hit": False,
+                          "cache_hit_detail": f"backend={backend};same_job_seed=true",
+                          "threshold_failed": False,
+                      }
+
+                      try:
+                          clean_workspace()
+                          reset_backend("none")
+                          apply_mutation(mutation)
+                          cold_seconds = run_cargo(profile, "none")
+
+                          clean_workspace()
+                          reset_backend(backend)
+                          run_cargo(profile, backend)
+                          apply_mutation(mutation)
+                          warm_seconds = run_cargo(profile, backend)
+                      except subprocess.CalledProcessError as exc:
+                          result["result"] = "failure"
+                          result["cache_hit_detail"] = (
+                              f"backend={backend};same_job_seed=true;returncode={exc.returncode}"
+                          )
+                          failures.append(
+                              f"{profile['id']}/{mutation['id']}/{competitor['id']} failed with exit code {exc.returncode}"
+                          )
+                      else:
+                          speedup_ratio = cold_seconds / warm_seconds if warm_seconds else float("inf")
+                          result["cold_seconds"] = round(cold_seconds, 2)
+                          result["warm_seconds"] = round(warm_seconds, 2)
+                          result["saved_seconds"] = round(cold_seconds - warm_seconds, 2)
+                          result["speedup_ratio"] = round(speedup_ratio, 2)
+                          result["cache_hit"] = warm_seconds < cold_seconds
+                          result["threshold_failed"] = speedup_ratio < threshold
+                          if result["threshold_failed"]:
+                              failures.append(
+                                  f"{profile['id']}/{mutation['id']}/{competitor['id']} observed {speedup_ratio:.2f}x, required {threshold:.2f}x"
+                              )
+
+                      results.append(result)
+
+          output_path.write_text(
+              json.dumps(
+                  {
+                      "threshold_ratio": threshold,
+                      "scenario": scenario,
+                      "results": results,
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          if failures:
+              print("Benchmark threshold or command failures detected:")
+              for failure in failures:
+                  print(f"- {failure}")
+          PY
+
       - name: Write benchmark summary
         shell: bash
         env:
-          BENCHMARK_COMMAND_TARGET: x86_64-unknown-linux-gnu
+          BENCHMARK_COMMAND_TARGET: ${{ steps.config.outputs.target }}
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          BENCHMARK_INPUT_JSON: benchmark-summary/cache-benchmark-results.json
           BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
           BENCHMARK_SUMMARY_WWW_DIR: benchmark-summary/site
           SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
-          THRESHOLD_RATIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-          SWATINEM_CLI_RESULT: ${{ needs.swatinem-soldr-cli.result }}
-          SWATINEM_CLI_COLD: ${{ needs.swatinem-soldr-cli.outputs.cold_seconds }}
-          SWATINEM_CLI_WARM: ${{ needs.swatinem-soldr-cli.outputs.warm_seconds }}
-          SWATINEM_CLI_SAVED: ${{ needs.swatinem-soldr-cli.outputs.saved_seconds }}
-          SWATINEM_CLI_RATIO: ${{ needs.swatinem-soldr-cli.outputs.speedup_ratio }}
-          SWATINEM_CLI_HIT: ${{ needs.swatinem-soldr-cli.outputs.cache_hit }}
-          SWATINEM_CLI_HIT_DETAIL: ${{ needs.swatinem-soldr-cli.outputs.cache_hit_detail }}
-          SWATINEM_CORE_RESULT: ${{ needs.swatinem-soldr-core.result }}
-          SWATINEM_CORE_COLD: ${{ needs.swatinem-soldr-core.outputs.cold_seconds }}
-          SWATINEM_CORE_WARM: ${{ needs.swatinem-soldr-core.outputs.warm_seconds }}
-          SWATINEM_CORE_SAVED: ${{ needs.swatinem-soldr-core.outputs.saved_seconds }}
-          SWATINEM_CORE_RATIO: ${{ needs.swatinem-soldr-core.outputs.speedup_ratio }}
-          SWATINEM_CORE_HIT: ${{ needs.swatinem-soldr-core.outputs.cache_hit }}
-          SWATINEM_CORE_HIT_DETAIL: ${{ needs.swatinem-soldr-core.outputs.cache_hit_detail }}
-          ZCCACHE_CLI_RESULT: ${{ needs.zccache-soldr-cli.result }}
-          ZCCACHE_CLI_COLD: ${{ needs.zccache-soldr-cli.outputs.cold_seconds }}
-          ZCCACHE_CLI_WARM: ${{ needs.zccache-soldr-cli.outputs.warm_seconds }}
-          ZCCACHE_CLI_SAVED: ${{ needs.zccache-soldr-cli.outputs.saved_seconds }}
-          ZCCACHE_CLI_RATIO: ${{ needs.zccache-soldr-cli.outputs.speedup_ratio }}
-          ZCCACHE_CLI_HIT: ${{ needs.zccache-soldr-cli.outputs.cache_hit }}
-          ZCCACHE_CLI_HIT_DETAIL: ${{ needs.zccache-soldr-cli.outputs.cache_hit_detail }}
-          ZCCACHE_CORE_RESULT: ${{ needs.zccache-soldr-core.result }}
-          ZCCACHE_CORE_COLD: ${{ needs.zccache-soldr-core.outputs.cold_seconds }}
-          ZCCACHE_CORE_WARM: ${{ needs.zccache-soldr-core.outputs.warm_seconds }}
-          ZCCACHE_CORE_SAVED: ${{ needs.zccache-soldr-core.outputs.saved_seconds }}
-          ZCCACHE_CORE_RATIO: ${{ needs.zccache-soldr-core.outputs.speedup_ratio }}
-          ZCCACHE_CORE_HIT: ${{ needs.zccache-soldr-core.outputs.cache_hit }}
-          ZCCACHE_CORE_HIT_DETAIL: ${{ needs.zccache-soldr-core.outputs.cache_hit_detail }}
+          THRESHOLD_RATIO: ${{ steps.config.outputs.threshold_ratio }}
         run: |
           set -euo pipefail
           python3 .github/scripts/cache_benchmark_report.py
+
+      - name: Enforce configured thresholds
+        shell: bash
+        env:
+          BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["BENCHMARK_RESULTS_JSON"]).read_text(encoding="utf-8"))
+          failures = []
+          for result in payload["results"]:
+              slug = f"{result['profile']}/{result['mutation']}/{result['competitor']}"
+              if result["result"] != "success":
+                  failures.append(f"{slug} failed")
+                  continue
+              if result["threshold_failed"]:
+                  failures.append(f"{slug} missed the configured speedup threshold")
+
+          if failures:
+              sys.exit("\n".join(failures))
+          PY
+
+      - name: Cleanup zccache
+        if: ${{ always() }}
+        uses: ./.github/actions/cache-benchmark-zccache-cleanup
+
+      - name: Upload raw benchmark artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-raw
+          path: benchmark-summary/cache-benchmark-results.json
+          if-no-files-found: error
 
       - name: Upload benchmark summary artifact
         if: ${{ always() }}
@@ -155,10 +310,10 @@ jobs:
           path: benchmark-summary/site
 
   deploy-pages:
-    if: ${{ always() && needs.summary.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: ${{ always() && needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
     name: Deploy benchmark site
     needs:
-      - summary
+      - benchmark
     permissions:
       pages: write
       id-token: write
