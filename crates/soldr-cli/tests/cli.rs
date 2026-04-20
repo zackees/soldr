@@ -842,7 +842,7 @@ fn repo_local_cargo_bin_tools_work_without_rustup() {
     for args in [
         vec!["--no-cache", "cargo", "--version"],
         vec!["rustfmt", "--version"],
-        vec!["rustc", "--version"],
+        vec!["--no-cache", "rustc", "--version"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
             .args(&args)
