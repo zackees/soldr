@@ -7,6 +7,19 @@ import subprocess
 import sys
 
 
+def _is_transient_zccache_status_failure(exc: subprocess.CalledProcessError) -> bool:
+    combined = "\n".join(
+        part
+        for part in (
+            exc.stdout,
+            exc.stderr,
+            exc.output,
+        )
+        if isinstance(part, str) and part
+    ).lower()
+    return "zccache status failed" in combined and "daemon not running" in combined
+
+
 def main() -> None:
     binary = os.environ["SETUP_SOLDR_PATH"]
     output_path = os.environ["GITHUB_OUTPUT"]
@@ -19,7 +32,11 @@ def main() -> None:
 
     subprocess.run(["cargo", "--version"], check=True)
     subprocess.run(["rustc", "--version"], check=True)
-    subprocess.run(["soldr", "status", "--json"], check=True, stdout=subprocess.DEVNULL)
+    try:
+        subprocess.run(["soldr", "status", "--json"], check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        if not _is_transient_zccache_status_failure(exc):
+            raise
 
 
 if __name__ == "__main__":

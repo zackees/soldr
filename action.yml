@@ -1,6 +1,6 @@
 name: setup-soldr
 author: zackees
-description: Extraction-ready Soldr setup action. Installs one soldr binary, provisions the resolved Rust toolchain via rustup, and restores a cacheable runner-local Soldr root.
+description: Extraction-ready Soldr setup action. Installs one soldr binary, bootstraps rustup when needed, provisions the resolved Rust toolchain, and restores a cacheable runner-local Soldr root.
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
