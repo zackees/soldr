@@ -404,6 +404,26 @@ fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
     std::env::join_paths(paths).expect("failed to join PATH")
 }
 
+/// PATH value for tests that need to verify soldr's tool resolution falls back
+/// to its rustup path. Strips the runner's real cargo/rustc entries so
+/// `probe_toolchain_binary`'s PATH search can't shadow the in-test fakes.
+/// On Windows we keep `System32` so `Command::new` can still spawn `.cmd`
+/// shims via `cmd.exe`.
+fn isolated_test_path() -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        let system_root = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        let dirs = [system_root.join("System32"), system_root];
+        std::env::join_paths(dirs).expect("failed to join isolated PATH")
+    }
+    #[cfg(not(windows))]
+    {
+        std::ffi::OsString::from("/usr/bin:/bin")
+    }
+}
+
 #[test]
 fn version_command_prints_workspace_version() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -771,8 +791,10 @@ fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
             .current_dir(&nested)
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("PATH", isolated_test_path())
             .env_remove("CARGO_HOME")
             .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
             .output()
             .unwrap_or_else(|_| panic!("failed to run soldr with args {args:?}"));
 
@@ -834,8 +856,13 @@ fn repo_local_cargo_bin_tools_work_without_rustup() {
     let rustup = install_failing_fake_rustup(&log_path);
     let repo_root = unique_temp_dir("repo-local-cargo-bin-root");
     let repo_cargo_bin = repo_root.join(".cargo").join("bin");
+    let repo_rustup_home = repo_root.join(".rustup");
     let nested = repo_root.join("workspace").join("crate");
     fs::create_dir_all(&repo_cargo_bin).expect("failed to create repo-local .cargo/bin");
+    // Anchor the rustup-home ancestor walk inside the test sandbox so it can't
+    // climb up to a runner-installed `~/.rustup` (Windows GitHub runners put
+    // TEMP under USERPROFILE, where `.rustup` typically exists).
+    fs::create_dir_all(&repo_rustup_home).expect("failed to create repo-local .rustup");
     fs::create_dir_all(&nested).expect("failed to create nested working dir");
     install_fake_version_toolchain(&repo_cargo_bin, &log_path);
 
@@ -849,6 +876,7 @@ fn repo_local_cargo_bin_tools_work_without_rustup() {
             .current_dir(&nested)
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("PATH", isolated_test_path())
             .env_remove("CARGO_HOME")
             .env_remove("RUSTUP_HOME")
             .env_remove("RUSTUP_TOOLCHAIN")
@@ -905,6 +933,8 @@ fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
         .env("CARGO_HOME", &explicit_cargo_home)
         .env("RUSTUP_HOME", &explicit_rustup_home)
+        .env("PATH", isolated_test_path())
+        .env_remove("RUSTUP_TOOLCHAIN")
         .output()
         .expect("failed to run soldr cargo --version with explicit homes");
 
