@@ -89,11 +89,10 @@ jobs:
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - uses: ./soldr/.github/actions/cache-benchmark-zccache
         with:
-          workspaces: |
-            soldr -> target
-            ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }} -> target
+          shared-key: ${{ inputs.target }}
+          target-dir: soldr/target
 
       - name: Build soldr-cli
         shell: pwsh
@@ -149,3 +148,6 @@ jobs:
         with:
           name: soldr-${{ inputs.target }}
           path: ${{ steps.soldr_binary.outputs.path }}
+
+      - if: ${{ always() }}
+        uses: ./soldr/.github/actions/cache-benchmark-zccache-cleanup
