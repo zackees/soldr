@@ -47,14 +47,22 @@ def _release_url(repo: str, version: str) -> str:
     return f"https://api.github.com/repos/{repo}/releases/latest"
 
 
+def _request_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "setup-soldr-action",
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def _fetch_release(repo: str, version: str) -> dict[str, object]:
     request = urllib.request.Request(
         _release_url(repo, version),
-        headers={
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "setup-soldr-action",
-        },
+        headers=_request_headers(),
     )
     with urllib.request.urlopen(request) as response:
         return json.load(response)

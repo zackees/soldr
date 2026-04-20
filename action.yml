@@ -83,6 +83,7 @@ runs:
     - id: install
       shell: pwsh
       env:
+        GITHUB_TOKEN: ${{ github.token }}
         SOLDR_REPO: ${{ steps.resolve.outputs.soldr_repo }}
         SOLDR_INSTALL_DIR: ${{ steps.resolve.outputs.bin_dir }}
         SETUP_SOLDR_VERSION: ${{ steps.resolve.outputs.soldr_version_requested }}
