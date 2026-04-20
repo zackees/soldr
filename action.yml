@@ -1,0 +1,107 @@
+name: setup-soldr
+description: Install soldr, provision the Rust toolchain, and restore a cacheable runner-local Soldr root.
+inputs:
+  version:
+    description: Soldr version or tag to install. Defaults to the latest release.
+    required: false
+    default: ""
+  repo:
+    description: GitHub repository that publishes Soldr releases.
+    required: false
+    default: zackees/soldr
+  cache:
+    description: Restore and save the setup cache across workflow runs.
+    required: false
+    default: "true"
+  cache-dir:
+    description: Override the runner-local cache root used for Soldr, Cargo, and rustup state.
+    required: false
+    default: ""
+  cache-key-suffix:
+    description: Optional extra suffix added to the cache key.
+    required: false
+    default: ""
+  toolchain:
+    description: Override the Rust toolchain channel. When empty, rust-toolchain.toml is used if present.
+    required: false
+    default: ""
+  toolchain-file:
+    description: Toolchain file to read when toolchain is not explicitly set.
+    required: false
+    default: rust-toolchain.toml
+  trust-mode:
+    description: Optional value for SOLDR_TRUST_MODE.
+    required: false
+    default: ""
+outputs:
+  soldr-path:
+    description: Installed Soldr binary path.
+    value: ${{ steps.resolve.outputs.soldr_path }}
+  soldr-version:
+    description: Installed Soldr version.
+    value: ${{ steps.verify.outputs.soldr_version }}
+  cache-dir:
+    description: Runner-local cache root used by the action.
+    value: ${{ steps.resolve.outputs.cache_root }}
+  cache-hit:
+    description: Whether the action restored an exact setup cache hit.
+    value: ${{ steps.cache-meta.outputs.cache_hit }}
+  toolchain:
+    description: Rust toolchain channel configured by the action.
+    value: ${{ steps.resolve.outputs.toolchain }}
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: pwsh
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_CACHE_DIR: ${{ inputs.cache-dir }}
+        INPUT_CACHE_KEY_SUFFIX: ${{ inputs.cache-key-suffix }}
+        INPUT_TOOLCHAIN: ${{ inputs.toolchain }}
+        INPUT_TOOLCHAIN_FILE: ${{ inputs.toolchain-file }}
+        INPUT_TRUST_MODE: ${{ inputs.trust-mode }}
+        ACTION_WORKSPACE: ${{ github.workspace }}
+        ACTION_OS: ${{ runner.os }}
+        ACTION_ARCH: ${{ runner.arch }}
+      run: python "${{ github.action_path }}/.github/actions/setup-soldr/resolve_setup.py"
+
+    - id: cache
+      if: ${{ inputs.cache == 'true' }}
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ${{ steps.resolve.outputs.cache_root }}
+        key: ${{ steps.resolve.outputs.cache_key }}
+        restore-keys: |
+          ${{ steps.resolve.outputs.cache_restore_prefix }}
+
+    - id: toolchain
+      shell: pwsh
+      run: python "${{ github.action_path }}/.github/actions/setup-soldr/ensure_rust_toolchain.py"
+
+    - id: install
+      shell: pwsh
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        SOLDR_REPO: ${{ steps.resolve.outputs.soldr_repo }}
+        SOLDR_INSTALL_DIR: ${{ steps.resolve.outputs.bin_dir }}
+        SETUP_SOLDR_VERSION: ${{ steps.resolve.outputs.soldr_version_requested }}
+      run: python "${{ github.action_path }}/.github/actions/setup-soldr/ensure_soldr.py"
+
+    - id: verify
+      shell: pwsh
+      env:
+        SETUP_SOLDR_PATH: ${{ steps.resolve.outputs.soldr_path }}
+      run: python "${{ github.action_path }}/.github/actions/setup-soldr/verify_soldr.py"
+
+    - id: cache-meta
+      shell: pwsh
+      env:
+        RAW_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        $value = $env:RAW_CACHE_HIT
+        if ([string]::IsNullOrWhiteSpace($value)) {
+          $value = "false"
+        }
+        "cache_hit=$value" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append

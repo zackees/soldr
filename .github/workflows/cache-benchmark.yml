@@ -23,16 +23,12 @@ on:
         default: "10"
         type: string
 
-env:
-  BENCHMARK_SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
-  BENCHMARK_THRESHOLD_RATIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
-
 permissions:
   contents: read
 
 jobs:
   swatinem-soldr-cli:
-    if: ${{ env.BENCHMARK_SCENARIO == 'all' || env.BENCHMARK_SCENARIO == 'soldr-cli' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-cli' }}
     name: Swatinem / Top-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
@@ -41,10 +37,10 @@ jobs:
       source_ref: ${{ github.sha }}
       cache_backend: swatinem
       mutation: soldr-cli
-      threshold_ratio: ${{ env.BENCHMARK_THRESHOLD_RATIO }}
+      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
 
   swatinem-soldr-core:
-    if: ${{ env.BENCHMARK_SCENARIO == 'all' || env.BENCHMARK_SCENARIO == 'soldr-core' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-core' }}
     name: Swatinem / Lower-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
@@ -53,10 +49,10 @@ jobs:
       source_ref: ${{ github.sha }}
       cache_backend: swatinem
       mutation: soldr-core
-      threshold_ratio: ${{ env.BENCHMARK_THRESHOLD_RATIO }}
+      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
 
   zccache-soldr-cli:
-    if: ${{ env.BENCHMARK_SCENARIO == 'all' || env.BENCHMARK_SCENARIO == 'soldr-cli' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-cli' }}
     name: zccache / Top-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
@@ -65,10 +61,10 @@ jobs:
       source_ref: ${{ github.sha }}
       cache_backend: zccache
       mutation: soldr-cli
-      threshold_ratio: ${{ env.BENCHMARK_THRESHOLD_RATIO }}
+      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
 
   zccache-soldr-core:
-    if: ${{ env.BENCHMARK_SCENARIO == 'all' || env.BENCHMARK_SCENARIO == 'soldr-core' }}
+    if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.scenario == 'all' || github.event.inputs.scenario == 'soldr-core' }}
     name: zccache / Lower-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
@@ -77,7 +73,7 @@ jobs:
       source_ref: ${{ github.sha }}
       cache_backend: zccache
       mutation: soldr-core
-      threshold_ratio: ${{ env.BENCHMARK_THRESHOLD_RATIO }}
+      threshold_ratio: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
 
   summary:
     if: ${{ always() }}
@@ -98,8 +94,8 @@ jobs:
           BENCHMARK_COMMAND_TARGET: x86_64-unknown-linux-gnu
           BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
           BENCHMARK_SUMMARY_WWW_DIR: benchmark-summary/site
-          SCENARIO: ${{ env.BENCHMARK_SCENARIO }}
-          THRESHOLD_RATIO: ${{ env.BENCHMARK_THRESHOLD_RATIO }}
+          SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
+          THRESHOLD_RATIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '10' }}
           SWATINEM_CLI_RESULT: ${{ needs.swatinem-soldr-cli.result }}
           SWATINEM_CLI_COLD: ${{ needs.swatinem-soldr-cli.outputs.cold_seconds }}
           SWATINEM_CLI_WARM: ${{ needs.swatinem-soldr-cli.outputs.warm_seconds }}
