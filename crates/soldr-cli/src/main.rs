@@ -420,11 +420,31 @@ fn run_wrapper_through_zccache(
     raw_args: &[String],
     zccache: &std::path::Path,
 ) -> Result<i32, SoldrError> {
-    let status = std::process::Command::new(zccache)
-        .args(&raw_args[1..])
-        .status()?;
+    let mut command = std::process::Command::new(zccache);
+    command.args(&raw_args[1..]);
 
-    Ok(status.code().unwrap_or(1))
+    // Cargo's jobserver lives on numbered file descriptors that it inherits
+    // into the RUSTC_WRAPPER, advertised via CARGO_MAKEFLAGS. On Unix,
+    // exec'ing into zccache replaces the wrapper process in-place so those
+    // FDs flow straight through to the inner rustc — rustc otherwise emits
+    // "failed to connect to jobserver from environment variable
+    // CARGO_MAKEFLAGS=...: cannot open file descriptor N" because spawning
+    // a Rust child closes any FDs not explicitly inherited.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        let err = command.exec();
+        return Err(SoldrError::Other(format!(
+            "failed to exec zccache at {}: {err}",
+            zccache.display()
+        )));
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = command.status()?;
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {

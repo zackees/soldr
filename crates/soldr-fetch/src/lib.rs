@@ -141,6 +141,23 @@ fn install_zccache_from_crates_io(
     std::fs::create_dir_all(&tool_dir)?;
 
     let install_root = tempfile::tempdir_in(&paths.bin)?;
+    // Cargo emits a "be sure to add `<root>/bin` to your PATH" warning whenever
+    // it installs into a `--root` that isn't already on PATH. The temp root
+    // here is just a staging area before we copy the binaries into the
+    // managed soldr cache, so the warning is misleading noise. Prepend the
+    // staging bin dir to PATH for the cargo subprocess so the check passes.
+    let install_bin = install_root.path().join("bin");
+    let install_path_env = match std::env::var_os("PATH") {
+        Some(existing) => {
+            let mut dirs: Vec<PathBuf> = vec![install_bin.clone()];
+            dirs.extend(std::env::split_paths(&existing));
+            std::env::join_paths(dirs).map_err(|e| {
+                SoldrError::Other(format!("failed to extend PATH for cargo install: {e}"))
+            })?
+        }
+        None => install_bin.clone().into_os_string(),
+    };
+
     for (package_name, binary_name) in MANAGED_ZCCACHE_PACKAGES {
         let install_status = std::process::Command::new("cargo")
             .args([
@@ -153,6 +170,7 @@ fn install_zccache_from_crates_io(
             ])
             .arg(install_root.path())
             .args(["--bin", binary_name, "--force"])
+            .env("PATH", &install_path_env)
             .status()
             .map_err(|e| {
                 SoldrError::Other(format!(
