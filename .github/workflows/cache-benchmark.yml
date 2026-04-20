@@ -30,45 +30,87 @@ permissions:
   contents: read
 
 jobs:
+  config:
+    name: Resolve Phase 1 config
+    runs-on: ubuntu-24.04
+    outputs:
+      runner: ${{ steps.config.outputs.runner }}
+      target: ${{ steps.config.outputs.target }}
+      threshold_ratio: ${{ steps.config.outputs.threshold_ratio }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Read benchmark config
+        id: config
+        shell: bash
+        env:
+          INPUT_THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          config = tomllib.loads(Path("benchmark.toml").read_text(encoding="utf-8"))
+          phase1 = config["phase1"]
+          threshold = os.environ["INPUT_THRESHOLD_RATIO"] or str(
+              phase1["default_threshold_ratio"]
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"runner={phase1['runner']}\n")
+              fh.write(f"target={phase1['target']}\n")
+              fh.write(f"threshold_ratio={threshold}\n")
+          PY
+
   soldr-cli:
+    needs: config
     if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-cli' }}
     name: Top-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
+      runner: ${{ needs.config.outputs.runner }}
+      target: ${{ needs.config.outputs.target }}
       source_ref: ${{ github.sha }}
       cache_backend: ${{ inputs.cache_backend }}
       mutation: soldr-cli
-      threshold_ratio: ${{ inputs.threshold_ratio }}
+      threshold_ratio: ${{ needs.config.outputs.threshold_ratio }}
 
   soldr-core:
+    needs: config
     if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-core' }}
     name: Lower-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
+      runner: ${{ needs.config.outputs.runner }}
+      target: ${{ needs.config.outputs.target }}
       source_ref: ${{ github.sha }}
       cache_backend: ${{ inputs.cache_backend }}
       mutation: soldr-core
-      threshold_ratio: ${{ inputs.threshold_ratio }}
+      threshold_ratio: ${{ needs.config.outputs.threshold_ratio }}
 
   summary:
     if: ${{ always() }}
     name: Phase 1 summary
     needs:
+      - config
       - soldr-cli
       - soldr-core
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Write benchmark summary
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Write phase 1 summary input
         shell: bash
         env:
           CACHE_BACKEND: ${{ inputs.cache_backend }}
           SCENARIO: ${{ inputs.scenario }}
-          THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
+          BENCH_RUNNER: ${{ needs.config.outputs.runner }}
+          BENCH_TARGET: ${{ needs.config.outputs.target }}
+          THRESHOLD_RATIO: ${{ needs.config.outputs.threshold_ratio }}
           SOLDR_CLI_RESULT: ${{ needs.soldr-cli.result }}
           SOLDR_CLI_COLD: ${{ needs.soldr-cli.outputs.cold_seconds }}
           SOLDR_CLI_WARM: ${{ needs.soldr-cli.outputs.warm_seconds }}
@@ -86,91 +128,48 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import json
           import os
+          from pathlib import Path
 
-          scenarios = [
-              (
-                  "soldr-cli",
-                  "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-                  os.environ["SOLDR_CLI_RESULT"],
-                  os.environ["SOLDR_CLI_COLD"],
-                  os.environ["SOLDR_CLI_WARM"],
-                  os.environ["SOLDR_CLI_SAVED"],
-                  os.environ["SOLDR_CLI_RATIO"],
-                  os.environ["SOLDR_CLI_HIT"],
-                  os.environ["SOLDR_CLI_HIT_DETAIL"],
-              ),
-              (
-                  "soldr-core",
-                  "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-                  os.environ["SOLDR_CORE_RESULT"],
-                  os.environ["SOLDR_CORE_COLD"],
-                  os.environ["SOLDR_CORE_WARM"],
-                  os.environ["SOLDR_CORE_SAVED"],
-                  os.environ["SOLDR_CORE_RATIO"],
-                  os.environ["SOLDR_CORE_HIT"],
-                  os.environ["SOLDR_CORE_HIT_DETAIL"],
-              ),
-          ]
+          payload = {
+              "cache_backend": os.environ["CACHE_BACKEND"],
+              "scenario": os.environ["SCENARIO"],
+              "runner": os.environ["BENCH_RUNNER"],
+              "target": os.environ["BENCH_TARGET"],
+              "threshold_ratio": os.environ["THRESHOLD_RATIO"],
+              "results": [
+                  {
+                      "mutation": "soldr-cli",
+                      "result": os.environ["SOLDR_CLI_RESULT"],
+                      "cold_seconds": os.environ["SOLDR_CLI_COLD"],
+                      "warm_seconds": os.environ["SOLDR_CLI_WARM"],
+                      "saved_seconds": os.environ["SOLDR_CLI_SAVED"],
+                      "speedup_ratio": os.environ["SOLDR_CLI_RATIO"],
+                      "cache_hit": os.environ["SOLDR_CLI_HIT"],
+                      "cache_hit_detail": os.environ["SOLDR_CLI_HIT_DETAIL"],
+                  },
+                  {
+                      "mutation": "soldr-core",
+                      "result": os.environ["SOLDR_CORE_RESULT"],
+                      "cold_seconds": os.environ["SOLDR_CORE_COLD"],
+                      "warm_seconds": os.environ["SOLDR_CORE_WARM"],
+                      "saved_seconds": os.environ["SOLDR_CORE_SAVED"],
+                      "speedup_ratio": os.environ["SOLDR_CORE_RATIO"],
+                      "cache_hit": os.environ["SOLDR_CORE_HIT"],
+                      "cache_hit_detail": os.environ["SOLDR_CORE_HIT_DETAIL"],
+                  },
+              ],
+          }
 
-          workflow_summary = [
-              "### Cache Benchmark Summary",
-              "",
-              f"- cache backend: `{os.environ['CACHE_BACKEND']}`",
-              f"- requested scenario: `{os.environ['SCENARIO']}`",
-              f"- required ratio: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
-              "- runner: `ubuntu-24.04`",
-              "- target: `x86_64-unknown-linux-gnu`",
-              "- measured command: `cargo build --package soldr-cli --release --locked --target x86_64-unknown-linux-gnu --timings`",
-              "",
-          ]
-          issue_comment = [
-              "### Phase 1 benchmark results",
-              "",
-              f"- workflow: `cache-benchmark.yml`",
-              f"- cache backend under test: `{os.environ['CACHE_BACKEND']}`",
-              f"- threshold used: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
-              f"- runner: `ubuntu-24.04`",
-              f"- target: `x86_64-unknown-linux-gnu`",
-              "",
-          ]
-
-          for key, label, result, cold, warm, saved, ratio, cache_hit, hit_detail in scenarios:
-              if result == "skipped":
-                  continue
-
-              workflow_summary.extend(
-                  [
-                      f"#### {label}",
-                      "",
-                      f"- job result: `{result}`",
-                      f"- cold wall seconds: `{cold}`",
-                      f"- warm wall seconds: `{warm}`",
-                      f"- seconds saved: `{saved}`",
-                      f"- speedup ratio: `{ratio}x`",
-                      f"- warm cache hit: `{cache_hit}`",
-                      f"- warm cache hit detail: `{hit_detail}`",
-                      "",
-                  ]
-              )
-              issue_comment.extend(
-                  [
-                      f"- {label}: cold `{cold}s`, warm `{warm}s`, saved `{saved}s`, speedup `{ratio}x`, cache hit `{cache_hit}`",
-                      f"  cache detail: `{hit_detail}`",
-                  ]
-              )
-
-          issue_comment.extend(
-              [
-                  "",
-                  "Timing artifacts are attached for each seed, cold, and warm child job as `cache-benchmark-<backend>-<mutation>-<stage>-timings`.",
-              ]
-          )
-
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-              fh.write("\n".join(workflow_summary) + "\n\n")
-              fh.write("### Issue Comment Draft\n\n")
-              fh.write("```markdown\n")
-              fh.write("\n".join(issue_comment) + "\n")
-              fh.write("```\n")
+          output_path = Path("benchmark-summary/phase1-summary-input.json")
+          output_path.parent.mkdir(parents=True, exist_ok=True)
+          output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
           PY
+
+      - name: Write benchmark summary
+        env:
+          BENCHMARK_REPORT_MODE: phase1-summary
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          BENCHMARK_PHASE1_INPUT_JSON: benchmark-summary/phase1-summary-input.json
+        run: python3 .github/scripts/cache_benchmark_report.py

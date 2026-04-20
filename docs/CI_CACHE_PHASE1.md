@@ -4,12 +4,12 @@ Issue [#122](https://github.com/zackees/soldr/issues/122) requires Linux x64 bas
 
 Use `.github/workflows/cache-benchmark.yml` for that Phase 1 measurement. The workflow dispatch:
 
-- runs on `ubuntu-24.04` with target `x86_64-unknown-linux-gnu`
+- resolves the Phase 1 runner, target, measured command, and mutation labels from [`benchmark.toml`](../benchmark.toml)
 - calls the reusable scenario workflow for each selected mutation
 - lets each scenario run three reusable child builds: seed, cold, and warm
 - measures `cargo build --package soldr-cli --release --locked --target x86_64-unknown-linux-gnu --timings`
 - fails unless the warm path is at least the configured ratio faster than the cold control
-- writes an issue-comment-ready summary into the workflow summary
+- writes an issue-comment-ready summary into the workflow summary via `.github/scripts/cache_benchmark_report.py`
 - uploads each measured build's `target/cargo-timings` bundle as an artifact
 
 Workflow dispatch inputs:
@@ -31,3 +31,5 @@ Recommended run:
 4. Leave `threshold_ratio=10` unless you are intentionally tightening or loosening the gate.
 5. Open the workflow summary and copy the `Issue Comment Draft` block into issue `#122`.
 6. Download any `cache-benchmark-<backend>-<mutation>-<stage>-timings` artifact you want to inspect. Each one contains the `cargo build --timings` output from that child job.
+
+The workflow's Phase 1 defaults currently live in `benchmark.toml` under `[phase1]`. Update that block if the benchmark runner, target, or measured command changes so the workflow, summary text, and docs stay aligned.

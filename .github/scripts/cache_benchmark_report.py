@@ -65,9 +65,19 @@ def _format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
+def _format_bool(value: bool | None) -> str:
+    if value is None:
+        return "n/a"
+    return "true" if value else "false"
+
+
 def _load_config() -> tuple[dict[str, Any], Path]:
     config_path = Path(os.environ.get("BENCHMARK_CONFIG_PATH", DEFAULT_CONFIG_PATH))
     return tomllib.loads(config_path.read_text(encoding="utf-8")), config_path
+
+
+def _mutation_by_id(config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {mutation["id"]: mutation for mutation in config.get("mutations", [])}
 
 
 def _format_command(template: str, target: str) -> str:
@@ -94,7 +104,7 @@ def _load_results(
     profiles = list(config["profiles"])
     profile_by_id = {profile["id"]: profile for profile in profiles}
     mutations = list(config["mutations"])
-    mutation_by_id = {mutation["id"]: mutation for mutation in mutations}
+    mutation_by_id = _mutation_by_id(config)
 
     results: list[dict[str, Any]] = []
     for raw_result in raw_results:
@@ -448,8 +458,123 @@ def _append_step_summary(report: dict[str, Any]) -> None:
         handle.write("\n".join(summary_lines) + "\n")
 
 
+def _phase1_result_label(
+    mutation_by_id: dict[str, dict[str, Any]], mutation_id: str
+) -> str:
+    mutation = mutation_by_id.get(mutation_id)
+    if mutation is None:
+        return f"`{mutation_id}`"
+    return f"{mutation['label']} (`{mutation['path']}`)"
+
+
+def _build_phase1_summary_lines(config: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+    phase1 = config["phase1"]
+    mutation_by_id = _mutation_by_id(config)
+    runner = payload.get("runner") or phase1["runner"]
+    target = payload.get("target") or phase1["target"]
+    threshold = float(payload.get("threshold_ratio") or phase1["default_threshold_ratio"])
+    cache_backend = payload["cache_backend"]
+    scenario = payload["scenario"]
+    command = _format_command(phase1["command"], target)
+    workflow_summary = [
+        "### Cache Benchmark Summary",
+        "",
+        f"- cache backend: `{cache_backend}`",
+        f"- requested scenario: `{scenario}`",
+        f"- required ratio: `{threshold:.2f}x`",
+        f"- runner: `{runner}`",
+        f"- target: `{target}`",
+        f"- measured command: `{command}`",
+        "",
+    ]
+    issue_comment = [
+        "### Phase 1 benchmark results",
+        "",
+        "- workflow: `cache-benchmark.yml`",
+        f"- cache backend under test: `{cache_backend}`",
+        f"- threshold used: `{threshold:.2f}x`",
+        f"- runner: `{runner}`",
+        f"- target: `{target}`",
+        "",
+    ]
+
+    for result in payload["results"]:
+        mutation_id = result["mutation"]
+        label = _phase1_result_label(mutation_by_id, mutation_id)
+        status = result.get("result", "success")
+        cold = _read_float(result.get("cold_seconds"))
+        warm = _read_float(result.get("warm_seconds"))
+        saved = _read_float(result.get("saved_seconds"))
+        ratio = _read_float(result.get("speedup_ratio"))
+        cache_hit = _read_bool(result.get("cache_hit"))
+        hit_detail = result.get("cache_hit_detail") or "n/a"
+
+        if status == "skipped":
+            continue
+
+        workflow_summary.extend(
+            [
+                f"#### {label}",
+                "",
+                f"- job result: `{status}`",
+                f"- cold wall seconds: `{_format_seconds(cold)}`",
+                f"- warm wall seconds: `{_format_seconds(warm)}`",
+                f"- seconds saved: `{_format_seconds(saved)}`",
+                f"- speedup ratio: `{_format_ratio(ratio)}`",
+                f"- warm cache hit: `{_format_bool(cache_hit)}`",
+                f"- warm cache hit detail: `{hit_detail}`",
+                "",
+            ]
+        )
+
+        issue_summary = [
+            f"- {label}: job result `{status}`",
+            f"  cache detail: `{hit_detail}`",
+        ]
+        if status == "success":
+            issue_summary[0] = (
+                f"- {label}: cold `{_format_seconds(cold)}`, warm `{_format_seconds(warm)}`, "
+                f"saved `{_format_seconds(saved)}`, speedup `{_format_ratio(ratio)}`, "
+                f"cache hit `{_format_bool(cache_hit)}`"
+            )
+        issue_comment.extend(issue_summary)
+
+    issue_number = phase1.get("issue")
+    issue_target = f"#{issue_number}" if issue_number is not None else "the Phase 1 tracker issue"
+    issue_comment.extend(
+        [
+            "",
+            "Timing artifacts are attached for each seed, cold, and warm child job as `cache-benchmark-<backend>-<mutation>-<stage>-timings`.",
+            "",
+            f"Copy this block into issue {issue_target}.",
+        ]
+    )
+
+    return workflow_summary + [
+        "### Issue Comment Draft",
+        "",
+        "```markdown",
+        *issue_comment,
+        "```",
+    ]
+
+
+def _append_phase1_step_summary(config: dict[str, Any]) -> None:
+    input_path = Path(os.environ["BENCHMARK_PHASE1_INPUT_JSON"])
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+    summary_lines = _build_phase1_summary_lines(config, payload)
+    with Path(summary_path).open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(summary_lines) + "\n")
+
+
 def main() -> None:
     config, config_path = _load_config()
+    if os.environ.get("BENCHMARK_REPORT_MODE") == "phase1-summary":
+        _append_phase1_step_summary(config)
+        return
     results, competitors, profiles, mutations = _load_results(config)
     report = _build_report(config, config_path, results, competitors, profiles, mutations)
     _write_json_report(report)
