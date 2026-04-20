@@ -3,6 +3,8 @@ name: Setup Soldr Action
 on:
   pull_request:
     paths:
+      - README.md
+      - INTEGRATION.md
       - action.yml
       - install.sh
       - rust-toolchain.toml
