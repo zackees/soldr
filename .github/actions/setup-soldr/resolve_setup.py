@@ -164,7 +164,6 @@ def main() -> None:
     build_cache_prefix = f"setup-soldr-buildcache-v1-{runner_os}-{runner_arch}"
     build_cache_toolchain_prefix = f"{build_cache_prefix}-{digest}-"
     build_cache_key = f"{build_cache_toolchain_prefix}{github_sha}"
-    build_cache_restore_keys = f"{build_cache_toolchain_prefix}\n{build_cache_prefix}-"
 
     if suffix:
         sanitized_suffix = _sanitize_fragment(suffix)
@@ -189,7 +188,8 @@ def main() -> None:
             "cache_key": cache_key,
             "cache_restore_prefix": f"{cache_prefix}-",
             "build_cache_key": build_cache_key,
-            "build_cache_restore_keys": build_cache_restore_keys,
+            "build_cache_restore_key_toolchain": build_cache_toolchain_prefix,
+            "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
             "soldr_root": str(soldr_root),
             "cargo_home": str(cargo_home),
             "rustup_home": str(rustup_home),

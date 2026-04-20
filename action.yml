@@ -98,7 +98,9 @@ runs:
       with:
         path: ~/.zccache
         key: ${{ steps.resolve.outputs.build_cache_key }}
-        restore-keys: ${{ steps.resolve.outputs.build_cache_restore_keys }}
+        restore-keys: |
+          ${{ steps.resolve.outputs.build_cache_restore_key_toolchain }}
+          ${{ steps.resolve.outputs.build_cache_restore_key_os_arch }}
 
     - id: toolchain
       shell: pwsh
