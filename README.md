@@ -1,4 +1,4 @@
-# soldr
+# soldr - Rust
 
 [![Linux x64](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml)
 [![Linux ARM64](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml)
