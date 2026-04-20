@@ -59,11 +59,11 @@ The preferred CI path is the repository root action:
 That action:
 
 - installs `soldr`
-- provisions the Rust toolchain, using `rust-toolchain.toml` by default
+- preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
 - puts `soldr` on `PATH` for later steps
 
-If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later.
+If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later. The action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the toolchain it just installed instead of asking rustup to resolve a pinned file lazily.
 
 For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
 

@@ -1,5 +1,5 @@
 name: setup-soldr
-description: Install soldr, provision the Rust toolchain, and restore a cacheable runner-local Soldr root.
+description: Install soldr, preinstall the resolved Rust toolchain, and restore a cacheable runner-local Soldr root.
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ""
   toolchain:
-    description: Override the Rust toolchain channel. When empty, rust-toolchain.toml is used if present.
+    description: Override the exact Rust toolchain channel string. When empty, rust-toolchain.toml is used if present.
     required: false
     default: ""
   toolchain-file:
@@ -47,7 +47,7 @@ outputs:
     description: Whether the action restored an exact setup cache hit.
     value: ${{ steps.cache-meta.outputs.cache_hit }}
   toolchain:
-    description: Rust toolchain channel configured by the action.
+    description: Exact Rust toolchain channel configured by the action.
     value: ${{ steps.resolve.outputs.toolchain }}
 runs:
   using: composite
