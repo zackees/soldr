@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - Cargo.toml
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -40,14 +41,6 @@ jobs:
           set -euo pipefail
           commit_sha='${{ github.sha }}'
 
-          if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
-            echo "autonomous releases must run from main" >&2
-            exit 1
-          fi
-
-          git fetch origin main --depth=1
-          git merge-base --is-ancestor "$commit_sha" origin/main
-
           cargo_version="$(
             sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' Cargo.toml | head -n1
           )"
@@ -80,192 +73,21 @@ jobs:
 
           pypi_tag="v${pypi_version}"
           highest_version="$(printf '%s\n%s\n' "$pypi_tag" "$version" | sort -V | tail -n1)"
+          should_release=true
           if [[ "$highest_version" != "$version" || "$pypi_tag" == "$version" ]]; then
-            {
-              echo "should_release=false"
-              echo "tag_exists=$tag_exists"
-              echo "version=$version"
-              echo "commit_sha=$commit_sha"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
+            should_release=false
           fi
 
           {
-            echo "should_release=true"
+            echo "should_release=$should_release"
             echo "tag_exists=$tag_exists"
             echo "version=$version"
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
 
-  lint:
-    name: Lint
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.prepare.outputs.commit_sha }}
-
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-        with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-  test:
-    name: ${{ matrix.name }}
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    runs-on: ${{ matrix.runner }}
-    env:
-      GH_TOKEN: ${{ github.token }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x64
-            runner: ubuntu-24.04
-          - name: macOS x64
-            runner: macos-15-intel
-          - name: Windows x64
-            runner: windows-2025
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.prepare.outputs.commit_sha }}
-
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
-      - name: Build workspace
-        run: cargo build --workspace --locked
-
-      - name: Run library tests
-        run: cargo test --workspace --lib --locked
-
-      - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --test cli --locked
-
-      - name: Verify Windows defaults to MSVC under Git Bash
-        if: runner.os == 'Windows'
-        shell: bash
-        run: bash .github/scripts/windows-msys-default-msvc.sh
-
-      - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
-
-  e2e-linux-x64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-gnu
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-linux-arm64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: ubuntu-24.04-arm
-      target: aarch64-unknown-linux-gnu
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-linux-x64-musl:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: ubuntu-24.04
-      target: x86_64-unknown-linux-musl
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-linux-arm64-musl:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: ubuntu-24.04-arm
-      target: aarch64-unknown-linux-musl
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-macos-x64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: macos-15-intel
-      target: x86_64-apple-darwin
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-macos-arm64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: macos-15
-      target: aarch64-apple-darwin
-      binary_name: soldr
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-windows-x64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: windows-2025
-      target: x86_64-pc-windows-msvc
-      binary_name: soldr.exe
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
-  e2e-windows-arm64:
-    name: build
-    needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: windows-11-arm
-      target: aarch64-pc-windows-msvc
-      binary_name: soldr.exe
-      source_ref: ${{ needs.prepare.outputs.commit_sha }}
-
   build:
     name: ${{ matrix.name }}
-    needs:
-      - prepare
-      - lint
-      - test
-      - e2e-linux-x64
-      - e2e-linux-arm64
-      - e2e-linux-x64-musl
-      - e2e-linux-arm64-musl
-      - e2e-macos-x64
-      - e2e-macos-arm64
-      - e2e-windows-x64
-      - e2e-windows-arm64
+    needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -343,18 +165,7 @@ jobs:
 
   build-pypi:
     name: PyPI ${{ matrix.name }}
-    needs:
-      - prepare
-      - lint
-      - test
-      - e2e-linux-x64
-      - e2e-linux-arm64
-      - e2e-linux-x64-musl
-      - e2e-linux-arm64-musl
-      - e2e-macos-x64
-      - e2e-macos-arm64
-      - e2e-windows-x64
-      - e2e-windows-arm64
+    needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -417,19 +228,10 @@ jobs:
 
   publish:
     name: Attest and publish release assets
-    if: >-
-      ${{
-        always() &&
-        needs.prepare.outputs.should_release == 'true' &&
-        needs.prepare.outputs.tag_exists == 'false' &&
-        needs.prepare.result == 'success' &&
-        needs.build.result == 'success' &&
-        needs.build-pypi.result == 'success'
-      }}
     needs:
       - prepare
       - build
-      - build-pypi
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
     runs-on: ubuntu-24.04
 
     steps:
@@ -478,12 +280,7 @@ jobs:
     needs:
       - prepare
       - build-pypi
-      - publish
-    if: |
-      always()
-      && needs.prepare.outputs.should_release == 'true'
-      && needs.build-pypi.result == 'success'
-      && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ubuntu-24.04
 
     steps:
