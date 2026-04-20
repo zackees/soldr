@@ -32,6 +32,7 @@ jobs:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
     needs: lint
+    if: matrix.runner != 'macos-15-intel' || github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release'
     env:
       GH_TOKEN: ${{ github.token }}
     strategy:
@@ -107,6 +108,7 @@ jobs:
 
   e2e-macos-x64:
     name: build
+    if: github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release'
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: macos-15-intel
