@@ -12,6 +12,10 @@ on:
       binary_name:
         required: true
         type: string
+      save_cache:
+        required: false
+        type: string
+        default: "false"
       source_ref:
         required: true
         type: string
@@ -91,7 +95,11 @@ jobs:
 
       - uses: ./soldr/.github/actions/cache-benchmark-zccache
         with:
+          # Keep branch-agnostic restore keys so feature branches can warm from
+          # canonical main caches, while push builds on feature branches can
+          # also save their own preferred branch-local cache entries.
           shared-key: ${{ inputs.target }}
+          save-cache: ${{ inputs.save_cache }}
           target-dir: soldr/target
 
       - name: Build soldr-cli
