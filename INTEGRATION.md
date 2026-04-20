@@ -27,6 +27,33 @@ This repository currently ships an in-repo root GitHub Action for Soldr setup. T
 
 The stable-major public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v1` contract yet.
 
+### Public-action status
+
+The target public UX after extraction is:
+
+```yaml
+steps:
+  - uses: actions/checkout@v4
+
+  - uses: zackees/setup-soldr@v1
+    with:
+      version: 0.7.4
+      cache: true
+
+  - run: soldr cargo build --locked --release
+  - run: soldr cargo test --locked
+```
+
+That public repo is not shipped yet. This repository cannot publish it directly to GitHub Marketplace because Marketplace action repositories must keep one root `action.yml` and no workflow files. The extraction plan and intended `@v1` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
+
+Stable-major rule for the planned public repo:
+
+- `@v1` is the moving major tag for backward-compatible updates
+- `@v2` is introduced only for breaking contract changes
+- the intended normal path is still one `setup-soldr` step plus `soldr cargo ...`; no separate toolchain action is part of the common-case contract
+
+Until that repo exists, no verified public one-line Soldr action exists yet. Use `zackees/soldr@<ref>` or `uses: ./` instead.
+
 ### Preferred setup action path
 
 The root action:
@@ -83,6 +110,8 @@ Useful inputs when wiring the action into another repository:
 - `cache`: turn the runner-local cache root on or off
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
+
+The current `repo` input is an implementation/testing override for the in-repo action. It is not part of the intended public `setup-soldr@v1` contract.
 
 Useful outputs:
 

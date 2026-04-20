@@ -940,10 +940,10 @@ fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
 #[test]
 fn rustup_resolution_failure_reports_raw_error_and_ci_guidance() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["rustc", "--version"])
+        .args(["--no-cache", "rustc", "--version"])
         .env("RUSTUP_TOOLCHAIN", "soldr-ci-missing-toolchain")
         .output()
-        .expect("failed to run soldr rustc --version with invalid RUSTUP_TOOLCHAIN");
+        .expect("failed to run soldr --no-cache rustc --version with invalid RUSTUP_TOOLCHAIN");
 
     assert!(
         !output.status.success(),
