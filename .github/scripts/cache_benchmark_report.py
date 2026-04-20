@@ -6,13 +6,10 @@ from __future__ import annotations
 import json
 import math
 import os
-import shutil
 from collections import defaultdict
+from html import escape
 from pathlib import Path
 from typing import Any
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-WWW_BENCHMARK_TEMPLATE = REPO_ROOT / "www" / "benchmarks" / "index.html"
 
 
 SCENARIOS = [
@@ -69,6 +66,18 @@ def _round_metric(value: float | None) -> float | None:
     if value is None or not math.isfinite(value):
         return None
     return round(value, 2)
+
+
+def _format_seconds(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}s"
+
+
+def _format_ratio(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}x"
+
+
+def _format_percent(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.2f}%"
 
 
 def _load_results() -> list[dict[str, Any]]:
@@ -170,6 +179,138 @@ def _write_json_report(report: dict[str, Any]) -> None:
     output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def _build_table_rows(report: dict[str, Any]) -> str:
+    rows: list[str] = []
+    for mutation in report["mutations"]:
+        leader_backend = mutation["leader_backend"]
+        for result in mutation["results"]:
+            winner = "yes" if result["backend"] == leader_backend else ""
+            rows.append(
+                "<tr>"
+                f"<td>{escape(result['mutation'])}</td>"
+                f"<td>{escape(result['backend'])}</td>"
+                f"<td>{escape(result['result'])}</td>"
+                f"<td>{_format_seconds(result['cold_seconds'])}</td>"
+                f"<td>{_format_seconds(result['warm_seconds'])}</td>"
+                f"<td>{_format_seconds(result['saved_seconds'])}</td>"
+                f"<td>{_format_ratio(result['speedup_ratio'])}</td>"
+                f"<td>{_format_percent(result['percent_less_wall_time_than_bare'])}</td>"
+                f"<td>{winner}</td>"
+                "</tr>"
+            )
+    return "\n".join(rows)
+
+
+def _build_html_page(report: dict[str, Any]) -> str:
+    headline = []
+    for mutation in report["mutations"]:
+        if mutation["leader_backend"] is None:
+            continue
+        headline.append(
+            f"{mutation['mutation']}: {mutation['leader_backend']} "
+            f"({_format_percent(mutation['leader_percent_less_wall_time_than_bare'])} less wall time than bare)"
+        )
+
+    headline_text = " | ".join(headline) if headline else "No successful benchmark results."
+
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>soldr rendered benchmarks</title>
+    <style>
+      body {{
+        margin: 0;
+        padding: 32px 20px 40px;
+        font-family: Arial, sans-serif;
+        color: #202426;
+        background: #f8f8f6;
+      }}
+      main {{
+        max-width: 1100px;
+        margin: 0 auto;
+      }}
+      h1 {{
+        margin: 0 0 12px;
+        font-size: 32px;
+      }}
+      p {{
+        margin: 0 0 12px;
+        line-height: 1.5;
+      }}
+      .meta {{
+        color: #4e5a5f;
+      }}
+      table {{
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 20px;
+        background: #ffffff;
+      }}
+      th, td {{
+        border: 1px solid #d7dcdf;
+        padding: 10px 12px;
+        text-align: left;
+        font-size: 14px;
+      }}
+      th {{
+        background: #eef2f3;
+      }}
+      tbody tr:nth-child(even) {{
+        background: #fafcfc;
+      }}
+      .footer {{
+        margin-top: 16px;
+        color: #4e5a5f;
+        font-size: 13px;
+      }}
+      @media (max-width: 900px) {{
+        .table-wrap {{
+          overflow-x: auto;
+        }}
+        table {{
+          min-width: 860px;
+        }}
+      }}
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>soldr rendered benchmarks</h1>
+      <p>{escape(headline_text)}</p>
+      <p class="meta">
+        Workflow: {escape(report["workflow"])} |
+        Scenario: {escape(report["requested_scenario"])} |
+        Threshold: {report["threshold_ratio"]:.2f}x
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Mutation</th>
+              <th>Backend</th>
+              <th>Result</th>
+              <th>Cold</th>
+              <th>Warm</th>
+              <th>Saved</th>
+              <th>Speedup</th>
+              <th>% less than bare</th>
+              <th>Winner</th>
+            </tr>
+          </thead>
+          <tbody>
+            {_build_table_rows(report)}
+          </tbody>
+        </table>
+      </div>
+      <p class="footer">Source data is published beside this page as latest.json.</p>
+    </main>
+  </body>
+</html>
+"""
+
+
 def _write_www_bundle(report: dict[str, Any]) -> None:
     www_dir = os.environ.get("BENCHMARK_SUMMARY_WWW_DIR")
     if not www_dir:
@@ -177,19 +318,9 @@ def _write_www_bundle(report: dict[str, Any]) -> None:
 
     output_dir = Path(www_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    if not WWW_BENCHMARK_TEMPLATE.exists():
-        raise FileNotFoundError(f"missing benchmark page template: {WWW_BENCHMARK_TEMPLATE}")
-
-    template_html = WWW_BENCHMARK_TEMPLATE.read_text(encoding="utf-8")
-    embedded_report = json.dumps(report, indent=2)
-    placeholder = '<script id="benchmark-data" type="application/json"></script>'
-    html = template_html.replace(
-        placeholder,
-        f'{placeholder[:-9]}\n{embedded_report}\n</script>',
-        1,
-    )
-    (output_dir / "index.html").write_text(html, encoding="utf-8")
+    (output_dir / "index.html").write_text(_build_html_page(report), encoding="utf-8")
     (output_dir / "latest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    (output_dir / ".nojekyll").write_text("", encoding="utf-8")
 
 
 def _build_summary_lines(report: dict[str, Any]) -> list[str]:
