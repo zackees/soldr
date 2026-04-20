@@ -82,9 +82,9 @@ That means Soldr treats `main` as the canonical warm-cache source:
 - A feature-branch push can save a branch-local cache entry in its own branch scope.
 - Later pushes and PRs for that same branch restore that branch-local cache first.
 - If the feature branch has no exact cache yet, GitHub falls back to the `main` cache lineage through the same stable keys.
-- Pull request runs are restore-only; they do not depend on PR merge-ref caches as the main strategy.
+- The heavy cache-producing CI runs on branch pushes, not `pull_request`, so each feature branch gets one useful cache lineage instead of a duplicate PR merge-ref lineage.
 
-In practice this gives the exact parent/child model we want: `main` acts as the shared parent cache, feature branches read from that parent on miss, and each feature branch may also save its own preferred child cache when the workflow runs on `push`. This repository is the first reference implementation of that pattern. For the full wiring and rollout notes, see [docs/CI_CACHE.md](./docs/CI_CACHE.md).
+In practice this gives the exact parent/child model we want: `main` acts as the shared parent cache, feature branches read from that parent on miss, and each feature branch may also save its own preferred child cache when the workflow runs on `push`. Pull requests then reflect the branch-push CI state instead of creating a second heavy cache path. This repository is the first reference implementation of that pattern. For the full wiring and rollout notes, see [docs/CI_CACHE.md](./docs/CI_CACHE.md).
 
 ## Why soldr exists
 

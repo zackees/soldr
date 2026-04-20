@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  pull_request:
-    paths-ignore:
-      - '*.md'
   push:
     branches:
       - '**'
@@ -29,11 +26,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          # GitHub caches are branch-scoped. A push writes into the current
-          # branch scope, so main continuously refreshes the canonical cache and
-          # feature branches can also save their own preferred branch-local
-          # cache entries. PR runs stay restore-only because merge-ref caches are
-          # much less reusable.
+          # GitHub caches are branch-scoped. This workflow runs on push only, so
+          # each branch writes into its own scope. That lets main refresh the
+          # canonical parent cache while feature branches can also save their own
+          # preferred child cache without duplicating work in pull_request runs.
           shared-key: workspace
           save-if: ${{ github.event_name == 'push' }}
 
@@ -70,7 +66,8 @@ jobs:
         with:
           # Use the same stable key lineage as lint. Pushes save branch-local
           # caches, which GitHub restores before falling back to base/default
-          # branch caches on later runs.
+          # branch caches on later branch pushes and on PR checks attached to
+          # the branch head.
           shared-key: workspace
           save-if: ${{ github.event_name == 'push' }}
 
