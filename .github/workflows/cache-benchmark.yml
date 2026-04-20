@@ -81,9 +81,12 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
       - name: Write benchmark summary
         shell: bash
         env:
+          BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
           SCENARIO: ${{ inputs.scenario }}
           THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
           SWATINEM_CLI_RESULT: ${{ needs.swatinem-soldr-cli.result }}
@@ -116,102 +119,12 @@ jobs:
           ZCCACHE_CORE_HIT_DETAIL: ${{ needs.zccache-soldr-core.outputs.cache_hit_detail }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
-          import os
+          python3 .github/scripts/cache_benchmark_report.py
 
-          scenarios = [
-              (
-                  "swatinem",
-                  "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-                  os.environ["SWATINEM_CLI_RESULT"],
-                  os.environ["SWATINEM_CLI_COLD"],
-                  os.environ["SWATINEM_CLI_WARM"],
-                  os.environ["SWATINEM_CLI_SAVED"],
-                  os.environ["SWATINEM_CLI_RATIO"],
-                  os.environ["SWATINEM_CLI_HIT"],
-                  os.environ["SWATINEM_CLI_HIT_DETAIL"],
-              ),
-              (
-                  "swatinem",
-                  "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-                  os.environ["SWATINEM_CORE_RESULT"],
-                  os.environ["SWATINEM_CORE_COLD"],
-                  os.environ["SWATINEM_CORE_WARM"],
-                  os.environ["SWATINEM_CORE_SAVED"],
-                  os.environ["SWATINEM_CORE_RATIO"],
-                  os.environ["SWATINEM_CORE_HIT"],
-                  os.environ["SWATINEM_CORE_HIT_DETAIL"],
-              ),
-              (
-                  "zccache",
-                  "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-                  os.environ["ZCCACHE_CLI_RESULT"],
-                  os.environ["ZCCACHE_CLI_COLD"],
-                  os.environ["ZCCACHE_CLI_WARM"],
-                  os.environ["ZCCACHE_CLI_SAVED"],
-                  os.environ["ZCCACHE_CLI_RATIO"],
-                  os.environ["ZCCACHE_CLI_HIT"],
-                  os.environ["ZCCACHE_CLI_HIT_DETAIL"],
-              ),
-              (
-                  "zccache",
-                  "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-                  os.environ["ZCCACHE_CORE_RESULT"],
-                  os.environ["ZCCACHE_CORE_COLD"],
-                  os.environ["ZCCACHE_CORE_WARM"],
-                  os.environ["ZCCACHE_CORE_SAVED"],
-                  os.environ["ZCCACHE_CORE_RATIO"],
-                  os.environ["ZCCACHE_CORE_HIT"],
-                  os.environ["ZCCACHE_CORE_HIT_DETAIL"],
-              ),
-          ]
-
-          workflow_summary = [
-              "### Cache Benchmark Summary",
-              "",
-              f"- requested scenario: `{os.environ['SCENARIO']}`",
-              f"- required ratio: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
-              "- timing scope: `cargo build --package soldr-cli --release --locked --target <target>` only",
-              "- measurement source: `time.perf_counter()` around the cargo subprocess",
-              "",
-              "| backend | mutation | result | cold (s) | warm (s) | saved (s) | speedup | cache hit |",
-              "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
-          ]
-          issue_comment = [
-              "### Phase 1 benchmark results",
-              "",
-              "- workflow: `cache-benchmark.yml`",
-              "- cache backends under test: `swatinem`, `zccache`",
-              f"- threshold used: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
-              "",
-              "| backend | mutation | cold (s) | warm (s) | saved (s) | speedup | cache hit |",
-              "| --- | --- | ---: | ---: | ---: | ---: | --- |",
-          ]
-
-          cache_details = []
-
-          for backend, label, result, cold, warm, saved, ratio, cache_hit, hit_detail in scenarios:
-              if result == "skipped":
-                  continue
-
-              workflow_summary.append(
-                  f"| `{backend}` | {label} | `{result}` | `{cold}` | `{warm}` | `{saved}` | `{ratio}x` | `{cache_hit}` |"
-              )
-              issue_comment.append(
-                  f"| `{backend}` | {label} | `{cold}` | `{warm}` | `{saved}` | `{ratio}x` | `{cache_hit}` |"
-              )
-              cache_details.append(f"- `{backend}` / {label}: `{hit_detail}`")
-
-          workflow_summary.extend(["", "### Cache Details", ""])
-          workflow_summary.extend(cache_details)
-
-          issue_comment.extend(["", "Cache details:"])
-          issue_comment.extend(cache_details)
-
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
-              fh.write("\n".join(workflow_summary) + "\n\n")
-              fh.write("### Issue Comment Draft\n\n")
-              fh.write("```markdown\n")
-              fh.write("\n".join(issue_comment) + "\n")
-              fh.write("```\n")
-          PY
+      - name: Upload benchmark summary artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-summary
+          path: benchmark-summary/cache-benchmark-summary.json
+          if-no-files-found: error
