@@ -10,7 +10,8 @@ Use `.github/workflows/cache-benchmark.yml` for that Phase 1 measurement. The wo
 - measures only the `cargo build --package soldr-cli --release --locked --target <target>` wall time
 - uses Python `time.perf_counter()` around the cargo subprocess for the benchmark timing
 - uploads one top-level `cache-benchmark-summary` artifact containing `cache-benchmark-summary.json`
-- uploads one website-ready `cache-benchmark-www` artifact containing `www/benchmarks/index.html` and `www/benchmarks/latest.json`
+- uploads one website-ready `cache-benchmark-www` artifact containing `index.html` and `latest.json`
+- deploys that same generated site bundle to GitHub Pages when the benchmark workflow runs on the default branch
 - keeps the final workflow summary focused on percent less wall time than bare and the leader's advantage over the next-best cache backend
 - fails a compare job unless the warm path is at least the configured ratio faster than the cold control
 
@@ -27,4 +28,4 @@ Recommended Phase 1 run:
 3. Leave `threshold_ratio=10`.
 4. Open the `Phase 1 summary` job for the high-level percent deltas.
 5. Download the `cache-benchmark-summary` artifact if you need the raw wall times and cache-hit details.
-6. Download `cache-benchmark-www` if you want the static benchmark page bundle for a `www` site.
+6. Download `cache-benchmark-www` if you want the static benchmark page bundle directly.

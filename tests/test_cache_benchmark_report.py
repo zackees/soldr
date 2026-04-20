@@ -14,7 +14,7 @@ SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "cache_benchmark_report.py"
 def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     json_path = tmp_path / "cache-benchmark-summary.json"
     summary_path = tmp_path / "step-summary.md"
-    www_dir = tmp_path / "www" / "benchmarks"
+    www_dir = tmp_path / "site"
     env = os.environ.copy()
     env.update(
         {
@@ -78,5 +78,7 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     www_json = json.loads((www_dir / "latest.json").read_text(encoding="utf-8"))
     assert www_json["workflow"] == "cache-benchmark.yml"
     www_html = (www_dir / "index.html").read_text(encoding="utf-8")
-    assert "<title>soldr Cache Benchmarks</title>" in www_html
-    assert '"workflow": "cache-benchmark.yml"' in www_html
+    assert "<title>soldr rendered benchmarks</title>" in www_html
+    assert "<th>Mutation</th>" in www_html
+    assert "<td>soldr-cli</td>" in www_html
+    assert (www_dir / ".nojekyll").exists()
