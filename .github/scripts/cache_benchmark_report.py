@@ -1,111 +1,39 @@
 #!/usr/bin/env python3
-"""Generate the top-level cache benchmark report and JSON artifact."""
+"""Generate the cache benchmark report and rendered site bundle."""
 
 from __future__ import annotations
 
 import json
 import math
 import os
+import tomllib
 from collections import defaultdict
 from html import escape
 from pathlib import Path
 from typing import Any
 
 
-SCENARIOS = [
-    {
-        "backend": "swatinem",
-        "mutation": "soldr-cli",
-        "label": "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-        "env_prefix": "SWATINEM_CLI",
-    },
-    {
-        "backend": "swatinem",
-        "mutation": "soldr-core",
-        "label": "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-        "env_prefix": "SWATINEM_CORE",
-    },
-    {
-        "backend": "zccache",
-        "mutation": "soldr-cli",
-        "label": "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-        "env_prefix": "ZCCACHE_CLI",
-    },
-    {
-        "backend": "zccache",
-        "mutation": "soldr-core",
-        "label": "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-        "env_prefix": "ZCCACHE_CORE",
-    },
-]
-
-DEFAULT_BENCHMARK_TARGET = "x86_64-unknown-linux-gnu"
-BENCHMARK_COMMAND_TEMPLATE = (
-    "soldr cargo build --package soldr-cli --release --locked --target {target}"
-)
-BASE_COMMAND_REFERENCE = [
-    {
-        "purpose": "Setup / status",
-        "command": "soldr status --json",
-        "status": "setup check",
-    },
-    {
-        "purpose": "Cache inspect",
-        "command": "soldr cache --json",
-        "status": "setup check",
-    },
-    {
-        "purpose": "Release build",
-        "command": "soldr cargo build --workspace --locked",
-        "status": "common compile path",
-    },
-    {
-        "purpose": "Targeted check",
-        "command": "soldr cargo check -p soldr-cli",
-        "status": "common compile path",
-    },
-    {
-        "purpose": "Library tests",
-        "command": "soldr cargo test --workspace --lib --locked",
-        "status": "common test path",
-    },
-    {
-        "purpose": "CLI smoke tests",
-        "command": "soldr cargo test -p soldr-cli --test cli --locked",
-        "status": "common test path",
-    },
-    {
-        "purpose": "Fetch integration test",
-        "command": "soldr cargo test -p soldr-fetch --test fetch_crgx --locked",
-        "status": "common test path",
-    },
-    {
-        "purpose": "Formatting check",
-        "command": "soldr cargo fmt --all -- --check",
-        "status": "quality check",
-    },
-    {
-        "purpose": "Clippy",
-        "command": "soldr cargo clippy --workspace --all-targets --locked -- -D warnings",
-        "status": "quality check",
-    },
-    {
-        "purpose": "Dylint",
-        "command": "soldr cargo-dylint check",
-        "status": "tooling check",
-    },
-]
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_CONFIG_PATH = REPO_ROOT / "benchmark.toml"
+DEFAULT_TARGET = "x86_64-unknown-linux-gnu"
 
 
-def _read_float(value: str) -> float | None:
-    if not value:
+class _SafeFormatDict(dict[str, str]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _read_float(value: Any) -> float | None:
+    if value in ("", None):
         return None
     return float(value)
 
 
-def _read_bool(value: str) -> bool | None:
-    if not value:
+def _read_bool(value: Any) -> bool | None:
+    if value in ("", None):
         return None
+    if isinstance(value, bool):
+        return value
     if value == "true":
         return True
     if value == "false":
@@ -137,108 +65,169 @@ def _format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
-def _load_results() -> list[dict[str, Any]]:
+def _load_config() -> tuple[dict[str, Any], Path]:
+    config_path = Path(os.environ.get("BENCHMARK_CONFIG_PATH", DEFAULT_CONFIG_PATH))
+    return tomllib.loads(config_path.read_text(encoding="utf-8")), config_path
+
+
+def _format_command(template: str, target: str) -> str:
+    return template.format_map(_SafeFormatDict(target=target))
+
+
+def _load_results(
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    input_path = Path(os.environ["BENCHMARK_INPUT_JSON"])
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    raw_results = payload["results"] if isinstance(payload, dict) else payload
+
+    site = config["site"]
+    target = os.environ.get("BENCHMARK_COMMAND_TARGET") or site.get(
+        "default_target", DEFAULT_TARGET
+    )
+    competitors = [
+        {"id": competitor_id, **competitor}
+        for competitor_id, competitor in config["competitors"].items()
+        if competitor.get("show", True)
+    ]
+    competitor_by_id = {competitor["id"]: competitor for competitor in competitors}
+    profiles = list(config["profiles"])
+    profile_by_id = {profile["id"]: profile for profile in profiles}
+    mutations = list(config["mutations"])
+    mutation_by_id = {mutation["id"]: mutation for mutation in mutations}
+
     results: list[dict[str, Any]] = []
-    benchmark_target = os.environ.get("BENCHMARK_COMMAND_TARGET", DEFAULT_BENCHMARK_TARGET)
-    benchmark_command = BENCHMARK_COMMAND_TEMPLATE.format(target=benchmark_target)
-    for scenario in SCENARIOS:
-        prefix = scenario["env_prefix"]
-        result = os.environ[f"{prefix}_RESULT"]
-        cold_seconds = _read_float(os.environ.get(f"{prefix}_COLD", ""))
-        warm_seconds = _read_float(os.environ.get(f"{prefix}_WARM", ""))
-        saved_seconds = _read_float(os.environ.get(f"{prefix}_SAVED", ""))
-        speedup_ratio = _read_float(os.environ.get(f"{prefix}_RATIO", ""))
-        cache_hit = _read_bool(os.environ.get(f"{prefix}_HIT", ""))
-        cache_hit_detail = os.environ.get(f"{prefix}_HIT_DETAIL", "")
-
-        percent_less_wall_time_than_bare = None
-        if cold_seconds is not None and warm_seconds is not None:
-            percent_less_wall_time_than_bare = _percent_less_time(cold_seconds, warm_seconds)
-
+    for raw_result in raw_results:
+        competitor = competitor_by_id[raw_result["competitor"]]
+        profile = profile_by_id[raw_result["profile"]]
+        mutation = mutation_by_id[raw_result["mutation"]]
         results.append(
             {
-                "backend": scenario["backend"],
-                "mutation": scenario["mutation"],
-                "label": scenario["label"],
-                "command": benchmark_command,
-                "result": result,
-                "cold_seconds": _round_metric(cold_seconds),
-                "warm_seconds": _round_metric(warm_seconds),
-                "saved_seconds": _round_metric(saved_seconds),
-                "speedup_ratio": _round_metric(speedup_ratio),
-                "cache_hit": cache_hit,
-                "cache_hit_detail": cache_hit_detail or None,
-                "percent_less_wall_time_than_bare": _round_metric(
-                    percent_less_wall_time_than_bare
-                ),
+                "competitor": competitor["id"],
+                "competitor_label": competitor["label"],
+                "backend": competitor["backend"],
+                "profile": profile["id"],
+                "profile_label": profile["label"],
+                "mutation": mutation["id"],
+                "mutation_label": mutation["label"],
+                "mutation_path": mutation["path"],
+                "command": _format_command(profile["command"], target),
+                "result": raw_result.get("result", "success"),
+                "cold_seconds": _round_metric(_read_float(raw_result.get("cold_seconds"))),
+                "warm_seconds": _round_metric(_read_float(raw_result.get("warm_seconds"))),
+                "saved_seconds": _round_metric(_read_float(raw_result.get("saved_seconds"))),
+                "speedup_ratio": _round_metric(_read_float(raw_result.get("speedup_ratio"))),
+                "cache_hit": _read_bool(raw_result.get("cache_hit")),
+                "cache_hit_detail": raw_result.get("cache_hit_detail") or None,
+                "threshold_failed": bool(raw_result.get("threshold_failed", False)),
             }
         )
-    return results
+
+    return results, competitors, profiles, mutations
 
 
-def _build_report(results: list[dict[str, Any]]) -> dict[str, Any]:
-    by_mutation: dict[str, list[dict[str, Any]]] = defaultdict(list)
+def _build_report(
+    config: dict[str, Any],
+    config_path: Path,
+    results: list[dict[str, Any]],
+    competitors: list[dict[str, Any]],
+    profiles: list[dict[str, Any]],
+    mutations: list[dict[str, Any]],
+) -> dict[str, Any]:
+    site = config["site"]
+    base_competitor_id = site["base_competitor"]
+    measured_mutation_ids = {result["mutation"] for result in results}
+    visible_mutations = [
+        mutation for mutation in mutations if mutation["id"] in measured_mutation_ids
+    ]
+    results_by_key: dict[tuple[str, str], dict[str, dict[str, Any]]] = defaultdict(dict)
     for result in results:
-        by_mutation[result["mutation"]].append(result)
+        results_by_key[(result["profile"], result["mutation"])][result["competitor"]] = result
 
-    mutation_summaries: list[dict[str, Any]] = []
-    for mutation, mutation_results in by_mutation.items():
-        successful = [
-            result
-            for result in mutation_results
-            if result["result"] == "success" and result["warm_seconds"] is not None
-        ]
-        successful.sort(key=lambda result: result["warm_seconds"])
+    comparison_rows: list[dict[str, Any]] = []
+    for profile in profiles:
+        for mutation in visible_mutations:
+            key = (profile["id"], mutation["id"])
+            competitor_results = results_by_key.get(key, {})
+            visible_results = {
+                competitor["id"]: competitor_results.get(competitor["id"]) for competitor in competitors
+            }
 
-        leader = successful[0] if successful else None
-        runner_up = successful[1] if len(successful) > 1 else None
-        leader_advantage = None
-        if leader and runner_up:
-            leader_advantage = _percent_less_time(
-                runner_up["warm_seconds"], leader["warm_seconds"]
+            soldr_result = visible_results.get("soldr")
+            base_result = visible_results.get(base_competitor_id)
+            soldr_vs_base = None
+            if (
+                soldr_result
+                and base_result
+                and soldr_result["result"] == "success"
+                and base_result["result"] == "success"
+                and soldr_result["warm_seconds"] is not None
+                and base_result["warm_seconds"] is not None
+            ):
+                soldr_vs_base = _round_metric(
+                    _percent_less_time(base_result["warm_seconds"], soldr_result["warm_seconds"])
+                )
+
+            comparison_rows.append(
+                {
+                    "profile": profile["id"],
+                    "profile_label": profile["label"],
+                    "mutation": mutation["id"],
+                    "mutation_label": mutation["label"],
+                    "competitors": visible_results,
+                    "soldr_vs_base_warm_percent": soldr_vs_base,
+                }
             )
 
-        mutation_summaries.append(
-            {
-                "mutation": mutation,
-                "label": mutation_results[0]["label"],
-                "leader_backend": leader["backend"] if leader else None,
-                "leader_percent_less_wall_time_than_bare": (
-                    leader["percent_less_wall_time_than_bare"] if leader else None
-                ),
-                "runner_up_backend": runner_up["backend"] if runner_up else None,
-                "leader_percent_less_wall_time_than_runner_up": _round_metric(
-                    leader_advantage
-                ),
-                "results": mutation_results,
-            }
+    comparison_values = [
+        row["soldr_vs_base_warm_percent"]
+        for row in comparison_rows
+        if row["soldr_vs_base_warm_percent"] is not None
+    ]
+    soldr_wins = sum(1 for value in comparison_values if value > 0)
+    headline = "No successful soldr vs swatinem comparisons yet."
+    if comparison_values:
+        average = sum(comparison_values) / len(comparison_values)
+        trend = "faster" if average >= 0 else "slower"
+        headline = (
+            f"Across {len(comparison_values)} configured comparisons, soldr is "
+            f"{abs(average):.2f}% {trend} on warm time than swatinem and leads "
+            f"{soldr_wins} rows."
         )
 
-    mutation_summaries.sort(key=lambda item: item["mutation"])
+    profile_commands = [
+        {
+            "id": profile["id"],
+            "label": profile["label"],
+            "command": _format_command(
+                profile["command"],
+                os.environ.get("BENCHMARK_COMMAND_TARGET")
+                or site.get("default_target", DEFAULT_TARGET),
+            ),
+        }
+        for profile in profiles
+    ]
 
     return {
         "workflow": "cache-benchmark.yml",
+        "config_path": str(config_path.relative_to(REPO_ROOT)),
         "requested_scenario": os.environ["SCENARIO"],
         "threshold_ratio": _round_metric(float(os.environ["THRESHOLD_RATIO"])),
-        "benchmarked_command": results[0]["command"] if results else None,
-        "command_reference": [
-            {
-                "purpose": "Benchmarked release build",
-                "command": results[0]["command"] if results else "n/a",
-                "status": "benchmarked now",
-            },
-            *BASE_COMMAND_REFERENCE,
-        ],
-        "metric_definition": {
-            "percent_less_wall_time_than_bare": (
-                "(cold_seconds - warm_seconds) / cold_seconds * 100"
-            ),
-            "leader_percent_less_wall_time_than_runner_up": (
-                "(runner_up_warm_seconds - leader_warm_seconds) / "
-                "runner_up_warm_seconds * 100"
-            ),
+        "headline": headline,
+        "site": {
+            "title": site["title"],
+            "soldr_note": site.get("soldr_note"),
+            "base_competitor": base_competitor_id,
         },
-        "mutations": mutation_summaries,
+        "competitors": competitors,
+        "profiles": profile_commands,
+        "mutations": visible_mutations,
+        "comparisons": comparison_rows,
+        "results": results,
+        "metric_definition": {
+            "speedup_ratio": "cold_seconds / warm_seconds",
+            "soldr_vs_base_warm_percent": "(base_warm_seconds - soldr_warm_seconds) / base_warm_seconds * 100",
+        },
     }
 
 
@@ -248,63 +237,51 @@ def _write_json_report(report: dict[str, Any]) -> None:
     output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def _comparison_result(row: dict[str, Any], competitor_id: str) -> dict[str, Any] | None:
+    return row["competitors"].get(competitor_id)
+
+
 def _build_table_rows(report: dict[str, Any]) -> str:
     rows: list[str] = []
-    for mutation in report["mutations"]:
-        leader_backend = mutation["leader_backend"]
-        for result in mutation["results"]:
-            winner = "yes" if result["backend"] == leader_backend else ""
-            rows.append(
-                "<tr>"
-                f"<td><code>{escape(result['command'])}</code></td>"
-                f"<td>{escape(result['label'])}</td>"
-                f"<td>{escape(result['backend'])}</td>"
-                f"<td>{escape(result['result'])}</td>"
-                f"<td>{_format_seconds(result['cold_seconds'])}</td>"
-                f"<td>{_format_seconds(result['warm_seconds'])}</td>"
-                f"<td>{_format_seconds(result['saved_seconds'])}</td>"
-                f"<td>{_format_ratio(result['speedup_ratio'])}</td>"
-                f"<td>{_format_percent(result['percent_less_wall_time_than_bare'])}</td>"
-                f"<td>{winner}</td>"
-                "</tr>"
-            )
-    return "\n".join(rows)
-
-
-def _build_command_reference_rows(report: dict[str, Any]) -> str:
-    rows: list[str] = []
-    benchmarked = report.get("benchmarked_command")
-    for item in report["command_reference"]:
-        benchmarked_flag = "yes" if item["command"] == benchmarked else "not yet"
+    for row in report["comparisons"]:
+        soldr = _comparison_result(row, "soldr") or {}
+        swatinem = _comparison_result(row, report["site"]["base_competitor"]) or {}
         rows.append(
             "<tr>"
-            f"<td>{escape(item['purpose'])}</td>"
-            f"<td><code>{escape(item['command'])}</code></td>"
-            f"<td>{escape(item['status'])}</td>"
-            f"<td>{benchmarked_flag}</td>"
+            f"<td>{escape(row['profile_label'])}</td>"
+            f"<td>{escape(row['mutation_label'])}</td>"
+            f"<td>{_format_seconds(soldr.get('cold_seconds'))}</td>"
+            f"<td>{_format_seconds(soldr.get('warm_seconds'))}</td>"
+            f"<td>{_format_ratio(soldr.get('speedup_ratio'))}</td>"
+            f"<td>{_format_seconds(swatinem.get('cold_seconds'))}</td>"
+            f"<td>{_format_seconds(swatinem.get('warm_seconds'))}</td>"
+            f"<td>{_format_ratio(swatinem.get('speedup_ratio'))}</td>"
+            f"<td>{_format_percent(row['soldr_vs_base_warm_percent'])}</td>"
             "</tr>"
         )
     return "\n".join(rows)
 
 
-def _build_html_page(report: dict[str, Any]) -> str:
-    headline = []
-    for mutation in report["mutations"]:
-        if mutation["leader_backend"] is None:
-            continue
-        headline.append(
-            f"{mutation['mutation']}: {mutation['leader_backend']} "
-            f"({_format_percent(mutation['leader_percent_less_wall_time_than_bare'])} less wall time than bare)"
+def _build_profile_command_items(report: dict[str, Any]) -> str:
+    items: list[str] = []
+    for profile in report["profiles"]:
+        items.append(
+            "<li>"
+            f"<strong>{escape(profile['label'])}</strong>: "
+            f"<code>{escape(profile['command'])}</code>"
+            "</li>"
         )
+    return "\n".join(items)
 
-    headline_text = " | ".join(headline) if headline else "No successful benchmark results."
 
+def _build_html_page(report: dict[str, Any]) -> str:
+    soldr_note = report["site"].get("soldr_note") or ""
     return f"""<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>soldr rendered benchmarks</title>
+    <title>{escape(report["site"]["title"])}</title>
     <style>
       body {{
         margin: 0;
@@ -314,19 +291,35 @@ def _build_html_page(report: dict[str, Any]) -> str:
         background: #f8f8f6;
       }}
       main {{
-        max-width: 1100px;
+        max-width: 1080px;
         margin: 0 auto;
       }}
       h1 {{
         margin: 0 0 12px;
         font-size: 32px;
       }}
+      h2 {{
+        margin: 28px 0 10px;
+        font-size: 22px;
+      }}
+      p, li {{
+        line-height: 1.5;
+      }}
       p {{
         margin: 0 0 12px;
-        line-height: 1.5;
       }}
       .meta {{
         color: #4e5a5f;
+      }}
+      .note {{
+        color: #2f3d42;
+        background: #eef2f3;
+        border: 1px solid #d7dcdf;
+        padding: 12px 14px;
+      }}
+      ul {{
+        margin: 0;
+        padding-left: 20px;
       }}
       table {{
         width: 100%;
@@ -347,7 +340,7 @@ def _build_html_page(report: dict[str, Any]) -> str:
         background: #fafcfc;
       }}
       .footer {{
-        margin-top: 16px;
+        margin-top: 18px;
         color: #4e5a5f;
         font-size: 13px;
       }}
@@ -356,37 +349,37 @@ def _build_html_page(report: dict[str, Any]) -> str:
           overflow-x: auto;
         }}
         table {{
-          min-width: 860px;
+          min-width: 880px;
         }}
       }}
     </style>
   </head>
   <body>
     <main>
-      <h1>soldr rendered benchmarks</h1>
-      <p>{escape(headline_text)}</p>
+      <h1>{escape(report["site"]["title"])}</h1>
+      <p>{escape(report["headline"])}</p>
       <p class="meta">
         Workflow: {escape(report["workflow"])} |
         Scenario: {escape(report["requested_scenario"])} |
         Threshold: {report["threshold_ratio"]:.2f}x
       </p>
-      <p class="meta">
-        Benchmarked command: <code>{escape(report["benchmarked_command"] or "n/a")}</code>
+      <p class="note">
+        {escape(soldr_note)} Raw detail is published beside this page as
+        <a href="latest.json">latest.json</a>.
       </p>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Command</th>
+              <th>Profile</th>
               <th>Change</th>
-              <th>Backend</th>
-              <th>Result</th>
-              <th>Cold</th>
-              <th>Warm</th>
-              <th>Saved</th>
-              <th>Speedup</th>
-              <th>% less than bare</th>
-              <th>Winner</th>
+              <th>soldr cold</th>
+              <th>soldr warm</th>
+              <th>soldr speedup</th>
+              <th>swatinem cold</th>
+              <th>swatinem warm</th>
+              <th>swatinem speedup</th>
+              <th>soldr vs swatinem</th>
             </tr>
           </thead>
           <tbody>
@@ -394,23 +387,11 @@ def _build_html_page(report: dict[str, Any]) -> str:
           </tbody>
         </table>
       </div>
-      <h2>Common soldr commands</h2>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Purpose</th>
-              <th>Command</th>
-              <th>Type</th>
-              <th>Benchmarked</th>
-            </tr>
-          </thead>
-          <tbody>
-            {_build_command_reference_rows(report)}
-          </tbody>
-        </table>
-      </div>
-      <p class="footer">Source data is published beside this page as latest.json.</p>
+      <h2>Benchmarked Commands</h2>
+      <ul>
+        {_build_profile_command_items(report)}
+      </ul>
+      <p class="footer">Config: <code>{escape(report["config_path"])}</code>.</p>
     </main>
   </body>
 </html>
@@ -435,51 +416,25 @@ def _build_summary_lines(report: dict[str, Any]) -> list[str]:
         "",
         f"- requested scenario: `{report['requested_scenario']}`",
         f"- threshold ratio: `{report['threshold_ratio']:.2f}x`",
-        "- primary metric: percent less wall time than bare build",
-        "- secondary metric: leader advantage over the next-best cache backend",
+        f"- config: `{report['config_path']}`",
         "- artifact: `cache-benchmark-summary.json`",
+        "- raw detail artifact: `cache-benchmark-results.json`",
         "",
-        "### Leaders",
+        "### Warm Comparison",
         "",
+        "| profile | change | soldr warm | swatinem warm | soldr vs swatinem |",
+        "| --- | --- | ---: | ---: | ---: |",
     ]
 
-    for mutation in report["mutations"]:
-        leader_backend = mutation["leader_backend"]
-        if leader_backend is None:
-            lines.append(f"- `{mutation['mutation']}`: no successful benchmark results")
-            continue
-
-        leader_vs_bare = mutation["leader_percent_less_wall_time_than_bare"]
-        runner_up_backend = mutation["runner_up_backend"]
-        leader_vs_runner_up = mutation["leader_percent_less_wall_time_than_runner_up"]
-        line = (
-            f"- `{mutation['mutation']}`: `{leader_backend}` is best, "
-            f"`{leader_vs_bare:.2f}%` less wall time than bare"
+    for row in report["comparisons"]:
+        soldr = _comparison_result(row, "soldr") or {}
+        swatinem = _comparison_result(row, report["site"]["base_competitor"]) or {}
+        lines.append(
+            f"| `{row['profile_label']}` | `{row['mutation_label']}` | "
+            f"`{_format_seconds(soldr.get('warm_seconds'))}` | "
+            f"`{_format_seconds(swatinem.get('warm_seconds'))}` | "
+            f"`{_format_percent(row['soldr_vs_base_warm_percent'])}` |"
         )
-        if runner_up_backend and leader_vs_runner_up is not None:
-            line += (
-                f", `{leader_vs_runner_up:.2f}%` less wall time than `{runner_up_backend}`"
-            )
-        lines.append(line)
-
-    lines.extend(
-        [
-            "",
-            "### Percent Less Wall Time Than Bare",
-            "",
-            "| mutation | backend | result | % less wall time than bare |",
-            "| --- | --- | --- | ---: |",
-        ]
-    )
-
-    for mutation in report["mutations"]:
-        for result in mutation["results"]:
-            percent = result["percent_less_wall_time_than_bare"]
-            percent_display = f"{percent:.2f}%" if percent is not None else "n/a"
-            lines.append(
-                f"| `{result['mutation']}` | `{result['backend']}` | "
-                f"`{result['result']}` | `{percent_display}` |"
-            )
 
     return lines
 
@@ -494,7 +449,9 @@ def _append_step_summary(report: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    report = _build_report(_load_results())
+    config, config_path = _load_config()
+    results, competitors, profiles, mutations = _load_results(config)
+    report = _build_report(config, config_path, results, competitors, profiles, mutations)
     _write_json_report(report)
     _write_www_bundle(report)
     _append_step_summary(report)
