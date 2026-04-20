@@ -31,10 +31,17 @@ on:
         required: false
         type: boolean
         default: true
+      upload_name:
+        required: false
+        type: string
+        default: ""
     outputs:
       wall_seconds:
         description: Wall-clock seconds for the cargo build step.
         value: ${{ jobs.build.outputs.wall_seconds }}
+      timing_report:
+        description: Relative path to the latest cargo timing report.
+        value: ${{ jobs.build.outputs.timing_report }}
       cache_hit:
         description: Whether the cache backend restored an exact cache hit relevant to the benchmark.
         value: ${{ jobs.build.outputs.cache_hit }}
@@ -50,6 +57,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     outputs:
       wall_seconds: ${{ steps.measure.outputs.wall_seconds }}
+      timing_report: ${{ steps.measure.outputs.timing_report }}
       cache_hit: ${{ steps.cache_hit.outputs.value }}
       cache_hit_detail: ${{ steps.cache_hit.outputs.detail }}
 
@@ -115,6 +123,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import pathlib
           import os
           import subprocess
           import time
@@ -131,18 +140,33 @@ jobs:
                   "--locked",
                   "--target",
                   target,
+                  "--timings",
               ],
               check=True,
           )
           elapsed = time.perf_counter() - start
+          timing_reports = sorted(
+              pathlib.Path("target/cargo-timings").glob("cargo-timing*.html"),
+              key=lambda path: path.stat().st_mtime,
+          )
+          timing_report = timing_reports[-1].as_posix() if timing_reports else ""
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"wall_seconds={elapsed:.2f}\n")
+              fh.write(f"timing_report={timing_report}\n")
           PY
 
       - name: Cleanup zccache
         if: ${{ always() && inputs.cache_backend == 'zccache' }}
         uses: ./.github/actions/cache-benchmark-zccache-cleanup
+
+      - name: Upload cargo timing artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.upload_name != '' && inputs.upload_name || format('cache-benchmark-{0}-{1}-{2}-timings', inputs.cache_backend, inputs.mutation, inputs.save_cache && 'seed' || (inputs.cache_backend == 'none' && 'cold' || 'warm')) }}
+          path: target/cargo-timings
+          if-no-files-found: warn
 
       - name: Compute cache-hit summary
         id: cache_hit
@@ -192,6 +216,9 @@ jobs:
             echo "- mutation: \`${{ inputs.mutation }}\`"
             if [ -n "${{ steps.measure.outputs.wall_seconds }}" ]; then
               echo "- wall seconds: \`${{ steps.measure.outputs.wall_seconds }}\`"
+            fi
+            if [ -n "${{ steps.measure.outputs.timing_report }}" ]; then
+              echo "- timing report: \`${{ steps.measure.outputs.timing_report }}\`"
             fi
             echo "- timing scope: \`cargo build --package soldr-cli --release --locked --target ${{ inputs.target }}\` only"
             echo "- measurement source: \`time.perf_counter()\` around the cargo subprocess"
