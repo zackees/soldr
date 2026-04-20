@@ -42,6 +42,31 @@ Current release line:
 - the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
 - practical integration examples for local builds and GitHub Actions live in [INTEGRATION.md](./INTEGRATION.md)
 
+## GitHub Actions setup
+
+The preferred CI path is the repository root action:
+
+```yaml
+- uses: zackees/soldr@<ref>
+  with:
+    version: 0.7.4
+    cache: true
+
+- run: soldr cargo build --locked --release
+- run: soldr cargo test --locked
+```
+
+That action:
+
+- installs `soldr`
+- provisions the Rust toolchain, using `rust-toolchain.toml` by default
+- restores a cacheable runner-local root for Soldr, Cargo, and rustup state
+- puts `soldr` on `PATH` for later steps
+
+If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later.
+
+For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
+
 ## Why soldr exists
 
 On Windows, the real problem is not "how do I cache builds?" or "how do I download a tool binary?" in isolation.
