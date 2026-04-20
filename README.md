@@ -40,6 +40,7 @@ Current release line:
 - `0.5.x` is the secure front-door, tool-fetch, and built-in zccache-backed cache release line
 - `1.0.0-rc` remains reserved for broader release hardening and bootstrap validation
 - the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
+- practical integration examples for local builds and GitHub Actions live in [INTEGRATION.md](./INTEGRATION.md)
 
 ## Why soldr exists
 
