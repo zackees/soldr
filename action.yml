@@ -1,28 +1,29 @@
 name: setup-soldr
-description: Current in-repo Soldr setup action. Installs soldr, provisions the resolved Rust toolchain via rustup, and restores a cacheable runner-local Soldr root.
+author: zackees
+description: Extraction-ready Soldr setup action. Installs one soldr binary, provisions the resolved Rust toolchain via rustup, and restores a cacheable runner-local Soldr root.
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
     required: false
     default: ""
   repo:
-    description: GitHub repository that publishes Soldr releases.
+    description: Release source repository override for extraction or local testing. Not part of the intended public setup-soldr@v1 contract.
     required: false
     default: zackees/soldr
   cache:
-    description: Restore and save the setup cache across workflow runs.
+    description: Restore and save the action-managed cache/state root across workflow runs.
     required: false
     default: "true"
   cache-dir:
-    description: Override the runner-local cache root used for Soldr, Cargo, and rustup state rehydrated by this action.
+    description: Override the runner-local cache/state root used for Soldr, Cargo, and rustup state rehydrated by this action.
     required: false
     default: ""
   cache-key-suffix:
-    description: Optional extra suffix added to the cache key.
+    description: Optional extra suffix appended to the cache key.
     required: false
     default: ""
   toolchain:
-    description: Override the exact Rust toolchain channel string. When empty, rust-toolchain.toml is used if present.
+    description: Override the exact Rust toolchain channel string. When empty, toolchain-file is used if present, otherwise stable.
     required: false
     default: ""
   toolchain-file:
@@ -35,16 +36,16 @@ inputs:
     default: ""
 outputs:
   soldr-path:
-    description: Installed Soldr binary path.
+    description: Installed Soldr binary path added to PATH for later steps.
     value: ${{ steps.resolve.outputs.soldr_path }}
   soldr-version:
-    description: Installed Soldr version.
+    description: Installed Soldr version reported by soldr version --json.
     value: ${{ steps.verify.outputs.soldr_version }}
   cache-dir:
-    description: Runner-local cache root used by the action.
+    description: Runner-local cache/state root used by the action.
     value: ${{ steps.resolve.outputs.cache_root }}
   cache-hit:
-    description: Whether the action restored an exact setup cache hit.
+    description: Whether the action restored an exact cache hit for the selected cache/state root.
     value: ${{ steps.cache-meta.outputs.cache_hit }}
   toolchain:
     description: Exact Rust toolchain channel configured by rustup for the action.
