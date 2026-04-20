@@ -172,4 +172,12 @@ jobs:
           BENCHMARK_REPORT_MODE: phase1-summary
           BENCHMARK_CONFIG_PATH: benchmark.toml
           BENCHMARK_PHASE1_INPUT_JSON: benchmark-summary/phase1-summary-input.json
+          BENCHMARK_PHASE1_ISSUE_COMMENT_PATH: benchmark-summary/phase1-issue-comment.md
         run: python3 .github/scripts/cache_benchmark_report.py
+
+      - name: Upload phase 1 issue comment artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-phase1-issue-comment
+          path: benchmark-summary/phase1-issue-comment.md
+          if-no-files-found: error

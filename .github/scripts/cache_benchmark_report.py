@@ -467,27 +467,21 @@ def _phase1_result_label(
     return f"{mutation['label']} (`{mutation['path']}`)"
 
 
-def _build_phase1_summary_lines(config: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+def _phase1_issue_target(config: dict[str, Any]) -> str:
+    issue_number = config["phase1"].get("issue")
+    return f"#{issue_number}" if issue_number is not None else "the Phase 1 tracker issue"
+
+
+def _build_phase1_issue_comment_lines(
+    config: dict[str, Any], payload: dict[str, Any]
+) -> list[str]:
     phase1 = config["phase1"]
     mutation_by_id = _mutation_by_id(config)
     runner = payload.get("runner") or phase1["runner"]
     target = payload.get("target") or phase1["target"]
     threshold = float(payload.get("threshold_ratio") or phase1["default_threshold_ratio"])
     cache_backend = payload["cache_backend"]
-    scenario = payload["scenario"]
-    command = _format_command(phase1["command"], target)
-    workflow_summary = [
-        "### Cache Benchmark Summary",
-        "",
-        f"- cache backend: `{cache_backend}`",
-        f"- requested scenario: `{scenario}`",
-        f"- required ratio: `{threshold:.2f}x`",
-        f"- runner: `{runner}`",
-        f"- target: `{target}`",
-        f"- measured command: `{command}`",
-        "",
-    ]
-    issue_comment = [
+    issue_comment_lines = [
         "### Phase 1 benchmark results",
         "",
         "- workflow: `cache-benchmark.yml`",
@@ -512,7 +506,48 @@ def _build_phase1_summary_lines(config: dict[str, Any], payload: dict[str, Any])
         if status == "skipped":
             continue
 
-        workflow_summary.extend(
+        issue_summary = [
+            f"- {label}: job result `{status}`",
+            f"  cache detail: `{hit_detail}`",
+        ]
+        if status == "success":
+            issue_summary[0] = (
+                f"- {label}: cold `{_format_seconds(cold)}`, warm `{_format_seconds(warm)}`, "
+                f"saved `{_format_seconds(saved)}`, speedup `{_format_ratio(ratio)}`, "
+                f"cache hit `{_format_bool(cache_hit)}`"
+            )
+        issue_comment_lines.extend(issue_summary)
+
+    issue_comment_lines.extend(
+        [
+            "",
+            "Timing artifacts are attached for each seed, cold, and warm child job as `cache-benchmark-<backend>-<mutation>-<stage>-timings`.",
+        ]
+    )
+
+    return issue_comment_lines
+
+
+def _build_phase1_workflow_detail_lines(
+    config: dict[str, Any], payload: dict[str, Any]
+) -> list[str]:
+    mutation_by_id = _mutation_by_id(config)
+    detail_lines: list[str] = []
+
+    for result in payload["results"]:
+        mutation_id = result["mutation"]
+        label = _phase1_result_label(mutation_by_id, mutation_id)
+        status = result.get("result", "success")
+        if status == "skipped":
+            continue
+
+        cold = _read_float(result.get("cold_seconds"))
+        warm = _read_float(result.get("warm_seconds"))
+        saved = _read_float(result.get("saved_seconds"))
+        ratio = _read_float(result.get("speedup_ratio"))
+        cache_hit = _read_bool(result.get("cache_hit"))
+        hit_detail = result.get("cache_hit_detail") or "n/a"
+        detail_lines.extend(
             [
                 f"#### {label}",
                 "",
@@ -527,35 +562,60 @@ def _build_phase1_summary_lines(config: dict[str, Any], payload: dict[str, Any])
             ]
         )
 
-        issue_summary = [
-            f"- {label}: job result `{status}`",
-            f"  cache detail: `{hit_detail}`",
-        ]
-        if status == "success":
-            issue_summary[0] = (
-                f"- {label}: cold `{_format_seconds(cold)}`, warm `{_format_seconds(warm)}`, "
-                f"saved `{_format_seconds(saved)}`, speedup `{_format_ratio(ratio)}`, "
-                f"cache hit `{_format_bool(cache_hit)}`"
-            )
-        issue_comment.extend(issue_summary)
+    return detail_lines
 
-    issue_number = phase1.get("issue")
-    issue_target = f"#{issue_number}" if issue_number is not None else "the Phase 1 tracker issue"
-    issue_comment.extend(
-        [
-            "",
-            "Timing artifacts are attached for each seed, cold, and warm child job as `cache-benchmark-<backend>-<mutation>-<stage>-timings`.",
-            "",
-            f"Copy this block into issue {issue_target}.",
-        ]
-    )
+
+def _write_phase1_issue_comment(lines: list[str]) -> str | None:
+    issue_comment_path = os.environ.get("BENCHMARK_PHASE1_ISSUE_COMMENT_PATH")
+    if not issue_comment_path:
+        return None
+    output_path = Path(issue_comment_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return issue_comment_path
+
+
+def _build_phase1_summary_lines(config: dict[str, Any], payload: dict[str, Any]) -> list[str]:
+    phase1 = config["phase1"]
+    runner = payload.get("runner") or phase1["runner"]
+    target = payload.get("target") or phase1["target"]
+    threshold = float(payload.get("threshold_ratio") or phase1["default_threshold_ratio"])
+    cache_backend = payload["cache_backend"]
+    scenario = payload["scenario"]
+    command = _format_command(phase1["command"], target)
+    issue_comment_lines = _build_phase1_issue_comment_lines(config, payload)
+    issue_target = _phase1_issue_target(config)
+    issue_comment_path = _write_phase1_issue_comment(issue_comment_lines)
+    workflow_summary = [
+        "### Cache Benchmark Summary",
+        "",
+        f"- cache backend: `{cache_backend}`",
+        f"- requested scenario: `{scenario}`",
+        f"- required ratio: `{threshold:.2f}x`",
+        f"- runner: `{runner}`",
+        f"- target: `{target}`",
+        f"- measured command: `{command}`",
+        "",
+    ]
+    workflow_summary.extend(_build_phase1_workflow_detail_lines(config, payload))
+    if issue_comment_path:
+        workflow_summary.extend(
+            [
+                "### Issue Comment Artifact",
+                "",
+                f"- markdown artifact: `{issue_comment_path}`",
+                "",
+            ]
+        )
 
     return workflow_summary + [
         "### Issue Comment Draft",
         "",
         "```markdown",
-        *issue_comment,
+        *issue_comment_lines,
         "```",
+        "",
+        f"Copy this block into issue {issue_target}.",
     ]
 
 
