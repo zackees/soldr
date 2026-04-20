@@ -28,9 +28,10 @@ The repository currently enforces several baseline controls:
 - Third-party GitHub Actions in the repository workflows are pinned to full commit SHAs.
 - The e2e bootstrap fixture input is pinned to an exact Git commit in the workflow inputs.
 - Releases are promoted from reviewed version bumps on `main` through `.github/workflows/release-auto.yml`.
+- The release workflow refuses to publish unless the workspace version is strictly greater than the latest version on PyPI.
+- PyPI publication uses OIDC Trusted Publishing bound to `release-auto.yml`; no long-lived PyPI tokens exist in the repo or in any environment.
 - Release assets are attested in GitHub Actions before publication.
-- Release publication uses a dedicated GitHub App instead of `GITHUB_TOKEN` or a PAT.
-- Release tags matching `v*.*.*` are protected by a repository ruleset.
+- Release tags are minted by the workflow's built-in `GITHUB_TOKEN`; no GitHub App or PAT is involved.
 - Immutable GitHub Releases are enabled.
 
 These controls reduce drift, but they do not make the full release pipeline hermetic.
@@ -76,21 +77,15 @@ When a pinned dependency, action, or external input is updated, the change shoul
 Current state:
 
 - releases are validated in GitHub Actions from the merged `main` commit that bumped the workspace version
-- `.github/workflows/release-auto.yml` is the single release path; it derives the version from `Cargo.toml` and only proceeds when the version actually changed on `main`
+- `.github/workflows/release-auto.yml` is the single release path; it derives the version from `Cargo.toml` and only proceeds when that version is strictly greater than the latest version published on PyPI
 - the release workflow re-runs lint, build, test, integration, and e2e checks before publishing
-- final publication runs inside the `release` environment where the GitHub App credentials and PyPI trusted publisher identity live
-- release tags are created through a GitHub App-backed workflow path
+- release tags are minted with the workflow's built-in `GITHUB_TOKEN`; no GitHub App or PAT is involved
+- PyPI wheels are uploaded through OIDC Trusted Publishing bound to `release-auto.yml`
 - release assets are published to GitHub Releases with a generated checksum manifest
 - release assets are attested in GitHub Actions prior to publication
-- the release workflow can also build hardened PyPI wheels, but enabling PyPI upload still requires Trusted Publisher registration on the existing `soldr` PyPI project
-- immutable releases and protected tag settings still depend on repository configuration outside the git tree
+- the intentional authorization step is the reviewed version-bump merge to protected `main` — there is no environment approval gate at release time
+- immutable releases and any tag-protection settings still depend on repository configuration outside the git tree
 - current user-facing verification guidance is checksum verification plus `gh attestation verify`
-
-Release-path tradeoff:
-
-- `.github/workflows/release-auto.yml` keeps the GitHub App tag-creation path, pinned actions, full validation gate, checksums, and attestations
-- the release button is gone; the intentional authorization step is now the reviewed version-bump merge to protected `main`
-- final publication still passes through the `release` environment, so secrets and trusted-publisher identity remain scoped there
 
 Current verification policy:
 

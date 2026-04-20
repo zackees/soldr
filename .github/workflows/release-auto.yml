@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       should_release: ${{ steps.validate.outputs.should_release }}
+      tag_exists: ${{ steps.validate.outputs.tag_exists }}
       version: ${{ steps.validate.outputs.version }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
 
@@ -30,14 +31,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Derive release version and commit
+      - name: Compare candidate version against PyPI
         id: validate
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          before_sha='${{ github.event.before }}'
           commit_sha='${{ github.sha }}'
 
           if [[ "${GITHUB_REF_NAME}" != "main" ]]; then
@@ -57,26 +57,6 @@ jobs:
             exit 1
           fi
 
-          previous_version=""
-          if [[ "$before_sha" =~ ^0+$ ]]; then
-            previous_version=""
-          elif git rev-parse --verify "${before_sha}^{commit}" >/dev/null 2>&1; then
-            previous_version="$(
-              git show "${before_sha}:Cargo.toml" |
-                sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' |
-                head -n1
-            )"
-          fi
-
-          if [[ "$cargo_version" == "$previous_version" ]]; then
-            {
-              echo "should_release=false"
-              echo "version=v${cargo_version}"
-              echo "commit_sha=$commit_sha"
-            } >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
           version="v${cargo_version}"
 
           if [[ ! "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
@@ -84,18 +64,35 @@ jobs:
             exit 1
           fi
 
+          tag_exists=false
           if git ls-remote --exit-code --tags origin "$version" >/dev/null 2>&1; then
-            echo "tag $version already exists" >&2
+            tag_exists=true
+          fi
+
+          pypi_version="$(
+            curl -fsSL https://pypi.org/pypi/soldr/json | jq -r '.info.version'
+          )"
+
+          if [[ -z "$pypi_version" || "$pypi_version" == "null" ]]; then
+            echo "failed to fetch latest PyPI version for soldr" >&2
             exit 1
           fi
 
-          if gh release view "$version" >/dev/null 2>&1; then
-            echo "release $version already exists" >&2
-            exit 1
+          pypi_tag="v${pypi_version}"
+          highest_version="$(printf '%s\n%s\n' "$pypi_tag" "$version" | sort -V | tail -n1)"
+          if [[ "$highest_version" != "$version" || "$pypi_tag" == "$version" ]]; then
+            {
+              echo "should_release=false"
+              echo "tag_exists=$tag_exists"
+              echo "version=$version"
+              echo "commit_sha=$commit_sha"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
           {
             echo "should_release=true"
+            echo "tag_exists=$tag_exists"
             echo "version=$version"
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
@@ -424,6 +421,7 @@ jobs:
       ${{
         always() &&
         needs.prepare.outputs.should_release == 'true' &&
+        needs.prepare.outputs.tag_exists == 'false' &&
         needs.prepare.result == 'success' &&
         needs.build.result == 'success' &&
         needs.build-pypi.result == 'success'
@@ -433,7 +431,6 @@ jobs:
       - build
       - build-pypi
     runs-on: ubuntu-24.04
-    environment: release
 
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -441,23 +438,6 @@ jobs:
           path: dist
           pattern: release-soldr-*
           merge-multiple: true
-
-      - name: Create GitHub App token
-        id: app-token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        with:
-          app-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: soldr
-
-      - name: Verify GitHub App token
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}" --jq '.full_name'
 
       - name: Generate release checksums
         shell: bash
@@ -472,7 +452,7 @@ jobs:
 
       - name: Create draft GitHub Release
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -485,7 +465,7 @@ jobs:
 
       - name: Publish GitHub Release
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -495,13 +475,16 @@ jobs:
 
   publish-pypi:
     name: Publish hardened PyPI wheels
-    if: needs.prepare.outputs.should_release == 'true'
     needs:
       - prepare
       - build-pypi
       - publish
+    if: |
+      always()
+      && needs.prepare.outputs.should_release == 'true'
+      && needs.build-pypi.result == 'success'
+      && (needs.publish.result == 'success' || needs.publish.result == 'skipped')
     runs-on: ubuntu-24.04
-    environment: release
 
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
