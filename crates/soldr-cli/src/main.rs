@@ -590,10 +590,7 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
     let output = command.output()?;
 
     if !output.status.success() {
-        return Err(SoldrError::Other(format!(
-            "failed to resolve {tool} via rustup: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )));
+        return Err(rustup_resolution_failure(tool, &output.stderr));
     }
 
     let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -609,6 +606,15 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
 fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
     let start_dir = std::env::current_dir().ok();
     soldr_core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+}
+
+fn rustup_resolution_failure(tool: &str, stderr: &[u8]) -> SoldrError {
+    let raw_failure = String::from_utf8_lossy(stderr).trim().to_string();
+    SoldrError::Other(format!(
+        "failed to resolve {tool} via rustup: {raw_failure}\n\
+CI hint: if this repository pins Rust in rust-toolchain.toml, preinstall that exact channel instead of a generic stable toolchain.\n\
+CI hint: export RUSTUP_TOOLCHAIN to that exact channel for later cargo, rustc, and soldr cargo steps, or use the documented setup-soldr action path (uses: zackees/soldr@<ref> or uses: ./)."
+    ))
 }
 
 fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
@@ -1002,7 +1008,8 @@ mod tests {
     use super::{
         cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
         first_cargo_subcommand, normalize_version, parse_tool_spec,
-        rustc_wrapper_mode_from_env_var, should_trampoline, RustcWrapperMode,
+        rustc_wrapper_mode_from_env_var, rustup_resolution_failure, should_trampoline,
+        RustcWrapperMode,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -1230,5 +1237,20 @@ mod tests {
             env!("CARGO_PKG_VERSION")
         )));
         assert!(should_trampoline("0.0.0-not-this-version"));
+    }
+
+    #[test]
+    fn rustup_resolution_failure_appends_ci_guidance() {
+        let error = rustup_resolution_failure(
+            "rustc",
+            b"error: toolchain '1.94.1-x86_64-pc-windows-msvc' is not installed",
+        );
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("failed to resolve rustc via rustup: error: toolchain '1.94.1-x86_64-pc-windows-msvc' is not installed"));
+        assert!(rendered.contains("pins Rust in rust-toolchain.toml"));
+        assert!(rendered.contains("generic stable toolchain"));
+        assert!(rendered.contains("RUSTUP_TOOLCHAIN"));
+        assert!(rendered.contains("setup-soldr action path"));
     }
 }
