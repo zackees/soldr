@@ -25,6 +25,35 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+fn path_display_variants(path: &Path) -> Vec<String> {
+    let mut variants = vec![path.display().to_string()];
+    if let Ok(canonical) = fs::canonicalize(path) {
+        let canonical = canonical.display().to_string();
+        if !variants.contains(&canonical) {
+            variants.push(canonical);
+        }
+    }
+    variants
+}
+
+fn log_contains_toolchain_homes(
+    log: &str,
+    prefix: &str,
+    cargo_home: &Path,
+    rustup_home: &Path,
+) -> bool {
+    for cargo_home in path_display_variants(cargo_home) {
+        for rustup_home in path_display_variants(rustup_home) {
+            if log.contains(&format!(
+                "{prefix} cargo_home={cargo_home} rustup_home={rustup_home}"
+            )) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(windows)]
     {
@@ -99,6 +128,88 @@ fn fake_rustc_script(log_path: &Path) -> String {
             "#!/bin/sh\n\
              echo \"rustc $*\" >> \"{}\"\n",
             log_path.display()
+        )
+    }
+}
+
+fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo {0} cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME% args=%*>>\"{1}\"\n\
+             echo {0} 1.0.0 (fake)\n",
+            tool_name,
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"{0} cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}} args=$*\" >> \"{1}\"\n\
+             echo \"{0} 1.0.0 (fake)\"\n",
+            tool_name,
+            log_path.display()
+        )
+    }
+}
+
+fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo rustup %* cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME%>>\"{0}\"\n\
+             if \"%~1\"==\"which\" (\n\
+               if \"%~2\"==\"cargo\" (\n\
+                 echo {1}\n\
+                 exit /b 0\n\
+               )\n\
+               if \"%~2\"==\"rustc\" (\n\
+                 echo {2}\n\
+                 exit /b 0\n\
+               )\n\
+               if \"%~2\"==\"rustfmt\" (\n\
+                 echo {3}\n\
+                 exit /b 0\n\
+               )\n\
+             )\n\
+             echo unsupported rustup invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display(),
+            tool_dir.join("cargo.cmd").display(),
+            tool_dir.join("rustc.cmd").display(),
+            tool_dir.join("rustfmt.cmd").display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"rustup $* cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}}\" >> \"{0}\"\n\
+             if [ \"$1\" = \"which\" ]; then\n\
+               case \"$2\" in\n\
+                 cargo)\n\
+                   echo \"{1}\"\n\
+                   exit 0\n\
+                   ;;\n\
+                 rustc)\n\
+                   echo \"{2}\"\n\
+                   exit 0\n\
+                   ;;\n\
+                 rustfmt)\n\
+                   echo \"{3}\"\n\
+                   exit 0\n\
+                   ;;\n\
+               esac\n\
+             fi\n\
+             echo \"unsupported rustup invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display(),
+            tool_dir.join("cargo").display(),
+            tool_dir.join("rustc").display(),
+            tool_dir.join("rustfmt").display()
         )
     }
 }
@@ -224,6 +335,30 @@ fn install_fake_wrapper(log_path: &Path, wrapper_name: &str) -> PathBuf {
         &fake_custom_wrapper_script(log_path, wrapper_name),
     );
     wrapper
+}
+
+fn install_fake_rustup_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let dir = unique_temp_dir("fake-rustup-toolchain");
+    let cargo = fake_script_path(&dir, "cargo");
+    let rustc = fake_script_path(&dir, "rustc");
+    let rustfmt = fake_script_path(&dir, "rustfmt");
+    #[cfg(windows)]
+    let rustup = dir.join("rustup.bat");
+    #[cfg(not(windows))]
+    let rustup = fake_script_path(&dir, "rustup");
+    write_fake_script(&cargo, &fake_version_tool_script(log_path, "cargo"));
+    write_fake_script(&rustc, &fake_version_tool_script(log_path, "rustc"));
+    write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
+    write_fake_script(&rustup, &fake_rustup_script(log_path, &dir));
+    (rustup, cargo, rustc, rustfmt)
+}
+
+#[cfg(windows)]
+fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![dir.to_path_buf()];
+    paths.extend(std::env::split_paths(&existing));
+    std::env::join_paths(paths).expect("failed to join PATH")
 }
 
 #[test]
@@ -571,6 +706,139 @@ fn rustc_wrapper_mode_passes_through_to_rustc() {
 }
 
 #[test]
+fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
+    let cache_root = unique_temp_dir("repo-local-toolchain-homes");
+    let log_path = cache_root.join("tool.log");
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let repo_root = unique_temp_dir("repo-local-toolchain-root");
+    let repo_cargo_home = repo_root.join(".cargo");
+    let repo_rustup_home = repo_root.join(".rustup");
+    let nested = repo_root.join("workspace").join("crate");
+    fs::create_dir_all(&repo_cargo_home).expect("failed to create repo-local .cargo");
+    fs::create_dir_all(&repo_rustup_home).expect("failed to create repo-local .rustup");
+    fs::create_dir_all(&nested).expect("failed to create nested working dir");
+
+    for args in [
+        vec!["--no-cache", "cargo", "--version"],
+        vec!["rustfmt", "--version"],
+        vec!["rustc", "--version"],
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+            .args(&args)
+            .current_dir(&nested)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run soldr with args {args:?}"));
+
+        assert!(
+            output.status.success(),
+            "soldr invocation failed for {:?}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake rustup log");
+    assert!(
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which cargo",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
+        "cargo resolution should use repo-local homes: {log}"
+    );
+    assert!(
+        log_contains_toolchain_homes(&log, "cargo", &repo_cargo_home, &repo_rustup_home),
+        "cargo execution should inherit repo-local homes: {log}"
+    );
+    assert!(
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which rustfmt",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
+        "rustfmt resolution should use repo-local homes: {log}"
+    );
+    assert!(
+        log_contains_toolchain_homes(&log, "rustfmt", &repo_cargo_home, &repo_rustup_home),
+        "rustfmt execution should inherit repo-local homes: {log}"
+    );
+    assert!(
+        log_contains_toolchain_homes(
+            &log,
+            "rustup which rustc",
+            &repo_cargo_home,
+            &repo_rustup_home
+        ),
+        "rustc resolution should use repo-local homes: {log}"
+    );
+    assert!(
+        log_contains_toolchain_homes(&log, "rustc", &repo_cargo_home, &repo_rustup_home),
+        "rustc execution should inherit repo-local homes: {log}"
+    );
+}
+
+#[test]
+fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
+    let cache_root = unique_temp_dir("explicit-toolchain-homes");
+    let log_path = cache_root.join("tool.log");
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let repo_root = unique_temp_dir("explicit-toolchain-repo");
+    let repo_cargo_home = repo_root.join(".cargo");
+    let repo_rustup_home = repo_root.join(".rustup");
+    let nested = repo_root.join("workspace").join("crate");
+    let explicit_cargo_home = unique_temp_dir("explicit-cargo-home");
+    let explicit_rustup_home = unique_temp_dir("explicit-rustup-home");
+    fs::create_dir_all(&repo_cargo_home).expect("failed to create repo-local .cargo");
+    fs::create_dir_all(&repo_rustup_home).expect("failed to create repo-local .rustup");
+    fs::create_dir_all(&nested).expect("failed to create nested working dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["--no-cache", "cargo", "--version"])
+        .current_dir(&nested)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("CARGO_HOME", &explicit_cargo_home)
+        .env("RUSTUP_HOME", &explicit_rustup_home)
+        .output()
+        .expect("failed to run soldr cargo --version with explicit homes");
+
+    assert!(
+        output.status.success(),
+        "soldr cargo --version failed with explicit homes\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake rustup log");
+    let explicit_cargo_home = explicit_cargo_home.display().to_string();
+    let explicit_rustup_home = explicit_rustup_home.display().to_string();
+    assert!(
+        log.contains(&format!(
+            "rustup which cargo cargo_home={explicit_cargo_home} rustup_home={explicit_rustup_home}"
+        )),
+        "cargo resolution should prefer explicit homes: {log}"
+    );
+    assert!(
+        log.contains(&format!(
+            "cargo cargo_home={explicit_cargo_home} rustup_home={explicit_rustup_home}"
+        )),
+        "cargo execution should inherit explicit homes: {log}"
+    );
+    assert!(
+        !log.contains(&repo_cargo_home.display().to_string())
+            && !log.contains(&repo_rustup_home.display().to_string()),
+        "repo-local homes should not leak into explicit-home runs: {log}"
+    );
+}
+
+#[test]
 fn status_reports_cache_control_defaults() {
     let cache_root = unique_temp_dir("status");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -773,14 +1041,6 @@ fn clean_rejects_json_flag() {
         stderr.contains("--json"),
         "expected clap to reject clean --json: {stderr}"
     );
-}
-
-#[cfg(windows)]
-fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
-    let existing = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![dir.to_path_buf()];
-    paths.extend(std::env::split_paths(&existing));
-    std::env::join_paths(paths).expect("failed to join PATH")
 }
 
 #[cfg(windows)]

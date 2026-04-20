@@ -2,8 +2,12 @@ use serde::Deserialize;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
+    process::Command,
 };
 use thiserror::Error;
+
+pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";
+pub const RUSTUP_HOME_ENV_VAR: &str = "RUSTUP_HOME";
 
 // ---------------------------------------------------------------------------
 // Target triple detection
@@ -225,9 +229,71 @@ fn find_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Option<Pa
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ImplicitToolchainHomes {
+    cargo_home: Option<PathBuf>,
+    rustup_home: Option<PathBuf>,
+}
+
+impl ImplicitToolchainHomes {
+    fn from_env(
+        start_dir: Option<&Path>,
+        cargo_home_env: Option<&OsStr>,
+        rustup_home_env: Option<&OsStr>,
+    ) -> Self {
+        Self {
+            cargo_home: if cargo_home_env.is_none() {
+                find_dir_in_ancestors(start_dir, ".cargo")
+            } else {
+                None
+            },
+            rustup_home: if rustup_home_env.is_none() {
+                find_dir_in_ancestors(start_dir, ".rustup")
+            } else {
+                None
+            },
+        }
+    }
+
+    fn detect(start_dir: Option<&Path>) -> Self {
+        Self::from_env(
+            start_dir,
+            std::env::var_os(CARGO_HOME_ENV_VAR).as_deref(),
+            std::env::var_os(RUSTUP_HOME_ENV_VAR).as_deref(),
+        )
+    }
+
+    fn apply_to_command(&self, command: &mut Command) {
+        if let Some(cargo_home) = &self.cargo_home {
+            command.env(CARGO_HOME_ENV_VAR, cargo_home);
+        }
+        if let Some(rustup_home) = &self.rustup_home {
+            command.env(RUSTUP_HOME_ENV_VAR, rustup_home);
+        }
+    }
+}
+
+fn find_dir_in_ancestors(start_dir: Option<&Path>, relative_path: &str) -> Option<PathBuf> {
+    let mut current = start_dir?.to_path_buf();
+    loop {
+        let candidate = current.join(relative_path);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+pub fn apply_implicit_toolchain_homes(command: &mut Command, start_dir: Option<&Path>) {
+    ImplicitToolchainHomes::detect(start_dir).apply_to_command(command);
+}
+
 fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
     let rustc = resolve_runtime_rustc(start_dir)?;
     let mut command = std::process::Command::new(rustc);
+    apply_implicit_toolchain_homes(&mut command, start_dir);
     if let Some(start_dir) = start_dir {
         command.current_dir(start_dir);
     }
@@ -246,6 +312,7 @@ fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
 
 fn resolve_runtime_rustc(start_dir: Option<&Path>) -> Option<PathBuf> {
     let mut rustup = std::process::Command::new("rustup");
+    apply_implicit_toolchain_homes(&mut rustup, start_dir);
     if let Some(start_dir) = start_dir {
         rustup.current_dir(start_dir);
     }
@@ -555,5 +622,49 @@ mod tests {
         let _target = TargetTriple::detect_in_dir(dir.path()).unwrap();
         #[cfg(target_os = "windows")]
         assert_eq!(_target.triple(), "x86_64-pc-windows-msvc");
+    }
+
+    #[test]
+    fn implicit_toolchain_homes_detect_repo_local_directories_from_ancestors() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".rustup")).unwrap();
+        let nested = dir.path().join("workspace").join("crate");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let homes = ImplicitToolchainHomes::from_env(Some(nested.as_path()), None, None);
+        assert_eq!(homes.cargo_home, Some(dir.path().join(".cargo")));
+        assert_eq!(homes.rustup_home, Some(dir.path().join(".rustup")));
+    }
+
+    #[test]
+    fn implicit_toolchain_homes_only_fill_missing_env_vars() {
+        let dir = tempdir().unwrap();
+        let repo_cargo_home = dir.path().join(".cargo");
+        let repo_rustup_home = dir.path().join(".rustup");
+        std::fs::create_dir_all(&repo_cargo_home).unwrap();
+        std::fs::create_dir_all(&repo_rustup_home).unwrap();
+
+        let homes = ImplicitToolchainHomes::from_env(
+            Some(dir.path()),
+            Some(OsStr::new("C:/explicit-cargo-home")),
+            None,
+        );
+        assert_eq!(homes.cargo_home, None);
+        assert_eq!(homes.rustup_home, Some(repo_rustup_home));
+    }
+
+    #[test]
+    fn implicit_toolchain_homes_treat_empty_env_as_explicit() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".cargo")).unwrap();
+        std::fs::create_dir_all(dir.path().join(".rustup")).unwrap();
+
+        let homes = ImplicitToolchainHomes::from_env(
+            Some(dir.path()),
+            Some(OsStr::new("")),
+            Some(OsStr::new("")),
+        );
+        assert_eq!(homes, ImplicitToolchainHomes::default());
     }
 }

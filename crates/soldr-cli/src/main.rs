@@ -5,6 +5,7 @@ use soldr_fetch::VersionSpec;
 
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
+const TEST_RUSTUP_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTUP_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
 const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
@@ -397,9 +398,10 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
         resolve_toolchain_binary(tool_stem)?
     };
 
-    let status = std::process::Command::new(tool_path)
-        .args(&raw_args[2..])
-        .status()?;
+    let mut command = std::process::Command::new(tool_path);
+    command.args(&raw_args[2..]);
+    apply_implicit_toolchain_homes(&mut command);
+    let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
 }
@@ -407,7 +409,10 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
 /// Run a rustup-managed toolchain binary with pass-through args.
 fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
     let binary = resolve_toolchain_binary(tool)?;
-    let status = std::process::Command::new(binary).args(args).status()?;
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
+    let status = command.status()?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -446,6 +451,7 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
 
     let mut command = std::process::Command::new(cargo);
     command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
     command.env("RUSTC", rustc);
     command.env(
         soldr_cache::CACHE_ENABLED_ENV_VAR,
@@ -578,9 +584,10 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
         return Ok(path);
     }
 
-    let output = std::process::Command::new("rustup")
-        .args(["which", tool])
-        .output()?;
+    let mut command = std::process::Command::new(rustup_binary());
+    command.args(["which", tool]);
+    apply_implicit_toolchain_homes(&mut command);
+    let output = command.output()?;
 
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
@@ -597,6 +604,11 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
     }
 
     Ok(path.into())
+}
+
+fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
+    let start_dir = std::env::current_dir().ok();
+    soldr_core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
 }
 
 fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
@@ -936,6 +948,10 @@ fn toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
         _ => return None,
     };
     non_empty_env_path(env_var)
+}
+
+fn rustup_binary() -> std::path::PathBuf {
+    non_empty_env_path(TEST_RUSTUP_BIN_ENV_VAR).unwrap_or_else(|| "rustup".into())
 }
 
 fn zccache_binary_override() -> Option<std::path::PathBuf> {
