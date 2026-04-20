@@ -9,6 +9,8 @@
 [![Windows x64](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml)
 [![Windows ARM64](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml)
 
+<img width="1536" height="1024" alt="image" src="https://github.com/user-attachments/assets/a4ef9cb4-6346-4f13-9d23-f8da9312ffa7" />
+
 **Instant tools. Instant builds. One command.**
 
 soldr = [crgx](https://crgx.dev/) + [zccache](https://github.com/zackees/zccache) in a single tool.
