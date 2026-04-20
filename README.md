@@ -15,7 +15,7 @@
 
 soldr = [crgx](https://crgx.dev/) + [zccache](https://github.com/zackees/zccache) in a single tool.
 
-In soldering, flux removes the oxide so the joint bonds clean. soldr removes the friction between you and your build: no waiting for tool installs, no waiting for recompilation.
+**Where correct builds meet instant builds.**
 
 The point of soldr is not to invent some brand-new primitive. The point is to combine the pieces that already work into one tool that people can actually rely on every day.
 
