@@ -61,7 +61,7 @@ jobs:
 
       - name: Build through soldr
         shell: pwsh
-        run: soldr cargo build --package soldr-cli --release --locked
+        run: soldr cargo build --package soldr-cli --locked
 
       - name: Test through soldr
         shell: pwsh

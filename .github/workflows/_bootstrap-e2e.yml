@@ -106,7 +106,7 @@ jobs:
         shell: pwsh
         working-directory: soldr
         run: |
-          cargo build --package soldr-cli --release --locked --target "${{ inputs.target }}"
+          cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
 
       - name: Resolve third-party toolchain
         id: third_party_toolchain
@@ -138,7 +138,7 @@ jobs:
         id: soldr_binary
         shell: pwsh
         run: |
-          $soldrPath = Join-Path $env:GITHUB_WORKSPACE "soldr/target/${{ inputs.target }}/release/${{ inputs.binary_name }}"
+          $soldrPath = Join-Path $env:GITHUB_WORKSPACE "soldr/target/${{ inputs.target }}/debug/${{ inputs.binary_name }}"
           "path=$soldrPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Show soldr version
