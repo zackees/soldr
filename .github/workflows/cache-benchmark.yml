@@ -87,6 +87,7 @@ jobs:
         shell: bash
         env:
           BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
+          BENCHMARK_SUMMARY_WWW_DIR: benchmark-summary/www/benchmarks
           SCENARIO: ${{ inputs.scenario }}
           THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
           SWATINEM_CLI_RESULT: ${{ needs.swatinem-soldr-cli.result }}
@@ -127,4 +128,12 @@ jobs:
         with:
           name: cache-benchmark-summary
           path: benchmark-summary/cache-benchmark-summary.json
+          if-no-files-found: error
+
+      - name: Upload benchmark www artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-www
+          path: benchmark-summary/www
           if-no-files-found: error
