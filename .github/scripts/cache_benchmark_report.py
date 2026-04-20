@@ -39,6 +39,63 @@ SCENARIOS = [
     },
 ]
 
+DEFAULT_BENCHMARK_TARGET = "x86_64-unknown-linux-gnu"
+BENCHMARK_COMMAND_TEMPLATE = (
+    "soldr cargo build --package soldr-cli --release --locked --target {target}"
+)
+BASE_COMMAND_REFERENCE = [
+    {
+        "purpose": "Setup / status",
+        "command": "soldr status --json",
+        "status": "setup check",
+    },
+    {
+        "purpose": "Cache inspect",
+        "command": "soldr cache --json",
+        "status": "setup check",
+    },
+    {
+        "purpose": "Release build",
+        "command": "soldr cargo build --workspace --locked",
+        "status": "common compile path",
+    },
+    {
+        "purpose": "Targeted check",
+        "command": "soldr cargo check -p soldr-cli",
+        "status": "common compile path",
+    },
+    {
+        "purpose": "Library tests",
+        "command": "soldr cargo test --workspace --lib --locked",
+        "status": "common test path",
+    },
+    {
+        "purpose": "CLI smoke tests",
+        "command": "soldr cargo test -p soldr-cli --test cli --locked",
+        "status": "common test path",
+    },
+    {
+        "purpose": "Fetch integration test",
+        "command": "soldr cargo test -p soldr-fetch --test fetch_crgx --locked",
+        "status": "common test path",
+    },
+    {
+        "purpose": "Formatting check",
+        "command": "soldr cargo fmt --all -- --check",
+        "status": "quality check",
+    },
+    {
+        "purpose": "Clippy",
+        "command": "soldr cargo clippy --workspace --all-targets --locked -- -D warnings",
+        "status": "quality check",
+    },
+    {
+        "purpose": "Dylint",
+        "command": "soldr cargo-dylint check",
+        "status": "tooling check",
+    },
+]
+
 
 def _read_float(value: str) -> float | None:
     if not value:
@@ -82,6 +139,8 @@ def _format_percent(value: float | None) -> str:
 
 def _load_results() -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
+    benchmark_target = os.environ.get("BENCHMARK_COMMAND_TARGET", DEFAULT_BENCHMARK_TARGET)
+    benchmark_command = BENCHMARK_COMMAND_TEMPLATE.format(target=benchmark_target)
     for scenario in SCENARIOS:
         prefix = scenario["env_prefix"]
         result = os.environ[f"{prefix}_RESULT"]
@@ -101,6 +160,7 @@ def _load_results() -> list[dict[str, Any]]:
                 "backend": scenario["backend"],
                 "mutation": scenario["mutation"],
                 "label": scenario["label"],
+                "command": benchmark_command,
                 "result": result,
                 "cold_seconds": _round_metric(cold_seconds),
                 "warm_seconds": _round_metric(warm_seconds),
@@ -160,6 +220,15 @@ def _build_report(results: list[dict[str, Any]]) -> dict[str, Any]:
         "workflow": "cache-benchmark.yml",
         "requested_scenario": os.environ["SCENARIO"],
         "threshold_ratio": _round_metric(float(os.environ["THRESHOLD_RATIO"])),
+        "benchmarked_command": results[0]["command"] if results else None,
+        "command_reference": [
+            {
+                "purpose": "Benchmarked release build",
+                "command": results[0]["command"] if results else "n/a",
+                "status": "benchmarked now",
+            },
+            *BASE_COMMAND_REFERENCE,
+        ],
         "metric_definition": {
             "percent_less_wall_time_than_bare": (
                 "(cold_seconds - warm_seconds) / cold_seconds * 100"
@@ -187,7 +256,8 @@ def _build_table_rows(report: dict[str, Any]) -> str:
             winner = "yes" if result["backend"] == leader_backend else ""
             rows.append(
                 "<tr>"
-                f"<td>{escape(result['mutation'])}</td>"
+                f"<td><code>{escape(result['command'])}</code></td>"
+                f"<td>{escape(result['label'])}</td>"
                 f"<td>{escape(result['backend'])}</td>"
                 f"<td>{escape(result['result'])}</td>"
                 f"<td>{_format_seconds(result['cold_seconds'])}</td>"
@@ -198,6 +268,22 @@ def _build_table_rows(report: dict[str, Any]) -> str:
                 f"<td>{winner}</td>"
                 "</tr>"
             )
+    return "\n".join(rows)
+
+
+def _build_command_reference_rows(report: dict[str, Any]) -> str:
+    rows: list[str] = []
+    benchmarked = report.get("benchmarked_command")
+    for item in report["command_reference"]:
+        benchmarked_flag = "yes" if item["command"] == benchmarked else "not yet"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(item['purpose'])}</td>"
+            f"<td><code>{escape(item['command'])}</code></td>"
+            f"<td>{escape(item['status'])}</td>"
+            f"<td>{benchmarked_flag}</td>"
+            "</tr>"
+        )
     return "\n".join(rows)
 
 
@@ -284,11 +370,15 @@ def _build_html_page(report: dict[str, Any]) -> str:
         Scenario: {escape(report["requested_scenario"])} |
         Threshold: {report["threshold_ratio"]:.2f}x
       </p>
+      <p class="meta">
+        Benchmarked command: <code>{escape(report["benchmarked_command"] or "n/a")}</code>
+      </p>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Mutation</th>
+              <th>Command</th>
+              <th>Change</th>
               <th>Backend</th>
               <th>Result</th>
               <th>Cold</th>
@@ -301,6 +391,22 @@ def _build_html_page(report: dict[str, Any]) -> str:
           </thead>
           <tbody>
             {_build_table_rows(report)}
+          </tbody>
+        </table>
+      </div>
+      <h2>Common soldr commands</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Purpose</th>
+              <th>Command</th>
+              <th>Type</th>
+              <th>Benchmarked</th>
+            </tr>
+          </thead>
+          <tbody>
+            {_build_command_reference_rows(report)}
           </tbody>
         </table>
       </div>
