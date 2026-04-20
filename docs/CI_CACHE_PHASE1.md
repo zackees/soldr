@@ -12,6 +12,7 @@ Use `.github/workflows/cache-benchmark.yml` for that Phase 1 measurement. The wo
 - uploads one top-level `cache-benchmark-summary` artifact containing `cache-benchmark-summary.json`
 - uploads one website-ready `cache-benchmark-www` artifact containing `index.html` and `latest.json`
 - deploys that same generated site bundle to GitHub Pages when the benchmark workflow runs on the default branch
+- renders the benchmark page with the actual `soldr ...` command under test as the first column, plus a reference table of common soldr commands such as `build`, `check`, `test`, `fmt`, and `clippy`
 - keeps the final workflow summary focused on percent less wall time than bare and the leader's advantage over the next-best cache backend
 - fails a compare job unless the warm path is at least the configured ratio faster than the cold control
 

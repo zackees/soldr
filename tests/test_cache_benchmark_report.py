@@ -20,6 +20,7 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
         {
             "SCENARIO": "all",
             "THRESHOLD_RATIO": "10",
+            "BENCHMARK_COMMAND_TARGET": "x86_64-unknown-linux-gnu",
             "BENCHMARK_SUMMARY_JSON": str(json_path),
             "BENCHMARK_SUMMARY_WWW_DIR": str(www_dir),
             "GITHUB_STEP_SUMMARY": str(summary_path),
@@ -63,6 +64,20 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     report = json.loads(json_path.read_text(encoding="utf-8"))
     assert report["workflow"] == "cache-benchmark.yml"
     assert report["threshold_ratio"] == 10.0
+    assert (
+        report["benchmarked_command"]
+        == "soldr cargo build --package soldr-cli --release --locked --target x86_64-unknown-linux-gnu"
+    )
+    assert any(
+        item["command"] == "soldr cargo fmt --all -- --check"
+        for item in report["command_reference"]
+    )
+    assert any(item["command"] == "soldr status --json" for item in report["command_reference"])
+    assert any(
+        item["command"]
+        == "soldr cargo clippy --workspace --all-targets --locked -- -D warnings"
+        for item in report["command_reference"]
+    )
 
     cli_mutation = next(
         mutation for mutation in report["mutations"] if mutation["mutation"] == "soldr-cli"
@@ -79,6 +94,9 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     assert www_json["workflow"] == "cache-benchmark.yml"
     www_html = (www_dir / "index.html").read_text(encoding="utf-8")
     assert "<title>soldr rendered benchmarks</title>" in www_html
-    assert "<th>Mutation</th>" in www_html
-    assert "<td>soldr-cli</td>" in www_html
+    assert "<th>Command</th>" in www_html
+    assert "soldr cargo build --package soldr-cli --release --locked --target x86_64-unknown-linux-gnu" in www_html
+    assert "soldr status --json" in www_html
+    assert "soldr cargo fmt --all -- --check" in www_html
+    assert "soldr cargo clippy --workspace --all-targets --locked -- -D warnings" in www_html
     assert (www_dir / ".nojekyll").exists()

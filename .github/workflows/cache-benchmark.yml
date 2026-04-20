@@ -86,6 +86,7 @@ jobs:
       - name: Write benchmark summary
         shell: bash
         env:
+          BENCHMARK_COMMAND_TARGET: x86_64-unknown-linux-gnu
           BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
           BENCHMARK_SUMMARY_WWW_DIR: benchmark-summary/site
           SCENARIO: ${{ inputs.scenario }}
