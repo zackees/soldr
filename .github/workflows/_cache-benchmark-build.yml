@@ -31,17 +31,10 @@ on:
         required: false
         type: boolean
         default: true
-      upload_name:
-        required: false
-        type: string
-        default: cache-benchmark
     outputs:
       wall_seconds:
         description: Wall-clock seconds for the cargo build step.
         value: ${{ jobs.build.outputs.wall_seconds }}
-      timing_report:
-        description: Relative path to the latest cargo timing report.
-        value: ${{ jobs.build.outputs.timing_report }}
       cache_hit:
         description: Whether the cache backend restored an exact cache hit relevant to the benchmark.
         value: ${{ jobs.build.outputs.cache_hit }}
@@ -57,7 +50,6 @@ jobs:
     runs-on: ${{ inputs.runner }}
     outputs:
       wall_seconds: ${{ steps.measure.outputs.wall_seconds }}
-      timing_report: ${{ steps.measure.outputs.timing_report }}
       cache_hit: ${{ steps.cache_hit.outputs.value }}
       cache_hit_detail: ${{ steps.cache_hit.outputs.detail }}
 
@@ -69,6 +61,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
           targets: ${{ inputs.target }}
+
+      - name: Resolve compiler path
+        id: rustc
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "path=$(rustup which rustc)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Swatinem rust-cache
         id: rust_cache
@@ -82,7 +81,7 @@ jobs:
       - name: Restore zccache
         id: zccache
         if: ${{ inputs.cache_backend == 'zccache' }}
-        uses: zackees/zccache@096f6ebb68a65d052514cf2612aa445d2be79261
+        uses: ./.github/actions/cache-benchmark-zccache
         with:
           shared-key: ${{ inputs.cache_shared_key }}
           save-cache: ${{ inputs.save_cache }}
@@ -112,16 +111,16 @@ jobs:
         shell: bash
         env:
           BENCH_TARGET: ${{ inputs.target }}
+          RUSTC: ${{ steps.rustc.outputs.path }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import os
-          import pathlib
           import subprocess
           import time
 
           target = os.environ["BENCH_TARGET"]
-          start = time.time()
+          start = time.perf_counter()
           subprocess.run(
               [
                   "cargo",
@@ -132,26 +131,18 @@ jobs:
                   "--locked",
                   "--target",
                   target,
-                  "--timings",
               ],
               check=True,
           )
-          elapsed = time.time() - start
-
-          timing_reports = sorted(
-              pathlib.Path("target/cargo-timings").glob("cargo-timing*.html"),
-              key=lambda path: path.stat().st_mtime,
-          )
-          timing_report = timing_reports[-1].as_posix() if timing_reports else ""
+          elapsed = time.perf_counter() - start
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"wall_seconds={elapsed:.2f}\n")
-              fh.write(f"timing_report={timing_report}\n")
           PY
 
       - name: Cleanup zccache
         if: ${{ always() && inputs.cache_backend == 'zccache' }}
-        uses: zackees/zccache/action/cleanup@096f6ebb68a65d052514cf2612aa445d2be79261
+        uses: ./.github/actions/cache-benchmark-zccache-cleanup
 
       - name: Compute cache-hit summary
         id: cache_hit
@@ -190,15 +181,6 @@ jobs:
             echo "detail=$detail"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Upload timing artifacts
-        if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: ${{ inputs.upload_name }}
-          if-no-files-found: warn
-          path: |
-            target/cargo-timings/*.html
-
       - name: Write job summary
         if: ${{ always() }}
         shell: bash
@@ -211,9 +193,9 @@ jobs:
             if [ -n "${{ steps.measure.outputs.wall_seconds }}" ]; then
               echo "- wall seconds: \`${{ steps.measure.outputs.wall_seconds }}\`"
             fi
-            if [ -n "${{ steps.measure.outputs.timing_report }}" ]; then
-              echo "- timing report: \`${{ steps.measure.outputs.timing_report }}\`"
-            fi
+            echo "- timing scope: \`cargo build --package soldr-cli --release --locked --target ${{ inputs.target }}\` only"
+            echo "- measurement source: \`time.perf_counter()\` around the cargo subprocess"
+            echo "- compiler path: \`${{ steps.rustc.outputs.path }}\`"
             echo "- cache hit summary: \`${{ steps.cache_hit.outputs.detail }}\`"
             if [ "${{ inputs.cache_backend }}" = "swatinem" ]; then
               echo "- rust-cache exact hit: \`${{ steps.rust_cache.outputs.cache-hit }}\`"

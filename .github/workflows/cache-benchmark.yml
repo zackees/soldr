@@ -3,14 +3,6 @@ name: Cache Benchmark
 on:
   workflow_dispatch:
     inputs:
-      cache_backend:
-        description: Cache action under test.
-        required: true
-        type: choice
-        default: swatinem
-        options:
-          - swatinem
-          - zccache
       scenario:
         description: Which Phase 1 scenario set to run.
         required: true
@@ -30,27 +22,51 @@ permissions:
   contents: read
 
 jobs:
-  soldr-cli:
+  swatinem-soldr-cli:
     if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-cli' }}
-    name: Top-crate edit
+    name: Swatinem / Top-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
       source_ref: ${{ github.sha }}
-      cache_backend: ${{ inputs.cache_backend }}
+      cache_backend: swatinem
       mutation: soldr-cli
       threshold_ratio: ${{ inputs.threshold_ratio }}
 
-  soldr-core:
+  swatinem-soldr-core:
     if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-core' }}
-    name: Lower-crate edit
+    name: Swatinem / Lower-crate edit
     uses: ./.github/workflows/_cache-benchmark-scenario.yml
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-gnu
       source_ref: ${{ github.sha }}
-      cache_backend: ${{ inputs.cache_backend }}
+      cache_backend: swatinem
+      mutation: soldr-core
+      threshold_ratio: ${{ inputs.threshold_ratio }}
+
+  zccache-soldr-cli:
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-cli' }}
+    name: zccache / Top-crate edit
+    uses: ./.github/workflows/_cache-benchmark-scenario.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      source_ref: ${{ github.sha }}
+      cache_backend: zccache
+      mutation: soldr-cli
+      threshold_ratio: ${{ inputs.threshold_ratio }}
+
+  zccache-soldr-core:
+    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-core' }}
+    name: zccache / Lower-crate edit
+    uses: ./.github/workflows/_cache-benchmark-scenario.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      source_ref: ${{ github.sha }}
+      cache_backend: zccache
       mutation: soldr-core
       threshold_ratio: ${{ inputs.threshold_ratio }}
 
@@ -58,29 +74,46 @@ jobs:
     if: ${{ always() }}
     name: Phase 1 summary
     needs:
-      - soldr-cli
-      - soldr-core
+      - swatinem-soldr-cli
+      - swatinem-soldr-core
+      - zccache-soldr-cli
+      - zccache-soldr-core
     runs-on: ubuntu-24.04
 
     steps:
       - name: Write benchmark summary
         shell: bash
         env:
-          CACHE_BACKEND: ${{ inputs.cache_backend }}
           SCENARIO: ${{ inputs.scenario }}
           THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
-          SOLDR_CLI_RESULT: ${{ needs.soldr-cli.result }}
-          SOLDR_CLI_COLD: ${{ needs.soldr-cli.outputs.cold_seconds }}
-          SOLDR_CLI_WARM: ${{ needs.soldr-cli.outputs.warm_seconds }}
-          SOLDR_CLI_RATIO: ${{ needs.soldr-cli.outputs.speedup_ratio }}
-          SOLDR_CLI_HIT: ${{ needs.soldr-cli.outputs.cache_hit }}
-          SOLDR_CLI_HIT_DETAIL: ${{ needs.soldr-cli.outputs.cache_hit_detail }}
-          SOLDR_CORE_RESULT: ${{ needs.soldr-core.result }}
-          SOLDR_CORE_COLD: ${{ needs.soldr-core.outputs.cold_seconds }}
-          SOLDR_CORE_WARM: ${{ needs.soldr-core.outputs.warm_seconds }}
-          SOLDR_CORE_RATIO: ${{ needs.soldr-core.outputs.speedup_ratio }}
-          SOLDR_CORE_HIT: ${{ needs.soldr-core.outputs.cache_hit }}
-          SOLDR_CORE_HIT_DETAIL: ${{ needs.soldr-core.outputs.cache_hit_detail }}
+          SWATINEM_CLI_RESULT: ${{ needs.swatinem-soldr-cli.result }}
+          SWATINEM_CLI_COLD: ${{ needs.swatinem-soldr-cli.outputs.cold_seconds }}
+          SWATINEM_CLI_WARM: ${{ needs.swatinem-soldr-cli.outputs.warm_seconds }}
+          SWATINEM_CLI_SAVED: ${{ needs.swatinem-soldr-cli.outputs.saved_seconds }}
+          SWATINEM_CLI_RATIO: ${{ needs.swatinem-soldr-cli.outputs.speedup_ratio }}
+          SWATINEM_CLI_HIT: ${{ needs.swatinem-soldr-cli.outputs.cache_hit }}
+          SWATINEM_CLI_HIT_DETAIL: ${{ needs.swatinem-soldr-cli.outputs.cache_hit_detail }}
+          SWATINEM_CORE_RESULT: ${{ needs.swatinem-soldr-core.result }}
+          SWATINEM_CORE_COLD: ${{ needs.swatinem-soldr-core.outputs.cold_seconds }}
+          SWATINEM_CORE_WARM: ${{ needs.swatinem-soldr-core.outputs.warm_seconds }}
+          SWATINEM_CORE_SAVED: ${{ needs.swatinem-soldr-core.outputs.saved_seconds }}
+          SWATINEM_CORE_RATIO: ${{ needs.swatinem-soldr-core.outputs.speedup_ratio }}
+          SWATINEM_CORE_HIT: ${{ needs.swatinem-soldr-core.outputs.cache_hit }}
+          SWATINEM_CORE_HIT_DETAIL: ${{ needs.swatinem-soldr-core.outputs.cache_hit_detail }}
+          ZCCACHE_CLI_RESULT: ${{ needs.zccache-soldr-cli.result }}
+          ZCCACHE_CLI_COLD: ${{ needs.zccache-soldr-cli.outputs.cold_seconds }}
+          ZCCACHE_CLI_WARM: ${{ needs.zccache-soldr-cli.outputs.warm_seconds }}
+          ZCCACHE_CLI_SAVED: ${{ needs.zccache-soldr-cli.outputs.saved_seconds }}
+          ZCCACHE_CLI_RATIO: ${{ needs.zccache-soldr-cli.outputs.speedup_ratio }}
+          ZCCACHE_CLI_HIT: ${{ needs.zccache-soldr-cli.outputs.cache_hit }}
+          ZCCACHE_CLI_HIT_DETAIL: ${{ needs.zccache-soldr-cli.outputs.cache_hit_detail }}
+          ZCCACHE_CORE_RESULT: ${{ needs.zccache-soldr-core.result }}
+          ZCCACHE_CORE_COLD: ${{ needs.zccache-soldr-core.outputs.cold_seconds }}
+          ZCCACHE_CORE_WARM: ${{ needs.zccache-soldr-core.outputs.warm_seconds }}
+          ZCCACHE_CORE_SAVED: ${{ needs.zccache-soldr-core.outputs.saved_seconds }}
+          ZCCACHE_CORE_RATIO: ${{ needs.zccache-soldr-core.outputs.speedup_ratio }}
+          ZCCACHE_CORE_HIT: ${{ needs.zccache-soldr-core.outputs.cache_hit }}
+          ZCCACHE_CORE_HIT_DETAIL: ${{ needs.zccache-soldr-core.outputs.cache_hit_detail }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -88,74 +121,92 @@ jobs:
 
           scenarios = [
               (
-                  "soldr-cli",
+                  "swatinem",
                   "top-crate edit (`crates/soldr-cli/src/main.rs`)",
-                  os.environ["SOLDR_CLI_RESULT"],
-                  os.environ["SOLDR_CLI_COLD"],
-                  os.environ["SOLDR_CLI_WARM"],
-                  os.environ["SOLDR_CLI_RATIO"],
-                  os.environ["SOLDR_CLI_HIT"],
-                  os.environ["SOLDR_CLI_HIT_DETAIL"],
+                  os.environ["SWATINEM_CLI_RESULT"],
+                  os.environ["SWATINEM_CLI_COLD"],
+                  os.environ["SWATINEM_CLI_WARM"],
+                  os.environ["SWATINEM_CLI_SAVED"],
+                  os.environ["SWATINEM_CLI_RATIO"],
+                  os.environ["SWATINEM_CLI_HIT"],
+                  os.environ["SWATINEM_CLI_HIT_DETAIL"],
               ),
               (
-                  "soldr-core",
+                  "swatinem",
                   "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
-                  os.environ["SOLDR_CORE_RESULT"],
-                  os.environ["SOLDR_CORE_COLD"],
-                  os.environ["SOLDR_CORE_WARM"],
-                  os.environ["SOLDR_CORE_RATIO"],
-                  os.environ["SOLDR_CORE_HIT"],
-                  os.environ["SOLDR_CORE_HIT_DETAIL"],
+                  os.environ["SWATINEM_CORE_RESULT"],
+                  os.environ["SWATINEM_CORE_COLD"],
+                  os.environ["SWATINEM_CORE_WARM"],
+                  os.environ["SWATINEM_CORE_SAVED"],
+                  os.environ["SWATINEM_CORE_RATIO"],
+                  os.environ["SWATINEM_CORE_HIT"],
+                  os.environ["SWATINEM_CORE_HIT_DETAIL"],
+              ),
+              (
+                  "zccache",
+                  "top-crate edit (`crates/soldr-cli/src/main.rs`)",
+                  os.environ["ZCCACHE_CLI_RESULT"],
+                  os.environ["ZCCACHE_CLI_COLD"],
+                  os.environ["ZCCACHE_CLI_WARM"],
+                  os.environ["ZCCACHE_CLI_SAVED"],
+                  os.environ["ZCCACHE_CLI_RATIO"],
+                  os.environ["ZCCACHE_CLI_HIT"],
+                  os.environ["ZCCACHE_CLI_HIT_DETAIL"],
+              ),
+              (
+                  "zccache",
+                  "lower-crate edit (`crates/soldr-core/src/lib.rs`)",
+                  os.environ["ZCCACHE_CORE_RESULT"],
+                  os.environ["ZCCACHE_CORE_COLD"],
+                  os.environ["ZCCACHE_CORE_WARM"],
+                  os.environ["ZCCACHE_CORE_SAVED"],
+                  os.environ["ZCCACHE_CORE_RATIO"],
+                  os.environ["ZCCACHE_CORE_HIT"],
+                  os.environ["ZCCACHE_CORE_HIT_DETAIL"],
               ),
           ]
 
           workflow_summary = [
               "### Cache Benchmark Summary",
               "",
-              f"- cache backend: `{os.environ['CACHE_BACKEND']}`",
               f"- requested scenario: `{os.environ['SCENARIO']}`",
               f"- required ratio: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
+              "- timing scope: `cargo build --package soldr-cli --release --locked --target <target>` only",
+              "- measurement source: `time.perf_counter()` around the cargo subprocess",
               "",
+              "| backend | mutation | result | cold (s) | warm (s) | saved (s) | speedup | cache hit |",
+              "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
           ]
           issue_comment = [
               "### Phase 1 benchmark results",
               "",
-              f"- workflow: `cache-benchmark.yml`",
-              f"- cache backend under test: `{os.environ['CACHE_BACKEND']}`",
+              "- workflow: `cache-benchmark.yml`",
+              "- cache backends under test: `swatinem`, `zccache`",
               f"- threshold used: `{float(os.environ['THRESHOLD_RATIO']):.2f}x`",
               "",
+              "| backend | mutation | cold (s) | warm (s) | saved (s) | speedup | cache hit |",
+              "| --- | --- | ---: | ---: | ---: | ---: | --- |",
           ]
 
-          for key, label, result, cold, warm, ratio, cache_hit, hit_detail in scenarios:
+          cache_details = []
+
+          for backend, label, result, cold, warm, saved, ratio, cache_hit, hit_detail in scenarios:
               if result == "skipped":
                   continue
 
-              workflow_summary.extend(
-                  [
-                      f"#### {label}",
-                      "",
-                      f"- job result: `{result}`",
-                      f"- cold wall seconds: `{cold}`",
-                      f"- warm wall seconds: `{warm}`",
-                      f"- speedup ratio: `{ratio}x`",
-                      f"- warm cache hit: `{cache_hit}`",
-                      f"- warm cache hit detail: `{hit_detail}`",
-                      "",
-                  ]
+              workflow_summary.append(
+                  f"| `{backend}` | {label} | `{result}` | `{cold}` | `{warm}` | `{saved}` | `{ratio}x` | `{cache_hit}` |"
               )
-              issue_comment.extend(
-                  [
-                      f"- {label}: cold `{cold}s`, warm `{warm}s`, speedup `{ratio}x`, cache hit `{cache_hit}`",
-                      f"  cache detail: `{hit_detail}`",
-                  ]
+              issue_comment.append(
+                  f"| `{backend}` | {label} | `{cold}` | `{warm}` | `{saved}` | `{ratio}x` | `{cache_hit}` |"
               )
+              cache_details.append(f"- `{backend}` / {label}: `{hit_detail}`")
 
-          issue_comment.extend(
-              [
-                  "",
-                  "Timing HTML artifacts are attached to the workflow run for each seed/cold/warm child job.",
-              ]
-          )
+          workflow_summary.extend(["", "### Cache Details", ""])
+          workflow_summary.extend(cache_details)
+
+          issue_comment.extend(["", "Cache details:"])
+          issue_comment.extend(cache_details)
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
               fh.write("\n".join(workflow_summary) + "\n\n")

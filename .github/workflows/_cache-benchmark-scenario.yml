@@ -31,6 +31,9 @@ on:
       warm_seconds:
         description: Warm cached wall-clock duration.
         value: ${{ jobs.compare.outputs.warm_seconds }}
+      saved_seconds:
+        description: Cold minus warm wall-clock duration.
+        value: ${{ jobs.compare.outputs.saved_seconds }}
       speedup_ratio:
         description: Cold divided by warm wall-clock time.
         value: ${{ jobs.compare.outputs.speedup_ratio }}
@@ -56,7 +59,6 @@ jobs:
       cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
       mutation: none
       save_cache: true
-      upload_name: benchmark-seed-${{ inputs.cache_backend }}-${{ inputs.mutation }}
 
   cold-control:
     name: Cold control
@@ -69,7 +71,6 @@ jobs:
       cache_shared_key: ""
       mutation: ${{ inputs.mutation }}
       save_cache: false
-      upload_name: benchmark-cold-${{ inputs.mutation }}
 
   warm-cache:
     name: Warm cache
@@ -83,7 +84,6 @@ jobs:
       cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
       mutation: ${{ inputs.mutation }}
       save_cache: false
-      upload_name: benchmark-warm-${{ inputs.cache_backend }}-${{ inputs.mutation }}
 
   compare:
     name: Compare warm vs cold
@@ -94,6 +94,7 @@ jobs:
     outputs:
       cold_seconds: ${{ steps.analyze.outputs.cold_seconds }}
       warm_seconds: ${{ steps.analyze.outputs.warm_seconds }}
+      saved_seconds: ${{ steps.analyze.outputs.saved_seconds }}
       speedup_ratio: ${{ steps.analyze.outputs.speedup_ratio }}
       cache_hit: ${{ steps.analyze.outputs.cache_hit }}
       cache_hit_detail: ${{ steps.analyze.outputs.cache_hit_detail }}
@@ -123,6 +124,7 @@ jobs:
           warm = float(os.environ["WARM_SECONDS"])
           threshold = float(os.environ["THRESHOLD_RATIO"])
           ratio = cold / warm if warm else float("inf")
+          saved = cold - warm
 
           summary = [
               "### Cache Benchmark Comparison",
@@ -131,15 +133,19 @@ jobs:
               f"- mutation: `{mutation}`",
               f"- cold wall seconds: `{cold:.2f}`",
               f"- warm wall seconds: `{warm:.2f}`",
+              f"- seconds saved: `{saved:.2f}`",
               f"- warm cache hit: `{cache_hit}`",
               f"- warm cache hit detail: `{cache_hit_detail}`",
               f"- speedup ratio: `{ratio:.2f}x`",
               f"- required ratio: `{threshold:.2f}x`",
+              "- timing scope: `cargo build --package soldr-cli --release --locked --target <target>` only",
+              "- measurement source: `time.perf_counter()` around the cargo subprocess",
           ]
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"cold_seconds={cold:.2f}\n")
               fh.write(f"warm_seconds={warm:.2f}\n")
+              fh.write(f"saved_seconds={saved:.2f}\n")
               fh.write(f"speedup_ratio={ratio:.2f}\n")
               fh.write(f"cache_hit={cache_hit}\n")
               fh.write(f"cache_hit_detail={cache_hit_detail}\n")
