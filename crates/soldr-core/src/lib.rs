@@ -943,7 +943,7 @@ mod tests {
         let rustup = fake_script_path(&tool_dir, "rustup");
         write_fake_script(&rustup, &fake_failing_rustup_script(&log_path));
 
-        let _path = EnvVarGuard::set("PATH", std::env::join_paths([&tool_dir]).unwrap());
+        let _path = EnvVarGuard::set("PATH", OsStr::new(""));
         let _cargo_home = EnvVarGuard::remove(CARGO_HOME_ENV_VAR);
         let _rustup_home = EnvVarGuard::set(RUSTUP_HOME_ENV_VAR, &explicit_rustup_home);
         let _rustup_toolchain = EnvVarGuard::remove(RUSTUP_TOOLCHAIN_ENV_VAR);
