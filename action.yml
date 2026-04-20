@@ -92,24 +92,7 @@ runs:
       shell: pwsh
       env:
         SETUP_SOLDR_PATH: ${{ steps.resolve.outputs.soldr_path }}
-      run: |
-        @'
-import json
-import subprocess
-import sys
-
-binary = sys.argv[1]
-output_path = sys.argv[2]
-version_json = subprocess.check_output([binary, "version", "--json"], text=True)
-payload = json.loads(version_json)
-
-with open(output_path, "a", encoding="utf-8") as fh:
-    fh.write(f"soldr_version={payload['soldr_version']}\n")
-'@ | python - "$env:SETUP_SOLDR_PATH" "$env:GITHUB_OUTPUT"
-
-        cargo --version
-        rustc --version
-        soldr status --json | Out-Null
+      run: python "${{ github.action_path }}/.github/actions/setup-soldr/verify_soldr.py"
 
     - id: cache-meta
       shell: pwsh
