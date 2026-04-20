@@ -108,7 +108,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 `v1` should preserve these behaviors:
 
 - install exactly one released Soldr binary for the active runner OS and architecture
-- provision the normal-path Rust toolchain itself via `rustup`; users should not need a separate toolchain action for the common path
+- provision the normal-path Rust toolchain itself, bootstrapping `rustup` via `rustup-init` when it is not already on the runner; users should not need to preinstall `rustup` or run a separate toolchain-setup action for the common path
 - create and export `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
 - put the installed `soldr` binary on `PATH`
 - restore and save the action-managed cache/state root when `cache: true`
@@ -119,7 +119,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 The extracted public action must document these current limits honestly:
 
 - the action rehydrates the Soldr root, Cargo home, and rustup home under the chosen cache/state root
-- Soldr still uses `rustup` under the hood today
+- the action bootstraps `rustup` on demand via `rustup-init` when it is absent, then uses it to install the requested toolchain; at runtime Soldr prefers direct toolchain binaries from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` and only falls back to `rustup which` when the direct probe fails (or when `RUSTUP_TOOLCHAIN` is explicitly set)
 - managed `zccache` artifact storage still follows zccache's current supported/default behavior rather than a fully action-controlled custom artifact path
 
 ### Non-Contract Details
