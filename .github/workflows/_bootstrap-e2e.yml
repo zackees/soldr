@@ -89,7 +89,7 @@ jobs:
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
-      - uses: ./.github/actions/cache-benchmark-zccache
+      - uses: ./soldr/.github/actions/cache-benchmark-zccache
         with:
           shared-key: ${{ inputs.target }}
           target-dir: soldr/target
@@ -150,4 +150,4 @@ jobs:
           path: ${{ steps.soldr_binary.outputs.path }}
 
       - if: ${{ always() }}
-        uses: ./.github/actions/cache-benchmark-zccache-cleanup
+        uses: ./soldr/.github/actions/cache-benchmark-zccache-cleanup
