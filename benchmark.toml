@@ -5,6 +5,13 @@ default_target = "x86_64-unknown-linux-gnu"
 base_competitor = "swatinem"
 soldr_note = "soldr uses managed zccache internally."
 
+[phase1]
+issue = 122
+runner = "ubuntu-24.04"
+target = "x86_64-unknown-linux-gnu"
+command = "cargo build --package soldr-cli --release --locked --target {target} --timings"
+default_threshold_ratio = 10.0
+
 [competitors.soldr]
 label = "soldr"
 backend = "zccache"
