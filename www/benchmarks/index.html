@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>soldr Cache Benchmarks</title>
+    <style>
+      :root {
+        --bg: #f3efe7;
+        --panel: rgba(255, 250, 242, 0.92);
+        --ink: #182021;
+        --muted: #5d6769;
+        --line: rgba(24, 32, 33, 0.12);
+        --accent: #0e8871;
+        --accent-strong: #0b5f50;
+        --accent-soft: rgba(14, 136, 113, 0.12);
+        --warn: #af5e00;
+        --shadow: 0 20px 60px rgba(24, 32, 33, 0.12);
+        --radius-xl: 28px;
+        --radius-lg: 22px;
+        --radius-md: 16px;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(14, 136, 113, 0.22), transparent 28%),
+          radial-gradient(circle at top right, rgba(219, 168, 42, 0.16), transparent 24%),
+          linear-gradient(180deg, #f7f3eb 0%, var(--bg) 100%);
+      }
+
+      .shell {
+        width: min(1120px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 40px 0 56px;
+      }
+
+      .hero,
+      .mutation,
+      .details {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(10px);
+      }
+
+      .hero {
+        border-radius: var(--radius-xl);
+        padding: 32px;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -40px -40px auto;
+        width: 180px;
+        height: 180px;
+        background: linear-gradient(135deg, rgba(14, 136, 113, 0.24), rgba(11, 95, 80, 0.08));
+        border-radius: 36px;
+        transform: rotate(14deg);
+      }
+
+      .eyebrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent-strong);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .hero h1 {
+        margin-top: 16px;
+        font-size: clamp(34px, 6vw, 64px);
+        line-height: 0.95;
+        max-width: 8ch;
+      }
+
+      .hero p {
+        margin-top: 18px;
+        max-width: 720px;
+        font-size: 18px;
+        line-height: 1.55;
+        color: var(--muted);
+      }
+
+      .meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-top: 28px;
+      }
+
+      .meta-card,
+      .stat-card {
+        border-radius: var(--radius-md);
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.62);
+        padding: 16px 18px;
+      }
+
+      .label {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .value {
+        margin-top: 8px;
+        font-size: 24px;
+        font-weight: 800;
+        letter-spacing: -0.04em;
+      }
+
+      .mutations {
+        display: grid;
+        gap: 18px;
+        margin-top: 24px;
+      }
+
+      .mutation {
+        border-radius: var(--radius-lg);
+        padding: 24px;
+      }
+
+      .mutation-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      .mutation-head h2 {
+        font-size: clamp(24px, 4vw, 36px);
+        letter-spacing: -0.04em;
+      }
+
+      .mutation-head p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.5;
+      }
+
+      .winner-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: #12292a;
+        color: #e8fffb;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+        margin-top: 18px;
+      }
+
+      .stat-card .value {
+        font-size: 30px;
+      }
+
+      .details {
+        margin-top: 18px;
+        border-radius: var(--radius-md);
+        overflow: hidden;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+
+      th,
+      td {
+        padding: 14px 16px;
+        text-align: left;
+        border-bottom: 1px solid var(--line);
+      }
+
+      th {
+        background: rgba(24, 32, 33, 0.04);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      td {
+        font-size: 15px;
+      }
+
+      tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .backend {
+        font-weight: 700;
+      }
+
+      .good {
+        color: var(--accent-strong);
+        font-weight: 700;
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .loading,
+      .error {
+        margin-top: 24px;
+        border-radius: var(--radius-md);
+        padding: 18px 20px;
+        border: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.76);
+      }
+
+      .error {
+        color: var(--warn);
+      }
+
+      .footer {
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      @media (max-width: 720px) {
+        .shell {
+          width: min(100vw - 20px, 1120px);
+          padding: 24px 0 40px;
+        }
+
+        .hero,
+        .mutation {
+          padding: 20px;
+        }
+
+        th,
+        td {
+          padding: 12px;
+        }
+
+        .details {
+          overflow-x: auto;
+        }
+
+        table {
+          min-width: 720px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <span class="eyebrow">soldr benchmark report</span>
+        <h1>Warm builds dropped to sub-second.</h1>
+        <p>
+          This page renders the latest cache benchmark summary from the GitHub Actions
+          benchmark workflow. The headline metric is simple: percent less wall time than
+          bare, then the winner's advantage over the next-best backend.
+        </p>
+        <div id="meta-grid" class="meta-grid"></div>
+      </section>
+
+      <div id="loading" class="loading">Loading benchmark summary...</div>
+      <div id="error" class="error" hidden></div>
+      <section id="mutations" class="mutations" hidden></section>
+      <p class="footer">
+        Data source: <code>latest.json</code> generated by <code>cache-benchmark.yml</code>.
+      </p>
+    </main>
+
+    <script id="benchmark-data" type="application/json"></script>
+    <script>
+      function getEmbeddedReport() {
+        const node = document.getElementById("benchmark-data");
+        if (!node) {
+          return null;
+        }
+        const raw = node.textContent.trim();
+        if (!raw) {
+          return null;
+        }
+        return JSON.parse(raw);
+      }
+
+      function formatPercent(value) {
+        return value == null ? "n/a" : value.toFixed(2) + "%";
+      }
+
+      function formatSeconds(value) {
+        return value == null ? "n/a" : value.toFixed(2) + "s";
+      }
+
+      function renderMeta(report) {
+        const metaGrid = document.getElementById("meta-grid");
+        const successfulResults = report.mutations.flatMap((mutation) =>
+          mutation.results.filter((result) => result.result === "success")
+        );
+        const fastestWarm = successfulResults.reduce((fastest, current) => {
+          if (!fastest || current.warm_seconds < fastest.warm_seconds) {
+            return current;
+          }
+          return fastest;
+        }, null);
+        const biggestWin = report.mutations.reduce((best, mutation) => {
+          if (
+            !best ||
+            (mutation.leader_percent_less_wall_time_than_bare ?? -1) >
+              (best.leader_percent_less_wall_time_than_bare ?? -1)
+          ) {
+            return mutation;
+          }
+          return best;
+        }, null);
+
+        const cards = [
+          ["scenario", report.requested_scenario],
+          ["threshold", report.threshold_ratio.toFixed(2) + "x"],
+          [
+            "fastest warm build",
+            fastestWarm
+              ? fastestWarm.backend + " / " + formatSeconds(fastestWarm.warm_seconds)
+              : "n/a",
+          ],
+          [
+            "best vs bare",
+            biggestWin
+              ? formatPercent(biggestWin.leader_percent_less_wall_time_than_bare)
+              : "n/a",
+          ],
+        ];
+
+        metaGrid.innerHTML = cards
+          .map(
+            ([label, value]) =>
+              '<article class="meta-card"><div class="label">' +
+              label +
+              '</div><div class="value">' +
+              value +
+              "</div></article>"
+          )
+          .join("");
+      }
+
+      function renderMutations(report) {
+        const mutations = document.getElementById("mutations");
+        mutations.innerHTML = report.mutations
+          .map((mutation) => {
+            const rows = mutation.results
+              .map(
+                (result) =>
+                  "<tr>" +
+                  '<td class="backend">' + result.backend + "</td>" +
+                  "<td>" + result.result + "</td>" +
+                  '<td class="good">' +
+                  formatPercent(result.percent_less_wall_time_than_bare) +
+                  "</td>" +
+                  "<td>" + formatSeconds(result.warm_seconds) + "</td>" +
+                  "<td>" + formatSeconds(result.cold_seconds) + "</td>" +
+                  "<td>" + formatSeconds(result.saved_seconds) + "</td>" +
+                  "<td>" + (result.speedup_ratio == null ? "n/a" : result.speedup_ratio.toFixed(2) + "x") + "</td>" +
+                  '<td class="muted">' + (result.cache_hit_detail || "n/a") + "</td>" +
+                  "</tr>"
+              )
+              .join("");
+
+            return (
+              '<article class="mutation">' +
+              '<div class="mutation-head">' +
+              "<div>" +
+              "<h2>" + mutation.mutation + "</h2>" +
+              "<p>" + mutation.label + "</p>" +
+              "</div>" +
+              '<div class="winner-pill">Winner: ' + (mutation.leader_backend || "n/a") + "</div>" +
+              "</div>" +
+              '<div class="stats">' +
+              '<article class="stat-card"><div class="label">Winner vs bare</div><div class="value">' +
+              formatPercent(mutation.leader_percent_less_wall_time_than_bare) +
+              "</div></article>" +
+              '<article class="stat-card"><div class="label">Winner vs runner-up</div><div class="value">' +
+              formatPercent(mutation.leader_percent_less_wall_time_than_runner_up) +
+              "</div></article>" +
+              "</div>" +
+              '<div class="details"><table><thead><tr>' +
+              "<th>Backend</th><th>Result</th><th>Less than bare</th><th>Warm</th><th>Cold</th><th>Saved</th><th>Speedup</th><th>Cache detail</th>" +
+              "</tr></thead><tbody>" +
+              rows +
+              "</tbody></table></div>" +
+              "</article>"
+            );
+          })
+          .join("");
+      }
+
+      async function main() {
+        const loading = document.getElementById("loading");
+        const error = document.getElementById("error");
+        const mutations = document.getElementById("mutations");
+        try {
+          let report = getEmbeddedReport();
+          if (!report) {
+            const response = await fetch("./latest.json", { cache: "no-store" });
+            if (!response.ok) {
+              throw new Error("HTTP " + response.status + " while loading latest.json");
+            }
+            report = await response.json();
+          }
+          renderMeta(report);
+          renderMutations(report);
+          loading.hidden = true;
+          mutations.hidden = false;
+        } catch (err) {
+          loading.hidden = true;
+          error.hidden = false;
+          error.textContent =
+            "Unable to load benchmark data. " +
+            (err && err.message ? err.message : "Unknown error");
+        }
+      }
+
+      main();
+    </script>
+  </body>
+</html>

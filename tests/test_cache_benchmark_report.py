@@ -14,12 +14,14 @@ SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "cache_benchmark_report.py"
 def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     json_path = tmp_path / "cache-benchmark-summary.json"
     summary_path = tmp_path / "step-summary.md"
+    www_dir = tmp_path / "www" / "benchmarks"
     env = os.environ.copy()
     env.update(
         {
             "SCENARIO": "all",
             "THRESHOLD_RATIO": "10",
             "BENCHMARK_SUMMARY_JSON": str(json_path),
+            "BENCHMARK_SUMMARY_WWW_DIR": str(www_dir),
             "GITHUB_STEP_SUMMARY": str(summary_path),
             "SWATINEM_CLI_RESULT": "success",
             "SWATINEM_CLI_COLD": "78.70",
@@ -72,3 +74,9 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     summary = summary_path.read_text(encoding="utf-8")
     assert "cache-benchmark-summary.json" in summary
     assert "`soldr-cli`: `zccache` is best, `97.69%` less wall time than bare" in summary
+
+    www_json = json.loads((www_dir / "latest.json").read_text(encoding="utf-8"))
+    assert www_json["workflow"] == "cache-benchmark.yml"
+    www_html = (www_dir / "index.html").read_text(encoding="utf-8")
+    assert "<title>soldr Cache Benchmarks</title>" in www_html
+    assert '"workflow": "cache-benchmark.yml"' in www_html

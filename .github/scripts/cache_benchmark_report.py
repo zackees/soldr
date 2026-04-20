@@ -6,9 +6,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+WWW_BENCHMARK_TEMPLATE = REPO_ROOT / "www" / "benchmarks" / "index.html"
 
 
 SCENARIOS = [
@@ -166,6 +170,28 @@ def _write_json_report(report: dict[str, Any]) -> None:
     output_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
+def _write_www_bundle(report: dict[str, Any]) -> None:
+    www_dir = os.environ.get("BENCHMARK_SUMMARY_WWW_DIR")
+    if not www_dir:
+        return
+
+    output_dir = Path(www_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not WWW_BENCHMARK_TEMPLATE.exists():
+        raise FileNotFoundError(f"missing benchmark page template: {WWW_BENCHMARK_TEMPLATE}")
+
+    template_html = WWW_BENCHMARK_TEMPLATE.read_text(encoding="utf-8")
+    embedded_report = json.dumps(report, indent=2)
+    placeholder = '<script id="benchmark-data" type="application/json"></script>'
+    html = template_html.replace(
+        placeholder,
+        f'{placeholder[:-9]}\n{embedded_report}\n</script>',
+        1,
+    )
+    (output_dir / "index.html").write_text(html, encoding="utf-8")
+    (output_dir / "latest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+
 def _build_summary_lines(report: dict[str, Any]) -> list[str]:
     lines = [
         "### Cache Benchmark Summary",
@@ -233,6 +259,7 @@ def _append_step_summary(report: dict[str, Any]) -> None:
 def main() -> None:
     report = _build_report(_load_results())
     _write_json_report(report)
+    _write_www_bundle(report)
     _append_step_summary(report)
 
 
