@@ -1,0 +1,42 @@
+# Minimal soldr CI for an external Rust repo.
+#
+# Drop this at .github/workflows/ci.yml and you get:
+#  - warm feature-branch builds that restore from the latest main cache on miss
+#  - per-branch cache saves so successive pushes on the same branch are warmer
+#  - no manual actions/cache step: zackees/soldr@v1 runs one internally with
+#    a branch-agnostic key + restore-keys prefix for parent (main) -> child
+#    (feature branch) cache sharing
+#
+# See docs/CI_CACHE.md for the full model and how to verify cache hits.
+
+name: CI
+
+# push on all branches is the correct default. Each feature branch saves into
+# its own cache scope and restores its own cache first, then falls back to
+# main's cache on miss. Do NOT add pull_request unless you specifically need
+# CI on the PR merge commit; it duplicates work and creates a second cache
+# lineage that does not help the parent->child restore.
+on:
+  push:
+    branches: ['**']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs soldr, provisions the pinned Rust toolchain from
+      # rust-toolchain.toml, and runs an internal actions/cache step keyed so
+      # main writes the canonical entry and feature branches restore from it.
+      - id: soldr
+        uses: zackees/soldr@v1
+        with:
+          cache: true
+
+      - run: echo "soldr cache-hit=${{ steps.soldr.outputs.cache-hit }}"
+      - run: soldr cargo build --locked
+      - run: soldr cargo test --locked
