@@ -82,7 +82,7 @@ jobs:
       - name: Restore zccache
         id: zccache
         if: ${{ inputs.cache_backend == 'zccache' }}
-        uses: zackees/zccache@096f6ebb68a65d052514cf2612aa445d2be79261
+        uses: ./.github/actions/cache-benchmark-zccache
         with:
           shared-key: ${{ inputs.cache_shared_key }}
           save-cache: ${{ inputs.save_cache }}
@@ -151,7 +151,7 @@ jobs:
 
       - name: Cleanup zccache
         if: ${{ always() && inputs.cache_backend == 'zccache' }}
-        uses: zackees/zccache/action/cleanup@096f6ebb68a65d052514cf2612aa445d2be79261
+        uses: ./.github/actions/cache-benchmark-zccache-cleanup
 
       - name: Compute cache-hit summary
         id: cache_hit
