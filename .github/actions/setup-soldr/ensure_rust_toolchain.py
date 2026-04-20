@@ -13,6 +13,14 @@ def run(command: list[str]) -> None:
     subprocess.run(command, check=True)
 
 
+def append_github_env(name: str, value: str) -> None:
+    output = os.environ.get("GITHUB_ENV")
+    if not output:
+        return
+    with open(output, "a", encoding="utf-8") as fh:
+        fh.write(f"{name}={value}\n")
+
+
 def main() -> None:
     cargo_home = Path(os.environ["CARGO_HOME"])
     rustup_home = Path(os.environ["RUSTUP_HOME"])
@@ -35,12 +43,15 @@ def main() -> None:
     targets = json.loads(os.environ.get("SETUP_SOLDR_TOOLCHAIN_TARGETS", "[]"))
 
     run([rustup, "set", "profile", profile])
-    run([rustup, "toolchain", "install", channel, "--profile", profile])
-    if components:
-        run([rustup, "component", "add", "--toolchain", channel, *components])
-    if targets:
-        run([rustup, "target", "add", "--toolchain", channel, *targets])
+    install_command = [rustup, "toolchain", "install", channel, "--profile", profile]
+    for component in components:
+        install_command.extend(["--component", component])
+    for target in targets:
+        install_command.extend(["--target", target])
+    run(install_command)
     run([rustup, "default", channel])
+    os.environ["RUSTUP_TOOLCHAIN"] = channel
+    append_github_env("RUSTUP_TOOLCHAIN", channel)
 
     cargo = shutil.which("cargo")
     rustc = shutil.which("rustc")

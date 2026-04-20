@@ -32,7 +32,7 @@ When stable action tags exist, prefer a major tag such as `@v1`. Until then, pin
 The root action:
 
 - installs one `soldr` binary
-- provisions the Rust toolchain without requiring a separate toolchain action
+- preinstalls the exact Rust toolchain resolved from `rust-toolchain.toml` or `toolchain:`
 - sets `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
 - restores and saves that runner-local root through GitHub cache when `cache: true`
 
@@ -40,6 +40,7 @@ Important toolchain rule:
 
 - if your repository already pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact channel with `toolchain:`
 - do not preinstall a different generic toolchain such as `stable` and assume a later `soldr cargo ...` step will reconcile it
+- the action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo` and `rustc` calls keep using the preinstalled toolchain instead of asking rustup to resolve it on demand
 
 Example:
 
@@ -120,6 +121,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          toolchain: 1.94.1
 
       - name: Install soldr 0.7.4
         shell: bash
@@ -162,6 +165,8 @@ jobs:
           path: soldr
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          toolchain: 1.94.1
 
       - name: Build soldr from source
         working-directory: soldr
