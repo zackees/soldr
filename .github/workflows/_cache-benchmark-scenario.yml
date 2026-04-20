@@ -59,6 +59,7 @@ jobs:
       cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
       mutation: none
       save_cache: true
+      upload_name: cache-benchmark-${{ inputs.cache_backend }}-${{ inputs.mutation }}-seed-timings
 
   cold-control:
     name: Cold control
@@ -71,6 +72,7 @@ jobs:
       cache_shared_key: ""
       mutation: ${{ inputs.mutation }}
       save_cache: false
+      upload_name: cache-benchmark-none-${{ inputs.mutation }}-cold-timings
 
   warm-cache:
     name: Warm cache
@@ -84,6 +86,7 @@ jobs:
       cache_shared_key: benchmark-${{ github.run_id }}-${{ github.run_attempt }}-${{ inputs.cache_backend }}-${{ inputs.mutation }}
       mutation: ${{ inputs.mutation }}
       save_cache: false
+      upload_name: cache-benchmark-${{ inputs.cache_backend }}-${{ inputs.mutation }}-warm-timings
 
   compare:
     name: Compare warm vs cold
