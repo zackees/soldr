@@ -142,4 +142,4 @@ Built on lessons from:
 
 ## License
 
-BSD-3-Clause
+BSD-3-Clause.
