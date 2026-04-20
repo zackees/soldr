@@ -60,9 +60,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
-          toolchain: stable
-          profile: minimal
           targets: ${{ inputs.target }}
+
+      - name: Resolve compiler path
+        id: rustc
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "path=$(rustup which rustc)" >> "$GITHUB_OUTPUT"
 
       - name: Restore Swatinem rust-cache
         id: rust_cache
@@ -106,6 +111,7 @@ jobs:
         shell: bash
         env:
           BENCH_TARGET: ${{ inputs.target }}
+          RUSTC: ${{ steps.rustc.outputs.path }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -189,6 +195,7 @@ jobs:
             fi
             echo "- timing scope: \`cargo build --package soldr-cli --release --locked --target ${{ inputs.target }}\` only"
             echo "- measurement source: \`time.perf_counter()\` around the cargo subprocess"
+            echo "- compiler path: \`${{ steps.rustc.outputs.path }}\`"
             echo "- cache hit summary: \`${{ steps.cache_hit.outputs.detail }}\`"
             if [ "${{ inputs.cache_backend }}" = "swatinem" ]; then
               echo "- rust-cache exact hit: \`${{ steps.rust_cache.outputs.cache-hit }}\`"
