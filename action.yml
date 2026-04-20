@@ -1,5 +1,5 @@
 name: setup-soldr
-description: Install soldr, preinstall the resolved Rust toolchain, and restore a cacheable runner-local Soldr root.
+description: Current in-repo Soldr setup action. Installs soldr, provisions the resolved Rust toolchain via rustup, and restores a cacheable runner-local Soldr root.
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
@@ -14,7 +14,7 @@ inputs:
     required: false
     default: "true"
   cache-dir:
-    description: Override the runner-local cache root used for Soldr, Cargo, and rustup state.
+    description: Override the runner-local cache root used for Soldr, Cargo, and rustup state rehydrated by this action.
     required: false
     default: ""
   cache-key-suffix:
@@ -47,7 +47,7 @@ outputs:
     description: Whether the action restored an exact setup cache hit.
     value: ${{ steps.cache-meta.outputs.cache_hit }}
   toolchain:
-    description: Exact Rust toolchain channel configured by the action.
+    description: Exact Rust toolchain channel configured by rustup for the action.
     value: ${{ steps.resolve.outputs.toolchain }}
 runs:
   using: composite

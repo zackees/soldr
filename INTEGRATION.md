@@ -19,20 +19,20 @@ The same pattern applies to `cargo test`, `cargo check`, and similar Cargo invoc
 
 ## GitHub Actions
 
-This repository now ships a root GitHub Action for Soldr setup. The preferred GitHub Actions path is:
+This repository currently ships an in-repo root GitHub Action for Soldr setup. The current GitHub Actions path is:
 
 1. use `zackees/soldr@<ref>` or `uses: ./` in the same repository
-2. let the action provision the Rust toolchain and restore the Soldr/Cargo/rustup cache root
+2. let the action provision the Rust toolchain through `rustup` and restore the Soldr/Cargo/rustup cache root
 3. run `soldr cargo ...`
 
-When stable action tags exist, prefer a major tag such as `@v1`. Until then, pin a full commit SHA or an explicit release tag.
+The stable-major public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v1` contract yet.
 
 ### Preferred setup action path
 
 The root action:
 
 - installs one `soldr` binary
-- preinstalls the exact Rust toolchain resolved from `rust-toolchain.toml` or `toolchain:`
+- preinstalls the exact Rust toolchain resolved from `rust-toolchain.toml` or `toolchain:` via `rustup`
 - sets `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
 - restores and saves that runner-local root through GitHub cache when `cache: true`
 
@@ -40,7 +40,8 @@ Important toolchain rule:
 
 - if your repository already pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact channel with `toolchain:`
 - do not preinstall a different generic toolchain such as `stable` and assume a later `soldr cargo ...` step will reconcile it
-- the action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo` and `rustc` calls keep using the preinstalled toolchain instead of asking rustup to resolve it on demand
+- the action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo` and `rustc` calls keep using the preinstalled toolchain instead of asking `rustup` to resolve it on demand
+- on GitHub-hosted runners, no separate toolchain setup action is usually needed for this path, but `rustup` is still the implementation dependency today; self-hosted runners must provide it
 
 Example:
 
@@ -231,8 +232,9 @@ On Windows PowerShell:
 
 When updating a workflow for `soldr`, do this:
 
-1. Keep the existing Rust toolchain setup.
-2. Install `soldr` or build `soldr` from source.
-3. Replace each `cargo ...` build/test/check command with `soldr cargo ...`.
-4. Do not add manual `RUSTC_WRAPPER` wiring unless the workflow explicitly needs wrapper-mode testing.
-5. Use the local source-build path when you need the most reliable cross-environment fallback.
+1. If you use the current root action on GitHub-hosted runners, do not add a separate toolchain setup action just for the normal path.
+2. If you are not using the root action, keep or add explicit Rust toolchain setup yourself.
+3. Install `soldr` or build `soldr` from source.
+4. Replace each `cargo ...` build/test/check command with `soldr cargo ...`.
+5. Do not add manual `RUSTC_WRAPPER` wiring unless the workflow explicitly needs wrapper-mode testing.
+6. Use the local source-build path when you need the most reliable cross-environment fallback.
