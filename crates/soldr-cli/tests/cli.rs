@@ -839,6 +839,48 @@ fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
 }
 
 #[test]
+fn rustup_resolution_failure_reports_raw_error_and_ci_guidance() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustc", "--version"])
+        .env("RUSTUP_TOOLCHAIN", "soldr-ci-missing-toolchain")
+        .output()
+        .expect("failed to run soldr rustc --version with invalid RUSTUP_TOOLCHAIN");
+
+    assert!(
+        !output.status.success(),
+        "expected soldr rustc --version to fail when rustup resolution fails"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("failed to resolve rustc via rustup: error: override toolchain 'soldr-ci-missing-toolchain' is not installed"),
+        "expected raw rustup stderr to be preserved: {stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "the RUSTUP_TOOLCHAIN environment variable specifies an uninstalled toolchain"
+        ),
+        "expected raw rustup explanation in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("pins Rust in rust-toolchain.toml"),
+        "expected rust-toolchain.toml guidance in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("generic stable toolchain"),
+        "expected exact-channel guidance in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("RUSTUP_TOOLCHAIN"),
+        "expected RUSTUP_TOOLCHAIN guidance in stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("setup-soldr action path"),
+        "expected setup-soldr guidance in stderr: {stderr}"
+    );
+}
+
+#[test]
 fn status_reports_cache_control_defaults() {
     let cache_root = unique_temp_dir("status");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
