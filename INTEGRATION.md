@@ -22,7 +22,7 @@ The same pattern applies to `cargo test`, `cargo check`, and similar Cargo invoc
 This repository currently ships an in-repo root GitHub Action for Soldr setup. The current GitHub Actions path is:
 
 1. use `zackees/soldr@<ref>` or `uses: ./` in the same repository
-2. let the action provision the Rust toolchain through `rustup` and restore the Soldr/Cargo/rustup cache root
+2. let the action bootstrap `rustup` if needed, then provision the Rust toolchain and restore the Soldr/Cargo/rustup cache root
 3. run `soldr cargo ...`
 
 The stable-major public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v1` contract yet.
@@ -68,7 +68,7 @@ Important toolchain rule:
 - if your repository already pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact channel with `toolchain:`
 - do not preinstall a different generic toolchain such as `stable` and assume a later `soldr cargo ...` step will reconcile it
 - the action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo` and `rustc` calls keep using the preinstalled toolchain instead of asking `rustup` to resolve it on demand
-- on GitHub-hosted runners, no separate toolchain setup action is usually needed for this path, but `rustup` is still the implementation dependency today; self-hosted runners must provide it
+- on GitHub-hosted runners, no separate toolchain setup action is usually needed for this path; the action will bootstrap `rustup` into its cached root if the runner does not already have it
 
 Example:
 
