@@ -48,6 +48,7 @@ jobs:
           Write-Host "cache-dir=${{ steps.setup.outputs.cache-dir }}"
           Write-Host "cache-hit=${{ steps.setup.outputs.cache-hit }}"
           Write-Host "build-cache-hit=${{ steps.setup.outputs.build-cache-hit }}"
+          Write-Host "target-cache-hit=${{ steps.setup.outputs.target-cache-hit }}"
           Write-Host "toolchain=${{ steps.setup.outputs.toolchain }}"
 
       - name: Verify setup state
