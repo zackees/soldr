@@ -37,7 +37,7 @@ inputs:
   build-cache:
     description: >
       Restore and save the zccache compilation artifact cache (~/.zccache)
-      across workflow runs. Default "true" — the action restores ~/.zccache
+      across workflow runs. Default "true"; the action restores ~/.zccache
       with a toolchain-scoped key and saves it at end-of-job, letting
       GitHub's own-branch -> PR base -> default-branch restore order seed
       feature-branch runs from the latest main-branch save without any

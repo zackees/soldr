@@ -62,6 +62,7 @@ The root action:
 - preinstalls the exact Rust toolchain resolved from `rust-toolchain.toml` or `toolchain:` via `rustup`
 - sets `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
 - restores and saves that runner-local root through GitHub cache when `cache: true`
+- restores and saves the zccache compilation artifact cache at `~/.zccache` by default; set `build-cache: false` to disable that layer
 
 Important toolchain rule:
 
@@ -108,6 +109,7 @@ Useful inputs when wiring the action into another repository:
 - `toolchain`: explicit Rust channel override when you do not want to rely on `rust-toolchain.toml`
 - `toolchain-file`: alternate toolchain file path when the repo does not use the default root `rust-toolchain.toml`
 - `cache`: turn the runner-local cache root on or off
+- `build-cache`: turn the `~/.zccache` compilation artifact cache on or off; defaults to `true`
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
 
@@ -119,6 +121,7 @@ Useful outputs:
 - `soldr-version`
 - `cache-dir`
 - `cache-hit`
+- `build-cache-hit`
 - `toolchain`
 
 ### What gets rehydrated today

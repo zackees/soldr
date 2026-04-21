@@ -38,5 +38,6 @@ jobs:
           cache: true
 
       - run: echo "soldr cache-hit=${{ steps.soldr.outputs.cache-hit }}"
+      - run: echo "soldr build-cache-hit=${{ steps.soldr.outputs.build-cache-hit }}"
       - run: soldr cargo build --locked
       - run: soldr cargo test --locked
