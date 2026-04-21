@@ -49,7 +49,7 @@ Behavior:
 - Fetch a pinned managed `zccache` release when caching is enabled
 - Set `RUSTC_WRAPPER` to the current soldr binary
 - Pass the managed `zccache` binary path into wrapper mode through the environment
-- Start a per-build zccache session on zccache's current default daemon endpoint
+- Start a per-build zccache session using Soldr's zccache cache root
 - Delegate to Cargo with the exact flags the user passed
 
 Current cache-control behavior:
@@ -58,7 +58,7 @@ Current cache-control behavior:
 - `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
 - zccache integration currently targets Rust builds through the cargo front door
-- zccache's current artifact store and daemon endpoint remain on zccache's default paths; soldr currently manages the session lifecycle and logs
+- soldr sets `ZCCACHE_CACHE_DIR` to the Soldr-owned zccache cache root for managed zccache commands; the pinned zccache release must support that override for artifacts and daemon state to move there
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins
 
 This is the normal build entry point.
@@ -235,6 +235,8 @@ Commands:
 | `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable wrapper injection with `none` / empty | unset |
 | `SOLDR_ZCCACHE_BIN` | Managed zccache binary path passed from soldr front door into wrapper mode | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
+| `ZCCACHE_CACHE_DIR` | Managed zccache cache root. For managed zccache, unset or equal to Soldr's `cache/zccache`; conflicting values are rejected. | unset |
+| `SCCACHE_DIR` | sccache cache root. For `SOLDR_RUSTC_WRAPPER=sccache`, Soldr sets this to `cache/sccache` only when the caller has not set it. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |

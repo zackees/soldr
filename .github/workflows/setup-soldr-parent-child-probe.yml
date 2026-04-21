@@ -1,0 +1,159 @@
+name: Setup Soldr Parent Child Probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue-number:
+        description: Issue number to receive the probe report comment.
+        required: true
+        default: "168"
+        type: string
+      post-comment:
+        description: Post the rendered report as an issue comment.
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    name: Parent-to-child cache probe
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - id: setup
+        uses: ./
+        with:
+          cache: true
+          build-cache: true
+          target-cache: true
+
+      - name: Run cold control build
+        id: cold
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import time
+          from pathlib import Path
+
+          env = os.environ.copy()
+          env["CARGO_TARGET_DIR"] = str(Path(env["RUNNER_TEMP"]) / "setup-soldr-cold-target")
+          start = time.perf_counter()
+          subprocess.run(
+              ["soldr", "--no-cache", "cargo", "build", "--package", "soldr-cli", "--locked"],
+              check=True,
+              env=env,
+          )
+          elapsed = time.perf_counter() - start
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"seconds={elapsed:.2f}\n")
+          PY
+
+      - name: Run warm soldr build
+        id: warm
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import subprocess
+          import time
+
+          start = time.perf_counter()
+          subprocess.run(
+              ["soldr", "cargo", "build", "--package", "soldr-cli", "--locked"],
+              check=True,
+          )
+          elapsed = time.perf_counter() - start
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"seconds={elapsed:.2f}\n")
+          PY
+
+      - name: Capture zccache status
+        id: zccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr cache --json > setup-soldr-parent-child-probe-cache.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          data = json.loads(Path("setup-soldr-parent-child-probe-cache.json").read_text(encoding="utf-8"))
+          zccache = data.get("zccache", {})
+          status_lines = zccache.get("status_lines") or []
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"artifact_cache_dir={zccache.get('artifact_cache_dir', '')}\n")
+              fh.write("status_lines<<status_lines\n")
+              fh.write("\n".join(status_lines))
+              fh.write("\nstatus_lines\n")
+          PY
+
+      - name: Render probe report
+        shell: bash
+        env:
+          PROBE_ISSUE_NUMBER: ${{ inputs.issue-number }}
+          PROBE_POST_COMMENT: ${{ inputs.post-comment }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PROBE_INPUT_JSON: setup-soldr-parent-child-probe-input.json
+          PROBE_OUTPUT_MD: setup-soldr-parent-child-probe-report.md
+          SETUP_CACHE_HIT: ${{ steps.setup.outputs.cache-hit }}
+          BUILD_CACHE_HIT: ${{ steps.setup.outputs.build-cache-hit }}
+          TARGET_CACHE_HIT: ${{ steps.setup.outputs.target-cache-hit }}
+          SOLDR_VERSION: ${{ steps.setup.outputs.soldr-version }}
+          TOOLCHAIN: ${{ steps.setup.outputs.toolchain }}
+          COLD_SECONDS: ${{ steps.cold.outputs.seconds }}
+          WARM_SECONDS: ${{ steps.warm.outputs.seconds }}
+          ZCCACHE_ARTIFACT_CACHE_DIR: ${{ steps.zccache.outputs.artifact_cache_dir }}
+          ZCCACHE_STATUS_LINES: ${{ steps.zccache.outputs.status_lines }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          payload = {
+              "run_url": f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              "ref_name": os.environ["GITHUB_REF_NAME"],
+              "sha": os.environ["GITHUB_SHA"],
+              "cold_result": "success",
+              "warm_result": "success",
+              "cold_seconds": os.environ["COLD_SECONDS"],
+              "warm_seconds": os.environ["WARM_SECONDS"],
+              "setup_cache_hit": os.environ["SETUP_CACHE_HIT"],
+              "build_cache_hit": os.environ["BUILD_CACHE_HIT"],
+              "target_cache_hit": os.environ["TARGET_CACHE_HIT"],
+              "soldr_version": os.environ["SOLDR_VERSION"],
+              "toolchain": os.environ["TOOLCHAIN"],
+              "zccache_artifact_cache_dir": os.environ["ZCCACHE_ARTIFACT_CACHE_DIR"],
+              "zccache_status_lines": [
+                  line for line in os.environ.get("ZCCACHE_STATUS_LINES", "").splitlines() if line
+              ],
+          }
+          Path(os.environ["PROBE_INPUT_JSON"]).write_text(
+              json.dumps(payload, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          python3 .github/scripts/setup_soldr_parent_child_probe_report.py
+
+      - name: Upload probe report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: setup-soldr-parent-child-probe
+          path: |
+            setup-soldr-parent-child-probe-input.json
+            setup-soldr-parent-child-probe-report.md
+            setup-soldr-parent-child-probe-cache.json
+          if-no-files-found: warn

@@ -88,7 +88,7 @@ steps:
 | `toolchain` | Explicit Rust toolchain channel override. |
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
-| `build-cache` | Restore and save the zccache compilation artifact cache (`~/.zccache`) across runs. Default `"true"`; set to `"false"` to opt out. |
+| `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache under `SOLDR_CACHE_DIR`. Default `"true"`; set to `"false"` to opt out. |
 | `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
 | `target-dir` | Cargo target directory restored by `target-cache`. Default `"target"`. |
 
@@ -104,7 +104,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 | `soldr-version` | Installed Soldr version reported by `soldr version --json`. |
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
-| `build-cache-hit` | Whether the zccache compilation cache (`~/.zccache`) was restored. Empty only when `build-cache` is explicitly disabled. |
+| `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is explicitly disabled. |
 | `target-cache-hit` | Whether the Cargo target directory cache was restored. Empty only when `build-cache` or `target-cache` is explicitly disabled. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 
@@ -118,7 +118,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - put the installed `soldr` binary on `PATH`
 - restore and save the action-managed cache/state root when `cache: true`
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
-- when `build-cache: true` (the default), restore `~/.zccache` at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
+- when `build-cache: true` (the default), restore Soldr's zccache cache root under `SOLDR_CACHE_DIR` at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts once the managed zccache release supports `ZCCACHE_CACHE_DIR`. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
 - when `build-cache: true` and `target-cache: true` (the defaults), restore the configured Cargo target directory at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and outputs. Keys include the runner OS, architecture, resolved toolchain digest, `Cargo.lock` hash, and commit SHA, with fallback limited to the same toolchain and lockfile lineage.
 
 ### Current Limits That Must Stay Explicit
@@ -127,7 +127,7 @@ The extracted public action must document these current limits honestly:
 
 - the action rehydrates the Soldr root, Cargo home, and rustup home under the chosen cache/state root
 - the action bootstraps `rustup` on demand via `rustup-init` when it is absent, then uses it to install the requested toolchain; at runtime Soldr prefers direct toolchain binaries from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` and only falls back to `rustup which` when the direct probe fails (or when `RUSTUP_TOOLCHAIN` is explicitly set)
-- managed `zccache` artifact storage still follows zccache's current supported/default behavior rather than a fully action-controlled custom artifact path
+- managed `zccache` artifact storage depends on the pinned zccache release honoring Soldr's `ZCCACHE_CACHE_DIR` override
 
 ### Non-Contract Details
 

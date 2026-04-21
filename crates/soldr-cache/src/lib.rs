@@ -27,6 +27,12 @@ pub const ZCCACHE_SESSION_ID_ENV_VAR: &str = "ZCCACHE_SESSION_ID";
 /// wrapper-mode children.
 pub const ZCCACHE_BINARY_ENV_VAR: &str = "SOLDR_ZCCACHE_BIN";
 
+/// zccache cache root override used by managed soldr builds.
+pub const ZCCACHE_CACHE_DIR_ENV_VAR: &str = "ZCCACHE_CACHE_DIR";
+
+/// sccache cache root override used for the custom `sccache` wrapper path.
+pub const SCCACHE_DIR_ENV_VAR: &str = "SCCACHE_DIR";
+
 pub fn cache_enabled_env_value(enabled: bool) -> &'static str {
     if enabled {
         CACHE_ENABLED_VALUE
@@ -51,6 +57,10 @@ pub fn cache_enabled_in_current_process() -> bool {
 
 pub fn zccache_dir(paths: &SoldrPaths) -> PathBuf {
     paths.cache.join("zccache")
+}
+
+pub fn sccache_dir(paths: &SoldrPaths) -> PathBuf {
+    paths.cache.join("sccache")
 }
 
 pub fn parse_zccache_session_id(stdout: &str) -> Option<String> {
@@ -96,7 +106,7 @@ struct SessionStartResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_enabled_env_value, cache_enabled_from_env_var, parse_zccache_session_id,
+        cache_enabled_env_value, cache_enabled_from_env_var, parse_zccache_session_id, sccache_dir,
         session_journal_path, zccache_dir, CACHE_DISABLED_VALUE, CACHE_ENABLED_VALUE,
     };
     use soldr_core::SoldrPaths;
@@ -139,6 +149,15 @@ mod tests {
         assert_eq!(
             zccache_dir(&paths),
             paths.root.join("cache").join("zccache")
+        );
+    }
+
+    #[test]
+    fn sccache_dir_lives_under_soldr_cache_root() {
+        let paths = SoldrPaths::with_root(Path::new("C:\\soldr-root").to_path_buf());
+        assert_eq!(
+            sccache_dir(&paths),
+            paths.root.join("cache").join("sccache")
         );
     }
 

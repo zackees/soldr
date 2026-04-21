@@ -18,7 +18,7 @@ You get, for free:
 
 - branch-agnostic cache keys the action produces on its own
 - automatic restore on feature branches from the latest `main` cache on a miss
-- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves `~/.zccache` by default
+- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves Soldr's zccache cache root by default
 - `cache-hit` and `build-cache-hit` outputs you can read to confirm warm vs cold runs
 
 The rest of this document explains how and why that works.
@@ -48,7 +48,7 @@ The `zackees/soldr@v1` action (see [`action.yml`](../action.yml)) runs internal 
 - **Restore-keys prefix for partial-match fallback.** The action registers a restore prefix (`setup-soldr-v1-{os}-{arch}-`) so that even if a future toolchain bump changes the exact key, GitHub can still fall back to the most recent compatible cache for the same OS and architecture.
 - **Push-only save semantics come for free.** GitHub's cache scoping already prevents feature-branch runs from overwriting `main`'s cache. You do not need to gate `save-if` yourself the way internal Rust caching wrappers usually make you do.
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
-- **Build-artifact cache enabled by default.** The action also restores `~/.zccache` with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
+- **Build-artifact cache enabled by default.** The action also restores Soldr's zccache cache root under `SOLDR_CACHE_DIR` with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs once the managed zccache release supports `ZCCACHE_CACHE_DIR`. You can opt out with `build-cache: false`.
 
 ## Minimum Config For An External Repo
 
@@ -127,6 +127,8 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
+For the dedicated parent-to-child validation in this repository, run the `Setup Soldr Parent Child Probe` workflow from a cache-probe branch after `main` has produced a warm cache. It measures a cold `soldr --no-cache` build against the restored `soldr cargo build`, records `cache-hit`, `build-cache-hit`, `target-cache-hit`, includes `soldr cache --json` status lines, and can post the rendered report to issue #168.
+
 ## Debugging Cold Misses
 
 If feature branches keep rebuilding from scratch, check these in order:
@@ -136,7 +138,7 @@ If feature branches keep rebuilding from scratch, check these in order:
 - **Did `rust-toolchain.toml` change?** The resolved toolchain channel is part of both cache key families. Bumping the toolchain channel or the components/targets list invalidates every existing entry. That is expected behavior; the next push to `main` will write a fresh canonical entry.
 - **Did you pass a `cache-key-suffix` input?** That value is appended to both cache key families (see `action.yml`). A different suffix on a feature branch produces a different key than `main` writes, and the restore will only succeed through the prefix fallback. Make sure the same suffix is used (or omitted) on every branch you want to share a lineage.
 - **Mixed runner OS/arch.** Cache keys are scoped by runner OS and architecture. A cache written on `ubuntu-24.04` will not restore on `macos-15` and vice versa. Each combination needs its own warm lineage from `main`.
-- **Did someone opt out of build caching?** If `build-cache: false` is set in the workflow, `build-cache-hit` will be empty and `~/.zccache` will not be restored or saved.
+- **Did someone opt out of build caching?** If `build-cache: false` is set in the workflow, `build-cache-hit` will be empty and Soldr's zccache cache root will not be restored or saved.
 
 ---
 

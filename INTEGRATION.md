@@ -62,7 +62,7 @@ The root action:
 - preinstalls the exact Rust toolchain resolved from `rust-toolchain.toml` or `toolchain:` via `rustup`
 - sets `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME`
 - restores and saves that runner-local root through GitHub cache when `cache: true`
-- restores and saves the zccache compilation artifact cache at `~/.zccache` by default; set `build-cache: false` to disable that layer
+- restores and saves Soldr's zccache compilation artifact cache under the selected `SOLDR_CACHE_DIR` by default; set `build-cache: false` to disable that layer
 
 Important toolchain rule:
 
@@ -109,7 +109,7 @@ Useful inputs when wiring the action into another repository:
 - `toolchain`: explicit Rust channel override when you do not want to rely on `rust-toolchain.toml`
 - `toolchain-file`: alternate toolchain file path when the repo does not use the default root `rust-toolchain.toml`
 - `cache`: turn the runner-local cache root on or off
-- `build-cache`: turn the `~/.zccache` compilation artifact cache on or off; defaults to `true`
+- `build-cache`: turn the Soldr-owned zccache compilation artifact cache on or off; defaults to `true`
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
 
@@ -134,7 +134,7 @@ The action-managed cache root includes:
 
 That means the Soldr binary, the Rust toolchain, cargo registry state, and Soldr-managed state are reusable on later runs.
 
-Current limitation: soldr still documents managed `zccache` artifact storage as following zccache's current supported/default behavior rather than a fully action-controlled custom artifact path, so the action should not claim more than that.
+Current limitation: Soldr now passes `ZCCACHE_CACHE_DIR` for managed zccache commands, but the pinned managed zccache release must support that upstream override before artifacts physically move off zccache's historical default root.
 
 ### Shortest CI path: install a released soldr
 
