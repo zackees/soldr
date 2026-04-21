@@ -64,6 +64,7 @@ That action:
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
 - restores and saves the zccache compilation artifact cache at `~/.zccache` by default; set `build-cache: false` to disable it
+- restores and saves the Cargo target directory by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-dir:` to choose another target directory
 - puts `soldr` on `PATH` for later steps
 - is the extraction source for the planned public `zackees/setup-soldr` action product
 

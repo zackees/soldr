@@ -68,6 +68,12 @@ def _sanitize_fragment(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip("-") or "default"
 
 
+def _short_file_hash(path: Path, missing: str) -> str:
+    if not path.exists():
+        return missing
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+
+
 def _write_env(name: str, value: str) -> None:
     output = os.environ.get("GITHUB_ENV")
     if not output:
@@ -150,6 +156,7 @@ def main() -> None:
     runner_arch = _sanitize_fragment(os.environ.get("ACTION_ARCH", "unknown").lower())
     cache_prefix = f"setup-soldr-v1-{runner_os}-{runner_arch}"
     cache_key = f"{cache_prefix}-{digest}"
+    cargo_lock_hash = _short_file_hash(workspace / "Cargo.lock", "no-lock")
 
     suffix = os.environ.get("INPUT_CACHE_KEY_SUFFIX", "").strip()
     if suffix:
@@ -165,9 +172,19 @@ def main() -> None:
     build_cache_toolchain_prefix = f"{build_cache_prefix}-{digest}-"
     build_cache_key = f"{build_cache_toolchain_prefix}{github_sha}"
 
+    target_dir_input = os.environ.get("INPUT_TARGET_DIR", "target").strip() or "target"
+    target_cache_path = Path(target_dir_input).expanduser()
+    if not target_cache_path.is_absolute():
+        target_cache_path = workspace / target_cache_path
+    target_cache_path = target_cache_path.resolve()
+    target_cache_prefix = f"setup-soldr-targetcache-v1-{runner_os}-{runner_arch}"
+    target_cache_lock_prefix = f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-"
+    target_cache_key = f"{target_cache_lock_prefix}{github_sha}"
+
     if suffix:
         sanitized_suffix = _sanitize_fragment(suffix)
         build_cache_key = f"{build_cache_key}-{sanitized_suffix}"
+        target_cache_key = f"{target_cache_key}-{sanitized_suffix}"
 
     _write_env("SOLDR_CACHE_DIR", str(soldr_root))
     _write_env("CARGO_HOME", str(cargo_home))
@@ -190,6 +207,9 @@ def main() -> None:
             "build_cache_key": build_cache_key,
             "build_cache_restore_key_toolchain": build_cache_toolchain_prefix,
             "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
+            "target_cache_path": str(target_cache_path),
+            "target_cache_key": target_cache_key,
+            "target_cache_restore_key_lock": target_cache_lock_prefix,
             "soldr_root": str(soldr_root),
             "cargo_home": str(cargo_home),
             "rustup_home": str(rustup_home),
