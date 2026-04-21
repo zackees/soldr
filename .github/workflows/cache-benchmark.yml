@@ -1,18 +1,15 @@
 name: Cache Benchmark
 
 on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "*.md"
   workflow_dispatch:
     inputs:
-      cache_backend:
-        description: Cache action under test.
-        required: true
-        type: choice
-        default: swatinem
-        options:
-          - swatinem
-          - zccache
       scenario:
-        description: Which Phase 1 scenario set to run.
+        description: Which mutation scenario set to run.
         required: true
         type: choice
         default: all
@@ -30,22 +27,23 @@ permissions:
   contents: read
 
 jobs:
-  config:
-    name: Resolve Phase 1 config
+  benchmark:
+    name: Config-driven benchmark
     runs-on: ubuntu-24.04
-    outputs:
-      runner: ${{ steps.config.outputs.runner }}
-      target: ${{ steps.config.outputs.target }}
-      threshold_ratio: ${{ steps.config.outputs.threshold_ratio }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Read benchmark config
+      - name: Resolve benchmark config
         id: config
         shell: bash
         env:
-          INPUT_THRESHOLD_RATIO: ${{ inputs.threshold_ratio }}
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          INPUT_THRESHOLD_RATIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.threshold_ratio || '' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -53,131 +51,281 @@ jobs:
           import tomllib
           from pathlib import Path
 
-          config = tomllib.loads(Path("benchmark.toml").read_text(encoding="utf-8"))
-          phase1 = config["phase1"]
+          config = tomllib.loads(Path(os.environ["BENCHMARK_CONFIG_PATH"]).read_text(encoding="utf-8"))
+          target = config["site"].get("default_target", "x86_64-unknown-linux-gnu")
           threshold = os.environ["INPUT_THRESHOLD_RATIO"] or str(
-              phase1["default_threshold_ratio"]
+              config["site"].get("default_threshold_ratio", 10.0)
           )
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"runner={phase1['runner']}\n")
-              fh.write(f"target={phase1['target']}\n")
+              fh.write(f"target={target}\n")
               fh.write(f"threshold_ratio={threshold}\n")
           PY
 
-  soldr-cli:
-    needs: config
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-cli' }}
-    name: Top-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ${{ needs.config.outputs.runner }}
-      target: ${{ needs.config.outputs.target }}
-      source_ref: ${{ github.sha }}
-      cache_backend: ${{ inputs.cache_backend }}
-      mutation: soldr-cli
-      threshold_ratio: ${{ needs.config.outputs.threshold_ratio }}
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          components: clippy
+          targets: ${{ steps.config.outputs.target }}
 
-  soldr-core:
-    needs: config
-    if: ${{ inputs.scenario == 'all' || inputs.scenario == 'soldr-core' }}
-    name: Lower-crate edit
-    uses: ./.github/workflows/_cache-benchmark-scenario.yml
-    with:
-      runner: ${{ needs.config.outputs.runner }}
-      target: ${{ needs.config.outputs.target }}
-      source_ref: ${{ github.sha }}
-      cache_backend: ${{ inputs.cache_backend }}
-      mutation: soldr-core
-      threshold_ratio: ${{ needs.config.outputs.threshold_ratio }}
+      - name: Prepare zccache tool
+        uses: ./.github/actions/cache-benchmark-zccache
+        with:
+          cache-cargo-registry: "false"
+          cache-compilation: "false"
+          cache-target: "false"
+          save-cache: "false"
 
-  summary:
-    if: ${{ always() }}
-    name: Phase 1 summary
-    needs:
-      - config
-      - soldr-cli
-      - soldr-core
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Write phase 1 summary input
+      - name: Run configured benchmarks
         shell: bash
         env:
-          CACHE_BACKEND: ${{ inputs.cache_backend }}
-          SCENARIO: ${{ inputs.scenario }}
-          BENCH_RUNNER: ${{ needs.config.outputs.runner }}
-          BENCH_TARGET: ${{ needs.config.outputs.target }}
-          THRESHOLD_RATIO: ${{ needs.config.outputs.threshold_ratio }}
-          SOLDR_CLI_RESULT: ${{ needs.soldr-cli.result }}
-          SOLDR_CLI_COLD: ${{ needs.soldr-cli.outputs.cold_seconds }}
-          SOLDR_CLI_WARM: ${{ needs.soldr-cli.outputs.warm_seconds }}
-          SOLDR_CLI_SAVED: ${{ needs.soldr-cli.outputs.saved_seconds }}
-          SOLDR_CLI_RATIO: ${{ needs.soldr-cli.outputs.speedup_ratio }}
-          SOLDR_CLI_HIT: ${{ needs.soldr-cli.outputs.cache_hit }}
-          SOLDR_CLI_HIT_DETAIL: ${{ needs.soldr-cli.outputs.cache_hit_detail }}
-          SOLDR_CORE_RESULT: ${{ needs.soldr-core.result }}
-          SOLDR_CORE_COLD: ${{ needs.soldr-core.outputs.cold_seconds }}
-          SOLDR_CORE_WARM: ${{ needs.soldr-core.outputs.warm_seconds }}
-          SOLDR_CORE_SAVED: ${{ needs.soldr-core.outputs.saved_seconds }}
-          SOLDR_CORE_RATIO: ${{ needs.soldr-core.outputs.speedup_ratio }}
-          SOLDR_CORE_HIT: ${{ needs.soldr-core.outputs.cache_hit }}
-          SOLDR_CORE_HIT_DETAIL: ${{ needs.soldr-core.outputs.cache_hit_detail }}
+          BENCHMARK_COMMAND_TARGET: ${{ steps.config.outputs.target }}
+          BENCHMARK_CONFIG_PATH: benchmark.toml
+          BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
+          SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
+          THRESHOLD_RATIO: ${{ steps.config.outputs.threshold_ratio }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
           import json
           import os
+          import shutil
+          import subprocess
+          import time
+          import tomllib
           from pathlib import Path
 
-          payload = {
-              "cache_backend": os.environ["CACHE_BACKEND"],
-              "scenario": os.environ["SCENARIO"],
-              "runner": os.environ["BENCH_RUNNER"],
-              "target": os.environ["BENCH_TARGET"],
-              "threshold_ratio": os.environ["THRESHOLD_RATIO"],
-              "results": [
-                  {
-                      "mutation": "soldr-cli",
-                      "result": os.environ["SOLDR_CLI_RESULT"],
-                      "cold_seconds": os.environ["SOLDR_CLI_COLD"],
-                      "warm_seconds": os.environ["SOLDR_CLI_WARM"],
-                      "saved_seconds": os.environ["SOLDR_CLI_SAVED"],
-                      "speedup_ratio": os.environ["SOLDR_CLI_RATIO"],
-                      "cache_hit": os.environ["SOLDR_CLI_HIT"],
-                      "cache_hit_detail": os.environ["SOLDR_CLI_HIT_DETAIL"],
-                  },
-                  {
-                      "mutation": "soldr-core",
-                      "result": os.environ["SOLDR_CORE_RESULT"],
-                      "cold_seconds": os.environ["SOLDR_CORE_COLD"],
-                      "warm_seconds": os.environ["SOLDR_CORE_WARM"],
-                      "saved_seconds": os.environ["SOLDR_CORE_SAVED"],
-                      "speedup_ratio": os.environ["SOLDR_CORE_RATIO"],
-                      "cache_hit": os.environ["SOLDR_CORE_HIT"],
-                      "cache_hit_detail": os.environ["SOLDR_CORE_HIT_DETAIL"],
-                  },
-              ],
-          }
+          class SafeFormatDict(dict):
+              def __missing__(self, key):
+                  return "{" + key + "}"
 
-          output_path = Path("benchmark-summary/phase1-summary-input.json")
+
+          repo_root = Path.cwd()
+          config = tomllib.loads(Path(os.environ["BENCHMARK_CONFIG_PATH"]).read_text(encoding="utf-8"))
+          target = os.environ["BENCHMARK_COMMAND_TARGET"]
+          threshold = float(os.environ["THRESHOLD_RATIO"])
+          scenario = os.environ["SCENARIO"]
+          output_path = Path(os.environ["BENCHMARK_RESULTS_JSON"])
+
+          selected_mutations = [
+              mutation
+              for mutation in config["mutations"]
+              if scenario == "all" or mutation["id"] == scenario
+          ]
+          competitors = [
+              {"id": competitor_id, **competitor}
+              for competitor_id, competitor in config["competitors"].items()
+              if competitor.get("show", True)
+          ]
+          profiles = list(config["profiles"])
+
+          def render_parts(parts):
+              return [part.format_map(SafeFormatDict(target=target)) for part in parts]
+
+          def clean_workspace():
+              subprocess.run(
+                  ["git", "reset", "--hard", "HEAD"],
+                  cwd=repo_root,
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              subprocess.run(
+                  ["git", "clean", "-fdx"],
+                  cwd=repo_root,
+                  check=True,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+
+          def reset_backend(backend):
+              if backend == "zccache":
+                  subprocess.run(["zccache", "stop"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  shutil.rmtree(Path.home() / ".zccache", ignore_errors=True)
+              subprocess.run(["cargo", "clean"], cwd=repo_root, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+          def apply_mutation(mutation):
+              mutation_path = repo_root / mutation["path"]
+              with mutation_path.open("a", encoding="utf-8") as handle:
+                  handle.write(f"\n// cache benchmark mutation: {mutation['id']}\n")
+
+          def run_cargo(profile, backend):
+              command = ["cargo", *render_parts(profile["cargo_args"])]
+              env = os.environ.copy()
+              env["CARGO_TERM_COLOR"] = "never"
+              env.pop("RUSTC_WRAPPER", None)
+              if backend == "zccache":
+                  subprocess.run(["zccache", "start"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                  env["RUSTC_WRAPPER"] = "zccache"
+              start = time.perf_counter()
+              subprocess.run(command, cwd=repo_root, env=env, check=True)
+              return time.perf_counter() - start
+
+          results = []
+          failures = []
           output_path.parent.mkdir(parents=True, exist_ok=True)
-          output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+          for mutation in selected_mutations:
+              for profile in profiles:
+                  for competitor in competitors:
+                      backend = competitor["backend"]
+                      result = {
+                          "competitor": competitor["id"],
+                          "profile": profile["id"],
+                          "mutation": mutation["id"],
+                          "result": "success",
+                          "cold_seconds": None,
+                          "warm_seconds": None,
+                          "saved_seconds": None,
+                          "speedup_ratio": None,
+                          "cache_hit": False,
+                          "cache_hit_detail": f"backend={backend};same_job_seed=true",
+                          "threshold_failed": False,
+                      }
+
+                      try:
+                          clean_workspace()
+                          reset_backend("none")
+                          apply_mutation(mutation)
+                          cold_seconds = run_cargo(profile, "none")
+
+                          clean_workspace()
+                          reset_backend(backend)
+                          run_cargo(profile, backend)
+                          apply_mutation(mutation)
+                          warm_seconds = run_cargo(profile, backend)
+                      except subprocess.CalledProcessError as exc:
+                          result["result"] = "failure"
+                          result["cache_hit_detail"] = (
+                              f"backend={backend};same_job_seed=true;returncode={exc.returncode}"
+                          )
+                          failures.append(
+                              f"{profile['id']}/{mutation['id']}/{competitor['id']} failed with exit code {exc.returncode}"
+                          )
+                      else:
+                          speedup_ratio = cold_seconds / warm_seconds if warm_seconds else float("inf")
+                          result["cold_seconds"] = round(cold_seconds, 2)
+                          result["warm_seconds"] = round(warm_seconds, 2)
+                          result["saved_seconds"] = round(cold_seconds - warm_seconds, 2)
+                          result["speedup_ratio"] = round(speedup_ratio, 2)
+                          result["cache_hit"] = warm_seconds < cold_seconds
+                          result["threshold_failed"] = speedup_ratio < threshold
+                          if result["threshold_failed"]:
+                              failures.append(
+                                  f"{profile['id']}/{mutation['id']}/{competitor['id']} observed {speedup_ratio:.2f}x, required {threshold:.2f}x"
+                              )
+
+                      results.append(result)
+
+          output_path.write_text(
+              json.dumps(
+                  {
+                      "threshold_ratio": threshold,
+                      "scenario": scenario,
+                      "results": results,
+                  },
+                  indent=2,
+              )
+              + "\n",
+              encoding="utf-8",
+          )
+
+          if failures:
+              print("Benchmark threshold or command failures detected:")
+              for failure in failures:
+                  print(f"- {failure}")
           PY
 
       - name: Write benchmark summary
+        shell: bash
         env:
-          BENCHMARK_REPORT_MODE: phase1-summary
+          BENCHMARK_COMMAND_TARGET: ${{ steps.config.outputs.target }}
           BENCHMARK_CONFIG_PATH: benchmark.toml
-          BENCHMARK_PHASE1_INPUT_JSON: benchmark-summary/phase1-summary-input.json
-          BENCHMARK_PHASE1_ISSUE_COMMENT_PATH: benchmark-summary/phase1-issue-comment.md
-        run: python3 .github/scripts/cache_benchmark_report.py
+          BENCHMARK_INPUT_JSON: benchmark-summary/cache-benchmark-results.json
+          BENCHMARK_SUMMARY_JSON: benchmark-summary/cache-benchmark-summary.json
+          BENCHMARK_SUMMARY_WWW_DIR: benchmark-summary/site
+          SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
+          THRESHOLD_RATIO: ${{ steps.config.outputs.threshold_ratio }}
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/cache_benchmark_report.py
 
-      - name: Upload phase 1 issue comment artifact
+      - name: Enforce configured thresholds
+        shell: bash
+        env:
+          BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          payload = json.loads(Path(os.environ["BENCHMARK_RESULTS_JSON"]).read_text(encoding="utf-8"))
+          failures = []
+          for result in payload["results"]:
+              slug = f"{result['profile']}/{result['mutation']}/{result['competitor']}"
+              if result["result"] != "success":
+                  failures.append(f"{slug} failed")
+                  continue
+              if result["threshold_failed"]:
+                  failures.append(f"{slug} missed the configured speedup threshold")
+
+          if failures:
+              sys.exit("\n".join(failures))
+          PY
+
+      - name: Cleanup zccache
+        if: ${{ always() }}
+        uses: ./.github/actions/cache-benchmark-zccache-cleanup
+
+      - name: Upload raw benchmark artifact
+        if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: cache-benchmark-phase1-issue-comment
-          path: benchmark-summary/phase1-issue-comment.md
+          name: cache-benchmark-raw
+          path: benchmark-summary/cache-benchmark-results.json
           if-no-files-found: error
+
+      - name: Upload benchmark summary artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-summary
+          path: benchmark-summary/cache-benchmark-summary.json
+          if-no-files-found: error
+
+      - name: Upload benchmark www artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cache-benchmark-www
+          path: benchmark-summary/site
+          if-no-files-found: error
+
+      - name: Configure GitHub Pages
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Upload GitHub Pages artifact
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: benchmark-summary/site
+
+  deploy-pages:
+    if: ${{ always() && needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    name: Deploy benchmark site
+    needs:
+      - benchmark
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
