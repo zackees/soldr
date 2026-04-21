@@ -1,7 +1,8 @@
 # Soldr / Rust
 
 
-<img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/78b119ea-7c7c-49ce-aeb4-86ee085ddf82" />
+<img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/87d94693-3542-4f4f-8b02-600bf0b9810e" />
+
 
 *A tool to download rust tool sets and aggressive cache your build. Instant warm compiles. Gh and local builds. Just add soldr before all your build commands*
 
