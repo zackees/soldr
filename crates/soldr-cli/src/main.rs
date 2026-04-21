@@ -420,8 +420,12 @@ fn run_wrapper_through_zccache(
     raw_args: &[String],
     zccache: &std::path::Path,
 ) -> Result<i32, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let zccache_cache_dir = resolve_managed_zccache_cache_dir(&paths)?;
+    std::fs::create_dir_all(&zccache_cache_dir)?;
     let mut command = std::process::Command::new(zccache);
     command.args(&raw_args[1..]);
+    command.env(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR, zccache_cache_dir);
 
     // Cargo's jobserver lives on numbered file descriptors that it inherits
     // into the RUSTC_WRAPPER, advertised via CARGO_MAKEFLAGS. On Unix,
@@ -652,6 +656,7 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
 
 struct ZccacheBuildSession {
     binary_path: std::path::PathBuf,
+    cache_dir: std::path::PathBuf,
     session_id: String,
 }
 
@@ -689,6 +694,13 @@ async fn prepare_rustc_wrapper(
     match rustc_wrapper_mode() {
         RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths).await.map(Some),
         RustcWrapperMode::Custom(wrapper) => {
+            if custom_wrapper_is_sccache(&wrapper)
+                && std::env::var_os(soldr_cache::SCCACHE_DIR_ENV_VAR).is_none()
+            {
+                let sccache_dir = soldr_cache::sccache_dir(paths);
+                std::fs::create_dir_all(&sccache_dir)?;
+                cargo.env(soldr_cache::SCCACHE_DIR_ENV_VAR, sccache_dir);
+            }
             cargo.env("RUSTC_WRAPPER", wrapper);
             cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
             cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
@@ -703,14 +715,21 @@ async fn prepare_rustc_wrapper(
     }
 }
 
+fn custom_wrapper_is_sccache(wrapper: &std::ffi::OsStr) -> bool {
+    std::path::Path::new(wrapper)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("sccache"))
+}
+
 async fn prepare_zccache_build(
     cargo: &mut std::process::Command,
     paths: &SoldrPaths,
 ) -> Result<ZccacheBuildSession, SoldrError> {
     let fetch = fetch_managed_zccache(paths).await?;
-    let zccache_dir = soldr_cache::zccache_dir(paths);
-    std::fs::create_dir_all(&zccache_dir)?;
-    std::fs::create_dir_all(zccache_dir.join("logs"))?;
+    let zccache_cache_dir = resolve_managed_zccache_cache_dir(paths)?;
+    std::fs::create_dir_all(&zccache_cache_dir)?;
+    std::fs::create_dir_all(zccache_cache_dir.join("logs"))?;
     if fetch.cached {
         eprintln!(
             "soldr: using managed zccache {}",
@@ -723,13 +742,14 @@ async fn prepare_zccache_build(
         );
     }
 
-    run_zccache_command(&fetch.binary_path, &["start"])?;
+    run_zccache_command(&fetch.binary_path, &["start"], Some(&zccache_cache_dir))?;
 
-    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    let journal_path = soldr_cache::session_journal_path(&zccache_cache_dir);
     let journal_path = journal_path.display().to_string();
     let session_json = run_zccache_command(
         &fetch.binary_path,
         &["session-start", "--stats", "--journal", &journal_path],
+        Some(&zccache_cache_dir),
     )?;
     let session_id =
         soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
@@ -741,16 +761,22 @@ async fn prepare_zccache_build(
 
     cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
     cargo.env(soldr_cache::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
+    cargo.env(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_cache_dir);
     cargo.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
 
     Ok(ZccacheBuildSession {
         binary_path: fetch.binary_path,
+        cache_dir: zccache_cache_dir,
         session_id,
     })
 }
 
 fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let output = run_zccache_command(&session.binary_path, &["session-end", &session.session_id])?;
+    let output = run_zccache_command(
+        &session.binary_path,
+        &["session-end", &session.session_id],
+        Some(&session.cache_dir),
+    )?;
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
         eprintln!("soldr: zccache session summary");
@@ -761,11 +787,11 @@ fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError>
 
 fn clear_zccache_cache() -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
-    let zccache_dir = soldr_cache::zccache_dir(&paths);
+    let zccache_dir = resolve_managed_zccache_cache_dir(&paths)?;
     let mut cleared_anything = false;
 
     if let Some(fetch) = cached_managed_zccache(&paths)? {
-        let _ = run_zccache_command(&fetch.binary_path, &["clear"])?;
+        let _ = run_zccache_command(&fetch.binary_path, &["clear"], Some(&zccache_dir))?;
         println!("cleared zccache artifact cache");
         cleared_anything = true;
     }
@@ -815,6 +841,7 @@ struct CacheOutput {
 
 #[derive(Serialize)]
 struct ZccacheStatusSnapshot {
+    artifact_cache_dir: String,
     state_dir: String,
     journal_path: String,
     journal_present: bool,
@@ -861,16 +888,17 @@ fn collect_cache_output() -> Result<CacheOutput, SoldrError> {
 }
 
 fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, SoldrError> {
-    let zccache_dir = soldr_cache::zccache_dir(paths);
+    let zccache_dir = resolve_managed_zccache_cache_dir(paths)?;
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_present = journal_path.exists();
 
     match cached_managed_zccache(paths)? {
         Some(fetch) => {
-            let output = run_zccache_command(&fetch.binary_path, &["status"])?;
+            let output = run_zccache_command(&fetch.binary_path, &["status"], Some(&zccache_dir))?;
             let stdout = output.stdout.trim();
             let status_lines = stdout.lines().map(str::to_owned).collect();
             Ok(ZccacheStatusSnapshot {
+                artifact_cache_dir: zccache_dir.display().to_string(),
                 state_dir: zccache_dir.display().to_string(),
                 journal_path: journal_path.display().to_string(),
                 journal_present,
@@ -881,6 +909,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             })
         }
         None => Ok(ZccacheStatusSnapshot {
+            artifact_cache_dir: zccache_dir.display().to_string(),
             state_dir: zccache_dir.display().to_string(),
             journal_path: journal_path.display().to_string(),
             journal_present,
@@ -915,6 +944,10 @@ fn print_cache_output(output: &CacheOutput) {
 }
 
 fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
+    println!(
+        "zccache artifact cache dir: {}",
+        snapshot.artifact_cache_dir
+    );
     println!("soldr zccache state dir: {}", snapshot.state_dir);
     println!(
         "last session journal: {} ({})",
@@ -957,8 +990,14 @@ struct CommandOutput {
 fn run_zccache_command(
     binary: &std::path::Path,
     args: &[&str],
+    cache_dir: Option<&std::path::Path>,
 ) -> Result<CommandOutput, SoldrError> {
-    let output = std::process::Command::new(binary).args(args).output()?;
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    if let Some(cache_dir) = cache_dir {
+        command.env(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR, cache_dir);
+    }
+    let output = command.output()?;
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
             "zccache {} failed: {}",
@@ -970,6 +1009,50 @@ fn run_zccache_command(
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
     })
+}
+
+fn resolve_managed_zccache_cache_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
+    let managed = soldr_cache::zccache_dir(paths);
+    let Some(explicit) = non_empty_env_path(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR) else {
+        return Ok(managed);
+    };
+
+    if paths_refer_to_same_location(&explicit, &managed) {
+        Ok(managed)
+    } else {
+        Err(SoldrError::Other(format!(
+            "{} is set to {}, but managed zccache builds require Soldr's cache root at {}. Unset {} or use `SOLDR_RUSTC_WRAPPER` for an explicitly managed custom wrapper.",
+            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            explicit.display(),
+            managed.display(),
+            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR
+        )))
+    }
+}
+
+fn paths_refer_to_same_location(left: &std::path::Path, right: &std::path::Path) -> bool {
+    normalize_path_for_compare(left) == normalize_path_for_compare(right)
+}
+
+fn normalize_path_for_compare(path: &std::path::Path) -> std::path::PathBuf {
+    let normalized = std::fs::canonicalize(path).unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join(path)
+        }
+    });
+
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from(normalized.display().to_string().to_ascii_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
 }
 
 fn toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
@@ -1031,10 +1114,10 @@ fn cached_managed_zccache(
 #[cfg(test)]
 mod tests {
     use super::{
-        cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
-        first_cargo_subcommand, normalize_version, parse_tool_spec,
-        rustc_wrapper_mode_from_env_var, rustup_resolution_failure, should_trampoline,
-        RustcWrapperMode,
+        cargo_args_specify_target, cargo_args_use_reserved_no_cache, custom_wrapper_is_sccache,
+        extract_as_pin, first_cargo_subcommand, normalize_version, parse_tool_spec,
+        paths_refer_to_same_location, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
+        should_trampoline, RustcWrapperMode,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -1100,6 +1183,26 @@ mod tests {
             rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
             RustcWrapperMode::Custom("sccache".into())
         );
+    }
+
+    #[test]
+    fn custom_wrapper_detection_recognizes_sccache_paths() {
+        assert!(custom_wrapper_is_sccache(OsStr::new("sccache")));
+        #[cfg(windows)]
+        assert!(custom_wrapper_is_sccache(OsStr::new(
+            "C:\\tools\\sccache.exe"
+        )));
+        #[cfg(not(windows))]
+        assert!(custom_wrapper_is_sccache(OsStr::new("/tools/sccache")));
+        assert!(!custom_wrapper_is_sccache(OsStr::new("zccache")));
+    }
+
+    #[test]
+    fn path_equivalence_allows_same_managed_cache_root() {
+        assert!(paths_refer_to_same_location(
+            std::path::Path::new("target"),
+            std::path::Path::new("target")
+        ));
     }
 
     #[test]

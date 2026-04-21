@@ -63,7 +63,7 @@ That action:
 - bootstraps `rustup` into the cached runner-local root when the runner does not already have it
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
-- restores and saves the zccache compilation artifact cache at `~/.zccache` by default; set `build-cache: false` to disable it
+- restores and saves Soldr's zccache compilation artifact cache under `~/.soldr/cache/zccache` by default; set `build-cache: false` to disable it
 - restores and saves the Cargo target directory by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-dir:` to choose another target directory
 - puts `soldr` on `PATH` for later steps
 - is the extraction source for the planned public `zackees/setup-soldr` action product
@@ -113,7 +113,7 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
-- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring; zccache's artifact store still uses its current default cache root.
+- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring and sets the managed zccache cache root to `~/.soldr/cache/zccache`.
 
 ```bash
 # Build through soldr's front door:
@@ -150,7 +150,7 @@ soldr maturin build --release
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
 - **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state instead of placeholder behavior.
-- **One cache boundary, eventually**: soldr keeps its own tools and zccache session state in `~/.soldr/`. Current zccache artifacts still live in zccache's default cache root until upstream exposes a supported cache-dir override.
+- **One cache boundary**: soldr keeps its own tools, zccache artifacts, and zccache session state under `~/.soldr/`. Managed zccache builds use `ZCCACHE_CACHE_DIR=~/.soldr/cache/zccache` when the managed zccache version supports that override.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).

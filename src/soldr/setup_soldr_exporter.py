@@ -120,8 +120,8 @@ jobs:
 - The action installs exactly one released `soldr` binary for the active runner target.
 - The normal path provisions Rust with `rustup`; on self-hosted runners, `rustup` must already be available.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
-- The action restores `~/.zccache` and the Cargo target directory by default so child branches can reuse parent-branch build state.
-- Managed `zccache` artifact storage still follows zccache's current supported/default behavior rather than a fully action-controlled custom artifact path.
+- The action restores Soldr's zccache cache root under `SOLDR_CACHE_DIR` and the Cargo target directory by default so child branches can reuse parent-branch build state.
+- Managed `zccache` artifact storage uses `ZCCACHE_CACHE_DIR` when the managed zccache version supports that override.
 
 ## Development
 

@@ -116,6 +116,16 @@ def main() -> None:
     cargo_home = cache_root / "cargo"
     rustup_home = cache_root / "rustup"
     bin_dir = cache_root / "bin"
+    build_cache_path = soldr_root / "cache" / "zccache"
+    setup_cache_paths = "\n".join(
+        str(path)
+        for path in (
+            bin_dir,
+            cargo_home,
+            rustup_home,
+            soldr_root / "bin",
+        )
+    )
     soldr_binary = "soldr.exe" if os.name == "nt" else "soldr"
     soldr_path = bin_dir / soldr_binary
 
@@ -123,6 +133,7 @@ def main() -> None:
         cache_root,
         soldr_root,
         soldr_root / "cache",
+        build_cache_path,
         soldr_root / "bin",
         cargo_home,
         cargo_home / "bin",
@@ -162,7 +173,7 @@ def main() -> None:
     if suffix:
         cache_key = f"{cache_key}-{_sanitize_fragment(suffix)}"
 
-    # Build-artifact cache (zccache compilation cache at ~/.zccache).
+    # Build-artifact cache (zccache compilation cache under SOLDR_CACHE_DIR).
     # Key shape: setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{sha}.
     # Restore falls back through the same toolchain lineage and then any
     # OS+arch cache, letting GitHub's own-branch -> PR base -> default branch
@@ -187,6 +198,7 @@ def main() -> None:
         target_cache_key = f"{target_cache_key}-{sanitized_suffix}"
 
     _write_env("SOLDR_CACHE_DIR", str(soldr_root))
+    _write_env("ZCCACHE_CACHE_DIR", str(build_cache_path))
     _write_env("CARGO_HOME", str(cargo_home))
     _write_env("RUSTUP_HOME", str(rustup_home))
     _write_env("SETUP_SOLDR_TOOLCHAIN_CHANNEL", toolchain["channel"])
@@ -202,11 +214,13 @@ def main() -> None:
     _write_outputs(
         {
             "cache_root": str(cache_root),
+            "setup_cache_paths": setup_cache_paths,
             "cache_key": cache_key,
             "cache_restore_prefix": f"{cache_prefix}-",
             "build_cache_key": build_cache_key,
             "build_cache_restore_key_toolchain": build_cache_toolchain_prefix,
             "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
+            "build_cache_path": str(build_cache_path),
             "target_cache_path": str(target_cache_path),
             "target_cache_key": target_cache_key,
             "target_cache_restore_key_lock": target_cache_lock_prefix,
