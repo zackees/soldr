@@ -262,4 +262,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: "168"
-        run: gh issue comment "$ISSUE_NUMBER" --body-file parent-child-zccache-report.md
+        run: gh issue comment "$ISSUE_NUMBER" --repo zackees/soldr --body-file parent-child-zccache-report.md
