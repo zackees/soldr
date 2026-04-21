@@ -37,12 +37,13 @@ inputs:
   build-cache:
     description: >
       Restore and save the zccache compilation artifact cache (~/.zccache)
-      across workflow runs. Opt-in. When "true", the action restores
-      ~/.zccache with a toolchain-scoped key and saves it at end-of-job,
-      letting GitHub's own-branch -> PR base -> default-branch restore order
-      seed feature-branch runs from the latest main-branch save.
+      across workflow runs. Default "true" — the action restores ~/.zccache
+      with a toolchain-scoped key and saves it at end-of-job, letting
+      GitHub's own-branch -> PR base -> default-branch restore order seed
+      feature-branch runs from the latest main-branch save without any
+      repo-side configuration. Set to "false" to opt out.
     required: false
-    default: "false"
+    default: "true"
 outputs:
   soldr-path:
     description: Installed Soldr binary path added to PATH for later steps.
@@ -59,8 +60,9 @@ outputs:
   build-cache-hit:
     description: >
       Whether the action restored the zccache compilation artifact cache
-      (~/.zccache). Empty string when `build-cache` is not enabled,
-      otherwise "true" for an exact key match, "false" otherwise.
+      (~/.zccache). "true" for an exact key match, "false" for a
+      restore-key fallback or no cache, empty string when `build-cache`
+      is explicitly disabled.
     value: ${{ steps.cache-meta.outputs.build_cache_hit }}
   toolchain:
     description: Exact Rust toolchain channel configured by rustup for the action.
