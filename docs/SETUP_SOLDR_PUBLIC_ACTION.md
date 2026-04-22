@@ -68,7 +68,7 @@ steps:
 
   - uses: zackees/setup-soldr@v0
     with:
-      version: 0.7.5
+      version: 0.7.6
       cache: true
 
   - run: soldr cargo build --locked --release

@@ -50,7 +50,7 @@ The current GitHub Actions entry point is the repository root action in this rep
 ```yaml
 - uses: zackees/soldr@<ref>
   with:
-    version: 0.7.5
+    version: 0.7.6
     cache: true
 
 - run: soldr cargo build --locked --release
