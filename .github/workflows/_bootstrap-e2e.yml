@@ -57,8 +57,16 @@ jobs:
           path: ${{ inputs.third_party_path }}
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        if: ${{ inputs.runner != 'windows-11-arm' }}
         with:
           targets: ${{ inputs.target }}
+
+      - name: Install Rust toolchain on Windows ARM
+        if: ${{ inputs.runner == 'windows-11-arm' }}
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.94.1 --profile minimal --component rustfmt --component clippy --target "${{ inputs.target }}"
+          rustup default 1.94.1
 
       - name: Share bootstrap zccache with soldr
         shell: pwsh
@@ -178,7 +186,12 @@ jobs:
         shell: pwsh
         working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
         run: |
-          & "${{ steps.soldr_binary.outputs.path }}" cache
+          $soldrPath = "${{ steps.soldr_binary.outputs.path }}"
+          if ([string]::IsNullOrWhiteSpace($soldrPath) -or -not (Test-Path -LiteralPath $soldrPath)) {
+            Write-Host "Soldr binary is unavailable; skipping shared cache status."
+            exit 0
+          }
+          & $soldrPath cache
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
