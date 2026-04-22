@@ -79,8 +79,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Clear caches
+    /// Clear the managed zccache build cache
     Clean,
+    /// Purge all soldr-managed cache artifacts
+    Purge,
     /// Show or set configuration
     Config,
     /// Inspect the compilation cache
@@ -197,6 +199,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Clean => {
             clear_zccache_cache()?;
+        }
+        Commands::Purge => {
+            purge_soldr_cache()?;
         }
         Commands::Config => {
             println!("(config not yet implemented)");
@@ -799,6 +804,35 @@ fn clear_zccache_cache() -> Result<(), SoldrError> {
         );
     }
     Ok(())
+}
+
+fn purge_soldr_cache() -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let mut purged_anything = false;
+
+    purged_anything |= remove_soldr_artifact_dir("cache", &paths.cache)?;
+    purged_anything |= remove_soldr_artifact_dir("bin", &paths.bin)?;
+
+    if !purged_anything {
+        println!("soldr cache is already empty: {}", paths.root.display());
+    }
+
+    Ok(())
+}
+
+fn remove_soldr_artifact_dir(label: &str, path: &std::path::Path) -> Result<bool, SoldrError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    if std::fs::symlink_metadata(path)?.file_type().is_dir() {
+        std::fs::remove_dir_all(path)?;
+        println!("removed soldr {label} dir: {}", path.display());
+    } else {
+        std::fs::remove_file(path)?;
+        println!("removed soldr {label} entry: {}", path.display());
+    }
+    Ok(true)
 }
 
 #[derive(Serialize)]
