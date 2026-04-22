@@ -767,6 +767,48 @@ fn managed_zccache_rejects_conflicting_cache_dir_override() {
 }
 
 #[test]
+fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
+    let parent_cache_root = unique_temp_dir("cargo-parent-managed-zccache-dir");
+    let child_cache_root = unique_temp_dir("cargo-child-managed-zccache-dir");
+    let parent_zccache_dir = parent_cache_root.join("cache").join("zccache");
+    let child_zccache_dir = child_cache_root.join("cache").join("zccache");
+    let log_path = child_cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &child_cache_root)
+        .env("ZCCACHE_CACHE_DIR", &parent_zccache_dir)
+        .env("SOLDR_MANAGED_ZCCACHE_CACHE_DIR", &parent_zccache_dir)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run nested soldr cargo build with inherited managed ZCCACHE_CACHE_DIR");
+
+    assert!(
+        output.status.success(),
+        "inherited soldr-managed ZCCACHE_CACHE_DIR should not block nested soldr\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        path_display_variants(&child_zccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("zccache_dir={path}"))
+                && log.contains(&format!("cache_dir={path}"))),
+        "nested soldr should replace the inherited managed zccache dir with its own cache root: {log}"
+    );
+    assert!(
+        !path_display_variants(&parent_zccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("cache_dir={path}"))),
+        "nested soldr should not reuse the parent managed zccache dir: {log}"
+    );
+}
+
+#[test]
 fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper");
     let log_path = cache_root.join("tool.log");
