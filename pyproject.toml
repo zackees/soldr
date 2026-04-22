@@ -11,12 +11,18 @@ description = "Instant tools. Instant builds. One command."
 readme = "README.md"
 license = "BSD-3-Clause"
 requires-python = ">=3.10"
+authors = [
+    { name = "Zach Vorhies" },
+]
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: 3",
 ]
 keywords = ["rust", "build", "cache", "install", "tools"]
+
+[project.urls]
+Repository = "https://github.com/zackees/soldr"
 
 [dependency-groups]
 dev = [
