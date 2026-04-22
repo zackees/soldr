@@ -208,7 +208,7 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
         {
             "SCENARIO": "all",
             "THRESHOLD_RATIO": "10",
-            "BENCHMARK_CONFIG_PATH": str(CONFIG_PATH),
+            "BENCHMARK_CONFIG_PATH": "benchmark.toml",
             "BENCHMARK_COMMAND_TARGET": "x86_64-unknown-linux-gnu",
             "BENCHMARK_INPUT_JSON": str(input_path),
             "BENCHMARK_SUMMARY_JSON": str(json_path),
