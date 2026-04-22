@@ -791,12 +791,14 @@ async fn prepare_rustc_wrapper(
             }
             cargo.env("RUSTC_WRAPPER", wrapper);
             cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
             cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
             Ok(None)
         }
         RustcWrapperMode::Disabled => {
             cargo.env_remove("RUSTC_WRAPPER");
             cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
             cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
             Ok(None)
         }
@@ -850,6 +852,7 @@ async fn prepare_zccache_build(
     cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
     cargo.env(soldr_cache::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
     cargo.env(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
+    cargo.env(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
     cargo.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
 
     Ok(ZccacheBuildSession {
@@ -1104,9 +1107,13 @@ struct CommandOutput {
 
 fn managed_zccache_cache_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
     let zccache_dir = normalize_path_for_compare(&soldr_cache::zccache_dir(paths))?;
+    let inherited_soldr_managed_dir =
+        non_empty_env_path(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
+            .map(|path| normalize_path_for_compare(&path))
+            .transpose()?;
     if let Some(explicit) = non_empty_env_path(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR) {
         let explicit = normalize_path_for_compare(&explicit)?;
-        if explicit != zccache_dir {
+        if explicit != zccache_dir && inherited_soldr_managed_dir.as_ref() != Some(&explicit) {
             return Err(SoldrError::Other(format!(
                 "{} is managed by soldr for managed zccache builds. Unset it, set SOLDR_CACHE_DIR to choose soldr's cache root, or set SOLDR_RUSTC_WRAPPER to use a custom wrapper.",
                 soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR
