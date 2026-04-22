@@ -42,9 +42,8 @@ jobs:
         with:
           cache: true
           # Keep the action runtime cache separate from the Soldr build under
-          # test. The dogfood build below overrides SOLDR_CACHE_DIR and
-          # ZCCACHE_CACHE_DIR so the action cache cannot cross-contaminate the
-          # repository build cache.
+          # test. The dogfood build below overrides SOLDR_CACHE_DIR and clears
+          # ZCCACHE_CACHE_DIR so soldr owns zccache under that separate root.
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
           build-cache: false
@@ -85,7 +84,6 @@ jobs:
             throw "setup-soldr action cache must be disjoint from the Soldr build-under-test cache"
           }
           New-Item -ItemType Directory -Force -Path $buildCache | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $buildCache "zccache") | Out-Null
           Write-Host "action-cache=$actionCache"
           Write-Host "build-under-test-cache=$buildCache"
 
@@ -93,12 +91,12 @@ jobs:
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/zccache
+          ZCCACHE_CACHE_DIR: ""
         run: soldr cargo build --package soldr-cli --locked
 
       - name: Test through soldr
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/zccache
+          ZCCACHE_CACHE_DIR: ""
         run: soldr cargo test -p soldr-cli --test cli --locked
