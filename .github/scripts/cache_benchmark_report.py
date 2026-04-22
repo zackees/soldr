@@ -73,6 +73,9 @@ def _format_bool(value: bool | None) -> str:
 
 def _load_config() -> tuple[dict[str, Any], Path]:
     config_path = Path(os.environ.get("BENCHMARK_CONFIG_PATH", DEFAULT_CONFIG_PATH))
+    if not config_path.is_absolute():
+        config_path = REPO_ROOT / config_path
+    config_path = config_path.resolve()
     return tomllib.loads(config_path.read_text(encoding="utf-8")), config_path
 
 

@@ -14,8 +14,8 @@ on:
         type: string
       save_cache:
         required: false
-        type: string
-        default: "false"
+        type: boolean
+        default: false
       source_ref:
         required: true
         type: string
@@ -60,6 +60,18 @@ jobs:
         with:
           targets: ${{ inputs.target }}
 
+      - name: Share bootstrap zccache with soldr
+        shell: pwsh
+        run: |
+          $cacheRoot = Join-Path $env:RUNNER_TEMP "soldr-bootstrap"
+          $soldrRoot = Join-Path $cacheRoot "soldr"
+          $zccacheDir = Join-Path (Join-Path $soldrRoot "cache") "zccache"
+          New-Item -ItemType Directory -Force -Path $zccacheDir | Out-Null
+
+          "SOLDR_CACHE_DIR=$soldrRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ZCCACHE_CACHE_DIR=$zccacheDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Sharing bootstrap zccache cache dir: $zccacheDir"
+
       - name: Install musl tools
         if: contains(inputs.target, 'musl')
         shell: bash
@@ -101,6 +113,14 @@ jobs:
           shared-key: ${{ inputs.target }}
           save-cache: ${{ inputs.save_cache }}
           target-dir: soldr/target
+          zccache-version: "1.3.4"
+
+      - name: Share bootstrap zccache binary with soldr
+        shell: pwsh
+        run: |
+          $zccache = Get-Command zccache -ErrorAction Stop
+          "SOLDR_ZCCACHE_BIN=$($zccache.Source)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Sharing bootstrap zccache binary: $($zccache.Source)"
 
       - name: Build soldr-cli
         shell: pwsh
@@ -151,6 +171,14 @@ jobs:
         working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
         run: |
           & "${{ steps.soldr_binary.outputs.path }}" cargo build --locked --target "${{ inputs.target }}"
+
+      - name: Show shared soldr cache status
+        if: ${{ always() }}
+        continue-on-error: true
+        shell: pwsh
+        working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
+        run: |
+          & "${{ steps.soldr_binary.outputs.path }}" cache
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

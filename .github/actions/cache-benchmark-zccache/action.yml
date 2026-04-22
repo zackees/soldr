@@ -16,6 +16,12 @@ inputs:
       Replaces sccache.
     required: false
     default: "true"
+  cache-dir:
+    description: >
+      Directory used by zccache for compilation artifacts. Defaults to
+      ZCCACHE_CACHE_DIR when already set, otherwise ~/.zccache.
+    required: false
+    default: ""
   cache-target:
     description: >
       Cache cargo target/ metadata (fingerprints, dep-info, build script outputs).
@@ -83,6 +89,10 @@ runs:
         OS="${{ runner.os }}"
         ARCH="${{ runner.arch }}"
         SHARED="${{ inputs.shared-key }}"
+        CACHE_DIR="${{ inputs.cache-dir }}"
+        if [ -z "$CACHE_DIR" ]; then
+          CACHE_DIR="${ZCCACHE_CACHE_DIR:-$HOME/.zccache}"
+        fi
         if [ -n "$SHARED" ]; then
           PREFIX="zccache-${OS}-${ARCH}-${SHARED}"
           REG_PREFIX="cargo-registry-${OS}-${ARCH}-${SHARED}"
@@ -117,13 +127,15 @@ runs:
         else
           echo "target-restore=" >> "$GITHUB_OUTPUT"
         fi
+        echo "zccache-dir=${CACHE_DIR}" >> "$GITHUB_OUTPUT"
+        echo "ZCCACHE_CACHE_DIR=${CACHE_DIR}" >> "$GITHUB_ENV"
 
     - name: Restore zccache compilation cache
       id: restore-zccache
       if: inputs.cache-compilation == 'true'
       uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
       with:
-        path: ~/.zccache
+        path: ${{ steps.keys.outputs.zccache-dir }}
         key: ${{ steps.keys.outputs.compilation-key }}
         restore-keys: ${{ steps.keys.outputs.compilation-restore }}
 
@@ -253,6 +265,7 @@ runs:
       run: |
         mkdir -p ~/.zccache-action-state
         echo "${{ steps.keys.outputs.compilation-key }}" > ~/.zccache-action-state/compilation-key
+        echo "${{ steps.keys.outputs.zccache-dir }}" > ~/.zccache-action-state/zccache-dir
         echo "${{ steps.keys.outputs.registry-key }}" > ~/.zccache-action-state/registry-key
         echo "${{ steps.keys.outputs.target-key }}" > ~/.zccache-action-state/target-key
         echo "${{ inputs.save-cache }}" > ~/.zccache-action-state/save-cache

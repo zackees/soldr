@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn test_version() {
-        assert_eq!(version(), "0.7.4");
+        assert_eq!(version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
