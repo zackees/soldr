@@ -4,6 +4,8 @@ build-backend = "maturin"
 
 [project]
 name = "soldr"
+# Version source of truth: Cargo.toml [workspace.package].version.
+# maturin derives the Python package version from the Rust package metadata.
 dynamic = ["version"]
 description = "Instant tools. Instant builds. One command."
 readme = "README.md"

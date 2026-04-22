@@ -37,7 +37,6 @@ steps:
 
   - uses: zackees/setup-soldr@v0
     with:
-      version: 0.7.6
       cache: true
 
   - run: soldr cargo build --locked --release
@@ -89,7 +88,6 @@ jobs:
 
       - uses: zackees/soldr@<ref>
         with:
-          version: 0.7.6
           cache: true
 
       - run: soldr cargo build --locked --release
@@ -101,7 +99,6 @@ For same-repository testing, use:
 ```yaml
 - uses: ./
   with:
-    version: 0.7.6
     cache: true
 ```
 
@@ -158,10 +155,10 @@ jobs:
         with:
           toolchain: 1.94.1
 
-      - name: Install soldr 0.7.6
+      - name: Install latest soldr release
         shell: bash
         run: |
-          curl -fsSL https://raw.githubusercontent.com/zackees/soldr/v0.7.6/install.sh | bash -s -- --version 0.7.6
+          curl -fsSL https://raw.githubusercontent.com/zackees/soldr/main/install.sh | bash
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build through soldr
@@ -195,7 +192,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: zackees/soldr
-          ref: v0.7.6
+          ref: main
           path: soldr
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
