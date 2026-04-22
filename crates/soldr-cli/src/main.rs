@@ -9,6 +9,7 @@ const TEST_RUSTUP_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTUP_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
 const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
+const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -505,9 +506,11 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
     command.env("RUSTC", rustc);
+    let cache_enabled_for_cargo = cache_enabled && cargo_args_are_cacheable(args);
+
     command.env(
         soldr_cache::CACHE_ENABLED_ENV_VAR,
-        soldr_cache::cache_enabled_env_value(cache_enabled),
+        soldr_cache::cache_enabled_env_value(cache_enabled_for_cargo),
     );
     let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
     path_dirs.push(cargo_bin_dir);
@@ -517,7 +520,7 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         command.env("CARGO_BUILD_TARGET", target);
     }
 
-    let session = if cache_enabled {
+    let session = if cache_enabled_for_cargo {
         prepare_rustc_wrapper(&mut command, &paths).await?
     } else {
         None
@@ -568,6 +571,31 @@ fn cargo_args_use_reserved_no_cache(args: &[String]) -> bool {
     false
 }
 
+fn cargo_args_are_cacheable(args: &[String]) -> bool {
+    let Some(subcommand) = first_cargo_subcommand(args) else {
+        return false;
+    };
+
+    matches!(
+        subcommand,
+        "b" | "build"
+            | "c"
+            | "check"
+            | "t"
+            | "test"
+            | "bench"
+            | "d"
+            | "doc"
+            | "r"
+            | "run"
+            | "rustc"
+            | "clippy"
+            | "fix"
+            | "install"
+            | "nextest"
+    )
+}
+
 fn prepend_paths(
     dirs: &[std::path::PathBuf],
     existing_path: Option<&std::ffi::OsStr>,
@@ -582,9 +610,21 @@ fn prepend_paths(
 /// Return the first positional argument (skipping flags) of the cargo
 /// front-door args, which is conventionally the cargo subcommand.
 fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
+    let mut skip_next = false;
     for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
         if arg == "--" {
             break;
+        }
+        if arg.starts_with('+') && arg.len() > 1 {
+            continue;
+        }
+        if cargo_global_arg_takes_value(arg) {
+            skip_next = !arg.contains('=');
+            continue;
         }
         if arg.starts_with('-') {
             continue;
@@ -592,6 +632,28 @@ fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
         return Some(arg.as_str());
     }
     None
+}
+
+fn cargo_global_arg_takes_value(arg: &str) -> bool {
+    matches!(
+        arg,
+        "-C" | "-Z"
+            | "-j"
+            | "--color"
+            | "--config"
+            | "--jobs"
+            | "--manifest-path"
+            | "--message-format"
+            | "--target-dir"
+    ) || arg.starts_with("-C=")
+        || arg.starts_with("-Z=")
+        || arg.starts_with("-j=")
+        || arg.starts_with("--color=")
+        || arg.starts_with("--config=")
+        || arg.starts_with("--jobs=")
+        || arg.starts_with("--manifest-path=")
+        || arg.starts_with("--message-format=")
+        || arg.starts_with("--target-dir=")
 }
 
 async fn ensure_known_subcommand_tool(
@@ -1105,9 +1167,25 @@ fn toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
     let env_var = match tool {
         "cargo" => TEST_CARGO_BIN_ENV_VAR,
         "rustc" => TEST_RUSTC_BIN_ENV_VAR,
-        _ => return None,
+        _ => return real_toolchain_binary_override(tool),
     };
-    non_empty_env_path(env_var)
+    non_empty_env_path(env_var).or_else(|| real_toolchain_binary_override(tool))
+}
+
+fn real_toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
+    non_empty_env_path(&real_toolchain_binary_env_var(tool))
+}
+
+fn real_toolchain_binary_env_var(tool: &str) -> String {
+    let mut value = String::from(REAL_TOOLCHAIN_BINARY_ENV_PREFIX);
+    for ch in tool.chars() {
+        if ch.is_ascii_alphanumeric() {
+            value.push(ch.to_ascii_uppercase());
+        } else {
+            value.push('_');
+        }
+    }
+    value
 }
 
 fn rustup_binary() -> std::path::PathBuf {

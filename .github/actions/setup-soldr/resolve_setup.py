@@ -148,6 +148,7 @@ def main() -> None:
     cargo_home = cache_root / "cargo"
     rustup_home = cache_root / "rustup"
     bin_dir = cache_root / "bin"
+    shim_dir = cache_root / "shims"
     zccache_cache_dir = soldr_root / "cache" / "zccache"
     soldr_binary = "soldr.exe" if os.name == "nt" else "soldr"
     soldr_path = bin_dir / soldr_binary
@@ -161,6 +162,7 @@ def main() -> None:
         cargo_home / "bin",
         rustup_home,
         bin_dir,
+        shim_dir,
         zccache_cache_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
@@ -275,6 +277,7 @@ def main() -> None:
             "cargo_home": str(cargo_home),
             "rustup_home": str(rustup_home),
             "bin_dir": str(bin_dir),
+            "shim_dir": str(shim_dir),
             "soldr_path": str(soldr_path),
             "soldr_repo": soldr_repo,
             "soldr_version_requested": soldr_version,

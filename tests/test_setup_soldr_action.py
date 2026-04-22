@@ -123,6 +123,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert (cache_root / "cargo" / "bin").is_dir()
     assert (cache_root / "rustup").is_dir()
     assert (cache_root / "bin").is_dir()
+    assert (cache_root / "shims").is_dir()
 
     outputs = github_output.read_text(encoding="utf-8")
     assert f"cache_root={cache_root}" in outputs
@@ -133,6 +134,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-" in outputs
     assert f"build_cache_path={cache_root / 'soldr' / 'cache' / 'zccache'}" in outputs
     assert f"target_cache_path={workspace / 'custom-target'}" in outputs
+    assert f"shim_dir={cache_root / 'shims'}" in outputs
     assert "target_cache_key=setup-soldr-targetcache-hot-v1-linux-x64-" in outputs
     assert "target_cache_enabled=true" in outputs
     assert "target_cache_mode=hot" in outputs

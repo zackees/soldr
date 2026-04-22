@@ -26,6 +26,7 @@ The exporter writes the standalone repository shape defined in `docs/SETUP_SOLDR
 - `.github/actions/setup-soldr/resolve_setup.py`
 - `.github/actions/setup-soldr/ensure_rust_toolchain.py`
 - `.github/actions/setup-soldr/ensure_soldr.py`
+- `.github/actions/setup-soldr/install_tool_shims.py`
 - `.github/actions/setup-soldr/verify_soldr.py`
 
 ## Behavior
