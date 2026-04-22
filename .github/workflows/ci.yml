@@ -21,24 +21,17 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+      - uses: zackees/setup-soldr@1937c19529f3690df5553a36dd33f39ccb20b070 # v0.1.0 / v0
         with:
-          components: rustfmt, clippy
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          # GitHub caches are branch-scoped. This workflow runs on push only, so
-          # each branch writes into its own scope. That lets main refresh the
-          # canonical parent cache while feature branches can also save their own
-          # preferred child cache without duplicating work in pull_request runs.
-          shared-key: workspace
-          save-if: ${{ github.event_name == 'push' }}
+          # Formatting does not benefit from a restored target directory, but
+          # clippy still uses soldr's compilation cache below.
+          target-cache: false
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
   build-linux-x64:
     name: Linux x64
@@ -51,28 +44,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          # Use the same stable key lineage as lint. Pushes save branch-local
-          # caches, which GitHub restores before falling back to base/default
-          # branch caches on later branch pushes and on PR checks attached to
-          # the branch head.
-          shared-key: workspace
-          save-if: ${{ github.event_name == 'push' }}
+      - uses: zackees/setup-soldr@1937c19529f3690df5553a36dd33f39ccb20b070 # v0.1.0 / v0
 
       - name: Build workspace
-        run: cargo build --workspace --locked
+        run: soldr cargo build --workspace --locked
 
       - name: Run library tests
-        run: cargo test --workspace --lib --locked
+        run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --test cli --locked
 
       - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
 
   build-macos-x64:
     name: macOS x64
@@ -85,28 +69,19 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          # Use the same stable key lineage as lint. Pushes save branch-local
-          # caches, which GitHub restores before falling back to base/default
-          # branch caches on later branch pushes and on PR checks attached to
-          # the branch head.
-          shared-key: workspace
-          save-if: ${{ github.event_name == 'push' }}
+      - uses: zackees/setup-soldr@1937c19529f3690df5553a36dd33f39ccb20b070 # v0.1.0 / v0
 
       - name: Build workspace
-        run: cargo build --workspace --locked
+        run: soldr cargo build --workspace --locked
 
       - name: Run library tests
-        run: cargo test --workspace --lib --locked
+        run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --test cli --locked
 
       - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
 
   build-windows-x64:
     name: Windows x64
@@ -119,25 +94,16 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          # Use the same stable key lineage as lint. Pushes save branch-local
-          # caches, which GitHub restores before falling back to base/default
-          # branch caches on later branch pushes and on PR checks attached to
-          # the branch head.
-          shared-key: workspace
-          save-if: ${{ github.event_name == 'push' }}
+      - uses: zackees/setup-soldr@1937c19529f3690df5553a36dd33f39ccb20b070 # v0.1.0 / v0
 
       - name: Build workspace
-        run: cargo build --workspace --locked
+        run: soldr cargo build --workspace --locked
 
       - name: Run library tests
-        run: cargo test --workspace --lib --locked
+        run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --test cli --locked
 
       - name: Verify Windows defaults to MSVC under Git Bash
         if: runner.os == 'Windows'
@@ -145,7 +111,7 @@ jobs:
         run: bash .github/scripts/windows-msys-default-msvc.sh
 
       - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
 
   e2e-linux-x64:
     name: build
