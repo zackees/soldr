@@ -3,7 +3,7 @@ use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 fn rustup_which(tool: &str) -> String {
@@ -468,6 +468,7 @@ fn help_lists_phase_one_command_surface() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("status"), "help output missing status");
     assert!(stdout.contains("clean"), "help output missing clean");
+    assert!(stdout.contains("purge"), "help output missing purge");
     assert!(stdout.contains("config"), "help output missing config");
     assert!(stdout.contains("cache"), "help output missing cache");
     assert!(stdout.contains("version"), "help output missing version");
@@ -620,6 +621,44 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cache_enabled_zccache_build_completes_under_20_seconds() {
+    let cache_root = unique_temp_dir("cargo-zccache-timing");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cargo build with fake zccache");
+    let elapsed = started.elapsed();
+
+    assert!(
+        output.status.success(),
+        "cache-enabled zccache build failed in {elapsed:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "cache-enabled zccache build took {elapsed:?}, expected under 20s"
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("zccache start")
+            && log.contains("zccache session-start")
+            && log.contains("zccache wrapper")
+            && log.contains("zccache session-end test-session"),
+        "timed build should exercise the managed zccache path: {log}"
     );
 }
 
