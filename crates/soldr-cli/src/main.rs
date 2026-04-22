@@ -108,6 +108,15 @@ async fn main() {
     // Must be checked before clap parsing.
     let raw_args: Vec<String> = std::env::args().collect();
     if raw_args.len() > 1 && is_wrapper_invocation(&raw_args[1]) {
+        if let Some(version) = soldr_as_env_pin() {
+            if should_trampoline(&version) {
+                std::process::exit(
+                    run_trampoline(&version, &raw_args[1..])
+                        .await
+                        .unwrap_or_else(report_and_exit),
+                );
+            }
+        }
         std::process::exit(run_rustc_wrapper(&raw_args).unwrap_or_else(report_and_exit));
     }
 
@@ -120,12 +129,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let pinned_version = pinned_version.or_else(|| {
-        std::env::var(SOLDR_AS_ENV_VAR)
-            .ok()
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    });
+    let pinned_version = pinned_version.or_else(soldr_as_env_pin);
 
     if let Some(version) = pinned_version {
         if should_trampoline(&version) {
@@ -148,6 +152,13 @@ async fn main() {
         .await
         .unwrap_or_else(report_and_exit);
     std::process::exit(rc);
+}
+
+fn soldr_as_env_pin() -> Option<String> {
+    std::env::var(SOLDR_AS_ENV_VAR)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
@@ -348,11 +359,26 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
         );
     }
 
-    let status = std::process::Command::new(&result.binary_path)
+    let mut command = std::process::Command::new(&result.binary_path);
+    command
         .args(args)
-        .env(SOLDR_TRAMPOLINING_ENV_VAR, env!("CARGO_PKG_VERSION"))
-        .status()
-        .map_err(|e| {
+        .env(SOLDR_TRAMPOLINING_ENV_VAR, env!("CARGO_PKG_VERSION"));
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+
+        let err = command.exec();
+        Err(SoldrError::Other(format!(
+            "failed to exec soldr v{} at {}: {err}",
+            result.version,
+            result.binary_path.display()
+        )))
+    }
+
+    #[cfg(not(unix))]
+    {
+        let status = command.status().map_err(|e| {
             SoldrError::Other(format!(
                 "failed to exec soldr v{} at {}: {e}",
                 result.version,
@@ -360,7 +386,8 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
             ))
         })?;
 
-    Ok(status.code().unwrap_or(1))
+        Ok(status.code().unwrap_or(1))
+    }
 }
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER

@@ -113,6 +113,21 @@ fn fake_cargo_script(log_path: &Path) -> String {
     }
 }
 
+#[cfg(not(windows))]
+fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
+    format!(
+        "#!/bin/sh\n\
+         echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
+         exec 3</dev/null\n\
+         exec 4>/dev/null\n\
+         export CARGO_MAKEFLAGS='-j --jobserver-fds=3,4'\n\
+         export SOLDR_TEST_JOBSERVER_READ_FD=3\n\
+         export SOLDR_TEST_JOBSERVER_WRITE_FD=4\n\
+         \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n",
+        log_path.display()
+    )
+}
+
 fn fake_rustc_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {
@@ -304,6 +319,17 @@ fn fake_zccache_script(log_path: &Path) -> String {
              esac\n\
              rustc=\"$1\"\n\
              shift\n\
+             if [ -n \"${{SOLDR_TEST_JOBSERVER_READ_FD:-}}\" ]; then\n\
+               if ! eval \": <&$SOLDR_TEST_JOBSERVER_READ_FD\"; then\n\
+                 echo \"jobserver read fd $SOLDR_TEST_JOBSERVER_READ_FD is not open\" >&2\n\
+                 exit 42\n\
+               fi\n\
+               if ! eval \": >&$SOLDR_TEST_JOBSERVER_WRITE_FD\"; then\n\
+                 echo \"jobserver write fd $SOLDR_TEST_JOBSERVER_WRITE_FD is not open\" >&2\n\
+                 exit 42\n\
+               fi\n\
+               echo \"zccache jobserver fds ok read=$SOLDR_TEST_JOBSERVER_READ_FD write=$SOLDR_TEST_JOBSERVER_WRITE_FD\" >> \"{0}\"\n\
+             fi\n\
              echo \"zccache wrapper cache_dir=${{ZCCACHE_CACHE_DIR:-}} $rustc $*\" >> \"{0}\"\n\
              \"$rustc\" \"$@\"\n",
             log_path.display()
@@ -345,6 +371,19 @@ fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let rustc = fake_script_path(&dir, "rustc");
     let zccache = fake_script_path(&dir, "zccache");
     write_fake_script(&cargo, &fake_cargo_script(log_path));
+    write_fake_script(&rustc, &fake_rustc_script(log_path));
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (cargo, rustc, zccache)
+}
+
+#[cfg(not(windows))]
+fn install_fake_jobserver_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let dir = unique_temp_dir("fake-jobserver-toolchain");
+    let cargo = fake_script_path(&dir, "cargo");
+    let rustc = fake_script_path(&dir, "rustc");
+    let zccache = fake_script_path(&dir, "zccache");
+
+    write_fake_script(&cargo, &fake_cargo_with_jobserver_script(log_path));
     write_fake_script(&rustc, &fake_rustc_script(log_path));
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (cargo, rustc, zccache)
@@ -621,6 +660,41 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[cfg(not(windows))]
+#[test]
+fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
+    let cache_root = unique_temp_dir("cargo-jobserver-fds");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_jobserver_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "test", "--no-run"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cargo test --no-run with fake jobserver fds");
+
+    assert!(
+        output.status.success(),
+        "cache-enabled front door lost jobserver fds\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("failed to connect to jobserver"),
+        "jobserver warning should not be emitted: {stderr}"
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("zccache jobserver fds ok read=3 write=4"),
+        "managed zccache wrapper did not observe open jobserver fds: {log}"
     );
 }
 
