@@ -100,3 +100,21 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
           ZCCACHE_CACHE_DIR: ""
         run: soldr cargo test -p soldr-cli --test cli --locked
+
+      - name: Show dogfood cache status
+        if: always()
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+          ZCCACHE_CACHE_DIR: ""
+        run: |
+          $soldr = Get-Command soldr -ErrorAction SilentlyContinue
+          if (-not $soldr) {
+            Write-Host "soldr is unavailable; skipping dogfood cache status"
+            exit 0
+          }
+          & $soldr.Source cache
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "soldr cache status unavailable after dogfood build"
+            exit 0
+          }
