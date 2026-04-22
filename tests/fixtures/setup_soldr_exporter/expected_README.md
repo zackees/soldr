@@ -81,7 +81,7 @@ jobs:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `true`; set to `false` to opt out. |
-| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. |
+| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. Default `false` because `target/` has no garbage collection and can grow to multi-GB caches; enable only for intentionally bounded paths. See zackees/soldr#197, zackees/setup-soldr#21, and zackees/zccache#65. |
 | `target-dir` | Cargo target directory restored by `target-cache`. |
 
 ## Outputs
@@ -101,7 +101,8 @@ jobs:
 - The action installs exactly one released `soldr` binary for the active runner target.
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
-- The action restores the Soldr-owned zccache cache root and the Cargo target directory by default so child branches can reuse parent-branch build state.
+- The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
+- Full Cargo target caching is opt-in until target snapshot garbage collection is bounded; prefer the default zccache artifact cache for normal CI.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
 - A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.
 

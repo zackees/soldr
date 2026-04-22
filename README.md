@@ -74,7 +74,7 @@ That action:
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
 - restores and saves the Soldr-owned zccache compilation artifact cache under `SOLDR_CACHE_DIR` by default; set `build-cache: false` to disable it
-- restores and saves the Cargo target directory by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-dir:` to choose another target directory
+- leaves full Cargo target directory caching off by default because `target/` has no garbage collection and can grow to multi-GB caches; set `target-cache: true` only with intentionally bounded target paths while [zackees/soldr#197](https://github.com/zackees/soldr/issues/197), [zackees/setup-soldr#21](https://github.com/zackees/setup-soldr/issues/21), and [zackees/zccache#65](https://github.com/zackees/zccache/issues/65) are tracked
 - puts `soldr` on `PATH` for later steps
 
 If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later. The action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the toolchain it just installed instead of asking `rustup` to resolve a pinned file lazily.

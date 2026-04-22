@@ -88,7 +88,7 @@ steps:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `"true"`; set to `"false"` to opt out. |
-| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
+| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. Default `"false"` because `target/` has no garbage collection and can grow to multi-GB caches; enable only for intentionally bounded paths. Tracked by [zackees/soldr#197](https://github.com/zackees/soldr/issues/197), [zackees/setup-soldr#21](https://github.com/zackees/setup-soldr/issues/21), and [zackees/zccache#65](https://github.com/zackees/zccache/issues/65). |
 | `target-dir` | Cargo target directory restored by `target-cache`. Default `"target"`. |
 
 The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v0` beta contract and should not be documented in the extracted public action README.
@@ -118,7 +118,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - restore and save the action-managed cache/state root when `cache: true`
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
 - when `build-cache: true` (the default), restore the Soldr-owned zccache cache root at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
-- when `build-cache: true` and `target-cache: true` (the defaults), restore the configured Cargo target directory at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and outputs. Keys include the runner OS, architecture, resolved toolchain digest, `Cargo.lock` hash, and commit SHA, with fallback limited to the same toolchain and lockfile lineage.
+- when `build-cache: true` and `target-cache: true` (explicitly enabled), restore the configured Cargo target directory at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and outputs. Keys include the runner OS, architecture, resolved toolchain digest, `Cargo.lock` hash, and commit SHA, with fallback limited to the same toolchain and lockfile lineage. This remains opt-in until target snapshot pruning is bounded.
 
 ### Current Limits That Must Stay Explicit
 
@@ -128,6 +128,7 @@ The extracted public action must document these current limits honestly:
 - the action bootstraps `rustup` on demand via `rustup-init` when it is absent, then uses it to install the requested toolchain; at runtime Soldr prefers direct toolchain binaries from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` and only falls back to `rustup which` when the direct probe fails (or when `RUSTUP_TOOLCHAIN` is explicitly set)
 - the action exports `ZCCACHE_CACHE_DIR` to the Soldr-owned zccache artifact cache under `SOLDR_CACHE_DIR`
 - restored Cargo target directories are fast paths, not freshness overrides; build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ
+- full Cargo target directories are not garbage-collected by Cargo, so broad target caching can accumulate stale profiles, test binaries, build-script outputs, and target triples until the runner disk fills; keep it off or narrowly scoped until [zackees/zccache#65](https://github.com/zackees/zccache/issues/65) has a bounded cleanup policy
 
 ### Non-Contract Details
 

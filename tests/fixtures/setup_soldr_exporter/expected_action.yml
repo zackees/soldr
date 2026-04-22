@@ -47,11 +47,12 @@ inputs:
   target-cache:
     description: >
       Restore and save the Cargo target directory across workflow runs.
-      Default "true"; this gives no-op child-branch builds a fast path when
-      Cargo can reuse restored fingerprints and outputs. Set to "false" to
-      cache only zccache compilation artifacts.
+      Default "false" because Cargo target directories do not garbage collect
+      themselves and can grow to multi-GB caches that exhaust hosted runners.
+      Enable only for intentionally bounded target paths. See
+      zackees/soldr#197, zackees/setup-soldr#21, and zackees/zccache#65.
     required: false
-    default: "true"
+    default: "false"
   target-dir:
     description: Cargo target directory restored by target-cache.
     required: false

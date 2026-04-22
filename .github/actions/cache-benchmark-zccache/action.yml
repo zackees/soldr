@@ -26,9 +26,10 @@ inputs:
     description: >
       Cache cargo target/ metadata (fingerprints, dep-info, build script outputs).
       Allows cargo to skip invoking rustc entirely on warm builds.
-      Only caches lightweight metadata, not full .rlib files.
+      Disabled by default because target snapshots do not have bounded garbage
+      collection yet; see zackees/soldr#197 and zackees/zccache#65.
     required: false
-    default: "true"
+    default: "false"
   compilation-restore-fallback:
     description: >
       Whether restore-key fallback is allowed for the zccache compilation cache.

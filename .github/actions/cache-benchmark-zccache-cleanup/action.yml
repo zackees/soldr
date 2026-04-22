@@ -30,7 +30,7 @@ runs:
           echo "save-cache=$(cat "$STATE_DIR/save-cache" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
           echo "cache-compilation=$(cat "$STATE_DIR/cache-compilation" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
           echo "cache-registry=$(cat "$STATE_DIR/cache-registry" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
-          echo "cache-target=$(cat "$STATE_DIR/cache-target" 2>/dev/null || echo 'true')" >> "$GITHUB_OUTPUT"
+          echo "cache-target=$(cat "$STATE_DIR/cache-target" 2>/dev/null || echo 'false')" >> "$GITHUB_OUTPUT"
           echo "target-dir=$(cat "$STATE_DIR/target-dir" 2>/dev/null || echo 'target')" >> "$GITHUB_OUTPUT"
         else
           echo "zccache-dir=$HOME/.zccache" >> "$GITHUB_OUTPUT"
@@ -86,6 +86,7 @@ runs:
         rm -rf "$SNAPSHOT_DIR"
         mkdir -p "$SNAPSHOT_DIR"
         if [ -d "$TARGET" ]; then
+          # Target snapshots are opt-in until zackees/zccache#65 adds bounded GC.
           tar cf "$SNAPSHOT_DIR/target-meta.tar" -C "$TARGET" \
             --exclude='incremental' \
             . 2>/dev/null || true
