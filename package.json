@@ -1,0 +1,42 @@
+{
+  "name": "@zackees/soldr",
+  "version": "0.7.6",
+  "description": "Instant Rust tools and builds from one command.",
+  "license": "BSD-3-Clause",
+  "homepage": "https://github.com/zackees/soldr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zackees/soldr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/zackees/soldr/issues"
+  },
+  "bin": {
+    "soldr": "bin/soldr.js"
+  },
+  "files": [
+    "bin/soldr.js",
+    "scripts/install.js",
+    "scripts/test-npm-package.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/install.js",
+    "prepack": "node scripts/test-npm-package.js",
+    "test:npm-package": "node scripts/test-npm-package.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "rust",
+    "cargo",
+    "build-cache",
+    "zccache",
+    "cli"
+  ]
+}

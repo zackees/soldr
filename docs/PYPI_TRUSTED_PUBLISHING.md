@@ -8,6 +8,8 @@ It is intentionally PyPI-only. crates.io publication is not part of the current 
 
 - `.github/workflows/release-auto.yml` is the only release workflow
 - that workflow always builds the hardened `soldr` wheel set as part of a real release
+- each platform job builds `soldr-cli` once, then packages that same target
+  binary into both the GitHub Release archive and the PyPI wheel
 - the workflow publishes those wheels through `pypa/gh-action-pypi-publish` in a dedicated OIDC job
 - the existing PyPI project `soldr` already exists
 - PyPI is the source of truth used by the workflow's "should we publish?" gate
@@ -47,7 +49,9 @@ The release workflow runs whenever a reviewed version bump lands on `main` (it f
 1. Derives the release version from `[workspace.package]` in `Cargo.toml`.
 2. Refuses to publish unless that version is strictly greater than the latest version on PyPI.
 3. Reruns the full lint, test, packaging, and e2e gate on the merged commit.
-4. Builds the platform release archives and hardened wheel set.
+4. Builds each platform binary once, packages it into both the GitHub Release
+   archive and the hardened wheel, and verifies the wheel's embedded `soldr`
+   binary SHA-256 matches the target release binary.
 5. Creates the `vX.Y.Z` GitHub Release with checksums and a build provenance attestation (skipped if the git tag already exists, e.g. PyPI catch-up).
 6. Publishes the wheel set to PyPI from a dedicated Linux job with `id-token: write`.
 
@@ -64,4 +68,5 @@ Until the publisher is registered, the PyPI publish job will not be able to mint
 After a successful publish:
 
 - https://pypi.org/project/soldr/X.Y.Z/ shows `Uploaded using Trusted Publishing? Yes`
-- the wheel set on PyPI matches the artifacts attached to the corresponding `vX.Y.Z` GitHub Release
+- the wheel set on PyPI contains the same per-platform `soldr` binaries as the
+  artifacts attached to the corresponding `vX.Y.Z` GitHub Release

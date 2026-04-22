@@ -53,6 +53,10 @@ pub fn zccache_dir(paths: &SoldrPaths) -> PathBuf {
     paths.cache.join("zccache")
 }
 
+pub fn sccache_dir(paths: &SoldrPaths) -> PathBuf {
+    paths.cache.join("sccache")
+}
+
 pub fn parse_zccache_session_id(stdout: &str) -> Option<String> {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -96,7 +100,7 @@ struct SessionStartResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        cache_enabled_env_value, cache_enabled_from_env_var, parse_zccache_session_id,
+        cache_enabled_env_value, cache_enabled_from_env_var, parse_zccache_session_id, sccache_dir,
         session_journal_path, zccache_dir, CACHE_DISABLED_VALUE, CACHE_ENABLED_VALUE,
     };
     use soldr_core::SoldrPaths;
@@ -139,6 +143,15 @@ mod tests {
         assert_eq!(
             zccache_dir(&paths),
             paths.root.join("cache").join("zccache")
+        );
+    }
+
+    #[test]
+    fn sccache_dir_lives_under_soldr_cache_root() {
+        let paths = SoldrPaths::with_root(Path::new("C:\\soldr-root").to_path_buf());
+        assert_eq!(
+            sccache_dir(&paths),
+            paths.root.join("cache").join("sccache")
         );
     }
 

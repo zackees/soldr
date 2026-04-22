@@ -43,6 +43,17 @@ Current release line:
 - the supported external integration boundary remains the `soldr` executable, not the internal Rust crates; see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md)
 - practical integration examples for local builds and GitHub Actions live in [INTEGRATION.md](./INTEGRATION.md)
 
+## Install from npm
+
+```bash
+npm install -g @zackees/soldr
+soldr --version
+```
+
+The npm package is a small launcher that downloads the matching `soldr` GitHub
+Release binary for your OS and architecture during install, verifies it against
+the published `SHA256SUMS` file, and exposes the `soldr` command.
+
 ## GitHub Actions setup
 
 The current GitHub Actions entry point is the repository root action in this repository:
@@ -63,6 +74,7 @@ That action:
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
 - restores and saves the zccache compilation artifact cache at `~/.zccache` by default; set `build-cache: false` to disable it
+- restores and saves the Cargo target directory by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-dir:` to choose another target directory
 - puts `soldr` on `PATH` for later steps
 - is the extraction source for the planned public `zackees/setup-soldr` action product
 

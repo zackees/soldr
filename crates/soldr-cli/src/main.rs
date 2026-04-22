@@ -434,10 +434,10 @@ fn run_wrapper_through_zccache(
     {
         use std::os::unix::process::CommandExt;
         let err = command.exec();
-        return Err(SoldrError::Other(format!(
+        Err(SoldrError::Other(format!(
             "failed to exec zccache at {}: {err}",
             zccache.display()
-        )));
+        )))
     }
 
     #[cfg(not(unix))]
@@ -689,6 +689,9 @@ async fn prepare_rustc_wrapper(
     match rustc_wrapper_mode() {
         RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths).await.map(Some),
         RustcWrapperMode::Custom(wrapper) => {
+            if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
+                cargo.env("SCCACHE_DIR", soldr_cache::sccache_dir(paths));
+            }
             cargo.env("RUSTC_WRAPPER", wrapper);
             cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
             cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
@@ -701,6 +704,13 @@ async fn prepare_rustc_wrapper(
             Ok(None)
         }
     }
+}
+
+fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
+    std::path::Path::new(wrapper)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("sccache"))
 }
 
 async fn prepare_zccache_build(
@@ -1032,7 +1042,7 @@ fn cached_managed_zccache(
 mod tests {
     use super::{
         cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
-        first_cargo_subcommand, normalize_version, parse_tool_spec,
+        first_cargo_subcommand, is_sccache_wrapper, normalize_version, parse_tool_spec,
         rustc_wrapper_mode_from_env_var, rustup_resolution_failure, should_trampoline,
         RustcWrapperMode,
     };
@@ -1100,6 +1110,15 @@ mod tests {
             rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
             RustcWrapperMode::Custom("sccache".into())
         );
+    }
+
+    #[test]
+    fn sccache_wrapper_detection_accepts_binary_names_and_paths() {
+        assert!(is_sccache_wrapper(OsStr::new("sccache")));
+        assert!(is_sccache_wrapper(OsStr::new("sccache.exe")));
+        assert!(is_sccache_wrapper(OsStr::new("/tmp/tools/sccache")));
+        assert!(!is_sccache_wrapper(OsStr::new("zccache")));
+        assert!(!is_sccache_wrapper(OsStr::new("sccache-proxy")));
     }
 
     #[test]

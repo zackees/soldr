@@ -162,7 +162,6 @@ jobs:
 
           results = []
           failures = []
-          output_path.parent.mkdir(parents=True, exist_ok=True)
 
           for mutation in selected_mutations:
               for profile in profiles:
@@ -216,6 +215,7 @@ jobs:
 
                       results.append(result)
 
+          output_path.parent.mkdir(parents=True, exist_ok=True)
           output_path.write_text(
               json.dumps(
                   {

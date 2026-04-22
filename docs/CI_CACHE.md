@@ -18,8 +18,8 @@ You get, for free:
 
 - branch-agnostic cache keys the action produces on its own
 - automatic restore on feature branches from the latest `main` cache on a miss
-- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves `~/.zccache` by default
-- `cache-hit` and `build-cache-hit` outputs you can read to confirm warm vs cold runs
+- no separate `actions/cache` step; the action already runs the setup-state cache internally and also restores and saves `~/.zccache` and the Cargo target directory by default
+- `cache-hit`, `build-cache-hit`, and `target-cache-hit` outputs you can read to confirm warm vs cold runs
 
 The rest of this document explains how and why that works.
 
@@ -49,6 +49,7 @@ The `zackees/soldr@v0` action (see [`action.yml`](../action.yml)) runs internal 
 - **Push-only save semantics come for free.** GitHub's cache scoping already prevents feature-branch runs from overwriting `main`'s cache. You do not need to gate `save-if` yourself the way internal Rust caching wrappers usually make you do.
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
 - **Build-artifact cache enabled by default.** The action also restores `~/.zccache` with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
+- **Cargo target cache enabled by default.** When `build-cache` is enabled, the action also restores the configured Cargo target directory with a key scoped to the runner, resolved toolchain, lockfile hash, and commit SHA. It falls back only within the same toolchain and lockfile lineage, which gives no-op feature-branch builds a fast path without reusing stale target outputs across dependency changes.
 
 ## Minimum Config For An External Repo
 
@@ -104,7 +105,7 @@ Add `pull_request` only if you explicitly need CI on the PR merge commit (for ex
 
 After two pushes to the same branch, you should be able to confirm the cache lineage is healthy.
 
-1. **Check the `cache-hit` and `build-cache-hit` outputs of the setup step.** Reference them from a later step like this:
+1. **Check the `cache-hit`, `build-cache-hit`, and `target-cache-hit` outputs of the setup step.** Reference them from a later step like this:
 
    ```yaml
    - id: soldr
@@ -113,6 +114,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
        cache: true
    - run: echo "cache-hit=${{ steps.soldr.outputs.cache-hit }}"
    - run: echo "build-cache-hit=${{ steps.soldr.outputs.build-cache-hit }}"
+   - run: echo "target-cache-hit=${{ steps.soldr.outputs.target-cache-hit }}"
    ```
 
    `true` means the key matched exactly. `false` means either a fresh key (cold) or a restore-keys fallback match (partial). Both `false` cases show the same literal `false`; distinguish them using the raw log.
@@ -125,6 +127,8 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v0-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
 
+   For the Cargo target layer, inspect the `target-cache` step. Its exact keys are `setup-soldr-targetcache-v0-{os}-{arch}-{toolchain-digest}-{cargo-lock-hash}-{github.sha}` and its restore-key falls back within the same toolchain and lockfile lineage.
+
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
 ## Debugging Cold Misses
@@ -132,11 +136,12 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 If feature branches keep rebuilding from scratch, check these in order:
 
 - **Has `main` run successfully recently?** The restore fallback only works if the default branch has written a cache. If the main-branch pipeline is red or was never run on this workflow file, there is no parent to restore from. Fix `main` first.
-- **Is `Cargo.lock` churning on every push?** Lockfile changes do not change the setup-soldr state-cache key, but they do invalidate downstream compilation caches managed by zccache. Check whether your workflow keeps regenerating `Cargo.lock` (for example, because `Cargo.lock` is gitignored in an application repo where it should be committed).
+- **Is `Cargo.lock` churning on every push?** Lockfile changes do not change the setup-soldr state-cache key, but they do invalidate the Cargo target cache and can reduce downstream zccache reuse. Check whether your workflow keeps regenerating `Cargo.lock` (for example, because `Cargo.lock` is gitignored in an application repo where it should be committed).
 - **Did `rust-toolchain.toml` change?** The resolved toolchain channel is part of both cache key families. Bumping the toolchain channel or the components/targets list invalidates every existing entry. That is expected behavior; the next push to `main` will write a fresh canonical entry.
 - **Did you pass a `cache-key-suffix` input?** That value is appended to both cache key families (see `action.yml`). A different suffix on a feature branch produces a different key than `main` writes, and the restore will only succeed through the prefix fallback. Make sure the same suffix is used (or omitted) on every branch you want to share a lineage.
 - **Mixed runner OS/arch.** Cache keys are scoped by runner OS and architecture. A cache written on `ubuntu-24.04` will not restore on `macos-15` and vice versa. Each combination needs its own warm lineage from `main`.
 - **Did someone opt out of build caching?** If `build-cache: false` is set in the workflow, `build-cache-hit` will be empty and `~/.zccache` will not be restored or saved.
+- **Did someone opt out of target caching?** If `target-cache: false` is set in the workflow, `target-cache-hit` will be empty and the Cargo target directory will not be restored or saved.
 
 ---
 

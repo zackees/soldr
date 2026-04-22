@@ -131,7 +131,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: prepare
-    if: needs.prepare.outputs.should_publish_github_release == 'true'
+    if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -201,61 +201,58 @@ jobs:
           Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "dist\package\${{ matrix.binary }}"
           Compress-Archive -Path "dist\package\${{ matrix.binary }}" -DestinationPath "dist\$name.zip" -Force
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-soldr-${{ matrix.target }}
-          path: dist/soldr-*
-
-  build-pypi:
-    name: PyPI ${{ matrix.name }}
-    needs: prepare
-    if: needs.prepare.outputs.should_publish_pypi == 'true'
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x64
-            runner: ubuntu-24.04
-            target: x86_64-unknown-linux-gnu
-          - name: Linux ARM64
-            runner: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-          - name: macOS x64
-            runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - name: macOS ARM64
-            runner: macos-15
-            target: aarch64-apple-darwin
-          - name: Windows x64
-            runner: windows-2025
-            target: x86_64-pc-windows-msvc
-          - name: Windows ARM64
-            runner: windows-11-arm
-            target: aarch64-pc-windows-msvc
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          ref: ${{ needs.prepare.outputs.commit_sha }}
-
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
 
-      - name: Build hardened wheel
+      - name: Build hardened wheel from shared target directory
         shell: bash
         run: |
+          set -euo pipefail
           uv tool install "maturin>=1.7,<2"
           maturin build \
             --release \
             --locked \
             --compatibility pypi \
             --target "${{ matrix.target }}" \
+            --target-dir target \
             --out dist
+
+      - name: Verify wheel binary matches release binary
+        shell: python
+        run: |
+          import hashlib
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          binary_name = "${{ matrix.binary }}"
+          release_binary = Path("dist") / "package" / binary_name
+          if not release_binary.exists():
+              raise SystemExit(f"packaged release binary not found: {release_binary}")
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected exactly one wheel, found {len(wheels)}: {wheels}")
+
+          expected = hashlib.sha256(release_binary.read_bytes()).hexdigest()
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              candidates = [
+                  name
+                  for name in wheel.namelist()
+                  if Path(name).name == binary_name and not name.endswith("/")
+              ]
+              if len(candidates) != 1:
+                  raise SystemExit(
+                      f"expected one {binary_name} in {wheels[0].name}, found {candidates}"
+                  )
+              actual = hashlib.sha256(wheel.read(candidates[0])).hexdigest()
+
+          if actual != expected:
+              print(f"release binary sha256: {expected}", file=sys.stderr)
+              print(f"wheel binary sha256:   {actual}", file=sys.stderr)
+              raise SystemExit("wheel does not contain the shared release binary")
+
+          print(f"{wheels[0].name} contains the shared {binary_name} binary")
 
       - name: Smoke test wheel
         shell: bash
@@ -263,6 +260,13 @@ jobs:
           uv venv .venv
           uv pip install --python .venv dist/*.whl
           .venv/bin/soldr --version || .venv/Scripts/soldr.exe --version
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-soldr-${{ matrix.target }}
+          path: |
+            dist/soldr-*.tar.gz
+            dist/soldr-*.zip
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -322,7 +326,7 @@ jobs:
     name: Publish hardened PyPI wheels
     needs:
       - prepare
-      - build-pypi
+      - build
     if: needs.prepare.outputs.should_publish_pypi == 'true'
     runs-on: ubuntu-24.04
 
@@ -343,3 +347,53 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
         with:
           packages-dir: dist
+
+  publish-npm:
+    name: Publish npm package
+    needs:
+      - prepare
+      - publish
+    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit_sha }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+
+      - name: Install npm CLI with trusted publishing support
+        shell: bash
+        run: npm install --global npm@11.12.1
+
+      - name: Validate npm package
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          npm --version
+          node scripts/test-npm-package.js
+          npm pack --dry-run
+
+      - name: Publish package to npm
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          package_spec="${package_name}@${package_version}"
+
+          if npm dist-tag ls "$package_name" | awk '{print $2}' | grep -Fx "$package_version" >/dev/null; then
+            echo "$package_spec is already published; skipping npm publish."
+            exit 0
+          fi
+
+          npm publish

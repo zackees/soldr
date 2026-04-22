@@ -97,6 +97,8 @@ jobs:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the zccache compilation artifact cache (`~/.zccache`) across runs. Default `true`; set to `false` to opt out. |
+| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. |
+| `target-dir` | Cargo target directory restored by `target-cache`. |
 
 ## Outputs
 
@@ -107,6 +109,7 @@ jobs:
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the zccache compilation cache (`~/.zccache`) was restored. Empty only when `build-cache` is disabled. |
+| `target-cache-hit` | Whether the Cargo target directory cache was restored. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 
 ## Notes
@@ -114,7 +117,8 @@ jobs:
 - The action installs exactly one released `soldr` binary for the active runner target.
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
-- Managed `zccache` artifact storage uses the default `~/.zccache` path and is controlled by `build-cache`.
+- The action restores `~/.zccache` and the Cargo target directory by default so child branches can reuse parent-branch build state.
+- Managed `zccache` artifact storage still follows zccache's current supported/default behavior rather than a fully action-controlled custom artifact path.
 
 ## Development
 
