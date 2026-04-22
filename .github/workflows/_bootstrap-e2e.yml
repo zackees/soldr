@@ -121,7 +121,7 @@ jobs:
           shared-key: ${{ inputs.target }}
           save-cache: ${{ inputs.save_cache }}
           target-dir: soldr/target
-          zccache-version: "1.3.4"
+          zccache-version: "1.3.7"
 
       - name: Share bootstrap zccache binary with soldr
         shell: pwsh
