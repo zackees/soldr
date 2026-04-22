@@ -16,9 +16,9 @@ repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 
 [workspace.dependencies]
-soldr-core = { path = "crates/soldr-core", version = "0.7.6" }
-soldr-fetch = { path = "crates/soldr-fetch", version = "0.7.6" }
-soldr-cache = { path = "crates/soldr-cache", version = "0.7.6" }
+soldr-core = { path = "crates/soldr-core" }
+soldr-fetch = { path = "crates/soldr-fetch" }
+soldr-cache = { path = "crates/soldr-cache" }
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
