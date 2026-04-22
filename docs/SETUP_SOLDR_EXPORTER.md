@@ -1,6 +1,6 @@
 # setup-soldr Exporter
 
-This repository cannot publish its root `action.yml` directly to GitHub Marketplace, but it now contains an exporter that materializes the releaseable `setup-soldr` action bundle for a future public `zackees/setup-soldr` repository.
+This repository cannot publish its root `action.yml` directly to GitHub Marketplace, but it contains an exporter that materializes the releaseable `setup-soldr` action bundle for the public `zackees/setup-soldr` repository.
 
 ## Command
 

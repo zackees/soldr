@@ -19,17 +19,15 @@ The same pattern applies to `cargo test`, `cargo check`, and similar Cargo invoc
 
 ## GitHub Actions
 
-This repository currently ships an in-repo root GitHub Action for Soldr setup. The current GitHub Actions path is:
+This repository publishes a public setup action for Soldr. The current GitHub Actions path is:
 
-1. use `zackees/soldr@<ref>` or `uses: ./` in the same repository
+1. use `zackees/setup-soldr@v0`
 2. let the action bootstrap `rustup` if needed, then provision the Rust toolchain and restore the Soldr/Cargo/rustup cache root
 3. run `soldr cargo ...`
 
-The public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v0` beta contract until the beta repository and tag exist.
-
 ### Public-action status
 
-The target public beta UX after extraction is:
+The public beta UX is:
 
 ```yaml
 steps:
@@ -43,16 +41,14 @@ steps:
   - run: soldr cargo test --locked
 ```
 
-That public repo is not shipped yet. This repository cannot publish it directly to GitHub Marketplace because Marketplace action repositories must keep one root `action.yml` and no workflow files. The extraction plan and intended `@v0` beta contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
+The public action repository is [`zackees/setup-soldr`](https://github.com/zackees/setup-soldr). This repository remains the source of truth for the action implementation and exports the standalone action bundle from the root `action.yml` plus helper scripts. The extraction plan and `@v0` beta contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
 
-Beta and stable tag rule for the planned public repo:
+Beta and stable tag rule for the public repo:
 
 - `@v0` is the moving beta tag while the action contract is still settling
 - `@v1` should be introduced only when the action is ready for a stable backward-compatible contract
 - later major tags such as `@v2` are introduced only for breaking contract changes after `@v1`
 - the intended normal path is still one `setup-soldr` step plus `soldr cargo ...`; no separate toolchain action is part of the common-case contract
-
-Until that repo exists, no verified public one-line Soldr action exists yet. Use `zackees/soldr@<ref>` or `uses: ./` instead.
 
 ### Preferred setup action path
 
@@ -86,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: zackees/soldr@<ref>
+      - uses: zackees/setup-soldr@v0
         with:
           cache: true
 
@@ -94,7 +90,7 @@ jobs:
       - run: soldr cargo test --locked
 ```
 
-For same-repository testing, use:
+For local same-repository action development before exporting a new public release, use:
 
 ```yaml
 - uses: ./
@@ -111,7 +107,7 @@ Useful inputs when wiring the action into another repository:
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
 
-The current `repo` input is an implementation/testing override for the in-repo action. It is not part of the intended public `setup-soldr@v0` beta contract.
+The current root `repo` input is an implementation/testing override for the in-repo action source. It is not part of the public `setup-soldr@v0` beta contract.
 
 Useful outputs:
 
