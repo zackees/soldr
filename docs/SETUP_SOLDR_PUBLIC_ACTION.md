@@ -127,6 +127,7 @@ The extracted public action must document these current limits honestly:
 - the action rehydrates the Soldr root, Cargo home, rustup home, and Soldr-owned zccache artifact cache under the chosen cache/state root
 - the action bootstraps `rustup` on demand via `rustup-init` when it is absent, then uses it to install the requested toolchain; at runtime Soldr prefers direct toolchain binaries from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` and only falls back to `rustup which` when the direct probe fails (or when `RUSTUP_TOOLCHAIN` is explicitly set)
 - the action exports `ZCCACHE_CACHE_DIR` to the Soldr-owned zccache artifact cache under `SOLDR_CACHE_DIR`
+- restored Cargo target directories are fast paths, not freshness overrides; build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ
 
 ### Non-Contract Details
 
