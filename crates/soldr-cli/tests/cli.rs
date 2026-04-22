@@ -435,7 +435,6 @@ fn install_failing_fake_rustup(log_path: &Path) -> PathBuf {
     rustup
 }
 
-#[cfg(windows)]
 fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![dir.to_path_buf()];
@@ -660,6 +659,109 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
+    let cache_root = unique_temp_dir("cargo-real-tool-overrides");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let shim_dir = unique_temp_dir("cargo-shim-dir");
+    let shim_cargo = fake_script_path(&shim_dir, "cargo");
+    write_fake_script(
+        &shim_cargo,
+        &fake_version_tool_script(&log_path, "shim-cargo"),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_REAL_CARGO", &cargo)
+        .env("SOLDR_REAL_RUSTC", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", prepend_to_path(&shim_dir))
+        .output()
+        .expect("failed to run soldr cargo build with real tool overrides");
+
+    assert!(
+        output.status.success(),
+        "real-tool override front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo wrapper="),
+        "real cargo should have been invoked: {log}"
+    );
+    assert!(
+        !log.contains("shim-cargo"),
+        "PATH shim should not be resolved when SOLDR_REAL_CARGO is set: {log}"
+    );
+}
+
+#[test]
+fn cargo_front_door_does_not_start_cache_for_non_build_subcommands() {
+    let cache_root = unique_temp_dir("cargo-non-build-no-cache");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "metadata"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cargo metadata with fake tools");
+
+    assert!(
+        output.status.success(),
+        "non-build cargo front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cache=0"),
+        "non-build cargo commands should propagate cache disabled: {log}"
+    );
+    assert!(
+        !log.contains("zccache start")
+            && !log.contains("zccache session-start")
+            && !log.contains("zccache wrapper")
+            && !log.contains("zccache session-end"),
+        "managed zccache should be skipped for non-build cargo commands: {log}"
+    );
+}
+
+#[test]
+fn cargo_front_door_detects_build_after_global_cargo_options() {
+    let cache_root = unique_temp_dir("cargo-global-options-cache");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "--manifest-path", "demo/Cargo.toml", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .output()
+        .expect("failed to run soldr cargo build with global cargo options");
+
+    assert!(
+        output.status.success(),
+        "global-option cargo front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cache=1") && log.contains("zccache start"),
+        "build after global cargo options should still use managed zccache: {log}"
     );
 }
 

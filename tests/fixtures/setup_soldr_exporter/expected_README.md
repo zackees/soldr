@@ -84,6 +84,7 @@ jobs:
 | `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. |
 | `target-cache-mode` | Target cache mode. Default `hot` caches Cargo freshness metadata and lightweight type metadata; `full` caches the whole `target-dir`; `off` disables target caching. |
 | `target-dir` | Cargo target directory restored by `target-cache`. |
+| `tool-shims` | Optional PATH shim mode. Set to `cargo` to make later `cargo ...` steps run through `soldr cargo ...`; default `false`. |
 
 ## Outputs
 
@@ -97,6 +98,7 @@ jobs:
 | `target-cache-hit` | Whether the Cargo target directory cache was restored. |
 | `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
+| `tool-shims-dir` | Directory containing generated tool shims when enabled. |
 
 ## Notes
 
@@ -106,6 +108,7 @@ jobs:
 - The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
 - The default target cache mode is `hot`, which avoids archiving the full Cargo `target/` tree and caches only Cargo freshness metadata plus lightweight type metadata. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
+- `tool-shims: cargo` prepends a Cargo shim for existing workflows that cannot rewrite every `cargo ...` command to `soldr cargo ...`.
 - A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.
 
 ## Development

@@ -27,6 +27,7 @@ The current setup action that should be extracted is:
 - `.github/actions/setup-soldr/resolve_setup.py`
 - `.github/actions/setup-soldr/ensure_rust_toolchain.py`
 - `.github/actions/setup-soldr/ensure_soldr.py`
+- `.github/actions/setup-soldr/install_tool_shims.py`
 - `.github/actions/setup-soldr/verify_soldr.py`
 
 The current smoke validation stays in this repository and is not copied into the public action repository:
@@ -53,6 +54,7 @@ setup-soldr/
             |-- resolve_setup.py
             |-- ensure_rust_toolchain.py
             |-- ensure_soldr.py
+            |-- install_tool_shims.py
             `-- verify_soldr.py
 ```
 
@@ -91,6 +93,7 @@ steps:
 | `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
 | `target-cache-mode` | Target cache mode. Default `"hot"` caches Cargo freshness metadata and lightweight type metadata; `"full"` caches the whole `target-dir`; `"off"` disables target caching. |
 | `target-dir` | Cargo target directory restored by `target-cache`. Default `"target"`. |
+| `tool-shims` | Optional PATH shim mode. Set to `"cargo"` to make later `cargo ...` steps run through `soldr cargo ...`; default `"false"`. |
 
 The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v0` beta contract and should not be documented in the extracted public action README.
 
@@ -108,6 +111,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 | `target-cache-hit` | Whether the Cargo target directory cache was restored. Empty only when `build-cache` or `target-cache` is explicitly disabled. |
 | `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
+| `tool-shims-dir` | Directory containing generated tool shims when enabled. |
 
 ### Required Behavior
 
@@ -119,6 +123,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - put the installed `soldr` binary on `PATH`
 - restore and save the action-managed cache/state root when `cache: true`
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
+- when `tool-shims: cargo` is enabled, resolve the real Cargo binary before prepending the generated shim directory to `PATH`, then export `SOLDR_REAL_CARGO` so Soldr avoids recursive shim lookup
 - when `build-cache: true` (the default), restore the Soldr-owned zccache cache root at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
 - when `build-cache: true` and `target-cache: true` (the defaults), restore a bounded hot Cargo target cache at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and lightweight metadata without archiving the full `target/` tree. `target-cache-mode: full` remains available only for tightly scoped jobs where the whole target directory is known to stay bounded.
 

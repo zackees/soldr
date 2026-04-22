@@ -106,8 +106,31 @@ Useful inputs when wiring the action into another repository:
 - `build-cache`: turn the Soldr-owned zccache compilation artifact cache on or off; defaults to `true`
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
+- `tool-shims`: set to `cargo` when an existing workflow should keep commands like `cargo build` while routing them through `soldr cargo build`
 
 The current root `repo` input is an implementation/testing override for the in-repo action source. It is not part of the public `setup-soldr@v0` beta contract.
+
+### Cargo shim mode
+
+The preferred explicit integration is still:
+
+```yaml
+- run: soldr cargo build --locked --release
+- run: soldr cargo test --locked
+```
+
+For dependent repositories that cannot easily rewrite every Cargo invocation, enable the opt-in shim mode:
+
+```yaml
+- uses: zackees/setup-soldr@v0
+  with:
+    tool-shims: cargo
+
+- run: cargo build --locked --release
+- run: cargo test --locked
+```
+
+`tool-shims: cargo` installs a generated `cargo` shim into a dedicated setup-soldr shim directory and prepends it to `PATH` for later steps. The action resolves the real Cargo binary before installing the shim and exports `SOLDR_REAL_CARGO`, so Soldr can bypass the shim when it needs to run the active toolchain.
 
 Useful outputs:
 

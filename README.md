@@ -77,6 +77,19 @@ That action:
 - restores and saves a bounded hot Cargo target cache by default for no-op CI fast paths; set `target-cache: false` to disable it, `target-cache-mode: full` to opt into whole-target caching, or `target-dir:` to choose another target directory
 - puts `soldr` on `PATH` for later steps
 
+For existing workflows where rewriting every `cargo ...` command is high-friction, opt into Cargo PATH shims:
+
+```yaml
+- uses: zackees/setup-soldr@v0
+  with:
+    tool-shims: cargo
+
+- run: cargo build --locked --release
+- run: cargo test --locked
+```
+
+The shim mode is off by default. When enabled, the action resolves the real Cargo binary before prepending its shim directory, then exports that real path for Soldr so `cargo ...` can safely trampoline into `soldr cargo ...` without recursive PATH lookup.
+
 If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later. The action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the toolchain it just installed instead of asking `rustup` to resolve a pinned file lazily.
 
 On GitHub-hosted runners, this means you usually do not need a separate toolchain setup action for the normal path. The action still uses `rustup` under the hood today, but it bootstraps `rustup` itself when the runner does not already have it.
