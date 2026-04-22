@@ -47,11 +47,19 @@ inputs:
   target-cache:
     description: >
       Restore and save the Cargo target directory across workflow runs.
-      Default "true"; this gives no-op child-branch builds a fast path when
-      Cargo can reuse restored fingerprints and outputs. Set to "false" to
-      cache only zccache compilation artifacts.
+      Default "true"; target-cache-mode controls whether this is a bounded hot
+      metadata cache or an explicit full target cache. Set to "false" to cache
+      only zccache compilation artifacts.
     required: false
     default: "true"
+  target-cache-mode:
+    description: >
+      Cargo target cache mode. "hot" caches Cargo freshness metadata and
+      lightweight type metadata by default. "full" caches the entire target-dir
+      and should only be used for tightly scoped jobs. "off" disables target
+      caching even when target-cache is true.
+    required: false
+    default: hot
   target-dir:
     description: Cargo target directory restored by target-cache.
     required: false
@@ -82,6 +90,9 @@ outputs:
       for an exact key match, "false" for a restore-key fallback or no cache,
       empty string when `target-cache` or `build-cache` is disabled.
     value: ${{ steps.cache-meta.outputs.target_cache_hit }}
+  target-cache-mode:
+    description: Effective Cargo target cache mode.
+    value: ${{ steps.resolve.outputs.target_cache_mode }}
   toolchain:
     description: Exact Rust toolchain channel configured by rustup for the action.
     value: ${{ steps.resolve.outputs.toolchain }}
@@ -97,6 +108,8 @@ runs:
         INPUT_TOOLCHAIN: ${{ inputs.toolchain }}
         INPUT_TOOLCHAIN_FILE: ${{ inputs.toolchain-file }}
         INPUT_TRUST_MODE: ${{ inputs.trust-mode }}
+        INPUT_TARGET_CACHE: ${{ inputs.target-cache }}
+        INPUT_TARGET_CACHE_MODE: ${{ inputs.target-cache-mode }}
         INPUT_TARGET_DIR: ${{ inputs.target-dir }}
         ACTION_WORKSPACE: ${{ github.workspace }}
         ACTION_OS: ${{ runner.os }}
@@ -123,10 +136,10 @@ runs:
           ${{ steps.resolve.outputs.build_cache_restore_key_os_arch }}
 
     - id: target-cache
-      if: ${{ inputs.build-cache == 'true' && inputs.target-cache == 'true' }}
+      if: ${{ inputs.build-cache == 'true' && steps.resolve.outputs.target_cache_enabled == 'true' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
       with:
-        path: ${{ steps.resolve.outputs.target_cache_path }}
+        path: ${{ steps.resolve.outputs.target_cache_paths }}
         key: ${{ steps.resolve.outputs.target_cache_key }}
         restore-keys: |
           ${{ steps.resolve.outputs.target_cache_restore_key_lock }}
@@ -151,7 +164,7 @@ runs:
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/verify_soldr.py"
 
     - id: zccache-warm-target
-      if: ${{ inputs.build-cache == 'true' && inputs.target-cache == 'true' }}
+      if: ${{ inputs.build-cache == 'true' && steps.resolve.outputs.target_cache_enabled == 'true' }}
       shell: pwsh
       env:
         TARGET_CACHE_PATH: ${{ steps.resolve.outputs.target_cache_path }}
@@ -201,6 +214,7 @@ runs:
         RAW_TARGET_CACHE_HIT: ${{ steps.target-cache.outputs.cache-hit }}
         BUILD_CACHE_ENABLED: ${{ inputs.build-cache }}
         TARGET_CACHE_ENABLED: ${{ inputs.target-cache }}
+        EFFECTIVE_TARGET_CACHE_ENABLED: ${{ steps.resolve.outputs.target_cache_enabled }}
       run: |
         $value = $env:RAW_CACHE_HIT
         if ([string]::IsNullOrWhiteSpace($value)) {
@@ -218,7 +232,7 @@ runs:
         }
         "build_cache_hit=$buildValue" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-        if ($env:BUILD_CACHE_ENABLED -eq "true" -and $env:TARGET_CACHE_ENABLED -eq "true") {
+        if ($env:BUILD_CACHE_ENABLED -eq "true" -and $env:EFFECTIVE_TARGET_CACHE_ENABLED -eq "true") {
           $targetValue = $env:RAW_TARGET_CACHE_HIT
           if ([string]::IsNullOrWhiteSpace($targetValue)) {
             $targetValue = "false"

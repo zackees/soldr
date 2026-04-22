@@ -133,8 +133,12 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-" in outputs
     assert f"build_cache_path={cache_root / 'soldr' / 'cache' / 'zccache'}" in outputs
     assert f"target_cache_path={workspace / 'custom-target'}" in outputs
-    assert "target_cache_key=setup-soldr-targetcache-v0-linux-x64-" in outputs
-    assert outputs.count("-no-lock-abc123") == 1
+    assert "target_cache_key=setup-soldr-targetcache-hot-v1-linux-x64-" in outputs
+    assert "target_cache_enabled=true" in outputs
+    assert "target_cache_mode=hot" in outputs
+    assert ".fingerprint" in outputs
+    assert outputs.count("-no-lock-") >= 1
+    assert outputs.count("-abc123") >= 1
     assert "toolchain=stable" in outputs
 
     env_text = github_env.read_text(encoding="utf-8")

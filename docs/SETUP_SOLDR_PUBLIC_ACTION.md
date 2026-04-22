@@ -88,7 +88,8 @@ steps:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `"true"`; set to `"false"` to opt out. |
-| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
+| `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. Default `"true"`; set to `"false"` to cache only zccache compilation artifacts. |
+| `target-cache-mode` | Target cache mode. Default `"hot"` caches Cargo freshness metadata and lightweight type metadata; `"full"` caches the whole `target-dir`; `"off"` disables target caching. |
 | `target-dir` | Cargo target directory restored by `target-cache`. Default `"target"`. |
 
 The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v0` beta contract and should not be documented in the extracted public action README.
@@ -105,6 +106,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is explicitly disabled. |
 | `target-cache-hit` | Whether the Cargo target directory cache was restored. Empty only when `build-cache` or `target-cache` is explicitly disabled. |
+| `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 
 ### Required Behavior
@@ -118,7 +120,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - restore and save the action-managed cache/state root when `cache: true`
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
 - when `build-cache: true` (the default), restore the Soldr-owned zccache cache root at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
-- when `build-cache: true` and `target-cache: true` (the defaults), restore the configured Cargo target directory at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and outputs. Keys include the runner OS, architecture, resolved toolchain digest, `Cargo.lock` hash, and commit SHA, with fallback limited to the same toolchain and lockfile lineage.
+- when `build-cache: true` and `target-cache: true` (the defaults), restore a bounded hot Cargo target cache at setup time and save it at end-of-job so no-op child-branch builds can reuse Cargo fingerprints and lightweight metadata without archiving the full `target/` tree. `target-cache-mode: full` remains available only for tightly scoped jobs where the whole target directory is known to stay bounded.
 
 ### Current Limits That Must Stay Explicit
 

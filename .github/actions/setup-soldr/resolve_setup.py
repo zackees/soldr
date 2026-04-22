@@ -74,6 +74,38 @@ def _short_file_hash(path: Path, missing: str) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
+HOT_TARGET_CACHE_PATTERNS = (
+    ".rustc_info.json",
+    "CACHEDIR.TAG",
+    "**/.fingerprint/**",
+    "**/deps/*.d",
+    "**/deps/*.rmeta",
+    "**/build/**/output",
+    "**/build/**/invoked.timestamp",
+    "**/build/**/root-output",
+    "!**/incremental/**",
+)
+
+
+def normalize_target_cache_mode(value: str) -> str:
+    mode = value.strip().lower() or "hot"
+    if mode not in {"hot", "full", "off"}:
+        raise RuntimeError(
+            f"invalid target-cache-mode {value!r}; expected hot, full, or off"
+        )
+    return mode
+
+
+def hot_target_cache_paths(target_cache_path: Path) -> str:
+    values: list[str] = []
+    for pattern in HOT_TARGET_CACHE_PATTERNS:
+        negate = pattern.startswith("!")
+        cleaned = pattern[1:] if negate else pattern
+        rendered = str(target_cache_path / cleaned)
+        values.append(f"!{rendered}" if negate else rendered)
+    return "\n".join(values)
+
+
 def _write_env(name: str, value: str) -> None:
     output = os.environ.get("GITHUB_ENV")
     if not output:
@@ -179,8 +211,30 @@ def main() -> None:
     if not target_cache_path.is_absolute():
         target_cache_path = workspace / target_cache_path
     target_cache_path = target_cache_path.resolve()
-    target_cache_prefix = f"setup-soldr-targetcache-v0-{runner_os}-{runner_arch}"
-    target_cache_lock_prefix = f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-"
+    target_cache_mode = normalize_target_cache_mode(
+        os.environ.get("INPUT_TARGET_CACHE_MODE", "hot")
+    )
+    target_cache_enabled = (
+        os.environ.get("INPUT_TARGET_CACHE", "true").strip().lower()
+        not in {"0", "false", "no", "off"}
+        and target_cache_mode != "off"
+    )
+    if target_cache_mode == "off":
+        target_cache_paths = str(target_cache_path)
+        target_cache_effective_mode = "off"
+        target_cache_prefix = f"setup-soldr-targetcache-off-v1-{runner_os}-{runner_arch}"
+        target_cache_lock_prefix = f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-"
+    elif target_cache_mode == "full":
+        target_cache_paths = str(target_cache_path)
+        target_cache_effective_mode = "full"
+        target_cache_prefix = f"setup-soldr-targetcache-full-v1-{runner_os}-{runner_arch}"
+        target_cache_lock_prefix = f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-"
+    else:
+        target_cache_paths = hot_target_cache_paths(target_cache_path)
+        target_cache_effective_mode = "hot"
+        target_paths_hash = hashlib.sha256(target_cache_paths.encode("utf-8")).hexdigest()[:16]
+        target_cache_prefix = f"setup-soldr-targetcache-hot-v1-{runner_os}-{runner_arch}"
+        target_cache_lock_prefix = f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-{target_paths_hash}-"
     target_cache_key = f"{target_cache_lock_prefix}{github_sha}"
 
     if suffix:
@@ -212,6 +266,9 @@ def main() -> None:
             "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
             "build_cache_path": str(zccache_cache_dir),
             "target_cache_path": str(target_cache_path),
+            "target_cache_paths": target_cache_paths,
+            "target_cache_enabled": str(target_cache_enabled).lower(),
+            "target_cache_mode": target_cache_effective_mode,
             "target_cache_key": target_cache_key,
             "target_cache_restore_key_lock": target_cache_lock_prefix,
             "soldr_root": str(soldr_root),

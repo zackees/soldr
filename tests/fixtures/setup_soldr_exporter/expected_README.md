@@ -81,7 +81,8 @@ jobs:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `true`; set to `false` to opt out. |
-| `target-cache` | Restore and save the Cargo target directory for no-op CI fast paths. |
+| `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. |
+| `target-cache-mode` | Target cache mode. Default `hot` caches Cargo freshness metadata and lightweight type metadata; `full` caches the whole `target-dir`; `off` disables target caching. |
 | `target-dir` | Cargo target directory restored by `target-cache`. |
 
 ## Outputs
@@ -94,6 +95,7 @@ jobs:
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is disabled. |
 | `target-cache-hit` | Whether the Cargo target directory cache was restored. |
+| `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 
 ## Notes
@@ -101,7 +103,8 @@ jobs:
 - The action installs exactly one released `soldr` binary for the active runner target.
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
-- The action restores the Soldr-owned zccache cache root and the Cargo target directory by default so child branches can reuse parent-branch build state.
+- The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
+- The default target cache mode is `hot`, which avoids archiving the full Cargo `target/` tree and caches only Cargo freshness metadata plus lightweight type metadata. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
 - A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.
 
