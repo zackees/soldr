@@ -117,6 +117,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert cache_root.is_dir()
     assert (cache_root / "soldr").is_dir()
     assert (cache_root / "soldr" / "cache").is_dir()
+    assert (cache_root / "soldr" / "cache" / "zccache").is_dir()
     assert (cache_root / "soldr" / "bin").is_dir()
     assert (cache_root / "cargo").is_dir()
     assert (cache_root / "cargo" / "bin").is_dir()
@@ -127,10 +128,15 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert f"cache_root={cache_root}" in outputs
     assert "cache_key=setup-soldr-v0-linux-x64-" in outputs
     assert "cache_restore_prefix=setup-soldr-v0-linux-x64-" in outputs
-    assert "build_cache_key=setup-soldr-buildcache-v0-linux-x64-" in outputs
-    assert "build_cache_restore_key_toolchain=setup-soldr-buildcache-v0-linux-x64-" in outputs
-    assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v0-linux-x64-" in outputs
+    assert "build_cache_key=setup-soldr-buildcache-v1-linux-x64-" in outputs
+    assert "build_cache_restore_key_toolchain=setup-soldr-buildcache-v1-linux-x64-" in outputs
+    assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-" in outputs
+    assert f"build_cache_path={cache_root / 'soldr' / 'cache' / 'zccache'}" in outputs
     assert f"target_cache_path={workspace / 'custom-target'}" in outputs
     assert "target_cache_key=setup-soldr-targetcache-v0-linux-x64-" in outputs
     assert outputs.count("-no-lock-abc123") == 1
     assert "toolchain=stable" in outputs
+
+    env_text = github_env.read_text(encoding="utf-8")
+    assert f"SOLDR_CACHE_DIR={cache_root / 'soldr'}" in env_text
+    assert f"ZCCACHE_CACHE_DIR={cache_root / 'soldr' / 'cache' / 'zccache'}" in env_text

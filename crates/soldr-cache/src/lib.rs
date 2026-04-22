@@ -27,6 +27,9 @@ pub const ZCCACHE_SESSION_ID_ENV_VAR: &str = "ZCCACHE_SESSION_ID";
 /// wrapper-mode children.
 pub const ZCCACHE_BINARY_ENV_VAR: &str = "SOLDR_ZCCACHE_BIN";
 
+/// Supported zccache cache-root override used for Soldr-owned artifact state.
+pub const ZCCACHE_CACHE_DIR_ENV_VAR: &str = "ZCCACHE_CACHE_DIR";
+
 pub fn cache_enabled_env_value(enabled: bool) -> &'static str {
     if enabled {
         CACHE_ENABLED_VALUE

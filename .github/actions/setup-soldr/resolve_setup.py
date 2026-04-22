@@ -116,6 +116,7 @@ def main() -> None:
     cargo_home = cache_root / "cargo"
     rustup_home = cache_root / "rustup"
     bin_dir = cache_root / "bin"
+    zccache_cache_dir = soldr_root / "cache" / "zccache"
     soldr_binary = "soldr.exe" if os.name == "nt" else "soldr"
     soldr_path = bin_dir / soldr_binary
 
@@ -128,6 +129,7 @@ def main() -> None:
         cargo_home / "bin",
         rustup_home,
         bin_dir,
+        zccache_cache_dir,
     ):
         path.mkdir(parents=True, exist_ok=True)
 
@@ -162,13 +164,13 @@ def main() -> None:
     if suffix:
         cache_key = f"{cache_key}-{_sanitize_fragment(suffix)}"
 
-    # Build-artifact cache (zccache compilation cache at ~/.zccache).
-    # Key shape: setup-soldr-buildcache-v0-{os}-{arch}-{toolchain-digest}-{sha}.
+    # Build-artifact cache (Soldr-owned zccache compilation cache).
+    # Key shape: setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{sha}.
     # Restore falls back through the same toolchain lineage and then any
     # OS+arch cache, letting GitHub's own-branch -> PR base -> default branch
     # restore order provide parent -> child lineage without user config.
     github_sha = os.environ.get("GITHUB_SHA", "").strip() or "nosha"
-    build_cache_prefix = f"setup-soldr-buildcache-v0-{runner_os}-{runner_arch}"
+    build_cache_prefix = f"setup-soldr-buildcache-v1-{runner_os}-{runner_arch}"
     build_cache_toolchain_prefix = f"{build_cache_prefix}-{digest}-"
     build_cache_key = f"{build_cache_toolchain_prefix}{github_sha}"
 
@@ -189,6 +191,7 @@ def main() -> None:
     _write_env("SOLDR_CACHE_DIR", str(soldr_root))
     _write_env("CARGO_HOME", str(cargo_home))
     _write_env("RUSTUP_HOME", str(rustup_home))
+    _write_env("ZCCACHE_CACHE_DIR", str(zccache_cache_dir))
     _write_env("SETUP_SOLDR_TOOLCHAIN_CHANNEL", toolchain["channel"])
     _write_env("SETUP_SOLDR_TOOLCHAIN_PROFILE", toolchain["profile"])
     _write_env("SETUP_SOLDR_TOOLCHAIN_COMPONENTS", json.dumps(toolchain["components"]))
@@ -207,6 +210,7 @@ def main() -> None:
             "build_cache_key": build_cache_key,
             "build_cache_restore_key_toolchain": build_cache_toolchain_prefix,
             "build_cache_restore_key_os_arch": f"{build_cache_prefix}-",
+            "build_cache_path": str(zccache_cache_dir),
             "target_cache_path": str(target_cache_path),
             "target_cache_key": target_cache_key,
             "target_cache_restore_key_lock": target_cache_lock_prefix,
