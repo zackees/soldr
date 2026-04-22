@@ -36,9 +36,19 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - id: setup
-        uses: ./
+        # This is zackees/setup-soldr@v0.1.0 / @v0 pinned to a full SHA
+        # because this repository's ruleset requires SHA-pinned actions.
+        uses: zackees/setup-soldr@1937c19529f3690df5553a36dd33f39ccb20b070
         with:
           cache: true
+          # Keep the action runtime cache separate from the Soldr build under
+          # test. The dogfood build below overrides SOLDR_CACHE_DIR and
+          # ZCCACHE_CACHE_DIR so the action cache cannot cross-contaminate the
+          # repository build cache.
+          cache-dir: ${{ runner.temp }}/setup-soldr-action-state
+          cache-key-suffix: dogfood-action-state
+          build-cache: false
+          target-cache: false
 
       - name: Show action outputs
         shell: pwsh
@@ -61,10 +71,34 @@ jobs:
           cargo --version
           rustc --version
 
+      - name: Verify cache isolation
+        shell: pwsh
+        env:
+          ACTION_CACHE_DIR: ${{ steps.setup.outputs.cache-dir }}
+          SOLDR_DOGFOOD_BUILD_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+        run: |
+          $actionCache = [System.IO.Path]::GetFullPath($env:ACTION_CACHE_DIR)
+          $buildCache = [System.IO.Path]::GetFullPath($env:SOLDR_DOGFOOD_BUILD_CACHE_DIR)
+          $actionPrefix = $actionCache.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+          $buildPrefix = $buildCache.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+          if ($actionCache -eq $buildCache -or $buildCache.StartsWith($actionPrefix) -or $actionCache.StartsWith($buildPrefix)) {
+            throw "setup-soldr action cache must be disjoint from the Soldr build-under-test cache"
+          }
+          New-Item -ItemType Directory -Force -Path $buildCache | Out-Null
+          New-Item -ItemType Directory -Force -Path (Join-Path $buildCache "zccache") | Out-Null
+          Write-Host "action-cache=$actionCache"
+          Write-Host "build-under-test-cache=$buildCache"
+
       - name: Build through soldr
         shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/zccache
         run: soldr cargo build --package soldr-cli --locked
 
       - name: Test through soldr
         shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/zccache
         run: soldr cargo test -p soldr-cli --test cli --locked

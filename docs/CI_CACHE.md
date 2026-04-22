@@ -1,16 +1,16 @@
 # CI Cache Guide For External Repos
 
-This is a usage guide for anyone wiring `zackees/soldr@v0` into their own GitHub Actions CI. It explains what you get automatically, what the minimum config looks like, and how to confirm warm builds on feature branches are actually restoring from `main`.
+This is a usage guide for anyone wiring `zackees/setup-soldr@v0` into their own GitHub Actions CI. It explains what you get automatically, what the minimum config looks like, and how to confirm warm builds on feature branches are actually restoring from `main`.
 
 If you want the background on why this repository wires its own workflows the way it does, skip to [Why This Repo Uses This Model](#why-this-repo-uses-this-model) at the bottom.
 
 ## TL;DR
 
-Add `zackees/soldr@v0` to a normal `push`-triggered workflow:
+Add `zackees/setup-soldr@v0` to a normal `push`-triggered workflow:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: zackees/soldr@v0
+- uses: zackees/setup-soldr@v0
 - run: soldr cargo build --locked
 ```
 
@@ -42,7 +42,7 @@ Two consequences of that scoping rule matter for soldr:
 
 ## What setup-soldr Does For You Automatically
 
-The `zackees/soldr@v0` action (see [`action.yml`](../action.yml)) runs internal cache steps keyed so that the parent-to-child restore works correctly without you configuring anything:
+The `zackees/setup-soldr@v0` action (generated from [`action.yml`](../action.yml)) runs internal cache steps keyed so that the parent-to-child restore works correctly without you configuring anything:
 
 - **Branch-agnostic state-cache keys.** The setup-state cache key is derived from runner OS, runner architecture, the resolved Rust toolchain channel, and the requested soldr version. No branch name is in the key. Two branches with the same toolchain pin produce the same key, so a cache written by `main` is a valid candidate for a run on any feature branch.
 - **Restore-keys prefix for partial-match fallback.** The action registers a restore prefix (`setup-soldr-v0-{os}-{arch}-`) so that even if a future toolchain bump changes the exact key, GitHub can still fall back to the most recent compatible cache for the same OS and architecture.
@@ -71,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: zackees/soldr@v0
+      - uses: zackees/setup-soldr@v0
         with:
           cache: true
 
@@ -109,7 +109,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    ```yaml
    - id: soldr
-     uses: zackees/soldr@v0
+     uses: zackees/setup-soldr@v0
      with:
        cache: true
    - run: echo "cache-hit=${{ steps.soldr.outputs.cache-hit }}"
