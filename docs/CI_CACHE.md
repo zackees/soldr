@@ -131,6 +131,14 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
+4. **Inspect zccache stats after the build.** Add a post-build status step when validating a new cache lineage:
+
+   ```yaml
+   - run: soldr cache
+   ```
+
+   The output includes the managed zccache root and status lines from zccache. For a healthy warm build, look for non-zero cached compilations or hit counts. If `build-cache-hit=true` but zccache still reports zero cached compilations, the build-artifact cache restored but did not produce compiler-cache reuse; check whether the target-cache layer also restored and whether Cargo invalidated fingerprints before zccache could hit.
+
 ## Debugging Target-Cache Restores That Still Rebuild
 
 A restored target cache is only a fast path when Cargo still considers the restored fingerprints fresh. Some crates have build scripts that do not declare narrow inputs with `cargo:rerun-if-changed=` or `cargo:rerun-if-env-changed=` lines. For those crates, Cargo can fall back to broad package/source fingerprint inputs. A fresh GitHub checkout may then have different source mtimes than the checkout that produced the restored target directory, so Cargo rebuilds that package even though `target-cache-hit` is `true`.
