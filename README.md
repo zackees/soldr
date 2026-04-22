@@ -129,6 +129,7 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 soldr cargo build --release
 soldr cargo test
 soldr --no-cache cargo test
+soldr purge
 SOLDR_RUSTC_WRAPPER=sccache soldr cargo build
 SOLDR_RUSTC_WRAPPER=none soldr cargo build
 
@@ -158,7 +159,7 @@ soldr maturin build --release
 - **One obvious command**: Fetch tools, pick the right Windows target, and run through managed zccache through the same entry point.
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
-- **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state instead of placeholder behavior.
+- **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
 - **One cache boundary, eventually**: soldr keeps its own tools and zccache session state in `~/.soldr/`. Current zccache artifacts still live in zccache's default cache root until upstream exposes a supported cache-dir override.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.

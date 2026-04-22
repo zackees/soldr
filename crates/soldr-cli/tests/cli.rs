@@ -1281,6 +1281,141 @@ fn clean_clears_managed_zccache_and_state_dir() {
 }
 
 #[test]
+fn purge_removes_soldr_artifact_dirs_and_keeps_config() {
+    let cache_root = unique_temp_dir("purge-command");
+    let bin_dir = cache_root.join("bin");
+    let cache_dir = cache_root.join("cache");
+    let zccache_state_dir = cache_dir.join("zccache").join("logs");
+    let config_file = cache_root.join("config.toml");
+    fs::create_dir_all(&bin_dir).expect("failed to create bin dir");
+    fs::create_dir_all(&zccache_state_dir).expect("failed to create zccache state dir");
+    fs::write(bin_dir.join("soldr-tool"), "cached binary").expect("failed to seed bin cache");
+    fs::write(zccache_state_dir.join("last-session.jsonl"), "{}\n")
+        .expect("failed to seed zccache state");
+    fs::write(&config_file, "cache = true\n").expect("failed to seed config");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("purge")
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr purge");
+
+    assert!(output.status.success(), "purge command failed");
+    assert!(
+        !bin_dir.exists(),
+        "purge should remove soldr-managed fetched tool artifacts at {}",
+        bin_dir.display()
+    );
+    assert!(
+        !cache_dir.exists(),
+        "purge should remove soldr-managed cache artifacts at {}",
+        cache_dir.display()
+    );
+    assert!(
+        config_file.exists(),
+        "purge should keep non-artifact config at {}",
+        config_file.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("removed soldr cache dir:"),
+        "purge should report cache cleanup: {stdout}"
+    );
+    assert!(
+        stdout.contains("removed soldr bin dir:"),
+        "purge should report bin cleanup: {stdout}"
+    );
+}
+
+#[test]
+fn purge_reports_empty_cache_without_creating_dirs() {
+    let cache_root = unique_temp_dir("purge-empty-command");
+    let bin_dir = cache_root.join("bin");
+    let cache_dir = cache_root.join("cache");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("purge")
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr purge");
+
+    assert!(output.status.success(), "purge command failed");
+    assert!(
+        !bin_dir.exists(),
+        "purge should not create missing bin dir at {}",
+        bin_dir.display()
+    );
+    assert!(
+        !cache_dir.exists(),
+        "purge should not create missing cache dir at {}",
+        cache_dir.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("soldr cache is already empty:"),
+        "purge should report empty cache: {stdout}"
+    );
+}
+
+#[test]
+fn purge_removes_corrupt_artifact_paths() {
+    let cache_root = unique_temp_dir("purge-corrupt-command");
+    let bin_path = cache_root.join("bin");
+    let cache_path = cache_root.join("cache");
+    fs::write(&bin_path, "not a dir").expect("failed to seed corrupt bin path");
+    fs::write(&cache_path, "not a dir").expect("failed to seed corrupt cache path");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .arg("purge")
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr purge");
+
+    assert!(output.status.success(), "purge command failed");
+    assert!(
+        !bin_path.exists(),
+        "purge should remove corrupt soldr bin path at {}",
+        bin_path.display()
+    );
+    assert!(
+        !cache_path.exists(),
+        "purge should remove corrupt soldr cache path at {}",
+        cache_path.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("removed soldr cache entry:"),
+        "purge should report corrupt cache path cleanup: {stdout}"
+    );
+    assert!(
+        stdout.contains("removed soldr bin entry:"),
+        "purge should report corrupt bin path cleanup: {stdout}"
+    );
+}
+
+#[test]
+fn purge_rejects_json_flag() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["purge", "--json"])
+        .output()
+        .expect("failed to run soldr purge --json");
+
+    assert!(
+        !output.status.success(),
+        "purge --json should be rejected because JSON is not supported there"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--json"),
+        "expected clap to reject purge --json: {stderr}"
+    );
+}
+
+#[test]
 fn clean_rejects_json_flag() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["clean", "--json"])
