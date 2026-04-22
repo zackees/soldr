@@ -139,3 +139,10 @@ def main() -> None:
     if output:
         with open(output, "a", encoding="utf-8") as fh:
             fh.write(f"toolchain={channel}\n")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (RuntimeError, OSError, subprocess.CalledProcessError) as exc:
+        sys.exit(str(exc))

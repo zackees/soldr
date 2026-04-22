@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 
@@ -81,6 +83,45 @@ def test_toolchain_signature_payload_is_json_serializable() -> None:
     }
 
     assert json.loads(json.dumps(payload))["channel"] == "1.94.1"
+
+
+def test_action_python_helpers_have_entrypoints() -> None:
+    action_text = (REPO_ROOT / "action.yml").read_text(encoding="utf-8")
+    script_paths = sorted(
+        {
+            REPO_ROOT / match.group(1)
+            for match in re.finditer(r"github\.action_path \}\}/([^\"']+\.py)", action_text)
+        }
+    )
+
+    assert script_paths, "expected action.yml to invoke Python helper scripts"
+    for script_path in script_paths:
+        tree = ast.parse(script_path.read_text(encoding="utf-8"))
+        assert any(
+            isinstance(node, ast.FunctionDef) and node.name == "main"
+            for node in tree.body
+        ), f"{script_path.relative_to(REPO_ROOT)} should define main()"
+        assert any(
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "__name__"
+            and any(
+                isinstance(comparator, ast.Constant)
+                and comparator.value == "__main__"
+                for comparator in node.test.comparators
+            )
+            for node in tree.body
+        ), f"{script_path.relative_to(REPO_ROOT)} should invoke main() as a script"
+
+
+def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
+    assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
 
 
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:

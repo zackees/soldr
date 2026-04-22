@@ -173,12 +173,18 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
-      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+      - name: Setup Soldr cache and toolchain
+        uses: ./
+        with:
+          cache-key-suffix: release-${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+      - name: Install target toolchain support
+        shell: pwsh
+        run: |
+          rustup target add "${{ matrix.target }}"
 
       - name: Build release binary
-        run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+        run: soldr cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
 
       - name: Package tarball
         if: matrix.archive == 'tar.gz'

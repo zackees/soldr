@@ -98,8 +98,9 @@ jobs:
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          ZCCACHE_CACHE_DIR: ""
-        run: soldr cargo test -p soldr-cli --test cli --locked
+        run: |
+          Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
+          soldr --no-cache cargo test -p soldr-cli --test cli --locked
 
       - name: Show dogfood cache status
         if: always()
