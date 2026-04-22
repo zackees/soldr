@@ -122,7 +122,7 @@ If soldr solves that one problem well, it becomes a super tool: the command you 
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
-- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring; zccache's artifact store still uses its current default cache root.
+- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring and keeps managed zccache artifacts under Soldr's cache root.
 
 ```bash
 # Build through soldr's front door:
@@ -160,7 +160,7 @@ soldr maturin build --release
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
 - **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
-- **One cache boundary, eventually**: soldr keeps its own tools and zccache session state in `~/.soldr/`. Current zccache artifacts still live in zccache's default cache root until upstream exposes a supported cache-dir override.
+- **One cache boundary**: soldr keeps its own tools, zccache session state, and managed zccache artifacts under `~/.soldr/` by default. Use `SOLDR_CACHE_DIR` to move that root.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).

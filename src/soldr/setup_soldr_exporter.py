@@ -119,6 +119,7 @@ jobs:
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
 - The action restores the Soldr-owned zccache cache root and the Cargo target directory by default so child branches can reuse parent-branch build state.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
+- A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.
 
 ## Development
 

@@ -131,6 +131,28 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
+## Debugging Target-Cache Restores That Still Rebuild
+
+A restored target cache is only a fast path when Cargo still considers the restored fingerprints fresh. Some crates have build scripts that do not declare narrow inputs with `cargo:rerun-if-changed=` or `cargo:rerun-if-env-changed=` lines. For those crates, Cargo can fall back to broad package/source fingerprint inputs. A fresh GitHub checkout may then have different source mtimes than the checkout that produced the restored target directory, so Cargo rebuilds that package even though `target-cache-hit` is `true`.
+
+Use Cargo's fingerprint diagnostics to confirm this failure mode:
+
+```yaml
+- name: Build with Cargo fingerprint diagnostics
+  env:
+    CARGO_LOG: cargo::core::compiler::fingerprint=info
+  run: soldr cargo build --locked
+```
+
+Look for lines like:
+
+```text
+fingerprint dirty for <crate> ... target="build-script-build"
+dirty: PrecalculatedComponentsChanged { ... }
+```
+
+That means the cache restored correctly, but Cargo invalidated a build-script fingerprint before zccache had a chance to make the command a no-op. The right fix is usually in the crate that owns the build script: emit precise `cargo:rerun-if-changed=` and `cargo:rerun-if-env-changed=` lines for the real inputs. `setup-soldr` should not hide this by blindly normalizing source mtimes, because that can mask real source changes and make Cargo's invalidation model harder to reason about.
+
 ## Debugging Cold Misses
 
 If feature branches keep rebuilding from scratch, check these in order:
