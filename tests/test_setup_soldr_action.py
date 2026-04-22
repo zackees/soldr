@@ -122,6 +122,13 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
     assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
+    assert "id: dogfood-build-cache" in workflow
+    assert "setup-soldr-dogfood-zccache-v1-" in workflow
+    assert "dogfood-build-cache-hit=" in workflow
+    assert "dogfood-build-seconds=" in workflow
+    assert "dogfood-test-seconds=" in workflow
+    assert "Stop dogfood zccache before cache save" in workflow
+    assert "& $zccache stop" in workflow
 
 
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:

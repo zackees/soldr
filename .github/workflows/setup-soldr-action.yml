@@ -42,8 +42,8 @@ jobs:
         with:
           cache: true
           # Keep the action runtime cache separate from the Soldr build under
-          # test. The dogfood build below overrides SOLDR_CACHE_DIR and clears
-          # ZCCACHE_CACHE_DIR so soldr owns zccache under that separate root.
+          # test. The dogfood build below overrides SOLDR_CACHE_DIR so soldr
+          # owns zccache under that separate root.
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
           build-cache: false
@@ -84,15 +84,35 @@ jobs:
             throw "setup-soldr action cache must be disjoint from the Soldr build-under-test cache"
           }
           New-Item -ItemType Directory -Force -Path $buildCache | Out-Null
+          $zccacheDir = Join-Path -Path (Join-Path -Path $buildCache -ChildPath "cache") -ChildPath "zccache"
+          New-Item -ItemType Directory -Force -Path $zccacheDir | Out-Null
           Write-Host "action-cache=$actionCache"
           Write-Host "build-under-test-cache=$buildCache"
+          Write-Host "build-under-test-zccache=$zccacheDir"
+
+      - id: dogfood-build-cache
+        name: Restore dogfood build cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
+          key: setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ github.sha }}
+          restore-keys: |
+            setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
+            setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build through soldr
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          ZCCACHE_CACHE_DIR: ""
-        run: soldr cargo build --package soldr-cli --locked
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
+        run: |
+          Write-Host "dogfood-build-cache-hit=${{ steps.dogfood-build-cache.outputs.cache-hit }}"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo build --package soldr-cli --locked
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-build-seconds={0:F3}", $timer.Elapsed.TotalSeconds))
+          exit $exitCode
 
       - name: Test through soldr
         shell: pwsh
@@ -100,14 +120,19 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
+          $timer = [Diagnostics.Stopwatch]::StartNew()
           soldr --no-cache cargo test -p soldr-cli --test cli --locked
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-test-seconds={0:F3}", $timer.Elapsed.TotalSeconds))
+          exit $exitCode
 
       - name: Show dogfood cache status
         if: always()
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          ZCCACHE_CACHE_DIR: ""
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
         run: |
           $soldr = Get-Command soldr -ErrorAction SilentlyContinue
           if (-not $soldr) {
@@ -119,3 +144,24 @@ jobs:
             Write-Host "soldr cache status unavailable after dogfood build"
             exit 0
           }
+
+      - name: Stop dogfood zccache before cache save
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
+        run: |
+          $exeName = if ($IsWindows) { "zccache.exe" } else { "zccache" }
+          $zccache = $null
+          $soldrBin = Join-Path -Path $env:SOLDR_CACHE_DIR -ChildPath "bin"
+          if (Test-Path -LiteralPath $soldrBin) {
+            $zccache = Get-ChildItem -LiteralPath $soldrBin -Recurse -Filter $exeName -File -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if ([string]::IsNullOrWhiteSpace($zccache)) {
+            Write-Host "zccache binary is unavailable; nothing to stop."
+            exit 0
+          }
+          & $zccache stop
