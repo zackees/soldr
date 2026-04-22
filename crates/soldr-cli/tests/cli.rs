@@ -807,6 +807,11 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
         expected_sccache_dir.display()
     );
     assert!(
+        expected_sccache_dir.is_dir(),
+        "soldr should pre-create the owned sccache cache dir at {}",
+        expected_sccache_dir.display()
+    );
+    assert!(
         !log.contains(env!("CARGO_BIN_EXE_soldr")),
         "soldr should not stay in the wrapper slot when overridden: {log}"
     );
@@ -1232,6 +1237,10 @@ fn status_reports_cache_control_defaults() {
         "status missing zccache version: {stdout}"
     );
     assert!(
+        stdout.contains("soldr zccache cache dir:"),
+        "status missing effective zccache cache dir: {stdout}"
+    );
+    assert!(
         stdout.contains("not fetched yet"),
         "status should explain unfetched managed zccache state: {stdout}"
     );
@@ -1263,6 +1272,14 @@ fn status_json_reports_stable_machine_fields() {
     );
     assert_eq!(json["zccache"]["binary_fetched"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
+    assert_eq!(
+        json["zccache"]["cache_dir"],
+        cache_root
+            .join("cache")
+            .join("zccache")
+            .display()
+            .to_string()
+    );
     assert!(
         json["target"].as_str().is_some(),
         "status JSON missing target"
@@ -1293,6 +1310,10 @@ fn cache_command_reports_managed_zccache_status() {
     assert!(output.status.success(), "cache command failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("soldr zccache cache dir:"),
+        "cache command missing cache dir: {stdout}"
+    );
     assert!(
         stdout.contains("soldr zccache state dir:"),
         "cache command missing state dir: {stdout}"
@@ -1342,6 +1363,14 @@ fn cache_json_reports_managed_zccache_status() {
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["binary_fetched"], true);
     assert_eq!(
+        json["zccache"]["cache_dir"],
+        cache_root
+            .join("cache")
+            .join("zccache")
+            .display()
+            .to_string()
+    );
+    assert_eq!(
         json["zccache"]["journal_path"],
         journal.display().to_string()
     );
@@ -1357,6 +1386,11 @@ fn clean_clears_managed_zccache_and_state_dir() {
     let log_path = cache_root.join("tool.log");
     let (_, _, zccache) = install_fake_toolchain(&log_path);
     let state_dir = cache_root.join("cache").join("zccache");
+    let user_home = cache_root.join("user-home");
+    let user_global_zccache = user_home.join(".zccache");
+    fs::create_dir_all(&user_global_zccache).expect("failed to seed user-global zccache");
+    fs::write(user_global_zccache.join("index.redb"), "user cache")
+        .expect("failed to seed user-global zccache file");
     let journal = state_dir.join("logs").join("last-session.jsonl");
     fs::create_dir_all(journal.parent().expect("journal parent missing"))
         .expect("failed to create journal dir");
@@ -1365,6 +1399,8 @@ fn clean_clears_managed_zccache_and_state_dir() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .arg("clean")
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &user_home)
+        .env("USERPROFILE", &user_home)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr clean");
@@ -1374,6 +1410,11 @@ fn clean_clears_managed_zccache_and_state_dir() {
         !state_dir.exists(),
         "clean should remove soldr zccache state dir at {}",
         state_dir.display()
+    );
+    assert!(
+        user_global_zccache.join("index.redb").exists(),
+        "clean must not remove user-global zccache state at {}",
+        user_global_zccache.display()
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
