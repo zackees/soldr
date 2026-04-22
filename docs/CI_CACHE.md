@@ -49,7 +49,7 @@ The `zackees/setup-soldr@v0` action (generated from [`action.yml`](../action.yml
 - **Push-only save semantics come for free.** GitHub's cache scoping already prevents feature-branch runs from overwriting `main`'s cache. You do not need to gate `save-if` yourself the way internal Rust caching wrappers usually make you do.
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
 - **Build-artifact cache enabled by default.** The action also restores the Soldr-owned zccache cache root with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
-- **Cargo target cache enabled by default.** When `build-cache` is enabled, the action also restores the configured Cargo target directory with a key scoped to the runner, resolved toolchain, lockfile hash, and commit SHA. It falls back only within the same toolchain and lockfile lineage, which gives no-op feature-branch builds a fast path without reusing stale target outputs across dependency changes.
+- **Hot Cargo target cache enabled by default.** When `build-cache` is enabled, the action restores a bounded hot target cache with Cargo freshness metadata and lightweight type metadata. It does not archive the full `target/` tree unless the workflow explicitly sets `target-cache-mode: full`.
 
 ## Minimum Config For An External Repo
 
@@ -127,7 +127,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
 
-   For the Cargo target layer, inspect the `target-cache` step. Its exact keys are `setup-soldr-targetcache-v0-{os}-{arch}-{toolchain-digest}-{cargo-lock-hash}-{github.sha}` and its restore-key falls back within the same toolchain and lockfile lineage.
+   For the Cargo target layer, inspect the `target-cache` step. Its default hot-cache keys are `setup-soldr-targetcache-hot-v1-{os}-{arch}-{toolchain-digest}-{cargo-lock-hash}-{paths-hash}-{github.sha}` and its restore-key falls back within the same toolchain, lockfile, and cache-shape lineage.
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
