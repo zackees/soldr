@@ -9,10 +9,56 @@ const root = path.resolve(__dirname, "..");
 const pkg = require(path.join(root, "package.json"));
 const install = require(path.join(root, "scripts", "install.js"));
 
+function tomlSection(toml, sectionName) {
+  const header = `[${sectionName}]`;
+  const lines = toml.split(/\r?\n/);
+  const body = [];
+  let found = false;
+
+  for (const line of lines) {
+    if (/^\s*\[.*\]\s*$/.test(line)) {
+      if (found) {
+        break;
+      }
+      found = line.trim() === header;
+      continue;
+    }
+
+    if (found) {
+      body.push(line);
+    }
+  }
+
+  return found ? body.join("\n") : null;
+}
+
 const cargoToml = fs.readFileSync(path.join(root, "Cargo.toml"), "utf8");
 const cargoVersion = cargoToml.match(/\[workspace\.package\][\s\S]*?^version = "([^"]+)"/m);
 assert(cargoVersion, "workspace package version not found in Cargo.toml");
 assert.strictEqual(pkg.version, cargoVersion[1], "package.json version must match Cargo.toml");
+
+const pyprojectToml = fs.readFileSync(path.join(root, "pyproject.toml"), "utf8");
+const pyprojectProject = tomlSection(pyprojectToml, "project");
+assert(pyprojectProject, "[project] section not found in pyproject.toml");
+
+assert(
+  !/^\s*version\s*=/.test(pyprojectProject),
+  'pyproject.toml [project] must not hardcode version; PyPI must derive it from Cargo.toml',
+);
+
+const dynamicVersion = pyprojectProject.match(/^\s*dynamic\s*=\s*\[([^\]]*)\]\s*$/m);
+assert(
+  dynamicVersion,
+  'pyproject.toml [project] must declare dynamic = ["version"] so PyPI derives from Cargo.toml',
+);
+
+const dynamicItems = [...dynamicVersion[1].matchAll(/"([^"]+)"|'([^']+)'/g)].map(
+  (match) => match[1] || match[2],
+);
+assert(
+  dynamicItems.includes("version"),
+  'pyproject.toml [project] dynamic metadata must include "version"',
+);
 
 assert.strictEqual(pkg.name, "@zackees/soldr");
 assert.strictEqual(pkg.license, "BSD-3-Clause");
@@ -42,4 +88,4 @@ assert.strictEqual(
   "abc123",
 );
 
-console.log("npm package checks passed");
+console.log("npm package and PyPI version checks passed");

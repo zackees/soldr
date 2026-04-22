@@ -30,6 +30,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check npm package metadata
+        run: node scripts/test-npm-package.js
+
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
