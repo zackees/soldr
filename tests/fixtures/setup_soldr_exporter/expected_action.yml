@@ -1,6 +1,9 @@
 name: setup-soldr
 author: zackees
-description: Extraction-ready Soldr setup action. Installs one soldr binary, provisions the resolved Rust toolchain via rustup, and restores a cacheable runner-local Soldr root.
+description: Extraction-ready Soldr setup action. Installs one soldr binary, bootstraps rustup when needed, provisions the resolved Rust toolchain, and restores a cacheable runner-local Soldr root.
+branding:
+  icon: terminal
+  color: green
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
@@ -30,6 +33,16 @@ inputs:
     description: Optional value for SOLDR_TRUST_MODE.
     required: false
     default: ""
+  build-cache:
+    description: >
+      Restore and save the zccache compilation artifact cache (~/.zccache)
+      across workflow runs. Default "true"; the action restores ~/.zccache
+      with a toolchain-scoped key and saves it at end-of-job, letting
+      GitHub's own-branch -> PR base -> default-branch restore order seed
+      feature-branch runs from the latest main-branch save without any
+      repo-side configuration. Set to "false" to opt out.
+    required: false
+    default: "true"
 outputs:
   soldr-path:
     description: Installed Soldr binary path added to PATH for later steps.
@@ -43,6 +56,13 @@ outputs:
   cache-hit:
     description: Whether the action restored an exact cache hit for the selected cache/state root.
     value: ${{ steps.cache-meta.outputs.cache_hit }}
+  build-cache-hit:
+    description: >
+      Whether the action restored the zccache compilation artifact cache
+      (~/.zccache). "true" for an exact key match, "false" for a
+      restore-key fallback or no cache, empty string when `build-cache`
+      is explicitly disabled.
+    value: ${{ steps.cache-meta.outputs.build_cache_hit }}
   toolchain:
     description: Exact Rust toolchain channel configured by rustup for the action.
     value: ${{ steps.resolve.outputs.toolchain }}
@@ -72,6 +92,16 @@ runs:
         restore-keys: |
           ${{ steps.resolve.outputs.cache_restore_prefix }}
 
+    - id: build-cache-restore
+      if: ${{ inputs.build-cache == 'true' }}
+      uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ~/.zccache
+        key: ${{ steps.resolve.outputs.build_cache_key }}
+        restore-keys: |
+          ${{ steps.resolve.outputs.build_cache_restore_key_toolchain }}
+          ${{ steps.resolve.outputs.build_cache_restore_key_os_arch }}
+
     - id: toolchain
       shell: pwsh
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/ensure_rust_toolchain.py"
@@ -95,9 +125,21 @@ runs:
       shell: pwsh
       env:
         RAW_CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        RAW_BUILD_CACHE_HIT: ${{ steps.build-cache-restore.outputs.cache-hit }}
+        BUILD_CACHE_ENABLED: ${{ inputs.build-cache }}
       run: |
         $value = $env:RAW_CACHE_HIT
         if ([string]::IsNullOrWhiteSpace($value)) {
           $value = "false"
         }
         "cache_hit=$value" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+        if ($env:BUILD_CACHE_ENABLED -eq "true") {
+          $buildValue = $env:RAW_BUILD_CACHE_HIT
+          if ([string]::IsNullOrWhiteSpace($buildValue)) {
+            $buildValue = "false"
+          }
+        } else {
+          $buildValue = ""
+        }
+        "build_cache_hit=$buildValue" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append

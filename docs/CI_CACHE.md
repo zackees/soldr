@@ -1,16 +1,16 @@
 # CI Cache Guide For External Repos
 
-This is a usage guide for anyone wiring `zackees/soldr@v1` into their own GitHub Actions CI. It explains what you get automatically, what the minimum config looks like, and how to confirm warm builds on feature branches are actually restoring from `main`.
+This is a usage guide for anyone wiring `zackees/soldr@v0` into their own GitHub Actions CI. It explains what you get automatically, what the minimum config looks like, and how to confirm warm builds on feature branches are actually restoring from `main`.
 
 If you want the background on why this repository wires its own workflows the way it does, skip to [Why This Repo Uses This Model](#why-this-repo-uses-this-model) at the bottom.
 
 ## TL;DR
 
-Add `zackees/soldr@v1` to a normal `push`-triggered workflow:
+Add `zackees/soldr@v0` to a normal `push`-triggered workflow:
 
 ```yaml
 - uses: actions/checkout@v4
-- uses: zackees/soldr@v1
+- uses: zackees/soldr@v0
 - run: soldr cargo build --locked
 ```
 
@@ -42,10 +42,10 @@ Two consequences of that scoping rule matter for soldr:
 
 ## What setup-soldr Does For You Automatically
 
-The `zackees/soldr@v1` action (see [`action.yml`](../action.yml)) runs internal cache steps keyed so that the parent-to-child restore works correctly without you configuring anything:
+The `zackees/soldr@v0` action (see [`action.yml`](../action.yml)) runs internal cache steps keyed so that the parent-to-child restore works correctly without you configuring anything:
 
 - **Branch-agnostic state-cache keys.** The setup-state cache key is derived from runner OS, runner architecture, the resolved Rust toolchain channel, and the requested soldr version. No branch name is in the key. Two branches with the same toolchain pin produce the same key, so a cache written by `main` is a valid candidate for a run on any feature branch.
-- **Restore-keys prefix for partial-match fallback.** The action registers a restore prefix (`setup-soldr-v1-{os}-{arch}-`) so that even if a future toolchain bump changes the exact key, GitHub can still fall back to the most recent compatible cache for the same OS and architecture.
+- **Restore-keys prefix for partial-match fallback.** The action registers a restore prefix (`setup-soldr-v0-{os}-{arch}-`) so that even if a future toolchain bump changes the exact key, GitHub can still fall back to the most recent compatible cache for the same OS and architecture.
 - **Push-only save semantics come for free.** GitHub's cache scoping already prevents feature-branch runs from overwriting `main`'s cache. You do not need to gate `save-if` yourself the way internal Rust caching wrappers usually make you do.
 - **Rehydrated state.** On a cache hit, the action restores the soldr root, `CARGO_HOME`, and `RUSTUP_HOME` under the runner-local cache/state root. The resolved Rust toolchain and the `soldr` binary are then provisioned on top of whatever was restored.
 - **Build-artifact cache enabled by default.** The action also restores `~/.zccache` with a toolchain-scoped key and saves it at end-of-job, so zccache compilation artifacts survive across runs unless you opt out with `build-cache: false`.
@@ -70,7 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: zackees/soldr@v1
+      - uses: zackees/soldr@v0
         with:
           cache: true
 
@@ -108,7 +108,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    ```yaml
    - id: soldr
-     uses: zackees/soldr@v1
+     uses: zackees/soldr@v0
      with:
        cache: true
    - run: echo "cache-hit=${{ steps.soldr.outputs.cache-hit }}"
@@ -118,12 +118,12 @@ After two pushes to the same branch, you should be able to confirm the cache lin
    `true` means the key matched exactly. `false` means either a fresh key (cold) or a restore-keys fallback match (partial). Both `false` cases show the same literal `false`; distinguish them using the raw log.
 
 2. **Open the raw log of the setup step.** Expand the internal cache steps inside the composite action. You want to see either:
-   - `Cache restored from key: setup-soldr-v1-...` for an exact setup-state cache hit, or
-   - `Cache restored successfully` followed by a key that matches the restore prefix `setup-soldr-v1-{os}-{arch}-` for a partial setup-state restore.
+   - `Cache restored from key: setup-soldr-v0-...` for an exact setup-state cache hit, or
+   - `Cache restored successfully` followed by a key that matches the restore prefix `setup-soldr-v0-{os}-{arch}-` for a partial setup-state restore.
 
    A line that says no cache was found at all, with no restore match, indicates a cold miss.
 
-   For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
+   For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v0-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 

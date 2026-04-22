@@ -1,13 +1,16 @@
 name: setup-soldr
 author: zackees
 description: Extraction-ready Soldr setup action. Installs one soldr binary, bootstraps rustup when needed, provisions the resolved Rust toolchain, and restores a cacheable runner-local Soldr root.
+branding:
+  icon: terminal
+  color: green
 inputs:
   version:
     description: Soldr version or tag to install. Defaults to the latest release.
     required: false
     default: ""
   repo:
-    description: Release source repository override for extraction or local testing. Not part of the intended public setup-soldr@v1 contract.
+    description: Release source repository override for extraction or local testing. Not part of the intended public setup-soldr@v0 beta contract.
     required: false
     default: zackees/soldr
   cache:

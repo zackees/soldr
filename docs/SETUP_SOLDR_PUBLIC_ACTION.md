@@ -58,17 +58,17 @@ setup-soldr/
 
 Do not copy any file from `.github/workflows/`.
 
-## Stable Public `v1` Contract
+## Beta Public `v0` Contract
 
-The intended public UX is:
+The intended public beta UX is:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
 
-  - uses: zackees/setup-soldr@v1
+  - uses: zackees/setup-soldr@v0
     with:
-      version: 0.7.4
+      version: 0.7.6
       cache: true
 
   - run: soldr cargo build --locked --release
@@ -77,7 +77,7 @@ steps:
 
 ### Supported Inputs
 
-`v1` should treat these inputs as the public contract:
+`v0` should treat these inputs as the beta public contract:
 
 | Input | Meaning |
 |---|---|
@@ -90,11 +90,11 @@ steps:
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the zccache compilation artifact cache (`~/.zccache`) across runs. Default `"true"`; set to `"false"` to opt out. |
 
-The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v1` contract and should not be documented in the extracted public action README.
+The current in-repo action also exposes `repo` as an implementation/testing override. That input is not part of the intended public `v0` beta contract and should not be documented in the extracted public action README.
 
 ### Supported Outputs
 
-`v1` should treat these outputs as the public contract:
+`v0` should treat these outputs as the beta public contract:
 
 | Output | Meaning |
 |---|---|
@@ -107,7 +107,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 
 ### Required Behavior
 
-`v1` should preserve these behaviors:
+`v0` should preserve these behaviors:
 
 - install exactly one released Soldr binary for the active runner OS and architecture
 - provision the normal-path Rust toolchain itself, bootstrapping `rustup` via `rustup-init` when it is not already on the runner; users should not need to preinstall `rustup` or run a separate toolchain-setup action for the common path
@@ -115,7 +115,7 @@ The current in-repo action also exposes `repo` as an implementation/testing over
 - put the installed `soldr` binary on `PATH`
 - restore and save the action-managed cache/state root when `cache: true`
 - export `RUSTUP_TOOLCHAIN` after toolchain installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the same resolved toolchain
-- when `build-cache: true` (the default), restore `~/.zccache` at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
+- when `build-cache: true` (the default), restore `~/.zccache` at setup time and save it at end-of-job (`if: always()`) so subsequent runs rehydrate zccache compilation artifacts. Keys are `setup-soldr-buildcache-v0-{os}-{arch}-{toolchain-digest}-{github.sha}` with restore-keys that first fall back to the same `{toolchain-digest}` lineage, then any cache for the same `{os}-{arch}`. GitHub's own-branch -> PR base -> default-branch restore order seeds feature-branch runs from the latest main-branch save without user configuration. Consumers that explicitly do not want cross-run cache reuse can set `build-cache: false`.
 
 ### Current Limits That Must Stay Explicit
 
@@ -127,7 +127,7 @@ The extracted public action must document these current limits honestly:
 
 ### Non-Contract Details
 
-These details can change inside `v1` without forcing `v2`, as long as the supported inputs, outputs, and behaviors above stay compatible:
+These details can change during `v0` while the action is still beta. `v1` should be reserved for the first stable contract with a stronger backward-compatibility promise:
 
 - the exact cache key format
 - the default runner-local filesystem path chosen when `cache-dir` is empty
@@ -147,9 +147,10 @@ Use this release model for `zackees/setup-soldr`:
 
 1. Validate the action changes in this repository first with the existing smoke path.
 2. Copy the release contents into `zackees/setup-soldr` without workflow files.
-3. Publish an immutable release tag such as `v1.0.0`.
-4. Move the major compatibility tag `v1` to the same commit as the latest compatible `v1.x.y` release.
-5. Introduce `v2` only for breaking contract changes such as input removal, output removal, or behavior changes that require workflow edits.
+3. Publish the beta release as an immutable tag such as `v0.1.0`.
+4. Move the beta compatibility tag `v0` to the same commit as the latest compatible beta release.
+5. Publish `v1.0.0` and move `v1` only when the action is ready for a stable backward-compatible contract.
+6. Introduce later major tags only for breaking contract changes such as input removal, output removal, or behavior changes that require workflow edits after `v1`.
 
 ## Extraction Checklist
 
@@ -160,8 +161,8 @@ Before the first public release:
 3. Copy [action.yml](../action.yml) and the helper scripts listed above into the public repository.
 4. Copy the user-facing setup docs from this repository's `README.md`, `INTEGRATION.md`, and this file into the public repository `README.md`, but remove any mention of the temporary in-repo `zackees/soldr@<ref>` path.
 5. Ensure the public repository contains no workflow files.
-6. Create the first release tag `v1.0.0`, then move `v1` to that commit.
-7. Publish the release to GitHub Marketplace from the public repository.
+6. Create the first beta release tag `v0.1.0`, then move `v0` to that commit.
+7. Publish the beta release to GitHub Marketplace from the public repository.
 
 ## What This PR Changes
 
@@ -170,4 +171,4 @@ This repo-contained plan is useful even before the public repository exists beca
 - defines the exact public contract the extracted action should preserve
 - distinguishes public contract from current implementation-only escape hatches
 - gives a mechanical file-copy plan for extraction
-- gives a stable tagging and release model for `@v1` and later `@v2`
+- gives a beta tagging and release model for `@v0`, with `@v1` reserved for the later stable contract

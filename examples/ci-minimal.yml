@@ -3,7 +3,7 @@
 # Drop this at .github/workflows/ci.yml and you get:
 #  - warm feature-branch builds that restore from the latest main cache on miss
 #  - per-branch cache saves so successive pushes on the same branch are warmer
-#  - no manual actions/cache step: zackees/soldr@v1 runs one internally with
+#  - no manual actions/cache step: zackees/soldr@v0 runs one internally with
 #    a branch-agnostic key + restore-keys prefix for parent (main) -> child
 #    (feature branch) cache sharing
 #
@@ -33,7 +33,7 @@ jobs:
       # rust-toolchain.toml, and runs an internal actions/cache step keyed so
       # main writes the canonical entry and feature branches restore from it.
       - id: soldr
-        uses: zackees/soldr@v1
+        uses: zackees/soldr@v0
         with:
           cache: true
 

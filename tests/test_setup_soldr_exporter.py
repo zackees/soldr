@@ -57,7 +57,7 @@ def test_export_bundle_excludes_internal_repo_override_input(tmp_path: Path) -> 
     action_yaml = destination.joinpath("action.yml").read_text(encoding="utf-8")
     assert "repo:" not in action_yaml
     assert "INPUT_REPO" not in action_yaml
-    assert "Not part of the intended public setup-soldr@v1 contract" not in action_yaml
+    assert "Not part of the intended public setup-soldr@v0 beta contract" not in action_yaml
 
 
 def test_export_bundle_refuses_repo_root_as_destination() -> None:

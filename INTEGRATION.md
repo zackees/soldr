@@ -25,31 +25,32 @@ This repository currently ships an in-repo root GitHub Action for Soldr setup. T
 2. let the action bootstrap `rustup` if needed, then provision the Rust toolchain and restore the Soldr/Cargo/rustup cache root
 3. run `soldr cargo ...`
 
-The stable-major public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v1` contract yet.
+The public setup action product is not shipped yet. Today, pin the current in-repo action by full commit SHA or explicit release tag; do not assume a public `@v0` beta contract until the beta repository and tag exist.
 
 ### Public-action status
 
-The target public UX after extraction is:
+The target public beta UX after extraction is:
 
 ```yaml
 steps:
   - uses: actions/checkout@v4
 
-  - uses: zackees/setup-soldr@v1
+  - uses: zackees/setup-soldr@v0
     with:
-      version: 0.7.4
+      version: 0.7.6
       cache: true
 
   - run: soldr cargo build --locked --release
   - run: soldr cargo test --locked
 ```
 
-That public repo is not shipped yet. This repository cannot publish it directly to GitHub Marketplace because Marketplace action repositories must keep one root `action.yml` and no workflow files. The extraction plan and intended `@v1` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
+That public repo is not shipped yet. This repository cannot publish it directly to GitHub Marketplace because Marketplace action repositories must keep one root `action.yml` and no workflow files. The extraction plan and intended `@v0` beta contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md).
 
-Stable-major rule for the planned public repo:
+Beta and stable tag rule for the planned public repo:
 
-- `@v1` is the moving major tag for backward-compatible updates
-- `@v2` is introduced only for breaking contract changes
+- `@v0` is the moving beta tag while the action contract is still settling
+- `@v1` should be introduced only when the action is ready for a stable backward-compatible contract
+- later major tags such as `@v2` are introduced only for breaking contract changes after `@v1`
 - the intended normal path is still one `setup-soldr` step plus `soldr cargo ...`; no separate toolchain action is part of the common-case contract
 
 Until that repo exists, no verified public one-line Soldr action exists yet. Use `zackees/soldr@<ref>` or `uses: ./` instead.
@@ -88,7 +89,7 @@ jobs:
 
       - uses: zackees/soldr@<ref>
         with:
-          version: 0.7.4
+          version: 0.7.6
           cache: true
 
       - run: soldr cargo build --locked --release
@@ -100,7 +101,7 @@ For same-repository testing, use:
 ```yaml
 - uses: ./
   with:
-    version: 0.7.4
+    version: 0.7.6
     cache: true
 ```
 
@@ -113,7 +114,7 @@ Useful inputs when wiring the action into another repository:
 - `cache-dir`: move the shared Soldr/Cargo/rustup root to a specific path
 - `trust-mode`: set `SOLDR_TRUST_MODE` for stricter fetched-binary policy
 
-The current `repo` input is an implementation/testing override for the in-repo action. It is not part of the intended public `setup-soldr@v1` contract.
+The current `repo` input is an implementation/testing override for the in-repo action. It is not part of the intended public `setup-soldr@v0` beta contract.
 
 Useful outputs:
 
@@ -157,10 +158,10 @@ jobs:
         with:
           toolchain: 1.94.1
 
-      - name: Install soldr 0.7.4
+      - name: Install soldr 0.7.6
         shell: bash
         run: |
-          curl -fsSL https://raw.githubusercontent.com/zackees/soldr/v0.7.4/install.sh | bash -s -- --version 0.7.4
+          curl -fsSL https://raw.githubusercontent.com/zackees/soldr/v0.7.6/install.sh | bash -s -- --version 0.7.6
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Build through soldr
@@ -194,7 +195,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: zackees/soldr
-          ref: v0.7.4
+          ref: v0.7.6
           path: soldr
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1

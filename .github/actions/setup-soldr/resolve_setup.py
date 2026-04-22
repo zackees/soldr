@@ -148,7 +148,7 @@ def main() -> None:
     ).hexdigest()[:16]
     runner_os = _sanitize_fragment(os.environ.get("ACTION_OS", os.name).lower())
     runner_arch = _sanitize_fragment(os.environ.get("ACTION_ARCH", "unknown").lower())
-    cache_prefix = f"setup-soldr-v1-{runner_os}-{runner_arch}"
+    cache_prefix = f"setup-soldr-v0-{runner_os}-{runner_arch}"
     cache_key = f"{cache_prefix}-{digest}"
 
     suffix = os.environ.get("INPUT_CACHE_KEY_SUFFIX", "").strip()
@@ -156,12 +156,12 @@ def main() -> None:
         cache_key = f"{cache_key}-{_sanitize_fragment(suffix)}"
 
     # Build-artifact cache (zccache compilation cache at ~/.zccache).
-    # Key shape: setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{sha}.
+    # Key shape: setup-soldr-buildcache-v0-{os}-{arch}-{toolchain-digest}-{sha}.
     # Restore falls back through the same toolchain lineage and then any
     # OS+arch cache, letting GitHub's own-branch -> PR base -> default branch
     # restore order provide parent -> child lineage without user config.
     github_sha = os.environ.get("GITHUB_SHA", "").strip() or "nosha"
-    build_cache_prefix = f"setup-soldr-buildcache-v1-{runner_os}-{runner_arch}"
+    build_cache_prefix = f"setup-soldr-buildcache-v0-{runner_os}-{runner_arch}"
     build_cache_toolchain_prefix = f"{build_cache_prefix}-{digest}-"
     build_cache_key = f"{build_cache_toolchain_prefix}{github_sha}"
 
