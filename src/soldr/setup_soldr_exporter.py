@@ -36,9 +36,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v1
+      - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.4
+          version: 0.7.5
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
@@ -58,9 +58,9 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v1
+      - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.4
+          version: 0.7.5
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
@@ -80,9 +80,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: zackees/setup-soldr@v1
+      - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.4
+          version: 0.7.5
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
@@ -99,6 +99,7 @@ jobs:
 | `toolchain` | Explicit Rust toolchain channel override. |
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
+| `build-cache` | Restore and save the zccache compilation artifact cache (`~/.zccache`) across runs. Default `true`; set to `false` to opt out. |
 
 ## Outputs
 
@@ -108,14 +109,15 @@ jobs:
 | `soldr-version` | Installed Soldr version reported by `soldr version --json`. |
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
+| `build-cache-hit` | Whether the zccache compilation cache (`~/.zccache`) was restored. Empty only when `build-cache` is disabled. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 
 ## Notes
 
 - The action installs exactly one released `soldr` binary for the active runner target.
-- The normal path provisions Rust with `rustup`; on self-hosted runners, `rustup` must already be available.
+- The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
-- Managed `zccache` artifact storage still follows zccache's current supported/default behavior rather than a fully action-controlled custom artifact path.
+- Managed `zccache` artifact storage uses the default `~/.zccache` path and is controlled by `build-cache`.
 
 ## Development
 

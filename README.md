@@ -50,7 +50,7 @@ The current GitHub Actions entry point is the repository root action in this rep
 ```yaml
 - uses: zackees/soldr@<ref>
   with:
-    version: 0.7.4
+    version: 0.7.5
     cache: true
 
 - run: soldr cargo build --locked --release
@@ -72,7 +72,7 @@ If your project pins Rust in `rust-toolchain.toml`, let the action read that fil
 On GitHub-hosted runners, this means you usually do not need a separate toolchain setup action for the normal path. The action still uses `rustup` under the hood today, but it bootstraps `rustup` itself when the runner does not already have it.
 On runners without `rustup`, the action downloads and installs it into the cached runner-local root before provisioning the requested toolchain.
 
-For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). GitHub Marketplace publication still requires extracting this action into a separate public action repository because GitHub requires a single root `action.yml` and no workflow files in the published repository. The repo-contained extraction plan and intended `zackees/setup-soldr@v1` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md). Until that public repo exists, treat `zackees/soldr@<ref>` as the current contract and pin a full commit SHA or explicit release tag instead of assuming `@v1`. For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
+For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). GitHub Marketplace publication still requires extracting this action into a separate public action repository because GitHub requires a single root `action.yml` and no workflow files in the published repository. The repo-contained extraction plan and intended beta `zackees/setup-soldr@v0` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md). Until that public repo exists, treat `zackees/soldr@<ref>` as the current contract and pin a full commit SHA or explicit release tag instead of assuming `@v0`. For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
 
 ### CI cache lineage
 

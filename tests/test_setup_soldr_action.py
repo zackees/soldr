@@ -123,4 +123,9 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
 
     outputs = github_output.read_text(encoding="utf-8")
     assert f"cache_root={cache_root}" in outputs
+    assert "cache_key=setup-soldr-v0-linux-x64-" in outputs
+    assert "cache_restore_prefix=setup-soldr-v0-linux-x64-" in outputs
+    assert "build_cache_key=setup-soldr-buildcache-v0-linux-x64-" in outputs
+    assert "build_cache_restore_key_toolchain=setup-soldr-buildcache-v0-linux-x64-" in outputs
+    assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v0-linux-x64-" in outputs
     assert "toolchain=stable" in outputs
