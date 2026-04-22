@@ -723,7 +723,9 @@ async fn prepare_rustc_wrapper(
         RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths).await.map(Some),
         RustcWrapperMode::Custom(wrapper) => {
             if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
-                cargo.env("SCCACHE_DIR", soldr_cache::sccache_dir(paths));
+                let sccache_dir = soldr_cache::sccache_dir(paths);
+                std::fs::create_dir_all(&sccache_dir)?;
+                cargo.env("SCCACHE_DIR", sccache_dir);
             }
             cargo.env("RUSTC_WRAPPER", wrapper);
             cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
@@ -894,6 +896,7 @@ struct CacheOutput {
 
 #[derive(Serialize)]
 struct ZccacheStatusSnapshot {
+    cache_dir: String,
     state_dir: String,
     journal_path: String,
     journal_present: bool,
@@ -951,6 +954,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             let stdout = output.stdout.trim();
             let status_lines = stdout.lines().map(str::to_owned).collect();
             Ok(ZccacheStatusSnapshot {
+                cache_dir: zccache_dir.display().to_string(),
                 state_dir: zccache_dir.display().to_string(),
                 journal_path: journal_path.display().to_string(),
                 journal_present,
@@ -961,6 +965,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             })
         }
         None => Ok(ZccacheStatusSnapshot {
+            cache_dir: zccache_dir.display().to_string(),
             state_dir: zccache_dir.display().to_string(),
             journal_path: journal_path.display().to_string(),
             journal_present,
@@ -995,6 +1000,7 @@ fn print_cache_output(output: &CacheOutput) {
 }
 
 fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
+    println!("soldr zccache cache dir: {}", snapshot.cache_dir);
     println!("soldr zccache state dir: {}", snapshot.state_dir);
     println!(
         "last session journal: {} ({})",
