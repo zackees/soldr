@@ -6,7 +6,13 @@ on:
       - main
     paths:
       - Cargo.toml
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      force_pypi_publish:
+        description: Force the PyPI wheel build/publish path for the current Cargo version, even if PyPI already lists files for it.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -23,7 +29,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       should_release: ${{ steps.validate.outputs.should_release }}
+      should_publish_github_release: ${{ steps.validate.outputs.should_publish_github_release }}
+      should_publish_pypi: ${{ steps.validate.outputs.should_publish_pypi }}
       tag_exists: ${{ steps.validate.outputs.tag_exists }}
+      pypi_has_version: ${{ steps.validate.outputs.pypi_has_version }}
+      pypi_file_count: ${{ steps.validate.outputs.pypi_file_count }}
       version: ${{ steps.validate.outputs.version }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
 
@@ -35,11 +45,13 @@ jobs:
       - name: Compare candidate version against PyPI
         id: validate
         env:
+          FORCE_PYPI_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.force_pypi_publish || false }}
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
           commit_sha='${{ github.sha }}'
+          force_pypi_publish="${FORCE_PYPI_PUBLISH,,}"
 
           cargo_version="$(
             sed -n '/^\[workspace.package\]/,/^\[/{s/^version = "\([^"]*\)"/\1/p}' Cargo.toml | head -n1
@@ -62,25 +74,56 @@ jobs:
             tag_exists=true
           fi
 
-          pypi_version="$(
-            curl -fsSL https://pypi.org/pypi/soldr/json | jq -r '.info.version'
-          )"
+          pypi_json="$(curl -fsSL https://pypi.org/pypi/soldr/json)"
+          pypi_version="$(jq -r '.info.version // ""' <<< "$pypi_json")"
 
           if [[ -z "$pypi_version" || "$pypi_version" == "null" ]]; then
             echo "failed to fetch latest PyPI version for soldr" >&2
             exit 1
           fi
 
-          pypi_tag="v${pypi_version}"
-          highest_version="$(printf '%s\n%s\n' "$pypi_tag" "$version" | sort -V | tail -n1)"
-          should_release=true
-          if [[ "$highest_version" != "$version" || "$pypi_tag" == "$version" ]]; then
-            should_release=false
+          pypi_file_count="$(
+            jq --arg candidate "$cargo_version" -r '(.releases[$candidate] // []) | length' <<< "$pypi_json"
+          )"
+          pypi_has_version=false
+          if (( pypi_file_count > 0 )); then
+            pypi_has_version=true
+          fi
+
+          should_publish_github_release=false
+          if [[ "$tag_exists" != "true" ]]; then
+            should_publish_github_release=true
+          fi
+
+          should_publish_pypi=false
+          if [[ "$pypi_has_version" != "true" || "$force_pypi_publish" == "true" ]]; then
+            should_publish_pypi=true
+          fi
+
+          should_release=false
+          if [[ "$should_publish_github_release" == "true" || "$should_publish_pypi" == "true" ]]; then
+            should_release=true
           fi
 
           {
+            echo "### Release detection"
+            echo ""
+            echo "- candidate version: \`$version\`"
+            echo "- current PyPI latest: \`v${pypi_version}\`"
+            echo "- PyPI files for candidate: \`$pypi_file_count\`"
+            echo "- GitHub tag exists: \`$tag_exists\`"
+            echo "- force PyPI publish: \`$force_pypi_publish\`"
+            echo "- publish GitHub release assets: \`$should_publish_github_release\`"
+            echo "- publish PyPI wheels: \`$should_publish_pypi\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
             echo "should_release=$should_release"
+            echo "should_publish_github_release=$should_publish_github_release"
+            echo "should_publish_pypi=$should_publish_pypi"
             echo "tag_exists=$tag_exists"
+            echo "pypi_has_version=$pypi_has_version"
+            echo "pypi_file_count=$pypi_file_count"
             echo "version=$version"
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
@@ -88,7 +131,7 @@ jobs:
   build:
     name: ${{ matrix.name }}
     needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
+    if: needs.prepare.outputs.should_publish_github_release == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -166,7 +209,7 @@ jobs:
   build-pypi:
     name: PyPI ${{ matrix.name }}
     needs: prepare
-    if: needs.prepare.outputs.should_release == 'true'
+    if: needs.prepare.outputs.should_publish_pypi == 'true'
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -231,7 +274,7 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
     runs-on: ubuntu-24.04
 
     steps:
@@ -280,7 +323,7 @@ jobs:
     needs:
       - prepare
       - build-pypi
-    if: needs.prepare.outputs.should_release == 'true'
+    if: needs.prepare.outputs.should_publish_pypi == 'true'
     runs-on: ubuntu-24.04
 
     steps:
