@@ -15,6 +15,7 @@ permissions:
 jobs:
   lint:
     name: Lint
+    if: github.ref_name == 'main'
     runs-on: ubuntu-24.04
 
     steps:
@@ -39,22 +40,81 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  test:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.runner }}
+  build-linux-x64:
+    name: Linux x64
+    if: github.ref_name == 'main'
+    runs-on: ubuntu-24.04
     needs: lint
     env:
       GH_TOKEN: ${{ github.token }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux x64
-            runner: ubuntu-24.04
-          - name: macOS x64
-            runner: macos-15-intel
-          - name: Windows x64
-            runner: windows-2025
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Use the same stable key lineage as lint. Pushes save branch-local
+          # caches, which GitHub restores before falling back to base/default
+          # branch caches on later branch pushes and on PR checks attached to
+          # the branch head.
+          shared-key: workspace
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Build workspace
+        run: cargo build --workspace --locked
+
+      - name: Run library tests
+        run: cargo test --workspace --lib --locked
+
+      - name: Run CLI smoke tests
+        run: cargo test -p soldr-cli --test cli --locked
+
+      - name: Run fetch integration test
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+
+  build-macos-x64:
+    name: macOS x64
+    if: github.ref_name == 'main'
+    runs-on: macos-15-intel
+    needs: lint
+    env:
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          # Use the same stable key lineage as lint. Pushes save branch-local
+          # caches, which GitHub restores before falling back to base/default
+          # branch caches on later branch pushes and on PR checks attached to
+          # the branch head.
+          shared-key: workspace
+          save-if: ${{ github.event_name == 'push' }}
+
+      - name: Build workspace
+        run: cargo build --workspace --locked
+
+      - name: Run library tests
+        run: cargo test --workspace --lib --locked
+
+      - name: Run CLI smoke tests
+        run: cargo test -p soldr-cli --test cli --locked
+
+      - name: Run fetch integration test
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+
+  build-windows-x64:
+    name: Windows x64
+    if: github.ref_name == 'main'
+    runs-on: windows-2025
+    needs: lint
+    env:
+      GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
