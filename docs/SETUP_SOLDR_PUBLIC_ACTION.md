@@ -2,7 +2,7 @@
 
 This document is the repo-contained delivery for [issue #137](https://github.com/zackees/soldr/issues/137).
 
-`soldr` cannot publish its current root action to GitHub Marketplace directly. The useful work that can land here is to freeze the intended public `setup-soldr` contract, define the extraction boundary, and document the exact release process that turns the current in-repo action into a separate public action product.
+`soldr` cannot publish its current root action to GitHub Marketplace directly. This document freezes the public `setup-soldr` contract, defines the extraction boundary, and documents the release process that turns the current in-repo action into the separate public action product at [`zackees/setup-soldr`](https://github.com/zackees/setup-soldr).
 
 ## Why Extraction Is Required
 
@@ -17,7 +17,7 @@ References:
 - https://docs.github.com/en/actions/how-tos/sharing-automations/creating-actions/publishing-actions-in-github-marketplace
 - https://docs.github.com/actions/how-tos/creating-and-publishing-actions/managing-custom-actions
 
-This repository intentionally contains normal application code and workflow files under `.github/workflows/`, so it is the source repository for the action, not the eventual Marketplace repository.
+This repository intentionally contains normal application code and workflow files under `.github/workflows/`, so it is the source repository for the action, not the Marketplace repository.
 
 ## Current Source Of Truth
 
@@ -157,19 +157,19 @@ Use this release model for `zackees/setup-soldr`:
 
 ## Extraction Checklist
 
-Before the first public release:
+For the public beta release:
 
 1. Create `zackees/setup-soldr` as a public repository.
 2. Accept the GitHub Marketplace Developer Agreement for the owning account or organization if it has not already been accepted.
 3. Copy [action.yml](../action.yml) and the helper scripts listed above into the public repository.
-4. Copy the user-facing setup docs from this repository's `README.md`, `INTEGRATION.md`, and this file into the public repository `README.md`, but remove any mention of the temporary in-repo `zackees/soldr@<ref>` path.
+4. Copy the user-facing setup docs from this repository's `README.md`, `INTEGRATION.md`, and this file into the public repository `README.md`, using `zackees/setup-soldr@v0` as the public action reference.
 5. Ensure the public repository contains no workflow files.
 6. Create the first beta release tag `v0.1.0`, then move `v0` to that commit.
 7. Publish the beta release to GitHub Marketplace from the public repository.
 
 ## What This PR Changes
 
-This repo-contained plan is useful even before the public repository exists because it:
+This repo-contained plan is useful because it:
 
 - defines the exact public contract the extracted action should preserve
 - distinguishes public contract from current implementation-only escape hatches

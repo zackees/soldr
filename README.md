@@ -56,10 +56,10 @@ the published `SHA256SUMS` file, and exposes the `soldr` command.
 
 ## GitHub Actions setup
 
-The current GitHub Actions entry point is the repository root action in this repository:
+The current GitHub Actions entry point is the public `setup-soldr` action:
 
 ```yaml
-- uses: zackees/soldr@<ref>
+- uses: zackees/setup-soldr@v0
   with:
     cache: true
 
@@ -76,14 +76,13 @@ That action:
 - restores and saves the Soldr-owned zccache compilation artifact cache under `SOLDR_CACHE_DIR` by default; set `build-cache: false` to disable it
 - restores and saves the Cargo target directory by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-dir:` to choose another target directory
 - puts `soldr` on `PATH` for later steps
-- is the extraction source for the planned public `zackees/setup-soldr` action product
 
 If your project pins Rust in `rust-toolchain.toml`, let the action read that file or pass the exact value with `toolchain:`. Do not preinstall a different generic toolchain such as `stable` and assume `soldr` will reconcile it later. The action exports `RUSTUP_TOOLCHAIN` after installation so later `cargo`, `rustc`, and `soldr cargo ...` steps stay on the toolchain it just installed instead of asking `rustup` to resolve a pinned file lazily.
 
 On GitHub-hosted runners, this means you usually do not need a separate toolchain setup action for the normal path. The action still uses `rustup` under the hood today, but it bootstraps `rustup` itself when the runner does not already have it.
 On runners without `rustup`, the action downloads and installs it into the cached runner-local root before provisioning the requested toolchain.
 
-For same-repository validation, use `uses: ./`. This repository smoke-tests that path in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). GitHub Marketplace publication still requires extracting this action into a separate public action repository because GitHub requires a single root `action.yml` and no workflow files in the published repository. The repo-contained extraction plan and intended beta `zackees/setup-soldr@v0` contract live in [docs/SETUP_SOLDR_PUBLIC_ACTION.md](./docs/SETUP_SOLDR_PUBLIC_ACTION.md). Until that public repo exists, treat `zackees/soldr@<ref>` as the current contract and pin a full commit SHA or explicit release tag instead of assuming `@v0`. For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
+The public action lives in [`zackees/setup-soldr`](https://github.com/zackees/setup-soldr) and is generated from this repository's root action source. This repository dogfoods `zackees/setup-soldr@v0` in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
 
 ### CI cache lineage
 
