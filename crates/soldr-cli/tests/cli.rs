@@ -88,7 +88,7 @@ fn fake_cargo_script(log_path: &Path) -> String {
     {
         format!(
             "@echo off\n\
-             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID%>>\"{}\"\n\
+             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR%>>\"{}\"\n\
              if defined RUSTC_WRAPPER (\n\
              call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
              ) else (\n\
@@ -102,7 +102,7 @@ fn fake_cargo_script(log_path: &Path) -> String {
     {
         format!(
             "#!/bin/sh\n\
-             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}}\" >> \"{}\"\n\
+             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}}\" >> \"{}\"\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
                \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
              else\n\
@@ -651,6 +651,14 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
         log.contains("sccache wrapper"),
         "custom wrapper should be invoked for rustc: {log}"
     );
+    let expected_sccache_dir = cache_root.join("cache").join("sccache");
+    assert!(
+        path_display_variants(&expected_sccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("sccache_dir={path}"))),
+        "cargo should receive soldr-owned SCCACHE_DIR at {}: {log}",
+        expected_sccache_dir.display()
+    );
     assert!(
         !log.contains(env!("CARGO_BIN_EXE_soldr")),
         "soldr should not stay in the wrapper slot when overridden: {log}"
@@ -667,6 +675,49 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     assert!(
         !stderr.contains("soldr: zccache session summary"),
         "custom wrapper path should not emit zccache session output: {stderr}"
+    );
+}
+
+#[test]
+fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
+    let cache_root = unique_temp_dir("cargo-custom-wrapper-preserve-sccache-dir");
+    let caller_sccache_dir = unique_temp_dir("caller-sccache-dir");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let wrapper = install_fake_wrapper(&log_path, "sccache");
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_RUSTC_WRAPPER", &wrapper)
+        .env("SCCACHE_DIR", &caller_sccache_dir)
+        .output()
+        .expect("failed to run soldr cargo build with caller SCCACHE_DIR");
+
+    assert!(
+        output.status.success(),
+        "custom-wrapper front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        path_display_variants(&caller_sccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("sccache_dir={path}"))),
+        "cargo should preserve caller-provided SCCACHE_DIR at {}: {log}",
+        caller_sccache_dir.display()
+    );
+    let soldr_sccache_dir = cache_root.join("cache").join("sccache");
+    assert!(
+        !path_display_variants(&soldr_sccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("sccache_dir={path}"))),
+        "cargo should not override caller SCCACHE_DIR with {}: {log}",
+        soldr_sccache_dir.display()
     );
 }
 

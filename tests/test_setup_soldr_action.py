@@ -105,6 +105,8 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("INPUT_TOOLCHAIN", "")
     monkeypatch.setenv("INPUT_TOOLCHAIN_FILE", "missing.toml")
     monkeypatch.setenv("INPUT_TRUST_MODE", "")
+    monkeypatch.setenv("INPUT_TARGET_DIR", "custom-target")
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
     monkeypatch.setenv("GITHUB_PATH", str(github_path))
@@ -128,4 +130,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "build_cache_key=setup-soldr-buildcache-v0-linux-x64-" in outputs
     assert "build_cache_restore_key_toolchain=setup-soldr-buildcache-v0-linux-x64-" in outputs
     assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v0-linux-x64-" in outputs
+    assert f"target_cache_path={workspace / 'custom-target'}" in outputs
+    assert "target_cache_key=setup-soldr-targetcache-v0-linux-x64-" in outputs
+    assert outputs.count("-no-lock-abc123") == 1
     assert "toolchain=stable" in outputs

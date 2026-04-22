@@ -30,6 +30,12 @@ For a normal `soldr` release:
 - the published GitHub Release is immutable once published
 - a SHA-256 checksum manifest is published with the release assets
 - GitHub build provenance attestations are generated for the published assets
+- PyPI wheels are built in the same platform jobs as the GitHub Release
+  archives, and the workflow checks that each wheel embeds the same `soldr`
+  binary bytes as the matching release build output
+- the npm package is a JavaScript launcher that downloads and verifies the
+  matching GitHub Release archive, so npm installations use those same release
+  binaries rather than a separate npm-specific build
 
 ## What It Does Not Guarantee Yet
 
