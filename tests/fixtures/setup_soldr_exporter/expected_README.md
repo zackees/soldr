@@ -22,7 +22,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.6
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
@@ -44,7 +43,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.6
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
@@ -66,7 +64,6 @@ jobs:
       - uses: actions/checkout@v4
       - uses: zackees/setup-soldr@v0
         with:
-          version: 0.7.6
           cache: true
       - run: soldr cargo build --locked --release
       - run: soldr cargo test --locked
