@@ -43,11 +43,13 @@ jobs:
           cache: true
           # Keep the action runtime cache separate from the Soldr build under
           # test. The dogfood build below overrides SOLDR_CACHE_DIR so soldr
-          # owns zccache under that separate root.
+          # owns zccache under that separate root, while the action restores
+          # Cargo target metadata for the workspace before the dogfood build.
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
-          build-cache: false
-          target-cache: false
+          build-cache: true
+          target-cache: true
+          target-cache-mode: hot
 
       - name: Show action outputs
         shell: pwsh

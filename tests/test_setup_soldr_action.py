@@ -115,13 +115,16 @@ def test_action_python_helpers_have_entrypoints() -> None:
         ), f"{script_path.relative_to(REPO_ROOT)} should invoke main() as a script"
 
 
-def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
+def test_setup_soldr_smoke_tests_enable_action_caches_and_isolate_dogfood_cache() -> None:
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
     ).read_text(encoding="utf-8")
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
     assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
+    assert "build-cache: true" in workflow
+    assert "target-cache: true" in workflow
+    assert "target-cache-mode: hot" in workflow
     assert "id: dogfood-build-cache" in workflow
     assert "setup-soldr-dogfood-zccache-v1-" in workflow
     assert "dogfood-build-cache-hit=" in workflow
