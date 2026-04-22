@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - Cargo.toml
+      - package.json
   workflow_dispatch:
     inputs:
       force_pypi_publish:
@@ -31,9 +32,11 @@ jobs:
       should_release: ${{ steps.validate.outputs.should_release }}
       should_publish_github_release: ${{ steps.validate.outputs.should_publish_github_release }}
       should_publish_pypi: ${{ steps.validate.outputs.should_publish_pypi }}
+      should_publish_npm: ${{ steps.validate.outputs.should_publish_npm }}
       tag_exists: ${{ steps.validate.outputs.tag_exists }}
       pypi_has_version: ${{ steps.validate.outputs.pypi_has_version }}
       pypi_file_count: ${{ steps.validate.outputs.pypi_file_count }}
+      npm_has_version: ${{ steps.validate.outputs.npm_has_version }}
       version: ${{ steps.validate.outputs.version }}
       commit_sha: ${{ steps.validate.outputs.commit_sha }}
 
@@ -69,6 +72,17 @@ jobs:
             exit 1
           fi
 
+          npm_package_name="$(jq -r '.name // ""' package.json)"
+          npm_package_version="$(jq -r '.version // ""' package.json)"
+          if [[ -z "$npm_package_name" || -z "$npm_package_version" ]]; then
+            echo "failed to derive npm package metadata from package.json" >&2
+            exit 1
+          fi
+          if [[ "$npm_package_version" != "$cargo_version" ]]; then
+            echo "package.json version ($npm_package_version) must match Cargo.toml ($cargo_version)" >&2
+            exit 1
+          fi
+
           tag_exists=false
           if git ls-remote --exit-code --tags origin "$version" >/dev/null 2>&1; then
             tag_exists=true
@@ -90,6 +104,13 @@ jobs:
             pypi_has_version=true
           fi
 
+          npm_package_uri="$(jq -rn --arg value "$npm_package_name" '$value | @uri')"
+          npm_json="$(curl -fsSL "https://registry.npmjs.org/${npm_package_uri}")"
+          npm_has_version=false
+          if jq -e --arg candidate "$cargo_version" '.versions[$candidate] != null' <<< "$npm_json" >/dev/null; then
+            npm_has_version=true
+          fi
+
           should_publish_github_release=false
           if [[ "$tag_exists" != "true" ]]; then
             should_publish_github_release=true
@@ -100,8 +121,13 @@ jobs:
             should_publish_pypi=true
           fi
 
+          should_publish_npm=false
+          if [[ "$npm_has_version" != "true" ]]; then
+            should_publish_npm=true
+          fi
+
           should_release=false
-          if [[ "$should_publish_github_release" == "true" || "$should_publish_pypi" == "true" ]]; then
+          if [[ "$should_publish_github_release" == "true" || "$should_publish_pypi" == "true" || "$should_publish_npm" == "true" ]]; then
             should_release=true
           fi
 
@@ -111,19 +137,24 @@ jobs:
             echo "- candidate version: \`$version\`"
             echo "- current PyPI latest: \`v${pypi_version}\`"
             echo "- PyPI files for candidate: \`$pypi_file_count\`"
+            echo "- npm package: \`$npm_package_name@$npm_package_version\`"
+            echo "- npm has candidate: \`$npm_has_version\`"
             echo "- GitHub tag exists: \`$tag_exists\`"
             echo "- force PyPI publish: \`$force_pypi_publish\`"
             echo "- publish GitHub release assets: \`$should_publish_github_release\`"
             echo "- publish PyPI wheels: \`$should_publish_pypi\`"
+            echo "- publish npm package: \`$should_publish_npm\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
           {
             echo "should_release=$should_release"
             echo "should_publish_github_release=$should_publish_github_release"
             echo "should_publish_pypi=$should_publish_pypi"
+            echo "should_publish_npm=$should_publish_npm"
             echo "tag_exists=$tag_exists"
             echo "pypi_has_version=$pypi_has_version"
             echo "pypi_file_count=$pypi_file_count"
+            echo "npm_has_version=$npm_has_version"
             echo "version=$version"
             echo "commit_sha=$commit_sha"
           } >> "$GITHUB_OUTPUT"
@@ -352,8 +383,9 @@ jobs:
     name: Publish npm package
     needs:
       - prepare
+      - build
       - publish
-    if: needs.prepare.outputs.should_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
+    if: always() && needs.prepare.outputs.should_publish_npm == 'true' && ((needs.prepare.outputs.should_publish_github_release == 'true' && needs.publish.result == 'success') || (needs.prepare.outputs.should_publish_github_release != 'true' && needs.build.result == 'success'))
     runs-on: ubuntu-24.04
     environment: release
     permissions:
