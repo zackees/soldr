@@ -74,7 +74,7 @@ That action:
 - preinstalls the exact Rust toolchain from `rust-toolchain.toml` by default via `rustup`
 - restores a cacheable runner-local root for Soldr, Cargo, and rustup state
 - restores and saves the Soldr-owned zccache compilation artifact cache under `SOLDR_CACHE_DIR` by default; set `build-cache: false` to disable it
-- restores and saves a bounded hot Cargo target cache by default for no-op CI fast paths; set `target-cache: false` to disable it, `target-cache-mode: full` to opt into whole-target caching, or `target-dir:` to choose another target directory
+- restores and saves a zccache-owned Rust artifact plan cache by default for no-op CI fast paths; set `target-cache: false` to disable it or `target-cache-mode: full` to opt into explicit whole-target caching
 - puts `soldr` on `PATH` for later steps
 
 For existing workflows where rewriting every `cargo ...` command is high-friction, opt into Cargo PATH shims:

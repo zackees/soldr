@@ -81,9 +81,9 @@ jobs:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `true`; set to `false` to opt out. |
-| `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. |
-| `target-cache-mode` | Target cache mode. Default `hot` caches Cargo freshness metadata and lightweight type metadata; `full` caches the whole `target-dir`; `off` disables target caching. |
-| `target-dir` | Cargo target directory restored by `target-cache`. |
+| `target-cache` | Restore and save the zccache-owned Rust artifact plan cache for fast CI rebuilds. |
+| `target-cache-mode` | Target cache mode. Default `thin` asks soldr to generate a bounded dependency-artifact plan for zccache; `full` asks zccache to cache the whole `target-dir`; `off` disables target artifact caching. The old `hot` value is accepted as a deprecated alias for `thin`. |
+| `target-dir` | Cargo target directory used in target-cache key shaping. |
 | `tool-shims` | Optional PATH shim mode. Set to `cargo` to make later `cargo ...` steps run through `soldr cargo ...`; default `false`. |
 
 ## Outputs
@@ -95,7 +95,7 @@ jobs:
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is disabled. |
-| `target-cache-hit` | Whether the Cargo target directory cache was restored. |
+| `target-cache-hit` | Whether the Rust artifact plan cache was restored. |
 | `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 | `tool-shims-dir` | Directory containing generated tool shims when enabled. |
@@ -106,7 +106,7 @@ jobs:
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
 - The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
-- The default target cache mode is `hot`, which avoids archiving the full Cargo `target/` tree and caches only Cargo freshness metadata plus lightweight type metadata. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
+- The default target cache mode is `thin`, which avoids action-owned `target/` snapshots by having soldr pass a bounded Rust artifact plan to zccache. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
 - `tool-shims: cargo` prepends a Cargo shim for existing workflows that cannot rewrite every `cargo ...` command to `soldr cargo ...`.
 - A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.

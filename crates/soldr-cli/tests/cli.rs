@@ -88,6 +88,20 @@ fn fake_cargo_script(log_path: &Path) -> String {
     {
         format!(
             "@echo off\n\
+             if \"%~1\"==\"metadata\" (\n\
+               if defined SOLDR_TEST_CARGO_METADATA_PATH (\n\
+                 type \"%SOLDR_TEST_CARGO_METADATA_PATH%\"\n\
+               ) else (\n\
+                 echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+                 echo {{}}\n\
+               )\n\
+               exit /b 0\n\
+             )\n\
+             if \"%~1\"==\"--version\" (\n\
+               echo cargo version>>\"{0}\"\n\
+               echo cargo 1.0.0-test\n\
+               exit /b 0\n\
+             )\n\
              echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{}\"\n\
              if defined RUSTC_WRAPPER (\n\
              call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
@@ -102,6 +116,20 @@ fn fake_cargo_script(log_path: &Path) -> String {
     {
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = \"metadata\" ]; then\n\
+               if [ -n \"${{SOLDR_TEST_CARGO_METADATA_PATH:-}}\" ]; then\n\
+                 cat \"$SOLDR_TEST_CARGO_METADATA_PATH\"\n\
+               else\n\
+                 echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 echo '{{}}'\n\
+               fi\n\
+               exit 0\n\
+             fi\n\
+             if [ \"$1\" = \"--version\" ]; then\n\
+               echo 'cargo version' >> \"{0}\"\n\
+               echo 'cargo 1.0.0-test'\n\
+               exit 0\n\
+             fi\n\
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
                \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
@@ -133,6 +161,12 @@ fn fake_rustc_script(log_path: &Path) -> String {
     {
         format!(
             "@echo off\n\
+             if \"%~1\"==\"-Vv\" (\n\
+               echo rustc 1.0.0-test\n\
+               echo host: x86_64-pc-windows-msvc\n\
+               echo release: 1.0.0-test\n\
+               exit /b 0\n\
+             )\n\
              echo rustc %*>>\"{}\"\n",
             log_path.display()
         )
@@ -141,6 +175,12 @@ fn fake_rustc_script(log_path: &Path) -> String {
     {
         format!(
             "#!/bin/sh\n\
+             if [ \"$1\" = \"-Vv\" ]; then\n\
+               echo 'rustc 1.0.0-test'\n\
+               echo 'host: x86_64-unknown-linux-gnu'\n\
+               echo 'release: 1.0.0-test'\n\
+               exit 0\n\
+             fi\n\
              echo \"rustc $*\" >> \"{}\"\n",
             log_path.display()
         )
@@ -274,6 +314,11 @@ fn fake_zccache_script(log_path: &Path) -> String {
                echo hits: 1\n\
                exit /b 0\n\
              )\n\
+             if \"%~1\"==\"rust-plan\" (\n\
+               echo zccache rust-plan %~2 cache_dir=%ZCCACHE_CACHE_DIR% args=%*>>\"{0}\"\n\
+               echo {{\"operation\":\"%~2\",\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\n\
+               exit /b 0\n\
+             )\n\
              if \"%~1\"==\"status\" (\n\
                echo hits=7\n\
                exit /b 0\n\
@@ -336,12 +381,17 @@ fn fake_zccache_script(log_path: &Path) -> String {
                  ;;\n\
                session-end)\n\
                  echo \"zccache session-end $2 cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
-                 echo 'hits: 1'\n\
-                 exit 0\n\
-                 ;;\n\
-               status)\n\
-                 echo 'hits=7'\n\
-                 exit 0\n\
+               echo 'hits: 1'\n\
+               exit 0\n\
+               ;;\n\
+              rust-plan)\n\
+                echo \"zccache rust-plan $2 cache_dir=${{ZCCACHE_CACHE_DIR:-}} args=$*\" >> \"{0}\"\n\
+                printf '{{\"operation\":\"%s\",\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\\n' \"$2\"\n\
+                exit 0\n\
+                ;;\n\
+              status)\n\
+                echo 'hits=7'\n\
+                exit 0\n\
                  ;;\n\
                clear)\n\
                  echo \"zccache clear cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
@@ -690,6 +740,101 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
+    let cache_root = unique_temp_dir("cargo-rust-plan-cache");
+    let workspace = unique_temp_dir("cargo-rust-plan-workspace");
+    let plan_cache = cache_root.join("target-artifact-cache");
+    let log_path = cache_root.join("tool.log");
+    let metadata_path = cache_root.join("metadata.json");
+    let target_dir = workspace.join("target");
+    fs::create_dir_all(workspace.join("app/src")).expect("create app source");
+    fs::create_dir_all(&target_dir).expect("create target dir");
+    fs::write(workspace.join("Cargo.lock"), "# lock\n").expect("write lockfile");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]\n").expect("write workspace manifest");
+    fs::write(workspace.join("app/Cargo.toml"), "[package]\nname='app'\n")
+        .expect("write app manifest");
+
+    let metadata = serde_json::json!({
+        "packages": [
+            {
+                "id": "path+file:///repo/app#app@0.1.0",
+                "source": null
+            },
+            {
+                "id": "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0",
+                "source": "registry+https://github.com/rust-lang/crates.io-index"
+            }
+        ],
+        "workspace_members": ["path+file:///repo/app#app@0.1.0"],
+        "workspace_root": workspace,
+        "target_directory": target_dir
+    });
+    fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap())
+        .expect("write metadata fixture");
+
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build", "--locked"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
+        .env("SOLDR_TARGET_CACHE_MODE", "thin")
+        .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
+        .output()
+        .expect("failed to run soldr cargo build with rust-plan target cache");
+
+    assert!(
+        output.status.success(),
+        "cache-enabled rust-plan front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("zccache rust-plan restore") && log.contains("zccache rust-plan save"),
+        "soldr should call zccache rust-plan restore/save when target cache is enabled: {log}"
+    );
+    assert!(
+        path_display_variants(&plan_cache)
+            .iter()
+            .any(|path| log.contains(&format!("cache_dir={path}"))),
+        "rust-plan calls should use the zccache-owned target artifact cache dir: {log}"
+    );
+    assert!(
+        log.find("zccache rust-plan restore") < log.find("cargo wrapper=")
+            && log.find("cargo wrapper=") < log.find("zccache rust-plan save"),
+        "rust-plan restore should run before Cargo and save should run after Cargo: {log}"
+    );
+
+    let plan_path = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("plans")
+        .join("last-rust-artifact-plan.json");
+    let plan: Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read generated rust plan"))
+            .expect("parse generated rust plan");
+    assert_eq!(plan["schema_version"], 1);
+    assert_eq!(plan["mode"], "thin");
+    assert_eq!(plan["cache_schema_version"], 1);
+    assert_eq!(
+        plan["packages"]["workspace_package_ids"][0],
+        "path+file:///repo/app#app@0.1.0"
+    );
+    assert!(
+        plan["packages"]["selected_package_ids"][0]
+            .as_str()
+            .unwrap()
+            .contains("serde"),
+        "external dependency should be selected in generated plan: {plan}"
     );
 }
 
@@ -1484,7 +1629,7 @@ fn status_json_reports_stable_machine_fields() {
     assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(json["cache_default_enabled"], true);
     assert_eq!(json["cache_enabled_for_invocation"], true);
-    assert_eq!(json["managed_zccache_version"], "1.3.8");
+    assert_eq!(json["managed_zccache_version"], "1.3.9");
     assert_eq!(json["root_dir"], cache_root.display().to_string());
     assert_eq!(
         json["cache_dir"],
@@ -1579,7 +1724,7 @@ fn cache_json_reports_managed_zccache_status() {
         serde_json::from_slice(&output.stdout).expect("cache --json did not return JSON");
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache");
-    assert_eq!(json["managed_zccache_version"], "1.3.8");
+    assert_eq!(json["managed_zccache_version"], "1.3.9");
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["binary_fetched"], true);
     assert_eq!(

@@ -46,22 +46,24 @@ inputs:
     default: "true"
   target-cache:
     description: >
-      Restore and save the Cargo target directory across workflow runs.
-      Default "true"; target-cache-mode controls whether this is a bounded hot
-      metadata cache or an explicit full target cache. Set to "false" to cache
-      only zccache compilation artifacts.
+      Restore and save the zccache-owned Rust artifact plan cache across
+      workflow runs.
+      Default "true"; target-cache-mode controls whether this is a bounded thin
+      dependency-artifact cache or an explicit full target cache plan. Set to
+      "false" to cache only zccache compilation artifacts.
     required: false
     default: "true"
   target-cache-mode:
     description: >
-      Cargo target cache mode. "hot" caches Cargo freshness metadata and
-      lightweight type metadata by default. "full" caches the entire target-dir
-      and should only be used for tightly scoped jobs. "off" disables target
-      caching even when target-cache is true.
+      Rust artifact cache mode. "thin" asks soldr to generate a bounded
+      dependency-artifact plan for zccache by default. "full" asks zccache to
+      cache the entire target-dir and should only be used for tightly scoped
+      jobs. "off" disables target caching even when target-cache is true. The
+      previous "hot" value is accepted as a deprecated alias for "thin".
     required: false
-    default: hot
+    default: thin
   target-dir:
-    description: Cargo target directory restored by target-cache.
+    description: Cargo target directory used in target-cache key shaping.
     required: false
     default: target
   tool-shims:
@@ -93,12 +95,12 @@ outputs:
     value: ${{ steps.cache-meta.outputs.build_cache_hit }}
   target-cache-hit:
     description: >
-      Whether the action restored the Cargo target directory cache. "true"
+      Whether the action restored the Rust artifact plan cache. "true"
       for an exact key match, "false" for a restore-key fallback or no cache,
-      empty string when `target-cache` or `build-cache` is disabled.
+      empty string when `target-cache` is disabled.
     value: ${{ steps.cache-meta.outputs.target_cache_hit }}
   target-cache-mode:
-    description: Effective Cargo target cache mode.
+    description: Effective Rust artifact target cache mode.
     value: ${{ steps.resolve.outputs.target_cache_mode }}
   toolchain:
     description: Exact Rust toolchain channel configured by rustup for the action.
@@ -147,7 +149,7 @@ runs:
           ${{ steps.resolve.outputs.build_cache_restore_key_os_arch }}
 
     - id: target-cache
-      if: ${{ inputs.build-cache == 'true' && steps.resolve.outputs.target_cache_enabled == 'true' }}
+      if: ${{ steps.resolve.outputs.target_cache_enabled == 'true' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
       with:
         path: ${{ steps.resolve.outputs.target_cache_paths }}
@@ -182,49 +184,6 @@ runs:
         SETUP_SOLDR_TOOL_SHIMS: ${{ inputs.tool-shims }}
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/install_tool_shims.py"
 
-    - id: zccache-warm-target
-      if: ${{ inputs.build-cache == 'true' && steps.resolve.outputs.target_cache_enabled == 'true' }}
-      shell: pwsh
-      env:
-        TARGET_CACHE_PATH: ${{ steps.resolve.outputs.target_cache_path }}
-      run: |
-        $target = $env:TARGET_CACHE_PATH
-        if ([string]::IsNullOrWhiteSpace($target) -or -not (Test-Path -LiteralPath $target)) {
-          Write-Host "No restored target directory to warm."
-          exit 0
-        }
-
-        $exeName = if ($IsWindows) { "zccache.exe" } else { "zccache" }
-        $zccache = $null
-        if (-not [string]::IsNullOrWhiteSpace($env:SOLDR_CACHE_DIR)) {
-          $soldrBin = Join-Path -Path $env:SOLDR_CACHE_DIR -ChildPath "bin"
-          if (Test-Path -LiteralPath $soldrBin) {
-            $zccache = Get-ChildItem -LiteralPath $soldrBin -Recurse -Filter $exeName -File -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
-        }
-        if ([string]::IsNullOrWhiteSpace($zccache)) {
-          $command = Get-Command zccache -ErrorAction SilentlyContinue
-          if ($command) {
-            $zccache = $command.Source
-          }
-        }
-        if ([string]::IsNullOrWhiteSpace($zccache)) {
-          Write-Host "zccache binary is not available yet; refreshing target mtimes only."
-        } else {
-          Write-Host "Warming target directory from zccache: $target"
-          & $zccache warm --target-dir $target
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "zccache warm did not complete successfully; continuing."
-          }
-        }
-
-        $stamp = (Get-Date).AddMinutes(1)
-        Get-ChildItem -LiteralPath $target -Recurse -File -Force -ErrorAction SilentlyContinue |
-          ForEach-Object { $_.LastWriteTime = $stamp }
-        Write-Host "Refreshed target file mtimes."
-        exit 0
-
     - id: cache-meta
       shell: pwsh
       env:
@@ -251,7 +210,7 @@ runs:
         }
         "build_cache_hit=$buildValue" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-        if ($env:BUILD_CACHE_ENABLED -eq "true" -and $env:EFFECTIVE_TARGET_CACHE_ENABLED -eq "true") {
+        if ($env:EFFECTIVE_TARGET_CACHE_ENABLED -eq "true") {
           $targetValue = $env:RAW_TARGET_CACHE_HIT
           if ([string]::IsNullOrWhiteSpace($targetValue)) {
             $targetValue = "false"
