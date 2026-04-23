@@ -112,6 +112,26 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
         return Ok(result);
     }
 
+    let release_version = VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.to_string());
+    match fetch_repo_binary_with_paths(
+        "zccache",
+        &binary_names,
+        &managed_zccache_repo(),
+        &release_version,
+        None,
+        paths,
+    )
+    .await
+    {
+        Ok(result) => return Ok(result),
+        Err(err) if should_fallback_to_managed_zccache_cargo_install(&err) => {
+            eprintln!(
+                "soldr: managed zccache prebuilt unavailable ({err}); falling back to cargo install"
+            );
+        }
+        Err(err) => return Err(err),
+    }
+
     let binary_path = install_zccache_from_crates_io(paths, MANAGED_ZCCACHE_VERSION, &target)?;
 
     Ok(FetchResult {
@@ -130,6 +150,17 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         &["zccache", "zccache-daemon", "zccache-fp"],
         &target,
     )
+}
+
+fn managed_zccache_repo() -> RepoInfo {
+    RepoInfo {
+        owner: "zackees".to_string(),
+        repo: "zccache".to_string(),
+    }
+}
+
+fn should_fallback_to_managed_zccache_cargo_install(error: &SoldrError) -> bool {
+    matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
 }
 
 fn install_zccache_from_crates_io(
@@ -660,9 +691,8 @@ fn match_asset<'a>(
         if target.os == Os::Linux && target.env == Env::Musl && name.contains("gnu") {
             continue;
         }
-        if target.os == Os::Linux && target.env == Env::Gnu && name.contains("musl") {
-            continue;
-        }
+        // zccache currently publishes musl Linux archives; keep those as a
+        // fallback on GNU runners instead of forcing a slow cargo install.
 
         let mut score: u32 = 1;
         if target.os == Os::Windows && name.contains("msvc") {
@@ -935,6 +965,51 @@ mod tests {
 
         let selected = match_asset(&assets, &target).unwrap();
         assert_eq!(selected.name, "tool-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn match_asset_prefers_linux_gnu_when_both_linux_variants_exist() {
+        let assets = vec![
+            asset("tool-x86_64-unknown-linux-gnu.tar.gz"),
+            asset("tool-x86_64-unknown-linux-musl.tar.gz"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            env: Env::Gnu,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-unknown-linux-gnu.tar.gz");
+    }
+
+    #[test]
+    fn match_asset_accepts_linux_musl_as_gnu_fallback() {
+        let assets = vec![asset("tool-x86_64-unknown-linux-musl.tar.gz")];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            env: Env::Gnu,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn managed_zccache_cargo_install_fallback_only_handles_unavailable_release_errors() {
+        assert!(should_fallback_to_managed_zccache_cargo_install(
+            &SoldrError::ToolNotFound("missing release".into())
+        ));
+        assert!(should_fallback_to_managed_zccache_cargo_install(
+            &SoldrError::Network("github api unavailable".into())
+        ));
+        assert!(!should_fallback_to_managed_zccache_cargo_install(
+            &SoldrError::Archive("corrupt archive".into())
+        ));
+        assert!(!should_fallback_to_managed_zccache_cargo_install(
+            &SoldrError::Other("checksum mismatch".into())
+        ));
     }
 
     #[test]
