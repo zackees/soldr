@@ -98,8 +98,7 @@ def test_action_python_helpers_have_entrypoints() -> None:
     for script_path in script_paths:
         tree = ast.parse(script_path.read_text(encoding="utf-8"))
         assert any(
-            isinstance(node, ast.FunctionDef) and node.name == "main"
-            for node in tree.body
+            isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body
         ), f"{script_path.relative_to(REPO_ROOT)} should define main()"
         assert any(
             isinstance(node, ast.If)
@@ -107,8 +106,7 @@ def test_action_python_helpers_have_entrypoints() -> None:
             and isinstance(node.test.left, ast.Name)
             and node.test.left.id == "__name__"
             and any(
-                isinstance(comparator, ast.Constant)
-                and comparator.value == "__main__"
+                isinstance(comparator, ast.Constant) and comparator.value == "__main__"
                 for comparator in node.test.comparators
             )
             for node in tree.body
@@ -116,9 +114,9 @@ def test_action_python_helpers_have_entrypoints() -> None:
 
 
 def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
-    workflow = (
-        REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
     assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
@@ -182,15 +180,117 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-" in outputs
     assert f"build_cache_path={cache_root / 'soldr' / 'cache' / 'zccache'}" in outputs
     assert f"target_cache_path={workspace / 'custom-target'}" in outputs
+    bundle_path = runner_temp / "setup-soldr-target-thin"
+    assert f"target_cache_bundle_path={bundle_path}" in outputs
     assert f"shim_dir={cache_root / 'shims'}" in outputs
-    assert "target_cache_key=setup-soldr-targetcache-hot-v1-linux-x64-" in outputs
-    assert "target_cache_enabled=true" in outputs
-    assert "target_cache_mode=hot" in outputs
-    assert ".fingerprint" in outputs
-    assert outputs.count("-no-lock-") >= 1
+    assert "target_cache_key=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+    assert "target_cache_enabled=false" in outputs
+    assert "target_cache_mode=thin" in outputs
+    assert f"target_cache_paths={bundle_path}" in outputs
     assert outputs.count("-abc123") >= 1
     assert "toolchain=stable" in outputs
 
     env_text = github_env.read_text(encoding="utf-8")
     assert f"SOLDR_CACHE_DIR={cache_root / 'soldr'}" in env_text
     assert f"ZCCACHE_CACHE_DIR={cache_root / 'soldr' / 'cache' / 'zccache'}" in env_text
+    assert "SOLDR_TARGET_CACHE_MODE=off" in env_text
+    assert "SOLDR_TARGET_CACHE_BACKEND=auto" in env_text
+
+
+def test_main_treats_hot_as_thin_alias_with_lockfile(tmp_path: Path, monkeypatch) -> None:
+    module = _load_module()
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    workspace.mkdir()
+    runner_temp.mkdir()
+    (workspace / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    (workspace / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+
+    github_env = tmp_path / "github.env"
+    github_output = tmp_path / "github.output"
+    github_path = tmp_path / "github.path"
+
+    monkeypatch.setenv("ACTION_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("ACTION_OS", "Linux")
+    monkeypatch.setenv("ACTION_ARCH", "X64")
+    monkeypatch.setenv("INPUT_REPO", "zackees/soldr")
+    monkeypatch.setenv("INPUT_VERSION", "")
+    monkeypatch.setenv("INPUT_CACHE_DIR", "")
+    monkeypatch.setenv("INPUT_CACHE_KEY_SUFFIX", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN_FILE", "missing.toml")
+    monkeypatch.setenv("INPUT_TRUST_MODE", "")
+    monkeypatch.setenv("INPUT_TARGET_CACHE", "true")
+    monkeypatch.setenv("INPUT_TARGET_CACHE_MODE", "hot")
+    monkeypatch.setenv("INPUT_TARGET_DIR", "target")
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setenv("GITHUB_PATH", str(github_path))
+
+    module.main()
+
+    cache_root = runner_temp / "setup-soldr"
+    bundle_path = runner_temp / "setup-soldr-target-thin"
+    outputs = github_output.read_text(encoding="utf-8")
+    assert "target_cache_enabled=true" in outputs
+    assert "target_cache_mode=thin" in outputs
+    assert "target_cache_key=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+    assert f"target_cache_paths={bundle_path}" in outputs
+    assert "target_cache_restore_key_lock=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+
+    env_text = github_env.read_text(encoding="utf-8")
+    assert "SOLDR_TARGET_CACHE_MODE=thin" in env_text
+    assert f"SOLDR_TARGET_CACHE_DIR={workspace / 'target'}" in env_text
+    assert f"SOLDR_TARGET_CACHE_BUNDLE_DIR={bundle_path}" in env_text
+    assert "SOLDR_TARGET_CACHE_BACKEND=auto" in env_text
+    assert bundle_path == runner_temp / "setup-soldr-target-thin"
+
+
+def test_full_target_cache_suffix_restore_prefix_matches_key_shape(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_module()
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    workspace.mkdir()
+    runner_temp.mkdir()
+    (workspace / "Cargo.lock").write_text("# lock\n", encoding="utf-8")
+    (workspace / "Cargo.toml").write_text("[workspace]\n", encoding="utf-8")
+
+    github_env = tmp_path / "github.env"
+    github_output = tmp_path / "github.output"
+    github_path = tmp_path / "github.path"
+
+    monkeypatch.setenv("ACTION_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("ACTION_OS", "Linux")
+    monkeypatch.setenv("ACTION_ARCH", "X64")
+    monkeypatch.setenv("INPUT_REPO", "zackees/soldr")
+    monkeypatch.setenv("INPUT_VERSION", "")
+    monkeypatch.setenv("INPUT_CACHE_DIR", "")
+    monkeypatch.setenv("INPUT_CACHE_KEY_SUFFIX", "feature-a")
+    monkeypatch.setenv("INPUT_TOOLCHAIN", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN_FILE", "missing.toml")
+    monkeypatch.setenv("INPUT_TRUST_MODE", "")
+    monkeypatch.setenv("INPUT_TARGET_CACHE", "true")
+    monkeypatch.setenv("INPUT_TARGET_CACHE_MODE", "full")
+    monkeypatch.setenv("INPUT_TARGET_DIR", "target")
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setenv("GITHUB_PATH", str(github_path))
+
+    module.main()
+
+    outputs = dict(
+        line.split("=", 1)
+        for line in github_output.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+    key = outputs["target_cache_key"]
+    restore_prefix = outputs["target_cache_restore_key_lock"]
+    assert key.startswith(restore_prefix)
+    assert key.endswith("abc123")
+    assert "feature-a" in restore_prefix

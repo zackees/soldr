@@ -1,7 +1,9 @@
 use clap::{Parser, Subcommand};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
+use std::collections::BTreeSet;
 
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
@@ -10,6 +12,9 @@ const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
 const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
 const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
+const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
+const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
+const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -502,10 +507,10 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     // PATH so cargo's subcommand dispatch finds it.
     let extra_bin_dirs = ensure_known_subcommand_tool(args, &paths).await?;
 
-    let mut command = std::process::Command::new(cargo);
+    let mut command = std::process::Command::new(&cargo);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
-    command.env("RUSTC", rustc);
+    command.env("RUSTC", &rustc);
     let cache_enabled_for_cargo = cache_enabled && cargo_args_are_cacheable(args);
 
     command.env(
@@ -526,11 +531,581 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         None
     };
 
+    let rust_plan = if let Some(session) = session.as_ref() {
+        maybe_prepare_rust_artifact_plan(&cargo, &rustc, args, session)?
+    } else {
+        None
+    };
+    if let Some(plan) = rust_plan.as_ref() {
+        run_zccache_rust_plan(plan, "restore", false)?;
+    }
+
     let status = command.status()?;
+    if status.success() {
+        if let Some(plan) = rust_plan.as_ref() {
+            run_zccache_rust_plan(plan, "save", true)?;
+        }
+    }
     if let Some(session) = session {
         finish_zccache_build(&session)?;
     }
     Ok(status.code().unwrap_or(1))
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoMetadataPackage>,
+    workspace_members: Vec<String>,
+    workspace_root: std::path::PathBuf,
+    target_directory: std::path::PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadataPackage {
+    id: String,
+    source: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RustArtifactPlan {
+    schema_version: u32,
+    mode: String,
+    workspace_root: String,
+    target_dir: String,
+    toolchain: RustToolchainIdentity,
+    target_triple: String,
+    profile: String,
+    inputs: RustPlanInputs,
+    packages: RustPlanPackages,
+    allowed_artifact_classes: Vec<&'static str>,
+    cache_schema_version: u32,
+    journal_log_path: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RustToolchainIdentity {
+    rustc: String,
+    cargo: String,
+    channel: String,
+    host: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RustPlanInputs {
+    features_hash: String,
+    rustflags_hash: String,
+    env_hash: String,
+    lockfile_hash: String,
+    cargo_config_hash: String,
+    manifest_hashes: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RustPlanPackages {
+    selected_package_ids: Vec<String>,
+    workspace_package_ids: Vec<String>,
+    excluded_path_package_ids: Vec<String>,
+}
+
+struct RustArtifactPlanContext {
+    path: std::path::PathBuf,
+    zccache_binary: std::path::PathBuf,
+    cache_dir: std::path::PathBuf,
+    session_id: String,
+    journal_path: std::path::PathBuf,
+    backend: String,
+}
+
+fn maybe_prepare_rust_artifact_plan(
+    cargo: &std::path::Path,
+    rustc: &std::path::Path,
+    args: &[String],
+    session: &ZccacheBuildSession,
+) -> Result<Option<RustArtifactPlanContext>, SoldrError> {
+    let Some(mode) = rust_artifact_cache_mode_from_env()? else {
+        return Ok(None);
+    };
+
+    if matches!(first_cargo_subcommand(args), Some("install")) {
+        eprintln!("soldr: rust artifact cache plan skipped for cargo install");
+        return Ok(None);
+    }
+
+    let metadata = cargo_metadata(cargo, args)?;
+    let toolchain = rust_toolchain_identity(cargo, rustc)?;
+    let plan = build_rust_artifact_plan(&metadata, &toolchain, args, &mode, session)?;
+    let plan_dir = session.cache_dir.join("plans");
+    std::fs::create_dir_all(&plan_dir)?;
+    let plan_path = plan_dir.join("last-rust-artifact-plan.json");
+    let plan_json = serde_json::to_string_pretty(&plan)
+        .map_err(|e| SoldrError::Other(format!("failed to serialize Rust artifact plan: {e}")))?;
+    std::fs::write(&plan_path, plan_json)?;
+
+    Ok(Some(RustArtifactPlanContext {
+        path: plan_path,
+        zccache_binary: session.binary_path.clone(),
+        cache_dir: rust_artifact_plan_cache_dir(session)?,
+        session_id: session.session_id.clone(),
+        journal_path: session.journal_path.clone(),
+        backend: rust_artifact_cache_backend_from_env()?,
+    }))
+}
+
+fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
+    let raw = std::env::var(TARGET_CACHE_MODE_ENV_VAR).unwrap_or_default();
+    let mode = raw.trim().to_ascii_lowercase();
+    match mode.as_str() {
+        "" | "off" | "false" | "0" | "no" => Ok(None),
+        "hot" | "thin" => Ok(Some("thin".to_string())),
+        "full" => Ok(Some("full".to_string())),
+        _ => Err(SoldrError::Other(format!(
+            "invalid {TARGET_CACHE_MODE_ENV_VAR} value {raw:?}; expected thin, full, or off"
+        ))),
+    }
+}
+
+fn rust_artifact_cache_backend_from_env() -> Result<String, SoldrError> {
+    let raw = std::env::var(TARGET_CACHE_BACKEND_ENV_VAR).unwrap_or_else(|_| "auto".to_string());
+    let backend = raw.trim().to_ascii_lowercase();
+    match backend.as_str() {
+        "" | "auto" => Ok("auto".to_string()),
+        "local" => Ok("local".to_string()),
+        "gha" => Ok("gha".to_string()),
+        _ => Err(SoldrError::Other(format!(
+            "invalid {TARGET_CACHE_BACKEND_ENV_VAR} value {raw:?}; expected auto, local, or gha"
+        ))),
+    }
+}
+
+fn rust_artifact_plan_cache_dir(
+    session: &ZccacheBuildSession,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let cache_dir = non_empty_env_path(TARGET_CACHE_BUNDLE_DIR_ENV_VAR)
+        .unwrap_or_else(|| session.cache_dir.join("rust-plan-cache"));
+    let cache_dir = normalize_path_for_compare(&cache_dir)?;
+    std::fs::create_dir_all(&cache_dir)?;
+    Ok(cache_dir)
+}
+
+fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetadata, SoldrError> {
+    let mut command = std::process::Command::new(cargo);
+    command.args(["metadata", "--format-version", "1"]);
+    command.args(cargo_metadata_passthrough_args(args));
+    apply_implicit_toolchain_homes(&mut command);
+
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(SoldrError::Other(format!(
+            "cargo metadata failed while preparing Rust artifact cache plan: {}",
+            command_stderr(&output)
+        )));
+    }
+
+    serde_json::from_slice(&output.stdout).map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to parse cargo metadata while preparing Rust artifact cache plan: {e}"
+        ))
+    })
+}
+
+fn cargo_metadata_passthrough_args(args: &[String]) -> Vec<std::ffi::OsString> {
+    let mut values = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        match arg.as_str() {
+            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => {
+                values.push(arg.as_str().into())
+            }
+            "--manifest-path" | "--config" | "--features" | "--filter-platform" => {
+                if let Some(value) = iter.next() {
+                    values.push(arg.as_str().into());
+                    values.push(value.as_str().into());
+                }
+            }
+            _ => {
+                for flag in [
+                    "--manifest-path=",
+                    "--config=",
+                    "--features=",
+                    "--filter-platform=",
+                ] {
+                    if arg.starts_with(flag) {
+                        values.push(arg.as_str().into());
+                    }
+                }
+            }
+        }
+    }
+    values
+}
+
+fn rust_toolchain_identity(
+    cargo: &std::path::Path,
+    rustc: &std::path::Path,
+) -> Result<RustToolchainIdentity, SoldrError> {
+    let rustc_output = tool_output(rustc, &["-Vv"])?;
+    let cargo_output = tool_output(cargo, &["--version"])?;
+    let host = rustc_output
+        .lines()
+        .find_map(|line| line.strip_prefix("host: "))
+        .unwrap_or("unknown")
+        .to_string();
+    let channel = std::env::var("RUSTUP_TOOLCHAIN")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            rustc_output
+                .lines()
+                .find_map(|line| line.strip_prefix("release: "))
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    Ok(RustToolchainIdentity {
+        rustc: rustc_output.trim().to_string(),
+        cargo: cargo_output.trim().to_string(),
+        channel,
+        host,
+    })
+}
+
+fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrError> {
+    let mut command = std::process::Command::new(tool);
+    command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(SoldrError::Other(format!(
+            "{} {} failed: {}",
+            tool.display(),
+            args.join(" "),
+            command_stderr(&output)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn build_rust_artifact_plan(
+    metadata: &CargoMetadata,
+    toolchain: &RustToolchainIdentity,
+    args: &[String],
+    mode: &str,
+    session: &ZccacheBuildSession,
+) -> Result<RustArtifactPlan, SoldrError> {
+    let workspace_root = normalize_path_for_compare(&metadata.workspace_root)?;
+    let target_dir = normalize_path_for_compare(&metadata.target_directory)?;
+    let workspace_members: BTreeSet<&str> = metadata
+        .workspace_members
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let mut selected_package_ids = Vec::new();
+    let mut excluded_path_package_ids = Vec::new();
+
+    for package in &metadata.packages {
+        if workspace_members.contains(package.id.as_str()) {
+            continue;
+        }
+        match package.source.as_deref() {
+            Some(source) if source.starts_with("registry+") || source.starts_with("git+") => {
+                selected_package_ids.push(package.id.clone());
+            }
+            _ => excluded_path_package_ids.push(package.id.clone()),
+        }
+    }
+
+    selected_package_ids.sort();
+    excluded_path_package_ids.sort();
+    let mut workspace_package_ids = metadata.workspace_members.clone();
+    workspace_package_ids.sort();
+
+    Ok(RustArtifactPlan {
+        schema_version: 1,
+        mode: mode.to_string(),
+        workspace_root: path_string(&workspace_root),
+        target_dir: path_string(&target_dir),
+        toolchain: RustToolchainIdentity {
+            rustc: toolchain.rustc.clone(),
+            cargo: toolchain.cargo.clone(),
+            channel: toolchain.channel.clone(),
+            host: toolchain.host.clone(),
+        },
+        target_triple: cargo_target_triple(args, &toolchain.host),
+        profile: cargo_profile(args).to_string(),
+        inputs: RustPlanInputs {
+            features_hash: stable_hash_json(&cargo_feature_inputs(args)),
+            rustflags_hash: stable_hash_json(&rustflags_inputs()),
+            env_hash: stable_hash_json(&build_env_inputs()),
+            lockfile_hash: file_hash_or_missing(&workspace_root.join("Cargo.lock"))?,
+            cargo_config_hash: cargo_config_hash(&workspace_root)?,
+            manifest_hashes: workspace_manifest_hashes(&workspace_root)?,
+        },
+        packages: RustPlanPackages {
+            selected_package_ids,
+            workspace_package_ids,
+            excluded_path_package_ids,
+        },
+        allowed_artifact_classes: allowed_artifact_classes(mode),
+        cache_schema_version: 1,
+        journal_log_path: Some(path_string(&session.journal_path)),
+    })
+}
+
+fn allowed_artifact_classes(mode: &str) -> Vec<&'static str> {
+    if mode == "full" {
+        return Vec::new();
+    }
+    vec![
+        "rlib",
+        "rmeta",
+        "dep_info",
+        "proc_macro",
+        "cargo_fingerprint",
+        "build_script_metadata",
+        "build_script_output",
+    ]
+}
+
+fn run_zccache_rust_plan(
+    plan: &RustArtifactPlanContext,
+    operation: &'static str,
+    include_session: bool,
+) -> Result<(), SoldrError> {
+    let plan_path = path_string(&plan.path);
+    let cache_dir = path_string(&plan.cache_dir);
+    let journal_path = path_string(&plan.journal_path);
+    let mut args = vec![
+        "rust-plan".to_string(),
+        operation.to_string(),
+        "--plan".to_string(),
+        plan_path,
+        "--json".to_string(),
+        "--backend".to_string(),
+        plan.backend.clone(),
+        "--cache-dir".to_string(),
+        cache_dir,
+        "--journal".to_string(),
+        journal_path,
+    ];
+    if include_session {
+        args.push("--session-id".to_string());
+        args.push(plan.session_id.clone());
+    }
+
+    let output =
+        run_zccache_command_strings_in_cache_dir(&plan.zccache_binary, &args, &plan.cache_dir)?;
+    let stdout = output.stdout.trim();
+    if !stdout.is_empty() {
+        eprintln!("soldr: zccache rust-plan {operation} summary");
+        eprintln!("{stdout}");
+    }
+    Ok(())
+}
+
+fn cargo_profile(args: &[String]) -> &str {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--release" {
+            return "release";
+        }
+        if arg == "--profile" {
+            return iter.next().map(String::as_str).unwrap_or("debug");
+        }
+        if let Some(value) = arg.strip_prefix("--profile=") {
+            return value;
+        }
+    }
+    "debug"
+}
+
+fn cargo_target_triple(args: &[String], host: &str) -> String {
+    cargo_target_arg(args)
+        .or_else(|| std::env::var("CARGO_BUILD_TARGET").ok())
+        .unwrap_or_else(|| host.to_string())
+}
+
+fn cargo_target_arg(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--target" {
+            return iter.next().cloned();
+        }
+        if let Some(value) = arg.strip_prefix("--target=") {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn cargo_feature_inputs(args: &[String]) -> Vec<String> {
+    selected_cargo_args(
+        args,
+        &[
+            "--features",
+            "--all-features",
+            "--no-default-features",
+            "--package",
+            "-p",
+            "--workspace",
+            "--exclude",
+            "--all-targets",
+            "--lib",
+            "--bins",
+            "--bin",
+            "--examples",
+            "--example",
+            "--tests",
+            "--test",
+            "--benches",
+            "--bench",
+        ],
+    )
+}
+
+fn selected_cargo_args(args: &[String], names: &[&str]) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if names.contains(&arg.as_str()) {
+            selected.push(arg.clone());
+            if !matches!(
+                arg.as_str(),
+                "--all-features"
+                    | "--no-default-features"
+                    | "--workspace"
+                    | "--all-targets"
+                    | "--lib"
+                    | "--bins"
+                    | "--examples"
+                    | "--tests"
+                    | "--benches"
+            ) {
+                if let Some(value) = iter.next() {
+                    selected.push(value.clone());
+                }
+            }
+            continue;
+        }
+        if names
+            .iter()
+            .any(|name| arg.starts_with(&format!("{name}=")))
+        {
+            selected.push(arg.clone());
+        }
+    }
+    selected
+}
+
+fn rustflags_inputs() -> Vec<(String, String)> {
+    sorted_env_vars(|name| {
+        name == "RUSTFLAGS"
+            || name == "CARGO_ENCODED_RUSTFLAGS"
+            || (name.starts_with("CARGO_TARGET_") && name.ends_with("_RUSTFLAGS"))
+    })
+}
+
+fn build_env_inputs() -> Vec<(String, String)> {
+    sorted_env_vars(|name| {
+        name == "CARGO_BUILD_TARGET"
+            || name == "CARGO_TARGET_DIR"
+            || name.starts_with("CARGO_PROFILE_")
+            || name.starts_with("CARGO_CFG_")
+    })
+}
+
+fn sorted_env_vars<F>(include: F) -> Vec<(String, String)>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut vars = std::env::vars()
+        .filter(|(name, _)| include(name))
+        .collect::<Vec<_>>();
+    vars.sort_by(|a, b| a.0.cmp(&b.0));
+    vars
+}
+
+fn workspace_manifest_hashes(workspace_root: &std::path::Path) -> Result<Vec<String>, SoldrError> {
+    let mut hashes = Vec::new();
+    collect_manifest_hashes(workspace_root, workspace_root, &mut hashes)?;
+    hashes.sort();
+    Ok(hashes)
+}
+
+fn collect_manifest_hashes(
+    workspace_root: &std::path::Path,
+    dir: &std::path::Path,
+    hashes: &mut Vec<String>,
+) -> Result<(), SoldrError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if matches!(
+                entry.file_name().to_str(),
+                Some(".git" | "target" | ".soldr" | "node_modules")
+            ) {
+                continue;
+            }
+            collect_manifest_hashes(workspace_root, &path, hashes)?;
+        } else if file_type.is_file() && entry.file_name() == std::ffi::OsStr::new("Cargo.toml") {
+            let relative = path
+                .strip_prefix(workspace_root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            hashes.push(format!("{relative}:{}", file_hash_or_missing(&path)?));
+        }
+    }
+    Ok(())
+}
+
+fn cargo_config_hash(workspace_root: &std::path::Path) -> Result<String, SoldrError> {
+    let mut inputs = Vec::new();
+    for relative in [".cargo/config.toml", ".cargo/config"] {
+        let path = workspace_root.join(relative);
+        if path.exists() {
+            inputs.push(format!("{relative}:{}", file_hash_or_missing(&path)?));
+        }
+    }
+    Ok(stable_hash_json(&inputs))
+}
+
+fn file_hash_or_missing(path: &std::path::Path) -> Result<String, SoldrError> {
+    if !path.exists() {
+        return Ok("missing".to_string());
+    }
+    Ok(sha256_bytes(&std::fs::read(path)?))
+}
+
+fn stable_hash_json<T: Serialize>(value: &T) -> String {
+    let bytes = serde_json::to_vec(value).unwrap_or_default();
+    sha256_bytes(&bytes)
+}
+
+fn sha256_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    hex
+}
+
+fn path_string(path: &std::path::Path) -> String {
+    path.display().to_string()
 }
 
 fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrError> {
@@ -699,27 +1274,146 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
     }
 
     let start_dir = std::env::current_dir().ok();
-    if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+    if let Some(path) = probe_direct_toolchain_binary(tool, start_dir.as_deref()) {
         return Ok(path);
     }
 
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["which", tool]);
     apply_implicit_toolchain_homes(&mut command);
-    let output = command.output()?;
+    let output = command.output();
 
-    if !output.status.success() {
-        return Err(rustup_resolution_failure(tool, &output.stderr));
+    match output {
+        Ok(output) if output.status.success() => {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Ok(path.into());
+            }
+        }
+        Ok(output) => {
+            if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+                return Ok(path);
+            }
+            return Err(rustup_resolution_failure(tool, &output.stderr));
+        }
+        Err(err) => {
+            if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+                return Ok(path);
+            }
+            return Err(SoldrError::Other(format!(
+                "failed to invoke rustup while resolving {tool}: {err}"
+            )));
+        }
     }
 
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        return Err(SoldrError::Other(format!(
-            "rustup did not return a path for {tool}"
-        )));
+    if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+        return Ok(path);
     }
 
-    Ok(path.into())
+    Err(SoldrError::Other(format!(
+        "rustup did not return a path for {tool}"
+    )))
+}
+
+fn probe_direct_toolchain_binary(
+    tool: &str,
+    start_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    if std::env::var_os("RUSTUP_TOOLCHAIN").is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+
+    explicit_rustup_toolchain_binary(tool)
+        .or_else(|| repo_local_rustup_toolchain_binary(tool, start_dir))
+        .or_else(|| explicit_cargo_home_binary(tool))
+        .or_else(|| repo_local_cargo_home_binary(tool, start_dir))
+}
+
+fn explicit_cargo_home_binary(tool: &str) -> Option<std::path::PathBuf> {
+    non_empty_env_path("CARGO_HOME").and_then(|path| executable_in_dir(&path.join("bin"), tool))
+}
+
+fn repo_local_cargo_home_binary(
+    tool: &str,
+    start_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    find_ancestor_dir(start_dir, ".cargo")
+        .and_then(|path| executable_in_dir(&path.join("bin"), tool))
+}
+
+fn explicit_rustup_toolchain_binary(tool: &str) -> Option<std::path::PathBuf> {
+    non_empty_env_path("RUSTUP_HOME")
+        .and_then(|path| rustup_home_single_toolchain_binary(&path, tool))
+}
+
+fn repo_local_rustup_toolchain_binary(
+    tool: &str,
+    start_dir: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    find_ancestor_dir(start_dir, ".rustup")
+        .and_then(|path| rustup_home_single_toolchain_binary(&path, tool))
+}
+
+fn rustup_home_single_toolchain_binary(
+    rustup_home: &std::path::Path,
+    tool: &str,
+) -> Option<std::path::PathBuf> {
+    let mut candidates = std::fs::read_dir(rustup_home.join("toolchains"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join("bin"))
+        .filter_map(|dir| executable_in_dir(&dir, tool))
+        .collect::<Vec<_>>();
+    if candidates.len() == 1 {
+        candidates.pop()
+    } else {
+        None
+    }
+}
+
+fn find_ancestor_dir(
+    start_dir: Option<&std::path::Path>,
+    relative: &str,
+) -> Option<std::path::PathBuf> {
+    let mut current = start_dir?.to_path_buf();
+    loop {
+        let candidate = current.join(relative);
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        if !current.pop() {
+            return None;
+        }
+    }
+}
+
+fn executable_in_dir(dir: &std::path::Path, tool: &str) -> Option<std::path::PathBuf> {
+    let candidate = dir.join(tool);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+    #[cfg(windows)]
+    {
+        for suffix in windows_path_exts() {
+            let candidate = dir.join(format!("{tool}{suffix}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
+fn windows_path_exts() -> Vec<String> {
+    std::env::var_os("PATHEXT")
+        .and_then(|value| value.into_string().ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .collect()
 }
 
 fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
@@ -748,6 +1442,7 @@ struct ZccacheBuildSession {
     binary_path: std::path::PathBuf,
     cache_dir: std::path::PathBuf,
     session_id: String,
+    journal_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -835,10 +1530,10 @@ async fn prepare_zccache_build(
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
-    let journal_path = journal_path.display().to_string();
+    let journal_path_arg = journal_path.display().to_string();
     let session_json = run_zccache_command_in_cache_dir(
         &fetch.binary_path,
-        &["session-start", "--stats", "--journal", &journal_path],
+        &["session-start", "--stats", "--journal", &journal_path_arg],
         &zccache_dir,
     )?;
     let session_id =
@@ -859,6 +1554,7 @@ async fn prepare_zccache_build(
         binary_path: fetch.binary_path,
         cache_dir: zccache_dir,
         session_id,
+        journal_path,
     })
 }
 
@@ -1146,6 +1842,30 @@ fn run_zccache_command_in_cache_dir(
     )
 }
 
+fn run_zccache_command_strings_in_cache_dir(
+    binary: &std::path::Path,
+    args: &[String],
+    cache_dir: &std::path::Path,
+) -> Result<CommandOutput, SoldrError> {
+    let output = run_zccache_command_raw_strings_with_env(
+        binary,
+        args,
+        &[(
+            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            cache_dir.as_os_str(),
+        )],
+    )?;
+    if !output.status.success() {
+        return Err(SoldrError::Other(zccache_command_failure_message_strings(
+            args, &output,
+        )));
+    }
+
+    Ok(CommandOutput {
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+    })
+}
+
 fn start_zccache_with_recovery(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -1254,7 +1974,31 @@ fn run_zccache_command_raw_with_env(
     Ok(command.output()?)
 }
 
+fn run_zccache_command_raw_strings_with_env(
+    binary: &std::path::Path,
+    args: &[String],
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> Result<std::process::Output, SoldrError> {
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    for &(name, value) in envs {
+        command.env(name, value);
+    }
+    Ok(command.output()?)
+}
+
 fn zccache_command_failure_message(args: &[&str], output: &std::process::Output) -> String {
+    format!(
+        "zccache {} failed: {}",
+        args.join(" "),
+        command_stderr(output)
+    )
+}
+
+fn zccache_command_failure_message_strings(
+    args: &[String],
+    output: &std::process::Output,
+) -> String {
     format!(
         "zccache {} failed: {}",
         args.join(" "),
@@ -1346,10 +2090,12 @@ fn cached_managed_zccache(
 #[cfg(test)]
 mod tests {
     use super::{
-        cargo_args_specify_target, cargo_args_use_reserved_no_cache, extract_as_pin,
-        first_cargo_subcommand, is_sccache_wrapper, normalize_version, parse_tool_spec,
-        rustc_wrapper_mode_from_env_var, rustup_resolution_failure, should_trampoline,
-        RustcWrapperMode,
+        allowed_artifact_classes, build_rust_artifact_plan, cargo_args_specify_target,
+        cargo_args_use_reserved_no_cache, cargo_metadata_passthrough_args, cargo_profile,
+        cargo_target_triple, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
+        normalize_version, parse_tool_spec, rustc_wrapper_mode_from_env_var,
+        rustup_resolution_failure, selected_cargo_args, should_trampoline, CargoMetadata,
+        CargoMetadataPackage, RustToolchainIdentity, RustcWrapperMode, ZccacheBuildSession,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -1452,6 +2198,115 @@ mod tests {
         assert_eq!(
             first_cargo_subcommand(&["--".into(), "nextest".into()]),
             None
+        );
+    }
+
+    #[test]
+    fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
+        let root =
+            std::env::temp_dir().join(format!("soldr-rust-plan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app/src")).unwrap();
+        std::fs::create_dir_all(root.join("local_dep/src")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("app/Cargo.toml"), "[package]\nname='app'\n").unwrap();
+        std::fs::write(
+            root.join("local_dep/Cargo.toml"),
+            "[package]\nname='local_dep'\n",
+        )
+        .unwrap();
+
+        let metadata = CargoMetadata {
+            workspace_root: root.clone(),
+            target_directory: root.join("target"),
+            workspace_members: vec!["path+file:///repo/app#app@0.1.0".to_string()],
+            packages: vec![
+                CargoMetadataPackage {
+                    id: "path+file:///repo/app#app@0.1.0".to_string(),
+                    source: None,
+                },
+                CargoMetadataPackage {
+                    id: "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0"
+                        .to_string(),
+                    source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+                },
+                CargoMetadataPackage {
+                    id: "path+file:///repo/local_dep#local_dep@0.1.0".to_string(),
+                    source: None,
+                },
+            ],
+        };
+        let toolchain = RustToolchainIdentity {
+            rustc: "rustc 1.0.0-test".to_string(),
+            cargo: "cargo 1.0.0-test".to_string(),
+            channel: "test".to_string(),
+            host: "x86_64-unknown-test".to_string(),
+        };
+        let session = ZccacheBuildSession {
+            binary_path: "zccache".into(),
+            cache_dir: root.join("cache"),
+            session_id: "session-1".to_string(),
+            journal_path: root.join("cache/logs/last-session.jsonl"),
+        };
+        let args = vec![
+            "build".to_string(),
+            "--release".to_string(),
+            "--features".to_string(),
+            "serde/derive".to_string(),
+            "--target".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+
+        let plan = build_rust_artifact_plan(&metadata, &toolchain, &args, "thin", &session)
+            .expect("build rust artifact plan");
+
+        assert_eq!(plan.schema_version, 1);
+        assert_eq!(plan.mode, "thin");
+        assert_eq!(plan.profile, "release");
+        assert_eq!(plan.target_triple, "x86_64-unknown-linux-gnu");
+        assert_eq!(plan.packages.workspace_package_ids.len(), 1);
+        assert_eq!(plan.packages.selected_package_ids.len(), 1);
+        assert!(plan.packages.selected_package_ids[0].contains("serde"));
+        assert_eq!(plan.packages.excluded_path_package_ids.len(), 1);
+        assert!(plan.allowed_artifact_classes.contains(&"cargo_fingerprint"));
+        assert_eq!(plan.cache_schema_version, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn rust_artifact_plan_helpers_parse_mode_profile_target_and_metadata_args() {
+        let args = vec![
+            "+stable".to_string(),
+            "build".to_string(),
+            "--locked".to_string(),
+            "--features=fast".to_string(),
+            "--target".to_string(),
+            "wasm32-unknown-unknown".to_string(),
+            "--profile".to_string(),
+            "release-lto".to_string(),
+            "--".to_string(),
+            "--ignored".to_string(),
+        ];
+
+        assert_eq!(cargo_profile(&args), "release-lto");
+        assert_eq!(
+            cargo_target_triple(&args, "x86_64-unknown-linux-gnu"),
+            "wasm32-unknown-unknown"
+        );
+        assert_eq!(
+            selected_cargo_args(&args, &["--features"]),
+            vec!["--features=fast".to_string()]
+        );
+        assert_eq!(allowed_artifact_classes("full"), Vec::<&str>::new());
+        assert_eq!(
+            cargo_metadata_passthrough_args(&args)
+                .iter()
+                .map(|value| value.to_string_lossy().to_string())
+                .collect::<Vec<_>>(),
+            vec!["--locked".to_string(), "--features=fast".to_string()]
         );
     }
 

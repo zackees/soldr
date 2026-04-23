@@ -1482,6 +1482,7 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
+ "sha2",
  "soldr-cache",
  "soldr-core",
  "soldr-fetch",

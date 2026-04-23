@@ -7,14 +7,14 @@ from pathlib import Path
 
 
 HELPER_SCRIPT_PATHS = (
-    Path('.github/actions/setup-soldr/resolve_setup.py'),
-    Path('.github/actions/setup-soldr/ensure_rust_toolchain.py'),
-    Path('.github/actions/setup-soldr/ensure_soldr.py'),
-    Path('.github/actions/setup-soldr/install_tool_shims.py'),
-    Path('.github/actions/setup-soldr/verify_soldr.py'),
+    Path(".github/actions/setup-soldr/resolve_setup.py"),
+    Path(".github/actions/setup-soldr/ensure_rust_toolchain.py"),
+    Path(".github/actions/setup-soldr/ensure_soldr.py"),
+    Path(".github/actions/setup-soldr/install_tool_shims.py"),
+    Path(".github/actions/setup-soldr/verify_soldr.py"),
 )
 
-PUBLIC_ACTION_REPO = 'zackees/setup-soldr'
+PUBLIC_ACTION_REPO = "zackees/setup-soldr"
 PUBLIC_README = """# setup-soldr
 
 Public GitHub Action for installing one released `soldr` binary, provisioning the resolved Rust toolchain with `rustup`, and restoring a cacheable runner-local root for Soldr, Cargo, and rustup state.
@@ -98,9 +98,9 @@ jobs:
 | `toolchain-file` | Alternate toolchain file path when `toolchain` is empty. |
 | `trust-mode` | Optional `SOLDR_TRUST_MODE` value. |
 | `build-cache` | Restore and save the Soldr-owned zccache compilation artifact cache across runs. Default `true`; set to `false` to opt out. |
-| `target-cache` | Restore and save Cargo target metadata for no-op CI fast paths. |
-| `target-cache-mode` | Target cache mode. Default `hot` caches Cargo freshness metadata and lightweight type metadata; `full` caches the whole `target-dir`; `off` disables target caching. |
-| `target-dir` | Cargo target directory restored by `target-cache`. |
+| `target-cache` | Restore and save the zccache-owned Rust artifact plan cache for fast CI rebuilds. |
+| `target-cache-mode` | Target cache mode. Default `thin` asks soldr to generate a bounded dependency-artifact plan for zccache; `full` asks zccache to cache the whole `target-dir`; `off` disables target artifact caching. The old `hot` value is accepted as a deprecated alias for `thin`. |
+| `target-dir` | Cargo target directory used in target-cache key shaping. |
 | `tool-shims` | Optional PATH shim mode. Set to `cargo` to make later `cargo ...` steps run through `soldr cargo ...`; default `false`. |
 
 ## Outputs
@@ -112,7 +112,7 @@ jobs:
 | `cache-dir` | Action-managed runner-local cache/state root. |
 | `cache-hit` | Whether the action restored an exact cache hit. |
 | `build-cache-hit` | Whether the Soldr-owned zccache compilation cache was restored. Empty only when `build-cache` is disabled. |
-| `target-cache-hit` | Whether the Cargo target directory cache was restored. |
+| `target-cache-hit` | Whether the Rust artifact plan cache was restored. |
 | `target-cache-mode` | Effective target cache mode. |
 | `toolchain` | Exact Rust toolchain channel configured for the action. |
 | `tool-shims-dir` | Directory containing generated tool shims when enabled. |
@@ -123,7 +123,7 @@ jobs:
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
 - The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
-- The default target cache mode is `hot`, which avoids archiving the full Cargo `target/` tree and caches only Cargo freshness metadata plus lightweight type metadata. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
+- The default target cache mode is `thin`, which avoids action-owned `target/` snapshots by having soldr pass a bounded Rust artifact plan to zccache. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
 - `tool-shims: cargo` prepends a Cargo shim for existing workflows that cannot rewrite every `cargo ...` command to `soldr cargo ...`.
 - A restored target directory is a Cargo fast path, not a guarantee: build scripts without precise `cargo:rerun-if-*` inputs can still be dirty on fresh checkouts because source mtimes differ.
@@ -140,13 +140,13 @@ def _module_repo_root() -> Path:
 
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding='utf-8')
+    path.write_text(content, encoding="utf-8")
 
 
 def _copy_file(source_root: Path, destination_root: Path, relative_path: Path) -> None:
     source_path = source_root / relative_path
     if not source_path.is_file():
-        raise FileNotFoundError(f'Missing source file for export: {source_path}')
+        raise FileNotFoundError(f"Missing source file for export: {source_path}")
     destination_path = destination_root / relative_path
     destination_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source_path, destination_path)
@@ -158,25 +158,25 @@ def _strip_repo_input(action_text: str) -> str:
 
     for line in action_text.splitlines():
         if skipping_repo_input:
-            if line.startswith('  ') and not line.startswith('    '):
+            if line.startswith("  ") and not line.startswith("    "):
                 skipping_repo_input = False
             else:
                 continue
 
-        if line == '  repo:':
+        if line == "  repo:":
             skipping_repo_input = True
             continue
 
-        if 'INPUT_REPO:' in line:
+        if "INPUT_REPO:" in line:
             continue
 
         output_lines.append(line)
 
-    return '\n'.join(output_lines) + '\n'
+    return "\n".join(output_lines) + "\n"
 
 
 def render_public_action_yaml(source_root: Path) -> str:
-    return _strip_repo_input((source_root / 'action.yml').read_text(encoding='utf-8'))
+    return _strip_repo_input((source_root / "action.yml").read_text(encoding="utf-8"))
 
 
 def render_public_readme() -> str:
@@ -188,12 +188,12 @@ def export_setup_soldr_bundle(source_root: Path, destination_root: Path) -> Path
     destination_root = destination_root.expanduser().resolve()
 
     if destination_root == source_root:
-        raise ValueError('Destination must not be the source repository root')
+        raise ValueError("Destination must not be the source repository root")
 
     destination_root.mkdir(parents=True, exist_ok=True)
-    _write_text(destination_root / 'action.yml', render_public_action_yaml(source_root))
-    _write_text(destination_root / 'README.md', render_public_readme())
-    _copy_file(source_root, destination_root, Path('LICENSE'))
+    _write_text(destination_root / "action.yml", render_public_action_yaml(source_root))
+    _write_text(destination_root / "README.md", render_public_readme())
+    _copy_file(source_root, destination_root, Path("LICENSE"))
 
     for relative_path in HELPER_SCRIPT_PATHS:
         _copy_file(source_root, destination_root, relative_path)
@@ -203,13 +203,15 @@ def export_setup_soldr_bundle(source_root: Path, destination_root: Path) -> Path
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description='Export the standalone public setup-soldr action bundle.'
+        description="Export the standalone public setup-soldr action bundle."
     )
-    parser.add_argument('destination', help='Directory to materialize as the future public action repository.')
     parser.add_argument(
-        '--source-root',
+        "destination", help="Directory to materialize as the future public action repository."
+    )
+    parser.add_argument(
+        "--source-root",
         default=str(_module_repo_root()),
-        help='Source soldr repository root. Defaults to the current checkout.',
+        help="Source soldr repository root. Defaults to the current checkout.",
     )
     return parser.parse_args(argv)
 
@@ -217,9 +219,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     destination = export_setup_soldr_bundle(Path(args.source_root), Path(args.destination))
-    print(f'Exported setup-soldr bundle to {destination}')
+    print(f"Exported setup-soldr bundle to {destination}")
     return 0
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     raise SystemExit(main())
