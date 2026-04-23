@@ -832,7 +832,7 @@ async fn prepare_zccache_build(
         );
     }
 
-    run_zccache_command_in_cache_dir(&fetch.binary_path, &["start"], &zccache_dir)?;
+    start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_path = journal_path.display().to_string();
@@ -1146,28 +1146,129 @@ fn run_zccache_command_in_cache_dir(
     )
 }
 
+fn start_zccache_with_recovery(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<(), SoldrError> {
+    let start = run_zccache_command_raw_in_cache_dir(binary, &["start"], cache_dir)?;
+    if start.status.success() {
+        return Ok(());
+    }
+
+    let initial_stderr = command_stderr(&start);
+    if !is_stale_zccache_daemon_start_failure(&initial_stderr) {
+        return Err(SoldrError::Other(zccache_command_failure_message(
+            &["start"],
+            &start,
+        )));
+    }
+
+    eprintln!(
+        "soldr: zccache start reported an unresponsive daemon; stopping stale state and retrying"
+    );
+    let stop_diagnostic = match run_zccache_command_raw_in_cache_dir(binary, &["stop"], cache_dir) {
+        Ok(stop) if stop.status.success() => None,
+        Ok(stop) => Some(zccache_command_failure_message(&["stop"], &stop)),
+        Err(err) => Some(format!("failed to invoke zccache stop: {err}")),
+    };
+
+    match run_zccache_command_raw_in_cache_dir(binary, &["start"], cache_dir) {
+        Ok(retry) if retry.status.success() => Ok(()),
+        Ok(retry) => {
+            let mut message = format!(
+                "zccache start failed after stale daemon recovery retry: {}",
+                command_stderr(&retry)
+            );
+            message.push_str(&format!(
+                "\ninitial zccache start failure: {}",
+                initial_stderr
+            ));
+            if let Some(stop_diagnostic) = stop_diagnostic {
+                message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
+            }
+            Err(SoldrError::Other(message))
+        }
+        Err(err) => {
+            let mut message =
+                format!("failed to invoke zccache start during stale daemon recovery retry: {err}");
+            message.push_str(&format!(
+                "\ninitial zccache start failure: {}",
+                initial_stderr
+            ));
+            if let Some(stop_diagnostic) = stop_diagnostic {
+                message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
+}
+
+fn is_stale_zccache_daemon_start_failure(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("not accepting connections")
+        || (stderr.contains("daemon process") && stderr.contains("exists"))
+}
+
+fn run_zccache_command_raw_in_cache_dir(
+    binary: &std::path::Path,
+    args: &[&str],
+    cache_dir: &std::path::Path,
+) -> Result<std::process::Output, SoldrError> {
+    run_zccache_command_raw_with_env(
+        binary,
+        args,
+        &[(
+            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            cache_dir.as_os_str(),
+        )],
+    )
+}
+
 fn run_zccache_command_with_env(
     binary: &std::path::Path,
     args: &[&str],
     envs: &[(&str, &std::ffi::OsStr)],
 ) -> Result<CommandOutput, SoldrError> {
-    let mut command = std::process::Command::new(binary);
-    command.args(args);
-    for &(name, value) in envs {
-        command.env(name, value);
-    }
-    let output = command.output()?;
+    let output = run_zccache_command_raw_with_env(binary, args, envs)?;
     if !output.status.success() {
-        return Err(SoldrError::Other(format!(
-            "zccache {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+        return Err(SoldrError::Other(zccache_command_failure_message(
+            args, &output,
         )));
     }
 
     Ok(CommandOutput {
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
     })
+}
+
+fn run_zccache_command_raw_with_env(
+    binary: &std::path::Path,
+    args: &[&str],
+    envs: &[(&str, &std::ffi::OsStr)],
+) -> Result<std::process::Output, SoldrError> {
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    for &(name, value) in envs {
+        command.env(name, value);
+    }
+    Ok(command.output()?)
+}
+
+fn zccache_command_failure_message(args: &[&str], output: &std::process::Output) -> String {
+    format!(
+        "zccache {} failed: {}",
+        args.join(" "),
+        command_stderr(output)
+    )
+}
+
+fn command_stderr(output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    if stderr.is_empty() {
+        format!("exit status {}", output.status)
+    } else {
+        stderr
+    }
 }
 
 fn toolchain_binary_override(tool: &str) -> Option<std::path::PathBuf> {
