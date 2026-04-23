@@ -611,6 +611,7 @@ struct RustArtifactPlanContext {
     path: std::path::PathBuf,
     zccache_binary: std::path::PathBuf,
     cache_dir: std::path::PathBuf,
+    zccache_daemon_cache_dir: std::path::PathBuf,
     session_id: String,
     journal_path: std::path::PathBuf,
     backend: String,
@@ -645,6 +646,7 @@ fn maybe_prepare_rust_artifact_plan(
         path: plan_path,
         zccache_binary: session.binary_path.clone(),
         cache_dir: rust_artifact_plan_cache_dir(session)?,
+        zccache_daemon_cache_dir: session.cache_dir.clone(),
         session_id: session.session_id.clone(),
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,
@@ -895,8 +897,11 @@ fn run_zccache_rust_plan(
         args.push(plan.session_id.clone());
     }
 
-    let output =
-        run_zccache_command_strings_in_cache_dir(&plan.zccache_binary, &args, &plan.cache_dir)?;
+    let output = run_zccache_command_strings_in_cache_dir(
+        &plan.zccache_binary,
+        &args,
+        &plan.zccache_daemon_cache_dir,
+    )?;
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
         eprintln!("soldr: zccache rust-plan {operation} summary");

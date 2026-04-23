@@ -748,6 +748,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
     let cache_root = unique_temp_dir("cargo-rust-plan-cache");
     let workspace = unique_temp_dir("cargo-rust-plan-workspace");
     let plan_cache = cache_root.join("target-artifact-cache");
+    let zccache_cache_dir = cache_root.join("cache").join("zccache");
     let log_path = cache_root.join("tool.log");
     let metadata_path = cache_root.join("metadata.json");
     let target_dir = workspace.join("target");
@@ -803,10 +804,17 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         "soldr should call zccache rust-plan restore/save when target cache is enabled: {log}"
     );
     assert!(
-        path_display_variants(&plan_cache)
+        path_display_variants(&zccache_cache_dir)
             .iter()
             .any(|path| log.contains(&format!("cache_dir={path}"))),
-        "rust-plan calls should use the zccache-owned target artifact cache dir: {log}"
+        "rust-plan calls should query the active managed zccache daemon cache dir: {log}"
+    );
+    assert!(
+        path_display_variants(&plan_cache).iter().any(|path| {
+            log.contains(&format!("--cache-dir {path}"))
+                || log.contains(&format!("--cache-dir \"{path}\""))
+        }),
+        "rust-plan calls should still pass the target artifact bundle path via --cache-dir: {log}"
     );
     assert!(
         log.find("zccache rust-plan restore") < log.find("cargo wrapper=")
