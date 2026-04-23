@@ -303,12 +303,13 @@ fn fake_zccache_script(log_path: &Path) -> String {
                if defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\"\n\
                exit /b 0\n\
              )\n\
-             if \"%~1\"==\"session-start\" (\n\
-               echo zccache session-start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
-               if not \"%~4\"==\"\" type nul > \"%~4\"\n\
-               echo {{\"session_id\":\"test-session\"}}\n\
-               exit /b 0\n\
-             )\n\
+              if \"%~1\"==\"session-start\" (\n\
+                echo zccache session-start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+                if not \"%~4\"==\"\" type nul > \"%~4\"\n\
+                if not \"%~6\"==\"\" type nul > \"%~6\"\n\
+                echo {{\"session_id\":\"test-session\"}}\n\
+                exit /b 0\n\
+              )\n\
              if \"%~1\"==\"session-end\" (\n\
                echo zccache session-end %~2 cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
                echo hits: 1\n\
@@ -373,12 +374,13 @@ fn fake_zccache_script(log_path: &Path) -> String {
                  fi\n\
                  exit 0\n\
                  ;;\n\
-               session-start)\n\
-                 echo \"zccache session-start cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
-                 : > \"$4\"\n\
-                 echo '{{\"session_id\":\"test-session\"}}'\n\
-                 exit 0\n\
-                 ;;\n\
+                session-start)\n\
+                  echo \"zccache session-start cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                  : > \"$4\"\n\
+                  : > \"$6\"\n\
+                  echo '{{\"session_id\":\"test-session\"}}'\n\
+                  exit 0\n\
+                  ;;\n\
                session-end)\n\
                  echo \"zccache session-end $2 cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
                echo 'hits: 1'\n\
@@ -736,6 +738,12 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
     );
 
     let journal = zccache_cache_dir.join("logs").join("last-session.jsonl");
+    let session_log = zccache_cache_dir.join("logs").join("last-session.log");
+    assert!(
+        session_log.exists(),
+        "expected session log at {}",
+        session_log.display()
+    );
     assert!(
         journal.exists(),
         "expected session journal at {}",
@@ -1644,6 +1652,7 @@ fn status_json_reports_stable_machine_fields() {
         cache_root.join("cache").display().to_string()
     );
     assert_eq!(json["zccache"]["binary_fetched"], false);
+    assert_eq!(json["zccache"]["session_log_present"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
     assert_eq!(
         json["zccache"]["cache_dir"],
@@ -1657,6 +1666,16 @@ fn status_json_reports_stable_machine_fields() {
         json["target"].as_str().is_some(),
         "status JSON missing target"
     );
+    assert_eq!(
+        json["zccache"]["session_log_path"],
+        cache_root
+            .join("cache")
+            .join("zccache")
+            .join("logs")
+            .join("last-session.log")
+            .display()
+            .to_string()
+    );
 }
 
 #[test]
@@ -1669,8 +1688,14 @@ fn cache_command_reports_managed_zccache_status() {
         .join("zccache")
         .join("logs")
         .join("last-session.jsonl");
+    let session_log = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("last-session.log");
     fs::create_dir_all(journal.parent().expect("journal parent missing"))
         .expect("failed to create journal dir");
+    fs::write(&session_log, "compile line\n").expect("failed to seed session log");
     fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -1692,12 +1717,16 @@ fn cache_command_reports_managed_zccache_status() {
         "cache command missing state dir: {stdout}"
     );
     assert!(
+        stdout.contains("last session log:"),
+        "cache command missing session log path: {stdout}"
+    );
+    assert!(
         stdout.contains("last session journal:"),
         "cache command missing journal path: {stdout}"
     );
     assert!(
-        stdout.contains("(present)"),
-        "cache command should report present journal: {stdout}"
+        stdout.contains(&format!("{}", session_log.display())) && stdout.contains("(present)"),
+        "cache command should report present session log: {stdout}"
     );
     assert!(
         stdout.contains("zccache: hits=7"),
@@ -1715,8 +1744,14 @@ fn cache_json_reports_managed_zccache_status() {
         .join("zccache")
         .join("logs")
         .join("last-session.jsonl");
+    let session_log = cache_root
+        .join("cache")
+        .join("zccache")
+        .join("logs")
+        .join("last-session.log");
     fs::create_dir_all(journal.parent().expect("journal parent missing"))
         .expect("failed to create journal dir");
+    fs::write(&session_log, "compile line\n").expect("failed to seed session log");
     fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -1733,6 +1768,7 @@ fn cache_json_reports_managed_zccache_status() {
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache");
     assert_eq!(json["managed_zccache_version"], "1.3.10");
+    assert_eq!(json["zccache"]["session_log_present"], true);
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["binary_fetched"], true);
     assert_eq!(
@@ -1742,6 +1778,10 @@ fn cache_json_reports_managed_zccache_status() {
             .join("zccache")
             .display()
             .to_string()
+    );
+    assert_eq!(
+        json["zccache"]["session_log_path"],
+        session_log.display().to_string()
     );
     assert_eq!(
         json["zccache"]["journal_path"],

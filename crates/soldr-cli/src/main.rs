@@ -1447,6 +1447,7 @@ struct ZccacheBuildSession {
     binary_path: std::path::PathBuf,
     cache_dir: std::path::PathBuf,
     session_id: String,
+    session_log_path: std::path::PathBuf,
     journal_path: std::path::PathBuf,
 }
 
@@ -1534,11 +1535,20 @@ async fn prepare_zccache_build(
 
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
+    let session_log_path = soldr_cache::session_log_path(&zccache_dir);
+    let session_log_path_arg = session_log_path.display().to_string();
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_path_arg = journal_path.display().to_string();
     let session_json = run_zccache_command_in_cache_dir(
         &fetch.binary_path,
-        &["session-start", "--stats", "--journal", &journal_path_arg],
+        &[
+            "session-start",
+            "--stats",
+            "--log",
+            &session_log_path_arg,
+            "--journal",
+            &journal_path_arg,
+        ],
         &zccache_dir,
     )?;
     let session_id =
@@ -1559,6 +1569,7 @@ async fn prepare_zccache_build(
         binary_path: fetch.binary_path,
         cache_dir: zccache_dir,
         session_id,
+        session_log_path,
         journal_path,
     })
 }
@@ -1569,6 +1580,12 @@ fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError>
         &["session-end", &session.session_id],
         &session.cache_dir,
     )?;
+    if session.session_log_path.exists() {
+        eprintln!(
+            "soldr: zccache session log: {}",
+            session.session_log_path.display()
+        );
+    }
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
         eprintln!("soldr: zccache session summary");
@@ -1664,6 +1681,8 @@ struct CacheOutput {
 struct ZccacheStatusSnapshot {
     cache_dir: String,
     state_dir: String,
+    session_log_path: String,
+    session_log_present: bool,
     journal_path: String,
     journal_present: bool,
     binary_path: Option<String>,
@@ -1710,6 +1729,8 @@ fn collect_cache_output() -> Result<CacheOutput, SoldrError> {
 
 fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, SoldrError> {
     let zccache_dir = managed_zccache_cache_dir(paths)?;
+    let session_log_path = soldr_cache::session_log_path(&zccache_dir);
+    let session_log_present = session_log_path.exists();
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_present = journal_path.exists();
 
@@ -1722,6 +1743,8 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             Ok(ZccacheStatusSnapshot {
                 cache_dir: zccache_dir.display().to_string(),
                 state_dir: zccache_dir.display().to_string(),
+                session_log_path: session_log_path.display().to_string(),
+                session_log_present,
                 journal_path: journal_path.display().to_string(),
                 journal_present,
                 binary_path: Some(fetch.binary_path.display().to_string()),
@@ -1733,6 +1756,8 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
         None => Ok(ZccacheStatusSnapshot {
             cache_dir: zccache_dir.display().to_string(),
             state_dir: zccache_dir.display().to_string(),
+            session_log_path: session_log_path.display().to_string(),
+            session_log_present,
             journal_path: journal_path.display().to_string(),
             journal_present,
             binary_path: None,
@@ -1768,6 +1793,15 @@ fn print_cache_output(output: &CacheOutput) {
 fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
     println!("soldr zccache cache dir: {}", snapshot.cache_dir);
     println!("soldr zccache state dir: {}", snapshot.state_dir);
+    println!(
+        "last session log: {} ({})",
+        snapshot.session_log_path,
+        if snapshot.session_log_present {
+            "present"
+        } else {
+            "missing"
+        }
+    );
     println!(
         "last session journal: {} ({})",
         snapshot.journal_path,
@@ -2253,6 +2287,7 @@ mod tests {
             binary_path: "zccache".into(),
             cache_dir: root.join("cache"),
             session_id: "session-1".to_string(),
+            session_log_path: root.join("cache/logs/last-session.log"),
             journal_path: root.join("cache/logs/last-session.jsonl"),
         };
         let args = vec![
