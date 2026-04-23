@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  RUST_BACKTRACE: "1"
+
 jobs:
   lint:
     name: Lint
