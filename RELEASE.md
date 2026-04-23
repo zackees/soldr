@@ -92,6 +92,16 @@ Before changing the release workflow:
 
 If the live GitHub-side or PyPI-side controls drift from the documented flow, stop and report the drift instead of assuming the release posture is intact.
 
+When preparing a normal release:
+
+1. Bump `[workspace.package].version` in `Cargo.toml`.
+2. Bump `package.json` to the exact same version.
+3. Confirm the candidate is not already published on PyPI as `soldr` and not already published on npm as `@zackees/soldr`.
+4. Confirm `git ls-remote --tags origin vX.Y.Z` does not find the candidate tag.
+5. Open and merge the version-bump PR to `main`; the release workflow creates the `vX.Y.Z` tag and GitHub Release from that merge commit.
+
+If `Autonomous Release` is run manually without an unpublished package version, the prepare job will set `should_release=false` and all build/publish jobs will be skipped. That is expected behavior, not a release failure. For a new release, prepare a new version-bump PR instead of manually rerunning the workflow.
+
 ## Verification Checklist
 
 After an autonomous release:
