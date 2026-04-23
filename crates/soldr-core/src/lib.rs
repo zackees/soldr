@@ -490,7 +490,11 @@ pub struct SoldrPaths {
 
 impl SoldrPaths {
     pub fn new() -> Result<Self, SoldrError> {
-        let root = soldr_root_from_env_var(std::env::var_os(SOLDR_CACHE_DIR_ENV_VAR).as_deref())
+        Self::from_root_env_value(std::env::var_os(SOLDR_CACHE_DIR_ENV_VAR).as_deref())
+    }
+
+    fn from_root_env_value(value: Option<&OsStr>) -> Result<Self, SoldrError> {
+        let root = soldr_root_from_env_var(value)
             .unwrap_or_else(|| home_dir().map(|home| home.join(".soldr")))?;
         Ok(Self::with_root(root))
     }
@@ -740,7 +744,7 @@ mod tests {
 
     #[test]
     fn test_paths() {
-        let paths = SoldrPaths::new().unwrap();
+        let paths = SoldrPaths::from_root_env_value(None).unwrap();
         assert!(paths.root.ends_with(".soldr"));
         assert!(paths.bin.ends_with("bin"));
         assert!(paths.cache.ends_with("cache"));
