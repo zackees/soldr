@@ -257,8 +257,10 @@ fn fake_zccache_script(log_path: &Path) -> String {
     {
         format!(
             "@echo off\n\
-             if \"%~1\"==\"start\" (\n\
-               echo zccache start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             if \"%~1\"==\"start\" goto soldr_zccache_start\n\
+             if \"%~1\"==\"stop\" (\n\
+               echo zccache stop cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+               if defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\"\n\
                exit /b 0\n\
              )\n\
              if \"%~1\"==\"session-start\" (\n\
@@ -284,7 +286,18 @@ fn fake_zccache_script(log_path: &Path) -> String {
              shift\n\
              echo zccache wrapper cache_dir=%ZCCACHE_CACHE_DIR% %rustc% %*>>\"{0}\"\n\
              call \"%rustc%\" %*\n\
-             exit /b %ERRORLEVEL%\n",
+             exit /b %ERRORLEVEL%\n\
+             :soldr_zccache_start\n\
+             echo zccache start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             if not defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE exit /b 0\n\
+             if exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\" exit /b 0\n\
+             if not exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.failed\" (\n\
+               type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.failed\"\n\
+               echo failed to start daemon: daemon process 3197 exists but not accepting connections 1>&2\n\
+               exit /b 1\n\
+             )\n\
+             echo zccache start retried before stop 1>&2\n\
+             exit /b 66\n",
             log_path.display()
         )
     }
@@ -295,6 +308,24 @@ fn fake_zccache_script(log_path: &Path) -> String {
              case \"$1\" in\n\
                start)\n\
                  echo \"zccache start cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
+                   if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\" ]; then\n\
+                     if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.failed\" ]; then\n\
+                       : > \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.failed\"\n\
+                       echo 'failed to start daemon: daemon process 3197 exists but not accepting connections' >&2\n\
+                       exit 1\n\
+                     fi\n\
+                     echo 'zccache start retried before stop' >&2\n\
+                     exit 66\n\
+                   fi\n\
+                 fi\n\
+                 exit 0\n\
+                 ;;\n\
+               stop)\n\
+                 echo \"zccache stop cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
+                   : > \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\"\n\
+                 fi\n\
                  exit 0\n\
                  ;;\n\
                session-start)\n\
@@ -659,6 +690,51 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cargo_front_door_recovers_from_stale_zccache_daemon_start() {
+    let cache_root = unique_temp_dir("cargo-stale-zccache-daemon");
+    let log_path = cache_root.join("tool.log");
+    let stale_marker = cache_root.join("stale-zccache-start");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_ZCCACHE_STALE_START_ONCE", &stale_marker)
+        .output()
+        .expect("failed to run soldr cargo build with stale fake zccache");
+
+    assert!(
+        output.status.success(),
+        "cache-enabled front door should recover from stale zccache daemon\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert_eq!(
+        log.matches("zccache start").count(),
+        2,
+        "managed zccache start should be retried once after stale daemon detection: {log}"
+    );
+    assert!(
+        log.contains("zccache stop"),
+        "managed zccache should stop stale daemon state before retrying: {log}"
+    );
+    assert!(
+        log.contains("zccache session-start")
+            && log.contains("zccache wrapper")
+            && log.contains("zccache session-end test-session"),
+        "recovered build should still exercise the normal managed zccache path: {log}"
+    );
+    assert!(
+        stale_marker.with_extension("stopped").exists(),
+        "fake zccache should only allow recovery after stop"
     );
 }
 
@@ -1408,7 +1484,7 @@ fn status_json_reports_stable_machine_fields() {
     assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(json["cache_default_enabled"], true);
     assert_eq!(json["cache_enabled_for_invocation"], true);
-    assert_eq!(json["managed_zccache_version"], "1.3.7");
+    assert_eq!(json["managed_zccache_version"], "1.3.8");
     assert_eq!(json["root_dir"], cache_root.display().to_string());
     assert_eq!(
         json["cache_dir"],
@@ -1503,7 +1579,7 @@ fn cache_json_reports_managed_zccache_status() {
         serde_json::from_slice(&output.stdout).expect("cache --json did not return JSON");
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache");
-    assert_eq!(json["managed_zccache_version"], "1.3.7");
+    assert_eq!(json["managed_zccache_version"], "1.3.8");
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["binary_fetched"], true);
     assert_eq!(
