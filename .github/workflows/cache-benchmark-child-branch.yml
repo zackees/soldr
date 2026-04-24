@@ -1,0 +1,262 @@
+name: Cache Benchmark Child Branch
+
+# Parent-to-child cache probe for issue #168.
+#
+# Runs the minimal consumer workflow (see examples/ci-minimal.yml) against a
+# selected branch, captures the setup-soldr action outputs and build timings,
+# and emits a markdown report matching the suggested shape in issue #168.
+#
+# This is a workflow-dispatch probe. Re-run it against the same child branch
+# twice back-to-back to distinguish:
+#   - run 1: parent (main) restore-key fallback
+#   - run 2: same-branch warm restore
+#
+# Acceptance criteria checks this probe supports (issue #168):
+#   - demonstrates parent-seeded restore of the zccache build cache
+#   - demonstrates same-branch warm restore
+#   - reports cold vs warm wall-clock, speedup ratio, and seconds saved
+#   - reports whether the stretch "sub-second no-op build" target is met
+#   - posts an issue comment with the merged findings and run URLs
+
+on:
+  workflow_dispatch:
+    inputs:
+      child_branch:
+        description: Child branch to probe. Defaults to the ref this workflow was dispatched on.
+        required: false
+        default: ""
+        type: string
+      post_comment:
+        description: Post the generated report as a comment on the tracking issue.
+        required: false
+        default: "true"
+        type: string
+      issue_number:
+        description: Tracking issue to comment on.
+        required: false
+        default: "168"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  cold-control:
+    name: Cold cargo control (no cache)
+    runs-on: ubuntu-24.04
+    outputs:
+      seconds: ${{ steps.measure.outputs.seconds }}
+      result: ${{ steps.measure.outputs.result }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.child_branch != '' && inputs.child_branch || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+
+      - name: Time cold cargo build
+        id: measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe-results
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import time
+
+          command = [
+              "cargo",
+              "build",
+              "--package",
+              "soldr-cli",
+              "--locked",
+              "--timings",
+          ]
+          start = time.perf_counter()
+          proc = subprocess.run(
+              command,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True,
+              check=False,
+          )
+          elapsed = time.perf_counter() - start
+          sys.stdout.write(proc.stdout)
+          sys.stdout.flush()
+
+          result = "success" if proc.returncode == 0 else "failure"
+          pathlib.Path("probe-results/cold-build.log").write_text(
+              proc.stdout, encoding="utf-8"
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"seconds={elapsed:.2f}\n")
+              fh.write(f"result={result}\n")
+
+          if proc.returncode != 0:
+              sys.exit(proc.returncode)
+          PY
+
+      - name: Upload cold timing artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: child-branch-probe-cold
+          path: |
+            target/cargo-timings
+            probe-results/cold-build.log
+          if-no-files-found: warn
+
+  warm-soldr:
+    name: Warm setup-soldr build on child branch
+    runs-on: ubuntu-24.04
+    outputs:
+      seconds: ${{ steps.measure.outputs.seconds }}
+      result: ${{ steps.measure.outputs.result }}
+      cache_hit: ${{ steps.setup.outputs.cache-hit }}
+      build_cache_hit: ${{ steps.setup.outputs.build-cache-hit }}
+      target_cache_hit: ${{ steps.setup.outputs.target-cache-hit }}
+      soldr_version: ${{ steps.setup.outputs.soldr-version }}
+      toolchain: ${{ steps.setup.outputs.toolchain }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ inputs.child_branch != '' && inputs.child_branch || github.ref }}
+
+      # Use the repo-local composite action so the probe validates the
+      # action.yml under test, not a pinned release. External consumers would
+      # use `uses: zackees/setup-soldr@v0` here.
+      - id: setup
+        uses: ./
+        with:
+          cache: true
+          build-cache: true
+          target-cache: true
+
+      - name: Show setup-soldr outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "cache-hit=${{ steps.setup.outputs.cache-hit }}"
+            echo "build-cache-hit=${{ steps.setup.outputs.build-cache-hit }}"
+            echo "target-cache-hit=${{ steps.setup.outputs.target-cache-hit }}"
+            echo "toolchain=${{ steps.setup.outputs.toolchain }}"
+            echo "soldr-version=${{ steps.setup.outputs.soldr-version }}"
+          } | tee probe-setup-outputs.txt
+
+      - name: Time soldr cargo build
+        id: measure
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p probe-results
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import subprocess
+          import sys
+          import time
+
+          command = [
+              "soldr",
+              "cargo",
+              "build",
+              "--package",
+              "soldr-cli",
+              "--locked",
+              "--timings",
+          ]
+          start = time.perf_counter()
+          proc = subprocess.run(
+              command,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.STDOUT,
+              text=True,
+              check=False,
+          )
+          elapsed = time.perf_counter() - start
+          sys.stdout.write(proc.stdout)
+          sys.stdout.flush()
+
+          result = "success" if proc.returncode == 0 else "failure"
+          pathlib.Path("probe-results/warm-build.log").write_text(
+              proc.stdout, encoding="utf-8"
+          )
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"seconds={elapsed:.2f}\n")
+              fh.write(f"result={result}\n")
+
+          if proc.returncode != 0:
+              sys.exit(proc.returncode)
+          PY
+
+      - name: Capture soldr cache status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr cache --json > probe-results/soldr-cache.json 2>&1 || true
+          soldr cache > probe-results/soldr-cache.txt 2>&1 || true
+
+      - name: Upload warm timing artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: child-branch-probe-warm
+          path: |
+            target/cargo-timings
+            probe-results
+            probe-setup-outputs.txt
+          if-no-files-found: warn
+
+  report:
+    name: Report parent-child speedup
+    if: always()
+    needs:
+      - cold-control
+      - warm-soldr
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build report
+        id: report
+        shell: bash
+        env:
+          COLD_RESULT: ${{ needs.cold-control.outputs.result }}
+          COLD_SECONDS: ${{ needs.cold-control.outputs.seconds }}
+          WARM_RESULT: ${{ needs.warm-soldr.outputs.result }}
+          WARM_SECONDS: ${{ needs.warm-soldr.outputs.seconds }}
+          CACHE_HIT: ${{ needs.warm-soldr.outputs.cache_hit }}
+          BUILD_CACHE_HIT: ${{ needs.warm-soldr.outputs.build_cache_hit }}
+          TARGET_CACHE_HIT: ${{ needs.warm-soldr.outputs.target_cache_hit }}
+          SOLDR_VERSION: ${{ needs.warm-soldr.outputs.soldr_version }}
+          TOOLCHAIN: ${{ needs.warm-soldr.outputs.toolchain }}
+          CHILD_BRANCH_INPUT: ${{ inputs.child_branch }}
+          OUTPUT_PATH: parent-child-zccache-report.md
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/cache_benchmark_child_branch_report.py
+
+      - name: Upload report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: child-branch-probe-report
+          path: parent-child-zccache-report.md
+          if-no-files-found: error
+
+      - name: Comment on tracking issue
+        if: ${{ inputs.post_comment == 'true' && github.repository == 'zackees/soldr' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          gh issue comment "$ISSUE_NUMBER" --body-file parent-child-zccache-report.md
