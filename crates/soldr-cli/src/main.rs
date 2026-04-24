@@ -906,8 +906,37 @@ fn run_zccache_rust_plan(
     if !stdout.is_empty() {
         eprintln!("soldr: zccache rust-plan {operation} summary");
         eprintln!("{stdout}");
+        if operation == "restore" {
+            warn_if_rust_plan_restore_incomplete(stdout);
+        }
     }
     Ok(())
+}
+
+fn warn_if_rust_plan_restore_incomplete(stdout: &str) {
+    let Ok(summary) = serde_json::from_str::<serde_json::Value>(stdout) else {
+        return;
+    };
+    let absent = summary
+        .get("artifact_absent_from_restored_plan")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if absent == 0 {
+        return;
+    }
+    let restored = summary
+        .get("restored_file_count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|n| n.to_string())
+        .unwrap_or_else(|| "?".to_string());
+    eprintln!(
+        "soldr warning: rust-plan restore is partial \
+         (artifact_absent_from_restored_plan={absent}, restored_file_count={restored}); \
+         Cargo is likely to fail with missing .rmeta errors. This usually means two \
+         `soldr cargo build` invocations are sharing the same --target-dir. Use a \
+         distinct --target-dir for each build or clear the target directory before \
+         re-running. See https://github.com/zackees/soldr/issues/228 for context."
+    );
 }
 
 fn cargo_profile(args: &[String]) -> &str {
