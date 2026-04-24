@@ -167,7 +167,11 @@ runs:
         GITHUB_TOKEN: ${{ github.token }}
         SOLDR_REPO: ${{ steps.resolve.outputs.soldr_repo }}
         SOLDR_INSTALL_DIR: ${{ steps.resolve.outputs.bin_dir }}
-        SETUP_SOLDR_VERSION: ${{ steps.resolve.outputs.soldr_version_requested }}
+        # Prefer the resolved release tag so the installed binary matches
+        # the tag baked into the cache key. Falls back to the original
+        # requested value (possibly empty for "latest") when the resolver
+        # could not reach the GitHub API. See issue #214.
+        SETUP_SOLDR_VERSION: ${{ steps.resolve.outputs.soldr_version_resolved || steps.resolve.outputs.soldr_version_requested }}
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/ensure_soldr.py"
 
     - id: verify

@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -123,6 +125,54 @@ def _target_env_hash() -> str:
     return _short_json_hash(relevant)
 
 
+def _is_empty_or_latest(value: str) -> bool:
+    normalized = value.strip().lower()
+    return not normalized or normalized == "latest"
+
+
+def _normalize_release_tag(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    return cleaned[1:] if cleaned.startswith("v") else cleaned
+
+
+def resolve_latest_soldr_release(repo: str) -> str:
+    """Resolve the latest published soldr release tag.
+
+    Returns the resolved release tag (without a leading ``v``) when the
+    GitHub API answers successfully. Returns an empty string on any
+    failure so the caller can fall back to the literal ``latest`` label
+    and keep working offline or under GitHub API outages.
+    """
+
+    url = f"https://api.github.com/repos/{repo.strip()}/releases/latest"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "setup-soldr-action",
+    }
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            payload = json.load(response)
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        TimeoutError,
+        ValueError,
+        OSError,
+    ):
+        return ""
+    tag = payload.get("tag_name")
+    if not isinstance(tag, str):
+        return ""
+    return _normalize_release_tag(tag)
+
+
 def normalize_target_cache_mode(value: str) -> str:
     mode = value.strip().lower() or "thin"
     if mode == "hot":
@@ -132,7 +182,9 @@ def normalize_target_cache_mode(value: str) -> str:
         )
         return "thin"
     if mode not in {"thin", "full", "off"}:
-        raise RuntimeError(f"invalid target-cache-mode {value!r}; expected thin, full, or off")
+        raise RuntimeError(
+            f"invalid target-cache-mode {value!r}; expected thin, full, or off"
+        )
     return mode
 
 
@@ -160,7 +212,9 @@ def _write_outputs(values: dict[str, str]) -> None:
         for key, value in values.items():
             if "\n" in value:
                 # Use GitHub's heredoc delimiter form for multi-line outputs.
-                delimiter = f"ghadelim_{hashlib.sha256(value.encode()).hexdigest()[:16]}"
+                delimiter = (
+                    f"ghadelim_{hashlib.sha256(value.encode()).hexdigest()[:16]}"
+                )
                 fh.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
             else:
                 fh.write(f"{key}={value}\n")
@@ -207,8 +261,23 @@ def main() -> None:
         toolchain_override=os.environ.get("INPUT_TOOLCHAIN", ""),
     )
 
-    soldr_repo = os.environ.get("INPUT_REPO", "zackees/soldr").strip() or "zackees/soldr"
+    soldr_repo = (
+        os.environ.get("INPUT_REPO", "zackees/soldr").strip() or "zackees/soldr"
+    )
     soldr_version = os.environ.get("INPUT_VERSION", "").strip()
+
+    # When the caller asks for "latest" (explicit or implicit), resolve the
+    # release tag before baking it into the cache key. Without this, the
+    # setup cache records the literal string "latest" and warm runs keep
+    # reusing whichever soldr/zccache bundle was first saved, even after a
+    # newer release ships. Fall back to the literal label when GitHub is
+    # unreachable so the action still works offline or on rate-limited
+    # runners. See issue #214.
+    resolved_soldr_version = soldr_version
+    if _is_empty_or_latest(soldr_version):
+        resolved_soldr_version = resolve_latest_soldr_release(soldr_repo)
+    cache_key_soldr_version = _normalize_release_tag(resolved_soldr_version) or "latest"
+
     toolchain_signature = {
         "channel": toolchain["channel"],
         "profile": toolchain["profile"],
@@ -217,7 +286,7 @@ def main() -> None:
         "source": toolchain["source"],
         "file_hash": toolchain["file_hash"],
         "soldr_repo": soldr_repo,
-        "soldr_version": soldr_version or "latest",
+        "soldr_version": cache_key_soldr_version,
     }
     digest = hashlib.sha256(
         json.dumps(toolchain_signature, sort_keys=True).encode("utf-8")
@@ -284,14 +353,20 @@ def main() -> None:
     if target_cache_mode == "off":
         target_cache_paths = str(target_cache_path)
         target_cache_effective_mode = "off"
-        target_cache_prefix = f"setup-soldr-targetcache-off-v1-{runner_os}-{runner_arch}"
+        target_cache_prefix = (
+            f"setup-soldr-targetcache-off-v1-{runner_os}-{runner_arch}"
+        )
         target_cache_restore_key = ""
         target_cache_key = f"{target_cache_prefix}-{target_inputs_hash}"
     elif target_cache_mode == "full":
         target_cache_paths = str(target_cache_path)
         target_cache_effective_mode = "full"
-        target_cache_prefix = f"setup-soldr-targetcache-full-v1-{runner_os}-{runner_arch}"
-        target_cache_suffix_fragment = f"{sanitized_suffix}-" if sanitized_suffix else ""
+        target_cache_prefix = (
+            f"setup-soldr-targetcache-full-v1-{runner_os}-{runner_arch}"
+        )
+        target_cache_suffix_fragment = (
+            f"{sanitized_suffix}-" if sanitized_suffix else ""
+        )
         target_cache_lock_prefix = (
             f"{target_cache_prefix}-{digest}-{cargo_lock_hash}-"
             f"{target_shape_hash}-{target_cache_suffix_fragment}"
@@ -301,8 +376,12 @@ def main() -> None:
     else:
         target_cache_paths = str(target_cache_bundle_path)
         target_cache_effective_mode = "thin"
-        target_cache_prefix = f"setup-soldr-targetcache-thin-v1-{runner_os}-{runner_arch}"
-        target_cache_suffix_fragment = f"{sanitized_suffix}-" if sanitized_suffix else ""
+        target_cache_prefix = (
+            f"setup-soldr-targetcache-thin-v1-{runner_os}-{runner_arch}"
+        )
+        target_cache_suffix_fragment = (
+            f"{sanitized_suffix}-" if sanitized_suffix else ""
+        )
         target_cache_restore_key = (
             f"{target_cache_prefix}-{target_inputs_hash}-{target_cache_suffix_fragment}"
         )
@@ -356,6 +435,7 @@ def main() -> None:
             "soldr_path": str(soldr_path),
             "soldr_repo": soldr_repo,
             "soldr_version_requested": soldr_version,
+            "soldr_version_resolved": resolved_soldr_version,
             "toolchain_channel": toolchain["channel"],
             "toolchain_profile": toolchain["profile"],
             "toolchain_source": toolchain["source"],
