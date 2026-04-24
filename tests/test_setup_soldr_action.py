@@ -90,7 +90,9 @@ def test_action_python_helpers_have_entrypoints() -> None:
     script_paths = sorted(
         {
             REPO_ROOT / match.group(1)
-            for match in re.finditer(r"github\.action_path \}\}/([^\"']+\.py)", action_text)
+            for match in re.finditer(
+                r"github\.action_path \}\}/([^\"']+\.py)", action_text
+            )
         }
     )
 
@@ -98,7 +100,8 @@ def test_action_python_helpers_have_entrypoints() -> None:
     for script_path in script_paths:
         tree = ast.parse(script_path.read_text(encoding="utf-8"))
         assert any(
-            isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body
+            isinstance(node, ast.FunctionDef) and node.name == "main"
+            for node in tree.body
         ), f"{script_path.relative_to(REPO_ROOT)} should define main()"
         assert any(
             isinstance(node, ast.If)
@@ -114,9 +117,9 @@ def test_action_python_helpers_have_entrypoints() -> None:
 
 
 def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
-    workflow = (REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "setup-soldr-action.yml"
+    ).read_text(encoding="utf-8")
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
     assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
@@ -156,6 +159,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
     monkeypatch.setenv("GITHUB_PATH", str(github_path))
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
 
     module.main()
 
@@ -176,8 +180,14 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "cache_key=setup-soldr-v0-linux-x64-" in outputs
     assert "cache_restore_prefix=setup-soldr-v0-linux-x64-" in outputs
     assert "build_cache_key=setup-soldr-buildcache-v1-linux-x64-" in outputs
-    assert "build_cache_restore_key_toolchain=setup-soldr-buildcache-v1-linux-x64-" in outputs
-    assert "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-" in outputs
+    assert (
+        "build_cache_restore_key_toolchain=setup-soldr-buildcache-v1-linux-x64-"
+        in outputs
+    )
+    assert (
+        "build_cache_restore_key_os_arch=setup-soldr-buildcache-v1-linux-x64-"
+        in outputs
+    )
     assert f"build_cache_path={cache_root / 'soldr' / 'cache' / 'zccache'}" in outputs
     assert f"target_cache_path={workspace / 'custom-target'}" in outputs
     bundle_path = runner_temp / "setup-soldr-target-thin"
@@ -197,7 +207,9 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     assert "SOLDR_TARGET_CACHE_BACKEND=auto" in env_text
 
 
-def test_main_treats_hot_as_thin_alias_with_lockfile(tmp_path: Path, monkeypatch) -> None:
+def test_main_treats_hot_as_thin_alias_with_lockfile(
+    tmp_path: Path, monkeypatch
+) -> None:
     module = _load_module()
     workspace = tmp_path / "workspace"
     runner_temp = tmp_path / "runner-temp"
@@ -228,6 +240,7 @@ def test_main_treats_hot_as_thin_alias_with_lockfile(tmp_path: Path, monkeypatch
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
     monkeypatch.setenv("GITHUB_PATH", str(github_path))
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
 
     module.main()
 
@@ -238,7 +251,10 @@ def test_main_treats_hot_as_thin_alias_with_lockfile(tmp_path: Path, monkeypatch
     assert "target_cache_mode=thin" in outputs
     assert "target_cache_key=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
     assert f"target_cache_paths={bundle_path}" in outputs
-    assert "target_cache_restore_key_lock=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+    assert (
+        "target_cache_restore_key_lock=setup-soldr-targetcache-thin-v1-linux-x64-"
+        in outputs
+    )
 
     env_text = github_env.read_text(encoding="utf-8")
     assert "SOLDR_TARGET_CACHE_MODE=thin" in env_text
@@ -246,6 +262,149 @@ def test_main_treats_hot_as_thin_alias_with_lockfile(tmp_path: Path, monkeypatch
     assert f"SOLDR_TARGET_CACHE_BUNDLE_DIR={bundle_path}" in env_text
     assert "SOLDR_TARGET_CACHE_BACKEND=auto" in env_text
     assert bundle_path == runner_temp / "setup-soldr-target-thin"
+
+
+def _setup_main_env(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    version: str = "",
+) -> tuple[Path, Path, Path]:
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    workspace.mkdir()
+    runner_temp.mkdir()
+
+    github_env = tmp_path / "github.env"
+    github_output = tmp_path / "github.output"
+    github_path = tmp_path / "github.path"
+
+    monkeypatch.setenv("ACTION_WORKSPACE", str(workspace))
+    monkeypatch.setenv("RUNNER_TEMP", str(runner_temp))
+    monkeypatch.setenv("ACTION_OS", "Linux")
+    monkeypatch.setenv("ACTION_ARCH", "X64")
+    monkeypatch.setenv("INPUT_REPO", "zackees/soldr")
+    monkeypatch.setenv("INPUT_VERSION", version)
+    monkeypatch.setenv("INPUT_CACHE_DIR", "")
+    monkeypatch.setenv("INPUT_CACHE_KEY_SUFFIX", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN", "")
+    monkeypatch.setenv("INPUT_TOOLCHAIN_FILE", "missing.toml")
+    monkeypatch.setenv("INPUT_TRUST_MODE", "")
+    monkeypatch.setenv("INPUT_TARGET_DIR", "target")
+    monkeypatch.setenv("GITHUB_SHA", "abc123")
+    monkeypatch.setenv("GITHUB_ENV", str(github_env))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
+    monkeypatch.setenv("GITHUB_PATH", str(github_path))
+    return github_env, github_output, github_path
+
+
+def _collect_outputs(output_path: Path) -> dict[str, str]:
+    return dict(
+        line.split("=", 1)
+        for line in output_path.read_text(encoding="utf-8").splitlines()
+        if "=" in line
+    )
+
+
+def test_latest_version_cache_key_changes_when_release_changes(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When input is `latest`, the cache key must be derived from the
+    resolved release tag so that a new soldr release invalidates the
+    setup cache and managed zccache binaries get refreshed. See #214."""
+    module = _load_module()
+
+    calls = {"count": 0}
+
+    def fake_resolver_0(_repo: str) -> str:
+        calls["count"] += 1
+        return "0.7.11"
+
+    run_dir_a = tmp_path / "run-a"
+    run_dir_a.mkdir()
+    _, output_a, _ = _setup_main_env(run_dir_a, monkeypatch)
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", fake_resolver_0)
+    module.main()
+    outputs_a = _collect_outputs(output_a)
+
+    run_dir_b = tmp_path / "run-b"
+    run_dir_b.mkdir()
+    _, output_b, _ = _setup_main_env(run_dir_b, monkeypatch)
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "0.7.12")
+    module.main()
+    outputs_b = _collect_outputs(output_b)
+
+    assert outputs_a["cache_key"] != outputs_b["cache_key"]
+    assert outputs_a["soldr_version_resolved"] == "0.7.11"
+    assert outputs_b["soldr_version_resolved"] == "0.7.12"
+    assert outputs_a["soldr_version_requested"] == ""
+    assert calls["count"] == 1
+
+
+def test_latest_version_cache_key_falls_back_to_literal_when_resolution_fails(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """If the GitHub API is unreachable, the resolver returns an empty
+    string; the action must still produce a deterministic cache key so
+    the warm-run pipeline keeps working. See #214."""
+    module = _load_module()
+
+    run_dir_a = tmp_path / "run-a"
+    run_dir_a.mkdir()
+    _, output_a, _ = _setup_main_env(run_dir_a, monkeypatch)
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+    module.main()
+    outputs_a = _collect_outputs(output_a)
+
+    run_dir_b = tmp_path / "run-b"
+    run_dir_b.mkdir()
+    _, output_b, _ = _setup_main_env(run_dir_b, monkeypatch)
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+    module.main()
+    outputs_b = _collect_outputs(output_b)
+
+    assert outputs_a["cache_key"] == outputs_b["cache_key"]
+    assert outputs_a["soldr_version_resolved"] == ""
+
+
+def test_pinned_version_input_skips_latest_resolution(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A pinned `version: 0.7.10` input must not trigger a GitHub API
+    call and must bake that exact version into the cache key."""
+    module = _load_module()
+    calls = {"count": 0}
+
+    def _should_not_call(_repo: str) -> str:
+        calls["count"] += 1
+        return "should-not-be-used"
+
+    _, github_output, _ = _setup_main_env(tmp_path, monkeypatch, version="0.7.10")
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", _should_not_call)
+    module.main()
+
+    outputs = _collect_outputs(github_output)
+    assert calls["count"] == 0
+    assert outputs["soldr_version_resolved"] == "0.7.10"
+    assert outputs["soldr_version_requested"] == "0.7.10"
+
+
+def test_normalize_release_tag_strips_v_prefix() -> None:
+    module = _load_module()
+    assert module._normalize_release_tag("v0.7.11") == "0.7.11"
+    assert module._normalize_release_tag("0.7.11") == "0.7.11"
+    assert module._normalize_release_tag(" v1.0.0 ") == "1.0.0"
+    assert module._normalize_release_tag("") == ""
+
+
+def test_is_empty_or_latest_matches_expected_values() -> None:
+    module = _load_module()
+    assert module._is_empty_or_latest("")
+    assert module._is_empty_or_latest("  ")
+    assert module._is_empty_or_latest("latest")
+    assert module._is_empty_or_latest("LATEST")
+    assert not module._is_empty_or_latest("v0.7.10")
+    assert not module._is_empty_or_latest("0.7.10")
 
 
 def test_full_target_cache_suffix_restore_prefix_matches_key_shape(
@@ -281,6 +440,7 @@ def test_full_target_cache_suffix_restore_prefix_matches_key_shape(
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
     monkeypatch.setenv("GITHUB_OUTPUT", str(github_output))
     monkeypatch.setenv("GITHUB_PATH", str(github_path))
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
 
     module.main()
 
