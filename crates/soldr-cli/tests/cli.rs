@@ -317,6 +317,10 @@ fn fake_zccache_script(log_path: &Path) -> String {
              )\n\
              if \"%~1\"==\"rust-plan\" (\n\
                echo zccache rust-plan %~2 cache_dir=%ZCCACHE_CACHE_DIR% args=%*>>\"{0}\"\n\
+               if /I \"%~2\"==\"restore\" if defined SOLDR_TEST_RUST_PLAN_STALE (\n\
+                 echo {{\"operation\":\"restore\",\"restored_file_count\":0,\"artifact_absent_from_restored_plan\":1,\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\n\
+                 exit /b 0\n\
+               )\n\
                echo {{\"operation\":\"%~2\",\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\n\
                exit /b 0\n\
              )\n\
@@ -388,6 +392,10 @@ fn fake_zccache_script(log_path: &Path) -> String {
                ;;\n\
               rust-plan)\n\
                 echo \"zccache rust-plan $2 cache_dir=${{ZCCACHE_CACHE_DIR:-}} args=$*\" >> \"{0}\"\n\
+                if [ \"$2\" = \"restore\" ] && [ -n \"${{SOLDR_TEST_RUST_PLAN_STALE:-}}\" ]; then\n\
+                  printf '{{\"operation\":\"restore\",\"restored_file_count\":0,\"artifact_absent_from_restored_plan\":1,\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\\n'\n\
+                  exit 0\n\
+                fi\n\
                 printf '{{\"operation\":\"%s\",\"compatibility\":{{\"status\":\"ok\",\"errors\":[]}}}}\\n' \"$2\"\n\
                 exit 0\n\
                 ;;\n\
@@ -851,6 +859,72 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
             .unwrap()
             .contains("serde"),
         "external dependency should be selected in generated plan: {plan}"
+    );
+}
+
+#[test]
+fn cargo_front_door_warns_when_rust_plan_restore_is_partial() {
+    let cache_root = unique_temp_dir("cargo-rust-plan-partial-cache");
+    let workspace = unique_temp_dir("cargo-rust-plan-partial-workspace");
+    let plan_cache = cache_root.join("target-artifact-cache");
+    let log_path = cache_root.join("tool.log");
+    let metadata_path = cache_root.join("metadata.json");
+    let target_dir = workspace.join("target");
+    fs::create_dir_all(workspace.join("app/src")).expect("create app source");
+    fs::create_dir_all(&target_dir).expect("create target dir");
+    fs::write(workspace.join("Cargo.lock"), "# lock\n").expect("write lockfile");
+    fs::write(workspace.join("Cargo.toml"), "[workspace]\n").expect("write workspace manifest");
+    fs::write(workspace.join("app/Cargo.toml"), "[package]\nname='app'\n")
+        .expect("write app manifest");
+
+    let metadata = serde_json::json!({
+        "packages": [
+            {
+                "id": "path+file:///repo/app#app@0.1.0",
+                "source": null
+            }
+        ],
+        "workspace_members": ["path+file:///repo/app#app@0.1.0"],
+        "workspace_root": workspace,
+        "target_directory": target_dir
+    });
+    fs::write(&metadata_path, serde_json::to_string(&metadata).unwrap())
+        .expect("write metadata fixture");
+
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build", "--locked"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
+        .env("SOLDR_TARGET_CACHE_MODE", "thin")
+        .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
+        .env("SOLDR_TEST_RUST_PLAN_STALE", "1")
+        .output()
+        .expect("failed to run soldr cargo build with stale rust-plan restore");
+
+    assert!(
+        output.status.success(),
+        "soldr should continue after a partial rust-plan restore so Cargo can still run\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("rust-plan restore is partial"),
+        "soldr should warn when zccache reports artifact_absent_from_restored_plan > 0: {stderr}"
+    );
+    assert!(
+        stderr.contains("target-dir") || stderr.contains("--target-dir"),
+        "warning should point users at the shared target-dir workaround: {stderr}"
+    );
+    assert!(
+        stderr.contains("228"),
+        "warning should reference issue #228 so users can find context: {stderr}"
     );
 }
 
