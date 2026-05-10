@@ -15,6 +15,15 @@ const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
 const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
 const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
 const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
+/// Selects which thin-slice pruning policy `soldr cargo` ships to zccache. See
+/// `docs/THIN_TARGET_CACHE_PRUNING.md` for the rationale and rollout plan.
+/// Values: `thin-v1` (legacy, default — keeps `.rlib`/`.rmeta`/proc-macro
+/// outputs as a safety net) and `thin-v2` (fingerprint-aware aggressive prune;
+/// drops library bytes and lets zccache's compilation cache repopulate them).
+const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
+/// Filename of the file-list manifest written next to the thin-slice bundle so
+/// downstream tooling can prove what landed in the slice without unpacking it.
+const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -635,10 +644,29 @@ struct CargoMetadataPackage {
     source: Option<String>,
 }
 
+/// Returns `true` when `cache_profile` should be omitted from the serialized
+/// plan to keep wire compatibility with zccache builds that do not yet know
+/// about the `cache_profile` field (e.g. v1.4.0, which uses
+/// `#[serde(deny_unknown_fields)]` on `RustArtifactPlanV1`).
+///
+/// We keep the value in-memory so internal consumers can still branch on it,
+/// but we hide it on the wire for everything except the `thin-v2` opt-in.
+fn skip_legacy_cache_profile(value: &Option<&'static str>) -> bool {
+    !matches!(value, Some("thin-v2"))
+}
+
 #[derive(Debug, Serialize)]
 struct RustArtifactPlan {
     schema_version: u32,
     mode: String,
+    /// Thin-slice pruning policy in effect, e.g. `thin-v1` (legacy) or
+    /// `thin-v2` (fingerprint-aware prune). Only emitted on the wire when
+    /// it carries new information (i.e. `thin-v2`). Omitted entirely for
+    /// `thin-v1` and `mode == "full"` so zccache builds with
+    /// `#[serde(deny_unknown_fields)]` (e.g. v1.4.0) can still parse the
+    /// plan unchanged.
+    #[serde(skip_serializing_if = "skip_legacy_cache_profile")]
+    cache_profile: Option<&'static str>,
     workspace_root: String,
     target_dir: String,
     toolchain: RustToolchainIdentity,
@@ -647,6 +675,14 @@ struct RustArtifactPlan {
     inputs: RustPlanInputs,
     packages: RustPlanPackages,
     allowed_artifact_classes: Vec<&'static str>,
+    /// Categories soldr explicitly drops from the slice. zccache may use this
+    /// to short-circuit walks for files it would otherwise consider keeping.
+    /// Empty for legacy `thin-v1` and `full` modes — preserves backwards
+    /// compatibility with zccache builds that do not yet understand it.
+    /// Skipped from the JSON entirely when empty so older zccache builds
+    /// with `#[serde(deny_unknown_fields)]` keep accepting the plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    dropped_artifact_classes: Vec<&'static str>,
     cache_schema_version: u32,
     journal_log_path: Option<String>,
 }
@@ -684,6 +720,9 @@ struct RustArtifactPlanContext {
     session_id: String,
     journal_path: std::path::PathBuf,
     backend: String,
+    /// Active thin-slice pruning policy. Only `Some` for thin modes; `None`
+    /// for `full` so the manifest emitter can short-circuit.
+    cache_profile: Option<&'static str>,
 }
 
 fn maybe_prepare_rust_artifact_plan(
@@ -701,9 +740,15 @@ fn maybe_prepare_rust_artifact_plan(
         return Ok(None);
     }
 
+    let profile = if mode == "thin" {
+        Some(rust_artifact_cache_profile_from_env()?)
+    } else {
+        None
+    };
+
     let metadata = cargo_metadata(cargo, args)?;
     let toolchain = rust_toolchain_identity(cargo, rustc)?;
-    let plan = build_rust_artifact_plan(&metadata, &toolchain, args, &mode, session)?;
+    let plan = build_rust_artifact_plan(&metadata, &toolchain, args, &mode, profile, session)?;
     let plan_dir = session.cache_dir.join("plans");
     std::fs::create_dir_all(&plan_dir)?;
     let plan_path = plan_dir.join("last-rust-artifact-plan.json");
@@ -719,6 +764,7 @@ fn maybe_prepare_rust_artifact_plan(
         session_id: session.session_id.clone(),
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,
+        cache_profile: profile,
     }))
 }
 
@@ -731,6 +777,20 @@ fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
         "full" => Ok(Some("full".to_string())),
         _ => Err(SoldrError::Other(format!(
             "invalid {TARGET_CACHE_MODE_ENV_VAR} value {raw:?}; expected thin, full, or off"
+        ))),
+    }
+}
+
+fn rust_artifact_cache_profile_from_env() -> Result<&'static str, SoldrError> {
+    let raw = std::env::var(TARGET_CACHE_PROFILE_ENV_VAR).unwrap_or_default();
+    let profile = raw.trim().to_ascii_lowercase();
+    match profile.as_str() {
+        // Default preserves the legacy slice contents until the verification
+        // job in `docs/THIN_TARGET_CACHE_PRUNING.md` Section 5 is green.
+        "" | "thin-v1" => Ok("thin-v1"),
+        "thin-v2" => Ok("thin-v2"),
+        _ => Err(SoldrError::Other(format!(
+            "invalid {TARGET_CACHE_PROFILE_ENV_VAR} value {raw:?}; expected thin-v1 or thin-v2"
         ))),
     }
 }
@@ -864,6 +924,7 @@ fn build_rust_artifact_plan(
     toolchain: &RustToolchainIdentity,
     args: &[String],
     mode: &str,
+    cache_profile: Option<&'static str>,
     session: &ZccacheBuildSession,
 ) -> Result<RustArtifactPlan, SoldrError> {
     let workspace_root = normalize_path_for_compare(&metadata.workspace_root)?;
@@ -893,9 +954,17 @@ fn build_rust_artifact_plan(
     let mut workspace_package_ids = metadata.workspace_members.clone();
     workspace_package_ids.sort();
 
+    let allowed = allowed_artifact_classes(mode, cache_profile);
+    let dropped = dropped_artifact_classes(mode, cache_profile);
+    let cache_schema_version = match cache_profile {
+        Some("thin-v2") => 2,
+        _ => 1,
+    };
+
     Ok(RustArtifactPlan {
         schema_version: 1,
         mode: mode.to_string(),
+        cache_profile,
         workspace_root: path_string(&workspace_root),
         target_dir: path_string(&target_dir),
         toolchain: RustToolchainIdentity {
@@ -919,25 +988,86 @@ fn build_rust_artifact_plan(
             workspace_package_ids,
             excluded_path_package_ids,
         },
-        allowed_artifact_classes: allowed_artifact_classes(mode),
-        cache_schema_version: 1,
+        allowed_artifact_classes: allowed,
+        dropped_artifact_classes: dropped,
+        cache_schema_version,
         journal_log_path: Some(path_string(&session.journal_path)),
     })
 }
 
-fn allowed_artifact_classes(mode: &str) -> Vec<&'static str> {
+/// Artifact classes the thin-slice walker is permitted to copy into the bundle.
+///
+/// `thin-v1` (legacy) preserves the historical contents that ship `.rlib`/
+/// `.rmeta`/proc-macro library bytes alongside the freshness inputs. This is
+/// kept as the safety-net default while the in-CI verification job from
+/// `docs/THIN_TARGET_CACHE_PRUNING.md` Section 5 is being rolled out.
+///
+/// `thin-v2` is the fingerprint-aware aggressive prune. It keeps only what
+/// cargo actually consults to make a fresh-vs-rebuild decision (fingerprints,
+/// dep-info, build-script `out_dir/` contents, small build-script metadata).
+/// The dropped library bytes are reproduced on demand by zccache's compilation
+/// cache when cargo asks rustc to rebuild the missing unit.
+fn allowed_artifact_classes(mode: &str, cache_profile: Option<&'static str>) -> Vec<&'static str> {
     if mode == "full" {
         return Vec::new();
     }
-    vec![
-        "rlib",
-        "rmeta",
-        "dep_info",
-        "proc_macro",
-        "cargo_fingerprint",
-        "build_script_metadata",
-        "build_script_output",
-    ]
+    match cache_profile {
+        Some("thin-v2") => vec![
+            // Fingerprint metadata cargo reads to decide skip-vs-rebuild.
+            // Split from the legacy `cargo_fingerprint` umbrella per
+            // `docs/THIN_TARGET_CACHE_PRUNING.md` Section 4.3.
+            "cargo_fingerprint_meta",
+            "dep_info",
+            "build_script_metadata",
+            "build_script_output",
+        ],
+        // thin-v1 (default) and any unrecognized profile that arrived via a
+        // future zccache that does not yet branch on `cache_profile` get the
+        // legacy class list so behavior is unchanged on rollout day 0.
+        _ => vec![
+            "rlib",
+            "rmeta",
+            "dep_info",
+            "proc_macro",
+            "cargo_fingerprint",
+            "build_script_metadata",
+            "build_script_output",
+        ],
+    }
+}
+
+/// Artifact classes the thin-slice walker must explicitly skip in the active
+/// profile. Surfaced to zccache so it can short-circuit walks for paths it
+/// would otherwise copy. Returning the drop list as data (rather than baking
+/// it into zccache) keeps the policy decision in soldr where the design
+/// discussion already lives.
+fn dropped_artifact_classes(mode: &str, cache_profile: Option<&'static str>) -> Vec<&'static str> {
+    if mode == "full" {
+        return Vec::new();
+    }
+    match cache_profile {
+        Some("thin-v2") => vec![
+            // Multi-GB rustc incremental DB. Churns per-commit, low CI hit
+            // rate. Cargo never reads it to decide freshness.
+            "incremental",
+            // Compiled build-script binaries. Cheap to regenerate from
+            // cached deps; bytes live in zccache's content store when needed.
+            "build_script_build",
+            // Library output bytes. zccache repopulates on rustc miss.
+            "rlib",
+            "rmeta",
+            // proc-macro shared libraries. Same story as `.rlib`.
+            "proc_macro",
+            // Split debug-info / pdb / macOS dSYM bundles.
+            "dwo",
+            "pdb",
+            "dsym",
+            // The fingerprint *outputs* (not the metadata). The metadata is
+            // tiny and load-bearing for freshness; the outputs are large.
+            "cargo_fingerprint_outputs",
+        ],
+        _ => Vec::new(),
+    }
 }
 
 fn run_zccache_rust_plan(
@@ -977,6 +1107,124 @@ fn run_zccache_rust_plan(
         eprintln!("{stdout}");
         if operation == "restore" {
             warn_if_rust_plan_restore_incomplete(stdout);
+        }
+    }
+    if operation == "save" && plan.cache_profile == Some("thin-v2") {
+        if let Err(e) = write_thin_manifest(&plan.cache_dir, plan.cache_profile) {
+            // Manifest emission is diagnostic; never fail the build because
+            // we could not write it. Log so it shows up in CI logs.
+            eprintln!(
+                "soldr warning: failed to write thin-slice manifest at {}: {e}",
+                plan.cache_dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Schema for `<thin-root>/manifest.v2.json`.
+///
+/// Written by soldr after `zccache rust-plan save` produces the bundle.
+/// Downstream tooling (e.g. setup-soldr verification jobs) reads this to
+/// prove what landed in the slice without unpacking it.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ThinSliceManifest {
+    /// Manifest format version. `2` for the file-list manifest produced by
+    /// the `thin-v2` profile.
+    schema_version: u32,
+    /// Active thin-slice pruning policy when this manifest was written.
+    cache_profile: String,
+    /// Absolute path of the bundle root the entries are relative to.
+    bundle_root: String,
+    /// Timestamp of manifest emission, RFC 3339 / seconds since epoch.
+    generated_at_unix_seconds: u64,
+    /// Every file in the bundle, sorted by relative path for stable diffs.
+    files: Vec<ThinSliceManifestEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct ThinSliceManifestEntry {
+    /// Path relative to `bundle_root`, forward-slashed for cross-platform diffability.
+    path: String,
+    /// File size in bytes. Optional because broken symlinks etc. may not
+    /// have a usable size; serialized as `null` rather than skipped so the
+    /// shape is uniform across entries.
+    size_bytes: Option<u64>,
+}
+
+fn write_thin_manifest(
+    bundle_root: &std::path::Path,
+    cache_profile: Option<&'static str>,
+) -> Result<(), SoldrError> {
+    let profile = cache_profile.unwrap_or("thin-v1").to_string();
+    if !bundle_root.exists() {
+        // Nothing to manifest; skip rather than spamming an empty file.
+        return Ok(());
+    }
+    let manifest = build_thin_manifest(bundle_root, &profile)?;
+    let manifest_path = bundle_root.join(THIN_MANIFEST_FILENAME);
+    let json = serde_json::to_string_pretty(&manifest)
+        .map_err(|e| SoldrError::Other(format!("failed to serialize thin-slice manifest: {e}")))?;
+    std::fs::write(&manifest_path, json)?;
+    Ok(())
+}
+
+fn build_thin_manifest(
+    bundle_root: &std::path::Path,
+    cache_profile: &str,
+) -> Result<ThinSliceManifest, SoldrError> {
+    let mut files = Vec::new();
+    walk_bundle_files(bundle_root, bundle_root, &mut files)?;
+    // Drop any prior manifest so the file list does not chase its own tail
+    // across repeated saves into the same bundle directory.
+    files.retain(|entry| entry.path != THIN_MANIFEST_FILENAME);
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+
+    let generated_at_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    Ok(ThinSliceManifest {
+        schema_version: 2,
+        cache_profile: cache_profile.to_string(),
+        bundle_root: path_string(bundle_root),
+        generated_at_unix_seconds,
+        files,
+    })
+}
+
+fn walk_bundle_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<ThinSliceManifestEntry>,
+) -> Result<(), SoldrError> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(SoldrError::from(e)),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            walk_bundle_files(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map(std::path::Path::to_path_buf)
+                .unwrap_or_else(|_| path.clone());
+            let rel_string = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            let size_bytes = std::fs::metadata(&path).ok().map(|m| m.len());
+            out.push(ThinSliceManifestEntry {
+                path: rel_string,
+                size_bytes,
+            });
         }
     }
     Ok(())
@@ -2443,12 +2691,15 @@ fn cached_managed_zccache(
 #[cfg(test)]
 mod tests {
     use super::{
-        allowed_artifact_classes, build_rust_artifact_plan, cargo_args_specify_target,
-        cargo_args_use_reserved_no_cache, cargo_metadata_passthrough_args, cargo_profile,
-        cargo_target_triple, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
+        allowed_artifact_classes, build_rust_artifact_plan, build_thin_manifest,
+        cargo_args_specify_target, cargo_args_use_reserved_no_cache,
+        cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
+        dropped_artifact_classes, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
         normalize_version, parse_tool_spec, rustc_wrapper_mode_from_env_var,
-        rustup_resolution_failure, selected_cargo_args, should_trampoline, CargoMetadata,
-        CargoMetadataPackage, RustToolchainIdentity, RustcWrapperMode, ZccacheBuildSession,
+        rustup_resolution_failure, selected_cargo_args, should_trampoline, write_thin_manifest,
+        CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, ZccacheBuildSession,
+        THIN_MANIFEST_FILENAME,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -2613,11 +2864,19 @@ mod tests {
             "x86_64-unknown-linux-gnu".to_string(),
         ];
 
-        let plan = build_rust_artifact_plan(&metadata, &toolchain, &args, "thin", &session)
-            .expect("build rust artifact plan");
+        let plan = build_rust_artifact_plan(
+            &metadata,
+            &toolchain,
+            &args,
+            "thin",
+            Some("thin-v1"),
+            &session,
+        )
+        .expect("build rust artifact plan");
 
         assert_eq!(plan.schema_version, 1);
         assert_eq!(plan.mode, "thin");
+        assert_eq!(plan.cache_profile, Some("thin-v1"));
         assert_eq!(plan.profile, "release");
         assert_eq!(plan.target_triple, "x86_64-unknown-linux-gnu");
         assert_eq!(plan.packages.workspace_package_ids.len(), 1);
@@ -2625,6 +2884,7 @@ mod tests {
         assert!(plan.packages.selected_package_ids[0].contains("serde"));
         assert_eq!(plan.packages.excluded_path_package_ids.len(), 1);
         assert!(plan.allowed_artifact_classes.contains(&"cargo_fingerprint"));
+        assert!(plan.dropped_artifact_classes.is_empty());
         assert_eq!(plan.cache_schema_version, 1);
 
         let _ = std::fs::remove_dir_all(&root);
@@ -2654,7 +2914,7 @@ mod tests {
             selected_cargo_args(&args, &["--features"]),
             vec!["--features=fast".to_string()]
         );
-        assert_eq!(allowed_artifact_classes("full"), Vec::<&str>::new());
+        assert_eq!(allowed_artifact_classes("full", None), Vec::<&str>::new());
         assert_eq!(
             cargo_metadata_passthrough_args(&args)
                 .iter()
@@ -2662,6 +2922,268 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["--locked".to_string(), "--features=fast".to_string()]
         );
+    }
+
+    /// `thin-v1` is the legacy slice. It must continue to ship the
+    /// historically-included library-output classes so rollout day 0 is a
+    /// no-op for callers that did not opt in to `thin-v2`.
+    #[test]
+    fn allowed_artifact_classes_thin_v1_keeps_legacy_set() {
+        let allowed = allowed_artifact_classes("thin", Some("thin-v1"));
+        for expected in [
+            "rlib",
+            "rmeta",
+            "dep_info",
+            "proc_macro",
+            "cargo_fingerprint",
+            "build_script_metadata",
+            "build_script_output",
+        ] {
+            assert!(
+                allowed.contains(&expected),
+                "thin-v1 must keep {expected} in the allowlist; got {allowed:?}"
+            );
+        }
+        assert!(dropped_artifact_classes("thin", Some("thin-v1")).is_empty());
+    }
+
+    /// `thin-v2` aggressively prunes the slice. The categories listed in
+    /// `docs/THIN_TARGET_CACHE_PRUNING.md` Section 3.2 must NOT appear in the
+    /// allowlist, and the new fingerprint split (`cargo_fingerprint_meta`,
+    /// dropping `cargo_fingerprint_outputs`) must be honored.
+    #[test]
+    fn allowed_artifact_classes_thin_v2_drops_heavy_categories() {
+        let allowed = allowed_artifact_classes("thin", Some("thin-v2"));
+
+        // Drop list per design Section 3.2.
+        for forbidden in [
+            "rlib",
+            "rmeta",
+            "proc_macro",
+            "incremental",
+            "cargo_fingerprint",
+            "cargo_fingerprint_outputs",
+            "build_script_build",
+            "dwo",
+            "pdb",
+            "dsym",
+        ] {
+            assert!(
+                !allowed.contains(&forbidden),
+                "thin-v2 must drop {forbidden} from the allowlist; got {allowed:?}"
+            );
+        }
+
+        // Keep list per design Section 3.1.
+        for required in [
+            "cargo_fingerprint_meta",
+            "dep_info",
+            "build_script_metadata",
+            "build_script_output",
+        ] {
+            assert!(
+                allowed.contains(&required),
+                "thin-v2 must keep {required} in the allowlist; got {allowed:?}"
+            );
+        }
+
+        // The drop list is surfaced as data so zccache can short-circuit.
+        let dropped = dropped_artifact_classes("thin", Some("thin-v2"));
+        for forbidden in [
+            "incremental",
+            "rlib",
+            "rmeta",
+            "proc_macro",
+            "build_script_build",
+            "dwo",
+            "pdb",
+            "dsym",
+            "cargo_fingerprint_outputs",
+        ] {
+            assert!(
+                dropped.contains(&forbidden),
+                "thin-v2 must publish {forbidden} in dropped_artifact_classes; got {dropped:?}"
+            );
+        }
+    }
+
+    /// Bumping `cache_schema_version` from 1 to 2 is the contract zccache
+    /// uses to decide whether the new fingerprint split is in effect.
+    #[test]
+    fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
+        let root = std::env::temp_dir().join(format!(
+            "soldr-rust-plan-thinv2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos(),
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("app/src")).unwrap();
+        std::fs::create_dir_all(root.join("target")).unwrap();
+        std::fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("app/Cargo.toml"), "[package]\nname='app'\n").unwrap();
+
+        let metadata = CargoMetadata {
+            workspace_root: root.clone(),
+            target_directory: root.join("target"),
+            workspace_members: vec!["path+file:///repo/app#app@0.1.0".to_string()],
+            packages: vec![CargoMetadataPackage {
+                id: "path+file:///repo/app#app@0.1.0".to_string(),
+                source: None,
+            }],
+        };
+        let toolchain = RustToolchainIdentity {
+            rustc: "rustc 1.0.0-test".to_string(),
+            cargo: "cargo 1.0.0-test".to_string(),
+            channel: "test".to_string(),
+            host: "x86_64-unknown-test".to_string(),
+        };
+        let session = ZccacheBuildSession {
+            binary_path: "zccache".into(),
+            cache_dir: root.join("cache"),
+            session_id: "session-thinv2".to_string(),
+            session_log_path: root.join("cache/logs/last-session.log"),
+            journal_path: root.join("cache/logs/last-session.jsonl"),
+        };
+
+        let plan = build_rust_artifact_plan(
+            &metadata,
+            &toolchain,
+            &["build".to_string()],
+            "thin",
+            Some("thin-v2"),
+            &session,
+        )
+        .expect("build rust artifact plan");
+
+        assert_eq!(plan.schema_version, 1, "outer schema is unchanged");
+        assert_eq!(
+            plan.cache_schema_version, 2,
+            "thin-v2 bumps the cache-side schema so zccache can branch on it"
+        );
+        assert_eq!(plan.cache_profile, Some("thin-v2"));
+        assert!(plan.allowed_artifact_classes.contains(&"dep_info"));
+        assert!(!plan.allowed_artifact_classes.contains(&"rlib"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The manifest must enumerate every regular file in the bundle, with
+    /// relative POSIX-style paths and either a size or `null`. It must NOT
+    /// list directories or its own filename.
+    #[test]
+    fn thin_manifest_enumerates_only_files_actually_present() {
+        let bundle = tempfile::tempdir().expect("tempdir for bundle");
+        let bundle_path = bundle.path();
+
+        // Build a representative bundle layout: nested dir + a file at root +
+        // an empty subdir (must not appear in the manifest).
+        std::fs::create_dir_all(bundle_path.join("debug/.fingerprint/foo-abc")).unwrap();
+        std::fs::create_dir_all(bundle_path.join("debug/deps")).unwrap();
+        std::fs::create_dir_all(bundle_path.join("debug/empty_subdir")).unwrap();
+        std::fs::write(
+            bundle_path.join("debug/.fingerprint/foo-abc/invoked.timestamp"),
+            "",
+        )
+        .unwrap();
+        std::fs::write(
+            bundle_path.join("debug/.fingerprint/foo-abc/dep-lib-foo"),
+            b"abc123",
+        )
+        .unwrap();
+        std::fs::write(bundle_path.join("debug/deps/foo-abc.d"), b"foo.rs:\n").unwrap();
+        std::fs::write(bundle_path.join("CACHEDIR.TAG"), b"Signature: 8a4773\n").unwrap();
+
+        let manifest = build_thin_manifest(bundle_path, "thin-v2").expect("build manifest");
+
+        assert_eq!(manifest.schema_version, 2);
+        assert_eq!(manifest.cache_profile, "thin-v2");
+
+        let paths: Vec<&str> = manifest.files.iter().map(|f| f.path.as_str()).collect();
+        // Sorted, POSIX-style, no manifest self-reference, no empty dir.
+        assert_eq!(
+            paths,
+            vec![
+                "CACHEDIR.TAG",
+                "debug/.fingerprint/foo-abc/dep-lib-foo",
+                "debug/.fingerprint/foo-abc/invoked.timestamp",
+                "debug/deps/foo-abc.d",
+            ],
+        );
+        // Sizes are populated for files that exist on disk.
+        let by_path: std::collections::HashMap<_, _> = manifest
+            .files
+            .iter()
+            .map(|f| (f.path.as_str(), f.size_bytes))
+            .collect();
+        assert_eq!(
+            by_path.get("debug/.fingerprint/foo-abc/dep-lib-foo"),
+            Some(&Some(6))
+        );
+        assert_eq!(
+            by_path.get("debug/.fingerprint/foo-abc/invoked.timestamp"),
+            Some(&Some(0))
+        );
+    }
+
+    /// The on-disk manifest emitted by `write_thin_manifest` must round-trip
+    /// through serde so downstream verifiers can deserialize it without
+    /// surprises (no field renames, no missing fields).
+    #[test]
+    fn thin_manifest_round_trips_through_serde() {
+        let bundle = tempfile::tempdir().expect("tempdir for manifest round-trip");
+        let bundle_path = bundle.path();
+        std::fs::create_dir_all(bundle_path.join("debug/deps")).unwrap();
+        std::fs::write(
+            bundle_path.join("debug/deps/example.d"),
+            b"example: src/lib.rs\n",
+        )
+        .unwrap();
+
+        write_thin_manifest(bundle_path, Some("thin-v2")).expect("write manifest");
+
+        let manifest_path = bundle_path.join(THIN_MANIFEST_FILENAME);
+        assert!(
+            manifest_path.is_file(),
+            "manifest must land at the well-known path"
+        );
+
+        let raw = std::fs::read_to_string(&manifest_path).expect("read manifest");
+        let parsed: ThinSliceManifest = serde_json::from_str(&raw).expect("deserialize manifest");
+
+        assert_eq!(parsed.schema_version, 2);
+        assert_eq!(parsed.cache_profile, "thin-v2");
+        assert_eq!(parsed.files.len(), 1);
+        assert_eq!(parsed.files[0].path, "debug/deps/example.d");
+
+        // Serializing the parsed value back must produce a JSON document that
+        // deserializes to an equal value (canonical round-trip).
+        let serialized = serde_json::to_string(&parsed).expect("serialize manifest");
+        let reparsed: ThinSliceManifest =
+            serde_json::from_str(&serialized).expect("re-deserialize manifest");
+        assert_eq!(parsed, reparsed);
+    }
+
+    /// A second `write_thin_manifest` call into the same bundle directory
+    /// must not list the previously-written manifest among its own entries.
+    #[test]
+    fn thin_manifest_does_not_self_reference_on_repeat_save() {
+        let bundle = tempfile::tempdir().expect("tempdir for repeat save");
+        let bundle_path = bundle.path();
+        std::fs::write(bundle_path.join("only.txt"), b"hello").unwrap();
+
+        write_thin_manifest(bundle_path, Some("thin-v2")).expect("first manifest write");
+        write_thin_manifest(bundle_path, Some("thin-v2")).expect("second manifest write");
+
+        let raw = std::fs::read_to_string(bundle_path.join(THIN_MANIFEST_FILENAME))
+            .expect("read manifest");
+        let parsed: ThinSliceManifest = serde_json::from_str(&raw).expect("parse manifest");
+
+        let paths: Vec<&str> = parsed.files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["only.txt"]);
     }
 
     #[test]
@@ -2810,5 +3332,153 @@ mod tests {
         assert!(rendered.contains("generic stable toolchain"));
         assert!(rendered.contains("RUSTUP_TOOLCHAIN"));
         assert!(rendered.contains("setup-soldr action path"));
+    }
+
+    /// Regression test for the zccache v1.4.0 wire-compat bug. zccache
+    /// v1.4.0 deserializes the plan with `#[serde(deny_unknown_fields)]`
+    /// and does NOT know about `cache_profile` / `dropped_artifact_classes`.
+    /// Therefore the default `thin-v1` (and `full`) JSON must look exactly
+    /// like the pre-PR plan: neither field may appear in the JSON. The
+    /// thin-v2 opt-in is allowed (and required) to surface them.
+    #[test]
+    fn rust_artifact_plan_thin_v1_json_omits_new_fields_for_zccache_compat() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "thin".to_string(),
+            cache_profile: Some("thin-v1"),
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec!["cargo_fingerprint"],
+            dropped_artifact_classes: vec![],
+            cache_schema_version: 1,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize thin-v1 plan");
+        assert!(
+            !json.contains("\"cache_profile\""),
+            "thin-v1 plan must NOT serialize cache_profile (zccache v1.4.0 \
+             rejects unknown fields); got: {json}"
+        );
+        assert!(
+            !json.contains("\"dropped_artifact_classes\""),
+            "thin-v1 plan must NOT serialize dropped_artifact_classes; got: {json}"
+        );
+    }
+
+    /// `full` mode also predates the new fields and zccache's strict
+    /// deserializer rejects them, so `cache_profile == None` plus an empty
+    /// drop list must serialize without either field.
+    #[test]
+    fn rust_artifact_plan_full_mode_json_omits_new_fields() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "full".to_string(),
+            cache_profile: None,
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec![],
+            dropped_artifact_classes: vec![],
+            cache_schema_version: 1,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize full plan");
+        assert!(!json.contains("\"cache_profile\""), "got: {json}");
+        assert!(
+            !json.contains("\"dropped_artifact_classes\""),
+            "got: {json}"
+        );
+    }
+
+    /// thin-v2 is the opt-in that ships the new wire fields. zccache
+    /// builds that consume thin-v2 must see both `cache_profile` and the
+    /// non-empty `dropped_artifact_classes` list.
+    #[test]
+    fn rust_artifact_plan_thin_v2_json_includes_new_fields() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "thin".to_string(),
+            cache_profile: Some("thin-v2"),
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec!["dep_info"],
+            dropped_artifact_classes: vec!["rlib", "rmeta"],
+            cache_schema_version: 2,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize thin-v2 plan");
+        assert!(
+            json.contains("\"cache_profile\":\"thin-v2\""),
+            "thin-v2 must serialize cache_profile; got: {json}"
+        );
+        assert!(
+            json.contains("\"dropped_artifact_classes\""),
+            "thin-v2 must serialize dropped_artifact_classes; got: {json}"
+        );
     }
 }
