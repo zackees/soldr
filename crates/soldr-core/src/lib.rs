@@ -513,6 +513,71 @@ impl SoldrPaths {
         std::fs::create_dir_all(&self.cache)?;
         Ok(())
     }
+
+    /// Load the soldr config from `config.toml` if it exists. Missing
+    /// or malformed files yield `Default::default()` so callers can
+    /// proceed with reasonable defaults.
+    pub fn load_config(&self) -> SoldrConfig {
+        SoldrConfig::load(&self.config_file)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config — `~/.soldr/config.toml`
+// ---------------------------------------------------------------------------
+
+/// Top-level soldr configuration. Currently only carries the
+/// `[gc]` section (issue #234); future sections can be added freely.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct SoldrConfig {
+    #[serde(default)]
+    pub gc: GcConfig,
+}
+
+/// `gc` section of `config.toml`.
+///
+/// ```toml
+/// [gc]
+/// allowlist_roots = ["~/dev", "/work/repos"]
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GcConfig {
+    /// Roots that `soldr gc` will consider for reclamation. If unset
+    /// (or empty after expansion), callers should fall back to
+    /// `~/dev`. `~` is expanded to the user's home directory.
+    #[serde(default)]
+    pub allowlist_roots: Option<Vec<String>>,
+}
+
+impl SoldrConfig {
+    pub fn load(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
+        toml::from_str(&text).unwrap_or_default()
+    }
+}
+
+/// Public accessor for the soldr home directory used by the `gc`
+/// allowlist default (`~/dev`). Returns `Err` when no home dir can be
+/// resolved.
+pub fn user_home_dir() -> Result<PathBuf, SoldrError> {
+    home_dir()
+}
+
+/// Expand `~` and `~/...` strings to absolute paths under the user's
+/// home directory. Other inputs pass through unchanged.
+pub fn expand_user_home(input: &str) -> PathBuf {
+    if let Some(rest) = input.strip_prefix("~") {
+        if let Ok(home) = home_dir() {
+            let trimmed = rest.trim_start_matches(['/', '\\']);
+            if trimmed.is_empty() {
+                return home;
+            }
+            return home.join(trimmed);
+        }
+    }
+    PathBuf::from(input)
 }
 
 fn soldr_root_from_env_var(value: Option<&OsStr>) -> Option<Result<PathBuf, SoldrError>> {

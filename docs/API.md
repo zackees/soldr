@@ -170,6 +170,45 @@ Stable machine-facing mode:
 soldr version --json
 ```
 
+### `soldr gc`
+
+Reclaim stale Cargo `target/` directories tracked in
+`~/.soldr/data.db`. Implemented by issue #234. The wrapper-mode hot
+path upserts each invocation's resolved workspace `target/` path with
+the current timestamp; `soldr gc` walks the registry, drops missing
+rows, applies safety guards, and (with confirmation) deletes the
+matching directories.
+
+```bash
+soldr gc                                     # interactive, y/N per dir
+soldr gc --dry-run                            # list candidates only
+soldr gc --all                                # delete every eligible candidate
+soldr gc --older-than 30d --larger-than 1GB   # tunable thresholds
+soldr gc --json                               # machine-readable report
+```
+
+Defaults:
+
+- `--older-than 10d`
+- `--larger-than 256M`
+
+Safety guards (from `docs/TARGET_GC_PROPOSAL.md`):
+
+- skip a candidate whose workspace `Cargo.lock` was modified within
+  the staleness window
+- skip a candidate whose `target/.cargo-lock` exists (active build)
+- only consider paths under `gc.allowlist_roots` (default: `~/dev`)
+
+Configure additional allowlist roots via `~/.soldr/config.toml`:
+
+```toml
+[gc]
+allowlist_roots = ["~/dev", "/work/repos"]
+```
+
+A passive once-per-day startup warning is also emitted on the
+dispatch path when stale candidates exist.
+
 ---
 
 ## Structured JSON Output
@@ -222,6 +261,7 @@ Commands:
   config   Show or set configuration
   cache    Inspect the compilation cache
   version  Show version
+  gc       Reclaim stale Cargo target/ directories (issue #234)
 ```
 
 ---
@@ -261,6 +301,8 @@ When soldr manages zccache itself, a caller-provided `ZCCACHE_CACHE_DIR` must ma
 |   |-- zccache/   # managed zccache artifact + state root (set via ZCCACHE_CACHE_DIR)
 |   `-- sccache/   # injected when SOLDR_RUSTC_WRAPPER=sccache and SCCACHE_DIR is unset
 |-- config.toml
+|-- data.db                # sqlite registry of tracked target/ dirs (issue #234)
+|-- .gc_warning_marker     # last-emitted timestamp for the stale-target startup warning
 `-- daemon.*
 ```
 

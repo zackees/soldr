@@ -103,6 +103,31 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Garbage-collect stale Cargo `target/` directories tracked by
+    /// the soldr registry (`~/.soldr/data.db`).
+    ///
+    /// Aliases: `purge-targets` (matches issue #234's `soldr --purge`
+    /// wording).
+    #[command(alias = "purge-targets")]
+    Gc {
+        /// Show candidates and totals without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Delete every eligible candidate without prompting.
+        #[arg(long)]
+        all: bool,
+        /// Minimum age before a `target/` is considered stale
+        /// (e.g. `10d`, `4w`).
+        #[arg(long, default_value = "10d", value_name = "DURATION")]
+        older_than: String,
+        /// Minimum on-disk size before a `target/` is considered for
+        /// reclamation (e.g. `256M`, `1GB`).
+        #[arg(long, default_value = "256M", value_name = "SIZE")]
+        larger_than: String,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -153,6 +178,10 @@ async fn main() {
                 .unwrap_or_else(report_and_exit),
         );
     }
+
+    // Dispatch path only: one-shot stale-target/ warning, throttled
+    // to once per day. Never runs on the rustc-wrapper hot path.
+    emit_startup_target_warning_if_due();
 
     let rc = run_with_args(&raw_args[0], &raw_args[1..])
         .await
@@ -238,6 +267,21 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             } else {
                 println!("soldr {}", output.soldr_version);
             }
+        }
+        Commands::Gc {
+            dry_run,
+            all,
+            older_than,
+            larger_than,
+            json,
+        } => {
+            run_gc_command(GcInvocation {
+                dry_run,
+                all,
+                older_than,
+                larger_than,
+                json,
+            })?;
         }
         Commands::External(args) => {
             if args.is_empty() {
@@ -420,6 +464,13 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(tool_arg);
 
+    // Per-build target/ tracking for `soldr gc`. Best-effort: if we
+    // can't resolve a workspace target dir cheaply, or the sqlite
+    // upsert fails for any reason, skip silently — never fail a build.
+    if tool_stem == "rustc" {
+        record_target_dir_in_registry(&raw_args[2..]);
+    }
+
     // Only route through zccache for actual rustc invocations, not
     // clippy-driver or other workspace wrappers.
     if tool_stem == "rustc" && soldr_cache::cache_enabled_in_current_process() {
@@ -483,6 +534,24 @@ fn run_wrapper_through_zccache(
         let status = command.status()?;
         Ok(status.code().unwrap_or(1))
     }
+}
+
+/// Best-effort upsert of the workspace `target/` dir into the soldr
+/// state registry on every wrapper invocation. Silent on failure.
+///
+/// `rustc_args` is the slice of args that follows the rustc binary
+/// path in the wrapper invocation (i.e. `raw_args[2..]`).
+fn record_target_dir_in_registry(rustc_args: &[String]) {
+    let Some(target) = soldr_cache::target_registry::resolve_workspace_target_dir(rustc_args)
+    else {
+        return;
+    };
+    let Ok(paths) = SoldrPaths::new() else { return };
+    let db_path = soldr_cache::data_db_path(&paths);
+    let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) else {
+        return;
+    };
+    let _ = registry.upsert(&target);
 }
 
 async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
@@ -1645,6 +1714,222 @@ fn clear_zccache_cache() -> Result<(), SoldrError> {
         );
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// soldr gc — garbage-collect stale Cargo target/ directories.
+// ---------------------------------------------------------------------------
+
+struct GcInvocation {
+    dry_run: bool,
+    all: bool,
+    older_than: String,
+    larger_than: String,
+    json: bool,
+}
+
+#[derive(Serialize)]
+struct GcCandidateOutput {
+    path: String,
+    size_bytes: u64,
+    size_human: String,
+    age_seconds: i64,
+    age_human: String,
+    eligible: bool,
+    reason: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GcOutput {
+    schema_version: u32,
+    command: &'static str,
+    dry_run: bool,
+    candidates: Vec<GcCandidateOutput>,
+    skipped: Vec<GcCandidateOutput>,
+    dropped_missing: usize,
+    deleted_paths: Vec<String>,
+}
+
+fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
+    use soldr_cache::gc::{parse_duration, parse_size, purge_one, scan, GcOptions};
+
+    let older_than = parse_duration(&invocation.older_than).map_err(SoldrError::Other)?;
+    let larger_than = parse_size(&invocation.larger_than).map_err(SoldrError::Other)?;
+
+    let paths = SoldrPaths::new()?;
+    let dev_roots = resolve_gc_dev_roots(&paths);
+    let db_path = soldr_cache::data_db_path(&paths);
+    let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
+        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+
+    let options = GcOptions {
+        older_than_seconds: older_than,
+        larger_than_bytes: larger_than,
+        dev_roots,
+        dry_run: invocation.dry_run,
+    };
+
+    let report =
+        scan(&registry, &options).map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+
+    let mut deleted_paths: Vec<String> = Vec::new();
+
+    if !invocation.json {
+        eprintln!(
+            "soldr gc: scanned registry at {} ({} candidate dir{}, {} skipped, {} dropped missing)",
+            db_path.display(),
+            report.candidates.len(),
+            if report.candidates.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            report.skipped.len(),
+            report.dropped_missing
+        );
+
+        if report.candidates.is_empty() {
+            eprintln!("soldr gc: nothing to reclaim.");
+        } else {
+            eprintln!("soldr gc: candidates");
+            for cand in &report.candidates {
+                eprintln!(
+                    "  {}  size={}  age={}",
+                    cand.path.display(),
+                    soldr_cache::target_registry::human_size(cand.size_bytes),
+                    soldr_cache::target_registry::human_age(cand.age_seconds),
+                );
+            }
+        }
+    }
+
+    for cand in &report.candidates {
+        let should_delete = if invocation.dry_run {
+            false
+        } else if invocation.all {
+            true
+        } else {
+            prompt_yes_no(&format!(
+                "soldr gc: delete {} ({}, age {}) ? [y/N] ",
+                cand.path.display(),
+                soldr_cache::target_registry::human_size(cand.size_bytes),
+                soldr_cache::target_registry::human_age(cand.age_seconds),
+            ))
+        };
+
+        if should_delete {
+            match purge_one(&registry, &cand.path, false) {
+                Ok(true) => {
+                    if !invocation.json {
+                        eprintln!("soldr gc: deleted {}", cand.path.display());
+                    }
+                    deleted_paths.push(cand.path.display().to_string());
+                }
+                Ok(false) => {
+                    if !invocation.json {
+                        eprintln!(
+                            "soldr gc: nothing to delete at {} (already gone)",
+                            cand.path.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("soldr gc: failed to delete {}: {e}", cand.path.display());
+                }
+            }
+        }
+    }
+
+    if invocation.json {
+        let output = GcOutput {
+            schema_version: JSON_SCHEMA_VERSION,
+            command: "gc",
+            dry_run: invocation.dry_run,
+            candidates: report
+                .candidates
+                .into_iter()
+                .map(gc_candidate_output)
+                .collect(),
+            skipped: report
+                .skipped
+                .into_iter()
+                .map(gc_candidate_output)
+                .collect(),
+            dropped_missing: report.dropped_missing,
+            deleted_paths,
+        };
+        print_json(&output)?;
+    }
+    Ok(())
+}
+
+fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
+    GcCandidateOutput {
+        path: c.path.display().to_string(),
+        size_human: soldr_cache::target_registry::human_size(c.size_bytes),
+        size_bytes: c.size_bytes,
+        age_human: soldr_cache::target_registry::human_age(c.age_seconds),
+        age_seconds: c.age_seconds,
+        eligible: c.eligible,
+        reason: c.reason,
+    }
+}
+
+fn prompt_yes_no(prompt: &str) -> bool {
+    use std::io::{BufRead, Write};
+    eprint!("{prompt}");
+    let _ = std::io::stderr().flush();
+    let stdin = std::io::stdin();
+    let mut line = String::new();
+    if stdin.lock().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+/// Resolve the configured `gc.allowlist_roots`, falling back to
+/// `~/dev` when unset.
+fn resolve_gc_dev_roots(paths: &SoldrPaths) -> Vec<std::path::PathBuf> {
+    let config = paths.load_config();
+    let configured = config
+        .gc
+        .allowlist_roots
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| !r.trim().is_empty())
+        .map(|r| soldr_core::expand_user_home(&r))
+        .collect::<Vec<_>>();
+    if !configured.is_empty() {
+        return configured;
+    }
+    if let Ok(home) = soldr_core::user_home_dir() {
+        return vec![home.join("dev")];
+    }
+    Vec::new()
+}
+
+fn emit_startup_target_warning_if_due() {
+    let Ok(paths) = SoldrPaths::new() else { return };
+    let db_path = soldr_cache::data_db_path(&paths);
+    if !db_path.exists() {
+        return;
+    }
+    let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) else {
+        return;
+    };
+    let options = soldr_cache::gc::GcOptions {
+        older_than_seconds: soldr_cache::target_registry::DEFAULT_STALE_AGE_SECONDS,
+        larger_than_bytes: soldr_cache::target_registry::DEFAULT_STALE_SIZE_BYTES,
+        dev_roots: resolve_gc_dev_roots(&paths),
+        dry_run: true,
+    };
+    let marker = soldr_cache::gc_warning_marker_path(&paths);
+    match soldr_cache::gc::maybe_build_startup_warning(&registry, &options, &marker) {
+        Ok(Some(message)) => eprintln!("{message}"),
+        Ok(None) => {}
+        Err(_) => {}
+    }
 }
 
 fn purge_soldr_cache() -> Result<(), SoldrError> {
