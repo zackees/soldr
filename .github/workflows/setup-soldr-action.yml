@@ -54,9 +54,9 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - id: setup
-        # This is zackees/setup-soldr@v0.2.0 / @v0 pinned to a full SHA
+        # This is zackees/setup-soldr@v0.4.3 / @v0 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2
+        uses: zackees/setup-soldr@6c48a0946390a3520a853e30fe417db7465b9119
         with:
           cache: true
           # Keep the action runtime cache separate from the Soldr build under
@@ -65,7 +65,7 @@ jobs:
           cache-dir: ${{ runner.temp }}/setup-soldr-action-state
           cache-key-suffix: dogfood-action-state
           build-cache: false
-          target-cache: false
+          target-cache: true
 
       - name: Show action outputs
         shell: pwsh
