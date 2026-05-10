@@ -254,18 +254,14 @@ jobs:
             --target-dir target \
             --out dist
 
-      - name: Verify wheel binary matches release binary
+      - name: Verify wheel ships the bin script at the spec path
         shell: python
         run: |
-          import hashlib
           import sys
           import zipfile
           from pathlib import Path
 
           binary_name = "${{ matrix.binary }}"
-          release_binary = Path("dist") / "package" / binary_name
-          if not release_binary.exists():
-              raise SystemExit(f"packaged release binary not found: {release_binary}")
 
           wheels = sorted(Path("dist").glob("*.whl"))
           if len(wheels) != 1:
@@ -284,17 +280,19 @@ jobs:
           distname_version = f"{parts[0]}-{parts[1]}"
           script_entry = f"{distname_version}.data/scripts/{binary_name}"
 
-          # Maturin 1.13.2 emits the bin-binding script under both
-          # `<distname>-<version>.data/scripts/<binary>` (the wheel-spec
-          # location pip puts on PATH) and an extra
-          # `<distname>.scripts/<binary>` purelib copy on macOS. Maturin
-          # also post-processes one of those copies (delocate-style
-          # rewrite of external dylib load paths, e.g. `liblzma`), so
-          # the bytes diverge between paths. The user-facing binary is
-          # the `.data/scripts/` one — that is what must match the
-          # standalone release tarball binary. Anything else in the
-          # wheel is purelib bloat that pip never puts on PATH.
-          expected = hashlib.sha256(release_binary.read_bytes()).hexdigest()
+          # We do NOT SHA-compare the wheel binary to the standalone
+          # release tarball binary at `dist/package/<binary>`. From
+          # maturin 1.13.2 onward, maturin builds its own binary at
+          # `target/maturin/<binary>` and post-processes it on macOS
+          # (delocate-style rewrite of external dylib load paths,
+          # e.g. `liblzma.5.dylib`). The wheel binary is therefore
+          # intentionally byte-different from cargo's release binary
+          # even though they're functionally equivalent. The
+          # `Smoke test wheel` step that follows installs the wheel
+          # and runs `<binary> --version` — that's the real functional
+          # check. This step's job is to confirm the wheel is
+          # structurally well-formed: exactly one entry at the
+          # PEP 491 scripts path, no nested look-alikes.
           with zipfile.ZipFile(wheels[0]) as wheel:
               names = wheel.namelist()
               if names.count(script_entry) != 1:
@@ -303,16 +301,16 @@ jobs:
                       f"expected exactly one `{script_entry}` entry in "
                       f"{wheels[0].name}, found {matches}"
                   )
-              actual = hashlib.sha256(wheel.read(script_entry)).hexdigest()
+              info = wheel.getinfo(script_entry)
+              if info.file_size == 0:
+                  raise SystemExit(
+                      f"`{script_entry}` in {wheels[0].name} is empty"
+                  )
 
-          if actual != expected:
-              print(f"release binary sha256: {expected}", file=sys.stderr)
-              print(f"wheel binary sha256:   {actual}", file=sys.stderr)
-              raise SystemExit(
-                  f"`{script_entry}` does not match the shared release binary"
-              )
-
-          print(f"{wheels[0].name} ships the shared {binary_name} at `{script_entry}`")
+          print(
+              f"{wheels[0].name} ships {binary_name} at `{script_entry}` "
+              f"({info.file_size} bytes)"
+          )
 
       - name: Smoke test wheel
         shell: bash
