@@ -245,13 +245,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # maturin 1.13.2 emits the bin-binding script under both
-          # `<name>-<version>.data/scripts/<binary>` (correct) and
-          # `<name>.scripts/<binary>` (extra) on macOS wheels, which
-          # trips the single-binary check in the verify step below
-          # (run 25634356438 macOS ARM64/x64). Pin below 1.13.2 until
-          # the upstream fix lands.
-          uv tool install "maturin>=1.7,<1.13.2"
+          uv tool install "maturin>=1.7,<2"
           maturin build \
             --release \
             --locked \
@@ -284,11 +278,28 @@ jobs:
                   for name in wheel.namelist()
                   if Path(name).name == binary_name and not name.endswith("/")
               ]
-              if len(candidates) != 1:
+              if not candidates:
                   raise SystemExit(
-                      f"expected one {binary_name} in {wheels[0].name}, found {candidates}"
+                      f"no {binary_name} found in {wheels[0].name}"
                   )
-              actual = hashlib.sha256(wheel.read(candidates[0])).hexdigest()
+              # maturin 1.13.2 emits the bin-binding script under both
+              # `<name>-<version>.data/scripts/<binary>` (the wheel-spec
+              # location pip puts on PATH) and an extra `<name>.scripts/
+              # <binary>` under purelib on macOS wheels. The duplicate
+              # is harmless wheel bloat — pip only installs the
+              # `.data/scripts/` copy to bin — but we still require
+              # every copy to be byte-identical to the release tarball
+              # binary so we never silently ship a stale duplicate.
+              actuals = {
+                  hashlib.sha256(wheel.read(name)).hexdigest()
+                  for name in candidates
+              }
+              if len(actuals) != 1:
+                  raise SystemExit(
+                      f"{binary_name} copies in {wheels[0].name} have "
+                      f"differing sha256 across paths {candidates}: {sorted(actuals)}"
+                  )
+              actual = next(iter(actuals))
 
           if actual != expected:
               print(f"release binary sha256: {expected}", file=sys.stderr)
