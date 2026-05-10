@@ -1532,7 +1532,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "blake3",
  "rusqlite",
@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "clap",
  "serde",
@@ -1562,7 +1562,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "serde",
  "tempfile",
@@ -1572,7 +1572,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.7.13"
+version = "0.7.14"
 dependencies = [
  "flate2",
  "hex",
