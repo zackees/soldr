@@ -167,6 +167,35 @@ soldr maturin build --release
   +-- not cached?     --> download pre-built binary (2s) --> run
 ```
 
+## Linker speed (the other half of fast CI)
+
+soldr caches `rustc` invocations. It does **not** cache the linker step. If your build links many binaries (multiple `tests/*.rs` files, several `[[bin]]` targets, examples, benches), the dominant cost is often `ld`, and zccache will not help with that.
+
+On Linux, switch to the `mold` linker for ~5-10x faster linking. Add to your repo's `.cargo/config.toml`:
+
+```toml
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+```
+
+Then in CI, install mold before any cargo step:
+
+```yaml
+- name: Install mold linker
+  run: |
+    sudo apt-get update
+    sudo apt-get install -y --no-install-recommends mold
+```
+
+macOS uses `ld64`, which is already fast and rarely worth swapping. Windows uses MSVC's linker, which `mold` does not target.
+
+If you also have many separate test binaries, consider consolidating them under one `tests/<name>.rs` entry point with sub-modules. Fewer linker invocations is itself a multiplicative win on top of mold.
+
 ## Design goals
 
 - **One obvious command**: Fetch tools, pick the right Windows target, and run through managed zccache through the same entry point.
