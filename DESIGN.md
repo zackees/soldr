@@ -23,7 +23,7 @@ The important product rule is that users should think in terms of `soldr cargo .
 
 - Not a separate build language
 - Not a project scaffolder
-- Not a Rust toolchain manager
+- Not a Rust toolchain manager *(under active reconsideration — see [docs/RUSTUP_REPLACEMENT_ANALYSIS.md](docs/RUSTUP_REPLACEMENT_ANALYSIS.md) and issue #235; the current recommendation is a hybrid native dist fetcher with rustup as a fallback, but until that work lands the position remains as stated)*
 
 soldr can delegate to Cargo, but it should not try to replace Cargo's flags, profiles, or dependency model.
 
