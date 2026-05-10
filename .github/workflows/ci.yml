@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: zackees/setup-soldr@13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2 # v0.2.0 / v0
+      - uses: zackees/setup-soldr@6c48a0946390a3520a853e30fe417db7465b9119 # v0.4.3 / v0
         with:
           # Formatting does not benefit from a restored target directory, but
           # clippy still uses soldr's compilation cache below.
@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: zackees/setup-soldr@13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2 # v0.2.0 / v0
+      - uses: zackees/setup-soldr@6c48a0946390a3520a853e30fe417db7465b9119 # v0.4.3 / v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -77,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: zackees/setup-soldr@13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2 # v0.2.0 / v0
+      - uses: zackees/setup-soldr@6c48a0946390a3520a853e30fe417db7465b9119 # v0.4.3 / v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: zackees/setup-soldr@13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2 # v0.2.0 / v0
+      - uses: zackees/setup-soldr@6c48a0946390a3520a853e30fe417db7465b9119 # v0.4.3 / v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
