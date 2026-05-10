@@ -12,6 +12,24 @@ on:
       - Cargo.lock
       - .github/actions/setup-soldr/**
       - .github/workflows/setup-soldr-action.yml
+  # Run on main pushes too so the dogfood zccache gets saved at the base
+  # branch scope (refs/heads/main). GitHub Actions caches are scoped per ref:
+  # a PR run can read caches from its base branch but cannot read other PRs'
+  # caches. Without a push:main trigger every PR starts cold because nothing
+  # has ever populated the prefix at the base scope. See issue #249.
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - INTEGRATION.md
+      - action.yml
+      - install.sh
+      - rust-toolchain.toml
+      - Cargo.toml
+      - Cargo.lock
+      - .github/actions/setup-soldr/**
+      - .github/workflows/setup-soldr-action.yml
   workflow_dispatch:
 
 permissions:
