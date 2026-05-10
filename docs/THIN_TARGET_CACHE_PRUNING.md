@@ -361,6 +361,47 @@ The CI gate that runs this script lives at
 quirks; flip it to a hard required check once it has been green for a week
 on `main`.
 
+#### 5.1.b Manifest assertion (`assert_thin_manifest.py`)
+
+The cargo-output verifier above only proves that cargo was happy with the
+restored slice. It does **not** prove that soldr-cli actually wrote
+`manifest.v2.json` next to the bundle, that the manifest enumerates the
+files present, or that it never re-lists artifact classes thin-v2 is
+supposed to drop. A second script,
+`.github/scripts/assert_thin_manifest.py`, closes that gap:
+
+```bash
+python .github/scripts/assert_thin_manifest.py \
+  <bundle_dir>/manifest.v2.json \
+  <bundle_dir> \
+  [--strict]
+```
+
+What it checks:
+
+- `manifest.v2.json` exists, parses as JSON, and matches the
+  `ThinSliceManifest` schema emitted by
+  `crates/soldr-cli/src/main.rs::write_thin_manifest` (`schema_version: 2`,
+  `cache_profile`, `bundle_root`, `generated_at_unix_seconds`, `files[]`).
+- Every entry in `files[]` exists as a regular file under `bundle_dir`
+  (drift detection).
+- `--strict` additionally fails if any file under `bundle_dir` is missing
+  from the manifest (orphan detection). Off by default because some bundle
+  writers may legitimately leave scratch state behind.
+- No path in the manifest matches the dropped-category patterns:
+  `*/incremental/*`, `*.rlib`, `*.rmeta`, `*.dwo`, `*.pdb`, `*.dSYM/*`,
+  `*/build-script-build`, `*/build-script-build.exe`. A regression that
+  starts re-listing any of these classes hard-fails the gate.
+
+Exit codes mirror `assert_thin_noop.py`: `0` ok / `1` validation failure
+(human-readable reason printed to stderr) / `2` usage error.
+
+The CI workflow runs this script in a step guarded on
+`SOLDR_TARGET_CACHE_BUNDLE_DIR` being set, so it no-ops cleanly until the
+workflow is upgraded to actually drive the `soldr cargo build` save path
+that produces a manifest. The assertion script is in place ahead of time
+so the day the workflow is wired up, the gate fires immediately.
+
 ### 5.2 Counter-tests
 
 | Counter-test | What it catches |
