@@ -57,7 +57,7 @@ fn log_contains_toolchain_homes(
 fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
     #[cfg(windows)]
     {
-        return dir.join(format!("{name}.cmd"));
+        dir.join(format!("{name}.cmd"))
     }
     #[cfg(not(windows))]
     {

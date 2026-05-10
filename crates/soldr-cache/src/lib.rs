@@ -10,6 +10,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod gc;
+pub mod target_registry;
+
+/// Path to the soldr state database (`~/.soldr/data.db`) used by the
+/// target-directory registry and any future state tables.
+pub fn data_db_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(target_registry::DATA_DB_FILE)
+}
+
+/// Throttle marker for the once-per-day stale-target startup warning.
+pub fn gc_warning_marker_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(".gc_warning_marker")
+}
+
 /// Environment variable used to carry cache enable/disable state from the
 /// front-door cargo command into child processes.
 pub const CACHE_ENABLED_ENV_VAR: &str = "SOLDR_CACHE_ENABLED";
