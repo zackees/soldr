@@ -2970,13 +2970,56 @@ mod tests {
         compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
         extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
         parse_tool_spec, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
-        selected_cargo_args, should_trampoline, write_thin_manifest, CargoMetadata,
-        CargoMetadataPackage, RustArtifactPlan, RustPlanInputs, RustPlanPackages,
-        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
-        ZccacheBuildSession, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+        selected_cargo_args, should_skip_warm_restore, should_trampoline,
+        warm_restore_sentinel_path, write_thin_manifest, write_warm_restore_sentinel,
+        CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustArtifactPlanContext,
+        RustPlanInputs, RustPlanPackages, RustToolchainIdentity, RustcWrapperMode,
+        ThinSliceManifest, WarmRestoreSentinel, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
+        THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    /// Serialises tests that mutate process-wide environment variables so
+    /// they do not race with each other under parallel `cargo test`. The
+    /// guard objects below restore the previous value on drop, but two
+    /// tests touching the same key concurrently would still observe each
+    /// other's mid-test state without this lock.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII guard that sets or removes an environment variable for the
+    /// duration of a test and restores the previous value on drop. Modelled
+    /// after the same helper in `soldr-core`'s test module.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     #[test]
     fn cargo_args_detect_explicit_target_flag() {
@@ -4021,5 +4064,216 @@ mod tests {
         let json = serde_json::to_string(&sentinel).expect("serialize sentinel");
         let parsed: WarmRestoreSentinel = serde_json::from_str(&json).expect("parse sentinel back");
         assert_eq!(parsed, sentinel);
+    }
+
+    /// Build a `RustArtifactPlanContext` whose plan-derived fields match
+    /// `plan` and whose filesystem-touching paths live under `tempdir`. The
+    /// other fields are filled with deterministic placeholders so tests can
+    /// inspect them without caring about the daemon plumbing they would
+    /// drive in production.
+    fn warm_restore_test_context(
+        plan: &RustArtifactPlan,
+        tempdir: &TempDir,
+    ) -> RustArtifactPlanContext {
+        let root = tempdir.path();
+        RustArtifactPlanContext {
+            path: root.join("plan.json"),
+            zccache_binary: root.join("zccache"),
+            cache_dir: root.join("cache"),
+            zccache_daemon_cache_dir: root.join("daemon"),
+            session_id: "session-test".to_string(),
+            journal_path: root.join("journal"),
+            backend: "fs".to_string(),
+            cache_profile: Some("thin-v1"),
+            plan_inputs_hash: compute_plan_inputs_hash(plan),
+            target_dir: plan.target_dir.clone(),
+        }
+    }
+
+    /// With the gating env var enabled, `write_warm_restore_sentinel` must
+    /// materialise a JSON sentinel under the plan's cache dir whose fields
+    /// reflect the plan inputs and the current GitHub Actions env. This is
+    /// the producer half of the warm-restore short-circuit.
+    #[test]
+    fn write_warm_restore_sentinel_emits_matching_json_when_enabled() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+        let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-42");
+        let _job = EnvVarGuard::set("GITHUB_JOB", "test-job");
+        let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "3");
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+
+        write_warm_restore_sentinel(&ctx);
+
+        let sentinel_path = warm_restore_sentinel_path(&ctx);
+        let raw = std::fs::read_to_string(&sentinel_path)
+            .expect("sentinel file should exist after write");
+        let sentinel: WarmRestoreSentinel =
+            serde_json::from_str(&raw).expect("sentinel JSON should parse");
+
+        assert_eq!(sentinel.schema_version, 1);
+        assert_eq!(sentinel.plan_inputs_hash, ctx.plan_inputs_hash);
+        assert_eq!(sentinel.target_dir, ctx.target_dir);
+        assert_eq!(sentinel.github_run_id, "run-42");
+        assert_eq!(sentinel.github_job, "test-job");
+        assert_eq!(sentinel.github_run_attempt, "3");
+        assert_eq!(sentinel.session_id, ctx.session_id);
+    }
+
+    /// When the gating env var is unset, the producer must be a strict
+    /// no-op so the short-circuit cannot accidentally fire on the next
+    /// invocation. No sentinel file should appear on disk.
+    #[test]
+    fn write_warm_restore_sentinel_is_noop_when_disabled() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::remove(SKIP_WARM_RESTORE_ENV_VAR);
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+
+        write_warm_restore_sentinel(&ctx);
+
+        let sentinel_path = warm_restore_sentinel_path(&ctx);
+        assert!(
+            !sentinel_path.exists(),
+            "no sentinel should be written when {SKIP_WARM_RESTORE_ENV_VAR} is unset"
+        );
+    }
+
+    /// Full filesystem round-trip: write a sentinel that exactly matches
+    /// the current plan and CI env, then ask `should_skip_warm_restore`
+    /// whether it should fire. The short-circuit must return `Some` with
+    /// a non-empty operator-visible reason string.
+    #[test]
+    fn should_skip_warm_restore_returns_some_on_full_match() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+        let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-7");
+        let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+        let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+        let sentinel_path = warm_restore_sentinel_path(&ctx);
+        std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
+            .expect("create sentinel parent");
+        let sentinel = WarmRestoreSentinel {
+            schema_version: 1,
+            plan_inputs_hash: ctx.plan_inputs_hash.clone(),
+            target_dir: ctx.target_dir.clone(),
+            github_run_id: "run-7".to_string(),
+            github_job: "build".to_string(),
+            github_run_attempt: "1".to_string(),
+            session_id: "session-prev".to_string(),
+            saved_at_unix_seconds: super::current_unix_seconds(),
+        };
+        std::fs::write(
+            &sentinel_path,
+            serde_json::to_string(&sentinel).expect("serialize sentinel"),
+        )
+        .expect("write sentinel");
+
+        let result = should_skip_warm_restore(&ctx);
+        let reason = result.expect("expected Some(reason) on full match");
+        assert!(
+            !reason.is_empty(),
+            "skip reason should be non-empty for operator visibility"
+        );
+    }
+
+    /// A sentinel left behind by a previous invocation with a different
+    /// `plan_inputs_hash` (e.g. after a lockfile bump) must not fire the
+    /// short-circuit even when the file is otherwise present and fresh.
+    #[test]
+    fn should_skip_warm_restore_returns_none_on_hash_mismatch() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+        let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-7");
+        let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+        let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+        let sentinel_path = warm_restore_sentinel_path(&ctx);
+        std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
+            .expect("create sentinel parent");
+        let sentinel = WarmRestoreSentinel {
+            schema_version: 1,
+            plan_inputs_hash: "stale-hash-from-previous-step".to_string(),
+            target_dir: ctx.target_dir.clone(),
+            github_run_id: "run-7".to_string(),
+            github_job: "build".to_string(),
+            github_run_attempt: "1".to_string(),
+            session_id: "session-prev".to_string(),
+            saved_at_unix_seconds: super::current_unix_seconds(),
+        };
+        std::fs::write(
+            &sentinel_path,
+            serde_json::to_string(&sentinel).expect("serialize sentinel"),
+        )
+        .expect("write sentinel");
+
+        assert!(should_skip_warm_restore(&ctx).is_none());
+    }
+
+    /// When no sentinel file exists at all, the short-circuit must fall
+    /// through without panicking on the missing-file IO error.
+    #[test]
+    fn should_skip_warm_restore_returns_none_when_sentinel_missing() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+        let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-7");
+        let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+        let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+        assert!(!warm_restore_sentinel_path(&ctx).exists());
+
+        assert!(should_skip_warm_restore(&ctx).is_none());
+    }
+
+    /// With the gating env var unset, the short-circuit must stay off
+    /// even when a perfectly-matching sentinel exists. This is the
+    /// safety property that keeps the feature opt-in until CI validates
+    /// it across all supported configurations.
+    #[test]
+    fn should_skip_warm_restore_returns_none_when_disabled_even_with_match() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::remove(SKIP_WARM_RESTORE_ENV_VAR);
+        let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-7");
+        let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+        let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+        let tempdir = TempDir::new().expect("create tempdir");
+        let plan = warm_restore_test_plan();
+        let ctx = warm_restore_test_context(&plan, &tempdir);
+        let sentinel_path = warm_restore_sentinel_path(&ctx);
+        std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
+            .expect("create sentinel parent");
+        let sentinel = WarmRestoreSentinel {
+            schema_version: 1,
+            plan_inputs_hash: ctx.plan_inputs_hash.clone(),
+            target_dir: ctx.target_dir.clone(),
+            github_run_id: "run-7".to_string(),
+            github_job: "build".to_string(),
+            github_run_attempt: "1".to_string(),
+            session_id: "session-prev".to_string(),
+            saved_at_unix_seconds: super::current_unix_seconds(),
+        };
+        std::fs::write(
+            &sentinel_path,
+            serde_json::to_string(&sentinel).expect("serialize sentinel"),
+        )
+        .expect("write sentinel");
+
+        assert!(should_skip_warm_restore(&ctx).is_none());
     }
 }
