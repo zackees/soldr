@@ -575,13 +575,28 @@ struct CargoMetadataPackage {
     source: Option<String>,
 }
 
+/// Returns `true` when `cache_profile` should be omitted from the serialized
+/// plan to keep wire compatibility with zccache builds that do not yet know
+/// about the `cache_profile` field (e.g. v1.4.0, which uses
+/// `#[serde(deny_unknown_fields)]` on `RustArtifactPlanV1`).
+///
+/// We keep the value in-memory so internal consumers can still branch on it,
+/// but we hide it on the wire for everything except the `thin-v2` opt-in.
+fn skip_legacy_cache_profile(value: &Option<&'static str>) -> bool {
+    !matches!(value, Some("thin-v2"))
+}
+
 #[derive(Debug, Serialize)]
 struct RustArtifactPlan {
     schema_version: u32,
     mode: String,
     /// Thin-slice pruning policy in effect, e.g. `thin-v1` (legacy) or
-    /// `thin-v2` (fingerprint-aware prune). Always present so downstream
-    /// tooling can branch unambiguously. `null` for `mode == "full"`.
+    /// `thin-v2` (fingerprint-aware prune). Only emitted on the wire when
+    /// it carries new information (i.e. `thin-v2`). Omitted entirely for
+    /// `thin-v1` and `mode == "full"` so zccache builds with
+    /// `#[serde(deny_unknown_fields)]` (e.g. v1.4.0) can still parse the
+    /// plan unchanged.
+    #[serde(skip_serializing_if = "skip_legacy_cache_profile")]
     cache_profile: Option<&'static str>,
     workspace_root: String,
     target_dir: String,
@@ -595,6 +610,9 @@ struct RustArtifactPlan {
     /// to short-circuit walks for files it would otherwise consider keeping.
     /// Empty for legacy `thin-v1` and `full` modes — preserves backwards
     /// compatibility with zccache builds that do not yet understand it.
+    /// Skipped from the JSON entirely when empty so older zccache builds
+    /// with `#[serde(deny_unknown_fields)]` keep accepting the plan.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     dropped_artifact_classes: Vec<&'static str>,
     cache_schema_version: u32,
     journal_log_path: Option<String>,
@@ -2394,8 +2412,9 @@ mod tests {
         dropped_artifact_classes, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
         normalize_version, parse_tool_spec, rustc_wrapper_mode_from_env_var,
         rustup_resolution_failure, selected_cargo_args, should_trampoline, write_thin_manifest,
-        CargoMetadata, CargoMetadataPackage, RustToolchainIdentity, RustcWrapperMode,
-        ThinSliceManifest, ZccacheBuildSession, THIN_MANIFEST_FILENAME,
+        CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, ZccacheBuildSession,
+        THIN_MANIFEST_FILENAME,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -3028,5 +3047,153 @@ mod tests {
         assert!(rendered.contains("generic stable toolchain"));
         assert!(rendered.contains("RUSTUP_TOOLCHAIN"));
         assert!(rendered.contains("setup-soldr action path"));
+    }
+
+    /// Regression test for the zccache v1.4.0 wire-compat bug. zccache
+    /// v1.4.0 deserializes the plan with `#[serde(deny_unknown_fields)]`
+    /// and does NOT know about `cache_profile` / `dropped_artifact_classes`.
+    /// Therefore the default `thin-v1` (and `full`) JSON must look exactly
+    /// like the pre-PR plan: neither field may appear in the JSON. The
+    /// thin-v2 opt-in is allowed (and required) to surface them.
+    #[test]
+    fn rust_artifact_plan_thin_v1_json_omits_new_fields_for_zccache_compat() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "thin".to_string(),
+            cache_profile: Some("thin-v1"),
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec!["cargo_fingerprint"],
+            dropped_artifact_classes: vec![],
+            cache_schema_version: 1,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize thin-v1 plan");
+        assert!(
+            !json.contains("\"cache_profile\""),
+            "thin-v1 plan must NOT serialize cache_profile (zccache v1.4.0 \
+             rejects unknown fields); got: {json}"
+        );
+        assert!(
+            !json.contains("\"dropped_artifact_classes\""),
+            "thin-v1 plan must NOT serialize dropped_artifact_classes; got: {json}"
+        );
+    }
+
+    /// `full` mode also predates the new fields and zccache's strict
+    /// deserializer rejects them, so `cache_profile == None` plus an empty
+    /// drop list must serialize without either field.
+    #[test]
+    fn rust_artifact_plan_full_mode_json_omits_new_fields() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "full".to_string(),
+            cache_profile: None,
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec![],
+            dropped_artifact_classes: vec![],
+            cache_schema_version: 1,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize full plan");
+        assert!(!json.contains("\"cache_profile\""), "got: {json}");
+        assert!(
+            !json.contains("\"dropped_artifact_classes\""),
+            "got: {json}"
+        );
+    }
+
+    /// thin-v2 is the opt-in that ships the new wire fields. zccache
+    /// builds that consume thin-v2 must see both `cache_profile` and the
+    /// non-empty `dropped_artifact_classes` list.
+    #[test]
+    fn rust_artifact_plan_thin_v2_json_includes_new_fields() {
+        let plan = RustArtifactPlan {
+            schema_version: 1,
+            mode: "thin".to_string(),
+            cache_profile: Some("thin-v2"),
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0".to_string(),
+                cargo: "cargo 1.0.0".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "release".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "f".to_string(),
+                rustflags_hash: "r".to_string(),
+                env_hash: "e".to_string(),
+                lockfile_hash: "l".to_string(),
+                cargo_config_hash: "c".to_string(),
+                manifest_hashes: vec![],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec![],
+                workspace_package_ids: vec![],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec!["dep_info"],
+            dropped_artifact_classes: vec!["rlib", "rmeta"],
+            cache_schema_version: 2,
+            journal_log_path: None,
+        };
+
+        let json = serde_json::to_string(&plan).expect("serialize thin-v2 plan");
+        assert!(
+            json.contains("\"cache_profile\":\"thin-v2\""),
+            "thin-v2 must serialize cache_profile; got: {json}"
+        );
+        assert!(
+            json.contains("\"dropped_artifact_classes\""),
+            "thin-v2 must serialize dropped_artifact_classes; got: {json}"
+        );
     }
 }
