@@ -928,24 +928,35 @@ fn current_unix_seconds() -> u64 {
 /// Pure function over its inputs so it can be unit-tested without touching
 /// the filesystem; the IO-bound caller passes the loaded sentinel and
 /// current env snapshot in.
-fn evaluate_warm_restore_skip(
-    sentinel: Option<&WarmRestoreSentinel>,
-    plan_inputs_hash: &str,
-    plan_target_dir: &str,
-    github_run_id: &str,
-    github_job: &str,
-    github_run_attempt: &str,
+/// Bundle of "current invocation" inputs that
+/// [`evaluate_warm_restore_skip`] compares against a loaded sentinel.
+///
+/// Internal-only — exists solely to keep the function's argument count
+/// under clippy's `too_many_arguments` threshold without changing
+/// behavior. Field names mirror the previous parameter names so call
+/// sites stay legible.
+struct WarmRestoreSkipInputs<'a> {
+    plan_inputs_hash: &'a str,
+    plan_target_dir: &'a str,
+    github_run_id: &'a str,
+    github_job: &'a str,
+    github_run_attempt: &'a str,
     now_unix_seconds: u64,
     max_age_seconds: u64,
+}
+
+fn evaluate_warm_restore_skip(
+    sentinel: Option<&WarmRestoreSentinel>,
+    inputs: &WarmRestoreSkipInputs<'_>,
 ) -> Option<String> {
     let sentinel = sentinel?;
     if sentinel.schema_version != 1 {
         return None;
     }
-    if sentinel.plan_inputs_hash != plan_inputs_hash {
+    if sentinel.plan_inputs_hash != inputs.plan_inputs_hash {
         return None;
     }
-    if sentinel.target_dir != plan_target_dir {
+    if sentinel.target_dir != inputs.plan_target_dir {
         return None;
     }
     // CI scoping: only short-circuit when both invocations are inside the
@@ -953,17 +964,19 @@ fn evaluate_warm_restore_skip(
     // strings on both sides, which still matches and lets the local repro
     // benefit from the same path. The intent of the issue, however, is the
     // CI case — hence the explicit attempt scoping.
-    if sentinel.github_run_id != github_run_id {
+    if sentinel.github_run_id != inputs.github_run_id {
         return None;
     }
-    if sentinel.github_job != github_job {
+    if sentinel.github_job != inputs.github_job {
         return None;
     }
-    if sentinel.github_run_attempt != github_run_attempt {
+    if sentinel.github_run_attempt != inputs.github_run_attempt {
         return None;
     }
-    let age = now_unix_seconds.saturating_sub(sentinel.saved_at_unix_seconds);
-    if age > max_age_seconds {
+    let age = inputs
+        .now_unix_seconds
+        .saturating_sub(sentinel.saved_at_unix_seconds);
+    if age > inputs.max_age_seconds {
         return None;
     }
     Some(format!(
@@ -986,16 +999,19 @@ fn should_skip_warm_restore(plan: &RustArtifactPlanContext) -> Option<String> {
     let sentinel_path = warm_restore_sentinel_path(plan);
     let raw = std::fs::read_to_string(&sentinel_path).ok()?;
     let sentinel: WarmRestoreSentinel = serde_json::from_str(&raw).ok()?;
-    evaluate_warm_restore_skip(
-        Some(&sentinel),
-        &plan.plan_inputs_hash,
-        &plan.target_dir,
-        &env_string_or_empty("GITHUB_RUN_ID"),
-        &env_string_or_empty("GITHUB_JOB"),
-        &env_string_or_empty("GITHUB_RUN_ATTEMPT"),
-        current_unix_seconds(),
-        WARM_RESTORE_MAX_AGE_SECONDS,
-    )
+    let github_run_id = env_string_or_empty("GITHUB_RUN_ID");
+    let github_job = env_string_or_empty("GITHUB_JOB");
+    let github_run_attempt = env_string_or_empty("GITHUB_RUN_ATTEMPT");
+    let inputs = WarmRestoreSkipInputs {
+        plan_inputs_hash: &plan.plan_inputs_hash,
+        plan_target_dir: &plan.target_dir,
+        github_run_id: &github_run_id,
+        github_job: &github_job,
+        github_run_attempt: &github_run_attempt,
+        now_unix_seconds: current_unix_seconds(),
+        max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+    };
+    evaluate_warm_restore_skip(Some(&sentinel), &inputs)
 }
 
 /// Persist the warm-restore sentinel after a successful `rust-plan save`.
@@ -2974,8 +2990,8 @@ mod tests {
         warm_restore_sentinel_path, write_thin_manifest, write_warm_restore_sentinel,
         CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustArtifactPlanContext,
         RustPlanInputs, RustPlanPackages, RustToolchainIdentity, RustcWrapperMode,
-        ThinSliceManifest, WarmRestoreSentinel, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
-        THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+        ThinSliceManifest, WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession,
+        SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::{OsStr, OsString};
@@ -3898,16 +3914,17 @@ mod tests {
         let plan = warm_restore_test_plan();
         let sentinel = warm_restore_test_sentinel(&plan);
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_some(), "expected skip; got {result:?}");
     }
 
@@ -3915,17 +3932,17 @@ mod tests {
     #[test]
     fn warm_restore_skip_falls_through_when_sentinel_missing() {
         let plan = warm_restore_test_plan();
-        assert!(evaluate_warm_restore_skip(
-            None,
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            "111",
-            "test",
-            "1",
-            1_000_000,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        )
-        .is_none());
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: "111",
+            github_job: "test",
+            github_run_attempt: "1",
+            now_unix_seconds: 1_000_000,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        assert!(evaluate_warm_restore_skip(None, &inputs).is_none());
     }
 
     /// Sentinel from a prior re-run attempt must NOT short-circuit into a
@@ -3936,16 +3953,17 @@ mod tests {
         let plan = warm_restore_test_plan();
         let sentinel = warm_restore_test_sentinel(&plan);
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            "2", // different attempt
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: "2", // different attempt
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
@@ -3956,16 +3974,17 @@ mod tests {
         let plan = warm_restore_test_plan();
         let sentinel = warm_restore_test_sentinel(&plan);
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            "other-job",
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: "other-job",
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
@@ -3976,16 +3995,17 @@ mod tests {
         let plan = warm_restore_test_plan();
         let sentinel = warm_restore_test_sentinel(&plan);
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            "/tmp/different-target",
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: "/tmp/different-target",
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
@@ -3997,16 +4017,17 @@ mod tests {
         let mut sentinel = warm_restore_test_sentinel(&plan);
         sentinel.plan_inputs_hash = "stale-hash".to_string();
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
@@ -4019,16 +4040,17 @@ mod tests {
         let plan = warm_restore_test_plan();
         let sentinel = warm_restore_test_sentinel(&plan);
         let now = sentinel.saved_at_unix_seconds + WARM_RESTORE_MAX_AGE_SECONDS + 1;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
@@ -4041,16 +4063,17 @@ mod tests {
         let mut sentinel = warm_restore_test_sentinel(&plan);
         sentinel.schema_version = 99;
         let now = sentinel.saved_at_unix_seconds + 60;
-        let result = evaluate_warm_restore_skip(
-            Some(&sentinel),
-            &compute_plan_inputs_hash(&plan),
-            &plan.target_dir,
-            &sentinel.github_run_id,
-            &sentinel.github_job,
-            &sentinel.github_run_attempt,
-            now,
-            WARM_RESTORE_MAX_AGE_SECONDS,
-        );
+        let inputs_hash = compute_plan_inputs_hash(&plan);
+        let inputs = WarmRestoreSkipInputs {
+            plan_inputs_hash: &inputs_hash,
+            plan_target_dir: &plan.target_dir,
+            github_run_id: &sentinel.github_run_id,
+            github_job: &sentinel.github_job,
+            github_run_attempt: &sentinel.github_run_attempt,
+            now_unix_seconds: now,
+            max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
+        };
+        let result = evaluate_warm_restore_skip(Some(&sentinel), &inputs);
         assert!(result.is_none());
     }
 
