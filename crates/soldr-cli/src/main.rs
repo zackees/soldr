@@ -24,13 +24,14 @@ const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
 /// Filename of the file-list manifest written next to the thin-slice bundle so
 /// downstream tooling can prove what landed in the slice without unpacking it.
 const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
-/// Opt-in flag that enables the warm-restore short-circuit (issue #229). When
-/// set to a truthy value, after a successful `rust-plan save` soldr writes a
-/// sentinel describing the plan/job; on the next `soldr cargo ...` invocation
-/// the matching `rust-plan restore` is skipped if the sentinel proves the
-/// `target/` tree is already in the exact state restore would produce. This
-/// preserves Cargo's mtime-based fingerprints across split CI steps. Default
-/// off until verification jobs land.
+/// Flag controlling the warm-restore short-circuit (issue #229). Default-on:
+/// after a successful `rust-plan save` soldr writes a sentinel describing the
+/// plan/job, and on the next `soldr cargo ...` invocation the matching
+/// `rust-plan restore` is skipped if the sentinel proves the `target/` tree
+/// is already in the exact state restore would produce. This preserves
+/// Cargo's mtime-based fingerprints across split CI steps. Set to a falsy
+/// value (`0` / `false` / `no` / `off` / empty, case-insensitive) to opt out;
+/// unset or any other value keeps the short-circuit enabled.
 const SKIP_WARM_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_SKIP_WARM_RESTORE";
 /// Filename of the sentinel written next to the thin-slice bundle root after
 /// a successful `rust-plan save`. Read on the next invocation by
@@ -886,14 +887,22 @@ fn warm_restore_sentinel_path(plan: &RustArtifactPlanContext) -> std::path::Path
     plan.cache_dir.join(WARM_RESTORE_SENTINEL_FILENAME)
 }
 
-/// Returns `true` when [`SKIP_WARM_RESTORE_ENV_VAR`] is set to a truthy value.
+/// Returns whether the warm-restore short-circuit is enabled for this
+/// invocation. The flag is default-on after #229 validation completed:
+///
+/// - Unset → `true` (default-on).
+/// - Set to a falsy value (`0` / `false` / `no` / `off` / empty,
+///   case-insensitive after trimming) → `false` (explicit opt-out).
+/// - Set to any other value, including the historical truthy values
+///   (`1` / `true` / `yes` / `on`) → `true`. Unrecognised values are
+///   tolerated as "enabled" rather than silently disabling the feature.
 fn warm_restore_skip_enabled() -> bool {
     match std::env::var(SKIP_WARM_RESTORE_ENV_VAR) {
         Ok(value) => {
             let trimmed = value.trim().to_ascii_lowercase();
-            matches!(trimmed.as_str(), "1" | "true" | "yes" | "on")
+            !matches!(trimmed.as_str(), "0" | "false" | "no" | "off" | "")
         }
-        Err(_) => false,
+        Err(_) => true,
     }
 }
 
@@ -2987,11 +2996,12 @@ mod tests {
         extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
         parse_tool_spec, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
         selected_cargo_args, should_skip_warm_restore, should_trampoline,
-        warm_restore_sentinel_path, write_thin_manifest, write_warm_restore_sentinel,
-        CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustArtifactPlanContext,
-        RustPlanInputs, RustPlanPackages, RustToolchainIdentity, RustcWrapperMode,
-        ThinSliceManifest, WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession,
-        SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+        warm_restore_sentinel_path, warm_restore_skip_enabled, write_thin_manifest,
+        write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, RustArtifactPlan,
+        RustArtifactPlanContext, RustPlanInputs, RustPlanPackages, RustToolchainIdentity,
+        RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel, WarmRestoreSkipInputs,
+        ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME,
+        WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::{OsStr, OsString};
@@ -4146,13 +4156,14 @@ mod tests {
         assert_eq!(sentinel.session_id, ctx.session_id);
     }
 
-    /// When the gating env var is unset, the producer must be a strict
-    /// no-op so the short-circuit cannot accidentally fire on the next
-    /// invocation. No sentinel file should appear on disk.
+    /// When the gating env var is explicitly opted out (falsy value), the
+    /// producer must be a strict no-op so the short-circuit cannot
+    /// accidentally fire on the next invocation. No sentinel file should
+    /// appear on disk.
     #[test]
     fn write_warm_restore_sentinel_is_noop_when_disabled() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _skip = EnvVarGuard::remove(SKIP_WARM_RESTORE_ENV_VAR);
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "0");
 
         let tempdir = TempDir::new().expect("create tempdir");
         let plan = warm_restore_test_plan();
@@ -4163,7 +4174,7 @@ mod tests {
         let sentinel_path = warm_restore_sentinel_path(&ctx);
         assert!(
             !sentinel_path.exists(),
-            "no sentinel should be written when {SKIP_WARM_RESTORE_ENV_VAR} is unset"
+            "no sentinel should be written when {SKIP_WARM_RESTORE_ENV_VAR} is set to a falsy value"
         );
     }
 
@@ -4263,14 +4274,14 @@ mod tests {
         assert!(should_skip_warm_restore(&ctx).is_none());
     }
 
-    /// With the gating env var unset, the short-circuit must stay off
-    /// even when a perfectly-matching sentinel exists. This is the
-    /// safety property that keeps the feature opt-in until CI validates
-    /// it across all supported configurations.
+    /// With the gating env var explicitly opted out (`"0"`), the
+    /// short-circuit must stay off even when a perfectly-matching sentinel
+    /// exists. This is the safety property that lets operators disable the
+    /// feature on demand without having to clear stale sentinel files.
     #[test]
     fn should_skip_warm_restore_returns_none_when_disabled_even_with_match() {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let _skip = EnvVarGuard::remove(SKIP_WARM_RESTORE_ENV_VAR);
+        let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "0");
         let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-7");
         let _job = EnvVarGuard::set("GITHUB_JOB", "build");
         let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
@@ -4298,5 +4309,35 @@ mod tests {
         .expect("write sentinel");
 
         assert!(should_skip_warm_restore(&ctx).is_none());
+    }
+
+    /// After the #229 validation flip, an unset env var must enable the
+    /// short-circuit by default. This locks in the default-on contract so
+    /// future refactors cannot regress it without updating the test.
+    #[test]
+    fn warm_restore_skip_enabled_defaults_on() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _skip = EnvVarGuard::remove(SKIP_WARM_RESTORE_ENV_VAR);
+
+        assert!(
+            warm_restore_skip_enabled(),
+            "warm-restore skip must default to enabled when {SKIP_WARM_RESTORE_ENV_VAR} is unset"
+        );
+    }
+
+    /// The default-on flip preserves an explicit opt-out path: each of the
+    /// recognised falsy spellings (`0`, `false`, `no`, `off`, empty string,
+    /// case-insensitive) must disable the short-circuit.
+    #[test]
+    fn warm_restore_skip_enabled_respects_explicit_falsy() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        for value in ["0", "false", "FALSE", "No", "off", "OFF", "", "  0  "] {
+            let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, value);
+            assert!(
+                !warm_restore_skip_enabled(),
+                "warm-restore skip must be disabled when {SKIP_WARM_RESTORE_ENV_VAR} is set to {value:?}"
+            );
+        }
     }
 }
