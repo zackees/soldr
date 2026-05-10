@@ -20,6 +20,10 @@
 #
 # TODO(#237 Phase 4): flip continue-on-error to false, expand matrix to
 # Windows and macOS, and consider running on the soldr workspace itself.
+# TODO(#237 Phase 4): wire the workflow through `soldr cargo build` with
+# SOLDR_TARGET_CACHE_BUNDLE_DIR set so the manifest assertion below has a
+# real artifact to inspect on every run. The gate is added now (guarded on
+# the env var) so the assertion script and CI surface stay in lockstep.
 
 name: thin-v2-verify
 
@@ -30,12 +34,14 @@ on:
       - "crates/soldr-cli/src/main.rs"
       - "crates/soldr-cache/**"
       - ".github/scripts/assert_thin_noop.py"
+      - ".github/scripts/assert_thin_manifest.py"
       - ".github/workflows/thin-v2-verify.yml"
   pull_request:
     paths:
       - "crates/soldr-cli/src/main.rs"
       - "crates/soldr-cache/**"
       - ".github/scripts/assert_thin_noop.py"
+      - ".github/scripts/assert_thin_manifest.py"
       - ".github/workflows/thin-v2-verify.yml"
 
 permissions:
@@ -85,6 +91,22 @@ jobs:
           python ${{ github.workspace }}/.github/scripts/assert_thin_noop.py \
             ${{ runner.temp }}/verify-noop/first.log \
             ${{ runner.temp }}/verify-noop/second.log
+
+      # Phase 3.5 / issue #237: validate the thin-v2 manifest the soldr-cli
+      # writes alongside the bundle directory. Guarded on
+      # SOLDR_TARGET_CACHE_BUNDLE_DIR being set because today this workflow
+      # runs `cargo build` directly, not `soldr cargo build`, so no manifest
+      # is produced. Once the workflow is upgraded to drive the full save
+      # path (TODO above), this step starts firing automatically and catches:
+      #   - manifest.v2.json never written
+      #   - manifest lists files not on disk (drift)
+      #   - manifest re-lists dropped categories (rlib/rmeta/incremental/...)
+      - name: Assert thin-v2 manifest matches bundle
+        if: env.SOLDR_TARGET_CACHE_BUNDLE_DIR != ''
+        run: |
+          python ${{ github.workspace }}/.github/scripts/assert_thin_manifest.py \
+            "${SOLDR_TARGET_CACHE_BUNDLE_DIR}/manifest.v2.json" \
+            "${SOLDR_TARGET_CACHE_BUNDLE_DIR}"
 
       - name: Upload build logs
         if: always()
