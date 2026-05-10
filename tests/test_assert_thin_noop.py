@@ -1,0 +1,249 @@
+"""Tests for the thin-v2 second-build no-op verifier.
+
+Covers the parsing layer (``parse_build_log``) and the assertion layer
+(``assert_second_build_is_noop``) plus a thin CLI smoke check that exercises
+the script as a subprocess, the same way CI invokes it.
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "assert_thin_noop.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("assert_thin_noop", SCRIPT_PATH)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec so dataclasses can resolve forward refs / module dict.
+    sys.modules["assert_thin_noop"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def mod():
+    return _load_module()
+
+
+# ---------------------------------------------------------------------------
+# parse_build_log
+# ---------------------------------------------------------------------------
+
+
+def test_parse_build_log_extracts_workspace_path_dep(mod) -> None:
+    text = (
+        "   Compiling soldr-core v0.7.11 (/home/runner/work/soldr/crates/soldr-core)\n"
+        "   Compiling serde v1.0.219\n"
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 12.4s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert summary.finished_seen is True
+    assert len(summary.compiling_units) == 2
+    fp = summary.first_party_compiles
+    tp = summary.third_party_compiles
+    assert len(fp) == 1
+    assert fp[0].name == "soldr-core"
+    assert fp[0].version == "0.7.11"
+    assert fp[0].path is not None
+    assert len(tp) == 1
+    assert tp[0].name == "serde"
+
+
+def test_parse_build_log_recognizes_finished_only(mod) -> None:
+    text = "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.12s\n"
+    summary = mod.parse_build_log(text)
+    assert summary.finished_seen is True
+    assert summary.compiling_units == []
+    assert summary.first_party_compiles == []
+    assert summary.third_party_compiles == []
+
+
+def test_parse_build_log_counts_fresh_lines(mod) -> None:
+    text = (
+        "       Fresh serde v1.0.219\n"
+        "       Fresh soldr-core v0.7.11\n"
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.05s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert summary.fresh_count == 2
+    assert summary.compiling_units == []
+
+
+def test_parse_build_log_handles_windows_paths(mod) -> None:
+    text = (
+        r"   Compiling soldr-cli v0.7.11 (D:\a\soldr\soldr\crates\soldr-cli)" + "\n"
+        "    Finished `dev` profile in 1.0s\n"
+    )
+    summary = mod.parse_build_log(text)
+    assert len(summary.first_party_compiles) == 1
+    assert summary.first_party_compiles[0].name == "soldr-cli"
+
+
+# ---------------------------------------------------------------------------
+# assert_second_build_is_noop
+# ---------------------------------------------------------------------------
+
+
+def _cold_log() -> str:
+    return (
+        "   Compiling proc-macro2 v1.0.86\n"
+        "   Compiling serde v1.0.219\n"
+        "   Compiling soldr-core v0.7.11 (/repo/crates/soldr-core)\n"
+        "   Compiling soldr-cli v0.7.11 (/repo/crates/soldr-cli)\n"
+        "    Finished `dev` profile in 42.1s\n"
+    )
+
+
+def _warm_noop_log() -> str:
+    return "    Finished `dev` profile in 0.04s\n"
+
+
+def test_assert_second_build_is_noop_passes_on_clean_warm(mod) -> None:
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), _warm_noop_log())
+    assert errors == []
+
+
+def test_assert_second_build_is_noop_allows_small_third_party_drift(mod) -> None:
+    warm = (
+        "   Compiling proc-macro-hack v0.5.20\n"
+        "   Compiling pin-project-internal v1.1.5\n"
+        "    Finished `dev` profile in 1.4s\n"
+    )
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), warm, tolerance=2)
+    assert errors == []
+
+
+def test_assert_second_build_is_noop_fails_on_first_party_compile(mod) -> None:
+    warm = (
+        "   Compiling soldr-cli v0.7.11 (/repo/crates/soldr-cli)\n"
+        "    Finished `dev` profile in 6.2s\n"
+    )
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), warm)
+    assert errors, "expected first-party recompile to fail the gate"
+    assert any("first-party" in e for e in errors)
+
+
+def test_assert_second_build_is_noop_fails_when_third_party_exceeds_tolerance(
+    mod,
+) -> None:
+    warm_lines = [f"   Compiling crate{i} v0.{i}.0\n" for i in range(5)]
+    warm = "".join(warm_lines) + "    Finished `dev` profile in 9.0s\n"
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), warm, tolerance=2)
+    assert errors
+    assert any("third-party" in e and "tolerance is 2" in e for e in errors)
+
+
+def test_assert_second_build_is_noop_fails_when_warm_has_no_finished(mod) -> None:
+    warm = "   Compiling something v0.1.0\n"  # truncated; no Finished line
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), warm)
+    assert any("Finished" in e for e in errors)
+
+
+def test_assert_second_build_is_noop_fails_on_empty_first_by_default(mod) -> None:
+    _, _, errors = mod.assert_second_build_is_noop(
+        "    Finished `dev` profile in 0.01s\n",
+        _warm_noop_log(),
+    )
+    assert any("first build did not show any Compiling lines" in e for e in errors)
+
+
+def test_assert_second_build_is_noop_allow_empty_first_skips_baseline_check(
+    mod,
+) -> None:
+    _, _, errors = mod.assert_second_build_is_noop(
+        "    Finished `dev` profile in 0.01s\n",
+        _warm_noop_log(),
+        require_first_built_something=False,
+    )
+    assert errors == []
+
+
+# ---------------------------------------------------------------------------
+# CLI surface
+# ---------------------------------------------------------------------------
+
+
+def _write(path: Path, body: str) -> Path:
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def test_cli_exits_zero_on_clean_warm_build(tmp_path: Path) -> None:
+    first = _write(tmp_path / "first.log", _cold_log())
+    second = _write(tmp_path / "second.log", _warm_noop_log())
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(first), str(second)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "assert_thin_noop: OK" in result.stdout
+
+
+def test_cli_exits_one_on_first_party_recompile(tmp_path: Path) -> None:
+    first = _write(tmp_path / "first.log", _cold_log())
+    second = _write(
+        tmp_path / "second.log",
+        (
+            "   Compiling soldr-cli v0.7.11 (/repo/crates/soldr-cli)\n"
+            "    Finished `dev` profile in 6.2s\n"
+        ),
+    )
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(first), str(second)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 1
+    assert "FAIL" in result.stderr
+    assert "first-party" in result.stderr
+
+
+def test_cli_exits_two_on_missing_log(tmp_path: Path) -> None:
+    missing = tmp_path / "does_not_exist.log"
+    second = _write(tmp_path / "second.log", _warm_noop_log())
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(missing), str(second)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "input log not found" in result.stderr
+
+
+def test_cli_tolerance_flag_relaxes_third_party_gate(tmp_path: Path) -> None:
+    first = _write(tmp_path / "first.log", _cold_log())
+    warm_lines = [f"   Compiling crate{i} v0.{i}.0\n" for i in range(5)]
+    second = _write(
+        tmp_path / "second.log",
+        "".join(warm_lines) + "    Finished `dev` profile in 9.0s\n",
+    )
+    # Default tolerance (2) should fail.
+    fail = subprocess.run(
+        [sys.executable, str(SCRIPT_PATH), str(first), str(second)],
+        capture_output=True,
+        text=True,
+    )
+    assert fail.returncode == 1
+    # Bumping tolerance past the count should pass.
+    ok = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            str(first),
+            str(second),
+            "--tolerance",
+            "10",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert ok.returncode == 0, ok.stderr

@@ -1,0 +1,98 @@
+# Verifier workflow for the thin-v2 target-cache slice (issue #237, Phase 3).
+#
+# What this gate proves:
+#   With SOLDR_TARGET_CACHE_PROFILE=thin-v2, building a workspace, then
+#   building it again with the slice in place, must report a no-op on the
+#   second pass. If cargo prints "Compiling <crate>" lines on the second
+#   build, the thin slice is missing fingerprint state.
+#
+# Why this is informational for now:
+#   This is the first end-to-end gate. Treat it as an early-warning signal
+#   while we shake out fixture and runner-environment quirks. Once it has
+#   been green for a week on `main`, drop `continue-on-error: true` so it
+#   becomes a hard required check on PRs that touch the relevant code.
+#
+# Scope:
+#   - One Linux x86_64 host. This is a correctness gate, not a perf bench.
+#   - Uses a tiny synthesized one-crate workspace so the cold/warm timing is
+#     small. The verifier behavior is workspace-agnostic; once stable we can
+#     point it at the real soldr workspace too.
+#
+# TODO(#237 Phase 4): flip continue-on-error to false, expand matrix to
+# Windows and macOS, and consider running on the soldr workspace itself.
+
+name: thin-v2-verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/soldr-cli/src/main.rs"
+      - "crates/soldr-cache/**"
+      - ".github/scripts/assert_thin_noop.py"
+      - ".github/workflows/thin-v2-verify.yml"
+  pull_request:
+    paths:
+      - "crates/soldr-cli/src/main.rs"
+      - "crates/soldr-cache/**"
+      - ".github/scripts/assert_thin_noop.py"
+      - ".github/workflows/thin-v2-verify.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: thin-v2 second-build no-op (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: true # informational while we iterate; see header.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+
+    env:
+      SOLDR_TARGET_CACHE_PROFILE: thin-v2
+      CARGO_TERM_COLOR: never
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Build soldr CLI
+        run: cargo build -p soldr-cli --locked
+
+      - name: Synthesize verification fixture
+        working-directory: ${{ runner.temp }}
+        run: |
+          cargo init --name verify-noop --bin verify-noop
+          cd verify-noop
+          # Pin a deterministic small dep so the cold build does meaningful
+          # work the verifier can recognize as a baseline.
+          cargo add serde --no-default-features --features derive
+
+      - name: First (cold) build
+        working-directory: ${{ runner.temp }}/verify-noop
+        run: cargo build --locked 2>&1 | tee first.log
+
+      - name: Second (warm) build — must be a no-op
+        working-directory: ${{ runner.temp }}/verify-noop
+        run: cargo build --locked 2>&1 | tee second.log
+
+      - name: Assert second build was a no-op
+        run: |
+          python ${{ github.workspace }}/.github/scripts/assert_thin_noop.py \
+            ${{ runner.temp }}/verify-noop/first.log \
+            ${{ runner.temp }}/verify-noop/second.log
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thin-v2-verify-logs-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/verify-noop/first.log
+            ${{ runner.temp }}/verify-noop/second.log
+          if-no-files-found: warn
+          retention-days: 7

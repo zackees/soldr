@@ -322,6 +322,45 @@ captured stderr for `fingerprint dirty for` and prints the offending crate
 plus reason — mirroring the diagnostic guidance already in
 [`docs/CI_CACHE.md`](CI_CACHE.md#debugging-target-cache-restores-that-still-rebuild).
 
+### 5.1.a Verifier script (`assert_thin_noop.py`)
+
+The verifier ships at `.github/scripts/assert_thin_noop.py`. It reads two
+captured `cargo build` logs (cold, then warm) and fails if the second build
+recompiled any first-party (workspace / path-dep) crate, or if it
+recompiled more than `--tolerance` third-party crates (default 2, to allow
+trivial proc-macro re-runs).
+
+Run it locally to spot-check a `thin-v2` change without spinning up CI:
+
+```bash
+# Build soldr-cli so SOLDR_TARGET_CACHE_PROFILE=thin-v2 is honored.
+cargo build -p soldr-cli --locked
+
+# Use any small workspace; a fresh `cargo init` works.
+mkdir -p /tmp/verify-noop && cd /tmp/verify-noop
+cargo init --name verify-noop --bin verify-noop >/dev/null
+cargo add serde --no-default-features --features derive >/dev/null
+
+# Capture both passes. (If you have a real warm thin-v2 slice from a
+# previous CI run, drop it into target/ between the two builds.)
+SOLDR_TARGET_CACHE_PROFILE=thin-v2 cargo build --locked 2>&1 | tee first.log
+SOLDR_TARGET_CACHE_PROFILE=thin-v2 cargo build --locked 2>&1 | tee second.log
+
+python /path/to/soldr/.github/scripts/assert_thin_noop.py first.log second.log
+```
+
+Exit code semantics:
+
+- `0` — second build is a no-op within tolerance. Slice is sufficient.
+- `1` — second build did real work; the slice is missing fingerprints.
+- `2` — input log not found (operator error).
+
+The CI gate that runs this script lives at
+`.github/workflows/thin-v2-verify.yml`. It is currently
+`continue-on-error: true` (informational) while we shake out runner-specific
+quirks; flip it to a hard required check once it has been green for a week
+on `main`.
+
 ### 5.2 Counter-tests
 
 | Counter-test | What it catches |
