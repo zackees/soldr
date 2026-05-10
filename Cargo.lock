@@ -1486,6 +1486,7 @@ dependencies = [
  "soldr-cache",
  "soldr-core",
  "soldr-fetch",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
