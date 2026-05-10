@@ -245,7 +245,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv tool install "maturin>=1.7,<2"
+          # maturin 1.13.2 emits the bin-binding script under both
+          # `<name>-<version>.data/scripts/<binary>` (correct) and
+          # `<name>.scripts/<binary>` (extra) on macOS wheels, which
+          # trips the single-binary check in the verify step below
+          # (run 25634356438 macOS ARM64/x64). Pin below 1.13.2 until
+          # the upstream fix lands.
+          uv tool install "maturin>=1.7,<1.13.2"
           maturin build \
             --release \
             --locked \
