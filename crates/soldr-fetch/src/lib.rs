@@ -45,7 +45,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.3.10";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.4.0";
 const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
     ("zccache-cli", "zccache"),
     ("zccache-daemon", "zccache-daemon"),
