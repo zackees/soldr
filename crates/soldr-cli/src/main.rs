@@ -24,6 +24,24 @@ const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
 /// Filename of the file-list manifest written next to the thin-slice bundle so
 /// downstream tooling can prove what landed in the slice without unpacking it.
 const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
+/// Opt-in flag that enables the warm-restore short-circuit (issue #229). When
+/// set to a truthy value, after a successful `rust-plan save` soldr writes a
+/// sentinel describing the plan/job; on the next `soldr cargo ...` invocation
+/// the matching `rust-plan restore` is skipped if the sentinel proves the
+/// `target/` tree is already in the exact state restore would produce. This
+/// preserves Cargo's mtime-based fingerprints across split CI steps. Default
+/// off until verification jobs land.
+const SKIP_WARM_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_SKIP_WARM_RESTORE";
+/// Filename of the sentinel written next to the thin-slice bundle root after
+/// a successful `rust-plan save`. Read on the next invocation by
+/// `should_skip_warm_restore` to decide whether `rust-plan restore` would be
+/// a no-op-but-touches-mtimes operation against an already-warm `target/`.
+const WARM_RESTORE_SENTINEL_FILENAME: &str = "last-save.json";
+/// Maximum age of a warm-restore sentinel before it is treated as stale and
+/// ignored. Five minutes comfortably covers a normal `cargo test --no-run`
+/// followed by `cargo test` step pair on GitHub Actions while keeping the
+/// short-circuit from kicking in on later, unrelated jobs.
+const WARM_RESTORE_MAX_AGE_SECONDS: u64 = 5 * 60;
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -615,13 +633,18 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         None
     };
     if let Some(plan) = rust_plan.as_ref() {
-        run_zccache_rust_plan(plan, "restore", false)?;
+        if let Some(reason) = should_skip_warm_restore(plan) {
+            eprintln!("{reason}");
+        } else {
+            run_zccache_rust_plan(plan, "restore", false)?;
+        }
     }
 
     let status = command.status()?;
     if status.success() {
         if let Some(plan) = rust_plan.as_ref() {
             run_zccache_rust_plan(plan, "save", true)?;
+            write_warm_restore_sentinel(plan);
         }
     }
     if let Some(session) = session {
@@ -723,6 +746,16 @@ struct RustArtifactPlanContext {
     /// Active thin-slice pruning policy. Only `Some` for thin modes; `None`
     /// for `full` so the manifest emitter can short-circuit.
     cache_profile: Option<&'static str>,
+    /// Stable digest over the plan inputs (toolchain, lockfile, manifests,
+    /// features, env, cargo config, target triple, profile, packages). Used
+    /// by the warm-restore sentinel (issue #229) to prove that a previous
+    /// step in the same job left `target/` in the exact state `restore`
+    /// would produce, so the next `restore` can be skipped.
+    plan_inputs_hash: String,
+    /// Absolute target dir from the active plan, mirrored into the warm-
+    /// restore sentinel so step 2 can verify it is being asked to restore
+    /// into the same tree step 1 saved.
+    target_dir: String,
 }
 
 fn maybe_prepare_rust_artifact_plan(
@@ -756,6 +789,9 @@ fn maybe_prepare_rust_artifact_plan(
         .map_err(|e| SoldrError::Other(format!("failed to serialize Rust artifact plan: {e}")))?;
     std::fs::write(&plan_path, plan_json)?;
 
+    let plan_inputs_hash = compute_plan_inputs_hash(&plan);
+    let target_dir = plan.target_dir.clone();
+
     Ok(Some(RustArtifactPlanContext {
         path: plan_path,
         zccache_binary: session.binary_path.clone(),
@@ -765,7 +801,244 @@ fn maybe_prepare_rust_artifact_plan(
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,
         cache_profile: profile,
+        plan_inputs_hash,
+        target_dir,
     }))
+}
+
+/// Stable digest summarising every plan field cargo would consult to decide
+/// whether the cached `target/` tree is still valid. Used by the warm-restore
+/// sentinel (issue #229) to prove that an in-job repeat of `soldr cargo ...`
+/// is asking to restore into the same tree it just saved.
+///
+/// We hash a tuple of (toolchain identity, target triple, profile, mode,
+/// cache profile, plan inputs, package selection) rather than the whole
+/// `RustArtifactPlan` so the sentinel does not falsely diverge on cosmetic
+/// fields (`schema_version`, `journal_log_path`, etc.).
+fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
+    let payload = serde_json::json!({
+        "toolchain": {
+            "rustc": plan.toolchain.rustc,
+            "cargo": plan.toolchain.cargo,
+            "channel": plan.toolchain.channel,
+            "host": plan.toolchain.host,
+        },
+        "target_triple": plan.target_triple,
+        "profile": plan.profile,
+        "mode": plan.mode,
+        "cache_profile": plan.cache_profile,
+        "inputs": {
+            "features_hash": plan.inputs.features_hash,
+            "rustflags_hash": plan.inputs.rustflags_hash,
+            "env_hash": plan.inputs.env_hash,
+            "lockfile_hash": plan.inputs.lockfile_hash,
+            "cargo_config_hash": plan.inputs.cargo_config_hash,
+            "manifest_hashes": plan.inputs.manifest_hashes,
+        },
+        "packages": {
+            "selected_package_ids": plan.packages.selected_package_ids,
+            "workspace_package_ids": plan.packages.workspace_package_ids,
+            "excluded_path_package_ids": plan.packages.excluded_path_package_ids,
+        },
+        "allowed_artifact_classes": plan.allowed_artifact_classes,
+        "dropped_artifact_classes": plan.dropped_artifact_classes,
+    });
+    stable_hash_json(&payload)
+}
+
+/// Sentinel written by `soldr cargo ...` after a successful `rust-plan save`.
+/// Read on the next invocation by [`should_skip_warm_restore`] to decide
+/// whether the matching `restore` would be a no-op-but-touches-mtimes
+/// operation against an already-warm `target/` tree.
+///
+/// All fields are required for a sentinel match; missing fields cause the
+/// short-circuit to bail out and fall through to the normal restore.
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct WarmRestoreSentinel {
+    /// Format version; bump if any field semantics change so older sentinels
+    /// are treated as stale.
+    schema_version: u32,
+    /// Hash from [`compute_plan_inputs_hash`]. Must match the current plan.
+    plan_inputs_hash: String,
+    /// Absolute target dir the previous save wrote into. Must match the
+    /// current plan's target dir, since restore is per-target-dir.
+    target_dir: String,
+    /// `GITHUB_RUN_ID` at save time. Empty string outside Actions; matched
+    /// strictly so the short-circuit does not leak between runs.
+    github_run_id: String,
+    /// `GITHUB_JOB` at save time. Same matching rule as run id.
+    github_job: String,
+    /// `GITHUB_RUN_ATTEMPT` at save time. Re-runs of the same job get a new
+    /// attempt id, so a prior attempt's sentinel is correctly treated as
+    /// stale.
+    github_run_attempt: String,
+    /// zccache session id from the saving invocation. Recorded for log
+    /// correlation; not used in the match decision.
+    session_id: String,
+    /// Wall-clock seconds since the unix epoch at save time. Compared
+    /// against [`WARM_RESTORE_MAX_AGE_SECONDS`] to bound how stale the
+    /// sentinel may be.
+    saved_at_unix_seconds: u64,
+}
+
+/// Returns the path of the warm-restore sentinel for this plan's bundle dir.
+fn warm_restore_sentinel_path(plan: &RustArtifactPlanContext) -> std::path::PathBuf {
+    plan.cache_dir.join(WARM_RESTORE_SENTINEL_FILENAME)
+}
+
+/// Returns `true` when [`SKIP_WARM_RESTORE_ENV_VAR`] is set to a truthy value.
+fn warm_restore_skip_enabled() -> bool {
+    match std::env::var(SKIP_WARM_RESTORE_ENV_VAR) {
+        Ok(value) => {
+            let trimmed = value.trim().to_ascii_lowercase();
+            matches!(trimmed.as_str(), "1" | "true" | "yes" | "on")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Read `name` from the environment, returning an empty string when absent
+/// or the value cannot be UTF-8 decoded. Used to canonicalise the GitHub
+/// Actions identifiers stored in the warm-restore sentinel so a
+/// missing-vs-empty distinction does not produce false negatives.
+fn env_string_or_empty(name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
+}
+
+/// Returns the current wall-clock as seconds since the unix epoch, or `0`
+/// if the system clock is before the epoch (which would only happen on a
+/// badly-misconfigured host).
+fn current_unix_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Decide whether the current invocation can skip `rust-plan restore`
+/// because a previous invocation in the same CI job already populated
+/// `target/` with the exact contents restore would produce.
+///
+/// Returns `Some(reason)` when the restore should be skipped (caller
+/// should log `reason` for operator visibility). Returns `None` when the
+/// caller should proceed with the normal restore — either because the
+/// short-circuit is disabled, the sentinel is missing/stale, or any of
+/// the match fields disagree.
+///
+/// Pure function over its inputs so it can be unit-tested without touching
+/// the filesystem; the IO-bound caller passes the loaded sentinel and
+/// current env snapshot in.
+fn evaluate_warm_restore_skip(
+    sentinel: Option<&WarmRestoreSentinel>,
+    plan_inputs_hash: &str,
+    plan_target_dir: &str,
+    github_run_id: &str,
+    github_job: &str,
+    github_run_attempt: &str,
+    now_unix_seconds: u64,
+    max_age_seconds: u64,
+) -> Option<String> {
+    let sentinel = sentinel?;
+    if sentinel.schema_version != 1 {
+        return None;
+    }
+    if sentinel.plan_inputs_hash != plan_inputs_hash {
+        return None;
+    }
+    if sentinel.target_dir != plan_target_dir {
+        return None;
+    }
+    // CI scoping: only short-circuit when both invocations are inside the
+    // same GitHub Actions run + job + attempt. Locally these are all empty
+    // strings on both sides, which still matches and lets the local repro
+    // benefit from the same path. The intent of the issue, however, is the
+    // CI case — hence the explicit attempt scoping.
+    if sentinel.github_run_id != github_run_id {
+        return None;
+    }
+    if sentinel.github_job != github_job {
+        return None;
+    }
+    if sentinel.github_run_attempt != github_run_attempt {
+        return None;
+    }
+    let age = now_unix_seconds.saturating_sub(sentinel.saved_at_unix_seconds);
+    if age > max_age_seconds {
+        return None;
+    }
+    Some(format!(
+        "soldr: skipping rust-plan restore; target dir {} was warmed by this job {} seconds ago (session {})",
+        sentinel.target_dir, age, sentinel.session_id,
+    ))
+}
+
+/// Filesystem-backed wrapper around [`evaluate_warm_restore_skip`]. Reads
+/// the sentinel for this plan's bundle dir, gathers the current env, and
+/// returns the skip reason when the short-circuit should fire.
+///
+/// Errors from sentinel parsing are deliberately swallowed (return `None`)
+/// — a corrupt sentinel must never break the build, only forfeit the
+/// optimisation.
+fn should_skip_warm_restore(plan: &RustArtifactPlanContext) -> Option<String> {
+    if !warm_restore_skip_enabled() {
+        return None;
+    }
+    let sentinel_path = warm_restore_sentinel_path(plan);
+    let raw = std::fs::read_to_string(&sentinel_path).ok()?;
+    let sentinel: WarmRestoreSentinel = serde_json::from_str(&raw).ok()?;
+    evaluate_warm_restore_skip(
+        Some(&sentinel),
+        &plan.plan_inputs_hash,
+        &plan.target_dir,
+        &env_string_or_empty("GITHUB_RUN_ID"),
+        &env_string_or_empty("GITHUB_JOB"),
+        &env_string_or_empty("GITHUB_RUN_ATTEMPT"),
+        current_unix_seconds(),
+        WARM_RESTORE_MAX_AGE_SECONDS,
+    )
+}
+
+/// Persist the warm-restore sentinel after a successful `rust-plan save`.
+/// Errors are downgraded to a warning so a sentinel write failure can never
+/// break the build that just succeeded; the worst case is that the next
+/// invocation does the normal restore (current behavior).
+fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
+    if !warm_restore_skip_enabled() {
+        return;
+    }
+    let sentinel = WarmRestoreSentinel {
+        schema_version: 1,
+        plan_inputs_hash: plan.plan_inputs_hash.clone(),
+        target_dir: plan.target_dir.clone(),
+        github_run_id: env_string_or_empty("GITHUB_RUN_ID"),
+        github_job: env_string_or_empty("GITHUB_JOB"),
+        github_run_attempt: env_string_or_empty("GITHUB_RUN_ATTEMPT"),
+        session_id: plan.session_id.clone(),
+        saved_at_unix_seconds: current_unix_seconds(),
+    };
+    let sentinel_path = warm_restore_sentinel_path(plan);
+    let json = match serde_json::to_string_pretty(&sentinel) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("soldr warning: failed to serialize warm-restore sentinel: {e}");
+            return;
+        }
+    };
+    if let Some(parent) = sentinel_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "soldr warning: failed to create warm-restore sentinel dir {}: {e}",
+                parent.display()
+            );
+            return;
+        }
+    }
+    if let Err(e) = std::fs::write(&sentinel_path, json) {
+        eprintln!(
+            "soldr warning: failed to write warm-restore sentinel at {}: {e}",
+            sentinel_path.display()
+        );
+    }
 }
 
 fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
@@ -2694,12 +2967,13 @@ mod tests {
         allowed_artifact_classes, build_rust_artifact_plan, build_thin_manifest,
         cargo_args_specify_target, cargo_args_use_reserved_no_cache,
         cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
-        dropped_artifact_classes, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
-        normalize_version, parse_tool_spec, rustc_wrapper_mode_from_env_var,
-        rustup_resolution_failure, selected_cargo_args, should_trampoline, write_thin_manifest,
-        CargoMetadata, CargoMetadataPackage, RustArtifactPlan, RustPlanInputs, RustPlanPackages,
-        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, ZccacheBuildSession,
-        THIN_MANIFEST_FILENAME,
+        compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
+        extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
+        parse_tool_spec, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
+        selected_cargo_args, should_trampoline, write_thin_manifest, CargoMetadata,
+        CargoMetadataPackage, RustArtifactPlan, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
+        ZccacheBuildSession, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::OsStr;
@@ -3480,5 +3754,272 @@ mod tests {
             json.contains("\"dropped_artifact_classes\""),
             "thin-v2 must serialize dropped_artifact_classes; got: {json}"
         );
+    }
+
+    fn warm_restore_test_plan() -> RustArtifactPlan {
+        RustArtifactPlan {
+            schema_version: 1,
+            mode: "thin".to_string(),
+            cache_profile: Some("thin-v1"),
+            workspace_root: "/tmp/ws".to_string(),
+            target_dir: "/tmp/ws/target".to_string(),
+            toolchain: RustToolchainIdentity {
+                rustc: "rustc 1.0.0-test".to_string(),
+                cargo: "cargo 1.0.0-test".to_string(),
+                channel: "stable".to_string(),
+                host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+            target_triple: "x86_64-unknown-linux-gnu".to_string(),
+            profile: "test".to_string(),
+            inputs: RustPlanInputs {
+                features_hash: "F".to_string(),
+                rustflags_hash: "R".to_string(),
+                env_hash: "E".to_string(),
+                lockfile_hash: "L".to_string(),
+                cargo_config_hash: "C".to_string(),
+                manifest_hashes: vec!["M1".to_string(), "M2".to_string()],
+            },
+            packages: RustPlanPackages {
+                selected_package_ids: vec!["serde@1.0.0".to_string()],
+                workspace_package_ids: vec!["app@0.1.0".to_string()],
+                excluded_path_package_ids: vec![],
+            },
+            allowed_artifact_classes: vec!["rlib", "rmeta"],
+            dropped_artifact_classes: vec![],
+            cache_schema_version: 1,
+            journal_log_path: Some("/tmp/journal".to_string()),
+        }
+    }
+
+    fn warm_restore_test_sentinel(plan: &RustArtifactPlan) -> WarmRestoreSentinel {
+        WarmRestoreSentinel {
+            schema_version: 1,
+            plan_inputs_hash: compute_plan_inputs_hash(plan),
+            target_dir: plan.target_dir.clone(),
+            github_run_id: "111".to_string(),
+            github_job: "test".to_string(),
+            github_run_attempt: "1".to_string(),
+            session_id: "session-1".to_string(),
+            saved_at_unix_seconds: 1_000_000,
+        }
+    }
+
+    /// The sentinel hash must change whenever any plan input cargo would
+    /// consult to decide freshness changes. Otherwise the warm-restore
+    /// short-circuit could fire across step pairs that are not actually
+    /// equivalent.
+    #[test]
+    fn plan_inputs_hash_changes_when_inputs_change() {
+        let plan_a = warm_restore_test_plan();
+        let mut plan_b = warm_restore_test_plan();
+        plan_b.inputs.lockfile_hash = "different".to_string();
+        assert_ne!(
+            compute_plan_inputs_hash(&plan_a),
+            compute_plan_inputs_hash(&plan_b),
+        );
+
+        let mut plan_c = warm_restore_test_plan();
+        plan_c.toolchain.rustc = "rustc 9.9.9".to_string();
+        assert_ne!(
+            compute_plan_inputs_hash(&plan_a),
+            compute_plan_inputs_hash(&plan_c),
+        );
+
+        let mut plan_d = warm_restore_test_plan();
+        plan_d.target_triple = "aarch64-apple-darwin".to_string();
+        assert_ne!(
+            compute_plan_inputs_hash(&plan_a),
+            compute_plan_inputs_hash(&plan_d),
+        );
+    }
+
+    /// Cosmetic plan fields (the journal path, the schema version we
+    /// already pin to 1) must not leak into the sentinel hash, so an
+    /// unrelated path swap does not invalidate the warm-restore optim.
+    #[test]
+    fn plan_inputs_hash_ignores_cosmetic_fields() {
+        let plan_a = warm_restore_test_plan();
+        let mut plan_b = warm_restore_test_plan();
+        plan_b.journal_log_path = Some("/tmp/other-journal".to_string());
+        plan_b.workspace_root = "/different/ws".to_string();
+        assert_eq!(
+            compute_plan_inputs_hash(&plan_a),
+            compute_plan_inputs_hash(&plan_b),
+        );
+    }
+
+    /// Happy path: sentinel proves the same plan was just saved into the
+    /// same target dir from the same CI job/attempt — restore is skipped.
+    #[test]
+    fn warm_restore_skip_fires_on_exact_match() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_some(), "expected skip; got {result:?}");
+    }
+
+    /// Plain "no sentinel on disk" must fall through to the normal restore.
+    #[test]
+    fn warm_restore_skip_falls_through_when_sentinel_missing() {
+        let plan = warm_restore_test_plan();
+        assert!(evaluate_warm_restore_skip(
+            None,
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            "111",
+            "test",
+            "1",
+            1_000_000,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        )
+        .is_none());
+    }
+
+    /// Sentinel from a prior re-run attempt must NOT short-circuit into a
+    /// fresh attempt — the action restored the cache from scratch and the
+    /// `target/` mtimes are no longer guaranteed to be the live ones.
+    #[test]
+    fn warm_restore_skip_rejects_mismatched_run_attempt() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            "2", // different attempt
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// Sentinel from a different job in the same workflow must not bleed
+    /// across job boundaries even when the run id matches.
+    #[test]
+    fn warm_restore_skip_rejects_mismatched_job() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            "other-job",
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// Sentinel for an unrelated target dir (e.g. a sibling workspace
+    /// also writing into the shared bundle dir) must not short-circuit.
+    #[test]
+    fn warm_restore_skip_rejects_mismatched_target_dir() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            "/tmp/different-target",
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// Once a plan input changes (lockfile bump, new manifest, etc.) the
+    /// sentinel hash diverges and restore must run normally.
+    #[test]
+    fn warm_restore_skip_rejects_mismatched_inputs_hash() {
+        let plan = warm_restore_test_plan();
+        let mut sentinel = warm_restore_test_sentinel(&plan);
+        sentinel.plan_inputs_hash = "stale-hash".to_string();
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// Stale sentinels (older than the configured window) must not
+    /// short-circuit. Otherwise a leftover sentinel from a previous
+    /// workflow run could cause skipping in a fresh job that happened to
+    /// inherit the same env identifiers.
+    #[test]
+    fn warm_restore_skip_rejects_stale_sentinel() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let now = sentinel.saved_at_unix_seconds + WARM_RESTORE_MAX_AGE_SECONDS + 1;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// A future-version sentinel (say after a soldr upgrade that bumps
+    /// the schema) must be ignored, never crash, and force a normal
+    /// restore on the next invocation.
+    #[test]
+    fn warm_restore_skip_rejects_unknown_schema_version() {
+        let plan = warm_restore_test_plan();
+        let mut sentinel = warm_restore_test_sentinel(&plan);
+        sentinel.schema_version = 99;
+        let now = sentinel.saved_at_unix_seconds + 60;
+        let result = evaluate_warm_restore_skip(
+            Some(&sentinel),
+            &compute_plan_inputs_hash(&plan),
+            &plan.target_dir,
+            &sentinel.github_run_id,
+            &sentinel.github_job,
+            &sentinel.github_run_attempt,
+            now,
+            WARM_RESTORE_MAX_AGE_SECONDS,
+        );
+        assert!(result.is_none());
+    }
+
+    /// Sentinel must round-trip as JSON without dropping fields, so
+    /// disk-roundtrip behavior is observable here too (the
+    /// filesystem-bound caller relies on serde to be exact).
+    #[test]
+    fn warm_restore_sentinel_round_trips_json() {
+        let plan = warm_restore_test_plan();
+        let sentinel = warm_restore_test_sentinel(&plan);
+        let json = serde_json::to_string(&sentinel).expect("serialize sentinel");
+        let parsed: WarmRestoreSentinel = serde_json::from_str(&json).expect("parse sentinel back");
+        assert_eq!(parsed, sentinel);
     }
 }
