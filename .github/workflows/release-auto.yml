@@ -271,42 +271,48 @@ jobs:
           if len(wheels) != 1:
               raise SystemExit(f"expected exactly one wheel, found {len(wheels)}: {wheels}")
 
+          # Pin the verification to the exact PEP 491 `.data/scripts/`
+          # entry that pip installs to the bin directory. Anchored to
+          # the wheel root so we never accept a nested or look-alike
+          # path. Per PEP 491 the wheel filename's first two
+          # `-`-separated tokens are `<distname>-<version>` and the
+          # data directory is `<distname>-<version>.data/`.
+          wheel_stem = wheels[0].stem  # filename without `.whl`
+          parts = wheel_stem.split("-")
+          if len(parts) < 2:
+              raise SystemExit(f"unexpected wheel filename: {wheels[0].name}")
+          distname_version = f"{parts[0]}-{parts[1]}"
+          script_entry = f"{distname_version}.data/scripts/{binary_name}"
+
+          # Maturin 1.13.2 emits the bin-binding script under both
+          # `<distname>-<version>.data/scripts/<binary>` (the wheel-spec
+          # location pip puts on PATH) and an extra
+          # `<distname>.scripts/<binary>` purelib copy on macOS. Maturin
+          # also post-processes one of those copies (delocate-style
+          # rewrite of external dylib load paths, e.g. `liblzma`), so
+          # the bytes diverge between paths. The user-facing binary is
+          # the `.data/scripts/` one — that is what must match the
+          # standalone release tarball binary. Anything else in the
+          # wheel is purelib bloat that pip never puts on PATH.
           expected = hashlib.sha256(release_binary.read_bytes()).hexdigest()
           with zipfile.ZipFile(wheels[0]) as wheel:
-              candidates = [
-                  name
-                  for name in wheel.namelist()
-                  if Path(name).name == binary_name and not name.endswith("/")
-              ]
-              if not candidates:
+              names = wheel.namelist()
+              if names.count(script_entry) != 1:
+                  matches = [n for n in names if n == script_entry]
                   raise SystemExit(
-                      f"no {binary_name} found in {wheels[0].name}"
+                      f"expected exactly one `{script_entry}` entry in "
+                      f"{wheels[0].name}, found {matches}"
                   )
-              # maturin 1.13.2 emits the bin-binding script under both
-              # `<name>-<version>.data/scripts/<binary>` (the wheel-spec
-              # location pip puts on PATH) and an extra `<name>.scripts/
-              # <binary>` under purelib on macOS wheels. The duplicate
-              # is harmless wheel bloat — pip only installs the
-              # `.data/scripts/` copy to bin — but we still require
-              # every copy to be byte-identical to the release tarball
-              # binary so we never silently ship a stale duplicate.
-              actuals = {
-                  hashlib.sha256(wheel.read(name)).hexdigest()
-                  for name in candidates
-              }
-              if len(actuals) != 1:
-                  raise SystemExit(
-                      f"{binary_name} copies in {wheels[0].name} have "
-                      f"differing sha256 across paths {candidates}: {sorted(actuals)}"
-                  )
-              actual = next(iter(actuals))
+              actual = hashlib.sha256(wheel.read(script_entry)).hexdigest()
 
           if actual != expected:
               print(f"release binary sha256: {expected}", file=sys.stderr)
               print(f"wheel binary sha256:   {actual}", file=sys.stderr)
-              raise SystemExit("wheel does not contain the shared release binary")
+              raise SystemExit(
+                  f"`{script_entry}` does not match the shared release binary"
+              )
 
-          print(f"{wheels[0].name} contains the shared {binary_name} binary")
+          print(f"{wheels[0].name} ships the shared {binary_name} at `{script_entry}`")
 
       - name: Smoke test wheel
         shell: bash
