@@ -46,7 +46,6 @@ jobs:
     needs: lint
     env:
       GH_TOKEN: ${{ github.token }}
-      SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "1"
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -72,7 +71,6 @@ jobs:
     needs: lint
     env:
       GH_TOKEN: ${{ github.token }}
-      SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "1"
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -98,7 +96,6 @@ jobs:
     needs: lint
     env:
       GH_TOKEN: ${{ github.token }}
-      SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "1"
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
