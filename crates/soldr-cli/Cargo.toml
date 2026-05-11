@@ -23,6 +23,23 @@ tracing-subscriber = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
+[features]
+# Internal feature flag that enables test-only fixture binaries (e.g.
+# `fake-zccache-265-stub`). Off by default so neither the maturin wheel,
+# the GitHub release tarball, nor `cargo install` pick up the stubs.
+# Integration tests that need the stub build it explicitly with
+# `cargo build --bin <stub> --features test-stubs` at test setup time.
+test-stubs = []
+
 [[bin]]
 name = "soldr"
 path = "src/main.rs"
+
+[[bin]]
+# Test fixture for crates/soldr-cli/tests/cli_unknown_session_retry.rs
+# (covers the deferred integration test from #265 / closes #266).
+# Gated behind the `test-stubs` feature so the stub is not built or
+# shipped in normal cargo / maturin builds.
+name = "fake-zccache-265-stub"
+path = "tests/bins/fake_zccache_stub.rs"
+required-features = ["test-stubs"]
