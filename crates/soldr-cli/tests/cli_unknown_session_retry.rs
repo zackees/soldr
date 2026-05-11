@@ -154,7 +154,6 @@ fn run_soldr_wrapper(label: &str, mode: Option<&str>) -> RetryRun {
 }
 
 #[test]
-#[ignore = "depends on #265 retry implementation in run_wrapper_through_zccache; unignore once #265 merges"]
 fn unknown_session_triggers_one_retry() {
     let run = run_soldr_wrapper("trigger-retry", None);
 
@@ -178,7 +177,6 @@ fn unknown_session_triggers_one_retry() {
 }
 
 #[test]
-#[ignore = "depends on #265 retry implementation in run_wrapper_through_zccache; unignore once #265 merges"]
 fn unknown_session_retry_budget_is_one() {
     let run = run_soldr_wrapper("retry-budget", Some("always_fail"));
 
@@ -197,7 +195,6 @@ fn unknown_session_retry_budget_is_one() {
 }
 
 #[test]
-#[ignore = "depends on #265 retry implementation in run_wrapper_through_zccache; unignore once #265 merges"]
 fn non_unknown_session_failure_does_not_retry() {
     let run = run_soldr_wrapper("no-retry", Some("non_session_failure"));
 
