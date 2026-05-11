@@ -550,6 +550,11 @@ fn run_wrapper_through_zccache(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        // TODO(#265): once exec() replaces this process there is nowhere to
+        // observe zccache's stderr or retry on "unknown session:". The
+        // Windows branch below performs that defensive retry. A Unix port
+        // would need to spawn-with-piped-stderr instead of exec, while still
+        // forwarding the cargo jobserver FDs (see issue #265 for context).
         let err = command.exec();
         Err(SoldrError::Other(format!(
             "failed to exec zccache at {}: {err}",
@@ -559,9 +564,149 @@ fn run_wrapper_through_zccache(
 
     #[cfg(not(unix))]
     {
-        let status = command.status()?;
-        Ok(status.code().unwrap_or(1))
+        run_wrapper_through_zccache_windows(raw_args, zccache)
     }
+}
+
+/// Windows-only wrapper invocation: spawn zccache with its stderr piped so we
+/// can tee it to our own stderr live AND scan it after the process exits.
+///
+/// If zccache returns a non-zero exit and its stderr contains the literal
+/// substring `unknown session:` (issue #265), the managed zccache daemon was
+/// killed mid-build by something outside soldr's control (e.g. zccache-ci's
+/// stop hook on older zccache, AV quarantine, or a Windows binary
+/// replacement). We allocate a fresh session via `zccache session-start` and
+/// retry the wrapper invocation exactly once with the new session id.
+///
+/// Retry budget is 1. On the retry's own failure we propagate that exit code
+/// unchanged — we don't loop on a persistently broken daemon.
+#[cfg(not(unix))]
+fn run_wrapper_through_zccache_windows(
+    raw_args: &[String],
+    zccache: &std::path::Path,
+) -> Result<i32, SoldrError> {
+    use std::io::Read;
+    use std::process::Stdio;
+
+    let mut command = std::process::Command::new(zccache);
+    command.args(&raw_args[1..]);
+    command.stderr(Stdio::piped());
+
+    let mut child = command.spawn()?;
+    let stderr = child
+        .stderr
+        .take()
+        .expect("stderr was configured as piped above");
+
+    // Tee zccache stderr to soldr's stderr in real time AND buffer it for
+    // post-exit inspection. A reader thread keeps the pipe drained so
+    // zccache cannot block on a full pipe.
+    let reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = reader.read(&mut chunk)?;
+            if n == 0 {
+                break;
+            }
+            // Best-effort tee: if writing to our own stderr fails we still
+            // want to keep draining the child pipe.
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), &chunk[..n]);
+            buf.extend_from_slice(&chunk[..n]);
+        }
+        Ok(buf)
+    });
+
+    let status = child.wait()?;
+    let stderr_bytes = reader
+        .join()
+        .map_err(|_| SoldrError::Other("zccache stderr reader thread panicked".into()))?
+        .unwrap_or_default();
+
+    let exit_code = status.code().unwrap_or(1);
+    if status.success() || !stderr_indicates_unknown_session(&stderr_bytes) {
+        return Ok(exit_code);
+    }
+
+    // Daemon told us our session id is gone. Allocate a fresh one and
+    // retry the wrapper invocation once.
+    let new_session_id = match allocate_replacement_session(zccache) {
+        Ok(id) => id,
+        Err(err) => {
+            eprintln!(
+                "soldr: zccache reported \"unknown session:\" but soldr could not allocate \
+                 a replacement session ({err}); propagating original exit code"
+            );
+            return Ok(exit_code);
+        }
+    };
+
+    eprintln!(
+        "soldr: zccache session resync after \"unknown session:\"; retrying once with fresh session {new_session_id}"
+    );
+
+    let mut retry = std::process::Command::new(zccache);
+    retry.args(&raw_args[1..]);
+    retry.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &new_session_id);
+    let retry_status = retry.status()?;
+    Ok(retry_status.code().unwrap_or(1))
+}
+
+/// Returns `true` iff `stderr` contains the literal substring
+/// `unknown session:` somewhere in its bytes. Tolerates non-UTF-8 input.
+///
+/// Extracted as a pure helper so the retry trigger can be unit-tested
+/// without spawning a real zccache.
+#[cfg_attr(unix, allow(dead_code))]
+fn stderr_indicates_unknown_session(stderr: &[u8]) -> bool {
+    const NEEDLE: &[u8] = b"unknown session:";
+    if stderr.len() < NEEDLE.len() {
+        return false;
+    }
+    stderr.windows(NEEDLE.len()).any(|w| w == NEEDLE)
+}
+
+/// Run `zccache session-start --stats --log <path> --journal <path>` against
+/// the cache dir the wrapper invocation inherits from cargo, and return the
+/// parsed session id. Mirrors the args used by `prepare_zccache_build`.
+///
+/// Used by the Windows wrapper retry path (issue #265): when the daemon
+/// reports `unknown session:` the in-process session id is stale, so soldr
+/// allocates a replacement before retrying the wrapper invocation once.
+#[cfg(not(unix))]
+fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, SoldrError> {
+    let cache_dir = std::env::var_os(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR)
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "{} is not set in the wrapper environment; cannot allocate replacement zccache session",
+                soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR
+            ))
+        })?;
+
+    let session_log_path = soldr_cache::session_log_path(&cache_dir);
+    let session_log_path_arg = session_log_path.display().to_string();
+    let journal_path = soldr_cache::session_journal_path(&cache_dir);
+    let journal_path_arg = journal_path.display().to_string();
+    let session_json = run_zccache_command_in_cache_dir(
+        zccache,
+        &[
+            "session-start",
+            "--stats",
+            "--log",
+            &session_log_path_arg,
+            "--journal",
+            &journal_path_arg,
+        ],
+        &cache_dir,
+    )?;
+    soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to parse zccache session id from output: {}",
+            session_json.stdout.trim()
+        ))
+    })
 }
 
 /// Best-effort upsert of the workspace `target/` dir into the soldr
@@ -2996,12 +3141,12 @@ mod tests {
         extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
         parse_tool_spec, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
         selected_cargo_args, should_skip_warm_restore, should_trampoline,
-        warm_restore_sentinel_path, warm_restore_skip_enabled, write_thin_manifest,
-        write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, RustArtifactPlan,
-        RustArtifactPlanContext, RustPlanInputs, RustPlanPackages, RustToolchainIdentity,
-        RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel, WarmRestoreSkipInputs,
-        ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME,
-        WARM_RESTORE_MAX_AGE_SECONDS,
+        stderr_indicates_unknown_session, warm_restore_sentinel_path, warm_restore_skip_enabled,
+        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage,
+        RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
+        WarmRestoreSkipInputs, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
+        THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::{OsStr, OsString};
@@ -4339,5 +4484,52 @@ mod tests {
                 "warm-restore skip must be disabled when {SKIP_WARM_RESTORE_ENV_VAR} is set to {value:?}"
             );
         }
+    }
+
+    // -------- stderr_indicates_unknown_session (issue #265) --------
+
+    #[test]
+    fn unknown_session_detector_rejects_empty_stderr() {
+        assert!(!stderr_indicates_unknown_session(b""));
+    }
+
+    #[test]
+    fn unknown_session_detector_matches_exact_zccache_line() {
+        let stderr = b"zccache error: unknown session: abc-123\n";
+        assert!(stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_matches_substring_mid_line() {
+        // The marker can appear anywhere in the stream, not necessarily at
+        // the start of a line.
+        let stderr = b"prelude blah blah unknown session: 0000 trailing\n";
+        assert!(stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_ignores_unrelated_session_mentions() {
+        // The word "session" alone is not enough; we only treat the literal
+        // "unknown session:" marker as a resync trigger.
+        let stderr = b"zccache info: session started\nzccache info: session ok\n";
+        assert!(!stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_tolerates_non_utf8_bytes() {
+        // Surround the marker with raw non-UTF-8 byte sequences; the
+        // detector must not panic and must still find the literal needle.
+        let mut stderr: Vec<u8> = vec![0xFF, 0xFE, 0x80, 0x81];
+        stderr.extend_from_slice(b"zccache error: unknown session: deadbeef\n");
+        stderr.extend_from_slice(&[0xC3, 0x28, 0xA0]);
+        assert!(stderr_indicates_unknown_session(&stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_rejects_partial_marker() {
+        // "unknown sessio" (missing the trailing "n:") must NOT match — we
+        // only resync on the exact daemon-emitted marker.
+        let stderr = b"unknown sessio\n";
+        assert!(!stderr_indicates_unknown_session(stderr));
     }
 }
