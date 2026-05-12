@@ -1653,11 +1653,15 @@ fn build_thin_manifest(
     bundle_root: &std::path::Path,
     cache_profile: &str,
 ) -> Result<ThinSliceManifest, SoldrError> {
-    let mut files = Vec::new();
-    walk_bundle_files(bundle_root, bundle_root, &mut files)?;
+    let thread_count = resolve_bundle_walk_thread_count(
+        &std::env::var(TARGET_CACHE_TAR_THREADS_ENV_VAR).unwrap_or_default(),
+    )?;
+    let mut files = walk_bundle_files(bundle_root, thread_count)?;
     // Drop any prior manifest so the file list does not chase its own tail
     // across repeated saves into the same bundle directory.
     files.retain(|entry| entry.path != THIN_MANIFEST_FILENAME);
+    // Sort so the manifest is byte-identical regardless of walk order
+    // (sequential vs parallel must produce the same output).
     files.sort_by(|a, b| a.path.cmp(&b.path));
 
     let generated_at_unix_seconds = std::time::SystemTime::now()
@@ -1674,10 +1678,111 @@ fn build_thin_manifest(
     })
 }
 
+/// Cap on the number of metadata-stat threads soldr will spin up for the
+/// bundle walk, matching the documented zccache cap. Past ~8 threads the
+/// per-file `GetFileInformation` syscall stops being the bottleneck (the
+/// directory iteration becomes one), so additional workers just contend.
+const BUNDLE_WALK_THREAD_CAP: usize = 8;
+
+/// Resolve the reader-thread count for the bundle walk from a raw
+/// `SOLDR_TARGET_CACHE_TAR_THREADS` value.
+///
+/// The env var has already been validated by
+/// [`parse_rust_artifact_cache_tar_threads`] at the cargo front door, so
+/// the raw input here is expected to be well-formed. We re-validate
+/// defensively because [`build_thin_manifest`] can also run on the bare
+/// `RUSTC_WRAPPER` passthrough path that does not flow through the front
+/// door check.
+///
+/// Returns:
+/// - `None` for `auto` / unset — use rayon's global pool, capped at the
+///   smaller of the system parallelism and [`BUNDLE_WALK_THREAD_CAP`].
+/// - `Some(1)` to force the sequential fallback (no rayon overhead).
+/// - `Some(n)` for an explicit thread count, clamped to
+///   `[1, BUNDLE_WALK_THREAD_CAP]`.
+fn resolve_bundle_walk_thread_count(raw: &str) -> Result<Option<usize>, SoldrError> {
+    let parsed = parse_rust_artifact_cache_tar_threads(raw)?;
+    let Some(token) = parsed else {
+        // Unset → auto.
+        return Ok(None);
+    };
+    if token == "auto" {
+        return Ok(None);
+    }
+    // parse_rust_artifact_cache_tar_threads already rejected zero / negative /
+    // non-integer values, so an integer-or-bust parse here is sound.
+    let n: usize = token.parse().map_err(|_| {
+        SoldrError::Other(format!(
+            "invalid {TARGET_CACHE_TAR_THREADS_ENV_VAR} value {raw:?}; expected `auto` or a positive integer (use `1` to disable parallelism)"
+        ))
+    })?;
+    Ok(Some(n.clamp(1, BUNDLE_WALK_THREAD_CAP)))
+}
+
+/// Walk every file under `root` and return one [`ThinSliceManifestEntry`]
+/// per regular file.
+///
+/// Implementation is two-phase:
+/// 1. Serial directory traversal (`read_dir`) collects every file path. Per
+///    `read_dir` is cheap; the per-entry cost is dominated by the metadata
+///    stat in phase 2 (which on Windows pays a Defender callback per file).
+/// 2. Parallel `std::fs::metadata` over the collected paths via rayon.
+///    Output order is non-deterministic — the caller MUST sort.
+///
+/// `thread_count`:
+/// - `None` → use rayon's global thread pool.
+/// - `Some(1)` → fully sequential (no rayon overhead at all).
+/// - `Some(n)` for `n > 1` → run inside a scoped thread pool of `n`
+///   workers so the env var actually controls something soldr-side.
 fn walk_bundle_files(
     root: &std::path::Path,
+    thread_count: Option<usize>,
+) -> Result<Vec<ThinSliceManifestEntry>, SoldrError> {
+    // Phase 1: serial DFS collects (absolute_path, relative_string) pairs.
+    let mut paths: Vec<(std::path::PathBuf, String)> = Vec::new();
+    collect_bundle_file_paths(root, root, &mut paths)?;
+
+    // Phase 2: stat each file. Sequential when only one worker is wanted,
+    // rayon-parallel otherwise.
+    let stat = |(path, rel): &(std::path::PathBuf, String)| -> ThinSliceManifestEntry {
+        let size_bytes = std::fs::metadata(path).ok().map(|m| m.len());
+        ThinSliceManifestEntry {
+            path: rel.clone(),
+            size_bytes,
+        }
+    };
+
+    let files = match thread_count {
+        Some(1) => paths.iter().map(stat).collect(),
+        Some(n) => {
+            use rayon::prelude::*;
+            // Build a scoped pool so the explicit thread count actually
+            // bounds this walk instead of leaking onto rayon's global pool.
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .thread_name(|i| format!("soldr-bundle-walk-{i}"))
+                .build()
+                .map_err(|e| {
+                    SoldrError::Other(format!("failed to build bundle-walk thread pool: {e}"))
+                })?;
+            pool.install(|| paths.par_iter().map(stat).collect())
+        }
+        None => {
+            use rayon::prelude::*;
+            paths.par_iter().map(stat).collect()
+        }
+    };
+
+    Ok(files)
+}
+
+/// Recursively walk `dir`, pushing `(absolute_path, root-relative string)`
+/// for every regular file under it. Used by [`walk_bundle_files`] as the
+/// directory-iteration phase before per-file metadata stats are fanned out.
+fn collect_bundle_file_paths(
+    root: &std::path::Path,
     dir: &std::path::Path,
-    out: &mut Vec<ThinSliceManifestEntry>,
+    out: &mut Vec<(std::path::PathBuf, String)>,
 ) -> Result<(), SoldrError> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -1689,7 +1794,7 @@ fn walk_bundle_files(
         let path = entry.path();
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
-            walk_bundle_files(root, &path, out)?;
+            collect_bundle_file_paths(root, &path, out)?;
         } else if file_type.is_file() {
             let rel = path
                 .strip_prefix(root)
@@ -1700,11 +1805,7 @@ fn walk_bundle_files(
                 .map(|c| c.as_os_str().to_string_lossy().into_owned())
                 .collect::<Vec<_>>()
                 .join("/");
-            let size_bytes = std::fs::metadata(&path).ok().map(|m| m.len());
-            out.push(ThinSliceManifestEntry {
-                path: rel_string,
-                size_bytes,
-            });
+            out.push((path, rel_string));
         }
     }
     Ok(())
@@ -3176,14 +3277,15 @@ mod tests {
         cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
         compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
         extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
-        parse_rust_artifact_cache_tar_threads, parse_tool_spec, rustc_wrapper_mode_from_env_var,
-        rustup_resolution_failure, selected_cargo_args, should_skip_warm_restore,
-        should_trampoline, stderr_indicates_unknown_session, warm_restore_sentinel_path,
-        warm_restore_skip_enabled, write_thin_manifest, write_warm_restore_sentinel, CargoMetadata,
-        CargoMetadataPackage, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
-        RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
-        WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
-        THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+        parse_rust_artifact_cache_tar_threads, parse_tool_spec, resolve_bundle_walk_thread_count,
+        rustc_wrapper_mode_from_env_var, rustup_resolution_failure, selected_cargo_args,
+        should_skip_warm_restore, should_trampoline, stderr_indicates_unknown_session,
+        walk_bundle_files, warm_restore_sentinel_path, warm_restore_skip_enabled,
+        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage,
+        RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
+        WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
+        SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
     use std::ffi::{OsStr, OsString};
@@ -4609,6 +4711,142 @@ mod tests {
             assert!(
                 msg.contains("SOLDR_TARGET_CACHE_TAR_THREADS"),
                 "error for {raw:?} must mention the env var, got {msg}"
+            );
+        }
+    }
+
+    /// Unset / `auto` / case-variants of `auto` must all yield `None`, which
+    /// signals "use rayon's global thread pool" to `walk_bundle_files`.
+    #[test]
+    fn bundle_walk_thread_count_auto_yields_none() {
+        for raw in ["", "  ", "auto", "AUTO", " Auto "] {
+            assert_eq!(
+                resolve_bundle_walk_thread_count(raw).unwrap(),
+                None,
+                "raw {raw:?} should resolve to None (auto)"
+            );
+        }
+    }
+
+    /// An explicit `1` must turn into `Some(1)` so the walk takes the
+    /// sequential fallback path (no rayon overhead).
+    #[test]
+    fn bundle_walk_thread_count_one_forces_sequential() {
+        assert_eq!(resolve_bundle_walk_thread_count("1").unwrap(), Some(1));
+    }
+
+    /// In-range explicit counts pass through unmodified; values above the
+    /// internal cap are clamped down to `BUNDLE_WALK_THREAD_CAP`.
+    #[test]
+    fn bundle_walk_thread_count_clamps_to_cap() {
+        assert_eq!(resolve_bundle_walk_thread_count("2").unwrap(), Some(2));
+        assert_eq!(
+            resolve_bundle_walk_thread_count("8").unwrap(),
+            Some(BUNDLE_WALK_THREAD_CAP)
+        );
+        // 64 → capped at BUNDLE_WALK_THREAD_CAP.
+        assert_eq!(
+            resolve_bundle_walk_thread_count("64").unwrap(),
+            Some(BUNDLE_WALK_THREAD_CAP)
+        );
+        assert_eq!(
+            resolve_bundle_walk_thread_count("9999").unwrap(),
+            Some(BUNDLE_WALK_THREAD_CAP)
+        );
+    }
+
+    /// Garbage values inherited from the parser must still propagate as
+    /// errors here so callers on the bare `RUSTC_WRAPPER` passthrough path
+    /// (which bypasses the cargo front-door validation) get a clear message
+    /// instead of a silent default.
+    #[test]
+    fn bundle_walk_thread_count_rejects_garbage() {
+        for raw in ["0", "twelve", "1.5"] {
+            let err = resolve_bundle_walk_thread_count(raw)
+                .expect_err(&format!("expected error for {raw:?}"));
+            assert!(
+                err.to_string().contains("SOLDR_TARGET_CACHE_TAR_THREADS"),
+                "error must reference the env var name"
+            );
+        }
+    }
+
+    /// Build a bundle layout with a handful of files at varying depths and
+    /// verify that the walker returns one entry per regular file with the
+    /// correct relative path string (forward-slashed, root-relative).
+    fn populate_walk_bundle_fixture(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("debug/deps")).unwrap();
+        std::fs::create_dir_all(root.join("debug/build")).unwrap();
+        std::fs::write(root.join("debug/deps/a.rlib"), b"alpha").unwrap();
+        std::fs::write(root.join("debug/deps/b.rmeta"), b"beta!!").unwrap();
+        std::fs::write(root.join("debug/build/c.txt"), b"gamma").unwrap();
+        std::fs::write(root.join("top.txt"), b"delta-delta").unwrap();
+    }
+
+    /// The sequential path (`Some(1)`) must enumerate every file with the
+    /// expected relative paths and sizes. This is the baseline against which
+    /// the parallel walks are compared for determinism.
+    #[test]
+    fn walk_bundle_files_sequential_lists_every_file_with_size() {
+        let bundle = tempfile::tempdir().expect("tempdir");
+        populate_walk_bundle_fixture(bundle.path());
+
+        let mut entries =
+            walk_bundle_files(bundle.path(), Some(1)).expect("sequential walk must succeed");
+        entries.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let observed: Vec<_> = entries
+            .iter()
+            .map(|e| (e.path.as_str(), e.size_bytes))
+            .collect();
+        assert_eq!(
+            observed,
+            vec![
+                ("debug/build/c.txt", Some(5)),
+                ("debug/deps/a.rlib", Some(5)),
+                ("debug/deps/b.rmeta", Some(6)),
+                ("top.txt", Some(11)),
+            ]
+        );
+    }
+
+    /// Output of the walk must be byte-identical (after the caller's
+    /// canonical sort) regardless of whether the metadata phase ran
+    /// sequentially, on rayon's global pool, or on a scoped explicit pool.
+    /// This is the determinism acceptance criterion from issue #272.
+    #[test]
+    fn walk_bundle_files_parallel_matches_sequential_after_sort() {
+        let bundle = tempfile::tempdir().expect("tempdir");
+        populate_walk_bundle_fixture(bundle.path());
+
+        let mut sequential =
+            walk_bundle_files(bundle.path(), Some(1)).expect("sequential walk must succeed");
+        sequential.sort_by(|a, b| a.path.cmp(&b.path));
+
+        for thread_count in [None, Some(2), Some(BUNDLE_WALK_THREAD_CAP)] {
+            let mut parallel = walk_bundle_files(bundle.path(), thread_count)
+                .unwrap_or_else(|e| panic!("walk failed with thread_count {thread_count:?}: {e}"));
+            parallel.sort_by(|a, b| a.path.cmp(&b.path));
+            assert_eq!(
+                parallel, sequential,
+                "thread_count {thread_count:?} produced a different file list after canonical sort"
+            );
+        }
+    }
+
+    /// A missing root is not an error — the bundle may legitimately not
+    /// exist yet (e.g. zccache restore produced nothing). The walk must
+    /// return an empty vec rather than propagating a `NotFound` IO error.
+    #[test]
+    fn walk_bundle_files_missing_root_returns_empty() {
+        let bundle = tempfile::tempdir().expect("tempdir");
+        let missing = bundle.path().join("never-created");
+        for thread_count in [Some(1), None, Some(4)] {
+            let entries = walk_bundle_files(&missing, thread_count)
+                .unwrap_or_else(|e| panic!("missing root must not error ({thread_count:?}): {e}"));
+            assert!(
+                entries.is_empty(),
+                "missing root walk with {thread_count:?} should be empty, got {entries:?}"
             );
         }
     }
