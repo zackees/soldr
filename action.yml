@@ -134,6 +134,35 @@ runs:
         ACTION_ARCH: ${{ runner.arch }}
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/resolve_setup.py"
 
+    # actions/cache@v4 picks its tar codec by probing `zstd --quiet --version`
+    # on PATH (see @actions/toolkit/packages/cache/src/internal/cacheUtils.ts).
+    # The windows-11-arm image omits zstd from its preinstalled software
+    # (https://github.com/actions/partner-runner-images), so cache save/restore
+    # silently falls back to single-threaded `tar -z` (gzip). On 2 GB payloads
+    # that turns a ~30s post-step into ~4m on ARM Windows runners. Installing
+    # zstd before any cache step lets actions/cache pick the multi-threaded
+    # `zstd -T0` path that x64 Windows already uses. Tracked upstream as
+    # actions/cache#1622 (unresolved as of v5.0.5). No-op on other platforms
+    # and when a future image starts shipping zstd, thanks to the PATH probe.
+    - id: ensure-zstd-windows-arm64
+      if: ${{ runner.os == 'Windows' && runner.arch == 'ARM64' }}
+      shell: pwsh
+      run: |
+        if (Get-Command zstd -ErrorAction SilentlyContinue) {
+          Write-Host "zstd already on PATH; skipping install."
+          zstd --version
+          exit 0
+        }
+        Write-Host "zstd not on PATH; installing via Chocolatey so actions/cache picks the multi-threaded zstd codec."
+        choco install zstandard -y --no-progress
+        if ($LASTEXITCODE -ne 0) {
+          throw "choco install zstandard exited with code $LASTEXITCODE"
+        }
+        if (-not (Get-Command zstd -ErrorAction SilentlyContinue)) {
+          throw "zstd installation completed but the binary is not on PATH"
+        }
+        zstd --version
+
     - id: cache
       if: ${{ inputs.cache == 'true' }}
       uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
