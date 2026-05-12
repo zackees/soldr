@@ -21,6 +21,15 @@ const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
 /// outputs as a safety net) and `thin-v2` (fingerprint-aware aggressive prune;
 /// drops library bytes and lets zccache's compilation cache repopulate them).
 const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
+/// Reader-thread count for the target-cache tar walk in zccache (issue #272).
+/// Forwarded to the `zccache rust-plan save/restore` subprocess via inherited
+/// environment; soldr validates the value early so typos fail before cargo
+/// metadata runs. Values: `auto` (default; zccache picks a vCPU-bounded count
+/// capped at 8), `1` (disable parallelism — sequential tar walk), or any
+/// positive integer for an explicit thread count. The actual parallel walk
+/// lives in zccache; this constant exists so soldr can reject malformed values
+/// at the front door.
+const TARGET_CACHE_TAR_THREADS_ENV_VAR: &str = "SOLDR_TARGET_CACHE_TAR_THREADS";
 /// Filename of the file-list manifest written next to the thin-slice bundle so
 /// downstream tooling can prove what landed in the slice without unpacking it.
 const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
@@ -925,6 +934,12 @@ fn maybe_prepare_rust_artifact_plan(
         None
     };
 
+    // Reject a malformed SOLDR_TARGET_CACHE_TAR_THREADS before we kick off
+    // cargo metadata. zccache also validates, but failing here keeps the
+    // error close to the user's typo and avoids spending seconds resolving
+    // the workspace just to die on a one-character env mistake.
+    rust_artifact_cache_tar_threads_from_env()?;
+
     let metadata = cargo_metadata(cargo, args)?;
     let toolchain = rust_toolchain_identity(cargo, rustc)?;
     let plan = build_rust_artifact_plan(&metadata, &toolchain, args, &mode, profile, session)?;
@@ -1247,6 +1262,28 @@ fn rust_artifact_cache_backend_from_env() -> Result<String, SoldrError> {
         "gha" => Ok("gha".to_string()),
         _ => Err(SoldrError::Other(format!(
             "invalid {TARGET_CACHE_BACKEND_ENV_VAR} value {raw:?}; expected auto, local, or gha"
+        ))),
+    }
+}
+
+fn rust_artifact_cache_tar_threads_from_env() -> Result<Option<String>, SoldrError> {
+    parse_rust_artifact_cache_tar_threads(
+        &std::env::var(TARGET_CACHE_TAR_THREADS_ENV_VAR).unwrap_or_default(),
+    )
+}
+
+fn parse_rust_artifact_cache_tar_threads(raw: &str) -> Result<Option<String>, SoldrError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.eq_ignore_ascii_case("auto") {
+        return Ok(Some("auto".to_string()));
+    }
+    match trimmed.parse::<u32>() {
+        Ok(n) if n >= 1 => Ok(Some(n.to_string())),
+        _ => Err(SoldrError::Other(format!(
+            "invalid {TARGET_CACHE_TAR_THREADS_ENV_VAR} value {raw:?}; expected `auto` or a positive integer (use `1` to disable parallelism)"
         ))),
     }
 }
@@ -3139,13 +3176,13 @@ mod tests {
         cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
         compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
         extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
-        parse_tool_spec, rustc_wrapper_mode_from_env_var, rustup_resolution_failure,
-        selected_cargo_args, should_skip_warm_restore, should_trampoline,
-        stderr_indicates_unknown_session, warm_restore_sentinel_path, warm_restore_skip_enabled,
-        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage,
-        RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
-        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
-        WarmRestoreSkipInputs, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
+        parse_rust_artifact_cache_tar_threads, parse_tool_spec, rustc_wrapper_mode_from_env_var,
+        rustup_resolution_failure, selected_cargo_args, should_skip_warm_restore,
+        should_trampoline, stderr_indicates_unknown_session, warm_restore_sentinel_path,
+        warm_restore_skip_enabled, write_thin_manifest, write_warm_restore_sentinel, CargoMetadata,
+        CargoMetadataPackage, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
+        RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
+        WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
         THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use soldr_fetch::VersionSpec;
@@ -4531,5 +4568,48 @@ mod tests {
         // only resync on the exact daemon-emitted marker.
         let stderr = b"unknown sessio\n";
         assert!(!stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn tar_threads_unset_or_blank_yields_none() {
+        assert!(parse_rust_artifact_cache_tar_threads("").unwrap().is_none());
+        assert!(parse_rust_artifact_cache_tar_threads("   ")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn tar_threads_auto_is_normalized_lowercase() {
+        assert_eq!(
+            parse_rust_artifact_cache_tar_threads("auto").unwrap(),
+            Some("auto".to_string())
+        );
+        assert_eq!(
+            parse_rust_artifact_cache_tar_threads("  AUTO ").unwrap(),
+            Some("auto".to_string())
+        );
+    }
+
+    #[test]
+    fn tar_threads_positive_integer_passes_through() {
+        for raw in ["1", "4", "8", "16"] {
+            assert_eq!(
+                parse_rust_artifact_cache_tar_threads(raw).unwrap(),
+                Some(raw.to_string())
+            );
+        }
+    }
+
+    #[test]
+    fn tar_threads_rejects_zero_negative_and_garbage() {
+        for raw in ["0", "-1", "1.5", "twelve", "auto4", "4 threads"] {
+            let err = parse_rust_artifact_cache_tar_threads(raw)
+                .expect_err(&format!("expected error for {raw:?}"));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("SOLDR_TARGET_CACHE_TAR_THREADS"),
+                "error for {raw:?} must mention the env var, got {msg}"
+            );
+        }
     }
 }
