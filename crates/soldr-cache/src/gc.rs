@@ -12,9 +12,12 @@ use crate::target_registry::{
     DEFAULT_STALE_AGE_SECONDS, DEFAULT_STALE_SIZE_BYTES,
 };
 use std::{
+    io::Write,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
+
+const GC_LOG_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct GcOptions {
@@ -57,6 +60,29 @@ pub struct GcReport {
     /// Number of registry rows whose path didn't exist on disk and
     /// were quietly dropped.
     pub dropped_missing: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct GcDeleteOutcome {
+    pub candidate: GcCandidate,
+    pub removed: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GcPurgeFailure {
+    pub candidate: GcCandidate,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct GcPurgeSummary {
+    pub selected_count: usize,
+    pub succeeded_count: usize,
+    pub failed_count: usize,
+    pub reclaimed_bytes: u64,
+    pub deleted_paths: Vec<PathBuf>,
+    pub failures: Vec<GcPurgeFailure>,
 }
 
 /// Pure scan: walk the registry, drop missing rows, apply thresholds
@@ -156,11 +182,131 @@ pub fn purge_one(
         return Ok(false);
     }
     let result = std::fs::remove_dir_all(path);
-    let _ = registry.remove(path);
     match result {
-        Ok(_) => Ok(true),
+        Ok(_) => {
+            let _ = registry.remove(path);
+            Ok(true)
+        }
         Err(e) => Err(RegistryError::Io(e)),
     }
+}
+
+pub fn delete_candidate_dir(candidate: GcCandidate) -> GcDeleteOutcome {
+    if !candidate.path.exists() {
+        return GcDeleteOutcome {
+            candidate,
+            removed: false,
+            error: None,
+        };
+    }
+
+    match std::fs::remove_dir_all(&candidate.path) {
+        Ok(()) => GcDeleteOutcome {
+            candidate,
+            removed: true,
+            error: None,
+        },
+        Err(e) => GcDeleteOutcome {
+            candidate,
+            removed: false,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+pub fn apply_purge_outcomes(
+    registry: &TargetRegistry,
+    outcomes: Vec<GcDeleteOutcome>,
+) -> Result<GcPurgeSummary, RegistryError> {
+    let mut summary = GcPurgeSummary {
+        selected_count: outcomes.len(),
+        ..GcPurgeSummary::default()
+    };
+
+    for outcome in outcomes {
+        if let Some(error) = outcome.error {
+            summary.failed_count += 1;
+            summary.failures.push(GcPurgeFailure {
+                candidate: outcome.candidate,
+                error,
+            });
+            continue;
+        }
+
+        let _ = registry.remove(&outcome.candidate.path)?;
+        summary.succeeded_count += 1;
+        if outcome.removed {
+            summary.reclaimed_bytes = summary
+                .reclaimed_bytes
+                .saturating_add(outcome.candidate.size_bytes);
+            summary.deleted_paths.push(outcome.candidate.path);
+        }
+    }
+
+    Ok(summary)
+}
+
+pub fn cleanup_old_gc_logs(log_dir: &Path) -> Result<usize, RegistryError> {
+    cleanup_old_gc_logs_with_retention(log_dir, GC_LOG_RETENTION)
+}
+
+pub fn cleanup_old_gc_logs_with_retention(
+    log_dir: &Path,
+    retention: Duration,
+) -> Result<usize, RegistryError> {
+    let entries = match std::fs::read_dir(log_dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = match entry.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+        if age > retention {
+            std::fs::remove_file(&path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub fn write_gc_error_log(
+    log_dir: &Path,
+    args: &[String],
+    failures: &[GcPurgeFailure],
+) -> Result<PathBuf, RegistryError> {
+    std::fs::create_dir_all(log_dir)?;
+    let now = current_unix_seconds()?;
+    let path = log_dir.join(format!("gc-error-{now}-{}.log", std::process::id()));
+    let mut file = std::fs::File::create(&path)?;
+
+    writeln!(file, "timestamp_unix={now}")?;
+    writeln!(file, "command_args={args:?}")?;
+    writeln!(file, "failure_count={}", failures.len())?;
+    writeln!(file)?;
+
+    for failure in failures {
+        writeln!(file, "path={}", failure.candidate.path.display())?;
+        writeln!(file, "size_bytes={}", failure.candidate.size_bytes)?;
+        writeln!(file, "age_seconds={}", failure.candidate.age_seconds)?;
+        writeln!(file, "error={}", failure.error)?;
+        writeln!(file)?;
+    }
+
+    Ok(path)
 }
 
 /// Information for the once-per-day startup warning. Returns `None`
@@ -365,6 +511,100 @@ mod tests {
         assert!(removed);
         assert!(!target.exists());
         assert!(registry.get(&target).unwrap().is_none());
+    }
+
+    #[test]
+    fn purge_outcomes_remove_only_successful_rows() {
+        let dir = tempdir().unwrap();
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let (_, ok_target) = make_workspace(dir.path(), "ok", 256);
+        let (_, failed_target) = make_workspace(dir.path(), "failed", 512);
+        registry.upsert_with_time(&ok_target, 100).unwrap();
+        registry.upsert_with_time(&failed_target, 100).unwrap();
+
+        let ok_candidate = GcCandidate {
+            path: ok_target.clone(),
+            size_bytes: 256,
+            age_seconds: 1000,
+            eligible: true,
+            reason: None,
+        };
+        let failed_candidate = GcCandidate {
+            path: failed_target.clone(),
+            size_bytes: 512,
+            age_seconds: 1000,
+            eligible: true,
+            reason: None,
+        };
+        let summary = apply_purge_outcomes(
+            &registry,
+            vec![
+                GcDeleteOutcome {
+                    candidate: ok_candidate,
+                    removed: true,
+                    error: None,
+                },
+                GcDeleteOutcome {
+                    candidate: failed_candidate,
+                    removed: false,
+                    error: Some("permission denied".to_string()),
+                },
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(summary.selected_count, 2);
+        assert_eq!(summary.succeeded_count, 1);
+        assert_eq!(summary.failed_count, 1);
+        assert_eq!(summary.reclaimed_bytes, 256);
+        assert!(registry.get(&ok_target).unwrap().is_none());
+        assert!(registry.get(&failed_target).unwrap().is_some());
+    }
+
+    #[test]
+    fn gc_error_log_includes_failure_details() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("repo").join("target");
+        let failure = GcPurgeFailure {
+            candidate: GcCandidate {
+                path: target.clone(),
+                size_bytes: 1024,
+                age_seconds: 42,
+                eligible: true,
+                reason: None,
+            },
+            error: "permission denied".to_string(),
+        };
+
+        let log_path = write_gc_error_log(
+            dir.path(),
+            &["soldr".to_string(), "gc".to_string(), "purge".to_string()],
+            &[failure],
+        )
+        .unwrap();
+        let raw = std::fs::read_to_string(log_path).unwrap();
+
+        assert!(raw.contains("command_args="));
+        assert!(raw.contains(&target.display().to_string()));
+        assert!(raw.contains("size_bytes=1024"));
+        assert!(raw.contains("permission denied"));
+    }
+
+    #[test]
+    fn gc_log_cleanup_removes_entries_past_retention() {
+        let dir = tempdir().unwrap();
+        let stale = dir.path().join("stale.log");
+        let fresh = dir.path().join("fresh.log");
+        std::fs::write(&stale, b"old").unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        std::fs::write(&fresh, b"new").unwrap();
+
+        let removed = cleanup_old_gc_logs_with_retention(dir.path(), Duration::from_millis(15))
+            .expect("cleanup old logs");
+
+        assert_eq!(removed, 1);
+        assert!(!stale.exists());
+        assert!(fresh.exists());
     }
 
     #[test]

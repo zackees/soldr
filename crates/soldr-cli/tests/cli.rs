@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::io::Write;
 use std::process::Command;
 use std::{
     fs,
@@ -38,6 +39,28 @@ fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     let target = workspace.join("target");
     fs::create_dir_all(&target).expect("failed to create target dir");
     fs::write(target.join("artifact.bin"), b"reclaim me").expect("failed to seed target file");
+    fs::write(
+        cache_root.join("config.toml"),
+        format!("[gc]\nallowlist_roots = [\"{}\"]\n", toml_string(&dev_root)),
+    )
+    .expect("failed to write gc config");
+
+    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
+        .expect("failed to open target registry");
+    let now = soldr_cache::target_registry::current_unix_seconds()
+        .expect("failed to get current unix seconds");
+    registry
+        .upsert_with_time(&target, now - 120)
+        .expect("failed to seed target registry");
+    target
+}
+
+fn seed_gc_file_candidate(cache_root: &Path, label: &str) -> PathBuf {
+    let dev_root = cache_root.join("dev-root");
+    let workspace = dev_root.join(label);
+    fs::create_dir_all(&workspace).expect("failed to create workspace dir");
+    let target = workspace.join("target");
+    fs::write(&target, b"not a directory").expect("failed to seed target file");
     fs::write(
         cache_root.join("config.toml"),
         format!("[gc]\nallowlist_roots = [\"{}\"]\n", toml_string(&dev_root)),
@@ -743,6 +766,101 @@ fn gc_purge_all_deletes_candidates_without_prompt() {
         !target.exists(),
         "soldr gc purge --all should delete {}",
         target.display()
+    );
+}
+
+#[test]
+fn gc_purge_enter_accepts_candidate() {
+    let cache_root = unique_temp_dir("gc-purge-enter");
+    let target = seed_gc_candidate(&cache_root, "purge-enter-project");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["gc", "purge", "--older-than", "1s", "--larger-than", "1B"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn soldr gc purge");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin should be piped")
+        .write_all(b"\n")
+        .expect("failed to accept prompt");
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait for soldr gc purge");
+
+    assert!(
+        output.status.success(),
+        "gc purge interactive failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !target.exists(),
+        "Enter should accept and delete {}",
+        target.display()
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("[Y/n]"),
+        "prompt should advertise default yes: {stderr}"
+    );
+    assert!(
+        stderr.contains("selected 1; succeeded 1; failed 0"),
+        "final summary should include aggregate counts: {stderr}"
+    );
+}
+
+#[test]
+fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
+    let cache_root = unique_temp_dir("gc-purge-json-failure");
+    let target = seed_gc_file_candidate(&cache_root, "purge-json-failure-project");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "gc",
+            "purge",
+            "--all",
+            "--json",
+            "--older-than",
+            "1s",
+            "--larger-than",
+            "1B",
+        ])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc purge --all --json");
+
+    assert!(
+        output.status.success(),
+        "gc purge --all --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout).expect("gc purge --json must be JSON");
+    assert_eq!(json["mode"], "purge");
+    assert_eq!(json["selected_count"], 1);
+    assert_eq!(json["succeeded_count"], 0);
+    assert_eq!(json["failed_count"], 1);
+    let log_path = PathBuf::from(
+        json["error_log_path"]
+            .as_str()
+            .expect("failure JSON should include error log path"),
+    );
+    assert!(
+        log_path.exists(),
+        "missing gc error log {}",
+        log_path.display()
+    );
+
+    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
+        .expect("failed to open target registry");
+    assert!(
+        registry.get(&target).unwrap().is_some(),
+        "failed deletion row should remain retryable"
     );
 }
 
