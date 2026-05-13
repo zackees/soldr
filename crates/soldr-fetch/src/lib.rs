@@ -244,6 +244,10 @@ fn install_zccache_from_crates_io(
                 .arg(install_root.path())
                 .args(["--bin", binary_name, "--force"])
                 .env("PATH", &install_path_env)
+                // Strip stale jobserver env so the nested cargo doesn't try
+                // to attach to fds it cannot see (see soldr #283).
+                .env_remove("MAKEFLAGS")
+                .env_remove("CARGO_MAKEFLAGS")
                 .status()
                 .map_err(|e| {
                     SoldrError::Other(format!(

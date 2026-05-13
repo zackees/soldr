@@ -761,6 +761,12 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
+    // soldr cargo is the top of the invocation tree, so any inherited
+    // MAKEFLAGS/CARGO_MAKEFLAGS points at jobserver fds that aren't open in
+    // our process. Stripping them lets cargo start a fresh jobserver instead
+    // of printing the "failed to connect to jobserver" warning (see #283).
+    command.env_remove("MAKEFLAGS");
+    command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
     let cache_enabled_for_cargo = cache_enabled && cargo_args_are_cacheable(args);
 
@@ -1303,6 +1309,8 @@ fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetad
     command.args(["metadata", "--format-version", "1"]);
     command.args(cargo_metadata_passthrough_args(args));
     apply_implicit_toolchain_homes(&mut command);
+    command.env_remove("MAKEFLAGS");
+    command.env_remove("CARGO_MAKEFLAGS");
 
     let output = command.output()?;
     if !output.status.success() {
