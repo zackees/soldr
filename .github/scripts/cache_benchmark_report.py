@@ -8,6 +8,7 @@ import math
 import os
 import tomllib
 from collections import defaultdict
+from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,18 @@ def _format_bool(value: bool | None) -> str:
     if value is None:
         return "n/a"
     return "true" if value else "false"
+
+
+def _generated_at_utc() -> str:
+    override = os.environ.get("BENCHMARK_GENERATED_AT_UTC")
+    if override:
+        return override
+    return (
+        datetime.now(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def _load_config() -> tuple[dict[str, Any], Path]:
@@ -148,6 +161,9 @@ def _build_report(
     mutations: list[dict[str, Any]],
 ) -> dict[str, Any]:
     site = config["site"]
+    target = os.environ.get("BENCHMARK_COMMAND_TARGET") or site.get(
+        "default_target", DEFAULT_TARGET
+    )
     base_competitor_id = site["base_competitor"]
     measured_mutation_ids = {result["mutation"] for result in results}
     visible_mutations = [
@@ -214,8 +230,7 @@ def _build_report(
             "label": profile["label"],
             "command": _format_command(
                 profile["command"],
-                os.environ.get("BENCHMARK_COMMAND_TARGET")
-                or site.get("default_target", DEFAULT_TARGET),
+                target,
             ),
         }
         for profile in profiles
@@ -227,6 +242,14 @@ def _build_report(
         "requested_scenario": os.environ["SCENARIO"],
         "threshold_ratio": _round_metric(float(os.environ["THRESHOLD_RATIO"])),
         "headline": headline,
+        "metadata": {
+            "generated_at_utc": _generated_at_utc(),
+            "git_sha": os.environ.get("GITHUB_SHA") or "unknown",
+            "github_run_id": os.environ.get("GITHUB_RUN_ID") or "local",
+            "runner_os": os.environ.get("RUNNER_OS") or "unknown",
+            "runner_arch": os.environ.get("RUNNER_ARCH") or "unknown",
+            "target": target,
+        },
         "site": {
             "title": site["title"],
             "soldr_note": site.get("soldr_note"),
@@ -285,6 +308,18 @@ def _build_profile_command_items(report: dict[str, Any]) -> str:
             "</li>"
         )
     return "\n".join(items)
+
+
+def _metadata_line(report: dict[str, Any]) -> str:
+    metadata = report["metadata"]
+    git_sha = metadata["git_sha"]
+    short_sha = git_sha[:12] if git_sha != "unknown" else git_sha
+    return (
+        f"Generated {metadata['generated_at_utc']} | "
+        f"SHA {short_sha} | "
+        f"{metadata['runner_os']}/{metadata['runner_arch']} | "
+        f"Target {metadata['target']}"
+    )
 
 
 def _build_html_page(report: dict[str, Any]) -> str:
@@ -376,6 +411,7 @@ def _build_html_page(report: dict[str, Any]) -> str:
         Scenario: {escape(report["requested_scenario"])} |
         Threshold: {report["threshold_ratio"]:.2f}x
       </p>
+      <p class="meta">{escape(_metadata_line(report))}</p>
       <p class="note">
         {escape(soldr_note)} Raw detail is published beside this page as
         <a href="latest.json">latest.json</a>.
@@ -411,6 +447,184 @@ def _build_html_page(report: dict[str, Any]) -> str:
 """
 
 
+def _load_image_font(size: int, bold: bool = False) -> Any:
+    try:
+        from PIL import ImageFont
+    except ImportError as exc:
+        raise SystemExit(
+            "Pillow is required to generate benchmark.jpg. Install it with `python -m pip install pillow`."
+        ) from exc
+
+    names = (
+        ["DejaVuSans-Bold.ttf", "Arial Bold.ttf"]
+        if bold
+        else ["DejaVuSans.ttf", "Arial.ttf"]
+    )
+    paths = [Path("/usr/share/fonts/truetype/dejavu") / name for name in names] + [
+        Path("C:/Windows/Fonts") / name for name in names
+    ]
+    for path in paths:
+        if path.exists():
+            try:
+                return ImageFont.truetype(str(path), size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
+
+
+def _text_width(draw: Any, text: str, font: Any) -> int:
+    left, _top, right, _bottom = draw.textbbox((0, 0), text, font=font)
+    return right - left
+
+
+def _truncate_text(draw: Any, text: str, font: Any, max_width: int) -> str:
+    if _text_width(draw, text, font) <= max_width:
+        return text
+    suffix = "..."
+    trimmed = text
+    while trimmed and _text_width(draw, trimmed + suffix, font) > max_width:
+        trimmed = trimmed[:-1]
+    return (trimmed + suffix) if trimmed else suffix
+
+
+def _wrap_text(draw: Any, text: str, font: Any, max_width: int, max_lines: int) -> list[str]:
+    words = text.split()
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = word if not current else f"{current} {word}"
+        if _text_width(draw, candidate, font) <= max_width:
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+        current = word
+        if len(lines) == max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) > max_lines:
+        lines = lines[:max_lines]
+    if len(lines) == max_lines:
+        original_prefix = " ".join(lines)
+        if len(original_prefix) < len(text):
+            lines[-1] = _truncate_text(draw, lines[-1], font, max_width)
+    return lines
+
+
+def _base_competitor_label(report: dict[str, Any]) -> str:
+    base = report["site"]["base_competitor"]
+    for competitor in report["competitors"]:
+        if competitor["id"] == base:
+            return competitor["label"]
+    return base
+
+
+def _write_benchmark_image(report: dict[str, Any], output_path: Path) -> None:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError as exc:
+        raise SystemExit(
+            "Pillow is required to generate benchmark.jpg. Install it with `python -m pip install pillow`."
+        ) from exc
+
+    width, height = 1200, 630
+    image = Image.new("RGB", (width, height), "#f8f8f6")
+    draw = ImageDraw.Draw(image)
+
+    title_font = _load_image_font(48, bold=True)
+    headline_font = _load_image_font(27, bold=True)
+    body_font = _load_image_font(24)
+    small_font = _load_image_font(19)
+    table_font = _load_image_font(20)
+    table_header_font = _load_image_font(20, bold=True)
+
+    ink = "#202426"
+    muted = "#4e5a5f"
+    border = "#d7dcdf"
+    panel = "#ffffff"
+    accent = "#0f766e"
+    x = 52
+    y = 42
+
+    draw.text((x, y), report["site"]["title"], fill=ink, font=title_font)
+    y += 66
+    for line in _wrap_text(draw, report["headline"], headline_font, width - 2 * x, 2):
+        draw.text((x, y), line, fill=accent, font=headline_font)
+        y += 36
+
+    y += 12
+    metadata = (
+        f"Scenario {report['requested_scenario']} | "
+        f"Threshold {report['threshold_ratio']:.2f}x | "
+        f"{_metadata_line(report)}"
+    )
+    draw.text(
+        (x, y),
+        _truncate_text(draw, metadata, small_font, width - 2 * x),
+        fill=muted,
+        font=small_font,
+    )
+    y += 46
+
+    table_x = x
+    table_y = y
+    table_w = width - 2 * x
+    row_h = 46
+    columns = [
+        ("Profile", 205),
+        ("Change", 220),
+        ("soldr warm", 160),
+        (f"{_base_competitor_label(report)} warm", 190),
+        ("soldr vs base", 160),
+    ]
+    used_w = sum(col_width for _label, col_width in columns)
+    columns[-1] = (columns[-1][0], columns[-1][1] + max(0, table_w - used_w))
+
+    draw.rounded_rectangle(
+        (table_x, table_y, table_x + table_w, table_y + row_h * 7),
+        radius=8,
+        fill=panel,
+        outline=border,
+        width=1,
+    )
+    draw.rectangle((table_x, table_y, table_x + table_w, table_y + row_h), fill="#eef2f3")
+
+    cursor = table_x
+    for label, col_w in columns:
+        draw.text((cursor + 14, table_y + 13), label, fill=ink, font=table_header_font)
+        cursor += col_w
+        draw.line((cursor, table_y, cursor, table_y + row_h * 7), fill=border, width=1)
+    draw.line((table_x, table_y + row_h, table_x + table_w, table_y + row_h), fill=border, width=1)
+
+    rows = report["comparisons"][:6]
+    base_id = report["site"]["base_competitor"]
+    for idx, row in enumerate(rows):
+        row_y = table_y + row_h * (idx + 1)
+        if idx % 2 == 1:
+            draw.rectangle((table_x, row_y, table_x + table_w, row_y + row_h), fill="#fafcfc")
+        soldr = _comparison_result(row, "soldr") or {}
+        base = _comparison_result(row, base_id) or {}
+        values = [
+            row["profile_label"],
+            row["mutation_label"],
+            _format_seconds(soldr.get("warm_seconds")),
+            _format_seconds(base.get("warm_seconds")),
+            _format_percent(row["soldr_vs_base_warm_percent"]),
+        ]
+        cursor = table_x
+        for value, (_label, col_w) in zip(values, columns):
+            text = _truncate_text(draw, value, table_font, col_w - 24)
+            draw.text((cursor + 14, row_y + 13), text, fill=ink, font=table_font)
+            cursor += col_w
+        draw.line((table_x, row_y + row_h, table_x + table_w, row_y + row_h), fill=border, width=1)
+
+    footer_y = height - 70
+    footer = "Full report: https://zackees.github.io/soldr/ | Raw data: latest.json"
+    draw.text((x, footer_y), footer, fill=muted, font=body_font)
+    image.save(output_path, "JPEG", quality=90, optimize=True)
+
+
 def _write_www_bundle(report: dict[str, Any]) -> None:
     www_dir = os.environ.get("BENCHMARK_SUMMARY_WWW_DIR")
     if not www_dir:
@@ -420,6 +634,7 @@ def _write_www_bundle(report: dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "index.html").write_text(_build_html_page(report), encoding="utf-8")
     (output_dir / "latest.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    _write_benchmark_image(report, output_dir / "benchmark.jpg")
     (output_dir / ".nojekyll").write_text("", encoding="utf-8")
 
 
