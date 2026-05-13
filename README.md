@@ -6,6 +6,8 @@
 
 *A tool to download rust tool sets and aggressive cache your build. Instant warm compiles. Gh and local builds. Just add soldr before all your build commands*
 
+[![Latest soldr benchmark stats](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark.jpg)](https://zackees.github.io/soldr/)
+
 Rendered benchmarks: [zackees.github.io/soldr](https://zackees.github.io/soldr/)
 
 [![Linux x64](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml)
