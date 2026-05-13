@@ -11,7 +11,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use std::{
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 
@@ -25,6 +25,8 @@ pub const DEFAULT_STALE_AGE_SECONDS: u64 = 10 * 24 * 60 * 60;
 /// Default size threshold (256 MiB) used by `soldr gc` and the
 /// startup warning.
 pub const DEFAULT_STALE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
+
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
@@ -58,6 +60,7 @@ impl TargetRegistry {
             std::fs::create_dir_all(parent)?;
         }
         let conn = Connection::open(path)?;
+        configure_file_connection(&conn)?;
         Self::init_schema(&conn)?;
         Ok(Self { conn })
     }
@@ -153,6 +156,14 @@ impl TargetRegistry {
     pub fn is_empty(&self) -> Result<bool, RegistryError> {
         Ok(self.len()? == 0)
     }
+}
+
+fn configure_file_connection(conn: &Connection) -> Result<(), RegistryError> {
+    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
+    let _: String = conn
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .unwrap_or_default();
+    Ok(())
 }
 
 /// Human-readable byte size, kibibyte-based (e.g. `12.3 GB`).
@@ -457,6 +468,70 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(row.last_used, 555);
+    }
+
+    #[test]
+    fn open_configures_file_registry_for_concurrent_access() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let registry = TargetRegistry::open(&db_path).unwrap();
+
+        let busy_timeout_ms: i64 = registry
+            .conn
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(busy_timeout_ms, 2_000);
+
+        let journal_mode: String = registry
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+    }
+
+    #[test]
+    fn file_registry_waits_for_brief_concurrent_writer() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("data.db");
+        let first_path = PathBuf::from("/tmp/concurrent-a/target");
+        let second_path = PathBuf::from("/tmp/concurrent-b/target");
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+
+        let writer = std::thread::spawn({
+            let db_path = db_path.clone();
+            let first_path = first_path.clone();
+            let ready = std::sync::Arc::clone(&ready);
+            move || {
+                let registry = TargetRegistry::open(&db_path).unwrap();
+                ready.wait();
+                registry.conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
+                locked_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(100));
+                registry.upsert_with_time(&first_path, 10).unwrap();
+                registry.conn.execute_batch("COMMIT;").unwrap();
+            }
+        });
+
+        let contender = std::thread::spawn({
+            let db_path = db_path.clone();
+            let second_path = second_path.clone();
+            let ready = std::sync::Arc::clone(&ready);
+            move || {
+                let registry = TargetRegistry::open(&db_path).unwrap();
+                ready.wait();
+                locked_rx.recv().unwrap();
+                registry.upsert_with_time(&second_path, 20).unwrap();
+            }
+        });
+
+        writer.join().unwrap();
+        contender.join().unwrap();
+
+        let registry = TargetRegistry::open(&db_path).unwrap();
+        assert_eq!(registry.len().unwrap(), 2);
+        assert_eq!(registry.get(&first_path).unwrap().unwrap().last_used, 10);
+        assert_eq!(registry.get(&second_path).unwrap().unwrap().last_used, 20);
     }
 
     #[test]
