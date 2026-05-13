@@ -11,7 +11,9 @@ const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
 const TEST_RUSTUP_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTUP_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
+const TEST_FREE_DISK_BYTES_ENV_VAR: &str = "SOLDR_TEST_FREE_DISK_BYTES";
 const JSON_SCHEMA_VERSION: u32 = 1;
+const LOW_DISK_WARNING_THRESHOLD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
 /// Picks the linker injected for `soldr cargo ...` builds. See `linker` module
 /// and `docs/API.md` for the supported values (`default | ld | mold | rust-lld
@@ -146,16 +148,42 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Garbage-collect stale Cargo `target/` directories tracked by
+    /// Review reclaimable Cargo `target/` directories tracked by
     /// the soldr registry (`~/.soldr/data.db`).
     ///
     /// Aliases: `purge-targets` (matches issue #234's `soldr --purge`
     /// wording).
     #[command(alias = "purge-targets")]
     Gc {
-        /// Show candidates and totals without deleting anything.
-        #[arg(long)]
+        /// Deprecated: `soldr gc` is already a non-destructive summary.
+        #[arg(long, hide = true)]
         dry_run: bool,
+        /// Deprecated: use `soldr gc purge --all`.
+        #[arg(long, hide = true)]
+        all: bool,
+        /// Minimum age before a `target/` is included in the summary
+        /// (e.g. `10d`, `4w`).
+        #[arg(long, default_value = "10d", value_name = "DURATION")]
+        older_than: String,
+        /// Minimum on-disk size before a `target/` is included in the
+        /// summary (e.g. `256M`, `1GB`).
+        #[arg(long, default_value = "256M", value_name = "SIZE")]
+        larger_than: String,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<GcSubcommand>,
+    },
+    /// Anything else is a tool to fetch and run
+    #[command(external_subcommand)]
+    External(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum GcSubcommand {
+    /// Delete eligible Cargo `target/` directories.
+    Purge {
         /// Delete every eligible candidate without prompting.
         #[arg(long)]
         all: bool,
@@ -171,9 +199,6 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Anything else is a tool to fetch and run
-    #[command(external_subcommand)]
-    External(Vec<String>),
 }
 
 #[tokio::main]
@@ -221,10 +246,6 @@ async fn main() {
                 .unwrap_or_else(report_and_exit),
         );
     }
-
-    // Dispatch path only: one-shot stale-target/ warning, throttled
-    // to once per day. Never runs on the rustc-wrapper hot path.
-    emit_startup_target_warning_if_due();
 
     let rc = run_with_args(&raw_args[0], &raw_args[1..])
         .await
@@ -317,14 +338,39 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             older_than,
             larger_than,
             json,
+            command,
         } => {
-            run_gc_command(GcInvocation {
-                dry_run,
-                all,
-                older_than,
-                larger_than,
-                json,
-            })?;
+            if all {
+                return Err(SoldrError::Other(
+                    "`soldr gc --all` no longer deletes targets; use `soldr gc purge --all`".into(),
+                ));
+            }
+            if dry_run && command.is_some() {
+                return Err(SoldrError::Other(
+                    "`soldr gc --dry-run` is a summary alias; use `soldr gc` or `soldr gc purge`"
+                        .into(),
+                ));
+            }
+            let invocation = match command {
+                Some(GcSubcommand::Purge {
+                    all,
+                    older_than,
+                    larger_than,
+                    json,
+                }) => GcInvocation {
+                    mode: GcMode::Purge { all },
+                    older_than,
+                    larger_than,
+                    json,
+                },
+                None => GcInvocation {
+                    mode: GcMode::Summary,
+                    older_than,
+                    larger_than,
+                    json,
+                },
+            };
+            run_gc_command(invocation)?;
         }
         Commands::External(args) => {
             if args.is_empty() {
@@ -774,12 +820,18 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
-    let cache_enabled_for_cargo = cache_enabled && cargo_args_are_cacheable(args);
+    let build_like_cargo = cargo_args_are_cacheable(args);
+    let cache_enabled_for_cargo = cache_enabled && build_like_cargo;
 
     command.env(
         soldr_cache::CACHE_ENABLED_ENV_VAR,
         soldr_cache::cache_enabled_env_value(cache_enabled_for_cargo),
     );
+    if build_like_cargo {
+        // Cargo front door only: keep startup/low-disk warnings off unrelated
+        // commands and out of the rustc-wrapper hot path.
+        emit_startup_target_warning_if_due();
+    }
     let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
     path_dirs.push(cargo_bin_dir);
     path_dirs.extend(extra_bin_dirs);
@@ -802,6 +854,13 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     } else {
         None
     };
+    if build_like_cargo {
+        let probe_path = rust_plan
+            .as_ref()
+            .map(|plan| std::path::PathBuf::from(&plan.target_dir))
+            .unwrap_or_else(|| cargo_disk_space_probe_path(args));
+        maybe_emit_low_disk_warning(&probe_path);
+    }
     if let Some(plan) = rust_plan.as_ref() {
         if let Some(reason) = should_skip_warm_restore(plan) {
             eprintln!("{reason}");
@@ -2195,6 +2254,117 @@ fn cargo_args_are_cacheable(args: &[String]) -> bool {
     )
 }
 
+fn maybe_emit_low_disk_warning(path: &std::path::Path) {
+    if let Some(message) =
+        low_disk_warning_for_path(path, stderr_should_use_color(), available_space)
+    {
+        eprintln!("{message}");
+    }
+}
+
+fn low_disk_warning_for_path<F>(
+    path: &std::path::Path,
+    use_color: bool,
+    available_space: F,
+) -> Option<String>
+where
+    F: FnOnce(&std::path::Path) -> std::io::Result<u64>,
+{
+    let probe_path = existing_filesystem_probe_path(path);
+    let free_bytes = available_space(&probe_path).ok()?;
+    low_disk_warning_for_free_bytes(free_bytes, use_color)
+}
+
+fn low_disk_warning_for_free_bytes(free_bytes: u64, use_color: bool) -> Option<String> {
+    if free_bytes >= LOW_DISK_WARNING_THRESHOLD_BYTES {
+        return None;
+    }
+    let warning = if use_color {
+        "\x1b[33mwarning\x1b[0m"
+    } else {
+        "warning"
+    };
+    Some(format!(
+        "soldr: {warning}: disk space is low ({} free). Run `soldr gc` to review reclaimable Rust target directories.",
+        soldr_cache::target_registry::human_size(free_bytes),
+    ))
+}
+
+fn stderr_should_use_color() -> bool {
+    use std::io::IsTerminal;
+
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
+    if let Some(raw) = std::env::var_os(TEST_FREE_DISK_BYTES_ENV_VAR) {
+        let raw = raw.to_string_lossy();
+        if raw.eq_ignore_ascii_case("error") {
+            return Err(std::io::Error::other("test disk-space failure"));
+        }
+        return raw.parse::<u64>().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid {TEST_FREE_DISK_BYTES_ENV_VAR}: {e}"),
+            )
+        });
+    }
+    fs2::available_space(path)
+}
+
+fn existing_filesystem_probe_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut cursor = if path.as_os_str().is_empty() {
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+    } else {
+        path.to_path_buf()
+    };
+    loop {
+        if cursor.exists() {
+            return cursor;
+        }
+        if !cursor.pop() {
+            return std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        }
+    }
+}
+
+fn cargo_disk_space_probe_path(args: &[String]) -> std::path::PathBuf {
+    if let Some(target_dir) = cargo_arg_value(args, "--target-dir") {
+        return absolutize_path(std::path::PathBuf::from(target_dir));
+    }
+    if let Some(target_dir) = non_empty_env_path("CARGO_TARGET_DIR") {
+        return absolutize_path(target_dir);
+    }
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+fn cargo_arg_value(args: &[String], flag: &str) -> Option<String> {
+    let prefix = format!("{flag}=");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(value) = arg.strip_prefix(&prefix) {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+fn absolutize_path(path: std::path::PathBuf) -> std::path::PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    }
+}
+
 fn prepend_paths(
     dirs: &[std::path::PathBuf],
     existing_path: Option<&std::ffi::OsStr>,
@@ -2641,9 +2811,14 @@ fn clear_zccache_cache() -> Result<(), SoldrError> {
 // soldr gc — garbage-collect stale Cargo target/ directories.
 // ---------------------------------------------------------------------------
 
+#[derive(Clone, Copy)]
+enum GcMode {
+    Summary,
+    Purge { all: bool },
+}
+
 struct GcInvocation {
-    dry_run: bool,
-    all: bool,
+    mode: GcMode,
     older_than: String,
     larger_than: String,
     json: bool,
@@ -2664,8 +2839,15 @@ struct GcCandidateOutput {
 struct GcOutput {
     schema_version: u32,
     command: &'static str,
+    mode: &'static str,
     dry_run: bool,
+    registry_path: String,
+    candidate_count: usize,
+    skipped_count: usize,
+    total_reclaimable_bytes: u64,
+    total_reclaimable_human: String,
     candidates: Vec<GcCandidateOutput>,
+    largest_candidates: Vec<GcCandidateOutput>,
     skipped: Vec<GcCandidateOutput>,
     dropped_missing: usize,
     deleted_paths: Vec<String>,
@@ -2676,6 +2858,11 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
 
     let older_than = parse_duration(&invocation.older_than).map_err(SoldrError::Other)?;
     let larger_than = parse_size(&invocation.larger_than).map_err(SoldrError::Other)?;
+    let purge_all = match invocation.mode {
+        GcMode::Summary => false,
+        GcMode::Purge { all } => all,
+    };
+    let is_summary = matches!(invocation.mode, GcMode::Summary);
 
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths);
@@ -2687,75 +2874,55 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
         older_than_seconds: older_than,
         larger_than_bytes: larger_than,
         dev_roots,
-        dry_run: invocation.dry_run,
+        dry_run: is_summary,
     };
 
     let report =
         scan(&registry, &options).map_err(|e| SoldrError::Other(format!("gc scan failed: {e}")))?;
+    let total_reclaimable_bytes = gc_total_reclaimable_bytes(&report.candidates);
 
     let mut deleted_paths: Vec<String> = Vec::new();
 
-    if !invocation.json {
-        eprintln!(
-            "soldr gc: scanned registry at {} ({} candidate dir{}, {} skipped, {} dropped missing)",
-            db_path.display(),
-            report.candidates.len(),
-            if report.candidates.len() == 1 {
-                ""
-            } else {
-                "s"
-            },
-            report.skipped.len(),
-            report.dropped_missing
-        );
+    if is_summary {
+        if !invocation.json {
+            print_gc_summary(&db_path, &report, total_reclaimable_bytes);
+        }
+    } else if !invocation.json {
+        print_gc_purge_scan(&db_path, &report, total_reclaimable_bytes);
+    }
 
-        if report.candidates.is_empty() {
-            eprintln!("soldr gc: nothing to reclaim.");
-        } else {
-            eprintln!("soldr gc: candidates");
-            for cand in &report.candidates {
-                eprintln!(
-                    "  {}  size={}  age={}",
+    if !is_summary {
+        for cand in &report.candidates {
+            let should_delete = if purge_all {
+                true
+            } else {
+                prompt_yes_no(&format!(
+                    "soldr gc: delete {} ({}, age {}) ? [y/N] ",
                     cand.path.display(),
                     soldr_cache::target_registry::human_size(cand.size_bytes),
                     soldr_cache::target_registry::human_age(cand.age_seconds),
-                );
-            }
-        }
-    }
+                ))
+            };
 
-    for cand in &report.candidates {
-        let should_delete = if invocation.dry_run {
-            false
-        } else if invocation.all {
-            true
-        } else {
-            prompt_yes_no(&format!(
-                "soldr gc: delete {} ({}, age {}) ? [y/N] ",
-                cand.path.display(),
-                soldr_cache::target_registry::human_size(cand.size_bytes),
-                soldr_cache::target_registry::human_age(cand.age_seconds),
-            ))
-        };
-
-        if should_delete {
-            match purge_one(&registry, &cand.path, false) {
-                Ok(true) => {
-                    if !invocation.json {
-                        eprintln!("soldr gc: deleted {}", cand.path.display());
+            if should_delete {
+                match purge_one(&registry, &cand.path, false) {
+                    Ok(true) => {
+                        if !invocation.json {
+                            eprintln!("soldr gc: deleted {}", cand.path.display());
+                        }
+                        deleted_paths.push(cand.path.display().to_string());
                     }
-                    deleted_paths.push(cand.path.display().to_string());
-                }
-                Ok(false) => {
-                    if !invocation.json {
-                        eprintln!(
-                            "soldr gc: nothing to delete at {} (already gone)",
-                            cand.path.display()
-                        );
+                    Ok(false) => {
+                        if !invocation.json {
+                            eprintln!(
+                                "soldr gc: nothing to delete at {} (already gone)",
+                                cand.path.display()
+                            );
+                        }
                     }
-                }
-                Err(e) => {
-                    eprintln!("soldr gc: failed to delete {}: {e}", cand.path.display());
+                    Err(e) => {
+                        eprintln!("soldr gc: failed to delete {}: {e}", cand.path.display());
+                    }
                 }
             }
         }
@@ -2765,7 +2932,19 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
         let output = GcOutput {
             schema_version: JSON_SCHEMA_VERSION,
             command: "gc",
-            dry_run: invocation.dry_run,
+            mode: if is_summary { "summary" } else { "purge" },
+            dry_run: is_summary,
+            registry_path: db_path.display().to_string(),
+            candidate_count: report.candidates.len(),
+            skipped_count: report.skipped.len(),
+            total_reclaimable_bytes,
+            total_reclaimable_human: soldr_cache::target_registry::human_size(
+                total_reclaimable_bytes,
+            ),
+            largest_candidates: gc_largest_candidates(&report.candidates, 5)
+                .into_iter()
+                .map(gc_candidate_output)
+                .collect(),
             candidates: report
                 .candidates
                 .into_iter()
@@ -2782,6 +2961,92 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
         print_json(&output)?;
     }
     Ok(())
+}
+
+fn gc_total_reclaimable_bytes(candidates: &[soldr_cache::gc::GcCandidate]) -> u64 {
+    candidates.iter().map(|c| c.size_bytes).sum()
+}
+
+fn print_gc_summary(
+    db_path: &std::path::Path,
+    report: &soldr_cache::gc::GcReport,
+    total_reclaimable_bytes: u64,
+) {
+    println!("soldr gc: registry: {}", db_path.display());
+    println!(
+        "soldr gc: eligible: {} target dir{}; reclaimable: {}",
+        report.candidates.len(),
+        if report.candidates.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
+        soldr_cache::target_registry::human_size(total_reclaimable_bytes)
+    );
+    println!(
+        "soldr gc: skipped: {}; dropped missing rows: {}",
+        report.skipped.len(),
+        report.dropped_missing
+    );
+
+    if report.candidates.is_empty() {
+        println!("soldr gc: nothing to reclaim.");
+    } else {
+        println!("soldr gc: largest eligible target directories:");
+        for cand in gc_largest_candidates(&report.candidates, 5) {
+            println!(
+                "  {}  size={}  last_used={}",
+                cand.path.display(),
+                soldr_cache::target_registry::human_size(cand.size_bytes),
+                soldr_cache::target_registry::human_age(cand.age_seconds),
+            );
+        }
+        println!("Run 'soldr gc purge' to delete eligible target directories.");
+    }
+}
+
+fn print_gc_purge_scan(
+    db_path: &std::path::Path,
+    report: &soldr_cache::gc::GcReport,
+    total_reclaimable_bytes: u64,
+) {
+    eprintln!(
+        "soldr gc purge: scanned registry at {} ({} candidate dir{}, {} skipped, {} dropped missing, {} reclaimable)",
+        db_path.display(),
+        report.candidates.len(),
+        if report.candidates.len() == 1 { "" } else { "s" },
+        report.skipped.len(),
+        report.dropped_missing,
+        soldr_cache::target_registry::human_size(total_reclaimable_bytes)
+    );
+
+    if report.candidates.is_empty() {
+        eprintln!("soldr gc purge: nothing to delete.");
+    } else {
+        eprintln!("soldr gc purge: candidates");
+        for cand in &report.candidates {
+            eprintln!(
+                "  {}  size={}  age={}",
+                cand.path.display(),
+                soldr_cache::target_registry::human_size(cand.size_bytes),
+                soldr_cache::target_registry::human_age(cand.age_seconds),
+            );
+        }
+    }
+}
+
+fn gc_largest_candidates(
+    candidates: &[soldr_cache::gc::GcCandidate],
+    limit: usize,
+) -> Vec<soldr_cache::gc::GcCandidate> {
+    let mut largest = candidates.to_vec();
+    largest.sort_by(|a, b| {
+        b.size_bytes
+            .cmp(&a.size_bytes)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    largest.truncate(limit);
+    largest
 }
 
 fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
@@ -3368,17 +3633,20 @@ mod tests {
         cargo_args_specify_target, cargo_args_use_reserved_no_cache,
         cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
         compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
-        extract_as_pin, first_cargo_subcommand, is_sccache_wrapper, normalize_version,
+        extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
+        low_disk_warning_for_free_bytes, low_disk_warning_for_path, normalize_version,
         parse_rust_artifact_cache_tar_threads, parse_tool_spec, resolve_bundle_walk_thread_count,
         rustc_wrapper_mode_from_env_var, rustup_resolution_failure, selected_cargo_args,
         should_skip_warm_restore, should_trampoline, stderr_indicates_unknown_session,
         walk_bundle_files, warm_restore_sentinel_path, warm_restore_skip_enabled,
-        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage,
-        RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
-        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
-        WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
-        SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, Cli,
+        Commands, GcSubcommand, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
+        RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
+        WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
+        LOW_DISK_WARNING_THRESHOLD_BYTES, SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME,
+        WARM_RESTORE_MAX_AGE_SECONDS,
     };
+    use clap::Parser;
     use soldr_fetch::VersionSpec;
     use std::ffi::{OsStr, OsString};
     use std::sync::Mutex;
@@ -3421,6 +3689,70 @@ mod tests {
                 std::env::remove_var(self.key);
             }
         }
+    }
+
+    #[test]
+    fn gc_cli_parses_summary_and_purge_modes() {
+        let summary = Cli::try_parse_from(["soldr", "gc", "--json"]).unwrap();
+        match summary.command {
+            Commands::Gc {
+                command: None,
+                json,
+                ..
+            } => assert!(json, "gc --json should parse as summary JSON"),
+            _ => panic!("expected gc summary command"),
+        }
+
+        let purge = Cli::try_parse_from([
+            "soldr",
+            "gc",
+            "purge",
+            "--all",
+            "--older-than",
+            "30d",
+            "--larger-than",
+            "1GB",
+        ])
+        .unwrap();
+        match purge.command {
+            Commands::Gc {
+                command:
+                    Some(GcSubcommand::Purge {
+                        all,
+                        older_than,
+                        larger_than,
+                        ..
+                    }),
+                ..
+            } => {
+                assert!(all);
+                assert_eq!(older_than, "30d");
+                assert_eq!(larger_than, "1GB");
+            }
+            _ => panic!("expected gc purge command"),
+        }
+    }
+
+    #[test]
+    fn low_disk_warning_formats_yellow_below_threshold() {
+        let message = low_disk_warning_for_free_bytes(1536 * 1024 * 1024, true)
+            .expect("expected low-disk warning below threshold");
+        assert!(message.contains("\x1b[33mwarning\x1b[0m"));
+        assert!(message.contains("1.5 GB free"));
+        assert!(message.contains("Run `soldr gc`"));
+    }
+
+    #[test]
+    fn low_disk_warning_omits_at_threshold() {
+        assert!(low_disk_warning_for_free_bytes(LOW_DISK_WARNING_THRESHOLD_BYTES, true).is_none());
+    }
+
+    #[test]
+    fn low_disk_probe_failure_is_nonfatal() {
+        let warning = low_disk_warning_for_path(std::path::Path::new("."), true, |_| {
+            Err(std::io::Error::other("probe failed"))
+        });
+        assert!(warning.is_none());
     }
 
     #[test]

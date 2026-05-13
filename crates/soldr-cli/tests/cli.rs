@@ -25,6 +25,35 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+fn toml_string(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+}
+
+fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
+    let dev_root = cache_root.join("dev-root");
+    let workspace = dev_root.join(label);
+    let target = workspace.join("target");
+    fs::create_dir_all(&target).expect("failed to create target dir");
+    fs::write(target.join("artifact.bin"), b"reclaim me").expect("failed to seed target file");
+    fs::write(
+        cache_root.join("config.toml"),
+        format!("[gc]\nallowlist_roots = [\"{}\"]\n", toml_string(&dev_root)),
+    )
+    .expect("failed to write gc config");
+
+    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
+        .expect("failed to open target registry");
+    let now = soldr_cache::target_registry::current_unix_seconds()
+        .expect("failed to get current unix seconds");
+    registry
+        .upsert_with_time(&target, now - 120)
+        .expect("failed to seed target registry");
+    target
+}
+
 fn path_display_variants(path: &Path) -> Vec<String> {
     let mut variants = vec![path.display().to_string()];
     if let Ok(canonical) = fs::canonicalize(path) {
@@ -614,6 +643,129 @@ fn help_lists_phase_one_command_surface() {
 }
 
 #[test]
+fn gc_summary_is_non_destructive_and_lists_largest_candidates() {
+    let cache_root = unique_temp_dir("gc-summary");
+    let target = seed_gc_candidate(&cache_root, "summary-project");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["gc", "--older-than", "1s", "--larger-than", "1B"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc");
+
+    assert!(
+        output.status.success(),
+        "gc summary failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.exists(),
+        "soldr gc summary must not delete {}",
+        target.display()
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reclaimable:"),
+        "summary should include total reclaimable bytes: {stdout}"
+    );
+    assert!(
+        stdout.contains("largest eligible target directories"),
+        "summary should list largest target directories: {stdout}"
+    );
+    assert!(
+        stdout.contains("Run 'soldr gc purge'"),
+        "summary should point to destructive purge command: {stdout}"
+    );
+}
+
+#[test]
+fn gc_summary_json_reports_candidates_without_deleting() {
+    let cache_root = unique_temp_dir("gc-summary-json");
+    let target = seed_gc_candidate(&cache_root, "summary-json-project");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["gc", "--json", "--older-than", "1s", "--larger-than", "1B"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc --json");
+
+    assert!(
+        output.status.success(),
+        "gc summary json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        target.exists(),
+        "soldr gc --json summary must not delete {}",
+        target.display()
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout).expect("gc --json must be JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["command"], "gc");
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["candidate_count"], 1);
+    assert!(json["total_reclaimable_bytes"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(json["largest_candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(json["deleted_paths"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn gc_purge_all_deletes_candidates_without_prompt() {
+    let cache_root = unique_temp_dir("gc-purge-all");
+    let target = seed_gc_candidate(&cache_root, "purge-project");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "gc",
+            "purge",
+            "--all",
+            "--older-than",
+            "1s",
+            "--larger-than",
+            "1B",
+        ])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc purge --all");
+
+    assert!(
+        output.status.success(),
+        "gc purge --all failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !target.exists(),
+        "soldr gc purge --all should delete {}",
+        target.display()
+    );
+}
+
+#[test]
+fn gc_flat_all_is_rejected_with_purge_hint() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["gc", "--all"])
+        .env("SOLDR_CACHE_DIR", unique_temp_dir("gc-flat-all"))
+        .output()
+        .expect("failed to run soldr gc --all");
+
+    assert!(
+        !output.status.success(),
+        "legacy flat gc --all must not silently delete"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("soldr gc purge --all"),
+        "error should point to the new purge command: {stderr}"
+    );
+}
+
+#[test]
 fn cargo_front_door_runs_real_cargo() {
     let cache_root = unique_temp_dir("cargo-version");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
@@ -661,6 +813,74 @@ fn cargo_front_door_consumes_no_cache_flag() {
     assert!(
         !stderr.contains("unexpected argument '--no-cache'"),
         "--no-cache should be consumed by soldr, not forwarded to cargo: {stderr}"
+    );
+}
+
+#[test]
+fn cargo_build_warns_when_disk_space_is_low() {
+    let cache_root = unique_temp_dir("cargo-low-disk");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["--no-cache", "cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_FREE_DISK_BYTES", "1500000000")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with low-disk override");
+
+    assert!(
+        output.status.success(),
+        "cargo build with low-disk warning failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("disk space is low"),
+        "low-disk warning missing from stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Run `soldr gc`"),
+        "low-disk warning should recommend soldr gc: {stderr}"
+    );
+}
+
+#[test]
+fn cargo_build_ignores_disk_space_detection_failures() {
+    let cache_root = unique_temp_dir("cargo-low-disk-error");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["--no-cache", "cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_FREE_DISK_BYTES", "error")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with disk-probe error");
+
+    assert!(
+        output.status.success(),
+        "disk-space detection failure must not fail build\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("disk space is low"),
+        "disk-space probe failure should not emit low-disk warning: {stderr}"
     );
 }
 
