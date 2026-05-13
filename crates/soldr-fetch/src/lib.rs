@@ -51,6 +51,12 @@ const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
     ("zccache-daemon", "zccache-daemon"),
     ("zccache-fingerprint", "zccache-fp"),
 ];
+const MANAGED_ZCCACHE_FETCH_ATTEMPTS: u32 = 4;
+const MANAGED_ZCCACHE_FETCH_INITIAL_BACKOFF: std::time::Duration =
+    std::time::Duration::from_secs(5);
+const MANAGED_ZCCACHE_INSTALL_ATTEMPTS: u32 = 3;
+const MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF: std::time::Duration =
+    std::time::Duration::from_secs(10);
 
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
@@ -113,16 +119,42 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
     }
 
     let release_version = VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.to_string());
-    match fetch_repo_binary_with_paths(
-        "zccache",
-        &binary_names,
-        &managed_zccache_repo(),
-        &release_version,
-        None,
-        paths,
-    )
-    .await
-    {
+    // A version bump that merges before the upstream GitHub release and the
+    // crates.io index have fully propagated will see a brief window where both
+    // sources return "not found". Retry the release fetch with backoff so the
+    // window can pass before we fall back to cargo install.
+    let repo = managed_zccache_repo();
+    let mut backoff = MANAGED_ZCCACHE_FETCH_INITIAL_BACKOFF;
+    let mut attempt = 1u32;
+    let release_outcome = loop {
+        match fetch_repo_binary_with_paths(
+            "zccache",
+            &binary_names,
+            &repo,
+            &release_version,
+            None,
+            paths,
+        )
+        .await
+        {
+            Ok(result) => break Ok(result),
+            Err(err)
+                if attempt < MANAGED_ZCCACHE_FETCH_ATTEMPTS
+                    && should_retry_managed_zccache_fetch(&err) =>
+            {
+                eprintln!(
+                    "soldr: transient error fetching managed zccache (attempt {attempt}/{}): {err}; retrying in {:?}",
+                    MANAGED_ZCCACHE_FETCH_ATTEMPTS, backoff
+                );
+                std::thread::sleep(backoff);
+                backoff = backoff.saturating_mul(2);
+                attempt += 1;
+            }
+            Err(err) => break Err(err),
+        }
+    };
+
+    match release_outcome {
         Ok(result) => return Ok(result),
         Err(err) if should_fallback_to_managed_zccache_cargo_install(&err) => {
             eprintln!(
@@ -163,6 +195,10 @@ fn should_fallback_to_managed_zccache_cargo_install(error: &SoldrError) -> bool 
     matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
 }
 
+fn should_retry_managed_zccache_fetch(error: &SoldrError) -> bool {
+    matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
+}
+
 fn install_zccache_from_crates_io(
     paths: &SoldrPaths,
     version: &str,
@@ -190,29 +226,46 @@ fn install_zccache_from_crates_io(
     };
 
     for (package_name, binary_name) in MANAGED_ZCCACHE_PACKAGES {
-        let install_status = std::process::Command::new("cargo")
-            .args([
-                "install",
-                package_name,
-                "--version",
-                version,
-                "--locked",
-                "--root",
-            ])
-            .arg(install_root.path())
-            .args(["--bin", binary_name, "--force"])
-            .env("PATH", &install_path_env)
-            .status()
-            .map_err(|e| {
-                SoldrError::Other(format!(
-                    "failed to invoke cargo install for managed zccache package {package_name}: {e}"
-                ))
-            })?;
+        // Retry to tolerate a stale crates.io index cache shortly after the
+        // upstream publish (e.g. a `zccache-cli vX.Y.Z` whose locked dep
+        // `zccache-compiler =X.Y.Z` has not yet propagated to every mirror).
+        let mut backoff = MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF;
+        let mut attempt = 1u32;
+        loop {
+            let install_status = std::process::Command::new("cargo")
+                .args([
+                    "install",
+                    package_name,
+                    "--version",
+                    version,
+                    "--locked",
+                    "--root",
+                ])
+                .arg(install_root.path())
+                .args(["--bin", binary_name, "--force"])
+                .env("PATH", &install_path_env)
+                .status()
+                .map_err(|e| {
+                    SoldrError::Other(format!(
+                        "failed to invoke cargo install for managed zccache package {package_name}: {e}"
+                    ))
+                })?;
 
-        if !install_status.success() {
-            return Err(SoldrError::Other(format!(
-                "cargo install {package_name} {version} failed with status {install_status}"
-            )));
+            if install_status.success() {
+                break;
+            }
+            if attempt >= MANAGED_ZCCACHE_INSTALL_ATTEMPTS {
+                return Err(SoldrError::Other(format!(
+                    "cargo install {package_name} {version} failed with status {install_status}"
+                )));
+            }
+            eprintln!(
+                "soldr: cargo install {package_name} {version} failed (attempt {attempt}/{}); retrying in {:?}",
+                MANAGED_ZCCACHE_INSTALL_ATTEMPTS, backoff
+            );
+            std::thread::sleep(backoff);
+            backoff = backoff.saturating_mul(2);
+            attempt += 1;
         }
 
         let installed_binary = install_root
