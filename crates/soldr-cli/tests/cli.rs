@@ -681,12 +681,20 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
     let cache_root = unique_temp_dir("cargo-default-cache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    // CI (setup-soldr) exports `SOLDR_TARGET_CACHE_MODE=full` /
+    // `SOLDR_BUILD_CACHE_MODE=full` in the job environment. Without
+    // stripping them, the spawned soldr triggers its rust-plan path,
+    // shells out to the fake cargo for `cargo metadata`, gets back `{}`,
+    // and fails with "missing field `packages`". Every fake-toolchain
+    // test below clears these the same way for the same reason.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo build with fake zccache");
 
@@ -941,6 +949,8 @@ fn cargo_front_door_recovers_from_stale_zccache_daemon_start() {
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_ZCCACHE_STALE_START_ONCE", &stale_marker)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo build with stale fake zccache");
 
@@ -992,6 +1002,8 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
         .env("SOLDR_REAL_RUSTC", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("PATH", prepend_to_path(&shim_dir))
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo build with real tool overrides");
 
@@ -1059,6 +1071,8 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo build with global cargo options");
 
@@ -1088,6 +1102,8 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo test --no-run with fake jobserver fds");
 
@@ -1124,6 +1140,8 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run soldr cargo build with fake zccache");
     let elapsed = started.elapsed();
@@ -1195,6 +1213,8 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
         .output()
         .expect("failed to run nested soldr cargo build with inherited managed ZCCACHE_CACHE_DIR");
 
