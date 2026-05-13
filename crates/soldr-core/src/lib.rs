@@ -526,12 +526,18 @@ impl SoldrPaths {
 // Config — `~/.soldr/config.toml`
 // ---------------------------------------------------------------------------
 
-/// Top-level soldr configuration. Currently only carries the
-/// `[gc]` section (issue #234); future sections can be added freely.
+/// Top-level soldr configuration. Currently carries the `[gc]` section
+/// (issue #234) and an optional top-level `linker = "..."` field (issue
+/// #285); future sections can be added freely.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SoldrConfig {
     #[serde(default)]
     pub gc: GcConfig,
+    /// User-configured linker choice for `soldr cargo ...`. Mirrors the
+    /// `SOLDR_LINKER` env var; the env var wins when both are set.
+    /// Accepted values: `default`, `ld`, `mold`, `rust-lld`, `fast`.
+    #[serde(default)]
+    pub linker: Option<String>,
 }
 
 /// `gc` section of `config.toml`.

@@ -5,12 +5,18 @@ use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 use std::collections::BTreeSet;
 
+mod linker;
+
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
 const TEST_RUSTUP_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTUP_BIN";
 const TEST_ZCCACHE_BIN_ENV_VAR: &str = "SOLDR_TEST_ZCCACHE_BIN";
 const JSON_SCHEMA_VERSION: u32 = 1;
 const RUSTC_WRAPPER_OVERRIDE_ENV_VAR: &str = "SOLDR_RUSTC_WRAPPER";
+/// Picks the linker injected for `soldr cargo ...` builds. See `linker` module
+/// and `docs/API.md` for the supported values (`default | ld | mold | rust-lld
+/// | fast`).
+const LINKER_ENV_VAR: &str = "SOLDR_LINKER";
 const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
 const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
 const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
@@ -778,9 +784,12 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     path_dirs.push(cargo_bin_dir);
     path_dirs.extend(extra_bin_dirs);
     command.env("PATH", prepend_paths(&path_dirs, existing_path.as_deref())?);
-    if let Some(target) = default_cargo_build_target(args)? {
+    let explicit_target = default_cargo_build_target(args)?;
+    if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
     }
+
+    apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
     let session = if cache_enabled_for_cargo {
         prepare_rustc_wrapper(&mut command, &paths).await?
@@ -2057,6 +2066,81 @@ fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrEr
     }
 
     Ok(Some(soldr_core::TargetTriple::detect()?.triple()))
+}
+
+/// Apply the `SOLDR_LINKER` / `config.toml linker = ...` override (issue
+/// #285) to the cargo subprocess command.
+///
+/// The active target triple is resolved in the same order as cargo:
+/// 1. an explicit `CARGO_BUILD_TARGET` injected by `default_cargo_build_target`,
+/// 2. a `CARGO_BUILD_TARGET` already in the parent env,
+/// 3. an `--target` flag inside `args`,
+/// 4. the auto-detected host triple from `TargetTriple::detect()`.
+fn apply_linker_override(
+    command: &mut std::process::Command,
+    args: &[String],
+    explicit_target: Option<&str>,
+    paths: &SoldrPaths,
+) -> Result<(), SoldrError> {
+    let config = paths.load_config();
+    let choice = linker::from_env_and_config(
+        std::env::var_os(LINKER_ENV_VAR).as_deref(),
+        config.linker.as_deref(),
+    )?;
+    if matches!(choice, linker::LinkerChoice::Default) {
+        // Fast-path: skip target detection entirely when there is nothing
+        // to inject. Keeps `soldr cargo` no-ops on platforms where target
+        // detection might fail or be slow.
+        return Ok(());
+    }
+
+    let target = resolve_active_target_triple(args, explicit_target)?;
+    let injection = linker::resolve_for_target(choice, &target)?;
+    let prefix = linker::cargo_target_env_prefix(&target);
+    if let Some(linker_path) = injection.linker {
+        command.env(format!("CARGO_TARGET_{prefix}_LINKER"), linker_path);
+    }
+    if let Some(rustflags) = injection.rustflags {
+        command.env(format!("CARGO_TARGET_{prefix}_RUSTFLAGS"), rustflags);
+    }
+    Ok(())
+}
+
+fn resolve_active_target_triple(
+    args: &[String],
+    explicit_target: Option<&str>,
+) -> Result<String, SoldrError> {
+    if let Some(target) = explicit_target {
+        return Ok(target.to_string());
+    }
+    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
+        if let Some(s) = target.to_str() {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Ok(s.to_string());
+            }
+        }
+    }
+    if let Some(target) = cargo_args_target_value(args) {
+        return Ok(target);
+    }
+    Ok(soldr_core::TargetTriple::detect()?.triple())
+}
+
+fn cargo_args_target_value(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
+        if arg == "--target" {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix("--target=") {
+            return Some(rest.to_string());
+        }
+    }
+    None
 }
 
 fn cargo_args_specify_target(args: &[String]) -> bool {
