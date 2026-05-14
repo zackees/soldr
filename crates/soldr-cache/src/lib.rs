@@ -11,12 +11,18 @@ use std::{
 };
 
 pub mod gc;
+pub mod state_db;
 pub mod target_registry;
 
-/// Path to the soldr state database (`~/.soldr/data.db`) used by the
-/// target-directory registry and any future state tables.
+/// Path to the soldr state database (`~/.soldr/state.redb`) used by the
+/// target-directory registry.
 pub fn data_db_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(target_registry::DATA_DB_FILE)
+}
+
+/// Path to the redb-backed soldr state database (`~/.soldr/state.redb`).
+pub fn state_db_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(state_db::STATE_DB_FILE)
 }
 
 /// Throttle marker for the once-per-day stale-target startup warning.

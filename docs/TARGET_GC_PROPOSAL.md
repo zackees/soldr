@@ -5,7 +5,7 @@ Tracks: [#233](https://github.com/zackees/soldr/issues/233). Adjacent: [#234](ht
 
 ## TL;DR
 
-Adopt the [#234](https://github.com/zackees/soldr/issues/234) sqlite-registry approach as the data plane, and layer a wrapper-driven, manually-triggered GC on top of it: every `RUSTC_WRAPPER` invocation upserts `(target_dir, last_used_unix_ts)` into `~/.soldr/data.db`, and `soldr gc` (alias `soldr --purge`) is the single user entry point that scans the registry, sizes candidates lazily, and deletes whole `target/` trees that are older than a threshold and not currently locked. **Do not roll our own selective pruner; do not auto-delete on startup; do not try to share `CARGO_TARGET_DIR` across worktrees.** Defer atime, scheduled triggers, and incremental-subtree pruning until we have real telemetry.
+Adopt the [#234](https://github.com/zackees/soldr/issues/234) registry approach as the data plane, and layer a wrapper-driven, manually-triggered GC on top of it: every `RUSTC_WRAPPER` invocation upserts `(target_dir, last_used_unix_ts)` into `~/.soldr/state.redb`, and `soldr gc` (alias `soldr --purge`) is the single user entry point that scans the registry, sizes candidates lazily, and deletes whole `target/` trees that are older than a threshold and not currently locked. **Do not roll our own selective pruner; do not auto-delete on startup; do not try to share `CARGO_TARGET_DIR` across worktrees.** Defer atime, scheduled triggers, and incremental-subtree pruning until we have real telemetry.
 
 The recommendation converges on #234 with three additions: (a) explicit lock-file safety check, (b) wrapper records the *workspace root*, not the `target/` path it deduces from cwd, (c) explicit "do not GC if `Cargo.lock` mtime is younger than threshold" guard.
 
@@ -20,9 +20,9 @@ Reasoning:
 - **atime is unreliable on the user's primary platform.** On Windows 10, `NtfsDisableLastAccessUpdate` defaults to "System Managed" (`0x80000002` / `0x80000003`), which *disables* last-access updates on volumes >128 GiB. The user's pain is on a workstation with 860 GB of dev directories spread across what is almost certainly a >128 GiB volume, so atime is silently off by default. Even when on, NTFS only flushes atime within one hour, and many devs disable it for SSD wear / perf reasons. Linux behaves similarly (`relatime` / `noatime`).
 - **Cargo.toml mtime is the wrong signal.** Editing source under `src/` does not touch `Cargo.toml`. A repo that's been built daily for two years can still have an unchanged `Cargo.toml`. mtime measures *project change*, not *build recency*.
 - **`cargo metadata` is too expensive to run across 41 dirs on every scan,** and it requires the toolchain to still resolve — useless for orphan `target/` dirs whose `Cargo.toml` has been deleted.
-- **Wrapper-recorded `last_used` is exact, free, and platform-independent.** soldr is already in the rustc invocation path on every build. The upsert is one sqlite write per *cargo invocation* (debounce inside the daemon — not per rustc spawn), so cost is negligible.
+- **Wrapper-recorded `last_used` is exact, free, and platform-independent.** soldr is already in the rustc invocation path on every build. The upsert is one redb write per *cargo invocation* (debounce inside the daemon — not per rustc spawn), so cost is negligible.
 
-Cost/benefit: Wrapper-recorded ts is the cheapest accurate signal we can get and avoids a Windows-specific footgun. Cost is the sqlite store (#234 already proposes it).
+Cost/benefit: Wrapper-recorded ts is the cheapest accurate signal we can get and avoids a Windows-specific footgun. Cost is the redb store.
 
 ---
 
@@ -108,7 +108,7 @@ Cost/benefit: All four guards are cheap (stat + path-prefix checks). They turn G
 
 **In:**
 
-1. `~/.soldr/data.db` (sqlite) with the schema from #234.
+1. `~/.soldr/state.redb` with the target registry table from #234.
 2. Wrapper-mode upsert: on every `RUSTC_WRAPPER` invocation, upsert `(workspace_target_dir, now_unix)`. Debounce in-process to one write per cargo invocation.
 3. `soldr gc` command:
    - Default: list candidates (>10 days unused, >256 MB), prompt y/N per dir.
@@ -136,7 +136,7 @@ Cost/benefit: All four guards are cheap (stat + path-prefix checks). They turn G
 ## References
 
 - Issue #233 (this exploration)
-- Issue #234 (the sqlite-registry implementation proposal we're converging on)
+- Issue #234 (the target-registry implementation proposal we're converging on)
 - `cargo-sweep` — selective intra-`target/` pruning by stamp file or age
 - `cargo-cache` — `$CARGO_HOME` cleanup, not `target/`
 - NTFS atime semantics: [Ntfs Last Access Update rules by Windows version (jipegit gist)](https://gist.github.com/jipegit/4f6602456f0c2fe256642cecee09b425), ["The 'Last Access' updates are almost back" — DFIR blog](https://dfir.ru/2018/12/08/the-last-access-updates-are-almost-back/)
