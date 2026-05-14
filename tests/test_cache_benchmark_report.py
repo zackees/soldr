@@ -161,6 +161,42 @@ def _sample_results() -> list[dict[str, object]]:
     ]
 
 
+def _sample_native_sqlite_results() -> list[dict[str, object]]:
+    return [
+        {
+            "target": "x86_64-unknown-linux-gnu",
+            "runner": "ubuntu-24.04",
+            "os": "linux",
+            "arch": "x86_64",
+            "policy": "native-zccache-enabled",
+            "command": "cargo build --manifest-path benchmarks/sqlite-native/Cargo.toml --release --locked --target x86_64-unknown-linux-gnu",
+            "result": "success",
+            "cold_seconds": 18.2,
+            "seed_seconds": 17.9,
+            "warm_seconds": 4.1,
+            "speedup_ratio": 4.44,
+            "cache_hit_detail": "native_wrapper=true;cc=zccache cc;target_dir_reset=true;zccache_path_remap=auto",
+            "zccache_stats": {
+                "after_warm": "Compile requests: 3\nCache hits: 1",
+            },
+        },
+        {
+            "target": "x86_64-unknown-linux-gnu",
+            "runner": "ubuntu-24.04",
+            "os": "linux",
+            "arch": "x86_64",
+            "policy": "native-zccache-disabled",
+            "result": "success",
+            "cold_seconds": 18.2,
+            "seed_seconds": None,
+            "warm_seconds": 17.3,
+            "speedup_ratio": 1.05,
+            "cache_hit_detail": "native_wrapper=false;cc=cc;target_dir_reset=true",
+            "zccache_stats": {},
+        },
+    ]
+
+
 def _phase1_payload() -> dict[str, object]:
     return {
         "cache_backend": "zccache",
@@ -261,6 +297,60 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     assert "soldr uses managed zccache internally." in www_html
     assert "latest.json" in www_html
     assert (www_dir / ".nojekyll").exists()
+
+
+def test_cache_benchmark_report_includes_native_sqlite_section(tmp_path: Path) -> None:
+    input_path = tmp_path / "cache-benchmark-results.json"
+    json_path = tmp_path / "cache-benchmark-summary.json"
+    summary_path = tmp_path / "step-summary.md"
+    www_dir = tmp_path / "site"
+    input_path.write_text(
+        json.dumps(
+            {
+                "results": _sample_results(),
+                "native_sqlite": _sample_native_sqlite_results(),
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "SCENARIO": "all",
+            "THRESHOLD_RATIO": "10",
+            "BENCHMARK_CONFIG_PATH": "benchmark.toml",
+            "BENCHMARK_COMMAND_TARGET": "x86_64-unknown-linux-gnu",
+            "BENCHMARK_INPUT_JSON": str(input_path),
+            "BENCHMARK_SUMMARY_JSON": str(json_path),
+            "BENCHMARK_SUMMARY_WWW_DIR": str(www_dir),
+            "GITHUB_STEP_SUMMARY": str(summary_path),
+        }
+    )
+
+    subprocess.run([sys.executable, str(SCRIPT_PATH)], check=True, env=env, cwd=REPO_ROOT)
+
+    report = json.loads(json_path.read_text(encoding="utf-8"))
+    native = report["native_sqlite"]
+    assert native["issue"] == 312
+    assert native["mode"] == "report-only"
+    assert native["fixture_manifest"] == "benchmarks/sqlite-native/Cargo.toml"
+    assert len(native["results"]) == 2
+    assert native["results"][0]["warm_seconds"] == 4.1
+    assert native["results"][0]["zccache_stats"]["after_warm"].endswith("Cache hits: 1")
+
+    summary = summary_path.read_text(encoding="utf-8")
+    assert "### Native SQLite" in summary
+    assert "| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `native-zccache-enabled` | `success` | `18.20s` | `17.90s` | `4.10s` | `4.44x` |" in summary
+
+    www_json = json.loads((www_dir / "latest.json").read_text(encoding="utf-8"))
+    assert www_json["native_sqlite"]["results"][1]["policy"] == "native-zccache-disabled"
+    www_html = (www_dir / "index.html").read_text(encoding="utf-8")
+    assert "<h2>Native SQLite</h2>" in www_html
+    assert "<th>Seed</th>" in www_html
+    assert "native-zccache-enabled" in www_html
 
 
 def test_phase1_summary_writes_issue_comment_markdown_artifact(tmp_path: Path) -> None:

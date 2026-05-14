@@ -1,0 +1,10 @@
+[package]
+name = "sqlite-native-benchmark"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+libsqlite3-sys = { version = "0.37.0", features = ["bundled"] }
