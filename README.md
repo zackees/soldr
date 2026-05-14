@@ -159,6 +159,7 @@ soldr rustfmt src/main.rs
 ```text
 soldr cargo build --release
   +-- resolve the real cargo binary
+  +-- on Windows, re-run from a soldr-owned runtime copy when needed
   +-- fetch/start managed zccache when cache is enabled
   +-- set soldr as the compiler wrapper for this build
   +-- have soldr wrapper mode delegate to managed zccache
@@ -205,6 +206,7 @@ If you also have many separate test binaries, consider consolidating them under 
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
 - **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
 - **One cache boundary**: soldr keeps its own tools, zccache session state, and managed zccache artifacts under `~/.soldr/` by default. Use `SOLDR_CACHE_DIR` to move that root.
+- **Disposable-worktree friendly on Windows**: for build orchestration, soldr can relocate itself under `~/.soldr/runtime/soldr-self/` so `RUSTC_WRAPPER` does not keep using a worktree-local `soldr.exe`; stale runtime copies are cleaned up periodically.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
