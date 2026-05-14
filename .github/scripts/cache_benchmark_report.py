@@ -102,10 +102,19 @@ def _format_command(template: str, target: str) -> str:
 
 def _load_results(
     config: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
     input_path = Path(os.environ["BENCHMARK_INPUT_JSON"])
     payload = json.loads(input_path.read_text(encoding="utf-8"))
     raw_results = payload["results"] if isinstance(payload, dict) else payload
+    native_sqlite_results = (
+        _load_native_sqlite_results(config, payload) if isinstance(payload, dict) else []
+    )
 
     site = config["site"]
     target = os.environ.get("BENCHMARK_COMMAND_TARGET") or site.get(
@@ -149,13 +158,58 @@ def _load_results(
             }
         )
 
-    return results, competitors, profiles, mutations
+    return results, native_sqlite_results, competitors, profiles, mutations
+
+
+def _raw_native_sqlite_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    rows = payload.get("native_sqlite", [])
+    if isinstance(rows, dict):
+        rows = rows.get("results", [rows])
+    if not isinstance(rows, list):
+        raise ValueError("native_sqlite must be a list, object, or object with results")
+    if not all(isinstance(row, dict) for row in rows):
+        raise ValueError("native_sqlite rows must be objects")
+    return rows
+
+
+def _load_native_sqlite_results(
+    config: dict[str, Any], payload: dict[str, Any]
+) -> list[dict[str, Any]]:
+    native_config = config.get("native_sqlite", {})
+    command_template = native_config.get("command")
+    results: list[dict[str, Any]] = []
+
+    for raw_result in _raw_native_sqlite_rows(payload):
+        target = str(raw_result.get("target") or "unknown")
+        command = raw_result.get("command")
+        if not command and command_template:
+            command = _format_command(command_template, target)
+        results.append(
+            {
+                "target": target,
+                "runner": raw_result.get("runner") or "unknown",
+                "os": raw_result.get("os") or "unknown",
+                "arch": raw_result.get("arch") or "unknown",
+                "policy": raw_result.get("policy") or "unknown",
+                "command": command,
+                "result": raw_result.get("result", "success"),
+                "cold_seconds": _round_metric(_read_float(raw_result.get("cold_seconds"))),
+                "seed_seconds": _round_metric(_read_float(raw_result.get("seed_seconds"))),
+                "warm_seconds": _round_metric(_read_float(raw_result.get("warm_seconds"))),
+                "speedup_ratio": _round_metric(_read_float(raw_result.get("speedup_ratio"))),
+                "cache_hit_detail": raw_result.get("cache_hit_detail") or None,
+                "zccache_stats": raw_result.get("zccache_stats") or {},
+            }
+        )
+
+    return results
 
 
 def _build_report(
     config: dict[str, Any],
     config_path: Path,
     results: list[dict[str, Any]],
+    native_sqlite_results: list[dict[str, Any]],
     competitors: list[dict[str, Any]],
     profiles: list[dict[str, Any]],
     mutations: list[dict[str, Any]],
@@ -236,7 +290,7 @@ def _build_report(
         for profile in profiles
     ]
 
-    return {
+    report = {
         "workflow": "cache-benchmark.yml",
         "config_path": str(config_path.relative_to(REPO_ROOT)),
         "requested_scenario": os.environ["SCENARIO"],
@@ -265,6 +319,20 @@ def _build_report(
             "soldr_vs_base_warm_percent": "(base_warm_seconds - soldr_warm_seconds) / base_warm_seconds * 100",
         },
     }
+    if native_sqlite_results:
+        native_config = config.get("native_sqlite", {})
+        report["native_sqlite"] = {
+            "issue": native_config.get("issue"),
+            "label": native_config.get("label", "Native SQLite"),
+            "mode": native_config.get("mode", "report-only"),
+            "fixture_manifest": native_config.get("fixture_manifest"),
+            "command": native_config.get("command"),
+            "policies": native_config.get("policies", {}),
+            "targets": native_config.get("targets", []),
+            "results": native_sqlite_results,
+        }
+
+    return report
 
 
 def _write_json_report(report: dict[str, Any]) -> None:
@@ -308,6 +376,66 @@ def _build_profile_command_items(report: dict[str, Any]) -> str:
             "</li>"
         )
     return "\n".join(items)
+
+
+def _native_sqlite_results(report: dict[str, Any]) -> list[dict[str, Any]]:
+    native = report.get("native_sqlite")
+    if not native:
+        return []
+    return native.get("results", [])
+
+
+def _build_native_sqlite_table_rows(report: dict[str, Any]) -> str:
+    rows: list[str] = []
+    for result in _native_sqlite_results(report):
+        rows.append(
+            "<tr>"
+            f"<td><code>{escape(result['target'])}</code></td>"
+            f"<td>{escape(result['runner'])}</td>"
+            f"<td>{escape(result['policy'])}</td>"
+            f"<td>{escape(result['result'])}</td>"
+            f"<td>{_format_seconds(result.get('cold_seconds'))}</td>"
+            f"<td>{_format_seconds(result.get('seed_seconds'))}</td>"
+            f"<td>{_format_seconds(result.get('warm_seconds'))}</td>"
+            f"<td>{_format_ratio(result.get('speedup_ratio'))}</td>"
+            "</tr>"
+        )
+    return "\n".join(rows)
+
+
+def _build_native_sqlite_section(report: dict[str, Any]) -> str:
+    native = report.get("native_sqlite")
+    if not native or not _native_sqlite_results(report):
+        return ""
+    issue = native.get("issue")
+    issue_text = f"issue #{issue}" if issue is not None else "native cache tracking"
+    mode = native.get("mode", "report-only")
+    return f"""
+      <h2>Native SQLite</h2>
+      <p class="meta">
+        Report-only bundled SQLite native C benchmark for {escape(issue_text)}.
+        Mode: {escape(mode)}.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Target</th>
+              <th>Runner</th>
+              <th>Policy</th>
+              <th>Result</th>
+              <th>Cold</th>
+              <th>Seed</th>
+              <th>Warm</th>
+              <th>Speedup</th>
+            </tr>
+          </thead>
+          <tbody>
+            {_build_native_sqlite_table_rows(report)}
+          </tbody>
+        </table>
+      </div>
+"""
 
 
 def _metadata_line(report: dict[str, Any]) -> str:
@@ -436,6 +564,7 @@ def _build_html_page(report: dict[str, Any]) -> str:
           </tbody>
         </table>
       </div>
+      {_build_native_sqlite_section(report)}
       <h2>Benchmarked Commands</h2>
       <ul>
         {_build_profile_command_items(report)}
@@ -664,6 +793,27 @@ def _build_summary_lines(report: dict[str, Any]) -> list[str]:
             f"`{_format_percent(row['soldr_vs_base_warm_percent'])}` |"
         )
 
+    native_rows = _native_sqlite_results(report)
+    if native_rows:
+        lines.extend(
+            [
+                "",
+                "### Native SQLite",
+                "",
+                "| target | runner | policy | result | cold | seed | warm | speedup |",
+                "| --- | --- | --- | --- | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for result in native_rows:
+            lines.append(
+                f"| `{result['target']}` | `{result['runner']}` | "
+                f"`{result['policy']}` | `{result['result']}` | "
+                f"`{_format_seconds(result.get('cold_seconds'))}` | "
+                f"`{_format_seconds(result.get('seed_seconds'))}` | "
+                f"`{_format_seconds(result.get('warm_seconds'))}` | "
+                f"`{_format_ratio(result.get('speedup_ratio'))}` |"
+            )
+
     return lines
 
 
@@ -853,8 +1003,16 @@ def main() -> None:
     if os.environ.get("BENCHMARK_REPORT_MODE") == "phase1-summary":
         _append_phase1_step_summary(config)
         return
-    results, competitors, profiles, mutations = _load_results(config)
-    report = _build_report(config, config_path, results, competitors, profiles, mutations)
+    results, native_sqlite_results, competitors, profiles, mutations = _load_results(config)
+    report = _build_report(
+        config,
+        config_path,
+        results,
+        native_sqlite_results,
+        competitors,
+        profiles,
+        mutations,
+    )
     _write_json_report(report)
     _write_www_bundle(report)
     _append_step_summary(report)

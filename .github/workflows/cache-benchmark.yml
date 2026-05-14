@@ -27,8 +27,358 @@ permissions:
   contents: read
 
 jobs:
+  native-sqlite:
+    name: Native SQLite (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            os: linux
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            os: linux
+            arch: aarch64
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            os: linux-musl
+            arch: x86_64
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            os: linux-musl
+            arch: aarch64
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            os: macos
+            arch: x86_64
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            os: macos
+            arch: aarch64
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            os: windows-msvc
+            arch: x86_64
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+            os: windows-msvc
+            arch: aarch64
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempts=0
+          max_attempts=3
+          until sudo apt-get update; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get update failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          attempts=0
+          until sudo apt-get install -y --no-install-recommends musl-tools; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get install musl-tools failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
+
+      - name: Prepare zccache tool
+        uses: ./.github/actions/cache-benchmark-zccache
+        with:
+          cache-cargo-registry: "false"
+          cache-compilation: "false"
+          cache-target: "false"
+          save-cache: "false"
+
+      - name: Run native SQLite benchmark
+        shell: bash
+        env:
+          NATIVE_SQLITE_ARCH: ${{ matrix.arch }}
+          NATIVE_SQLITE_OS: ${{ matrix.os }}
+          NATIVE_SQLITE_RESULT_PATH: benchmark-summary/native-sqlite-${{ matrix.target }}.json
+          NATIVE_SQLITE_RUNNER: ${{ matrix.runner }}
+          NATIVE_SQLITE_TARGET: ${{ matrix.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/native-sqlite-zccache
+        run: |
+          set -euo pipefail
+          PYTHON_BIN=python3
+          if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+            PYTHON_BIN=python
+          fi
+          "$PYTHON_BIN" - <<'PY'
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+          import time
+          import tomllib
+          from pathlib import Path
+
+          target = os.environ["NATIVE_SQLITE_TARGET"]
+          runner = os.environ["NATIVE_SQLITE_RUNNER"]
+          os_name = os.environ["NATIVE_SQLITE_OS"]
+          arch = os.environ["NATIVE_SQLITE_ARCH"]
+          result_path = Path(os.environ["NATIVE_SQLITE_RESULT_PATH"])
+          cache_dir = Path(os.environ["ZCCACHE_CACHE_DIR"])
+          target_dir = Path(os.environ["RUNNER_TEMP"]) / f"sqlite-native-target-{target}"
+
+          config = tomllib.loads(Path("benchmark.toml").read_text(encoding="utf-8"))
+          native_config = config["native_sqlite"]
+          policies = native_config["policies"]
+          manifest = Path(native_config["fixture_manifest"])
+          command = [
+              "cargo",
+              "build",
+              "--manifest-path",
+              str(manifest),
+              "--release",
+              "--locked",
+              "--target",
+              target,
+          ]
+
+          def rounded(value):
+              return None if value is None else round(value, 2)
+
+          def base_row(policy, result="success"):
+              return {
+                  "target": target,
+                  "runner": runner,
+                  "os": os_name,
+                  "arch": arch,
+                  "policy": policy,
+                  "command": native_config["command"].format(target=target),
+                  "cold_seconds": None,
+                  "seed_seconds": None,
+                  "warm_seconds": None,
+                  "speedup_ratio": None,
+                  "cache_hit_detail": None,
+                  "zccache_stats": {},
+                  "result": result,
+              }
+
+          def write_payload(rows):
+              result_path.parent.mkdir(parents=True, exist_ok=True)
+              result_path.write_text(
+                  json.dumps({"native_sqlite": rows}, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+
+          def append_summary(rows):
+              summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+              if not summary_path:
+                  return
+              lines = [
+                  "### Native SQLite Benchmark",
+                  "",
+                  f"- target: `{target}`",
+                  f"- runner: `{runner}`",
+                  f"- mode: `{native_config['mode']}`",
+                  "",
+                  "| policy | result | cold | seed | warm | speedup |",
+                  "| --- | --- | ---: | ---: | ---: | ---: |",
+              ]
+              for row in rows:
+                  def seconds(value):
+                      return "n/a" if value is None else f"{float(value):.2f}s"
+                  def ratio(value):
+                      return "n/a" if value is None else f"{float(value):.2f}x"
+                  lines.append(
+                      f"| `{row['policy']}` | `{row['result']}` | "
+                      f"`{seconds(row['cold_seconds'])}` | "
+                      f"`{seconds(row['seed_seconds'])}` | "
+                      f"`{seconds(row['warm_seconds'])}` | "
+                      f"`{ratio(row['speedup_ratio'])}` |"
+                  )
+              with Path(summary_path).open("a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines) + "\n")
+
+          def run_quiet(args, check):
+              return subprocess.run(
+                  args,
+                  check=check,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+
+          def reset_target_dir():
+              shutil.rmtree(target_dir, ignore_errors=True)
+
+          def reset_zccache():
+              run_quiet(["zccache", "stop"], check=False)
+              shutil.rmtree(cache_dir, ignore_errors=True)
+              cache_dir.mkdir(parents=True, exist_ok=True)
+              run_quiet(["zccache", "start"], check=True)
+
+          def zccache_status():
+              proc = subprocess.run(
+                  ["zccache", "status"],
+                  check=False,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+              )
+              return proc.stdout.strip()
+
+          if target.endswith("pc-windows-msvc"):
+              if shutil.which("clang-cl") is None:
+                  row = base_row(policies["enabled"], result="unsupported")
+                  row["cache_hit_detail"] = "windows-msvc native benchmark requires clang-cl, but clang-cl was not on PATH"
+                  rows = [row]
+                  write_payload(rows)
+                  append_summary(rows)
+                  sys.exit(0)
+              direct_cc = "clang-cl"
+              direct_cxx = "clang-cl"
+              wrapped_cc = "zccache clang-cl"
+              wrapped_cxx = "zccache clang-cl"
+          else:
+              direct_cc = "cc"
+              direct_cxx = "c++"
+              wrapped_cc = "zccache cc"
+              wrapped_cxx = "zccache c++"
+
+          def run_build(native_wrapper_enabled):
+              env = os.environ.copy()
+              env["CARGO_INCREMENTAL"] = "0"
+              env["CARGO_TARGET_DIR"] = str(target_dir)
+              env["CARGO_TERM_COLOR"] = "never"
+              env.pop("RUSTC_WRAPPER", None)
+              env.pop("RUSTC_WORKSPACE_WRAPPER", None)
+              env.pop("CC_KNOWN_WRAPPER_CUSTOM", None)
+              env.pop("ZCCACHE_PATH_REMAP", None)
+
+              if native_wrapper_enabled:
+                  env["CC_KNOWN_WRAPPER_CUSTOM"] = "zccache"
+                  env["ZCCACHE_PATH_REMAP"] = "auto"
+                  env["CC"] = wrapped_cc
+                  env["CXX"] = wrapped_cxx
+              else:
+                  env["CC"] = direct_cc
+                  env["CXX"] = direct_cxx
+
+              start = time.perf_counter()
+              subprocess.run(command, env=env, check=True)
+              return time.perf_counter() - start
+
+          cold_seconds = None
+          seed_seconds = None
+          warm_seconds = None
+          seed_stats = ""
+          warm_stats = ""
+          rows = []
+          stage = "setup"
+
+          try:
+              stage = "cold-control"
+              reset_zccache()
+              reset_target_dir()
+              cold_seconds = run_build(native_wrapper_enabled=False)
+
+              stage = "seed-native-cache"
+              reset_zccache()
+              reset_target_dir()
+              seed_seconds = run_build(native_wrapper_enabled=True)
+              seed_stats = zccache_status()
+
+              stage = "warm-native-cache"
+              reset_target_dir()
+              warm_seconds = run_build(native_wrapper_enabled=True)
+              warm_stats = zccache_status()
+
+              enabled = base_row(policies["enabled"])
+              enabled["cold_seconds"] = rounded(cold_seconds)
+              enabled["seed_seconds"] = rounded(seed_seconds)
+              enabled["warm_seconds"] = rounded(warm_seconds)
+              enabled["speedup_ratio"] = rounded(cold_seconds / warm_seconds if warm_seconds else None)
+              enabled["cache_hit_detail"] = (
+                  f"native_wrapper=true;cc={wrapped_cc};target_dir_reset=true;"
+                  "zccache_path_remap=auto"
+              )
+              enabled["zccache_stats"] = {
+                  "after_seed": seed_stats,
+                  "after_warm": warm_stats,
+              }
+              rows.append(enabled)
+
+              try:
+                  stage = "disabled-native-cache-warm"
+                  reset_target_dir()
+                  disabled_warm_seconds = run_build(native_wrapper_enabled=False)
+              except subprocess.CalledProcessError as exc:
+                  disabled = base_row(policies["disabled"], result="failure")
+                  disabled["cold_seconds"] = rounded(cold_seconds)
+                  disabled["cache_hit_detail"] = (
+                      f"native_wrapper=false;cc={direct_cc};stage={stage};"
+                      f"returncode={exc.returncode}"
+                  )
+              else:
+                  disabled = base_row(policies["disabled"])
+                  disabled["cold_seconds"] = rounded(cold_seconds)
+                  disabled["warm_seconds"] = rounded(disabled_warm_seconds)
+                  disabled["speedup_ratio"] = rounded(
+                      cold_seconds / disabled_warm_seconds if disabled_warm_seconds else None
+                  )
+                  disabled["cache_hit_detail"] = (
+                      f"native_wrapper=false;cc={direct_cc};target_dir_reset=true"
+                  )
+              rows.append(disabled)
+
+              write_payload(rows)
+              append_summary(rows)
+          except subprocess.CalledProcessError as exc:
+              row = base_row(policies["enabled"], result="failure")
+              row["cold_seconds"] = rounded(cold_seconds)
+              row["seed_seconds"] = rounded(seed_seconds)
+              row["warm_seconds"] = rounded(warm_seconds)
+              row["cache_hit_detail"] = f"stage={stage};returncode={exc.returncode}"
+              row["zccache_stats"] = {
+                  "after_seed": seed_stats,
+                  "after_warm": warm_stats,
+              }
+              rows = [row]
+              write_payload(rows)
+              append_summary(rows)
+              sys.exit(exc.returncode or 1)
+          finally:
+              run_quiet(["zccache", "stop"], check=False)
+          PY
+
+      - name: Cleanup zccache
+        if: ${{ always() }}
+        uses: ./.github/actions/cache-benchmark-zccache-cleanup
+
+      - name: Upload native SQLite benchmark artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-sqlite-benchmark-${{ matrix.target }}
+          path: benchmark-summary/native-sqlite-${{ matrix.target }}.json
+          if-no-files-found: error
+
   benchmark:
     name: Config-driven benchmark
+    needs:
+      - native-sqlite
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -260,6 +610,42 @@ jobs:
               print("Benchmark threshold or command failures detected:")
               for failure in failures:
                   print(f"- {failure}")
+          PY
+
+      - name: Download native SQLite benchmark artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: native-sqlite-benchmark-*
+          path: benchmark-summary/native-sqlite
+          merge-multiple: true
+
+      - name: Merge native SQLite benchmark artifacts
+        shell: bash
+        env:
+          BENCHMARK_NATIVE_ARTIFACT_DIR: benchmark-summary/native-sqlite
+          BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          results_path = Path(os.environ["BENCHMARK_RESULTS_JSON"])
+          native_dir = Path(os.environ["BENCHMARK_NATIVE_ARTIFACT_DIR"])
+          payload = json.loads(results_path.read_text(encoding="utf-8"))
+
+          native_results = []
+          for artifact_path in sorted(native_dir.glob("native-sqlite-*.json")):
+              artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+              rows = artifact.get("native_sqlite", artifact)
+              if isinstance(rows, dict):
+                  rows = [rows]
+              native_results.extend(rows)
+
+          payload["native_sqlite"] = native_results
+          results_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+          print(f"Merged {len(native_results)} native SQLite benchmark rows.")
           PY
 
       - name: Install benchmark report image dependencies
