@@ -156,6 +156,28 @@ impl TargetRegistry {
         Ok(removed)
     }
 
+    /// Remove rows for every path in `paths` in a single write
+    /// transaction. Missing rows are skipped. Returns the number of
+    /// rows that were actually removed.
+    pub fn remove_many(&self, paths: &[PathBuf]) -> Result<usize, RegistryError> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        let write_txn = self.db.begin_write()?;
+        let mut removed = 0usize;
+        {
+            let mut table = write_txn.open_table(TARGETS)?;
+            for path in paths {
+                let key = path_to_string(path);
+                if table.remove(key.as_str())?.is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        write_txn.commit()?;
+        Ok(removed)
+    }
+
     /// Total number of tracked rows.
     pub fn len(&self) -> Result<usize, RegistryError> {
         let read_txn = self.db.begin_read()?;
@@ -240,6 +262,48 @@ pub fn directory_size(path: &Path) -> u64 {
         }
     }
     total
+}
+
+/// Recursively measure both on-disk size (bytes) and file count for
+/// a directory in a single walk. Same symlink/error semantics as
+/// [`directory_size`]: symlinks are not followed, individual entry
+/// errors are swallowed. Returns `(total_bytes, file_count)`.
+pub fn directory_size_and_files(path: &Path) -> (u64, u64) {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return (0, 0),
+    };
+    if metadata.file_type().is_symlink() {
+        return (0, 0);
+    }
+    if metadata.is_file() {
+        return (metadata.len(), 1);
+    }
+    let mut total_bytes: u64 = 0;
+    let mut total_files: u64 = 0;
+    let entries = match std::fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return (0, 0),
+    };
+    for entry in entries.flatten() {
+        let entry_path = entry.path();
+        let entry_meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if entry_meta.file_type().is_symlink() {
+            continue;
+        }
+        if entry_meta.is_dir() {
+            let (sub_bytes, sub_files) = directory_size_and_files(&entry_path);
+            total_bytes = total_bytes.saturating_add(sub_bytes);
+            total_files = total_files.saturating_add(sub_files);
+        } else if entry_meta.is_file() {
+            total_bytes = total_bytes.saturating_add(entry_meta.len());
+            total_files = total_files.saturating_add(1);
+        }
+    }
+    (total_bytes, total_files)
 }
 
 /// Resolve the workspace `target/` dir from an arbitrary path that
@@ -453,6 +517,36 @@ mod tests {
         assert!(registry.remove(&path).unwrap());
         assert!(!registry.remove(&path).unwrap());
         assert_eq!(registry.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn remove_many_batches_deletes_and_counts_hits() {
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let a = PathBuf::from("/tmp/a/target");
+        let b = PathBuf::from("/tmp/b/target");
+        let c = PathBuf::from("/tmp/c/target");
+        let ghost = PathBuf::from("/tmp/ghost/target");
+        registry.upsert_with_time(&a, 10).unwrap();
+        registry.upsert_with_time(&b, 20).unwrap();
+        registry.upsert_with_time(&c, 30).unwrap();
+
+        let removed = registry
+            .remove_many(&[a.clone(), ghost.clone(), b.clone()])
+            .unwrap();
+        assert_eq!(removed, 2);
+        assert!(registry.get(&a).unwrap().is_none());
+        assert!(registry.get(&b).unwrap().is_none());
+        assert!(registry.get(&c).unwrap().is_some());
+        assert!(registry.get(&ghost).unwrap().is_none());
+    }
+
+    #[test]
+    fn remove_many_on_empty_input_is_a_noop() {
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let path = PathBuf::from("/tmp/keep/target");
+        registry.upsert_with_time(&path, 5).unwrap();
+        assert_eq!(registry.remove_many(&[]).unwrap(), 0);
+        assert!(registry.get(&path).unwrap().is_some());
     }
 
     #[test]
