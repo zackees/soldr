@@ -32,11 +32,26 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      issues: write
       pages: write
+      pull-requests: write
       id-token: write
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Verify setup-soldr pin matches v0
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SETUP_SOLDR_PIN_AUTOFIX: "1"
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            python3 .github/scripts/verify_setup_soldr_pin.py
+          else
+            python .github/scripts/verify_setup_soldr_pin.py
+          fi
 
       - name: Resolve benchmark config
         id: config
@@ -63,7 +78,9 @@ jobs:
           PY
 
       - id: setup-soldr
-        uses: zackees/setup-soldr@v0
+        # This is zackees/setup-soldr@v0 pinned to a full SHA
+        # because this repository's ruleset requires SHA-pinned actions.
+        uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656
 
       - name: Ensure benchmark target
         shell: bash
