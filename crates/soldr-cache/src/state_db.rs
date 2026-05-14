@@ -152,11 +152,9 @@ fn current_unix_seconds() -> Result<u64, StateDbError> {
 
 fn path_key(path: &Path) -> String {
     let normalized: PathBuf = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let mut key = normalized.to_string_lossy().replace('\\', "/");
+    let key = normalized.to_string_lossy().replace('\\', "/");
     #[cfg(windows)]
-    {
-        key = key.to_ascii_lowercase();
-    }
+    let key = key.to_ascii_lowercase();
     key
 }
 

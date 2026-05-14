@@ -38,3 +38,6 @@ tar = "0.4"
 toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
+
+[workspace.lints.rust]
+unused_mut = "deny"
