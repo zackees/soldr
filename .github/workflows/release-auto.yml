@@ -20,6 +20,9 @@ permissions:
   attestations: write
   id-token: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 concurrency:
   group: release-auto-${{ github.ref_name }}
   cancel-in-progress: false
@@ -214,10 +217,14 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - name: Setup Soldr cache and toolchain
+      - name: Setup Soldr toolchain
         uses: zackees/setup-soldr@dc7390d816f6251a92d1d837c99f1e1c598caf83 # @v0
         with:
           linker: platform-default
+          cache: false
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
           cache-key-suffix: release-${{ matrix.target }}
 
       - name: Install target toolchain support
@@ -226,7 +233,7 @@ jobs:
           rustup target add "${{ matrix.target }}"
 
       - name: Build release binary
-        run: soldr cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+        run: soldr --no-cache cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
 
       - name: Package tarball
         if: matrix.archive == 'tar.gz'
@@ -251,6 +258,8 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
 
       - name: Build hardened wheel from shared target directory
         shell: bash
@@ -261,6 +270,7 @@ jobs:
             --release \
             --locked \
             --compatibility pypi \
+            --auditwheel repair \
             --target "${{ matrix.target }}" \
             --target-dir target \
             --out dist
@@ -268,7 +278,6 @@ jobs:
       - name: Verify wheel ships the bin script at the spec path
         shell: python
         run: |
-          import sys
           import zipfile
           from pathlib import Path
 
