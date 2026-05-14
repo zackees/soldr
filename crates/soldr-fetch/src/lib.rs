@@ -774,7 +774,7 @@ fn match_asset<'a>(
             score += 5;
         }
 
-        if best.map_or(true, |(_, s)| score > s) {
+        if best.is_none_or(|(_, s)| score > s) {
             best = Some((asset, score));
         }
     }

@@ -156,6 +156,7 @@ fn lock_runtime_root(runtime_root: &Path) -> Result<File, SoldrError> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(lock_path)?;
     file.lock_exclusive()?;
     Ok(file)

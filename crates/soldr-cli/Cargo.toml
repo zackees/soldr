@@ -34,6 +34,9 @@ tempfile = { workspace = true }
 # `cargo build --bin <stub> --features test-stubs` at test setup time.
 test-stubs = []
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "soldr"
 path = "src/main.rs"
