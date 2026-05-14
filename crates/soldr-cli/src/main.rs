@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use soldr_core::{SoldrError, SoldrPaths};
+use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 use std::collections::BTreeSet;
 use std::io::Write;
@@ -393,9 +393,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 eprintln!("soldr: downloaded {crate_name} v{}", result.version);
             }
 
-            let status = std::process::Command::new(&result.binary_path)
-                .args(tool_args)
-                .status()?;
+            let mut command = std::process::Command::new(&result.binary_path);
+            command.args(tool_args);
+            suppress_windows_console_window(&mut command);
+            let status = command.status()?;
 
             std::process::exit(status.code().unwrap_or(1));
         }
@@ -505,6 +506,7 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
     command
         .args(args)
         .env(SOLDR_TRAMPOLINING_ENV_VAR, env!("CARGO_PKG_VERSION"));
+    suppress_windows_console_window(&mut command);
 
     #[cfg(unix)]
     {
@@ -582,6 +584,7 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
     let mut command = std::process::Command::new(tool_path);
     command.args(&raw_args[2..]);
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
@@ -593,6 +596,7 @@ fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrEr
     let mut command = std::process::Command::new(binary);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     let status = command.status()?;
     Ok(status.code().unwrap_or(1))
 }
@@ -603,6 +607,7 @@ fn run_wrapper_through_zccache(
 ) -> Result<i32, SoldrError> {
     let mut command = std::process::Command::new(zccache);
     command.args(&raw_args[1..]);
+    suppress_windows_console_window(&mut command);
 
     // Cargo's jobserver lives on numbered file descriptors that it inherits
     // into the RUSTC_WRAPPER, advertised via CARGO_MAKEFLAGS. On Unix,
@@ -655,6 +660,7 @@ fn run_wrapper_through_zccache_windows(
     let mut command = std::process::Command::new(zccache);
     command.args(&raw_args[1..]);
     command.stderr(Stdio::piped());
+    suppress_windows_console_window(&mut command);
 
     let mut child = command.spawn()?;
     let stderr = child
@@ -713,6 +719,7 @@ fn run_wrapper_through_zccache_windows(
     let mut retry = std::process::Command::new(zccache);
     retry.args(&raw_args[1..]);
     retry.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &new_session_id);
+    suppress_windows_console_window(&mut retry);
     let retry_status = retry.status()?;
     Ok(retry_status.code().unwrap_or(1))
 }
@@ -816,6 +823,7 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     // soldr cargo is the top of the invocation tree, so any inherited
     // MAKEFLAGS/CARGO_MAKEFLAGS points at jobserver fds that aren't open in
     // our process. Stripping them lets cargo start a fresh jobserver instead
@@ -1380,6 +1388,7 @@ fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetad
     command.args(["metadata", "--format-version", "1"]);
     command.args(cargo_metadata_passthrough_args(args));
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
 
@@ -1466,6 +1475,7 @@ fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrErr
     let mut command = std::process::Command::new(tool);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     let output = command.output()?;
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
@@ -2478,6 +2488,7 @@ fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["which", tool]);
     apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
     let output = command.output();
 
     match output {
@@ -3649,6 +3660,7 @@ fn run_zccache_command_raw_with_env(
     for &(name, value) in envs {
         command.env(name, value);
     }
+    suppress_windows_console_window(&mut command);
     Ok(command.output()?)
 }
 
@@ -3662,6 +3674,7 @@ fn run_zccache_command_raw_strings_with_env(
     for &(name, value) in envs {
         command.env(name, value);
     }
+    suppress_windows_console_window(&mut command);
     Ok(command.output()?)
 }
 
