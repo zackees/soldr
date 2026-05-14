@@ -215,7 +215,7 @@ jobs:
           fi
 
       - name: Setup Soldr cache and toolchain
-        uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
+        uses: zackees/setup-soldr@d7be70d3960d2401a8974a11169429c0c846f7db # @v0
         with:
           linker: platform-default
           cache-key-suffix: release-${{ matrix.target }}
