@@ -205,6 +205,13 @@ enum GcSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// List every `target/` directory currently tracked in the soldr
+    /// registry, without applying any age or size thresholds.
+    List {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -377,6 +384,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     larger_than,
                     json,
                 },
+                Some(GcSubcommand::List { json }) => {
+                    run_gc_list_command(json)?;
+                    return Ok(());
+                }
                 None => GcInvocation {
                     mode: GcMode::Summary,
                     older_than,
@@ -3433,6 +3444,162 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
             error_log_path: error_log_path.map(|p| p.display().to_string()),
         };
         print_json(&output)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GcListEntryOutput {
+    path: String,
+    last_used_unix: i64,
+    age_seconds: i64,
+    age_human: String,
+    size_bytes: u64,
+    size_human: String,
+    file_count: u64,
+}
+
+#[derive(Serialize)]
+struct GcListOutput {
+    schema_version: u32,
+    command: &'static str,
+    mode: &'static str,
+    registry_path: String,
+    entry_count: usize,
+    pruned_missing: usize,
+    entries: Vec<GcListEntryOutput>,
+}
+
+fn absolute_path_string(path: &std::path::Path) -> String {
+    std::path::absolute(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .display()
+        .to_string()
+}
+
+/// Compute `(size_bytes, file_count)` for a directory using rayon to
+/// fan out across the top-level entries. The per-entry walk is the
+/// existing sequential routine. This keeps the implementation small
+/// while exploiting the typical cargo `target/` layout where the bulk
+/// of bytes sit under a handful of subdirs (`debug/`, `release/`,
+/// per-target triples, etc.).
+fn fast_directory_size_and_files(path: &std::path::Path) -> (u64, u64) {
+    use rayon::prelude::*;
+
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(_) => return (0, 0),
+    };
+    if metadata.file_type().is_symlink() {
+        return (0, 0);
+    }
+    if metadata.is_file() {
+        return (metadata.len(), 1);
+    }
+    let entries: Vec<std::fs::DirEntry> = match std::fs::read_dir(path) {
+        Ok(iter) => iter.flatten().collect(),
+        Err(_) => return (0, 0),
+    };
+    entries
+        .into_par_iter()
+        .map(|entry| {
+            let entry_path = entry.path();
+            let entry_meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => return (0u64, 0u64),
+            };
+            if entry_meta.file_type().is_symlink() {
+                (0, 0)
+            } else if entry_meta.is_dir() {
+                soldr_cache::target_registry::directory_size_and_files(&entry_path)
+            } else if entry_meta.is_file() {
+                (entry_meta.len(), 1)
+            } else {
+                (0, 0)
+            }
+        })
+        .reduce(
+            || (0u64, 0u64),
+            |a, b| (a.0.saturating_add(b.0), a.1.saturating_add(b.1)),
+        )
+}
+
+fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
+    use rayon::prelude::*;
+
+    let paths = SoldrPaths::new()?;
+    let db_path = soldr_cache::data_db_path(&paths);
+    let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
+        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+    let rows = registry
+        .list()
+        .map_err(|e| SoldrError::Other(format!("gc list failed: {e}")))?;
+    let now = soldr_cache::target_registry::current_unix_seconds()
+        .map_err(|e| SoldrError::Other(format!("gc list clock error: {e}")))?;
+
+    // Partition rows into those still on disk and those that have
+    // disappeared since the registry was written. Missing rows are
+    // never reported — they're swept out of the registry at the end
+    // via a single batched delete.
+    let (live_rows, missing_paths): (Vec<_>, Vec<_>) = rows.into_par_iter().partition_map(|row| {
+        if row.path.exists() {
+            rayon::iter::Either::Left(row)
+        } else {
+            rayon::iter::Either::Right(row.path)
+        }
+    });
+
+    let entries: Vec<GcListEntryOutput> = live_rows
+        .into_par_iter()
+        .map(|row| {
+            let (size_bytes, file_count) = fast_directory_size_and_files(&row.path);
+            let age_seconds = now.saturating_sub(row.last_used);
+            GcListEntryOutput {
+                path: absolute_path_string(&row.path),
+                last_used_unix: row.last_used,
+                age_seconds,
+                age_human: soldr_cache::target_registry::human_age(age_seconds),
+                size_bytes,
+                size_human: soldr_cache::target_registry::human_size(size_bytes),
+                file_count,
+            }
+        })
+        .collect();
+
+    let pruned_missing = registry
+        .remove_many(&missing_paths)
+        .map_err(|e| SoldrError::Other(format!("failed to prune missing registry rows: {e}")))?;
+
+    if json {
+        let output = GcListOutput {
+            schema_version: JSON_SCHEMA_VERSION,
+            command: "gc",
+            mode: "list",
+            registry_path: db_path.display().to_string(),
+            entry_count: entries.len(),
+            pruned_missing,
+            entries,
+        };
+        print_json(&output)?;
+    } else {
+        println!("soldr gc list: registry: {}", db_path.display());
+        println!(
+            "soldr gc list: {} tracked target dir{}",
+            entries.len(),
+            if entries.len() == 1 { "" } else { "s" }
+        );
+        for entry in &entries {
+            println!(
+                "  {}  size={}  files={}  age={}",
+                entry.path, entry.size_human, entry.file_count, entry.age_human,
+            );
+        }
+        if pruned_missing > 0 {
+            println!(
+                "soldr gc list: pruned {pruned_missing} missing row{} from registry",
+                if pruned_missing == 1 { "" } else { "s" }
+            );
+        }
     }
     Ok(())
 }
