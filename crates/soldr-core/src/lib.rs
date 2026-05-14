@@ -378,6 +378,18 @@ pub fn apply_implicit_toolchain_homes(command: &mut Command, start_dir: Option<&
     ImplicitToolchainHomes::detect(start_dir).apply_to_command(command);
 }
 
+pub fn suppress_windows_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
 pub fn probe_toolchain_binary(tool: &str, start_dir: Option<&Path>) -> Option<PathBuf> {
     if rustup_toolchain_env_is_explicit(std::env::var_os(RUSTUP_TOOLCHAIN_ENV_VAR).as_deref()) {
         return None;
@@ -395,6 +407,7 @@ fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<String> {
     let rustc = resolve_runtime_rustc(start_dir)?;
     let mut command = std::process::Command::new(rustc);
     apply_implicit_toolchain_homes(&mut command, start_dir);
+    suppress_windows_console_window(&mut command);
     if let Some(start_dir) = start_dir {
         command.current_dir(start_dir);
     }
@@ -418,6 +431,7 @@ fn resolve_runtime_rustc(start_dir: Option<&Path>) -> Option<PathBuf> {
 
     let mut rustup = std::process::Command::new("rustup");
     apply_implicit_toolchain_homes(&mut rustup, start_dir);
+    suppress_windows_console_window(&mut rustup);
     if let Some(start_dir) = start_dir {
         rustup.current_dir(start_dir);
     }
@@ -995,6 +1009,36 @@ mod tests {
 
         assert_eq!(resolve_runtime_rustc(None), Some(rustc));
         assert_rustup_not_invoked(&log_path);
+    }
+
+    #[test]
+    fn suppress_windows_console_window_preserves_piped_output() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "echo soldr-no-window"]);
+            command
+        };
+
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf soldr-no-window"]);
+            command
+        };
+
+        suppress_windows_console_window(&mut command);
+        let output = command.output().expect("failed to run child command");
+        assert!(
+            output.status.success(),
+            "child command failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("soldr-no-window"),
+            "missing expected stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
     }
 
     #[test]

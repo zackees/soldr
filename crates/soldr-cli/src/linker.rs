@@ -11,7 +11,7 @@
 //! and `CARGO_TARGET_*_RUSTFLAGS` via the env hash, so no separate
 //! invalidation hook is required.
 
-use soldr_core::SoldrError;
+use soldr_core::{suppress_windows_console_window, SoldrError};
 use std::ffi::OsStr;
 use std::str::FromStr;
 
@@ -179,7 +179,10 @@ pub fn resolve_for_target_with_probe(
 /// Probe whether `mold` is on `PATH`. Best-effort: any failure (missing
 /// binary, non-zero exit, IO error) returns `false`.
 fn mold_on_path() -> bool {
-    match std::process::Command::new("mold").arg("--version").output() {
+    let mut command = std::process::Command::new("mold");
+    command.arg("--version");
+    suppress_windows_console_window(&mut command);
+    match command.output() {
         Ok(out) => out.status.success(),
         Err(_) => false,
     }

@@ -15,7 +15,9 @@ pub use trust::{
     CHECKSUMS_FILE_ENV_VAR, TRUST_MODE_ENV_VAR,
 };
 
-use soldr_core::{Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple};
+use soldr_core::{
+    suppress_windows_console_window, Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple,
+};
 use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
@@ -45,7 +47,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.4.5";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.4.6";
 const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
     ("zccache-cli", "zccache"),
     ("zccache-daemon", "zccache-daemon"),
@@ -232,7 +234,8 @@ fn install_zccache_from_crates_io(
         let mut backoff = MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF;
         let mut attempt = 1u32;
         loop {
-            let install_status = std::process::Command::new("cargo")
+            let mut command = std::process::Command::new("cargo");
+            command
                 .args([
                     "install",
                     package_name,
@@ -247,13 +250,13 @@ fn install_zccache_from_crates_io(
                 // Strip stale jobserver env so the nested cargo doesn't try
                 // to attach to fds it cannot see (see soldr #283).
                 .env_remove("MAKEFLAGS")
-                .env_remove("CARGO_MAKEFLAGS")
-                .status()
-                .map_err(|e| {
-                    SoldrError::Other(format!(
-                        "failed to invoke cargo install for managed zccache package {package_name}: {e}"
-                    ))
-                })?;
+                .env_remove("CARGO_MAKEFLAGS");
+            suppress_windows_console_window(&mut command);
+            let install_status = command.status().map_err(|e| {
+                SoldrError::Other(format!(
+                    "failed to invoke cargo install for managed zccache package {package_name}: {e}"
+                ))
+            })?;
 
             if install_status.success() {
                 break;
