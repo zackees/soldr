@@ -4,6 +4,9 @@ use sha2::{Digest, Sha256};
 use soldr_core::{SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 use std::collections::BTreeSet;
+use std::io::Write;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 mod linker;
 
@@ -2851,10 +2854,19 @@ struct GcOutput {
     skipped: Vec<GcCandidateOutput>,
     dropped_missing: usize,
     deleted_paths: Vec<String>,
+    selected_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
+    reclaimed_bytes: u64,
+    reclaimed_human: String,
+    error_log_path: Option<String>,
 }
 
 fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
-    use soldr_cache::gc::{parse_duration, parse_size, purge_one, scan, GcOptions};
+    use soldr_cache::gc::{
+        cleanup_old_gc_logs, parse_duration, parse_size, scan, write_gc_error_log, GcOptions,
+        GcPurgeSummary,
+    };
 
     let older_than = parse_duration(&invocation.older_than).map_err(SoldrError::Other)?;
     let larger_than = parse_size(&invocation.larger_than).map_err(SoldrError::Other)?;
@@ -2869,6 +2881,9 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
     let db_path = soldr_cache::data_db_path(&paths);
     let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+    let gc_log_dir = soldr_cache::gc_log_dir(&paths);
+    cleanup_old_gc_logs(&gc_log_dir)
+        .map_err(|e| SoldrError::Other(format!("failed to clean old gc logs: {e}")))?;
 
     let options = GcOptions {
         older_than_seconds: older_than,
@@ -2882,6 +2897,8 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
     let total_reclaimable_bytes = gc_total_reclaimable_bytes(&report.candidates);
 
     let mut deleted_paths: Vec<String> = Vec::new();
+    let mut purge_summary = GcPurgeSummary::default();
+    let mut error_log_path: Option<std::path::PathBuf> = None;
 
     if is_summary {
         if !invocation.json {
@@ -2892,39 +2909,21 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
     }
 
     if !is_summary {
-        for cand in &report.candidates {
-            let should_delete = if purge_all {
-                true
-            } else {
-                prompt_yes_no(&format!(
-                    "soldr gc: delete {} ({}, age {}) ? [y/N] ",
-                    cand.path.display(),
-                    soldr_cache::target_registry::human_size(cand.size_bytes),
-                    soldr_cache::target_registry::human_age(cand.age_seconds),
-                ))
-            };
-
-            if should_delete {
-                match purge_one(&registry, &cand.path, false) {
-                    Ok(true) => {
-                        if !invocation.json {
-                            eprintln!("soldr gc: deleted {}", cand.path.display());
-                        }
-                        deleted_paths.push(cand.path.display().to_string());
-                    }
-                    Ok(false) => {
-                        if !invocation.json {
-                            eprintln!(
-                                "soldr gc: nothing to delete at {} (already gone)",
-                                cand.path.display()
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("soldr gc: failed to delete {}: {e}", cand.path.display());
-                    }
-                }
-            }
+        purge_summary =
+            run_gc_purge_candidates(&registry, &report.candidates, purge_all, invocation.json)?;
+        deleted_paths = purge_summary
+            .deleted_paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        if !purge_summary.failures.is_empty() {
+            let args = std::env::args().collect::<Vec<_>>();
+            let path = write_gc_error_log(&gc_log_dir, &args, &purge_summary.failures)
+                .map_err(|e| SoldrError::Other(format!("failed to write gc error log: {e}")))?;
+            error_log_path = Some(path);
+        }
+        if !invocation.json {
+            print_gc_purge_result(&purge_summary, error_log_path.as_deref());
         }
     }
 
@@ -2957,10 +2956,118 @@ fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
                 .collect(),
             dropped_missing: report.dropped_missing,
             deleted_paths,
+            selected_count: purge_summary.selected_count,
+            succeeded_count: purge_summary.succeeded_count,
+            failed_count: purge_summary.failed_count,
+            reclaimed_bytes: purge_summary.reclaimed_bytes,
+            reclaimed_human: soldr_cache::target_registry::human_size(
+                purge_summary.reclaimed_bytes,
+            ),
+            error_log_path: error_log_path.map(|p| p.display().to_string()),
         };
         print_json(&output)?;
     }
     Ok(())
+}
+
+fn run_gc_purge_candidates(
+    registry: &soldr_cache::target_registry::TargetRegistry,
+    candidates: &[soldr_cache::gc::GcCandidate],
+    purge_all: bool,
+    json: bool,
+) -> Result<soldr_cache::gc::GcPurgeSummary, SoldrError> {
+    let worker_count = gc_purge_worker_count();
+    let (job_tx, job_rx) = mpsc::channel::<soldr_cache::gc::GcCandidate>();
+    let (result_tx, result_rx) = mpsc::channel();
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    let mut workers = Vec::new();
+    for idx in 0..worker_count {
+        let job_rx = Arc::clone(&job_rx);
+        let result_tx = result_tx.clone();
+        let builder = std::thread::Builder::new().name(format!("soldr-gc-{idx}"));
+        workers.push(
+            builder
+                .spawn(move || loop {
+                    let next = {
+                        let rx = job_rx.lock().expect("gc worker channel poisoned");
+                        rx.recv()
+                    };
+                    match next {
+                        Ok(candidate) => {
+                            let _ =
+                                result_tx.send(soldr_cache::gc::delete_candidate_dir(candidate));
+                        }
+                        Err(_) => break,
+                    }
+                })
+                .map_err(|e| SoldrError::Other(format!("failed to start gc worker: {e}")))?,
+        );
+    }
+    drop(result_tx);
+
+    let mut selected_count = 0usize;
+    let mut completed_count = 0usize;
+    let mut outcomes = Vec::new();
+
+    for cand in candidates {
+        let should_delete = purge_all || prompt_gc_purge_candidate(cand);
+        if !should_delete {
+            continue;
+        }
+
+        selected_count += 1;
+        job_tx
+            .send(cand.clone())
+            .map_err(|e| SoldrError::Other(format!("failed to queue gc delete: {e}")))?;
+    }
+    drop(job_tx);
+
+    while completed_count < selected_count {
+        match result_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(outcome) => {
+                completed_count += 1;
+                outcomes.push(outcome);
+                if !json {
+                    print_gc_purge_progress(completed_count, selected_count);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !json {
+                    print_gc_purge_progress(completed_count, selected_count);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| SoldrError::Other("gc worker panicked".to_string()))?;
+    }
+
+    if !json && selected_count > 0 {
+        eprintln!();
+    }
+
+    soldr_cache::gc::apply_purge_outcomes(registry, outcomes)
+        .map_err(|e| SoldrError::Other(format!("failed to update gc registry: {e}")))
+}
+
+fn gc_purge_worker_count() -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    gc_purge_worker_count_for(available)
+}
+
+fn gc_purge_worker_count_for(available_parallelism: usize) -> usize {
+    available_parallelism.clamp(1, 4)
+}
+
+fn print_gc_purge_progress(completed: usize, selected: usize) {
+    eprint!("\rsoldr gc purge: deleting selected targets {completed}/{selected}");
+    let _ = std::io::stderr().flush();
 }
 
 fn gc_total_reclaimable_bytes(candidates: &[soldr_cache::gc::GcCandidate]) -> u64 {
@@ -3035,6 +3142,25 @@ fn print_gc_purge_scan(
     }
 }
 
+fn print_gc_purge_result(
+    summary: &soldr_cache::gc::GcPurgeSummary,
+    error_log_path: Option<&std::path::Path>,
+) {
+    eprintln!(
+        "soldr gc purge: selected {}; succeeded {}; failed {}; reclaimed {}",
+        summary.selected_count,
+        summary.succeeded_count,
+        summary.failed_count,
+        soldr_cache::target_registry::human_size(summary.reclaimed_bytes)
+    );
+    if let Some(path) = error_log_path {
+        eprintln!(
+            "soldr gc purge: detailed deletion errors written to {}",
+            path.display()
+        );
+    }
+}
+
 fn gc_largest_candidates(
     candidates: &[soldr_cache::gc::GcCandidate],
     limit: usize,
@@ -3061,7 +3187,16 @@ fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
     }
 }
 
-fn prompt_yes_no(prompt: &str) -> bool {
+fn prompt_gc_purge_candidate(cand: &soldr_cache::gc::GcCandidate) -> bool {
+    prompt_yes_no_default_yes(&format!(
+        "soldr gc: delete {} ({}, age {}) ? [Y/n] ",
+        cand.path.display(),
+        soldr_cache::target_registry::human_size(cand.size_bytes),
+        soldr_cache::target_registry::human_age(cand.age_seconds),
+    ))
+}
+
+fn prompt_yes_no_default_yes(prompt: &str) -> bool {
     use std::io::{BufRead, Write};
     eprint!("{prompt}");
     let _ = std::io::stderr().flush();
@@ -3070,7 +3205,11 @@ fn prompt_yes_no(prompt: &str) -> bool {
     if stdin.lock().read_line(&mut line).is_err() {
         return false;
     }
-    matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    parse_gc_purge_answer(&line)
+}
+
+fn parse_gc_purge_answer(input: &str) -> bool {
+    matches!(input.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes")
 }
 
 /// Resolve the configured `gc.allowlist_roots`, falling back to
@@ -3633,16 +3772,17 @@ mod tests {
         cargo_args_specify_target, cargo_args_use_reserved_no_cache,
         cargo_metadata_passthrough_args, cargo_profile, cargo_target_triple,
         compute_plan_inputs_hash, dropped_artifact_classes, evaluate_warm_restore_skip,
-        extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
+        extract_as_pin, first_cargo_subcommand, gc_purge_worker_count_for, is_sccache_wrapper,
         low_disk_warning_for_free_bytes, low_disk_warning_for_path, normalize_version,
-        parse_rust_artifact_cache_tar_threads, parse_tool_spec, resolve_bundle_walk_thread_count,
-        rustc_wrapper_mode_from_env_var, rustup_resolution_failure, selected_cargo_args,
-        should_skip_warm_restore, should_trampoline, stderr_indicates_unknown_session,
-        walk_bundle_files, warm_restore_sentinel_path, warm_restore_skip_enabled,
-        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, Cli,
-        Commands, GcSubcommand, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
-        RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
-        WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
+        parse_gc_purge_answer, parse_rust_artifact_cache_tar_threads, parse_tool_spec,
+        resolve_bundle_walk_thread_count, rustc_wrapper_mode_from_env_var,
+        rustup_resolution_failure, selected_cargo_args, should_skip_warm_restore,
+        should_trampoline, stderr_indicates_unknown_session, walk_bundle_files,
+        warm_restore_sentinel_path, warm_restore_skip_enabled, write_thin_manifest,
+        write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, Cli, Commands,
+        GcSubcommand, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
+        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
+        WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
         LOW_DISK_WARNING_THRESHOLD_BYTES, SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME,
         WARM_RESTORE_MAX_AGE_SECONDS,
     };
@@ -3731,6 +3871,24 @@ mod tests {
             }
             _ => panic!("expected gc purge command"),
         }
+    }
+
+    #[test]
+    fn gc_purge_prompt_defaults_enter_to_yes() {
+        for input in ["", "\n", "y", "Y", "yes", " YES "] {
+            assert!(parse_gc_purge_answer(input), "expected {input:?} to accept");
+        }
+        for input in ["n", "no", "anything else"] {
+            assert!(!parse_gc_purge_answer(input), "expected {input:?} to skip");
+        }
+    }
+
+    #[test]
+    fn gc_purge_worker_count_is_bounded() {
+        assert_eq!(gc_purge_worker_count_for(0), 1);
+        assert_eq!(gc_purge_worker_count_for(1), 1);
+        assert_eq!(gc_purge_worker_count_for(2), 2);
+        assert_eq!(gc_purge_worker_count_for(16), 4);
     }
 
     #[test]

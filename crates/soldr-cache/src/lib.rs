@@ -24,6 +24,11 @@ pub fn gc_warning_marker_path(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(".gc_warning_marker")
 }
 
+/// Directory for root-scoped GC error logs.
+pub fn gc_log_dir(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join("logs").join("gc")
+}
+
 /// Environment variable used to carry cache enable/disable state from the
 /// front-door cargo command into child processes.
 pub const CACHE_ENABLED_ENV_VAR: &str = "SOLDR_CACHE_ENABLED";
