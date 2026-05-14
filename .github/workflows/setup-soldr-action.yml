@@ -101,10 +101,9 @@ jobs:
       - name: Verify cache isolation
         shell: pwsh
         env:
-          ACTION_CACHE_DIR: ${{ steps.setup.outputs.cache-dir }}
           SOLDR_DOGFOOD_BUILD_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
         run: |
-          $actionCache = [System.IO.Path]::GetFullPath($env:ACTION_CACHE_DIR)
+          $actionCache = [System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)
           $buildCache = [System.IO.Path]::GetFullPath($env:SOLDR_DOGFOOD_BUILD_CACHE_DIR)
           $actionPrefix = $actionCache.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
           $buildPrefix = $buildCache.TrimEnd([System.IO.Path]::DirectorySeparatorChar, [System.IO.Path]::AltDirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar

@@ -130,6 +130,8 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "dogfood-test-seconds=" in workflow
     assert "Stop dogfood zccache before cache save" in workflow
     assert "& $zccache stop" in workflow
+    assert "ACTION_CACHE_DIR: ${{ steps.setup.outputs.cache-dir }}" not in workflow
+    assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:
@@ -244,7 +246,6 @@ def test_main_treats_hot_as_thin_alias_with_lockfile(
 
     module.main()
 
-    cache_root = runner_temp / "setup-soldr"
     bundle_path = runner_temp / "setup-soldr-target-thin"
     outputs = github_output.read_text(encoding="utf-8")
     assert "target_cache_enabled=true" in outputs
