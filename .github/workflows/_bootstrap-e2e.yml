@@ -56,8 +56,19 @@ jobs:
           ref: ${{ inputs.third_party_ref }}
           path: ${{ inputs.third_party_path }}
 
+      - name: Verify setup-soldr pin matches v0
+        shell: bash
+        working-directory: soldr
+        run: |
+          set -euo pipefail
+          if command -v python3 >/dev/null 2>&1; then
+            python3 .github/scripts/verify_setup_soldr_pin.py
+          else
+            python .github/scripts/verify_setup_soldr_pin.py
+          fi
+
       - name: Setup Soldr cache and toolchain
-        uses: ./soldr
+        uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656 # @v0
         with:
           toolchain-file: soldr/rust-toolchain.toml
           cache-key-suffix: bootstrap-${{ inputs.target }}
