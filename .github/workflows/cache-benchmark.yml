@@ -430,7 +430,7 @@ jobs:
       - id: setup-soldr
         # This is zackees/setup-soldr@v0 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@d7be70d3960d2401a8974a11169429c0c846f7db
+        uses: zackees/setup-soldr@f3f2d86d0908974e746cab3b00a09f98d570bb8c
         with:
           linker: platform-default
 
