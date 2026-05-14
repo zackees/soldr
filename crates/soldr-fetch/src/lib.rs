@@ -47,7 +47,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.4.6";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.4.7";
 const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
     ("zccache-cli", "zccache"),
     ("zccache-daemon", "zccache-daemon"),
@@ -740,6 +740,9 @@ fn match_asset<'a>(
         if name.contains("src") || name.contains("source") {
             continue;
         }
+        if name.contains("-debug.") {
+            continue;
+        }
 
         // Respect the resolved ABI/libc instead of assuming Windows is always MSVC.
         if target.os == Os::Windows && target.env == Env::Msvc && name.contains("gnu") {
@@ -1054,6 +1057,22 @@ mod tests {
 
         let selected = match_asset(&assets, &target).unwrap();
         assert_eq!(selected.name, "tool-x86_64-unknown-linux-musl.tar.gz");
+    }
+
+    #[test]
+    fn match_asset_skips_debug_sidecar_archives() {
+        let assets = vec![
+            asset("tool-x86_64-pc-windows-msvc-debug.zip"),
+            asset("tool-x86_64-pc-windows-msvc.zip"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            env: Env::Msvc,
+        };
+
+        let selected = match_asset(&assets, &target).unwrap();
+        assert_eq!(selected.name, "tool-x86_64-pc-windows-msvc.zip");
     }
 
     #[test]
