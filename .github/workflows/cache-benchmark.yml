@@ -65,13 +65,15 @@ jobs:
       - id: setup-soldr
         uses: zackees/setup-soldr@v0
         with:
-          cache: "false"
-          build-cache: "false"
-          target-cache: "false"
+          cache: "true"
 
       - name: Ensure benchmark target
         shell: bash
         run: rustup target add "${{ steps.config.outputs.target }}"
+
+      - name: Build soldr with setup-soldr
+        shell: bash
+        run: soldr cargo build --package soldr-cli --release --locked --target "${{ steps.config.outputs.target }}"
 
       - name: Prepare zccache tool
         uses: ./.github/actions/cache-benchmark-zccache
