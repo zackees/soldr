@@ -3108,6 +3108,7 @@ struct ZccacheBuildSession {
     session_id: String,
     session_log_path: std::path::PathBuf,
     journal_path: std::path::PathBuf,
+    session_stats_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3198,6 +3199,7 @@ async fn prepare_zccache_build(
     let session_log_path_arg = session_log_path.display().to_string();
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_path_arg = journal_path.display().to_string();
+    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
     let session_json = run_zccache_command_in_cache_dir(
         &fetch.binary_path,
         &[
@@ -3230,13 +3232,14 @@ async fn prepare_zccache_build(
         session_id,
         session_log_path,
         journal_path,
+        session_stats_path,
     })
 }
 
 fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let output = run_zccache_command_in_cache_dir(
+    let output = run_zccache_command_raw_in_cache_dir(
         &session.binary_path,
-        &["session-end", &session.session_id],
+        &["session-end", &session.session_id, "--json"],
         &session.cache_dir,
     )?;
     if session.session_log_path.exists() {
@@ -3245,12 +3248,124 @@ fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError>
             session.session_log_path.display()
         );
     }
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stats_json = stdout.trim();
+        if !stats_json.is_empty() {
+            write_zccache_session_stats_json(session, stats_json)?;
+            let stats = parse_zccache_session_stats_json(stats_json)?;
+            print_zccache_session_stats(&stats, &session.session_stats_path);
+        }
+        return Ok(());
+    }
+
+    if zccache_json_flag_unsupported(&output) {
+        eprintln!(
+            "soldr: zccache JSON session summary unavailable; falling back to text session-end"
+        );
+        finish_zccache_build_text_fallback(session)?;
+        return Ok(());
+    }
+
+    Err(SoldrError::Other(zccache_command_failure_message(
+        &["session-end", &session.session_id, "--json"],
+        &output,
+    )))
+}
+
+fn finish_zccache_build_text_fallback(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
+    let output = run_zccache_command_in_cache_dir(
+        &session.binary_path,
+        &["session-end", &session.session_id],
+        &session.cache_dir,
+    )?;
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
         eprintln!("soldr: zccache session summary");
         eprintln!("{stdout}");
     }
     Ok(())
+}
+
+fn write_zccache_session_stats_json(
+    session: &ZccacheBuildSession,
+    stats_json: &str,
+) -> Result<(), SoldrError> {
+    if let Some(parent) = session.session_stats_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&session.session_stats_path, stats_json)?;
+    Ok(())
+}
+
+fn parse_zccache_session_stats_json(stats_json: &str) -> Result<serde_json::Value, SoldrError> {
+    serde_json::from_str(stats_json).map_err(|err| {
+        SoldrError::Other(format!(
+            "failed to parse zccache JSON session summary: {err}"
+        ))
+    })
+}
+
+fn print_zccache_session_stats(stats: &serde_json::Value, stats_path: &std::path::Path) {
+    eprintln!("soldr: zccache session summary");
+    eprintln!("  stats file: {}", stats_path.display());
+    match stats.get("status").and_then(serde_json::Value::as_str) {
+        Some("ok") => {
+            let hits = json_u64(stats, "hits").unwrap_or(0);
+            let misses = json_u64(stats, "misses").unwrap_or(0);
+            let non_cacheable = json_u64(stats, "non_cacheable").unwrap_or(0);
+            let errors = json_u64(stats, "errors").unwrap_or(0);
+            let compilations = json_u64(stats, "compilations").unwrap_or(hits + misses);
+            eprintln!(
+                "  compilations: {compilations}; hits: {hits}; misses: {misses}; non-cacheable: {non_cacheable}; errors: {errors}"
+            );
+            if let Some(hit_rate) = json_f64(stats, "hit_rate") {
+                eprintln!("  hit rate: {:.1}%", hit_rate * 100.0);
+            } else {
+                eprintln!("  hit rate: n/a");
+            }
+            let unique_sources = json_u64(stats, "unique_sources").unwrap_or(0);
+            let bytes_read = json_u64(stats, "bytes_read").unwrap_or(0);
+            let bytes_written = json_u64(stats, "bytes_written").unwrap_or(0);
+            eprintln!(
+                "  unique sources: {unique_sources}; bytes read: {bytes_read}; bytes written: {bytes_written}"
+            );
+            let time_saved_ms = json_u64(stats, "time_saved_ms").unwrap_or(0);
+            let duration_ms = json_u64(stats, "duration_ms").unwrap_or(0);
+            eprintln!("  time saved: {time_saved_ms} ms; duration: {duration_ms} ms");
+        }
+        Some("unavailable") => {
+            let reason = stats
+                .get("reason")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            eprintln!("  status: unavailable ({reason})");
+        }
+        Some("error") => {
+            let error = stats
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown error");
+            eprintln!("  status: error ({error})");
+        }
+        Some(status) => eprintln!("  status: {status}"),
+        None => eprintln!("  status: unknown"),
+    }
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
+}
+
+fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
+    value.get(key).and_then(serde_json::Value::as_f64)
+}
+
+fn zccache_json_flag_unsupported(output: &std::process::Output) -> bool {
+    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+    stderr.contains("unexpected argument")
+        || stderr.contains("unrecognized option")
+        || stderr.contains("found argument")
 }
 
 fn clear_zccache_cache() -> Result<(), SoldrError> {
@@ -3791,6 +3906,8 @@ struct ZccacheStatusSnapshot {
     session_log_present: bool,
     journal_path: String,
     journal_present: bool,
+    session_stats_path: String,
+    session_stats_present: bool,
     binary_path: Option<String>,
     binary_fetched: bool,
     status_lines: Vec<String>,
@@ -3839,6 +3956,8 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
     let session_log_present = session_log_path.exists();
     let journal_path = soldr_cache::session_journal_path(&zccache_dir);
     let journal_present = journal_path.exists();
+    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
+    let session_stats_present = session_stats_path.exists();
 
     match cached_managed_zccache(paths)? {
         Some(fetch) => {
@@ -3853,6 +3972,8 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
                 session_log_present,
                 journal_path: journal_path.display().to_string(),
                 journal_present,
+                session_stats_path: session_stats_path.display().to_string(),
+                session_stats_present,
                 binary_path: Some(fetch.binary_path.display().to_string()),
                 binary_fetched: true,
                 status_lines,
@@ -3866,6 +3987,8 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             session_log_present,
             journal_path: journal_path.display().to_string(),
             journal_present,
+            session_stats_path: session_stats_path.display().to_string(),
+            session_stats_present,
             binary_path: None,
             binary_fetched: false,
             status_lines: Vec::new(),
@@ -3912,6 +4035,15 @@ fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
         "last session journal: {} ({})",
         snapshot.journal_path,
         if snapshot.journal_present {
+            "present"
+        } else {
+            "missing"
+        }
+    );
+    println!(
+        "last session stats: {} ({})",
+        snapshot.session_stats_path,
+        if snapshot.session_stats_present {
             "present"
         } else {
             "missing"
@@ -4573,6 +4705,7 @@ mod tests {
             session_id: "session-1".to_string(),
             session_log_path: root.join("cache/logs/last-session.log"),
             journal_path: root.join("cache/logs/last-session.jsonl"),
+            session_stats_path: root.join("cache/logs/last-session-stats.json"),
         };
         let args = vec![
             "build".to_string(),
@@ -4767,6 +4900,7 @@ mod tests {
             session_id: "session-thinv2".to_string(),
             session_log_path: root.join("cache/logs/last-session.log"),
             journal_path: root.join("cache/logs/last-session.jsonl"),
+            session_stats_path: root.join("cache/logs/last-session-stats.json"),
         };
 
         let plan = build_rust_artifact_plan(

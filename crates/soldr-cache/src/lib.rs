@@ -127,6 +127,10 @@ pub fn session_log_path(zccache_dir: &Path) -> PathBuf {
     zccache_dir.join("logs").join("last-session.log")
 }
 
+pub fn session_stats_path(zccache_dir: &Path) -> PathBuf {
+    zccache_dir.join("logs").join("last-session-stats.json")
+}
+
 #[derive(Debug, Deserialize)]
 struct SessionStartResponse {
     session_id: String,
@@ -136,8 +140,8 @@ struct SessionStartResponse {
 mod tests {
     use super::{
         cache_enabled_env_value, cache_enabled_from_env_var, parse_zccache_session_id, sccache_dir,
-        session_journal_path, session_log_path, zccache_dir, CACHE_DISABLED_VALUE,
-        CACHE_ENABLED_VALUE,
+        session_journal_path, session_log_path, session_stats_path, zccache_dir,
+        CACHE_DISABLED_VALUE, CACHE_ENABLED_VALUE,
     };
     use soldr_core::SoldrPaths;
     use std::{ffi::OsStr, path::Path};
@@ -232,6 +236,17 @@ mod tests {
             Path::new("C:\\soldr-root\\cache\\zccache")
                 .join("logs")
                 .join("last-session.log")
+        );
+    }
+
+    #[test]
+    fn session_stats_path_uses_logs_directory() {
+        let path = session_stats_path(Path::new("C:\\soldr-root\\cache\\zccache"));
+        assert_eq!(
+            path,
+            Path::new("C:\\soldr-root\\cache\\zccache")
+                .join("logs")
+                .join("last-session-stats.json")
         );
     }
 }
