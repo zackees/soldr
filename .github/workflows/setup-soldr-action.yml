@@ -69,6 +69,7 @@ jobs:
         uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6
         with:
           cache: true
+          linker: platform-default
           # Keep the action runtime cache separate from the Soldr build under
           # test. The dogfood build below overrides SOLDR_CACHE_DIR so soldr
           # owns zccache under that separate root.

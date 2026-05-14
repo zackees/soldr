@@ -217,6 +217,7 @@ jobs:
       - name: Setup Soldr cache and toolchain
         uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
         with:
+          linker: platform-default
           cache-key-suffix: release-${{ matrix.target }}
 
       - name: Install target toolchain support

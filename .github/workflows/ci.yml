@@ -36,6 +36,7 @@ jobs:
 
       - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
         with:
+          linker: platform-default
           # Formatting does not benefit from a restored target directory, but
           # clippy still uses soldr's compilation cache below.
           target-cache: false
@@ -71,6 +72,8 @@ jobs:
           fi
 
       - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
+        with:
+          linker: platform-default
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -106,6 +109,8 @@ jobs:
           fi
 
       - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
+        with:
+          linker: platform-default
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -141,6 +146,8 @@ jobs:
           fi
 
       - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
+        with:
+          linker: platform-default
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
