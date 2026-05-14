@@ -1,4 +1,4 @@
-name: Cache Benchmark
+name: Run Benchmark
 
 on:
   push:

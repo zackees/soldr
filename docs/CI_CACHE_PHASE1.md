@@ -9,7 +9,7 @@ The benchmark pipeline is now driven by [`benchmark.toml`](../benchmark.toml):
 - mutation scenarios live in the TOML file
 - the rendered page labels come from the same config
 
-`Cache Benchmark` reads that config and currently benchmarks three profile families on Linux x64:
+`Run Benchmark` reads that config and currently benchmarks three profile families on Linux x64:
 
 - `release`: `soldr cargo build --package soldr-cli --release --locked --target <target>`
 - `quick`: `soldr cargo check -p soldr-cli --locked --target <target>`
@@ -49,7 +49,7 @@ Scenarios from `benchmark.toml`:
 
 Recommended run:
 
-1. Dispatch `Cache Benchmark`.
+1. Dispatch `Run Benchmark`.
 2. Leave `scenario=all` unless you only need one mutation row set.
 3. Leave `threshold_ratio=10` unless you are intentionally tightening or loosening the warm-path gate.
 4. Open the workflow summary for the compact warm comparison table.
