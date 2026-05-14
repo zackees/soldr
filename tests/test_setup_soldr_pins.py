@@ -1,23 +1,25 @@
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OLD_SETUP_SOLDR_SHA = "1937c19529f3690df5553a36dd33f39ccb20b070"
-SETUP_SOLDR_V0_2_SHA = "13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2"
-SETUP_SOLDR_V0_4_3_SHA = "6c48a0946390a3520a853e30fe417db7465b9119"
+VERIFY_SCRIPT_PATH = REPO_ROOT / ".github" / "scripts" / "verify_setup_soldr_pin.py"
 
 
-def test_workflows_pin_setup_soldr_v0_4_3() -> None:
-    workflow_paths = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
-    workflow_text = "\n".join(
-        path.read_text(encoding="utf-8") for path in workflow_paths
+def load_verify_module():
+    spec = importlib.util.spec_from_file_location(
+        "verify_setup_soldr_pin", VERIFY_SCRIPT_PATH
     )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    assert OLD_SETUP_SOLDR_SHA not in workflow_text
-    assert SETUP_SOLDR_V0_2_SHA not in workflow_text
-    assert workflow_text.count(f"zackees/setup-soldr@{SETUP_SOLDR_V0_4_3_SHA}") == 5
-    assert "v0.1.0 / v0" not in workflow_text
-    assert "v0.2.0 / v0" not in workflow_text
-    assert "v0.4.3 / v0" in workflow_text
+
+def test_workflows_pin_setup_soldr_to_current_v0_sha() -> None:
+    module = load_verify_module()
+
+    module.verify_setup_soldr_pins(REPO_ROOT)
