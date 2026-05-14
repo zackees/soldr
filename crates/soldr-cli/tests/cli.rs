@@ -45,8 +45,9 @@ fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     )
     .expect("failed to write gc config");
 
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
-        .expect("failed to open target registry");
+    let registry =
+        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+            .expect("failed to open target registry");
     let now = soldr_cache::target_registry::current_unix_seconds()
         .expect("failed to get current unix seconds");
     registry
@@ -67,8 +68,9 @@ fn seed_gc_file_candidate(cache_root: &Path, label: &str) -> PathBuf {
     )
     .expect("failed to write gc config");
 
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
-        .expect("failed to open target registry");
+    let registry =
+        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+            .expect("failed to open target registry");
     let now = soldr_cache::target_registry::current_unix_seconds()
         .expect("failed to get current unix seconds");
     registry
@@ -146,6 +148,7 @@ fn fake_cargo_script(log_path: &Path) -> String {
                ) else (\n\
                  echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
                  for /f \"tokens=1,* delims==\" %%A in ('set CARGO_TARGET_ 2^>nul') do @echo cargo_target_env %%A=%%B>>\"{0}\"\n\
+                 for /f \"tokens=1,* delims==\" %%A in ('set CARGO_PROFILE_ 2^>nul') do @echo cargo_profile_env %%A=%%B>>\"{0}\"\n\
                  echo {{}}\n\
                )\n\
                exit /b 0\n\
@@ -157,6 +160,7 @@ fn fake_cargo_script(log_path: &Path) -> String {
              )\n\
              echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
              for /f \"tokens=1,* delims==\" %%A in ('set CARGO_TARGET_ 2^>nul') do @echo cargo_target_env %%A=%%B>>\"{0}\"\n\
+             for /f \"tokens=1,* delims==\" %%A in ('set CARGO_PROFILE_ 2^>nul') do @echo cargo_profile_env %%A=%%B>>\"{0}\"\n\
              if defined RUSTC_WRAPPER (\n\
              call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name demo --emit dep-info,link\n\
              ) else (\n\
@@ -175,12 +179,18 @@ fn fake_cargo_script(log_path: &Path) -> String {
                  echo \"cargo_target_env $line\" >> \"{0}\"\n\
                done\n\
              }}\n\
+             log_cargo_profile_envs() {{\n\
+               env | grep '^CARGO_PROFILE_' | while IFS= read -r line; do\n\
+                 echo \"cargo_profile_env $line\" >> \"{0}\"\n\
+               done\n\
+             }}\n\
              if [ \"$1\" = \"metadata\" ]; then\n\
                if [ -n \"${{SOLDR_TEST_CARGO_METADATA_PATH:-}}\" ]; then\n\
                  cat \"$SOLDR_TEST_CARGO_METADATA_PATH\"\n\
                else\n\
                  echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
                  log_cargo_target_envs\n\
+                 log_cargo_profile_envs\n\
                  echo '{{}}'\n\
                fi\n\
                exit 0\n\
@@ -192,6 +202,7 @@ fn fake_cargo_script(log_path: &Path) -> String {
              fi\n\
              echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
              log_cargo_target_envs\n\
+             log_cargo_profile_envs\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
                \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name demo --emit dep-info,link\n\
              else\n\
@@ -856,8 +867,9 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
         log_path.display()
     );
 
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("data.db"))
-        .expect("failed to open target registry");
+    let registry =
+        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+            .expect("failed to open target registry");
     assert!(
         registry.get(&target).unwrap().is_some(),
         "failed deletion row should remain retryable"
@@ -1111,6 +1123,135 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         journal.exists(),
         "expected session journal at {}",
         journal.display()
+    );
+}
+
+#[test]
+fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
+    let cache_root = unique_temp_dir("cargo-debug-default-off");
+    let repo = unique_temp_dir("cargo-debug-default-repo");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("failed to seed Cargo.toml");
+    fs::create_dir_all(repo.join("src")).expect("failed to create src dir");
+    fs::write(repo.join("src").join("lib.rs"), "").expect("failed to seed lib.rs");
+
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let cargo_home = cache_root.join("cargo-home");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .current_dir(&repo)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("CARGO_HOME", &cargo_home)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("CARGO_PROFILE_DEV_DEBUG")
+        .env_remove("CARGO_PROFILE_TEST_DEBUG")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run first soldr cargo build");
+    assert!(
+        first.status.success(),
+        "first build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let second = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .current_dir(&repo)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("CARGO_HOME", &cargo_home)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("CARGO_PROFILE_DEV_DEBUG")
+        .env_remove("CARGO_PROFILE_TEST_DEBUG")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run second soldr cargo build");
+    assert!(
+        second.status.success(),
+        "second build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo_profile_env CARGO_PROFILE_DEV_DEBUG=false"),
+        "soldr should inject the dev profile debug override when unspecified: {log}"
+    );
+
+    let first_stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(
+        first_stderr.contains("Cargo profile.dev.debug is unspecified")
+            && first_stderr.contains("CARGO_PROFILE_DEV_DEBUG=false"),
+        "first invocation should warn about the defaulted debug setting: {first_stderr}"
+    );
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        !second_stderr.contains("Cargo profile.dev.debug is unspecified"),
+        "second invocation for the same repo should not repeat the debug-default warning: {second_stderr}"
+    );
+}
+
+#[test]
+fn cargo_front_door_respects_dev_debug_in_cargo_config_toml() {
+    let cache_root = unique_temp_dir("cargo-debug-config-explicit");
+    let repo = unique_temp_dir("cargo-debug-config-repo");
+    fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("failed to seed Cargo.toml");
+    fs::create_dir_all(repo.join(".cargo")).expect("failed to create .cargo dir");
+    fs::write(
+        repo.join(".cargo").join("config.toml"),
+        "[profile.dev]\ndebug = true\n",
+    )
+    .expect("failed to seed .cargo/config.toml");
+
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .current_dir(&repo)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("CARGO_HOME", cache_root.join("cargo-home"))
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("CARGO_PROFILE_DEV_DEBUG")
+        .env_remove("CARGO_PROFILE_TEST_DEBUG")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with explicit config debug");
+
+    assert!(
+        output.status.success(),
+        "build with explicit cargo config debug failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        !log.contains("cargo_profile_env CARGO_PROFILE_DEV_DEBUG=false"),
+        "explicit .cargo/config.toml profile.dev.debug must not be overridden: {log}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Cargo profile.dev.debug is unspecified"),
+        "explicit .cargo/config.toml profile.dev.debug should suppress warning: {stderr}"
     );
 }
 

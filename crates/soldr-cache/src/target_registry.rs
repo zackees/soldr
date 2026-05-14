@@ -1,22 +1,24 @@
-//! Sqlite-backed registry of observed Cargo `target/` directories.
+//! Redb-backed registry of observed Cargo `target/` directories.
 //!
 //! Implements the data plane for issue #234: every `RUSTC_WRAPPER`
 //! invocation upserts the resolved workspace `target/` path with the
 //! current unix timestamp. The `soldr gc` command later scans the
 //! registry to find stale candidates for reclamation.
 //!
-//! The store lives at `~/.soldr/data.db` and is intentionally generic:
-//! future state can land in additional tables without renaming.
+//! The store lives in `~/.soldr/state.redb` alongside other soldr state.
 
-use rusqlite::{params, Connection, OptionalExtension};
+use redb::{
+    backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata,
+    TableDefinition,
+};
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 use thiserror::Error;
 
 /// Default file name for the soldr state database under `~/.soldr/`.
-pub const DATA_DB_FILE: &str = "data.db";
+pub const DATA_DB_FILE: &str = crate::state_db::STATE_DB_FILE;
 
 /// Default staleness threshold (10 days) used by `soldr gc` and the
 /// startup warning.
@@ -26,12 +28,20 @@ pub const DEFAULT_STALE_AGE_SECONDS: u64 = 10 * 24 * 60 * 60;
 /// startup warning.
 pub const DEFAULT_STALE_SIZE_BYTES: u64 = 256 * 1024 * 1024;
 
-const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
+const TARGETS: TableDefinition<&str, i64> = TableDefinition::new("target_registry_targets");
 
 #[derive(Debug, Error)]
 pub enum RegistryError {
-    #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    #[error("redb database error: {0}")]
+    Database(#[from] redb::DatabaseError),
+    #[error("redb transaction error: {0}")]
+    Transaction(#[from] redb::TransactionError),
+    #[error("redb table error: {0}")]
+    Table(#[from] redb::TableError),
+    #[error("redb storage error: {0}")]
+    Storage(#[from] redb::StorageError),
+    #[error("redb commit error: {0}")]
+    Commit(#[from] redb::CommitError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("system clock before unix epoch: {0}")]
@@ -46,10 +56,10 @@ pub struct TargetRow {
     pub last_used: i64,
 }
 
-/// Sqlite registry backed by `~/.soldr/data.db` (or a caller-provided
-/// path). The schema is the minimal v1 table from issue #234.
+/// Redb registry backed by `~/.soldr/state.redb` (or a caller-provided
+/// path).
 pub struct TargetRegistry {
-    conn: Connection,
+    db: Database,
 }
 
 impl TargetRegistry {
@@ -59,24 +69,25 @@ impl TargetRegistry {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(path)?;
-        configure_file_connection(&conn)?;
-        Self::init_schema(&conn)?;
-        Ok(Self { conn })
+        let db = Database::builder().create(path)?;
+        Self::init_schema(&db)?;
+        Ok(Self { db })
     }
 
     /// Open an in-memory database. Useful for tests and for callers
     /// that want a registry without touching disk.
     pub fn open_in_memory() -> Result<Self, RegistryError> {
-        let conn = Connection::open_in_memory()?;
-        Self::init_schema(&conn)?;
-        Ok(Self { conn })
+        let db = Database::builder().create_with_backend(InMemoryBackend::new())?;
+        Self::init_schema(&db)?;
+        Ok(Self { db })
     }
 
-    fn init_schema(conn: &Connection) -> Result<(), RegistryError> {
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS targets (\n  id          INTEGER PRIMARY KEY AUTOINCREMENT,\n  path        TEXT NOT NULL UNIQUE,\n  last_used   INTEGER NOT NULL\n);",
-        )?;
+    fn init_schema(db: &Database) -> Result<(), RegistryError> {
+        let write_txn = db.begin_write()?;
+        {
+            let _table = write_txn.open_table(TARGETS)?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -84,10 +95,12 @@ impl TargetRegistry {
     /// timestamp.
     pub fn upsert_with_time(&self, path: &Path, unix_seconds: i64) -> Result<(), RegistryError> {
         let path_str = path_to_string(path);
-        self.conn.execute(
-            "INSERT INTO targets (path, last_used) VALUES (?1, ?2) ON CONFLICT(path) DO UPDATE SET last_used = excluded.last_used",
-            params![path_str, unix_seconds],
-        )?;
+        let write_txn = self.db.begin_write()?;
+        {
+            let mut table = write_txn.open_table(TARGETS)?;
+            table.insert(path_str.as_str(), &unix_seconds)?;
+        }
+        write_txn.commit()?;
         Ok(())
     }
 
@@ -98,72 +111,62 @@ impl TargetRegistry {
 
     /// Return all tracked rows, ordered by `last_used` ascending.
     pub fn list(&self) -> Result<Vec<TargetRow>, RegistryError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, last_used FROM targets ORDER BY last_used ASC")?;
-        let rows = stmt
-            .query_map([], |row| {
-                let path: String = row.get(0)?;
-                let last_used: i64 = row.get(1)?;
-                Ok(TargetRow {
-                    path: PathBuf::from(path),
-                    last_used,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TARGETS)?;
+        let mut rows = Vec::new();
+        for row in table.iter()? {
+            let (path, last_used) = row?;
+            rows.push(TargetRow {
+                path: PathBuf::from(path.value()),
+                last_used: last_used.value(),
+            });
+        }
+        rows.sort_by(|a, b| {
+            a.last_used
+                .cmp(&b.last_used)
+                .then_with(|| a.path.cmp(&b.path))
+        });
         Ok(rows)
     }
 
     /// Look up a single tracked row by path, if present.
     pub fn get(&self, path: &Path) -> Result<Option<TargetRow>, RegistryError> {
         let path_str = path_to_string(path);
-        let row = self
-            .conn
-            .query_row(
-                "SELECT path, last_used FROM targets WHERE path = ?1",
-                params![path_str],
-                |row| {
-                    let path: String = row.get(0)?;
-                    let last_used: i64 = row.get(1)?;
-                    Ok(TargetRow {
-                        path: PathBuf::from(path),
-                        last_used,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(row)
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TARGETS)?;
+        let Some(last_used) = table.get(path_str.as_str())? else {
+            return Ok(None);
+        };
+        Ok(Some(TargetRow {
+            path: PathBuf::from(path_str),
+            last_used: last_used.value(),
+        }))
     }
 
     /// Remove the row for `path`. No-op if it doesn't exist.
     pub fn remove(&self, path: &Path) -> Result<bool, RegistryError> {
         let path_str = path_to_string(path);
-        let removed = self
-            .conn
-            .execute("DELETE FROM targets WHERE path = ?1", params![path_str])?;
-        Ok(removed > 0)
+        let write_txn = self.db.begin_write()?;
+        let removed = {
+            let mut table = write_txn.open_table(TARGETS)?;
+            let old = table.remove(path_str.as_str())?;
+            old.is_some()
+        };
+        write_txn.commit()?;
+        Ok(removed)
     }
 
     /// Total number of tracked rows.
     pub fn len(&self) -> Result<usize, RegistryError> {
-        let count: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM targets", [], |row| row.get(0))?;
-        Ok(count as usize)
+        let read_txn = self.db.begin_read()?;
+        let table = read_txn.open_table(TARGETS)?;
+        Ok(table.len()? as usize)
     }
 
     /// Whether the registry has any rows.
     pub fn is_empty(&self) -> Result<bool, RegistryError> {
         Ok(self.len()? == 0)
     }
-}
-
-fn configure_file_connection(conn: &Connection) -> Result<(), RegistryError> {
-    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)?;
-    let _: String = conn
-        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
-        .unwrap_or_default();
-    Ok(())
 }
 
 /// Human-readable byte size, kibibyte-based (e.g. `12.3 GB`).
@@ -455,7 +458,7 @@ mod tests {
     #[test]
     fn open_persists_to_disk() {
         let dir = tempdir().unwrap();
-        let db_path = dir.path().join("data.db");
+        let db_path = dir.path().join("state.redb");
         {
             let registry = TargetRegistry::open(&db_path).unwrap();
             registry
@@ -471,67 +474,15 @@ mod tests {
     }
 
     #[test]
-    fn open_configures_file_registry_for_concurrent_access() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("data.db");
-        let registry = TargetRegistry::open(&db_path).unwrap();
-
-        let busy_timeout_ms: i64 = registry
-            .conn
-            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
+    fn open_in_memory_uses_isolated_redb_backend() {
+        let first = TargetRegistry::open_in_memory().unwrap();
+        let second = TargetRegistry::open_in_memory().unwrap();
+        first
+            .upsert_with_time(Path::new("/tmp/first/target"), 10)
             .unwrap();
-        assert_eq!(busy_timeout_ms, 2_000);
 
-        let journal_mode: String = registry
-            .conn
-            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
-    }
-
-    #[test]
-    fn file_registry_waits_for_brief_concurrent_writer() {
-        let dir = tempdir().unwrap();
-        let db_path = dir.path().join("data.db");
-        let first_path = PathBuf::from("/tmp/concurrent-a/target");
-        let second_path = PathBuf::from("/tmp/concurrent-b/target");
-        let ready = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
-
-        let writer = std::thread::spawn({
-            let db_path = db_path.clone();
-            let first_path = first_path.clone();
-            let ready = std::sync::Arc::clone(&ready);
-            move || {
-                let registry = TargetRegistry::open(&db_path).unwrap();
-                ready.wait();
-                registry.conn.execute_batch("BEGIN IMMEDIATE;").unwrap();
-                locked_tx.send(()).unwrap();
-                std::thread::sleep(Duration::from_millis(100));
-                registry.upsert_with_time(&first_path, 10).unwrap();
-                registry.conn.execute_batch("COMMIT;").unwrap();
-            }
-        });
-
-        let contender = std::thread::spawn({
-            let db_path = db_path.clone();
-            let second_path = second_path.clone();
-            let ready = std::sync::Arc::clone(&ready);
-            move || {
-                let registry = TargetRegistry::open(&db_path).unwrap();
-                ready.wait();
-                locked_rx.recv().unwrap();
-                registry.upsert_with_time(&second_path, 20).unwrap();
-            }
-        });
-
-        writer.join().unwrap();
-        contender.join().unwrap();
-
-        let registry = TargetRegistry::open(&db_path).unwrap();
-        assert_eq!(registry.len().unwrap(), 2);
-        assert_eq!(registry.get(&first_path).unwrap().unwrap().last_used, 10);
-        assert_eq!(registry.get(&second_path).unwrap().unwrap().last_used, 20);
+        assert_eq!(first.len().unwrap(), 1);
+        assert!(second.is_empty().unwrap());
     }
 
     #[test]

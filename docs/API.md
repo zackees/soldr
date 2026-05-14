@@ -173,7 +173,7 @@ soldr version --json
 ### `soldr gc`
 
 Review reclaimable Cargo `target/` directories tracked in
-`~/.soldr/data.db`. Implemented by issue #234 and made safe-by-default
+`~/.soldr/state.redb`. Implemented by issue #234 and made safe-by-default
 by issue #289. The wrapper-mode hot path upserts each invocation's
 resolved workspace `target/` path with the current timestamp; `soldr gc`
 walks the registry, drops missing rows, applies safety guards, and
@@ -320,7 +320,7 @@ When soldr manages zccache itself, a caller-provided `ZCCACHE_CACHE_DIR` must ma
 |   |-- zccache/   # managed zccache artifact + state root (set via ZCCACHE_CACHE_DIR)
 |   `-- sccache/   # injected when SOLDR_RUSTC_WRAPPER=sccache and SCCACHE_DIR is unset
 |-- config.toml
-|-- data.db                # sqlite registry of tracked target/ dirs (issue #234)
+|-- state.redb             # redb state store, including tracked target/ dirs
 |-- .gc_warning_marker     # last-emitted timestamp for the stale-target startup warning
 `-- daemon.*
 ```
