@@ -90,6 +90,37 @@ fn path_display_variants(path: &Path) -> Vec<String> {
     variants
 }
 
+fn logged_cargo_wrapper(log: &str) -> Option<String> {
+    log.lines().find_map(|line| {
+        let wrapper = line.strip_prefix("cargo wrapper=")?;
+        wrapper
+            .split_once(" rustc=")
+            .map(|(wrapper, _)| wrapper.to_string())
+    })
+}
+
+fn log_contains_owned_soldr_wrapper(log: &str, cache_root: &Path) -> bool {
+    if log.contains(env!("CARGO_BIN_EXE_soldr")) {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        let Some(wrapper) = logged_cargo_wrapper(log) else {
+            return false;
+        };
+        let runtime_root = cache_root.join("runtime").join("soldr-self");
+        path_display_variants(&runtime_root)
+            .iter()
+            .any(|path| wrapper.contains(path))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cache_root;
+        false
+    }
+}
+
 fn log_contains_toolchain_homes(
     log: &str,
     prefix: &str,
@@ -1070,7 +1101,7 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         "fake cargo did not record wrapper env: {log}"
     );
     assert!(
-        log.contains(env!("CARGO_BIN_EXE_soldr")),
+        log_contains_owned_soldr_wrapper(&log, &cache_root),
         "soldr should own the wrapper slot in cache-enabled mode: {log}"
     );
     assert!(
@@ -1124,6 +1155,57 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         "expected session journal at {}",
         journal.display()
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
+    let cache_root = unique_temp_dir("windows-self-relocate-cache");
+    let worktree = unique_temp_dir("windows-self-relocate-worktree");
+    let source_dir = worktree.join("target").join("debug");
+    fs::create_dir_all(&source_dir).expect("failed to create copied exe dir");
+    let copied_soldr = source_dir.join("soldr.exe");
+    fs::copy(env!("CARGO_BIN_EXE_soldr"), &copied_soldr)
+        .expect("failed to copy soldr exe into temporary worktree");
+
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(&copied_soldr)
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run copied soldr exe");
+
+    assert!(
+        output.status.success(),
+        "copied soldr front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let wrapper = logged_cargo_wrapper(&log).expect("fake cargo should log RUSTC_WRAPPER");
+    assert!(
+        path_display_variants(&cache_root.join("runtime").join("soldr-self"))
+            .iter()
+            .any(|path| wrapper.contains(path)),
+        "RUSTC_WRAPPER should point at the relocated runtime copy: {log}"
+    );
+    assert!(
+        !path_display_variants(&copied_soldr)
+            .iter()
+            .any(|path| wrapper.contains(path)),
+        "RUSTC_WRAPPER should not point at the original worktree copy: {log}"
+    );
+
+    fs::remove_dir_all(&worktree)
+        .expect("temporary worktree should be removable after soldr exits");
+    assert!(!worktree.exists());
 }
 
 #[test]

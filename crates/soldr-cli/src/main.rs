@@ -9,6 +9,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
 mod linker;
+mod self_relocate;
 
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
@@ -211,6 +212,14 @@ async fn main() {
     // RUSTC_WRAPPER mode: cargo passes `soldr /path/to/rustc <args...>`
     // Must be checked before clap parsing.
     let raw_args: Vec<String> = std::env::args().collect();
+    if should_self_relocate_for_invocation(&raw_args) {
+        match self_relocate::maybe_reexec_from_runtime(&raw_args) {
+            Ok(Some(code)) => std::process::exit(code),
+            Ok(None) => {}
+            Err(error) => std::process::exit(report_and_exit(error)),
+        }
+    }
+
     if raw_args.len() > 1 && is_wrapper_invocation(&raw_args[1]) {
         if let Some(version) = soldr_as_env_pin() {
             if should_trampoline(&version) {
@@ -410,6 +419,34 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 fn report_and_exit(error: SoldrError) -> i32 {
     eprintln!("soldr: {error}");
     1
+}
+
+fn should_self_relocate_for_invocation(raw_args: &[String]) -> bool {
+    let user_args = raw_args.get(1..).unwrap_or(&[]);
+    let Ok((_, args)) = extract_as_pin(user_args) else {
+        return false;
+    };
+
+    let mut cache_enabled = true;
+    let mut idx = 0usize;
+    while idx < args.len() {
+        match args[idx].as_str() {
+            "--no-cache" => {
+                cache_enabled = false;
+                idx += 1;
+            }
+            "--" => return false,
+            arg if arg.starts_with('-') => idx += 1,
+            "cargo" => {
+                return cache_enabled
+                    && cargo_args_are_cacheable(&args[idx + 1..])
+                    && matches!(rustc_wrapper_mode(), RustcWrapperMode::ManagedZccache);
+            }
+            _ => return false,
+        }
+    }
+
+    false
 }
 
 /// Extract `--as <version>` or `--as=<version>` from the leading flag
@@ -4208,15 +4245,15 @@ mod tests {
         low_disk_warning_for_free_bytes, low_disk_warning_for_path, normalize_version,
         parse_gc_purge_answer, parse_rust_artifact_cache_tar_threads, parse_tool_spec,
         resolve_bundle_walk_thread_count, rustc_wrapper_mode_from_env_var,
-        rustup_resolution_failure, selected_cargo_args, should_skip_warm_restore,
-        should_trampoline, stderr_indicates_unknown_session, walk_bundle_files,
-        warm_restore_sentinel_path, warm_restore_skip_enabled, write_thin_manifest,
-        write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, Cli, Commands,
-        GcSubcommand, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs, RustPlanPackages,
-        RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest, WarmRestoreSentinel,
-        WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
-        LOW_DISK_WARNING_THRESHOLD_BYTES, SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME,
-        WARM_RESTORE_MAX_AGE_SECONDS,
+        rustup_resolution_failure, selected_cargo_args, should_self_relocate_for_invocation,
+        should_skip_warm_restore, should_trampoline, stderr_indicates_unknown_session,
+        walk_bundle_files, warm_restore_sentinel_path, warm_restore_skip_enabled,
+        write_thin_manifest, write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, Cli,
+        Commands, GcSubcommand, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
+        RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
+        WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
+        LOW_DISK_WARNING_THRESHOLD_BYTES, RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
+        SKIP_WARM_RESTORE_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
     };
     use clap::Parser;
     use soldr_fetch::VersionSpec;
@@ -4406,6 +4443,47 @@ mod tests {
             rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
             RustcWrapperMode::Custom("sccache".into())
         );
+    }
+
+    #[test]
+    fn self_relocate_gate_targets_managed_cacheable_cargo_builds() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _wrapper = EnvVarGuard::remove(RUSTC_WRAPPER_OVERRIDE_ENV_VAR);
+
+        assert!(should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "cargo".into(),
+            "build".into(),
+        ]));
+        assert!(should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "--as".into(),
+            env!("CARGO_PKG_VERSION").into(),
+            "cargo".into(),
+            "test".into(),
+        ]));
+        assert!(!should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "cargo".into(),
+            "--version".into(),
+        ]));
+        assert!(!should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "--no-cache".into(),
+            "cargo".into(),
+            "build".into(),
+        ]));
+        assert!(!should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "version".into(),
+        ]));
+
+        let _custom = EnvVarGuard::set(RUSTC_WRAPPER_OVERRIDE_ENV_VAR, "sccache");
+        assert!(!should_self_relocate_for_invocation(&[
+            "soldr".into(),
+            "cargo".into(),
+            "build".into(),
+        ]));
     }
 
     #[test]
