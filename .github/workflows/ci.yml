@@ -34,7 +34,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656 # @v0
+      - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
         with:
           # Formatting does not benefit from a restored target directory, but
           # clippy still uses soldr's compilation cache below.
@@ -70,7 +70,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656 # @v0
+      - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -105,7 +105,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656 # @v0
+      - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
@@ -140,7 +140,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@7ca12d4e2430886fa9b2a4fc889ad0404d213656 # @v0
+      - uses: zackees/setup-soldr@81a358ea263b035cc2652ec73b42178085b06bc6 # @v0
 
       - name: Build workspace
         run: soldr cargo build --workspace --locked
