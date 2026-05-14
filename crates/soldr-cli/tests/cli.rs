@@ -2716,7 +2716,7 @@ fn status_json_reports_stable_machine_fields() {
     assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(json["cache_default_enabled"], true);
     assert_eq!(json["cache_enabled_for_invocation"], true);
-    assert_eq!(json["managed_zccache_version"], "1.4.8");
+    assert_eq!(json["managed_zccache_version"], "1.5.0");
     assert_eq!(json["root_dir"], cache_root.display().to_string());
     assert_eq!(
         json["cache_dir"],
@@ -2873,7 +2873,7 @@ fn cache_json_reports_managed_zccache_status() {
         serde_json::from_slice(&output.stdout).expect("cache --json did not return JSON");
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache");
-    assert_eq!(json["managed_zccache_version"], "1.4.8");
+    assert_eq!(json["managed_zccache_version"], "1.5.0");
     assert_eq!(json["zccache"]["session_log_present"], true);
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["session_stats_present"], true);
@@ -2902,6 +2902,83 @@ fn cache_json_reports_managed_zccache_status() {
         json["zccache"]["status_lines"][0],
         Value::String("hits=7".to_string())
     );
+}
+
+#[test]
+fn cache_report_json_emits_stable_schema_when_files_missing() {
+    let cache_root = unique_temp_dir("cache-report-empty");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cache", "report", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr cache report --json");
+
+    assert!(
+        output.status.success(),
+        "cache report --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .expect("cache report --json must produce parseable JSON");
+    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["command"], "cache report");
+    assert_eq!(json["managed_zccache_version"], "1.5.0");
+    assert_eq!(json["session_stats_present"], false);
+    assert_eq!(json["journal_present"], false);
+    assert!(json["last_session"].is_null());
+    assert!(json["rollups"].is_null());
+    assert!(
+        json["diagnoses"]
+            .as_array()
+            .expect("diagnoses array")
+            .is_empty(),
+        "diagnoses should start empty before rule passes are wired"
+    );
+    let notes = json["notes"]
+        .as_array()
+        .expect("notes should always be an array");
+    assert!(
+        !notes.is_empty(),
+        "missing files should produce explanatory notes"
+    );
+}
+
+#[test]
+fn cache_report_json_surfaces_persisted_session_stats() {
+    let cache_root = unique_temp_dir("cache-report-stats");
+    let zccache_dir = cache_root.join("cache").join("zccache");
+    let stats_path = zccache_dir.join("logs").join("last-session-stats.json");
+    fs::create_dir_all(stats_path.parent().expect("stats parent missing"))
+        .expect("failed to create logs dir");
+    fs::write(
+        &stats_path,
+        r#"{"status":"ok","session_id":"abc","hits":7,"misses":3,"compilations":10,"hit_rate":0.7,"time_saved_ms":12345}"#,
+    )
+    .expect("failed to seed session stats");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cache", "report", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr cache report --json");
+
+    assert!(
+        output.status.success(),
+        "cache report --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("cache report --json must produce JSON");
+    assert_eq!(json["session_stats_present"], true);
+    assert_eq!(json["last_session"]["status"], "ok");
+    assert_eq!(json["last_session"]["hits"], 7);
+    assert_eq!(json["last_session"]["misses"], 3);
+    assert_eq!(json["last_session"]["hit_rate"].as_f64(), Some(0.7));
 }
 
 #[test]
