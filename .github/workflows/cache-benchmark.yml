@@ -64,8 +64,6 @@ jobs:
 
       - id: setup-soldr
         uses: zackees/setup-soldr@v0
-        with:
-          cache: "true"
 
       - name: Ensure benchmark target
         shell: bash
