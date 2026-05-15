@@ -1030,7 +1030,80 @@ fn run_toolchain_prepare() -> Result<i32, SoldrError> {
         }
     }
 
+    if let Some(soldr_section) = manifest.soldr.as_ref() {
+        if !soldr_section.plugins.is_empty() {
+            let code = install_plugins(&soldr_section.plugins)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+    }
+
     Ok(0)
+}
+
+/// Install every plugin declared under `[soldr.plugins]` via the
+/// resolved cargo binary (so installs respect soldr-managed
+/// `$CARGO_HOME`). We deliberately do NOT route through the rustc
+/// wrapper machinery — that path is meant for compile units, not
+/// dev-tool installation. The active cargo already honors
+/// `rust-toolchain.toml` at exec time, so no explicit channel is
+/// passed.
+fn install_plugins(
+    plugins: &std::collections::BTreeMap<String, soldr_core::PluginSpec>,
+) -> Result<i32, SoldrError> {
+    for (name, spec) in plugins {
+        let code = cargo_install_plugin(name, spec)?;
+        if code != 0 {
+            return Ok(code);
+        }
+    }
+    Ok(0)
+}
+
+fn cargo_install_plugin(name: &str, spec: &soldr_core::PluginSpec) -> Result<i32, SoldrError> {
+    let cargo = resolve_toolchain_binary("cargo")?;
+    let mut command = std::process::Command::new(&cargo);
+    command.arg("install").arg(name);
+
+    let (version, locked, features, no_default_features) = match spec {
+        soldr_core::PluginSpec::Version(value) => (Some(value.as_str()), None, None, None),
+        soldr_core::PluginSpec::Detailed {
+            version,
+            locked,
+            features,
+            no_default_features,
+        } => (
+            version.as_deref(),
+            *locked,
+            features.as_deref(),
+            *no_default_features,
+        ),
+    };
+
+    if let Some(version) = version {
+        let trimmed = version.trim();
+        if !trimmed.is_empty() && trimmed != "*" {
+            command.arg("--version").arg(trimmed);
+        }
+    }
+    if locked == Some(true) {
+        command.arg("--locked");
+    }
+    if no_default_features == Some(true) {
+        command.arg("--no-default-features");
+    }
+    if let Some(features) = features {
+        let joined = features.join(",");
+        if !joined.is_empty() {
+            command.arg("--features").arg(joined);
+        }
+    }
+
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
