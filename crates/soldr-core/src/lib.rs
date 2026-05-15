@@ -541,12 +541,16 @@ impl SoldrPaths {
 // ---------------------------------------------------------------------------
 
 /// Top-level soldr configuration. Currently carries the `[gc]` section
-/// (issue #234) and an optional top-level `linker = "..."` field (issue
-/// #285); future sections can be added freely.
+/// (issue #234), the `[auto_gc]` section (issue #323) and an optional
+/// top-level `linker = "..."` field (issue #285); future sections can
+/// be added freely.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct SoldrConfig {
     #[serde(default)]
     pub gc: GcConfig,
+    /// Automatic GC under disk pressure (issue #323).
+    #[serde(default)]
+    pub auto_gc: AutoGcConfig,
     /// User-configured linker choice for `soldr cargo ...`. Mirrors the
     /// `SOLDR_LINKER` env var; the env var wins when both are set.
     /// Accepted values: `default`, `ld`, `mold`, `rust-lld`, `fast`.
@@ -569,6 +573,64 @@ pub struct GcConfig {
     pub allowlist_roots: Option<Vec<String>>,
 }
 
+/// `auto_gc` section of `config.toml` (issue #323 — automatic GC under
+/// disk pressure).
+///
+/// ```toml
+/// [auto_gc]
+/// enabled = true            # opt-out; on by default
+/// trigger_free_gb = 20      # start GC when free space < this
+/// target_free_gb  = 30      # stop GC when free space >= this
+/// min_age_secs    = 3600    # never touch files modified in this window
+/// ```
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct AutoGcConfig {
+    /// Whether soldr should automatically reclaim disk space when free
+    /// space on a soldr-relevant volume drops below `trigger_free_gb`.
+    /// Defaults to `true` (opt-out).
+    #[serde(default = "AutoGcConfig::default_enabled")]
+    pub enabled: bool,
+    /// Auto-GC fires when free space on a soldr-relevant volume drops
+    /// below this threshold (in GiB).
+    #[serde(default = "AutoGcConfig::default_trigger_free_gb")]
+    pub trigger_free_gb: u64,
+    /// Auto-GC stops escalating once free space reaches this number of
+    /// GiB on the affected volume. Must be >= `trigger_free_gb`.
+    #[serde(default = "AutoGcConfig::default_target_free_gb")]
+    pub target_free_gb: u64,
+    /// Floor applied uniformly to every age-based filter used by
+    /// auto-GC. Files / directories modified within this many seconds
+    /// of "now" are never touched.
+    #[serde(default = "AutoGcConfig::default_min_age_secs")]
+    pub min_age_secs: u64,
+}
+
+impl AutoGcConfig {
+    pub const fn default_enabled() -> bool {
+        true
+    }
+    pub const fn default_trigger_free_gb() -> u64 {
+        20
+    }
+    pub const fn default_target_free_gb() -> u64 {
+        30
+    }
+    pub const fn default_min_age_secs() -> u64 {
+        3600
+    }
+}
+
+impl Default for AutoGcConfig {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            trigger_free_gb: Self::default_trigger_free_gb(),
+            target_free_gb: Self::default_target_free_gb(),
+            min_age_secs: Self::default_min_age_secs(),
+        }
+    }
+}
+
 impl SoldrConfig {
     pub fn load(path: &Path) -> Self {
         let Ok(text) = std::fs::read_to_string(path) else {
@@ -583,6 +645,24 @@ impl SoldrConfig {
 /// resolved.
 pub fn user_home_dir() -> Result<PathBuf, SoldrError> {
     home_dir()
+}
+
+/// Resolve `$CARGO_HOME` if set and non-empty, otherwise `~/.cargo`.
+/// Returns `None` when neither resolves cleanly.
+pub fn resolve_cargo_home() -> Option<PathBuf> {
+    if let Some(path) = non_empty_env_path(std::env::var_os(CARGO_HOME_ENV_VAR).as_deref()) {
+        return Some(path);
+    }
+    home_dir().ok().map(|home| home.join(".cargo"))
+}
+
+/// Resolve `$RUSTUP_HOME` if set and non-empty, otherwise `~/.rustup`.
+/// Returns `None` when neither resolves cleanly.
+pub fn resolve_rustup_home() -> Option<PathBuf> {
+    if let Some(path) = non_empty_env_path(std::env::var_os(RUSTUP_HOME_ENV_VAR).as_deref()) {
+        return Some(path);
+    }
+    home_dir().ok().map(|home| home.join(".rustup"))
 }
 
 /// Expand `~` and `~/...` strings to absolute paths under the user's
@@ -833,6 +913,38 @@ mod tests {
         assert!(paths.root.ends_with(".soldr"));
         assert!(paths.bin.ends_with("bin"));
         assert!(paths.cache.ends_with("cache"));
+    }
+
+    #[test]
+    fn auto_gc_config_default_round_trip() {
+        let cfg: SoldrConfig = toml::from_str("[auto_gc]\n").unwrap();
+        assert_eq!(cfg.auto_gc, AutoGcConfig::default());
+        assert!(cfg.auto_gc.enabled);
+        assert_eq!(cfg.auto_gc.trigger_free_gb, 20);
+        assert_eq!(cfg.auto_gc.target_free_gb, 30);
+        assert_eq!(cfg.auto_gc.min_age_secs, 3600);
+    }
+
+    #[test]
+    fn auto_gc_config_custom_values_parse() {
+        let toml_text = r#"
+[auto_gc]
+enabled = false
+trigger_free_gb = 10
+target_free_gb = 50
+min_age_secs = 7200
+"#;
+        let cfg: SoldrConfig = toml::from_str(toml_text).unwrap();
+        assert!(!cfg.auto_gc.enabled);
+        assert_eq!(cfg.auto_gc.trigger_free_gb, 10);
+        assert_eq!(cfg.auto_gc.target_free_gb, 50);
+        assert_eq!(cfg.auto_gc.min_age_secs, 7200);
+    }
+
+    #[test]
+    fn missing_auto_gc_section_uses_defaults() {
+        let cfg: SoldrConfig = toml::from_str("").unwrap();
+        assert_eq!(cfg.auto_gc, AutoGcConfig::default());
     }
 
     #[test]
