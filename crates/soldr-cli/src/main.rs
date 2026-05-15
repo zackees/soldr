@@ -916,11 +916,23 @@ fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> 
         return Ok(args.to_vec());
     };
 
+    // Inject `--toolchain <channel>` after the subcommand/verb pair so a
+    // call like `target add x86_64-unknown-linux-musl` becomes
+    // `target add --toolchain <channel> x86_64-unknown-linux-musl`.
+    // The verb is the next non-flag positional after `target`/`component`.
+    let mut insertion_idx = first_positional + 1;
+    for (offset, arg) in args[first_positional + 1..].iter().enumerate() {
+        if !arg.starts_with('-') {
+            insertion_idx = first_positional + 1 + offset + 1;
+            break;
+        }
+    }
+
     let mut out = Vec::with_capacity(args.len() + 2);
-    out.extend(args[..=first_positional].iter().cloned());
+    out.extend(args[..insertion_idx].iter().cloned());
     out.push("--toolchain".to_string());
     out.push(channel);
-    out.extend(args[first_positional + 1..].iter().cloned());
+    out.extend(args[insertion_idx..].iter().cloned());
     Ok(out)
 }
 

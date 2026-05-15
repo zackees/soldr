@@ -637,6 +637,82 @@ fn install_failing_fake_rustup(log_path: &Path) -> PathBuf {
     rustup
 }
 
+/// Fake rustup that logs one line per invocation to `log_path`, with the
+/// argv joined by `\u{1f}` (ASCII unit separator) so test assertions can
+/// reason about the exact argv even when individual arguments contain
+/// spaces. Always exits 0.
+fn fake_logging_rustup_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             setlocal enabledelayedexpansion\n\
+             set \"line=\"\n\
+             :loop\n\
+             if \"%~1\"==\"\" goto done\n\
+             if defined line (set \"line=!line!\u{1f}%~1\") else (set \"line=%~1\")\n\
+             shift\n\
+             goto loop\n\
+             :done\n\
+             echo !line!>>\"{}\"\n\
+             exit /b 0\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        // Use ASCII Unit Separator (\037) between argv elements so assertions
+        // can split deterministically even if an individual arg contains
+        // spaces. Hand-roll the join in /bin/sh.
+        format!(
+            "#!/bin/sh\n\
+             sep=$(printf '\\037')\n\
+             out=\"\"\n\
+             first=1\n\
+             for arg in \"$@\"; do\n\
+               if [ $first -eq 1 ]; then\n\
+                 out=\"$arg\"\n\
+                 first=0\n\
+               else\n\
+                 out=\"$out${{sep}}$arg\"\n\
+               fi\n\
+             done\n\
+             printf '%s\\n' \"$out\" >> \"{}\"\n\
+             exit 0\n",
+            log_path.display()
+        )
+    }
+}
+
+/// Install a fake rustup that logs argv per invocation. Returns the path
+/// to the fake binary, ready to hand to `SOLDR_TEST_RUSTUP_BIN`.
+fn install_logging_fake_rustup(log_path: &Path) -> PathBuf {
+    let dir = unique_temp_dir("fake-rustup-logging");
+    #[cfg(windows)]
+    let rustup = dir.join("rustup.bat");
+    #[cfg(not(windows))]
+    let rustup = fake_script_path(&dir, "rustup");
+    write_fake_script(&rustup, &fake_logging_rustup_script(log_path));
+    rustup
+}
+
+/// Read every argv invocation logged by `fake_logging_rustup_script`.
+/// Each returned `Vec<String>` is one invocation, with argv split on the
+/// ASCII unit separator.
+fn read_logged_rustup_invocations(log_path: &Path) -> Vec<Vec<String>> {
+    let text = fs::read_to_string(log_path).unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.split('\u{1f}').map(str::to_string).collect())
+        .collect()
+}
+
+fn seed_rust_toolchain_toml(dir: &Path, contents: &str) {
+    fs::create_dir_all(dir).expect("failed to create workspace dir");
+    fs::write(dir.join("rust-toolchain.toml"), contents)
+        .expect("failed to write rust-toolchain.toml");
+}
+
 fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![dir.to_path_buf()];
@@ -713,6 +789,223 @@ fn help_lists_phase_one_command_surface() {
     assert!(stdout.contains("cache"), "help output missing cache");
     assert!(stdout.contains("version"), "help output missing version");
     assert!(stdout.contains("cargo"), "help output missing cargo");
+    assert!(stdout.contains("rustup"), "help output missing rustup");
+    assert!(
+        stdout.contains("toolchain"),
+        "help output missing toolchain"
+    );
+}
+
+#[test]
+fn rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands() {
+    let workspace = unique_temp_dir("rustup-passthrough-show");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustup", "show"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup show");
+
+    assert!(
+        output.status.success(),
+        "soldr rustup show failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    assert_eq!(invocations[0], vec!["show".to_string()]);
+}
+
+#[test]
+fn rustup_passthrough_injects_toolchain_for_target_add() {
+    let workspace = unique_temp_dir("rustup-passthrough-target-add");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustup", "target", "add", "x86_64-unknown-linux-musl"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup target add");
+
+    assert!(
+        output.status.success(),
+        "soldr rustup target add failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    assert_eq!(
+        invocations[0],
+        vec![
+            "target".to_string(),
+            "add".to_string(),
+            "--toolchain".to_string(),
+            "1.94.1".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn rustup_passthrough_does_not_double_inject_toolchain() {
+    let workspace = unique_temp_dir("rustup-passthrough-explicit-toolchain");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "rustup",
+            "target",
+            "add",
+            "--toolchain",
+            "nightly",
+            "aarch64-apple-darwin",
+        ])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup target add --toolchain nightly");
+
+    assert!(
+        output.status.success(),
+        "soldr rustup target add --toolchain failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    let invocation = &invocations[0];
+    let toolchain_count = invocation.iter().filter(|arg| *arg == "--toolchain").count();
+    assert_eq!(
+        toolchain_count, 1,
+        "--toolchain should appear exactly once: {invocation:?}"
+    );
+    let toolchain_value_idx = invocation
+        .iter()
+        .position(|arg| arg == "--toolchain")
+        .expect("--toolchain not found");
+    assert_eq!(
+        invocation.get(toolchain_value_idx + 1).map(String::as_str),
+        Some("nightly"),
+        "user-supplied toolchain should be preserved: {invocation:?}"
+    );
+}
+
+#[test]
+fn toolchain_install_invokes_rustup_with_channel() {
+    let workspace = unique_temp_dir("toolchain-install");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "install"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr toolchain install");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain install failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    assert_eq!(
+        invocations[0],
+        vec![
+            "toolchain".to_string(),
+            "install".to_string(),
+            "1.94.1".to_string(),
+            "--profile".to_string(),
+            "minimal".to_string(),
+            "--no-self-update".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn toolchain_prepare_installs_channel_components_and_targets() {
+    let workspace = unique_temp_dir("toolchain-prepare");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         components = [\"clippy\"]\n\
+         targets = [\"x86_64-unknown-linux-musl\"]\n",
+    );
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr toolchain prepare");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(
+        invocations.len(),
+        3,
+        "expected install + component add + target add: {invocations:?}"
+    );
+    assert_eq!(
+        invocations[0],
+        vec![
+            "toolchain".to_string(),
+            "install".to_string(),
+            "1.94.1".to_string(),
+            "--profile".to_string(),
+            "minimal".to_string(),
+            "--no-self-update".to_string(),
+        ],
+        "first invocation should install the pinned channel"
+    );
+    assert_eq!(
+        invocations[1],
+        vec![
+            "component".to_string(),
+            "add".to_string(),
+            "--toolchain".to_string(),
+            "1.94.1".to_string(),
+            "clippy".to_string(),
+        ],
+        "second invocation should add the declared component"
+    );
+    assert_eq!(
+        invocations[2],
+        vec![
+            "target".to_string(),
+            "add".to_string(),
+            "--toolchain".to_string(),
+            "1.94.1".to_string(),
+            "x86_64-unknown-linux-musl".to_string(),
+        ],
+        "third invocation should add the declared target"
+    );
 }
 
 #[test]
