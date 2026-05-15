@@ -222,6 +222,60 @@ Stable machine-facing mode:
 soldr version --json
 ```
 
+### `soldr toolchain`
+
+Project-aware orchestrators around `rustup` and `cargo install` that
+read `rust-toolchain.toml` so users (and CI) don't have to thread the
+pinned channel through every command.
+
+```bash
+soldr toolchain install   # rustup toolchain install <channel> --profile minimal --no-self-update
+soldr toolchain prepare   # install + component add + target add + cargo install for [soldr.plugins]
+```
+
+`prepare` runs, in order:
+
+1. `rustup toolchain install <channel> --profile minimal --no-self-update`
+2. `rustup component add --toolchain <channel> <component>` for every entry in `[toolchain].components`
+3. `rustup target add --toolchain <channel> <target>` for every entry in `[toolchain].targets`
+4. `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
+
+The first non-zero exit short-circuits the chain.
+
+#### `[soldr.plugins]`
+
+Top-level `[soldr]` section of `rust-toolchain.toml`. Currently
+surfaces a `plugins` table keyed by cargo crate name. Each value is
+either a bare version requirement or a detailed table.
+
+```toml
+[toolchain]
+channel = "1.94.1"
+
+[soldr.plugins]
+cargo-nextest = "0.9"
+cargo-zigbuild = { version = "0.18", locked = true }
+cargo-deny    = "*"          # any version — `--version` is omitted
+cargo-llvm-cov = { version = "0.6", features = ["no_cfg_coverage"], no_default_features = true }
+```
+
+Field semantics for the detailed shape:
+
+| Field                 | Type           | Maps to                  |
+|-----------------------|----------------|--------------------------|
+| `version`             | string         | `--version <value>`. `"*"` or unset omits the flag entirely. |
+| `locked`              | bool           | `--locked` when `true`.  |
+| `features`            | list of string | `--features <a,b,c>` when non-empty. |
+| `no_default_features` | bool           | `--no-default-features` when `true`. |
+
+Installs are dispatched to the cargo binary resolved by soldr's
+toolchain probe (`resolve_toolchain_binary("cargo")`) and invoked
+directly — **not** through the rustc wrapper. This routes installs
+into soldr-managed `$CARGO_HOME` while letting the active cargo honor
+`rust-toolchain.toml` at exec time, so no explicit channel is threaded
+through. `cargo install` is idempotent by design, so a second
+`prepare` after a successful one is a no-op for plugins.
+
 ### `soldr gc`
 
 Review reclaimable Cargo `target/` directories tracked in
