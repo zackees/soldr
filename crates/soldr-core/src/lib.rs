@@ -148,7 +148,69 @@ struct RustToolchainFile {
 
 #[derive(Debug, Deserialize)]
 struct RustToolchainSection {
+    #[serde(default)]
+    channel: Option<String>,
+    #[serde(default)]
+    components: Option<Vec<String>>,
+    #[serde(default)]
     targets: Option<Vec<String>>,
+    #[serde(default)]
+    profile: Option<String>,
+}
+
+/// Parsed view of a project's `rust-toolchain.toml`. All fields are
+/// optional so callers can treat a missing file or missing `[toolchain]`
+/// section the same as a fully-populated section whose fields happen to
+/// be unset. Returned by [`read_rust_toolchain_manifest`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RustToolchainManifest {
+    pub channel: Option<String>,
+    pub components: Option<Vec<String>>,
+    pub targets: Option<Vec<String>>,
+    pub profile: Option<String>,
+}
+
+/// Read `rust-toolchain.toml` from `workspace_root` (non-recursive — the
+/// caller is expected to already point at the directory containing the
+/// manifest, mirroring how cargo resolves the file). A missing file is
+/// not an error; an empty `RustToolchainManifest` is returned so callers
+/// can branch on `manifest.channel.is_none()` without juggling IO error
+/// kinds. Malformed TOML or unreadable files surface as
+/// [`SoldrError::Other`].
+pub fn read_rust_toolchain_manifest(
+    workspace_root: &Path,
+) -> Result<RustToolchainManifest, SoldrError> {
+    let path = workspace_root.join("rust-toolchain.toml");
+    if !path.exists() {
+        return Ok(RustToolchainManifest::default());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|err| {
+        SoldrError::Other(format!(
+            "failed to read rust-toolchain.toml at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let parsed: RustToolchainFile = toml::from_str(&text).map_err(|err| {
+        SoldrError::Other(format!(
+            "failed to parse rust-toolchain.toml at {}: {err}",
+            path.display()
+        ))
+    })?;
+    let Some(section) = parsed.toolchain else {
+        return Ok(RustToolchainManifest::default());
+    };
+    Ok(RustToolchainManifest {
+        channel: section
+            .channel
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+        components: section.components,
+        targets: section.targets,
+        profile: section
+            .profile
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty()),
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,10 +241,9 @@ fn read_cargo_config_target(path: PathBuf) -> Option<String> {
 }
 
 fn read_toolchain_target(path: PathBuf) -> Option<String> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let toolchain: RustToolchainFile = toml::from_str(&text).ok()?;
-    let supported = toolchain
-        .toolchain?
+    let workspace_root = path.parent()?;
+    let manifest = read_rust_toolchain_manifest(workspace_root).ok()?;
+    let supported = manifest
         .targets?
         .into_iter()
         .filter(|target| TargetTriple::from_triple(target).is_ok())
@@ -1248,5 +1309,48 @@ min_age_secs = 7200
 
         assert_eq!(resolve_runtime_rustc(Some(&nested)), Some(repo_local_rustc));
         assert_rustup_not_invoked(&log_path);
+    }
+
+    #[test]
+    fn rust_toolchain_manifest_parses_full_section() {
+        let dir = tempdir().unwrap();
+        let manifest_path = dir.path().join("rust-toolchain.toml");
+        fs::write(
+            &manifest_path,
+            "[toolchain]\n\
+             channel = \"1.94.1\"\n\
+             components = [\"clippy\", \"rustfmt\"]\n\
+             targets = [\"x86_64-unknown-linux-musl\", \"aarch64-apple-darwin\"]\n\
+             profile = \"minimal\"\n",
+        )
+        .unwrap();
+
+        let manifest = read_rust_toolchain_manifest(dir.path()).unwrap();
+        assert_eq!(manifest.channel.as_deref(), Some("1.94.1"));
+        assert_eq!(
+            manifest.components.as_deref(),
+            Some(&["clippy".to_string(), "rustfmt".to_string()][..])
+        );
+        assert_eq!(
+            manifest.targets.as_deref(),
+            Some(
+                &[
+                    "x86_64-unknown-linux-musl".to_string(),
+                    "aarch64-apple-darwin".to_string()
+                ][..]
+            )
+        );
+        assert_eq!(manifest.profile.as_deref(), Some("minimal"));
+    }
+
+    #[test]
+    fn rust_toolchain_manifest_missing_file_returns_default() {
+        let dir = tempdir().unwrap();
+        let manifest = read_rust_toolchain_manifest(dir.path()).unwrap();
+        assert_eq!(manifest, RustToolchainManifest::default());
+        assert!(manifest.channel.is_none());
+        assert!(manifest.components.is_none());
+        assert!(manifest.targets.is_none());
+        assert!(manifest.profile.is_none());
     }
 }

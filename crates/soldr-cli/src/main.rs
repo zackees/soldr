@@ -187,9 +187,37 @@ enum Commands {
         #[command(subcommand)]
         command: Option<GcSubcommand>,
     },
+    /// Drop-in passthrough to the system `rustup` binary.
+    ///
+    /// When the first non-flag positional argument is `target` or
+    /// `component` and `rust-toolchain.toml` declares a `channel`,
+    /// soldr automatically inserts `--toolchain <channel>` after the
+    /// subcommand (unless the user already passed `--toolchain`).
+    /// Every other invocation is forwarded verbatim.
+    Rustup {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Read `rust-toolchain.toml` and install the declared channel /
+    /// components / targets via `rustup`.
+    Toolchain {
+        #[command(subcommand)]
+        subcommand: ToolchainSubcommand,
+    },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum ToolchainSubcommand {
+    /// Install the channel declared in `rust-toolchain.toml`. No-op
+    /// (exit 0 with a note) when the manifest is missing or omits
+    /// `channel`.
+    Install,
+    /// Install the channel and every declared component / target from
+    /// `rust-toolchain.toml`. Stops at the first nonzero rustup exit.
+    Prepare,
 }
 
 #[derive(Subcommand)]
@@ -428,6 +456,17 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::RustAnalyzer { args } => {
             std::process::exit(run_toolchain_passthrough("rust-analyzer", &args)?);
         }
+        Commands::Rustup { args } => {
+            std::process::exit(run_rustup_passthrough(&args)?);
+        }
+        Commands::Toolchain { subcommand } => match subcommand {
+            ToolchainSubcommand::Install => {
+                std::process::exit(run_toolchain_install()?);
+            }
+            ToolchainSubcommand::Prepare => {
+                std::process::exit(run_toolchain_prepare()?);
+            }
+        },
         Commands::Status { json } => {
             let output = collect_status_output(cache_enabled)?;
             if json {
@@ -821,6 +860,168 @@ fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrEr
     let binary = resolve_toolchain_binary(tool)?;
     let mut command = std::process::Command::new(binary);
     command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+/// Drop-in passthrough for `soldr rustup ...`.
+///
+/// Most invocations forward verbatim. The one exception is the "scoped"
+/// pin: when the first positional argument is `target` or `component`
+/// (the two rustup subcommands that mutate per-toolchain state) AND
+/// `rust-toolchain.toml` declares a `channel`, soldr inserts
+/// `--toolchain <channel>` immediately after the user's first positional
+/// argument so the call lands on the pinned toolchain rather than the
+/// rustup default. If the user already supplied `--toolchain` anywhere,
+/// the injection is skipped.
+fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError> {
+    let final_args = scope_rustup_args_to_pin(args)?;
+    let mut command = std::process::Command::new(rustup_binary());
+    command.args(&final_args);
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> {
+    // Find the first non-flag positional. Anything before it (e.g.
+    // `--verbose`) is preserved in place.
+    let mut first_positional: Option<usize> = None;
+    for (idx, arg) in args.iter().enumerate() {
+        if !arg.starts_with('-') {
+            first_positional = Some(idx);
+            break;
+        }
+    }
+
+    let Some(first_positional) = first_positional else {
+        return Ok(args.to_vec());
+    };
+
+    let subcommand = args[first_positional].as_str();
+    if subcommand != "target" && subcommand != "component" {
+        return Ok(args.to_vec());
+    }
+
+    if rustup_args_specify_toolchain(args) {
+        return Ok(args.to_vec());
+    }
+
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let Some(channel) = manifest.channel else {
+        return Ok(args.to_vec());
+    };
+
+    // Inject `--toolchain <channel>` after the subcommand/verb pair so a
+    // call like `target add x86_64-unknown-linux-musl` becomes
+    // `target add --toolchain <channel> x86_64-unknown-linux-musl`.
+    // The verb is the next non-flag positional after `target`/`component`.
+    let mut insertion_idx = first_positional + 1;
+    for (offset, arg) in args[first_positional + 1..].iter().enumerate() {
+        if !arg.starts_with('-') {
+            insertion_idx = first_positional + 1 + offset + 1;
+            break;
+        }
+    }
+
+    let mut out = Vec::with_capacity(args.len() + 2);
+    out.extend(args[..insertion_idx].iter().cloned());
+    out.push("--toolchain".to_string());
+    out.push(channel);
+    out.extend(args[insertion_idx..].iter().cloned());
+    Ok(out)
+}
+
+fn rustup_args_specify_toolchain(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--toolchain" || arg.starts_with("--toolchain="))
+}
+
+/// Implementation of `soldr toolchain install`.
+fn run_toolchain_install() -> Result<i32, SoldrError> {
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let Some(channel) = manifest.channel.as_deref() else {
+        eprintln!(
+            "soldr: no rust-toolchain.toml channel found; nothing to install. \
+             Create rust-toolchain.toml with a `[toolchain] channel = \"<version>\"` entry."
+        );
+        return Ok(0);
+    };
+
+    rustup_toolchain_install(channel)
+}
+
+/// Implementation of `soldr toolchain prepare`.
+fn run_toolchain_prepare() -> Result<i32, SoldrError> {
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let Some(channel) = manifest.channel.as_deref() else {
+        eprintln!(
+            "soldr: no rust-toolchain.toml channel found; nothing to prepare. \
+             Create rust-toolchain.toml with a `[toolchain] channel = \"<version>\"` entry."
+        );
+        return Ok(0);
+    };
+
+    let install_code = rustup_toolchain_install(channel)?;
+    if install_code != 0 {
+        return Ok(install_code);
+    }
+
+    if let Some(components) = manifest.components.as_deref() {
+        for component in components {
+            let code = rustup_component_add(channel, component)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+    }
+
+    if let Some(targets) = manifest.targets.as_deref() {
+        for target in targets {
+            let code = rustup_target_add(channel, target)?;
+            if code != 0 {
+                return Ok(code);
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
+    let mut command = std::process::Command::new(rustup_binary());
+    command.args([
+        "toolchain",
+        "install",
+        channel,
+        "--profile",
+        "minimal",
+        "--no-self-update",
+    ]);
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrError> {
+    let mut command = std::process::Command::new(rustup_binary());
+    command.args(["component", "add", "--toolchain", channel, component]);
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let status = command.status()?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
+    let mut command = std::process::Command::new(rustup_binary());
+    command.args(["target", "add", "--toolchain", channel, target]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
     let status = command.status()?;
