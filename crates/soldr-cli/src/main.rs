@@ -636,11 +636,41 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
         record_target_dir_in_registry(&raw_args[2..]);
     }
 
+    // When the source argument is "-" (stdin), rustc reads the source from
+    // the process's stdin. If we pass this invocation to zccache as-is,
+    // zccache reads stdin to hash the source content, exhausting the pipe
+    // before rustc is spawned. Rustc then receives an empty stdin, compiles
+    // nothing, and exits 0 — masking any real compile error (e.g. E0554 from
+    // build-script feature probes like rustix 0.37's `can_compile()`).
+    //
+    // Fix: spill stdin to a temp file so both zccache and rustc see a real
+    // path. The temp file is created in the system temp directory and removed
+    // after the child exits. This keeps zccache in the loop (it can hash the
+    // file normally) while preserving the correct exit code.
+    let stdin_tempfile = if raw_args[2..].iter().any(|a| a == "-") {
+        Some(spill_stdin_to_tempfile()?)
+    } else {
+        None
+    };
+
+    // Build the effective arg list, replacing "-" with the temp file path.
+    let effective_args: std::borrow::Cow<[String]> = if let Some(ref tmp) = stdin_tempfile {
+        let tmp_str = tmp.path().to_string_lossy().into_owned();
+        let replaced: Vec<String> = raw_args
+            .iter()
+            .cloned()
+            .map(|a| if a == "-" { tmp_str.clone() } else { a })
+            .collect();
+        std::borrow::Cow::Owned(replaced)
+    } else {
+        std::borrow::Cow::Borrowed(raw_args)
+    };
+
     // Only route through zccache for actual rustc invocations, not
     // clippy-driver or other workspace wrappers.
     if tool_stem == "rustc" && soldr_cache::cache_enabled_in_current_process() {
         if let Some(zccache) = zccache_binary_override() {
-            return run_wrapper_through_zccache(raw_args, &zccache);
+            return run_wrapper_through_zccache(&effective_args, &zccache);
         }
     }
 
@@ -653,12 +683,33 @@ fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
     };
 
     let mut command = std::process::Command::new(tool_path);
-    command.args(&raw_args[2..]);
+    command.args(&effective_args[2..]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// Read all of stdin into a named temporary file and return the file.
+///
+/// The file has a `.rs` extension so rustc accepts it without flags, and
+/// lives in the system temp directory. It is deleted when the returned
+/// `NamedTempFile` value is dropped (i.e. after the child process exits).
+fn spill_stdin_to_tempfile() -> Result<tempfile::NamedTempFile, SoldrError> {
+    use std::io::{Read, Write as _};
+    let mut tmp = tempfile::Builder::new()
+        .prefix("soldr-stdin-")
+        .suffix(".rs")
+        .tempfile()
+        .map_err(|e| SoldrError::Other(format!("failed to create stdin temp file: {e}")))?;
+    let mut buf = Vec::new();
+    std::io::stdin()
+        .read_to_end(&mut buf)
+        .map_err(|e| SoldrError::Other(format!("failed to read stdin: {e}")))?;
+    tmp.write_all(&buf)
+        .map_err(|e| SoldrError::Other(format!("failed to write stdin temp file: {e}")))?;
+    Ok(tmp)
 }
 
 /// Run a rustup-managed toolchain binary with pass-through args.

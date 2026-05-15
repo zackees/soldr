@@ -3235,3 +3235,60 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
         artifact.display()
     );
 }
+
+/// Regression test for issue #324: RUSTC_WRAPPER mode must propagate the
+/// rustc exit code even when the source is read from stdin ("-").
+///
+/// Before the fix, zccache consumed stdin to hash the source. Rustc then
+/// received an empty stdin, compiled nothing, and exited 0 — masking E0554
+/// and similar errors that build-script feature probes depend on.
+///
+/// The test exercises the direct-to-rustc path (no zccache configured) to
+/// keep it self-contained and fast. The spill-to-tempfile logic runs
+/// regardless of whether zccache is in the chain.
+#[test]
+fn wrapper_mode_stdin_source_propagates_nonzero_exit_code() {
+    let rustc = rustup_which("rustc");
+    let out_dir = unique_temp_dir("wrapper-stdin-exit");
+
+    // A source that is valid Rust but uses an unstable feature gate.
+    // On stable rustc this must fail with E0554 (exit != 0).
+    let probe_source = b"#![allow(stable_features)]\n#![feature(rustc_attrs)]\n";
+
+    // Invoke soldr as RUSTC_WRAPPER: soldr <rustc-path> - <flags...>
+    // Disable the cache to avoid a zccache binary being required.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            rustc.as_str(),
+            "-",
+            "--crate-type=lib",
+            "--emit=metadata",
+            "--out-dir",
+            out_dir.to_str().expect("non-UTF-8 temp dir"),
+        ])
+        .env("SOLDR_CACHE_ENABLED", "0")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn soldr in wrapper mode");
+
+    child
+        .stdin
+        .take()
+        .expect("stdin should be piped")
+        .write_all(probe_source)
+        .expect("failed to write probe source to soldr stdin");
+
+    let output = child
+        .wait_with_output()
+        .expect("failed to wait for soldr wrapper");
+
+    assert!(
+        !output.status.success(),
+        "soldr wrapper mode with stdin source must propagate non-zero rustc exit code\n\
+         stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
