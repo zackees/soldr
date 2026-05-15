@@ -70,6 +70,11 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      - name: Remove pre-installed clippy (macOS runner conflict)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: rustup component remove clippy --toolchain stable 2>/dev/null || true
+
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
           targets: ${{ matrix.target }}
@@ -769,3 +774,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
