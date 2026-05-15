@@ -41,8 +41,14 @@ jobs:
           # clippy still uses soldr's compilation cache below.
           target-cache: false
 
+      # setup-soldr@d7be70d installs a minimal toolchain without rustfmt or
+      # clippy. Once https://github.com/zackees/setup-soldr/issues/93 lands,
+      # the shim layer + default components will make this step unnecessary.
+      - name: Install rustfmt and clippy components
+        run: rustup component add rustfmt clippy
+
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: soldr cargo fmt --all -- --check
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js
