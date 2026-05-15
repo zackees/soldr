@@ -434,7 +434,7 @@ mod tests {
         let mut probe = FixedDisk::new();
         probe
             .add("C", 5 * GIB)
-            .add("D", 1 * GIB)
+            .add("D", GIB)
             .map(&p("C:/cargo"), "C")
             .map(&p("D:/work/target"), "D");
         let config = AutoGcConfig::default();
