@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::{
+    collections::BTreeMap,
     ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
@@ -144,6 +145,8 @@ impl std::fmt::Display for TargetTriple {
 #[derive(Debug, Deserialize)]
 struct RustToolchainFile {
     toolchain: Option<RustToolchainSection>,
+    #[serde(default)]
+    soldr: Option<SoldrManifestSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,6 +161,41 @@ struct RustToolchainSection {
     profile: Option<String>,
 }
 
+/// Top-level `[soldr]` section of `rust-toolchain.toml`. Carries
+/// soldr-specific developer-tooling declarations that aren't part of
+/// rustup's own schema. Currently surfaces the `[soldr.plugins]` table
+/// (see [`PluginSpec`]) which `soldr toolchain prepare` translates into
+/// `cargo install` invocations.
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+pub struct SoldrManifestSection {
+    #[serde(default)]
+    pub plugins: BTreeMap<String, PluginSpec>,
+}
+
+/// One entry in `[soldr.plugins]`. The key is the cargo crate name
+/// (e.g. `cargo-nextest`); the value is either a bare version string or
+/// a detailed table that mirrors `cargo install`'s relevant flags.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum PluginSpec {
+    /// `cargo-nextest = "0.9"` — just a version requirement. The literal
+    /// `"*"` is treated as "any version" and skips `--version`.
+    Version(String),
+    /// `cargo-zigbuild = { version = "0.18", locked = true, ... }`.
+    /// Every field is optional; omitted fields mean "don't pass the
+    /// corresponding cargo install flag".
+    Detailed {
+        #[serde(default)]
+        version: Option<String>,
+        #[serde(default)]
+        locked: Option<bool>,
+        #[serde(default)]
+        features: Option<Vec<String>>,
+        #[serde(default)]
+        no_default_features: Option<bool>,
+    },
+}
+
 /// Parsed view of a project's `rust-toolchain.toml`. All fields are
 /// optional so callers can treat a missing file or missing `[toolchain]`
 /// section the same as a fully-populated section whose fields happen to
@@ -168,6 +206,9 @@ pub struct RustToolchainManifest {
     pub components: Option<Vec<String>>,
     pub targets: Option<Vec<String>>,
     pub profile: Option<String>,
+    /// Parsed `[soldr]` section. `None` when the file omits it
+    /// entirely so callers can short-circuit cleanly.
+    pub soldr: Option<SoldrManifestSection>,
 }
 
 /// Read `rust-toolchain.toml` from `workspace_root` (non-recursive — the
@@ -196,8 +237,12 @@ pub fn read_rust_toolchain_manifest(
             path.display()
         ))
     })?;
+    let soldr = parsed.soldr;
     let Some(section) = parsed.toolchain else {
-        return Ok(RustToolchainManifest::default());
+        return Ok(RustToolchainManifest {
+            soldr,
+            ..RustToolchainManifest::default()
+        });
     };
     Ok(RustToolchainManifest {
         channel: section
@@ -210,6 +255,7 @@ pub fn read_rust_toolchain_manifest(
             .profile
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty()),
+        soldr,
     })
 }
 
@@ -1352,5 +1398,56 @@ min_age_secs = 7200
         assert!(manifest.components.is_none());
         assert!(manifest.targets.is_none());
         assert!(manifest.profile.is_none());
+        assert!(manifest.soldr.is_none());
+    }
+
+    #[test]
+    fn manifest_parses_soldr_plugins_section() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\n\
+             channel = \"1.94.1\"\n\
+             \n\
+             [soldr.plugins]\n\
+             cargo-nextest = \"0.9\"\n\
+             cargo-zigbuild = { version = \"0.18\", locked = true }\n\
+             cargo-deny = \"*\"\n",
+        )
+        .unwrap();
+
+        let manifest = read_rust_toolchain_manifest(dir.path()).unwrap();
+        let soldr = manifest.soldr.expect("expected [soldr] section to parse");
+        assert_eq!(soldr.plugins.len(), 3);
+        match soldr
+            .plugins
+            .get("cargo-nextest")
+            .expect("cargo-nextest missing")
+        {
+            PluginSpec::Version(value) => assert_eq!(value, "0.9"),
+            other => panic!("cargo-nextest should parse as Version(\"0.9\"), got {other:?}"),
+        }
+        match soldr
+            .plugins
+            .get("cargo-zigbuild")
+            .expect("cargo-zigbuild missing")
+        {
+            PluginSpec::Detailed {
+                version,
+                locked,
+                features,
+                no_default_features,
+            } => {
+                assert_eq!(version.as_deref(), Some("0.18"));
+                assert_eq!(*locked, Some(true));
+                assert!(features.is_none());
+                assert!(no_default_features.is_none());
+            }
+            other => panic!("cargo-zigbuild should parse as Detailed, got {other:?}"),
+        }
+        match soldr.plugins.get("cargo-deny").expect("cargo-deny missing") {
+            PluginSpec::Version(value) => assert_eq!(value, "*"),
+            other => panic!("cargo-deny should parse as Version(\"*\"), got {other:?}"),
+        }
     }
 }
