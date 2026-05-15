@@ -223,6 +223,125 @@ When less than 2 GB is available, it emits a yellow stderr warning that
 recommends `soldr gc`. Disk-space detection failures are ignored so they
 never fail the build.
 
+### `soldr gc cargo` (issue #323)
+
+Shells out to nightly cargo's unstable `-Zgc clean gc` against
+`$CARGO_HOME`. The CLI prepends `rustup run <toolchain>` so the workspace
+`rust-toolchain.toml` is bypassed — `cargo` here always means "the cargo
+shipped with the requested toolchain".
+
+```bash
+soldr gc cargo                                  # nightly, conservative defaults
+soldr gc cargo --dry-run --json                 # plan + machine-readable report
+soldr gc cargo --max-src-age 7days --max-crate-age 14days
+soldr gc cargo --toolchain nightly-2026-01-01   # pin the nightly snapshot
+```
+
+Toolchain resolution: `--toolchain` flag → `$SOLDR_GC_CARGO_TOOLCHAIN`
+→ `nightly` default. Missing toolchain is a hard error from explicit
+`gc cargo`; the `gc sweep` orchestrator downgrades it to a skip so CI
+runners without nightly still get the soldr target purge stage.
+
+JSON shape (`schema_version: 1`):
+
+```json
+{
+  "schema_version": 1,
+  "command": "gc",
+  "mode": "cargo",
+  "toolchain": "nightly",
+  "exit_code": 0,
+  "dry_run": false,
+  "args": ["-Zgc", "clean", "gc", "--max-src-age=7days"],
+  "stdout_bytes": 612,
+  "stderr_bytes": 0,
+  "skipped": false,
+  "skipped_reason": null
+}
+```
+
+### `soldr gc locations` (issue #323)
+
+Read-only enumeration of every cache directory soldr cares about. No
+deletion, no last-used derivation. Walks `$CARGO_HOME/{registry/{src,
+cache,index},git/{db,checkouts},.global-cache}`,
+`$RUSTUP_HOME/{toolchains,update-hashes}`, `~/.soldr/cache/`, and
+`~/.soldr/state.redb`. Missing paths are reported with `exists: false`
+and zero size.
+
+```bash
+soldr gc locations
+soldr gc locations --json
+```
+
+Per-entry JSON: `{kind, path, exists, size_bytes, size_human, file_count,
+owner, purge_safety}`. `owner` is `cargo` / `rustup` / `soldr`;
+`purge_safety` is `regenerable` (safe to delete; cargo will refetch) or
+`user_action` (the user installed it on purpose — never auto-purge).
+
+### `soldr gc sweep` (issue #323)
+
+Orchestrator that combines `gc locations`, cargo's `clean gc`, and the
+soldr target purge in one shot. Designed to be the user-facing "free
+me some disk space" command.
+
+```bash
+soldr gc sweep                            # full pipeline, prompt for each target
+soldr gc sweep --all --dry-run --json     # plan everything, delete nothing
+soldr gc sweep --no-cargo-gc              # skip cargo (e.g. no nightly available)
+soldr gc sweep --aggressive               # second cargo pass with tighter ages
+```
+
+Stages, in order:
+
+1. `gc locations` (always — read-only).
+2. cargo `clean gc` with conservative defaults (unless `--no-cargo-gc`
+   or nightly is missing — auto-skipped).
+3. soldr's target purge over registered workspaces. Respects `--all`
+   (no prompt) and the configured `gc.allowlist_roots`.
+4. `--aggressive` only: second cargo pass with
+   `--max-src-age=7days --max-crate-age=14days --max-git-co-age=7days`,
+   each clamped to `auto_gc.min_age_secs`.
+
+### Automatic GC under disk pressure (issue #323)
+
+soldr's cargo front door triggers a background auto-GC pass when free
+space on any soldr-relevant volume drops below the configured trigger.
+Per volume (Windows: drive letter; Unix: device id):
+
+1. tier 1 — cargo `clean gc` with conservative ages,
+2. tier 2 — soldr target purge with `larger_than = 256M` and
+   `older_than = max(1h, auto_gc.min_age_secs)`,
+3. tier 3 — cargo `clean gc` with `--max-src-age=7d
+   --max-crate-age=14d --max-git-co-age=7d`,
+4. stop. Anything more aggressive requires explicit
+   `soldr gc sweep --aggressive`.
+
+Configure in `~/.soldr/config.toml`:
+
+```toml
+[auto_gc]
+enabled = true          # opt-out; on by default
+trigger_free_gb = 20    # start GC when free space < this
+target_free_gb = 30     # stop GC when free space >= this
+min_age_secs = 3600     # never touch anything modified within this window
+```
+
+Behavior:
+
+- Background-only. The GC pass runs on a detached thread named
+  `soldr-auto-gc`, so the build never blocks waiting for it.
+- Throttled to ~once per 5 minutes via `~/.soldr/.auto_gc_marker`.
+- Set `SOLDR_AUTO_GC_DISABLED=1` to disable for a single invocation
+  without editing config.
+- Volumes that already have plenty of free space are skipped, even
+  when another volume on the same machine is below the trigger.
+- Every check that crosses the trigger writes a structured log line to
+  `~/.soldr/logs/auto-gc.log`. The file rotates to
+  `auto-gc.log.old` once it exceeds 10 MiB.
+- Cargo's `.package-cache` mutex serializes auto-GC against any
+  in-flight `cargo build`, so concurrent builds and GC don't race.
+
 ---
 
 ## Structured JSON Output
