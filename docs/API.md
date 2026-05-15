@@ -276,6 +276,65 @@ into soldr-managed `$CARGO_HOME` while letting the active cargo honor
 through. `cargo install` is idempotent by design, so a second
 `prepare` after a successful one is a no-op for plugins.
 
+### `soldr doctor`
+
+Diagnose drift between `rust-toolchain.toml` and the rustup state
+currently installed for the declared channel. Read-only — `doctor`
+never invokes `rustup toolchain install`, `rustup component add`, or
+`rustup target add`. Exits `1` when drift is detected, `0` otherwise.
+When no `rust-toolchain.toml` exists in the current working directory
+the command exits `0` and reports that no manifest was found.
+
+```bash
+soldr doctor
+soldr doctor --json
+```
+
+Example human output (drift detected):
+
+```text
+manifest: /home/user/project/rust-toolchain.toml
+toolchain: 1.94.1
+  status: installed
+
+components (declared 2):
+  rustfmt   installed
+  clippy    MISSING
+
+targets (declared 1):
+  x86_64-unknown-linux-musl   installed
+
+result: drift detected (1 missing component)
+hint: run `soldr toolchain prepare` to bring installed state in sync with manifest
+```
+
+Example JSON output (`schema_version: 1`):
+
+```json
+{
+  "schema_version": 1,
+  "command": "doctor",
+  "manifest_path": "/home/user/project/rust-toolchain.toml",
+  "toolchain": {"channel": "1.94.1", "installed": true},
+  "components": [
+    {"name": "rustfmt", "installed": true},
+    {"name": "clippy", "installed": false}
+  ],
+  "targets": [
+    {"triple": "x86_64-unknown-linux-musl", "installed": true}
+  ],
+  "drift": true,
+  "missing_components": ["clippy"],
+  "missing_targets": []
+}
+```
+
+Component installed-state matching is target-qualified: rustup's
+`component list --installed` returns names like
+`clippy-x86_64-unknown-linux-gnu`, so a declared `clippy` matches any
+installed entry that either equals `clippy` exactly or starts with
+`clippy-`.
+
 ### `soldr gc`
 
 Review reclaimable Cargo `target/` directories tracked in
