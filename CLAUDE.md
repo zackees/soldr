@@ -59,7 +59,18 @@ Two categories, surfaced as first-class subcommands or via the generic fetch pat
 **Rustup front door** (top-level, direct exec of `rustup` itself — `rustup which rustup` doesn't work):
 - `soldr rustup <args>` forwards to the system `rustup` binary. When the first non-flag positional is `target` or `component` and `rust-toolchain.toml` declares a `channel`, soldr injects `--toolchain <channel>` after the verb so per-toolchain state mutations land on the pinned toolchain. Pass `--toolchain` explicitly to opt out of injection.
 - `soldr toolchain install` reads `[toolchain].channel` from `rust-toolchain.toml` and runs `rustup toolchain install <channel> --profile minimal --no-self-update`.
-- `soldr toolchain prepare` chains install + `component add` + `target add` for every declared component / target.
+- `soldr toolchain prepare` chains install + `component add` + `target add` for every declared component / target, then `cargo install`s every entry under `[soldr.plugins]`.
+  - Manifest example:
+    ```toml
+    [toolchain]
+    channel = "1.94.1"
+
+    [soldr.plugins]
+    cargo-nextest = "0.9"
+    cargo-zigbuild = { version = "0.18", locked = true }
+    cargo-deny = "*"          # any version — `--version` is omitted
+    ```
+  - `prepare` invokes the cargo binary resolved via `resolve_toolchain_binary("cargo")` directly (NOT through the rustc wrapper) so installs land in soldr-managed `$CARGO_HOME`. The active cargo already obeys `rust-toolchain.toml`, so no channel is threaded through.
 
 **Ecosystem fetches** (registered in `known_tools`, pulled from GitHub Releases):
 - cargo subcommands invoked via `soldr cargo <sub>`: `nextest`, `deny`, `audit`, `llvm-cov`, `udeps`, `semver-checks`, `expand`, `watch`.
