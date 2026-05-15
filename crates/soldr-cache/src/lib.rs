@@ -10,9 +10,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub mod auto_gc;
 pub mod gc;
 pub mod state_db;
 pub mod target_registry;
+
+/// Directory for the auto-GC structured log (`~/.soldr/logs/auto-gc.log`).
+pub fn auto_gc_log_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join("logs").join("auto-gc.log")
+}
+
+/// Marker file used to throttle the auto-GC check so we don't hammer
+/// the cargo `.package-cache` lock on every rustc-wrapper invocation.
+pub fn auto_gc_throttle_marker_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(".auto_gc_marker")
+}
 
 /// Path to the soldr state database (`~/.soldr/state.redb`) used by the
 /// target-directory registry.
