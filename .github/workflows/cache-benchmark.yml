@@ -30,6 +30,12 @@ jobs:
   native-sqlite:
     name: Native SQLite (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
+    env:
+      # Bypass rust-toolchain.toml's `components = ["rustfmt", "clippy"]` so
+      # cargo does not ask rustup to install clippy at build time. On macos-15
+      # ARM runners that triggers a `bin/cargo-clippy` conflict against the
+      # runner image's pre-installed toolchain. See zackees/soldr#330.
+      RUSTUP_TOOLCHAIN: "1.94.1"
     strategy:
       fail-fast: false
       matrix:
