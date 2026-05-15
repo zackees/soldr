@@ -713,6 +713,72 @@ fn seed_rust_toolchain_toml(dir: &Path, contents: &str) {
         .expect("failed to write rust-toolchain.toml");
 }
 
+/// Fake cargo that logs one line per invocation to `log_path`, with the
+/// argv joined by `\u{1f}` (ASCII unit separator) so test assertions can
+/// reason about the exact argv even when individual arguments contain
+/// spaces. Always exits 0. Mirrors `fake_logging_rustup_script` but
+/// writes to a separate log file so concurrent rustup + cargo
+/// invocations under `toolchain prepare` don't interleave.
+fn fake_logging_cargo_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             setlocal enabledelayedexpansion\n\
+             set \"line=\"\n\
+             :loop\n\
+             if \"%~1\"==\"\" goto done\n\
+             if defined line (set \"line=!line!\u{1f}%~1\") else (set \"line=%~1\")\n\
+             shift\n\
+             goto loop\n\
+             :done\n\
+             echo !line!>>\"{}\"\n\
+             exit /b 0\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             sep=$(printf '\\037')\n\
+             out=\"\"\n\
+             first=1\n\
+             for arg in \"$@\"; do\n\
+               if [ $first -eq 1 ]; then\n\
+                 out=\"$arg\"\n\
+                 first=0\n\
+               else\n\
+                 out=\"$out${{sep}}$arg\"\n\
+               fi\n\
+             done\n\
+             printf '%s\\n' \"$out\" >> \"{}\"\n\
+             exit 0\n",
+            log_path.display()
+        )
+    }
+}
+
+/// Install a fake cargo that logs argv per invocation. Returns the path
+/// to the fake binary, ready to hand to `SOLDR_TEST_CARGO_BIN`.
+fn install_logging_fake_cargo(log_path: &Path) -> PathBuf {
+    let dir = unique_temp_dir("fake-cargo-logging");
+    let cargo = fake_script_path(&dir, "cargo");
+    write_fake_script(&cargo, &fake_logging_cargo_script(log_path));
+    cargo
+}
+
+/// Read every argv invocation logged by `fake_logging_cargo_script`.
+/// Each returned `Vec<String>` is one invocation, with argv split on
+/// the ASCII unit separator.
+fn read_logged_cargo_invocations(log_path: &Path) -> Vec<Vec<String>> {
+    let text = fs::read_to_string(log_path).unwrap_or_default();
+    text.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.split('\u{1f}').map(str::to_string).collect())
+        .collect()
+}
+
 fn prepend_to_path(dir: &Path) -> std::ffi::OsString {
     let existing = std::env::var_os("PATH").unwrap_or_default();
     let mut paths = vec![dir.to_path_buf()];
@@ -1008,6 +1074,162 @@ fn toolchain_prepare_installs_channel_components_and_targets() {
             "x86_64-unknown-linux-musl".to_string(),
         ],
         "third invocation should add the declared target"
+    );
+}
+
+#[test]
+fn toolchain_prepare_installs_plugins_with_version() {
+    let workspace = unique_temp_dir("toolchain-prepare-plugin-version");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-nextest = \"0.9\"\n",
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo = install_logging_fake_cargo(&cargo_log);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .output()
+        .expect("failed to run soldr toolchain prepare");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo_invocations = read_logged_cargo_invocations(&cargo_log);
+    assert_eq!(
+        cargo_invocations.len(),
+        1,
+        "expected exactly one cargo install: {cargo_invocations:?}"
+    );
+    let invocation = &cargo_invocations[0];
+    assert_eq!(invocation.first().map(String::as_str), Some("install"));
+    assert_eq!(invocation.get(1).map(String::as_str), Some("cargo-nextest"));
+    let version_idx = invocation
+        .iter()
+        .position(|arg| arg == "--version")
+        .expect("--version should appear");
+    assert_eq!(
+        invocation.get(version_idx + 1).map(String::as_str),
+        Some("0.9")
+    );
+}
+
+#[test]
+fn toolchain_prepare_installs_plugin_with_locked_flag() {
+    let workspace = unique_temp_dir("toolchain-prepare-plugin-locked");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-zigbuild = { version = \"0.18\", locked = true }\n",
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo = install_logging_fake_cargo(&cargo_log);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .output()
+        .expect("failed to run soldr toolchain prepare");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo_invocations = read_logged_cargo_invocations(&cargo_log);
+    assert_eq!(
+        cargo_invocations.len(),
+        1,
+        "expected exactly one cargo install: {cargo_invocations:?}"
+    );
+    let invocation = &cargo_invocations[0];
+    assert_eq!(invocation.first().map(String::as_str), Some("install"));
+    assert_eq!(
+        invocation.get(1).map(String::as_str),
+        Some("cargo-zigbuild")
+    );
+    let version_idx = invocation
+        .iter()
+        .position(|arg| arg == "--version")
+        .expect("--version should appear");
+    assert_eq!(
+        invocation.get(version_idx + 1).map(String::as_str),
+        Some("0.18")
+    );
+    assert!(
+        invocation.iter().any(|arg| arg == "--locked"),
+        "expected --locked in argv: {invocation:?}"
+    );
+}
+
+#[test]
+fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
+    let workspace = unique_temp_dir("toolchain-prepare-plugin-no-version");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-deny = \"*\"\n",
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo = install_logging_fake_cargo(&cargo_log);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .output()
+        .expect("failed to run soldr toolchain prepare");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let cargo_invocations = read_logged_cargo_invocations(&cargo_log);
+    assert_eq!(
+        cargo_invocations.len(),
+        1,
+        "expected exactly one cargo install: {cargo_invocations:?}"
+    );
+    let invocation = &cargo_invocations[0];
+    assert_eq!(
+        invocation,
+        &vec!["install".to_string(), "cargo-deny".to_string()],
+        "expected bare install argv (no --version for \"*\"): {invocation:?}"
+    );
+    assert!(
+        !invocation.iter().any(|arg| arg == "--version"),
+        "--version should be omitted when spec is \"*\": {invocation:?}"
     );
 }
 
