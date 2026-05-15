@@ -348,6 +348,32 @@ enum CacheSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Prune stale per-prefix build artifacts from a cargo `target/`
+    /// directory, keeping only the newest entry per
+    /// `(parent_dir, prefix)` bucket inside
+    /// `target/<profile>/{deps, .fingerprint, incremental, build}/`.
+    ///
+    /// Defaults to a dry run for safety. Pass `--force` (or
+    /// `--no-dry-run`) to actually delete entries.
+    #[command(name = "prune-target")]
+    PruneTarget {
+        /// Path to the cargo `target/` directory to prune.
+        path: std::path::PathBuf,
+        /// Explicit dry-run mode (this is the default). Accepted for
+        /// scriptability; mutually compatible with the default.
+        #[arg(long, conflicts_with_all = ["force", "no_dry_run"])]
+        dry_run: bool,
+        /// Negate the dry-run default and actually delete entries.
+        /// Equivalent to `--force`.
+        #[arg(long = "no-dry-run", conflicts_with = "dry_run")]
+        no_dry_run: bool,
+        /// Actually delete entries. Equivalent to `--no-dry-run`.
+        #[arg(long, conflicts_with = "dry_run")]
+        force: bool,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -487,6 +513,19 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Cache { json, command } => match command {
             Some(CacheSubcommand::Report { json: report_json }) => {
                 run_cache_report_command(report_json || json)?;
+            }
+            Some(CacheSubcommand::PruneTarget {
+                path,
+                dry_run,
+                no_dry_run,
+                force,
+                json: prune_json,
+            }) => {
+                let effective_dry_run = !(force || no_dry_run);
+                // Either flag pair maps onto the same boolean; `dry_run`
+                // is the documented default so we accept it explicitly.
+                let _ = dry_run;
+                run_cache_prune_target_command(path, effective_dry_run, prune_json || json)?;
             }
             None => {
                 let output = collect_cache_output()?;
@@ -5609,6 +5648,131 @@ fn zccache_subcommand_unsupported(output: &std::process::Output, subcommand: &st
     ];
     let combined = format!("{stderr}\n{stdout}");
     needles.iter().any(|n| combined.contains(n)) && combined.contains(subcommand)
+}
+
+fn run_cache_prune_target_command(
+    target_dir: std::path::PathBuf,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), SoldrError> {
+    let canonical = std::path::absolute(&target_dir).unwrap_or_else(|_| target_dir.clone());
+    let opts = soldr_cache::prune_target::PruneTargetOptions {
+        target_dir: canonical.clone(),
+        dry_run,
+    };
+    let report = soldr_cache::prune_target::prune_target(&opts)
+        .map_err(|e| SoldrError::Other(format!("cache prune-target failed: {e}")))?;
+
+    if json {
+        let output = build_cache_prune_target_output(&canonical, dry_run, &report);
+        print_json(&output)?;
+    } else {
+        print_cache_prune_target_text(&canonical, dry_run, &report);
+    }
+    Ok(())
+}
+
+fn build_cache_prune_target_output(
+    target_dir: &std::path::Path,
+    dry_run: bool,
+    report: &soldr_cache::prune_target::PruneTargetReport,
+) -> CachePruneTargetOutput {
+    CachePruneTargetOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "cache prune-target",
+        target_dir: target_dir.display().to_string(),
+        dry_run,
+        scanned: report.scanned,
+        kept: report.kept,
+        deleted: report.deleted,
+        reclaimed_bytes: report.reclaimed_bytes,
+        reclaimed_human: soldr_cache::target_registry::human_size(report.reclaimed_bytes),
+        entries: report
+            .entries
+            .iter()
+            .map(|entry| CachePruneTargetEntryOutput {
+                path: entry.path.display().to_string(),
+                prefix: entry.prefix.clone(),
+                hash: entry.hash.clone(),
+                size_bytes: entry.size_bytes,
+                size_human: soldr_cache::target_registry::human_size(entry.size_bytes),
+                mtime_unix: entry.mtime_unix,
+                action: match entry.action {
+                    soldr_cache::prune_target::PruneAction::Keep => "keep",
+                    soldr_cache::prune_target::PruneAction::Delete => "delete",
+                },
+            })
+            .collect(),
+    }
+}
+
+fn print_cache_prune_target_text(
+    target_dir: &std::path::Path,
+    dry_run: bool,
+    report: &soldr_cache::prune_target::PruneTargetReport,
+) {
+    println!("soldr cache prune-target: {}", target_dir.display());
+    println!(
+        "  mode: {}",
+        if dry_run {
+            "dry-run (use --force to actually delete)"
+        } else {
+            "force"
+        }
+    );
+    println!(
+        "  scanned={} kept={} deleted={} reclaimed={}",
+        report.scanned,
+        report.kept,
+        report.deleted,
+        soldr_cache::target_registry::human_size(report.reclaimed_bytes),
+    );
+    let mut shown = 0usize;
+    for entry in &report.entries {
+        if entry.action != soldr_cache::prune_target::PruneAction::Delete {
+            continue;
+        }
+        if shown == 0 {
+            println!(
+                "  {} entries:",
+                if dry_run { "would delete" } else { "deleted" }
+            );
+        }
+        println!(
+            "    - {} ({})",
+            entry.path.display(),
+            soldr_cache::target_registry::human_size(entry.size_bytes),
+        );
+        shown += 1;
+    }
+    if shown == 0 {
+        println!("  nothing to prune");
+    }
+}
+
+#[derive(Serialize)]
+struct CachePruneTargetOutput {
+    schema_version: u32,
+    command: &'static str,
+    target_dir: String,
+    dry_run: bool,
+    scanned: usize,
+    kept: usize,
+    deleted: usize,
+    reclaimed_bytes: u64,
+    reclaimed_human: String,
+    entries: Vec<CachePruneTargetEntryOutput>,
+}
+
+#[derive(Serialize)]
+struct CachePruneTargetEntryOutput {
+    path: String,
+    prefix: String,
+    hash: String,
+    size_bytes: u64,
+    size_human: String,
+    mtime_unix: i64,
+    action: &'static str,
 }
 
 fn run_cache_report_command(json: bool) -> Result<(), SoldrError> {

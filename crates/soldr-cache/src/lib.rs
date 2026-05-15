@@ -12,6 +12,7 @@ use std::{
 
 pub mod auto_gc;
 pub mod gc;
+pub mod prune_target;
 pub mod state_db;
 pub mod target_registry;
 
