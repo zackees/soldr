@@ -273,7 +273,8 @@ mod tests {
         }
 
         fn map(&mut self, path: &Path, volume: &str) -> &mut Self {
-            self.volume_for.insert(path.to_path_buf(), volume.to_string());
+            self.volume_for
+                .insert(path.to_path_buf(), volume.to_string());
             self
         }
     }
