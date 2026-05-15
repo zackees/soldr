@@ -887,7 +887,10 @@ fn rustup_passthrough_does_not_double_inject_toolchain() {
     let invocations = read_logged_rustup_invocations(&log_path);
     assert_eq!(invocations.len(), 1, "expected one rustup invocation");
     let invocation = &invocations[0];
-    let toolchain_count = invocation.iter().filter(|arg| *arg == "--toolchain").count();
+    let toolchain_count = invocation
+        .iter()
+        .filter(|arg| *arg == "--toolchain")
+        .count();
     assert_eq!(
         toolchain_count, 1,
         "--toolchain should appear exactly once: {invocation:?}"
