@@ -162,6 +162,56 @@ Stable machine-facing mode:
 soldr cache --json
 ```
 
+#### `soldr cache prune-target <path>`
+
+First slice of issue #316. Prune stale per-prefix cargo build artifacts
+inside a given `target/` directory, keeping only the newest entry per
+`(parent_dir, prefix)` bucket. Scanned subdirectories under each
+profile (`debug/`, `release/`, …) are `deps/`, `.fingerprint/`,
+`incremental/`, and `build/`.
+
+```bash
+soldr cache prune-target ./target                  # dry-run report
+soldr cache prune-target ./target --force          # actually delete
+soldr cache prune-target ./target --dry-run --json # machine-readable plan
+```
+
+Defaults to a dry run for safety; pass `--force` (or `--no-dry-run`)
+to actually delete entries. If `target/.cargo-lock` or any
+`target/<profile>/.cargo-lock` is present the command refuses with a
+non-zero exit code (suggests a live build).
+
+JSON schema (`--json`):
+
+```json
+{
+  "schema_version": 1,
+  "command": "cache prune-target",
+  "target_dir": "<absolute path>",
+  "dry_run": true,
+  "scanned": 3,
+  "kept": 1,
+  "deleted": 2,
+  "reclaimed_bytes": 0,
+  "reclaimed_human": "0 B",
+  "entries": [
+    {
+      "path": "<absolute path>",
+      "prefix": "libfoo",
+      "hash": "abcdef1234567",
+      "size_bytes": 0,
+      "size_human": "0 B",
+      "mtime_unix": 1700000500,
+      "action": "keep"
+    }
+  ]
+}
+```
+
+Automatic pruning via `RUSTC_WRAPPER` pre/post-compile hooks is
+deferred to a follow-up — the manual subcommand is intentionally
+opt-in until the behaviour is trusted on real `target/` directories.
+
 ### `soldr version`
 
 Print soldr version.
@@ -352,6 +402,7 @@ The supported JSON protocol currently exists on:
 
 - `soldr status --json`
 - `soldr cache --json`
+- `soldr cache prune-target <path> --json`
 - `soldr version --json`
 
 The JSON response always includes:
