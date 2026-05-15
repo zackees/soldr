@@ -68,7 +68,7 @@ jobs:
           fi
 
       - name: Setup Soldr cache and toolchain
-        uses: zackees/setup-soldr@dc7390d816f6251a92d1d837c99f1e1c598caf83 # @v0
+        uses: zackees/setup-soldr@37ab11d8638b8ba9c7d4d0d9efac81bece533335 # @v0
         with:
           toolchain-file: soldr/rust-toolchain.toml
           linker: platform-default
