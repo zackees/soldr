@@ -99,6 +99,35 @@ On runners without `rustup`, the action downloads and installs it into the cache
 
 The public action lives in [`zackees/setup-soldr`](https://github.com/zackees/setup-soldr) and is generated from this repository's root action source. This repository dogfoods `zackees/setup-soldr@v0` in [setup-soldr-action.yml](./.github/workflows/setup-soldr-action.yml). For fuller examples and fallback patterns, see [INTEGRATION.md](./INTEGRATION.md).
 
+### Native vs cross targets
+
+`soldr cargo --target ...` runs the build through soldr/zccache, but it does not fetch a target's Rust standard library. If the active toolchain does not already have that target installed, the canonical failure is `error[E0463]: can't find crate for core/std` (or `compiler_builtins`) at the first compile step.
+
+Native host targets work by default because `rustup` installs the host triple as part of the toolchain. Cross targets must be declared explicitly. Building `aarch64-pc-windows-msvc` from a Windows x86 runner, for example, requires provisioning `aarch64-pc-windows-msvc` before any `soldr cargo --target aarch64-pc-windows-msvc` invocation.
+
+Two equivalent ways to declare a cross target: declaratively via `rust-toolchain.toml`'s `[toolchain].targets` (preferred — `setup-soldr` honors it during toolchain install), or imperatively via `soldr rustup target add` / `soldr toolchain prepare` (see [#331](https://github.com/zackees/soldr/issues/331) and [PR #333](https://github.com/zackees/soldr/pull/333)).
+
+```toml
+# rust-toolchain.toml — declarative (preferred)
+[toolchain]
+channel = "1.94.1"
+targets = ["aarch64-pc-windows-msvc"]
+```
+
+```bash
+# CLI — imperative
+soldr rustup target add aarch64-pc-windows-msvc
+soldr cargo build --target aarch64-pc-windows-msvc
+```
+
+```bash
+# Orchestrated
+soldr toolchain prepare
+soldr cargo build --target aarch64-pc-windows-msvc
+```
+
+The canonical multi-platform GitHub Actions tutorial lives in [`zackees/setup-soldr#90`](https://github.com/zackees/setup-soldr/issues/90).
+
 ### CI cache lineage
 
 GitHub Actions caches are not shared across arbitrary sibling feature branches. A workflow run can restore caches from its own branch, the default branch, and for pull requests the PR base branch. It cannot directly restore caches created on another feature branch.

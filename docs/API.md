@@ -132,6 +132,8 @@ soldr cargo check -p soldr-cli
 soldr --no-cache cargo test
 ```
 
+For cross-target builds (`soldr cargo --target ...`), the target's Rust standard library must be provisioned separately — see the [native vs cross targets](../README.md#native-vs-cross-targets) section of the README.
+
 ### `soldr status`
 
 Show cache and target information.

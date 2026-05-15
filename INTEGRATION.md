@@ -110,6 +110,8 @@ Useful inputs when wiring the action into another repository:
 
 The current root `repo` input is an implementation/testing override for the in-repo action source. It is not part of the public `setup-soldr@v0` beta contract.
 
+Cross-target CI must provision the target's Rust standard library before invoking `soldr cargo --target ...`. Declare it in `rust-toolchain.toml`'s `[toolchain].targets` (the preferred path — `setup-soldr` reads the toolchain file during install) or use `setup-soldr` with an explicit targets input. Otherwise the cross build fails at compile time with `error[E0463]: can't find crate for core/std`. See the [native vs cross targets](./README.md#native-vs-cross-targets) section of the README and the canonical multi-platform tutorial at [`zackees/setup-soldr#90`](https://github.com/zackees/setup-soldr/issues/90).
+
 ### Cargo shim mode
 
 The preferred explicit integration is still:
