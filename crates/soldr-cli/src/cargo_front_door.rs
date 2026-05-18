@@ -845,6 +845,24 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
         return false;
     };
 
+    if is_cacheable_cargo_subcommand(subcommand) {
+        return true;
+    }
+
+    // cargo-watch (issue #341): the outer cargo invocation is `watch`, but the
+    // process it spawns on every file change is `cargo <inner>`. If the inner
+    // subcommand is itself cacheable, we want to seed `RUSTC_WRAPPER=zccache`
+    // (and friends) on the cargo-watch process so the children inherit the
+    // wrapper. Only `watch` is handled here; do not add other wrappers
+    // (e.g. bacon) without verifying their argv shape.
+    if subcommand == "watch" {
+        return cargo_watch_inner_is_cacheable(args);
+    }
+
+    false
+}
+
+fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
     matches!(
         subcommand,
         "b" | "build"
@@ -863,6 +881,119 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
             | "install"
             | "nextest"
     )
+}
+
+/// Scan a `cargo watch ...` arg list for `-x` / `--exec` / `-s` / `--shell`
+/// values whose first whitespace-tokenized word names a cacheable cargo
+/// subcommand. cargo-watch accepts multiple `-x` flags and runs them in
+/// sequence; we treat the invocation as cacheable if ANY of them targets a
+/// cacheable subcommand so the children get the wrapper. Shell form (`-s`)
+/// may include a literal leading `cargo` token, which we strip before
+/// classifying.
+fn cargo_watch_inner_is_cacheable(args: &[String]) -> bool {
+    cargo_watch_inner_subcommands(args)
+        .iter()
+        .any(|sub| is_cacheable_cargo_subcommand(sub))
+}
+
+fn cargo_watch_inner_subcommands(args: &[String]) -> Vec<String> {
+    let mut subcommands = Vec::new();
+    // Locate the outer `watch` subcommand using the same skip-flags-and-toolchain
+    // pass `first_cargo_subcommand` uses, then walk only the args after it. This
+    // keeps `-x` flags that happen to appear earlier (e.g. global flag values)
+    // from being misread.
+    let watch_idx = match cargo_subcommand_index(args, "watch") {
+        Some(idx) => idx,
+        None => return subcommands,
+    };
+    let mut iter = args.iter().skip(watch_idx + 1);
+    while let Some(arg) = iter.next() {
+        if arg == "--" {
+            return subcommands;
+        }
+
+        // Long-form `--exec`/`--shell` with separate value.
+        if arg == "--exec" || arg == "--shell" {
+            if let Some(value) = iter.next() {
+                if let Some(sub) = inner_subcommand_from_exec_value(value) {
+                    subcommands.push(sub);
+                }
+            }
+            continue;
+        }
+        // Long-form `--exec=...` / `--shell=...`.
+        if let Some(value) = arg
+            .strip_prefix("--exec=")
+            .or_else(|| arg.strip_prefix("--shell="))
+        {
+            if let Some(sub) = inner_subcommand_from_exec_value(value) {
+                subcommands.push(sub);
+            }
+            continue;
+        }
+        // Short-form `-x`/`-s` with separate value.
+        if arg == "-x" || arg == "-s" {
+            if let Some(value) = iter.next() {
+                if let Some(sub) = inner_subcommand_from_exec_value(value) {
+                    subcommands.push(sub);
+                }
+            }
+            continue;
+        }
+        // Short-form `-x=...` / `-s=...`. cargo-watch typically uses
+        // `-x VALUE`, but accept the `=` form defensively.
+        if let Some(value) = arg.strip_prefix("-x=").or_else(|| arg.strip_prefix("-s=")) {
+            if let Some(sub) = inner_subcommand_from_exec_value(value) {
+                subcommands.push(sub);
+            }
+            continue;
+        }
+    }
+    subcommands
+}
+
+/// Locate the index in `args` of `target`, skipping the same leading flags
+/// (and `+toolchain` shorthand) that `first_cargo_subcommand` skips. Returns
+/// `None` if no such positional appears before a `--` separator.
+fn cargo_subcommand_index(args: &[String], target: &str) -> Option<usize> {
+    let mut skip_next = false;
+    for (idx, arg) in args.iter().enumerate() {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--" {
+            return None;
+        }
+        if arg.starts_with('+') && arg.len() > 1 {
+            continue;
+        }
+        if cargo_global_arg_takes_value(arg) {
+            skip_next = !arg.contains('=');
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        if arg == target {
+            return Some(idx);
+        }
+        return None;
+    }
+    None
+}
+
+fn inner_subcommand_from_exec_value(value: &str) -> Option<String> {
+    let mut tokens = value.split_whitespace();
+    let first = tokens.next()?;
+    // `-s 'cargo build --release'` form: peel off a literal leading `cargo`
+    // so the next token is the inner subcommand.
+    let candidate = if first == "cargo" {
+        tokens.next()?
+    } else {
+        first
+    };
+    Some(candidate.to_string())
 }
 
 fn maybe_emit_low_disk_warning(path: &std::path::Path) {
