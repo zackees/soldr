@@ -1,10 +1,11 @@
 //! Status, cache inspection, cache prune-target, version, and cache-clearing
 //! commands. Extracted from `main.rs` as part of issue #339.
 
-use crate::{
-    cached_managed_zccache, managed_zccache_cache_dir, run_zccache_command_in_cache_dir,
-    run_zccache_command_raw_in_cache_dir, JSON_SCHEMA_VERSION,
+use crate::zccache::{
+    managed_zccache_cache_dir, run_zccache_command_in_cache_dir,
+    run_zccache_command_raw_in_cache_dir,
 };
+use crate::{cached_managed_zccache, JSON_SCHEMA_VERSION};
 use serde::Serialize;
 use soldr_core::{SoldrError, SoldrPaths};
 
@@ -31,7 +32,6 @@ pub(crate) fn clear_zccache_cache() -> Result<(), SoldrError> {
     }
     Ok(())
 }
-
 
 pub(crate) fn purge_soldr_cache() -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;

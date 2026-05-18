@@ -2,11 +2,11 @@
 //! injection, low-disk warning, and the cargo arg-parsing helpers shared
 //! with `rust_plan`. Extracted from `main.rs` as part of issue #339.
 
+use crate::zccache::{finish_zccache_build, prepare_rustc_wrapper};
 use crate::{
-    apply_implicit_toolchain_homes, finish_zccache_build, gc, linker, non_empty_env_path,
-    prepare_rustc_wrapper, resolve_toolchain_binary, rust_plan, CARGO_PROFILE_DEV_DEBUG_ENV_VAR,
-    CARGO_PROFILE_TEST_DEBUG_ENV_VAR, LINKER_ENV_VAR, LOW_DISK_WARNING_THRESHOLD_BYTES,
-    TEST_FREE_DISK_BYTES_ENV_VAR,
+    apply_implicit_toolchain_homes, gc, linker, non_empty_env_path, resolve_toolchain_binary,
+    rust_plan, CARGO_PROFILE_DEV_DEBUG_ENV_VAR, CARGO_PROFILE_TEST_DEBUG_ENV_VAR, LINKER_ENV_VAR,
+    LOW_DISK_WARNING_THRESHOLD_BYTES, TEST_FREE_DISK_BYTES_ENV_VAR,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -125,7 +125,6 @@ pub(crate) async fn run_cargo_front_door(
     }
     Ok(status.code().unwrap_or(1))
 }
-
 
 pub(crate) fn cargo_profile(args: &[String]) -> &str {
     let mut iter = args.iter();
@@ -267,7 +266,9 @@ where
     vars
 }
 
-pub(crate) fn workspace_manifest_hashes(workspace_root: &std::path::Path) -> Result<Vec<String>, SoldrError> {
+pub(crate) fn workspace_manifest_hashes(
+    workspace_root: &std::path::Path,
+) -> Result<Vec<String>, SoldrError> {
     let mut hashes = Vec::new();
     collect_manifest_hashes(workspace_root, workspace_root, &mut hashes)?;
     hashes.sort();

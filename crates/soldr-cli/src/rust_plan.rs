@@ -7,9 +7,12 @@ use crate::cargo_front_door::{
     file_hash_or_missing, first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
     workspace_manifest_hashes, CargoProfileDebugDefault,
 };
+use crate::zccache::{
+    command_stderr, normalize_path_for_compare, run_zccache_command_strings_in_cache_dir,
+    ZccacheBuildSession,
+};
 use crate::{
-    apply_implicit_toolchain_homes, command_stderr, non_empty_env_path, normalize_path_for_compare,
-    run_zccache_command_strings_in_cache_dir, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
+    apply_implicit_toolchain_homes, non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR,
     TARGET_CACHE_BACKEND_ENV_VAR, TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR,
     TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
     WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
