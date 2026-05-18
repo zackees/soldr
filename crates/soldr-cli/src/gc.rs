@@ -2,10 +2,8 @@
 //! auto-GC tiers. Extracted from `main.rs` as part of issue #339.
 
 use crate::cache::print_json;
-use crate::{
-    available_space, existing_filesystem_probe_path, GcCargoArgs, GcSweepArgs, JSON_SCHEMA_VERSION,
-    SOLDR_GC_CARGO_TOOLCHAIN_ENV_VAR,
-};
+use crate::cargo_front_door::{available_space, existing_filesystem_probe_path};
+use crate::{GcCargoArgs, GcSweepArgs, JSON_SCHEMA_VERSION, SOLDR_GC_CARGO_TOOLCHAIN_ENV_VAR};
 use serde::Serialize;
 use soldr_core::{SoldrError, SoldrPaths};
 use std::io::Write;

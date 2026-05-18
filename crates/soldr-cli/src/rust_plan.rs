@@ -2,15 +2,17 @@
 //! related zccache `rust-plan` integration. Extracted from `main.rs` as part
 //! of issue #339.
 
+use crate::cargo_front_door::{
+    build_env_inputs, cargo_config_hash, cargo_feature_inputs, cargo_profile, cargo_target_triple,
+    file_hash_or_missing, first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
+    workspace_manifest_hashes, CargoProfileDebugDefault,
+};
 use crate::{
-    apply_implicit_toolchain_homes, build_env_inputs, cargo_config_hash, cargo_feature_inputs,
-    cargo_profile, cargo_target_triple, command_stderr, file_hash_or_missing,
-    first_cargo_subcommand, non_empty_env_path, normalize_path_for_compare, path_string,
-    rustflags_inputs, run_zccache_command_strings_in_cache_dir, stable_hash_json,
-    workspace_manifest_hashes, CargoProfileDebugDefault, ZccacheBuildSession,
-    SKIP_WARM_RESTORE_ENV_VAR, TARGET_CACHE_BACKEND_ENV_VAR, TARGET_CACHE_BUNDLE_DIR_ENV_VAR,
-    TARGET_CACHE_MODE_ENV_VAR, TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR,
-    THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
+    apply_implicit_toolchain_homes, command_stderr, non_empty_env_path, normalize_path_for_compare,
+    run_zccache_command_strings_in_cache_dir, ZccacheBuildSession, SKIP_WARM_RESTORE_ENV_VAR,
+    TARGET_CACHE_BACKEND_ENV_VAR, TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR,
+    TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
+    WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
 };
 use serde::{Deserialize, Serialize};
 use soldr_core::{suppress_windows_console_window, SoldrError};
