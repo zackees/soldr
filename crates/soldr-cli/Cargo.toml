@@ -11,6 +11,7 @@ description = "CLI for soldr — instant tools, instant builds"
 soldr-core = { workspace = true }
 soldr-fetch = { workspace = true }
 soldr-cache = { workspace = true }
+blake3 = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
