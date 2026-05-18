@@ -2,6 +2,7 @@
 //! injection, low-disk warning, and the cargo arg-parsing helpers shared
 //! with `rust_plan`. Extracted from `main.rs` as part of issue #339.
 
+use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
 use crate::zccache::{finish_zccache_build, prepare_rustc_wrapper};
 use crate::{
     apply_implicit_toolchain_homes, gc, linker, non_empty_env_path, resolve_toolchain_binary,
@@ -23,6 +24,30 @@ pub(crate) async fn run_cargo_front_door(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
         ));
     }
+
+    // `cargo run` trampoline (issue #344). When the binary is already
+    // up-to-date with the recorded sources, this exec's the binary
+    // directly and never spawns cargo. Otherwise we get back a plan that
+    // strips the soldr-private `--no-trampoline` flag from the arg list
+    // and lets us refresh the sidecar after cargo succeeds.
+    let trampoline_plan = if is_cargo_run_invocation(args) {
+        match try_run_trampoline(args)? {
+            TrampolineDecision::Executed(code) => return Ok(code),
+            TrampolineDecision::FellThrough(plan) => Some(plan),
+        }
+    } else {
+        None
+    };
+    // Use the cleaned arg vector from here on so `--no-trampoline` is
+    // not forwarded to cargo.
+    let owned_cleaned_args;
+    let args: &[String] = match trampoline_plan.as_ref() {
+        Some(plan) => {
+            owned_cleaned_args = plan.cleaned_args.clone();
+            &owned_cleaned_args
+        }
+        None => args,
+    };
 
     let cargo = resolve_toolchain_binary("cargo")?;
     let rustc = resolve_toolchain_binary("rustc")?;
@@ -119,11 +144,20 @@ pub(crate) async fn run_cargo_front_door(
             rust_plan::run_zccache_rust_plan(plan, "save", true)?;
             rust_plan::write_warm_restore_sentinel(plan);
         }
+        if let Some(plan) = trampoline_plan.as_ref() {
+            refresh_sidecar_after_cargo(plan);
+        }
     }
     if let Some(session) = session {
         finish_zccache_build(&session)?;
     }
+    drop(trampoline_plan);
     Ok(status.code().unwrap_or(1))
+}
+
+/// True when the cargo argv resolves to `cargo run` (or `cargo r`).
+fn is_cargo_run_invocation(args: &[String]) -> bool {
+    matches!(first_cargo_subcommand(args), Some("run" | "r"))
 }
 
 pub(crate) fn cargo_profile(args: &[String]) -> &str {

@@ -11,6 +11,7 @@ mod linker;
 mod rust_plan;
 mod self_relocate;
 mod toolchain;
+mod trampoline;
 mod wrapper;
 mod zccache;
 

@@ -1544,6 +1544,7 @@ dependencies = [
 name = "soldr-cli"
 version = "0.7.22"
 dependencies = [
+ "blake3",
  "clap",
  "fs2",
  "rayon",
