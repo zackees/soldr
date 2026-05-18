@@ -1072,3 +1072,7 @@ async fn ensure_known_subcommand_tool(
         .to_path_buf();
     Ok(vec![dir])
 }
+
+#[cfg(test)]
+#[path = "cargo_front_door_tests.rs"]
+mod tests;

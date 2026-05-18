@@ -495,3 +495,45 @@ pub(crate) fn command_stderr(output: &std::process::Output) -> String {
         stderr
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn rustc_wrapper_override_defaults_to_managed_zccache() {
+        assert_eq!(
+            rustc_wrapper_mode_from_env_var(None),
+            RustcWrapperMode::ManagedZccache
+        );
+    }
+
+    #[test]
+    fn rustc_wrapper_override_disables_wrapper_for_empty_or_none() {
+        for value in ["", " ", "none", "NONE"] {
+            assert_eq!(
+                rustc_wrapper_mode_from_env_var(Some(OsStr::new(value))),
+                RustcWrapperMode::Disabled,
+                "expected {value:?} to disable wrapper injection"
+            );
+        }
+    }
+
+    #[test]
+    fn rustc_wrapper_override_uses_custom_wrapper_name() {
+        assert_eq!(
+            rustc_wrapper_mode_from_env_var(Some(OsStr::new("sccache"))),
+            RustcWrapperMode::Custom("sccache".into())
+        );
+    }
+
+    #[test]
+    fn sccache_wrapper_detection_accepts_binary_names_and_paths() {
+        assert!(is_sccache_wrapper(OsStr::new("sccache")));
+        assert!(is_sccache_wrapper(OsStr::new("sccache.exe")));
+        assert!(is_sccache_wrapper(OsStr::new("/tmp/tools/sccache")));
+        assert!(!is_sccache_wrapper(OsStr::new("zccache")));
+        assert!(!is_sccache_wrapper(OsStr::new("sccache-proxy")));
+    }
+}

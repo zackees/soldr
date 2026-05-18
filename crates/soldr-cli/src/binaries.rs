@@ -252,3 +252,75 @@ pub(crate) fn cached_managed_zccache(
 
     soldr_fetch::cached_zccache_binary(paths)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_spec_defaults_to_latest_version() {
+        let (tool, version) = parse_tool_spec("maturin");
+        assert_eq!(tool, "maturin");
+        assert!(matches!(version, VersionSpec::Latest));
+    }
+
+    #[test]
+    fn rustup_resolution_failure_appends_ci_guidance() {
+        let error = rustup_resolution_failure(
+            "rustc",
+            b"error: toolchain '1.94.1-x86_64-pc-windows-msvc' is not installed",
+        );
+
+        let rendered = error.to_string();
+        assert!(rendered.contains("failed to resolve rustc via rustup: error: toolchain '1.94.1-x86_64-pc-windows-msvc' is not installed"));
+        assert!(rendered.contains("pins Rust in rust-toolchain.toml"));
+        assert!(rendered.contains("generic stable toolchain"));
+        assert!(rendered.contains("RUSTUP_TOOLCHAIN"));
+        assert!(rendered.contains("setup-soldr action path"));
+    }
+
+    #[test]
+    fn known_subcommand_registry_recognizes_phase_two_tools() {
+        for sub in ["nextest", "deny", "audit", "llvm-cov"] {
+            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+                .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
+            assert_eq!(spec.cargo_subcommand, Some(sub));
+            assert!(spec.crate_name.starts_with("cargo-"));
+        }
+    }
+
+    #[test]
+    fn known_subcommand_registry_recognizes_phase_three_tools() {
+        for sub in ["udeps", "semver-checks", "expand", "watch"] {
+            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+                .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
+            assert_eq!(spec.cargo_subcommand, Some(sub));
+            assert!(spec.crate_name.starts_with("cargo-"));
+        }
+    }
+
+    #[test]
+    fn top_level_tools_are_not_cargo_subcommands() {
+        for crate_name in [
+            "cross",
+            "mdbook",
+            "cbindgen",
+            "wasm-pack",
+            "trunk",
+            "sccache",
+        ] {
+            let spec = soldr_fetch::lookup_by_crate(crate_name)
+                .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
+            assert_eq!(spec.cargo_subcommand, None);
+        }
+    }
+
+    #[test]
+    fn soldr_itself_is_registered_for_self_trampoline() {
+        let spec = soldr_fetch::lookup_by_crate("soldr")
+            .expect("soldr should be registered in known_tools for --as trampoline");
+        assert_eq!(spec.binary_name, "soldr");
+        assert_eq!(spec.repo, Some(("zackees", "soldr")));
+        assert_eq!(spec.cargo_subcommand, None);
+    }
+}

@@ -310,3 +310,55 @@ fn record_target_dir_in_registry(rustc_args: &[String]) {
     };
     let _ = registry.upsert(&target);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -------- stderr_indicates_unknown_session (issue #265) --------
+
+    #[test]
+    fn unknown_session_detector_rejects_empty_stderr() {
+        assert!(!stderr_indicates_unknown_session(b""));
+    }
+
+    #[test]
+    fn unknown_session_detector_matches_exact_zccache_line() {
+        let stderr = b"zccache error: unknown session: abc-123\n";
+        assert!(stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_matches_substring_mid_line() {
+        // The marker can appear anywhere in the stream, not necessarily at
+        // the start of a line.
+        let stderr = b"prelude blah blah unknown session: 0000 trailing\n";
+        assert!(stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_ignores_unrelated_session_mentions() {
+        // The word "session" alone is not enough; we only treat the literal
+        // "unknown session:" marker as a resync trigger.
+        let stderr = b"zccache info: session started\nzccache info: session ok\n";
+        assert!(!stderr_indicates_unknown_session(stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_tolerates_non_utf8_bytes() {
+        // Surround the marker with raw non-UTF-8 byte sequences; the
+        // detector must not panic and must still find the literal needle.
+        let mut stderr: Vec<u8> = vec![0xFF, 0xFE, 0x80, 0x81];
+        stderr.extend_from_slice(b"zccache error: unknown session: deadbeef\n");
+        stderr.extend_from_slice(&[0xC3, 0x28, 0xA0]);
+        assert!(stderr_indicates_unknown_session(&stderr));
+    }
+
+    #[test]
+    fn unknown_session_detector_rejects_partial_marker() {
+        // "unknown sessio" (missing the trailing "n:") must NOT match — we
+        // only resync on the exact daemon-emitted marker.
+        let stderr = b"unknown sessio\n";
+        assert!(!stderr_indicates_unknown_session(stderr));
+    }
+}

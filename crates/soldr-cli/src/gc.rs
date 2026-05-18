@@ -1587,3 +1587,7 @@ pub(crate) fn emit_startup_target_warning_if_due() {
         Err(_) => {}
     }
 }
+
+#[cfg(test)]
+#[path = "gc_tests.rs"]
+mod tests;

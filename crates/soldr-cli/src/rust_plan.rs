@@ -1071,3 +1071,7 @@ fn warn_if_rust_plan_restore_incomplete(stdout: &str) {
          re-running. See https://github.com/zackees/soldr/issues/228 for context."
     );
 }
+
+#[cfg(test)]
+#[path = "rust_plan_tests/mod.rs"]
+mod tests;

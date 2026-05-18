@@ -818,4 +818,5 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
 }
 
 #[cfg(test)]
+#[path = "main_tests.rs"]
 mod tests;
