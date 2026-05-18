@@ -1,18 +1,21 @@
 use super::gc::{gc_purge_worker_count_for, parse_gc_purge_answer};
-use super::{
+use super::rust_plan::{
     allowed_artifact_classes, build_rust_artifact_plan, build_thin_manifest,
-    cargo_args_specify_target, cargo_args_use_reserved_no_cache, cargo_metadata_passthrough_args,
-    cargo_profile, cargo_target_triple, compute_plan_inputs_hash, dropped_artifact_classes,
-    evaluate_warm_restore_skip, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
-    low_disk_warning_for_free_bytes, low_disk_warning_for_path, normalize_version,
-    parse_rust_artifact_cache_tar_threads, parse_tool_spec, resolve_bundle_walk_thread_count,
+    cargo_metadata_passthrough_args, compute_plan_inputs_hash, dropped_artifact_classes,
+    evaluate_warm_restore_skip, parse_rust_artifact_cache_tar_threads,
+    resolve_bundle_walk_thread_count, should_skip_warm_restore, walk_bundle_files,
+    warm_restore_sentinel_path, warm_restore_skip_enabled, write_thin_manifest,
+    write_warm_restore_sentinel, CargoMetadata, CargoMetadataPackage, RustArtifactPlan,
+    RustArtifactPlanContext, RustPlanInputs, RustPlanPackages, RustToolchainIdentity,
+    ThinSliceManifest, WarmRestoreSentinel, WarmRestoreSkipInputs, BUNDLE_WALK_THREAD_CAP,
+};
+use super::{
+    cargo_args_specify_target, cargo_args_use_reserved_no_cache, cargo_profile,
+    cargo_target_triple, extract_as_pin, first_cargo_subcommand, is_sccache_wrapper,
+    low_disk_warning_for_free_bytes, low_disk_warning_for_path, normalize_version, parse_tool_spec,
     rustc_wrapper_mode_from_env_var, rustup_resolution_failure, selected_cargo_args,
-    should_self_relocate_for_invocation, should_skip_warm_restore, should_trampoline,
-    stderr_indicates_unknown_session, walk_bundle_files, warm_restore_sentinel_path,
-    warm_restore_skip_enabled, write_thin_manifest, write_warm_restore_sentinel, CargoMetadata,
-    CargoMetadataPackage, Cli, Commands, GcSubcommand, RustArtifactPlan, RustArtifactPlanContext,
-    RustPlanInputs, RustPlanPackages, RustToolchainIdentity, RustcWrapperMode, ThinSliceManifest,
-    WarmRestoreSentinel, WarmRestoreSkipInputs, ZccacheBuildSession, BUNDLE_WALK_THREAD_CAP,
+    should_self_relocate_for_invocation, should_trampoline, stderr_indicates_unknown_session,
+    Cli, Commands, GcSubcommand, RustcWrapperMode, ZccacheBuildSession,
     LOW_DISK_WARNING_THRESHOLD_BYTES, RUSTC_WRAPPER_OVERRIDE_ENV_VAR, SKIP_WARM_RESTORE_ENV_VAR,
     THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
 };
@@ -1342,7 +1345,7 @@ fn should_skip_warm_restore_returns_some_on_full_match() {
         github_job: "build".to_string(),
         github_run_attempt: "1".to_string(),
         session_id: "session-prev".to_string(),
-        saved_at_unix_seconds: super::current_unix_seconds(),
+        saved_at_unix_seconds: super::rust_plan::current_unix_seconds(),
     };
     std::fs::write(
         &sentinel_path,
@@ -1383,7 +1386,7 @@ fn should_skip_warm_restore_returns_none_on_hash_mismatch() {
         github_job: "build".to_string(),
         github_run_attempt: "1".to_string(),
         session_id: "session-prev".to_string(),
-        saved_at_unix_seconds: super::current_unix_seconds(),
+        saved_at_unix_seconds: super::rust_plan::current_unix_seconds(),
     };
     std::fs::write(
         &sentinel_path,
@@ -1438,7 +1441,7 @@ fn should_skip_warm_restore_returns_none_when_disabled_even_with_match() {
         github_job: "build".to_string(),
         github_run_attempt: "1".to_string(),
         session_id: "session-prev".to_string(),
-        saved_at_unix_seconds: super::current_unix_seconds(),
+        saved_at_unix_seconds: super::rust_plan::current_unix_seconds(),
     };
     std::fs::write(
         &sentinel_path,

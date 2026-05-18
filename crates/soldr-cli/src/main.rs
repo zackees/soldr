@@ -1,14 +1,17 @@
 use clap::{Parser, Subcommand};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use soldr_fetch::VersionSpec;
 use std::collections::BTreeSet;
 
 mod cache;
+mod doctor;
 mod gc;
 mod linker;
+mod rust_plan;
 mod self_relocate;
+mod toolchain;
 
 const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
@@ -29,15 +32,15 @@ const CARGO_PROFILE_TEST_DEBUG_ENV_VAR: &str = "CARGO_PROFILE_TEST_DEBUG";
 /// | fast`).
 const LINKER_ENV_VAR: &str = "SOLDR_LINKER";
 const REAL_TOOLCHAIN_BINARY_ENV_PREFIX: &str = "SOLDR_REAL_";
-const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
-const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
-const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
+pub(crate) const TARGET_CACHE_MODE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_MODE";
+pub(crate) const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUNDLE_DIR";
+pub(crate) const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
 /// Selects which thin-slice pruning policy `soldr cargo` ships to zccache. See
 /// `docs/THIN_TARGET_CACHE_PRUNING.md` for the rationale and rollout plan.
 /// Values: `thin-v1` (legacy, default — keeps `.rlib`/`.rmeta`/proc-macro
 /// outputs as a safety net) and `thin-v2` (fingerprint-aware aggressive prune;
 /// drops library bytes and lets zccache's compilation cache repopulate them).
-const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
+pub(crate) const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
 /// Reader-thread count for the target-cache tar walk in zccache (issue #272).
 /// Forwarded to the `zccache rust-plan save/restore` subprocess via inherited
 /// environment; soldr validates the value early so typos fail before cargo
@@ -46,10 +49,10 @@ const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
 /// positive integer for an explicit thread count. The actual parallel walk
 /// lives in zccache; this constant exists so soldr can reject malformed values
 /// at the front door.
-const TARGET_CACHE_TAR_THREADS_ENV_VAR: &str = "SOLDR_TARGET_CACHE_TAR_THREADS";
+pub(crate) const TARGET_CACHE_TAR_THREADS_ENV_VAR: &str = "SOLDR_TARGET_CACHE_TAR_THREADS";
 /// Filename of the file-list manifest written next to the thin-slice bundle so
 /// downstream tooling can prove what landed in the slice without unpacking it.
-const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
+pub(crate) const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
 /// Flag controlling the warm-restore short-circuit (issue #229). Default-on:
 /// after a successful `rust-plan save` soldr writes a sentinel describing the
 /// plan/job, and on the next `soldr cargo ...` invocation the matching
@@ -58,17 +61,17 @@ const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
 /// Cargo's mtime-based fingerprints across split CI steps. Set to a falsy
 /// value (`0` / `false` / `no` / `off` / empty, case-insensitive) to opt out;
 /// unset or any other value keeps the short-circuit enabled.
-const SKIP_WARM_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_SKIP_WARM_RESTORE";
+pub(crate) const SKIP_WARM_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_SKIP_WARM_RESTORE";
 /// Filename of the sentinel written next to the thin-slice bundle root after
 /// a successful `rust-plan save`. Read on the next invocation by
 /// `should_skip_warm_restore` to decide whether `rust-plan restore` would be
 /// a no-op-but-touches-mtimes operation against an already-warm `target/`.
-const WARM_RESTORE_SENTINEL_FILENAME: &str = "last-save.json";
+pub(crate) const WARM_RESTORE_SENTINEL_FILENAME: &str = "last-save.json";
 /// Maximum age of a warm-restore sentinel before it is treated as stale and
 /// ignored. Five minutes comfortably covers a normal `cargo test --no-run`
 /// followed by `cargo test` step pair on GitHub Actions while keeping the
 /// short-circuit from kicking in on later, unrelated jobs.
-const WARM_RESTORE_MAX_AGE_SECONDS: u64 = 5 * 60;
+pub(crate) const WARM_RESTORE_MAX_AGE_SECONDS: u64 = 5 * 60;
 
 /// Pin a specific soldr version to handle this invocation. Explicit
 /// `--as <version>` flag takes precedence over this env var.
@@ -469,39 +472,39 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             std::process::exit(run_cargo_front_door(&args, cache_enabled).await?);
         }
         Commands::Rustc { args } => {
-            std::process::exit(run_toolchain_passthrough("rustc", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);
         }
         Commands::Rustfmt { args } => {
-            std::process::exit(run_toolchain_passthrough("rustfmt", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rustfmt", &args)?);
         }
         Commands::ClippyDriver { args } => {
-            std::process::exit(run_toolchain_passthrough("clippy-driver", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("clippy-driver", &args)?);
         }
         Commands::Rustdoc { args } => {
-            std::process::exit(run_toolchain_passthrough("rustdoc", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rustdoc", &args)?);
         }
         Commands::RustGdb { args } => {
-            std::process::exit(run_toolchain_passthrough("rust-gdb", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rust-gdb", &args)?);
         }
         Commands::RustLldb { args } => {
-            std::process::exit(run_toolchain_passthrough("rust-lldb", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rust-lldb", &args)?);
         }
         Commands::RustAnalyzer { args } => {
-            std::process::exit(run_toolchain_passthrough("rust-analyzer", &args)?);
+            std::process::exit(toolchain::run_toolchain_passthrough("rust-analyzer", &args)?);
         }
         Commands::Rustup { args } => {
-            std::process::exit(run_rustup_passthrough(&args)?);
+            std::process::exit(toolchain::run_rustup_passthrough(&args)?);
         }
         Commands::Toolchain { subcommand } => match subcommand {
             ToolchainSubcommand::Install => {
-                std::process::exit(run_toolchain_install()?);
+                std::process::exit(toolchain::run_toolchain_install()?);
             }
             ToolchainSubcommand::Prepare => {
-                std::process::exit(run_toolchain_prepare()?);
+                std::process::exit(toolchain::run_toolchain_prepare()?);
             }
         },
         Commands::Doctor { json } => {
-            std::process::exit(run_doctor(json)?);
+            std::process::exit(doctor::run_doctor(json)?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
@@ -908,574 +911,7 @@ fn spill_stdin_to_tempfile() -> Result<tempfile::NamedTempFile, SoldrError> {
     Ok(tmp)
 }
 
-/// Run a rustup-managed toolchain binary with pass-through args.
-fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
-    let binary = resolve_toolchain_binary(tool)?;
-    let mut command = std::process::Command::new(binary);
-    command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
 
-/// Drop-in passthrough for `soldr rustup ...`.
-///
-/// Most invocations forward verbatim. The one exception is the "scoped"
-/// pin: when the first positional argument is `target` or `component`
-/// (the two rustup subcommands that mutate per-toolchain state) AND
-/// `rust-toolchain.toml` declares a `channel`, soldr inserts
-/// `--toolchain <channel>` immediately after the user's first positional
-/// argument so the call lands on the pinned toolchain rather than the
-/// rustup default. If the user already supplied `--toolchain` anywhere,
-/// the injection is skipped.
-fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError> {
-    let final_args = scope_rustup_args_to_pin(args)?;
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(&final_args);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> {
-    // Find the first non-flag positional. Anything before it (e.g.
-    // `--verbose`) is preserved in place.
-    let mut first_positional: Option<usize> = None;
-    for (idx, arg) in args.iter().enumerate() {
-        if !arg.starts_with('-') {
-            first_positional = Some(idx);
-            break;
-        }
-    }
-
-    let Some(first_positional) = first_positional else {
-        return Ok(args.to_vec());
-    };
-
-    let subcommand = args[first_positional].as_str();
-    if subcommand != "target" && subcommand != "component" {
-        return Ok(args.to_vec());
-    }
-
-    if rustup_args_specify_toolchain(args) {
-        return Ok(args.to_vec());
-    }
-
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
-    let Some(channel) = manifest.channel else {
-        return Ok(args.to_vec());
-    };
-
-    // Inject `--toolchain <channel>` after the subcommand/verb pair so a
-    // call like `target add x86_64-unknown-linux-musl` becomes
-    // `target add --toolchain <channel> x86_64-unknown-linux-musl`.
-    // The verb is the next non-flag positional after `target`/`component`.
-    let mut insertion_idx = first_positional + 1;
-    for (offset, arg) in args[first_positional + 1..].iter().enumerate() {
-        if !arg.starts_with('-') {
-            insertion_idx = first_positional + 1 + offset + 1;
-            break;
-        }
-    }
-
-    let mut out = Vec::with_capacity(args.len() + 2);
-    out.extend(args[..insertion_idx].iter().cloned());
-    out.push("--toolchain".to_string());
-    out.push(channel);
-    out.extend(args[insertion_idx..].iter().cloned());
-    Ok(out)
-}
-
-fn rustup_args_specify_toolchain(args: &[String]) -> bool {
-    args.iter()
-        .any(|arg| arg == "--toolchain" || arg.starts_with("--toolchain="))
-}
-
-/// Implementation of `soldr toolchain install`.
-fn run_toolchain_install() -> Result<i32, SoldrError> {
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
-    let Some(channel) = manifest.channel.as_deref() else {
-        eprintln!(
-            "soldr: no rust-toolchain.toml channel found; nothing to install. \
-             Create rust-toolchain.toml with a `[toolchain] channel = \"<version>\"` entry."
-        );
-        return Ok(0);
-    };
-
-    rustup_toolchain_install(channel)
-}
-
-/// Implementation of `soldr toolchain prepare`.
-fn run_toolchain_prepare() -> Result<i32, SoldrError> {
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
-    let Some(channel) = manifest.channel.as_deref() else {
-        eprintln!(
-            "soldr: no rust-toolchain.toml channel found; nothing to prepare. \
-             Create rust-toolchain.toml with a `[toolchain] channel = \"<version>\"` entry."
-        );
-        return Ok(0);
-    };
-
-    let install_code = rustup_toolchain_install(channel)?;
-    if install_code != 0 {
-        return Ok(install_code);
-    }
-
-    if let Some(components) = manifest.components.as_deref() {
-        for component in components {
-            let code = rustup_component_add(channel, component)?;
-            if code != 0 {
-                return Ok(code);
-            }
-        }
-    }
-
-    if let Some(targets) = manifest.targets.as_deref() {
-        for target in targets {
-            let code = rustup_target_add(channel, target)?;
-            if code != 0 {
-                return Ok(code);
-            }
-        }
-    }
-
-    if let Some(soldr_section) = manifest.soldr.as_ref() {
-        if !soldr_section.plugins.is_empty() {
-            let code = install_plugins(&soldr_section.plugins)?;
-            if code != 0 {
-                return Ok(code);
-            }
-        }
-    }
-
-    Ok(0)
-}
-
-/// Install every plugin declared under `[soldr.plugins]` via the
-/// resolved cargo binary (so installs respect soldr-managed
-/// `$CARGO_HOME`). We deliberately do NOT route through the rustc
-/// wrapper machinery — that path is meant for compile units, not
-/// dev-tool installation. The active cargo already honors
-/// `rust-toolchain.toml` at exec time, so no explicit channel is
-/// passed.
-fn install_plugins(
-    plugins: &std::collections::BTreeMap<String, soldr_core::PluginSpec>,
-) -> Result<i32, SoldrError> {
-    for (name, spec) in plugins {
-        let code = cargo_install_plugin(name, spec)?;
-        if code != 0 {
-            return Ok(code);
-        }
-    }
-    Ok(0)
-}
-
-fn cargo_install_plugin(name: &str, spec: &soldr_core::PluginSpec) -> Result<i32, SoldrError> {
-    let cargo = resolve_toolchain_binary("cargo")?;
-    let mut command = std::process::Command::new(&cargo);
-    command.arg("install").arg(name);
-
-    let (version, locked, features, no_default_features) = match spec {
-        soldr_core::PluginSpec::Version(value) => (Some(value.as_str()), None, None, None),
-        soldr_core::PluginSpec::Detailed {
-            version,
-            locked,
-            features,
-            no_default_features,
-        } => (
-            version.as_deref(),
-            *locked,
-            features.as_deref(),
-            *no_default_features,
-        ),
-    };
-
-    if let Some(version) = version {
-        let trimmed = version.trim();
-        if !trimmed.is_empty() && trimmed != "*" {
-            command.arg("--version").arg(trimmed);
-        }
-    }
-    if locked == Some(true) {
-        command.arg("--locked");
-    }
-    if no_default_features == Some(true) {
-        command.arg("--no-default-features");
-    }
-    if let Some(features) = features {
-        let joined = features.join(",");
-        if !joined.is_empty() {
-            command.arg("--features").arg(joined);
-        }
-    }
-
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args([
-        "toolchain",
-        "install",
-        channel,
-        "--profile",
-        "minimal",
-        "--no-self-update",
-    ]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(["component", "add", "--toolchain", channel, component]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(["target", "add", "--toolchain", channel, target]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let status = command.status()?;
-    Ok(status.code().unwrap_or(1))
-}
-
-#[derive(Serialize)]
-struct DoctorComponent {
-    name: String,
-    installed: bool,
-}
-
-#[derive(Serialize)]
-struct DoctorTarget {
-    triple: String,
-    installed: bool,
-}
-
-#[derive(Serialize)]
-struct DoctorToolchain {
-    channel: String,
-    installed: bool,
-}
-
-#[derive(Serialize)]
-struct DoctorOutput {
-    schema_version: u32,
-    command: &'static str,
-    /// Absolute path to the inspected `rust-toolchain.toml`. `None`
-    /// when no manifest exists in the current working directory.
-    manifest_path: Option<String>,
-    /// `None` when the manifest is missing or omits `channel`.
-    toolchain: Option<DoctorToolchain>,
-    components: Vec<DoctorComponent>,
-    targets: Vec<DoctorTarget>,
-    /// Whether any declared component or target is missing from the
-    /// installed rustup state. Always `false` when no manifest exists.
-    drift: bool,
-    missing_components: Vec<String>,
-    missing_targets: Vec<String>,
-}
-
-/// Implementation of `soldr doctor`. Read-only — never invokes
-/// `rustup component add` / `target add` / `toolchain install`.
-fn run_doctor(json: bool) -> Result<i32, SoldrError> {
-    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest_path = workspace_root.join("rust-toolchain.toml");
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
-    let manifest_present = manifest_path.exists();
-
-    let Some(channel) = manifest.channel.as_deref() else {
-        if json {
-            let output = DoctorOutput {
-                schema_version: JSON_SCHEMA_VERSION,
-                command: "doctor",
-                manifest_path: manifest_present.then(|| manifest_path.display().to_string()),
-                toolchain: None,
-                components: Vec::new(),
-                targets: Vec::new(),
-                drift: false,
-                missing_components: Vec::new(),
-                missing_targets: Vec::new(),
-            };
-            cache::print_json(&output)?;
-        } else if manifest_present {
-            println!(
-                "manifest: {} (present but no [toolchain] channel declared)",
-                manifest_path.display()
-            );
-            println!("result: no manifest fields to compare; nothing to do");
-        } else {
-            println!(
-                "no rust-toolchain.toml found in {}",
-                workspace_root.display()
-            );
-            println!("result: no manifest found; nothing to compare");
-        }
-        return Ok(0);
-    };
-
-    let toolchain_installed = rustup_toolchain_is_installed(channel)?;
-
-    let declared_components: Vec<String> = manifest.components.clone().unwrap_or_default();
-    let declared_targets: Vec<String> = manifest.targets.clone().unwrap_or_default();
-
-    let installed_components = if toolchain_installed && !declared_components.is_empty() {
-        rustup_installed_components(channel)?
-    } else {
-        Vec::new()
-    };
-    let installed_targets = if toolchain_installed && !declared_targets.is_empty() {
-        rustup_installed_targets(channel)?
-    } else {
-        Vec::new()
-    };
-
-    let component_rows: Vec<DoctorComponent> = declared_components
-        .iter()
-        .map(|declared| DoctorComponent {
-            name: declared.clone(),
-            installed: component_is_installed(declared, &installed_components),
-        })
-        .collect();
-    let target_rows: Vec<DoctorTarget> = declared_targets
-        .iter()
-        .map(|declared| DoctorTarget {
-            triple: declared.clone(),
-            installed: target_is_installed(declared, &installed_targets),
-        })
-        .collect();
-
-    let missing_components: Vec<String> = component_rows
-        .iter()
-        .filter(|row| !row.installed)
-        .map(|row| row.name.clone())
-        .collect();
-    let missing_targets: Vec<String> = target_rows
-        .iter()
-        .filter(|row| !row.installed)
-        .map(|row| row.triple.clone())
-        .collect();
-
-    let drift =
-        !toolchain_installed || !missing_components.is_empty() || !missing_targets.is_empty();
-
-    if json {
-        let output = DoctorOutput {
-            schema_version: JSON_SCHEMA_VERSION,
-            command: "doctor",
-            manifest_path: Some(manifest_path.display().to_string()),
-            toolchain: Some(DoctorToolchain {
-                channel: channel.to_string(),
-                installed: toolchain_installed,
-            }),
-            components: component_rows,
-            targets: target_rows,
-            drift,
-            missing_components,
-            missing_targets,
-        };
-        cache::print_json(&output)?;
-    } else {
-        print_doctor_human(
-            &manifest_path,
-            channel,
-            toolchain_installed,
-            &component_rows,
-            &target_rows,
-            &missing_components,
-            &missing_targets,
-            drift,
-        );
-    }
-
-    Ok(if drift { 1 } else { 0 })
-}
-
-fn component_is_installed(declared: &str, installed: &[String]) -> bool {
-    let prefix = format!("{declared}-");
-    installed
-        .iter()
-        .any(|entry| entry == declared || entry.starts_with(&prefix))
-}
-
-fn target_is_installed(declared: &str, installed: &[String]) -> bool {
-    installed.iter().any(|entry| entry == declared)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn print_doctor_human(
-    manifest_path: &std::path::Path,
-    channel: &str,
-    toolchain_installed: bool,
-    components: &[DoctorComponent],
-    targets: &[DoctorTarget],
-    missing_components: &[String],
-    missing_targets: &[String],
-    drift: bool,
-) {
-    println!("manifest: {}", manifest_path.display());
-    println!("toolchain: {channel}");
-    println!(
-        "  status: {}",
-        if toolchain_installed {
-            "installed"
-        } else {
-            "MISSING"
-        }
-    );
-
-    if !components.is_empty() {
-        println!();
-        println!("components (declared {}):", components.len());
-        let width = components
-            .iter()
-            .map(|row| row.name.len())
-            .max()
-            .unwrap_or(0);
-        for row in components {
-            println!(
-                "  {:<width$}   {}",
-                row.name,
-                if row.installed {
-                    "installed"
-                } else {
-                    "MISSING"
-                },
-                width = width
-            );
-        }
-    }
-
-    if !targets.is_empty() {
-        println!();
-        println!("targets (declared {}):", targets.len());
-        let width = targets
-            .iter()
-            .map(|row| row.triple.len())
-            .max()
-            .unwrap_or(0);
-        for row in targets {
-            println!(
-                "  {:<width$}   {}",
-                row.triple,
-                if row.installed {
-                    "installed"
-                } else {
-                    "MISSING"
-                },
-                width = width
-            );
-        }
-    }
-
-    println!();
-    if drift {
-        let missing_component_count = missing_components.len();
-        let missing_target_count = missing_targets.len();
-        let mut parts: Vec<String> = Vec::new();
-        if !toolchain_installed {
-            parts.push("toolchain not installed".to_string());
-        }
-        if missing_component_count > 0 {
-            parts.push(format!(
-                "{missing_component_count} missing component{}",
-                if missing_component_count == 1 {
-                    ""
-                } else {
-                    "s"
-                }
-            ));
-        }
-        if missing_target_count > 0 {
-            parts.push(format!(
-                "{missing_target_count} missing target{}",
-                if missing_target_count == 1 { "" } else { "s" }
-            ));
-        }
-        println!("result: drift detected ({})", parts.join(", "));
-        println!(
-            "hint: run `soldr toolchain prepare` to bring installed state in sync with manifest"
-        );
-    } else {
-        println!("result: no drift");
-    }
-}
-
-fn rustup_toolchain_is_installed(channel: &str) -> Result<bool, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(["toolchain", "list"]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let output = command.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(SoldrError::Other(format!(
-            "`rustup toolchain list` failed with exit code {}: {stderr}",
-            output.status.code().unwrap_or(-1)
-        )));
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().any(|line| {
-        let trimmed = line.trim();
-        trimmed == channel
-            || trimmed.starts_with(&format!("{channel} "))
-            || trimmed.starts_with(&format!("{channel}-"))
-    }))
-}
-
-fn rustup_installed_components(channel: &str) -> Result<Vec<String>, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(["component", "list", "--installed", "--toolchain", channel]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let output = command.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(SoldrError::Other(format!(
-            "`rustup component list --installed --toolchain {channel}` failed with exit code {}: {stderr}",
-            output.status.code().unwrap_or(-1)
-        )));
-    }
-    Ok(parse_rustup_list_output(&output.stdout))
-}
-
-fn rustup_installed_targets(channel: &str) -> Result<Vec<String>, SoldrError> {
-    let mut command = std::process::Command::new(rustup_binary());
-    command.args(["target", "list", "--installed", "--toolchain", channel]);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let output = command.output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        return Err(SoldrError::Other(format!(
-            "`rustup target list --installed --toolchain {channel}` failed with exit code {}: {stderr}",
-            output.status.code().unwrap_or(-1)
-        )));
-    }
-    Ok(parse_rustup_list_output(&output.stdout))
-}
-
-fn parse_rustup_list_output(bytes: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect()
-}
 
 fn run_wrapper_through_zccache(
     raw_args: &[String],
@@ -1744,8 +1180,8 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         None
     };
 
-    let rust_plan = if let Some(session) = session.as_ref() {
-        maybe_prepare_rust_artifact_plan(
+    let plan_ctx = if let Some(session) = session.as_ref() {
+        rust_plan::maybe_prepare_rust_artifact_plan(
             &cargo,
             &rustc,
             args,
@@ -1756,25 +1192,25 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
         None
     };
     if build_like_cargo {
-        let probe_path = rust_plan
+        let probe_path = plan_ctx
             .as_ref()
             .map(|plan| std::path::PathBuf::from(&plan.target_dir))
             .unwrap_or_else(|| cargo_disk_space_probe_path(args));
         maybe_emit_low_disk_warning(&probe_path);
     }
-    if let Some(plan) = rust_plan.as_ref() {
-        if let Some(reason) = should_skip_warm_restore(plan) {
+    if let Some(plan) = plan_ctx.as_ref() {
+        if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
             eprintln!("{reason}");
         } else {
-            run_zccache_rust_plan(plan, "restore", false)?;
+            rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
         }
     }
 
     let status = command.status()?;
     if status.success() {
-        if let Some(plan) = rust_plan.as_ref() {
-            run_zccache_rust_plan(plan, "save", true)?;
-            write_warm_restore_sentinel(plan);
+        if let Some(plan) = plan_ctx.as_ref() {
+            rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+            rust_plan::write_warm_restore_sentinel(plan);
         }
     }
     if let Some(session) = session {
@@ -1783,1050 +1219,8 @@ async fn run_cargo_front_door(args: &[String], cache_enabled: bool) -> Result<i3
     Ok(status.code().unwrap_or(1))
 }
 
-#[derive(Debug, Deserialize)]
-struct CargoMetadata {
-    packages: Vec<CargoMetadataPackage>,
-    workspace_members: Vec<String>,
-    workspace_root: std::path::PathBuf,
-    target_directory: std::path::PathBuf,
-}
 
-#[derive(Debug, Deserialize)]
-struct CargoMetadataPackage {
-    id: String,
-    source: Option<String>,
-}
-
-/// Returns `true` when `cache_profile` should be omitted from the serialized
-/// plan to keep wire compatibility with zccache builds that do not yet know
-/// about the `cache_profile` field (e.g. v1.4.0, which uses
-/// `#[serde(deny_unknown_fields)]` on `RustArtifactPlanV1`).
-///
-/// We keep the value in-memory so internal consumers can still branch on it,
-/// but we hide it on the wire for everything except the `thin-v2` opt-in.
-fn skip_legacy_cache_profile(value: &Option<&'static str>) -> bool {
-    !matches!(value, Some("thin-v2"))
-}
-
-#[derive(Debug, Serialize)]
-struct RustArtifactPlan {
-    schema_version: u32,
-    mode: String,
-    /// Thin-slice pruning policy in effect, e.g. `thin-v1` (legacy) or
-    /// `thin-v2` (fingerprint-aware prune). Only emitted on the wire when
-    /// it carries new information (i.e. `thin-v2`). Omitted entirely for
-    /// `thin-v1` and `mode == "full"` so zccache builds with
-    /// `#[serde(deny_unknown_fields)]` (e.g. v1.4.0) can still parse the
-    /// plan unchanged.
-    #[serde(skip_serializing_if = "skip_legacy_cache_profile")]
-    cache_profile: Option<&'static str>,
-    workspace_root: String,
-    target_dir: String,
-    toolchain: RustToolchainIdentity,
-    target_triple: String,
-    profile: String,
-    inputs: RustPlanInputs,
-    packages: RustPlanPackages,
-    allowed_artifact_classes: Vec<&'static str>,
-    /// Categories soldr explicitly drops from the slice. zccache may use this
-    /// to short-circuit walks for files it would otherwise consider keeping.
-    /// Empty for legacy `thin-v1` and `full` modes — preserves backwards
-    /// compatibility with zccache builds that do not yet understand it.
-    /// Skipped from the JSON entirely when empty so older zccache builds
-    /// with `#[serde(deny_unknown_fields)]` keep accepting the plan.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    dropped_artifact_classes: Vec<&'static str>,
-    cache_schema_version: u32,
-    journal_log_path: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct RustToolchainIdentity {
-    rustc: String,
-    cargo: String,
-    channel: String,
-    host: String,
-}
-
-#[derive(Debug, Serialize)]
-struct RustPlanInputs {
-    features_hash: String,
-    rustflags_hash: String,
-    env_hash: String,
-    lockfile_hash: String,
-    cargo_config_hash: String,
-    manifest_hashes: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct RustPlanPackages {
-    selected_package_ids: Vec<String>,
-    workspace_package_ids: Vec<String>,
-    excluded_path_package_ids: Vec<String>,
-}
-
-struct RustArtifactPlanContext {
-    path: std::path::PathBuf,
-    zccache_binary: std::path::PathBuf,
-    cache_dir: std::path::PathBuf,
-    zccache_daemon_cache_dir: std::path::PathBuf,
-    session_id: String,
-    journal_path: std::path::PathBuf,
-    backend: String,
-    /// Active thin-slice pruning policy. Only `Some` for thin modes; `None`
-    /// for `full` so the manifest emitter can short-circuit.
-    cache_profile: Option<&'static str>,
-    /// Stable digest over the plan inputs (toolchain, lockfile, manifests,
-    /// features, env, cargo config, target triple, profile, packages). Used
-    /// by the warm-restore sentinel (issue #229) to prove that a previous
-    /// step in the same job left `target/` in the exact state `restore`
-    /// would produce, so the next `restore` can be skipped.
-    plan_inputs_hash: String,
-    /// Absolute target dir from the active plan, mirrored into the warm-
-    /// restore sentinel so step 2 can verify it is being asked to restore
-    /// into the same tree step 1 saved.
-    target_dir: String,
-}
-
-fn maybe_prepare_rust_artifact_plan(
-    cargo: &std::path::Path,
-    rustc: &std::path::Path,
-    args: &[String],
-    session: &ZccacheBuildSession,
-    cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
-) -> Result<Option<RustArtifactPlanContext>, SoldrError> {
-    let Some(mode) = rust_artifact_cache_mode_from_env()? else {
-        return Ok(None);
-    };
-
-    if matches!(first_cargo_subcommand(args), Some("install")) {
-        eprintln!("soldr: rust artifact cache plan skipped for cargo install");
-        return Ok(None);
-    }
-
-    let profile = if mode == "thin" {
-        Some(rust_artifact_cache_profile_from_env()?)
-    } else {
-        None
-    };
-
-    // Reject a malformed SOLDR_TARGET_CACHE_TAR_THREADS before we kick off
-    // cargo metadata. zccache also validates, but failing here keeps the
-    // error close to the user's typo and avoids spending seconds resolving
-    // the workspace just to die on a one-character env mistake.
-    rust_artifact_cache_tar_threads_from_env()?;
-
-    let metadata = cargo_metadata(cargo, args)?;
-    let toolchain = rust_toolchain_identity(cargo, rustc)?;
-    let plan = build_rust_artifact_plan(
-        &metadata,
-        &toolchain,
-        args,
-        &mode,
-        profile,
-        session,
-        cargo_profile_debug_default,
-    )?;
-    let plan_dir = session.cache_dir.join("plans");
-    std::fs::create_dir_all(&plan_dir)?;
-    let plan_path = plan_dir.join("last-rust-artifact-plan.json");
-    let plan_json = serde_json::to_string_pretty(&plan)
-        .map_err(|e| SoldrError::Other(format!("failed to serialize Rust artifact plan: {e}")))?;
-    std::fs::write(&plan_path, plan_json)?;
-
-    let plan_inputs_hash = compute_plan_inputs_hash(&plan);
-    let target_dir = plan.target_dir.clone();
-
-    Ok(Some(RustArtifactPlanContext {
-        path: plan_path,
-        zccache_binary: session.binary_path.clone(),
-        cache_dir: rust_artifact_plan_cache_dir(session)?,
-        zccache_daemon_cache_dir: session.cache_dir.clone(),
-        session_id: session.session_id.clone(),
-        journal_path: session.journal_path.clone(),
-        backend: rust_artifact_cache_backend_from_env()?,
-        cache_profile: profile,
-        plan_inputs_hash,
-        target_dir,
-    }))
-}
-
-/// Stable digest summarising every plan field cargo would consult to decide
-/// whether the cached `target/` tree is still valid. Used by the warm-restore
-/// sentinel (issue #229) to prove that an in-job repeat of `soldr cargo ...`
-/// is asking to restore into the same tree it just saved.
-///
-/// We hash a tuple of (toolchain identity, target triple, profile, mode,
-/// cache profile, plan inputs, package selection) rather than the whole
-/// `RustArtifactPlan` so the sentinel does not falsely diverge on cosmetic
-/// fields (`schema_version`, `journal_log_path`, etc.).
-fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
-    let payload = serde_json::json!({
-        "toolchain": {
-            "rustc": plan.toolchain.rustc,
-            "cargo": plan.toolchain.cargo,
-            "channel": plan.toolchain.channel,
-            "host": plan.toolchain.host,
-        },
-        "target_triple": plan.target_triple,
-        "profile": plan.profile,
-        "mode": plan.mode,
-        "cache_profile": plan.cache_profile,
-        "inputs": {
-            "features_hash": plan.inputs.features_hash,
-            "rustflags_hash": plan.inputs.rustflags_hash,
-            "env_hash": plan.inputs.env_hash,
-            "lockfile_hash": plan.inputs.lockfile_hash,
-            "cargo_config_hash": plan.inputs.cargo_config_hash,
-            "manifest_hashes": plan.inputs.manifest_hashes,
-        },
-        "packages": {
-            "selected_package_ids": plan.packages.selected_package_ids,
-            "workspace_package_ids": plan.packages.workspace_package_ids,
-            "excluded_path_package_ids": plan.packages.excluded_path_package_ids,
-        },
-        "allowed_artifact_classes": plan.allowed_artifact_classes,
-        "dropped_artifact_classes": plan.dropped_artifact_classes,
-    });
-    stable_hash_json(&payload)
-}
-
-/// Sentinel written by `soldr cargo ...` after a successful `rust-plan save`.
-/// Read on the next invocation by [`should_skip_warm_restore`] to decide
-/// whether the matching `restore` would be a no-op-but-touches-mtimes
-/// operation against an already-warm `target/` tree.
-///
-/// All fields are required for a sentinel match; missing fields cause the
-/// short-circuit to bail out and fall through to the normal restore.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct WarmRestoreSentinel {
-    /// Format version; bump if any field semantics change so older sentinels
-    /// are treated as stale.
-    schema_version: u32,
-    /// Hash from [`compute_plan_inputs_hash`]. Must match the current plan.
-    plan_inputs_hash: String,
-    /// Absolute target dir the previous save wrote into. Must match the
-    /// current plan's target dir, since restore is per-target-dir.
-    target_dir: String,
-    /// `GITHUB_RUN_ID` at save time. Empty string outside Actions; matched
-    /// strictly so the short-circuit does not leak between runs.
-    github_run_id: String,
-    /// `GITHUB_JOB` at save time. Same matching rule as run id.
-    github_job: String,
-    /// `GITHUB_RUN_ATTEMPT` at save time. Re-runs of the same job get a new
-    /// attempt id, so a prior attempt's sentinel is correctly treated as
-    /// stale.
-    github_run_attempt: String,
-    /// zccache session id from the saving invocation. Recorded for log
-    /// correlation; not used in the match decision.
-    session_id: String,
-    /// Wall-clock seconds since the unix epoch at save time. Compared
-    /// against [`WARM_RESTORE_MAX_AGE_SECONDS`] to bound how stale the
-    /// sentinel may be.
-    saved_at_unix_seconds: u64,
-}
-
-/// Returns the path of the warm-restore sentinel for this plan's bundle dir.
-fn warm_restore_sentinel_path(plan: &RustArtifactPlanContext) -> std::path::PathBuf {
-    plan.cache_dir.join(WARM_RESTORE_SENTINEL_FILENAME)
-}
-
-/// Returns whether the warm-restore short-circuit is enabled for this
-/// invocation. The flag is default-on after #229 validation completed:
-///
-/// - Unset → `true` (default-on).
-/// - Set to a falsy value (`0` / `false` / `no` / `off` / empty,
-///   case-insensitive after trimming) → `false` (explicit opt-out).
-/// - Set to any other value, including the historical truthy values
-///   (`1` / `true` / `yes` / `on`) → `true`. Unrecognised values are
-///   tolerated as "enabled" rather than silently disabling the feature.
-fn warm_restore_skip_enabled() -> bool {
-    match std::env::var(SKIP_WARM_RESTORE_ENV_VAR) {
-        Ok(value) => {
-            let trimmed = value.trim().to_ascii_lowercase();
-            !matches!(trimmed.as_str(), "0" | "false" | "no" | "off" | "")
-        }
-        Err(_) => true,
-    }
-}
-
-/// Read `name` from the environment, returning an empty string when absent
-/// or the value cannot be UTF-8 decoded. Used to canonicalise the GitHub
-/// Actions identifiers stored in the warm-restore sentinel so a
-/// missing-vs-empty distinction does not produce false negatives.
-fn env_string_or_empty(name: &str) -> String {
-    std::env::var(name).unwrap_or_default()
-}
-
-/// Returns the current wall-clock as seconds since the unix epoch, or `0`
-/// if the system clock is before the epoch (which would only happen on a
-/// badly-misconfigured host).
-fn current_unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// Decide whether the current invocation can skip `rust-plan restore`
-/// because a previous invocation in the same CI job already populated
-/// `target/` with the exact contents restore would produce.
-///
-/// Returns `Some(reason)` when the restore should be skipped (caller
-/// should log `reason` for operator visibility). Returns `None` when the
-/// caller should proceed with the normal restore — either because the
-/// short-circuit is disabled, the sentinel is missing/stale, or any of
-/// the match fields disagree.
-///
-/// Pure function over its inputs so it can be unit-tested without touching
-/// the filesystem; the IO-bound caller passes the loaded sentinel and
-/// current env snapshot in.
-/// Bundle of "current invocation" inputs that
-/// [`evaluate_warm_restore_skip`] compares against a loaded sentinel.
-///
-/// Internal-only — exists solely to keep the function's argument count
-/// under clippy's `too_many_arguments` threshold without changing
-/// behavior. Field names mirror the previous parameter names so call
-/// sites stay legible.
-struct WarmRestoreSkipInputs<'a> {
-    plan_inputs_hash: &'a str,
-    plan_target_dir: &'a str,
-    github_run_id: &'a str,
-    github_job: &'a str,
-    github_run_attempt: &'a str,
-    now_unix_seconds: u64,
-    max_age_seconds: u64,
-}
-
-fn evaluate_warm_restore_skip(
-    sentinel: Option<&WarmRestoreSentinel>,
-    inputs: &WarmRestoreSkipInputs<'_>,
-) -> Option<String> {
-    let sentinel = sentinel?;
-    if sentinel.schema_version != 1 {
-        return None;
-    }
-    if sentinel.plan_inputs_hash != inputs.plan_inputs_hash {
-        return None;
-    }
-    if sentinel.target_dir != inputs.plan_target_dir {
-        return None;
-    }
-    // CI scoping: only short-circuit when both invocations are inside the
-    // same GitHub Actions run + job + attempt. Locally these are all empty
-    // strings on both sides, which still matches and lets the local repro
-    // benefit from the same path. The intent of the issue, however, is the
-    // CI case — hence the explicit attempt scoping.
-    if sentinel.github_run_id != inputs.github_run_id {
-        return None;
-    }
-    if sentinel.github_job != inputs.github_job {
-        return None;
-    }
-    if sentinel.github_run_attempt != inputs.github_run_attempt {
-        return None;
-    }
-    let age = inputs
-        .now_unix_seconds
-        .saturating_sub(sentinel.saved_at_unix_seconds);
-    if age > inputs.max_age_seconds {
-        return None;
-    }
-    Some(format!(
-        "soldr: skipping rust-plan restore; target dir {} was warmed by this job {} seconds ago (session {})",
-        sentinel.target_dir, age, sentinel.session_id,
-    ))
-}
-
-/// Filesystem-backed wrapper around [`evaluate_warm_restore_skip`]. Reads
-/// the sentinel for this plan's bundle dir, gathers the current env, and
-/// returns the skip reason when the short-circuit should fire.
-///
-/// Errors from sentinel parsing are deliberately swallowed (return `None`)
-/// — a corrupt sentinel must never break the build, only forfeit the
-/// optimisation.
-fn should_skip_warm_restore(plan: &RustArtifactPlanContext) -> Option<String> {
-    if !warm_restore_skip_enabled() {
-        return None;
-    }
-    let sentinel_path = warm_restore_sentinel_path(plan);
-    let raw = std::fs::read_to_string(&sentinel_path).ok()?;
-    let sentinel: WarmRestoreSentinel = serde_json::from_str(&raw).ok()?;
-    let github_run_id = env_string_or_empty("GITHUB_RUN_ID");
-    let github_job = env_string_or_empty("GITHUB_JOB");
-    let github_run_attempt = env_string_or_empty("GITHUB_RUN_ATTEMPT");
-    let inputs = WarmRestoreSkipInputs {
-        plan_inputs_hash: &plan.plan_inputs_hash,
-        plan_target_dir: &plan.target_dir,
-        github_run_id: &github_run_id,
-        github_job: &github_job,
-        github_run_attempt: &github_run_attempt,
-        now_unix_seconds: current_unix_seconds(),
-        max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
-    };
-    evaluate_warm_restore_skip(Some(&sentinel), &inputs)
-}
-
-/// Persist the warm-restore sentinel after a successful `rust-plan save`.
-/// Errors are downgraded to a warning so a sentinel write failure can never
-/// break the build that just succeeded; the worst case is that the next
-/// invocation does the normal restore (current behavior).
-fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
-    if !warm_restore_skip_enabled() {
-        return;
-    }
-    let sentinel = WarmRestoreSentinel {
-        schema_version: 1,
-        plan_inputs_hash: plan.plan_inputs_hash.clone(),
-        target_dir: plan.target_dir.clone(),
-        github_run_id: env_string_or_empty("GITHUB_RUN_ID"),
-        github_job: env_string_or_empty("GITHUB_JOB"),
-        github_run_attempt: env_string_or_empty("GITHUB_RUN_ATTEMPT"),
-        session_id: plan.session_id.clone(),
-        saved_at_unix_seconds: current_unix_seconds(),
-    };
-    let sentinel_path = warm_restore_sentinel_path(plan);
-    let json = match serde_json::to_string_pretty(&sentinel) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!("soldr warning: failed to serialize warm-restore sentinel: {e}");
-            return;
-        }
-    };
-    if let Some(parent) = sentinel_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "soldr warning: failed to create warm-restore sentinel dir {}: {e}",
-                parent.display()
-            );
-            return;
-        }
-    }
-    if let Err(e) = std::fs::write(&sentinel_path, json) {
-        eprintln!(
-            "soldr warning: failed to write warm-restore sentinel at {}: {e}",
-            sentinel_path.display()
-        );
-    }
-}
-
-fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
-    let raw = std::env::var(TARGET_CACHE_MODE_ENV_VAR).unwrap_or_default();
-    let mode = raw.trim().to_ascii_lowercase();
-    match mode.as_str() {
-        "" | "off" | "false" | "0" | "no" => Ok(None),
-        "hot" | "thin" => Ok(Some("thin".to_string())),
-        "full" => Ok(Some("full".to_string())),
-        _ => Err(SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_MODE_ENV_VAR} value {raw:?}; expected thin, full, or off"
-        ))),
-    }
-}
-
-fn rust_artifact_cache_profile_from_env() -> Result<&'static str, SoldrError> {
-    let raw = std::env::var(TARGET_CACHE_PROFILE_ENV_VAR).unwrap_or_default();
-    let profile = raw.trim().to_ascii_lowercase();
-    match profile.as_str() {
-        // Default preserves the legacy slice contents until the verification
-        // job in `docs/THIN_TARGET_CACHE_PRUNING.md` Section 5 is green.
-        "" | "thin-v1" => Ok("thin-v1"),
-        "thin-v2" => Ok("thin-v2"),
-        _ => Err(SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_PROFILE_ENV_VAR} value {raw:?}; expected thin-v1 or thin-v2"
-        ))),
-    }
-}
-
-fn rust_artifact_cache_backend_from_env() -> Result<String, SoldrError> {
-    let raw = std::env::var(TARGET_CACHE_BACKEND_ENV_VAR).unwrap_or_else(|_| "auto".to_string());
-    let backend = raw.trim().to_ascii_lowercase();
-    match backend.as_str() {
-        "" | "auto" => Ok("auto".to_string()),
-        "local" => Ok("local".to_string()),
-        "gha" => Ok("gha".to_string()),
-        _ => Err(SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_BACKEND_ENV_VAR} value {raw:?}; expected auto, local, or gha"
-        ))),
-    }
-}
-
-fn rust_artifact_cache_tar_threads_from_env() -> Result<Option<String>, SoldrError> {
-    parse_rust_artifact_cache_tar_threads(
-        &std::env::var(TARGET_CACHE_TAR_THREADS_ENV_VAR).unwrap_or_default(),
-    )
-}
-
-fn parse_rust_artifact_cache_tar_threads(raw: &str) -> Result<Option<String>, SoldrError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    if trimmed.eq_ignore_ascii_case("auto") {
-        return Ok(Some("auto".to_string()));
-    }
-    match trimmed.parse::<u32>() {
-        Ok(n) if n >= 1 => Ok(Some(n.to_string())),
-        _ => Err(SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_TAR_THREADS_ENV_VAR} value {raw:?}; expected `auto` or a positive integer (use `1` to disable parallelism)"
-        ))),
-    }
-}
-
-fn rust_artifact_plan_cache_dir(
-    session: &ZccacheBuildSession,
-) -> Result<std::path::PathBuf, SoldrError> {
-    let cache_dir = non_empty_env_path(TARGET_CACHE_BUNDLE_DIR_ENV_VAR)
-        .unwrap_or_else(|| session.cache_dir.join("rust-plan-cache"));
-    let cache_dir = normalize_path_for_compare(&cache_dir)?;
-    std::fs::create_dir_all(&cache_dir)?;
-    Ok(cache_dir)
-}
-
-fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetadata, SoldrError> {
-    let mut command = std::process::Command::new(cargo);
-    command.args(["metadata", "--format-version", "1"]);
-    command.args(cargo_metadata_passthrough_args(args));
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    command.env_remove("MAKEFLAGS");
-    command.env_remove("CARGO_MAKEFLAGS");
-
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(SoldrError::Other(format!(
-            "cargo metadata failed while preparing Rust artifact cache plan: {}",
-            command_stderr(&output)
-        )));
-    }
-
-    serde_json::from_slice(&output.stdout).map_err(|e| {
-        SoldrError::Other(format!(
-            "failed to parse cargo metadata while preparing Rust artifact cache plan: {e}"
-        ))
-    })
-}
-
-fn cargo_metadata_passthrough_args(args: &[String]) -> Vec<std::ffi::OsString> {
-    let mut values = Vec::new();
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--" {
-            break;
-        }
-        match arg.as_str() {
-            "--locked" | "--offline" | "--frozen" | "--all-features" | "--no-default-features" => {
-                values.push(arg.as_str().into())
-            }
-            "--manifest-path" | "--config" | "--features" | "--filter-platform" => {
-                if let Some(value) = iter.next() {
-                    values.push(arg.as_str().into());
-                    values.push(value.as_str().into());
-                }
-            }
-            _ => {
-                for flag in [
-                    "--manifest-path=",
-                    "--config=",
-                    "--features=",
-                    "--filter-platform=",
-                ] {
-                    if arg.starts_with(flag) {
-                        values.push(arg.as_str().into());
-                    }
-                }
-            }
-        }
-    }
-    values
-}
-
-fn rust_toolchain_identity(
-    cargo: &std::path::Path,
-    rustc: &std::path::Path,
-) -> Result<RustToolchainIdentity, SoldrError> {
-    let rustc_output = tool_output(rustc, &["-Vv"])?;
-    let cargo_output = tool_output(cargo, &["--version"])?;
-    let host = rustc_output
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .unwrap_or("unknown")
-        .to_string();
-    let channel = std::env::var("RUSTUP_TOOLCHAIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            rustc_output
-                .lines()
-                .find_map(|line| line.strip_prefix("release: "))
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-
-    Ok(RustToolchainIdentity {
-        rustc: rustc_output.trim().to_string(),
-        cargo: cargo_output.trim().to_string(),
-        channel,
-        host,
-    })
-}
-
-fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrError> {
-    let mut command = std::process::Command::new(tool);
-    command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
-    suppress_windows_console_window(&mut command);
-    let output = command.output()?;
-    if !output.status.success() {
-        return Err(SoldrError::Other(format!(
-            "{} {} failed: {}",
-            tool.display(),
-            args.join(" "),
-            command_stderr(&output)
-        )));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
-}
-
-fn build_rust_artifact_plan(
-    metadata: &CargoMetadata,
-    toolchain: &RustToolchainIdentity,
-    args: &[String],
-    mode: &str,
-    cache_profile: Option<&'static str>,
-    session: &ZccacheBuildSession,
-    cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
-) -> Result<RustArtifactPlan, SoldrError> {
-    let workspace_root = normalize_path_for_compare(&metadata.workspace_root)?;
-    let target_dir = normalize_path_for_compare(&metadata.target_directory)?;
-    let workspace_members: BTreeSet<&str> = metadata
-        .workspace_members
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let mut selected_package_ids = Vec::new();
-    let mut excluded_path_package_ids = Vec::new();
-
-    for package in &metadata.packages {
-        if workspace_members.contains(package.id.as_str()) {
-            continue;
-        }
-        match package.source.as_deref() {
-            Some(source) if source.starts_with("registry+") || source.starts_with("git+") => {
-                selected_package_ids.push(package.id.clone());
-            }
-            _ => excluded_path_package_ids.push(package.id.clone()),
-        }
-    }
-
-    selected_package_ids.sort();
-    excluded_path_package_ids.sort();
-    let mut workspace_package_ids = metadata.workspace_members.clone();
-    workspace_package_ids.sort();
-
-    let allowed = allowed_artifact_classes(mode, cache_profile);
-    let dropped = dropped_artifact_classes(mode, cache_profile);
-    let cache_schema_version = match cache_profile {
-        Some("thin-v2") => 2,
-        _ => 1,
-    };
-
-    Ok(RustArtifactPlan {
-        schema_version: 1,
-        mode: mode.to_string(),
-        cache_profile,
-        workspace_root: path_string(&workspace_root),
-        target_dir: path_string(&target_dir),
-        toolchain: RustToolchainIdentity {
-            rustc: toolchain.rustc.clone(),
-            cargo: toolchain.cargo.clone(),
-            channel: toolchain.channel.clone(),
-            host: toolchain.host.clone(),
-        },
-        target_triple: cargo_target_triple(args, &toolchain.host),
-        profile: cargo_profile(args).to_string(),
-        inputs: RustPlanInputs {
-            features_hash: stable_hash_json(&cargo_feature_inputs(args)),
-            rustflags_hash: stable_hash_json(&rustflags_inputs()),
-            env_hash: stable_hash_json(&build_env_inputs(cargo_profile_debug_default)),
-            lockfile_hash: file_hash_or_missing(&workspace_root.join("Cargo.lock"))?,
-            cargo_config_hash: cargo_config_hash(&workspace_root)?,
-            manifest_hashes: workspace_manifest_hashes(&workspace_root)?,
-        },
-        packages: RustPlanPackages {
-            selected_package_ids,
-            workspace_package_ids,
-            excluded_path_package_ids,
-        },
-        allowed_artifact_classes: allowed,
-        dropped_artifact_classes: dropped,
-        cache_schema_version,
-        journal_log_path: Some(path_string(&session.journal_path)),
-    })
-}
-
-/// Artifact classes the thin-slice walker is permitted to copy into the bundle.
-///
-/// `thin-v1` (legacy) preserves the historical contents that ship `.rlib`/
-/// `.rmeta`/proc-macro library bytes alongside the freshness inputs. This is
-/// kept as the safety-net default while the in-CI verification job from
-/// `docs/THIN_TARGET_CACHE_PRUNING.md` Section 5 is being rolled out.
-///
-/// `thin-v2` is the fingerprint-aware aggressive prune. It keeps only what
-/// cargo actually consults to make a fresh-vs-rebuild decision (fingerprints,
-/// dep-info, build-script `out_dir/` contents, small build-script metadata).
-/// The dropped library bytes are reproduced on demand by zccache's compilation
-/// cache when cargo asks rustc to rebuild the missing unit.
-fn allowed_artifact_classes(mode: &str, cache_profile: Option<&'static str>) -> Vec<&'static str> {
-    if mode == "full" {
-        return Vec::new();
-    }
-    match cache_profile {
-        Some("thin-v2") => vec![
-            // Fingerprint metadata cargo reads to decide skip-vs-rebuild.
-            // Split from the legacy `cargo_fingerprint` umbrella per
-            // `docs/THIN_TARGET_CACHE_PRUNING.md` Section 4.3.
-            "cargo_fingerprint_meta",
-            "dep_info",
-            "build_script_metadata",
-            "build_script_output",
-        ],
-        // thin-v1 (default) and any unrecognized profile that arrived via a
-        // future zccache that does not yet branch on `cache_profile` get the
-        // legacy class list so behavior is unchanged on rollout day 0.
-        _ => vec![
-            "rlib",
-            "rmeta",
-            "dep_info",
-            "proc_macro",
-            "cargo_fingerprint",
-            "build_script_metadata",
-            "build_script_output",
-        ],
-    }
-}
-
-/// Artifact classes the thin-slice walker must explicitly skip in the active
-/// profile. Surfaced to zccache so it can short-circuit walks for paths it
-/// would otherwise copy. Returning the drop list as data (rather than baking
-/// it into zccache) keeps the policy decision in soldr where the design
-/// discussion already lives.
-fn dropped_artifact_classes(mode: &str, cache_profile: Option<&'static str>) -> Vec<&'static str> {
-    if mode == "full" {
-        return Vec::new();
-    }
-    match cache_profile {
-        Some("thin-v2") => vec![
-            // Multi-GB rustc incremental DB. Churns per-commit, low CI hit
-            // rate. Cargo never reads it to decide freshness.
-            "incremental",
-            // Compiled build-script binaries. Cheap to regenerate from
-            // cached deps; bytes live in zccache's content store when needed.
-            "build_script_build",
-            // Library output bytes. zccache repopulates on rustc miss.
-            "rlib",
-            "rmeta",
-            // proc-macro shared libraries. Same story as `.rlib`.
-            "proc_macro",
-            // Split debug-info / pdb / macOS dSYM bundles.
-            "dwo",
-            "pdb",
-            "dsym",
-            // The fingerprint *outputs* (not the metadata). The metadata is
-            // tiny and load-bearing for freshness; the outputs are large.
-            "cargo_fingerprint_outputs",
-        ],
-        _ => Vec::new(),
-    }
-}
-
-fn run_zccache_rust_plan(
-    plan: &RustArtifactPlanContext,
-    operation: &'static str,
-    include_session: bool,
-) -> Result<(), SoldrError> {
-    let plan_path = path_string(&plan.path);
-    let cache_dir = path_string(&plan.cache_dir);
-    let journal_path = path_string(&plan.journal_path);
-    let mut args = vec![
-        "rust-plan".to_string(),
-        operation.to_string(),
-        "--plan".to_string(),
-        plan_path,
-        "--json".to_string(),
-        "--backend".to_string(),
-        plan.backend.clone(),
-        "--cache-dir".to_string(),
-        cache_dir,
-        "--journal".to_string(),
-        journal_path,
-    ];
-    if include_session {
-        args.push("--session-id".to_string());
-        args.push(plan.session_id.clone());
-    }
-
-    let output = run_zccache_command_strings_in_cache_dir(
-        &plan.zccache_binary,
-        &args,
-        &plan.zccache_daemon_cache_dir,
-    )?;
-    let stdout = output.stdout.trim();
-    if !stdout.is_empty() {
-        eprintln!("soldr: zccache rust-plan {operation} summary");
-        eprintln!("{stdout}");
-        if operation == "restore" {
-            warn_if_rust_plan_restore_incomplete(stdout);
-        }
-    }
-    if operation == "save" && plan.cache_profile == Some("thin-v2") {
-        if let Err(e) = write_thin_manifest(&plan.cache_dir, plan.cache_profile) {
-            // Manifest emission is diagnostic; never fail the build because
-            // we could not write it. Log so it shows up in CI logs.
-            eprintln!(
-                "soldr warning: failed to write thin-slice manifest at {}: {e}",
-                plan.cache_dir.display()
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Schema for `<thin-root>/manifest.v2.json`.
-///
-/// Written by soldr after `zccache rust-plan save` produces the bundle.
-/// Downstream tooling (e.g. setup-soldr verification jobs) reads this to
-/// prove what landed in the slice without unpacking it.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ThinSliceManifest {
-    /// Manifest format version. `2` for the file-list manifest produced by
-    /// the `thin-v2` profile.
-    schema_version: u32,
-    /// Active thin-slice pruning policy when this manifest was written.
-    cache_profile: String,
-    /// Absolute path of the bundle root the entries are relative to.
-    bundle_root: String,
-    /// Timestamp of manifest emission, RFC 3339 / seconds since epoch.
-    generated_at_unix_seconds: u64,
-    /// Every file in the bundle, sorted by relative path for stable diffs.
-    files: Vec<ThinSliceManifestEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct ThinSliceManifestEntry {
-    /// Path relative to `bundle_root`, forward-slashed for cross-platform diffability.
-    path: String,
-    /// File size in bytes. Optional because broken symlinks etc. may not
-    /// have a usable size; serialized as `null` rather than skipped so the
-    /// shape is uniform across entries.
-    size_bytes: Option<u64>,
-}
-
-fn write_thin_manifest(
-    bundle_root: &std::path::Path,
-    cache_profile: Option<&'static str>,
-) -> Result<(), SoldrError> {
-    let profile = cache_profile.unwrap_or("thin-v1").to_string();
-    if !bundle_root.exists() {
-        // Nothing to manifest; skip rather than spamming an empty file.
-        return Ok(());
-    }
-    let manifest = build_thin_manifest(bundle_root, &profile)?;
-    let manifest_path = bundle_root.join(THIN_MANIFEST_FILENAME);
-    let json = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| SoldrError::Other(format!("failed to serialize thin-slice manifest: {e}")))?;
-    std::fs::write(&manifest_path, json)?;
-    Ok(())
-}
-
-fn build_thin_manifest(
-    bundle_root: &std::path::Path,
-    cache_profile: &str,
-) -> Result<ThinSliceManifest, SoldrError> {
-    let thread_count = resolve_bundle_walk_thread_count(
-        &std::env::var(TARGET_CACHE_TAR_THREADS_ENV_VAR).unwrap_or_default(),
-    )?;
-    let mut files = walk_bundle_files(bundle_root, thread_count)?;
-    // Drop any prior manifest so the file list does not chase its own tail
-    // across repeated saves into the same bundle directory.
-    files.retain(|entry| entry.path != THIN_MANIFEST_FILENAME);
-    // Sort so the manifest is byte-identical regardless of walk order
-    // (sequential vs parallel must produce the same output).
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-
-    let generated_at_unix_seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    Ok(ThinSliceManifest {
-        schema_version: 2,
-        cache_profile: cache_profile.to_string(),
-        bundle_root: path_string(bundle_root),
-        generated_at_unix_seconds,
-        files,
-    })
-}
-
-/// Cap on the number of metadata-stat threads soldr will spin up for the
-/// bundle walk, matching the documented zccache cap. Past ~8 threads the
-/// per-file `GetFileInformation` syscall stops being the bottleneck (the
-/// directory iteration becomes one), so additional workers just contend.
-const BUNDLE_WALK_THREAD_CAP: usize = 8;
-
-/// Resolve the reader-thread count for the bundle walk from a raw
-/// `SOLDR_TARGET_CACHE_TAR_THREADS` value.
-///
-/// The env var has already been validated by
-/// [`parse_rust_artifact_cache_tar_threads`] at the cargo front door, so
-/// the raw input here is expected to be well-formed. We re-validate
-/// defensively because [`build_thin_manifest`] can also run on the bare
-/// `RUSTC_WRAPPER` passthrough path that does not flow through the front
-/// door check.
-///
-/// Returns:
-/// - `None` for `auto` / unset — use rayon's global pool, capped at the
-///   smaller of the system parallelism and [`BUNDLE_WALK_THREAD_CAP`].
-/// - `Some(1)` to force the sequential fallback (no rayon overhead).
-/// - `Some(n)` for an explicit thread count, clamped to
-///   `[1, BUNDLE_WALK_THREAD_CAP]`.
-fn resolve_bundle_walk_thread_count(raw: &str) -> Result<Option<usize>, SoldrError> {
-    let parsed = parse_rust_artifact_cache_tar_threads(raw)?;
-    let Some(token) = parsed else {
-        // Unset → auto.
-        return Ok(None);
-    };
-    if token == "auto" {
-        return Ok(None);
-    }
-    // parse_rust_artifact_cache_tar_threads already rejected zero / negative /
-    // non-integer values, so an integer-or-bust parse here is sound.
-    let n: usize = token.parse().map_err(|_| {
-        SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_TAR_THREADS_ENV_VAR} value {raw:?}; expected `auto` or a positive integer (use `1` to disable parallelism)"
-        ))
-    })?;
-    Ok(Some(n.clamp(1, BUNDLE_WALK_THREAD_CAP)))
-}
-
-/// Walk every file under `root` and return one [`ThinSliceManifestEntry`]
-/// per regular file.
-///
-/// Implementation is two-phase:
-/// 1. Serial directory traversal (`read_dir`) collects every file path. Per
-///    `read_dir` is cheap; the per-entry cost is dominated by the metadata
-///    stat in phase 2 (which on Windows pays a Defender callback per file).
-/// 2. Parallel `std::fs::metadata` over the collected paths via rayon.
-///    Output order is non-deterministic — the caller MUST sort.
-///
-/// `thread_count`:
-/// - `None` → use rayon's global thread pool.
-/// - `Some(1)` → fully sequential (no rayon overhead at all).
-/// - `Some(n)` for `n > 1` → run inside a scoped thread pool of `n`
-///   workers so the env var actually controls something soldr-side.
-fn walk_bundle_files(
-    root: &std::path::Path,
-    thread_count: Option<usize>,
-) -> Result<Vec<ThinSliceManifestEntry>, SoldrError> {
-    // Phase 1: serial DFS collects (absolute_path, relative_string) pairs.
-    let mut paths: Vec<(std::path::PathBuf, String)> = Vec::new();
-    collect_bundle_file_paths(root, root, &mut paths)?;
-
-    // Phase 2: stat each file. Sequential when only one worker is wanted,
-    // rayon-parallel otherwise.
-    let stat = |(path, rel): &(std::path::PathBuf, String)| -> ThinSliceManifestEntry {
-        let size_bytes = std::fs::metadata(path).ok().map(|m| m.len());
-        ThinSliceManifestEntry {
-            path: rel.clone(),
-            size_bytes,
-        }
-    };
-
-    let files = match thread_count {
-        Some(1) => paths.iter().map(stat).collect(),
-        Some(n) => {
-            use rayon::prelude::*;
-            // Build a scoped pool so the explicit thread count actually
-            // bounds this walk instead of leaking onto rayon's global pool.
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .thread_name(|i| format!("soldr-bundle-walk-{i}"))
-                .build()
-                .map_err(|e| {
-                    SoldrError::Other(format!("failed to build bundle-walk thread pool: {e}"))
-                })?;
-            pool.install(|| paths.par_iter().map(stat).collect())
-        }
-        None => {
-            use rayon::prelude::*;
-            paths.par_iter().map(stat).collect()
-        }
-    };
-
-    Ok(files)
-}
-
-/// Recursively walk `dir`, pushing `(absolute_path, root-relative string)`
-/// for every regular file under it. Used by [`walk_bundle_files`] as the
-/// directory-iteration phase before per-file metadata stats are fanned out.
-fn collect_bundle_file_paths(
-    root: &std::path::Path,
-    dir: &std::path::Path,
-    out: &mut Vec<(std::path::PathBuf, String)>,
-) -> Result<(), SoldrError> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(SoldrError::from(e)),
-    };
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_dir() {
-            collect_bundle_file_paths(root, &path, out)?;
-        } else if file_type.is_file() {
-            let rel = path
-                .strip_prefix(root)
-                .map(std::path::Path::to_path_buf)
-                .unwrap_or_else(|_| path.clone());
-            let rel_string = rel
-                .components()
-                .map(|c| c.as_os_str().to_string_lossy().into_owned())
-                .collect::<Vec<_>>()
-                .join("/");
-            out.push((path, rel_string));
-        }
-    }
-    Ok(())
-}
-
-fn warn_if_rust_plan_restore_incomplete(stdout: &str) {
-    let Ok(summary) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return;
-    };
-    let absent = summary
-        .get("artifact_absent_from_restored_plan")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    if absent == 0 {
-        return;
-    }
-    let restored = summary
-        .get("restored_file_count")
-        .and_then(serde_json::Value::as_u64)
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".to_string());
-    eprintln!(
-        "soldr warning: rust-plan restore is partial \
-         (artifact_absent_from_restored_plan={absent}, restored_file_count={restored}); \
-         Cargo is likely to fail with missing .rmeta errors. This usually means two \
-         `soldr cargo build` invocations are sharing the same --target-dir. Use a \
-         distinct --target-dir for each build or clear the target directory before \
-         re-running. See https://github.com/zackees/soldr/issues/228 for context."
-    );
-}
-
-fn cargo_profile(args: &[String]) -> &str {
+pub(crate) fn cargo_profile(args: &[String]) -> &str {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         if arg == "--" {
@@ -2845,7 +1239,7 @@ fn cargo_profile(args: &[String]) -> &str {
     "debug"
 }
 
-fn cargo_target_triple(args: &[String], host: &str) -> String {
+pub(crate) fn cargo_target_triple(args: &[String], host: &str) -> String {
     cargo_target_arg(args)
         .or_else(|| std::env::var("CARGO_BUILD_TARGET").ok())
         .unwrap_or_else(|| host.to_string())
@@ -2867,7 +1261,7 @@ fn cargo_target_arg(args: &[String]) -> Option<String> {
     None
 }
 
-fn cargo_feature_inputs(args: &[String]) -> Vec<String> {
+pub(crate) fn cargo_feature_inputs(args: &[String]) -> Vec<String> {
     selected_cargo_args(
         args,
         &[
@@ -2892,7 +1286,7 @@ fn cargo_feature_inputs(args: &[String]) -> Vec<String> {
     )
 }
 
-fn selected_cargo_args(args: &[String], names: &[&str]) -> Vec<String> {
+pub(crate) fn selected_cargo_args(args: &[String], names: &[&str]) -> Vec<String> {
     let mut selected = Vec::new();
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -2929,7 +1323,7 @@ fn selected_cargo_args(args: &[String], names: &[&str]) -> Vec<String> {
     selected
 }
 
-fn rustflags_inputs() -> Vec<(String, String)> {
+pub(crate) fn rustflags_inputs() -> Vec<(String, String)> {
     sorted_env_vars(|name| {
         name == "RUSTFLAGS"
             || name == "CARGO_ENCODED_RUSTFLAGS"
@@ -2937,7 +1331,7 @@ fn rustflags_inputs() -> Vec<(String, String)> {
     })
 }
 
-fn build_env_inputs(
+pub(crate) fn build_env_inputs(
     cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
 ) -> Vec<(String, String)> {
     let mut vars = sorted_env_vars(|name| {
@@ -2966,7 +1360,7 @@ where
     vars
 }
 
-fn workspace_manifest_hashes(workspace_root: &std::path::Path) -> Result<Vec<String>, SoldrError> {
+pub(crate) fn workspace_manifest_hashes(workspace_root: &std::path::Path) -> Result<Vec<String>, SoldrError> {
     let mut hashes = Vec::new();
     collect_manifest_hashes(workspace_root, workspace_root, &mut hashes)?;
     hashes.sort();
@@ -3002,7 +1396,7 @@ fn collect_manifest_hashes(
     Ok(())
 }
 
-fn cargo_config_hash(workspace_root: &std::path::Path) -> Result<String, SoldrError> {
+pub(crate) fn cargo_config_hash(workspace_root: &std::path::Path) -> Result<String, SoldrError> {
     let mut inputs = Vec::new();
     for relative in [".cargo/config.toml", ".cargo/config"] {
         let path = workspace_root.join(relative);
@@ -3013,19 +1407,19 @@ fn cargo_config_hash(workspace_root: &std::path::Path) -> Result<String, SoldrEr
     Ok(stable_hash_json(&inputs))
 }
 
-fn file_hash_or_missing(path: &std::path::Path) -> Result<String, SoldrError> {
+pub(crate) fn file_hash_or_missing(path: &std::path::Path) -> Result<String, SoldrError> {
     if !path.exists() {
         return Ok("missing".to_string());
     }
     Ok(sha256_bytes(&std::fs::read(path)?))
 }
 
-fn stable_hash_json<T: Serialize>(value: &T) -> String {
+pub(crate) fn stable_hash_json<T: Serialize>(value: &T) -> String {
     let bytes = serde_json::to_vec(value).unwrap_or_default();
     sha256_bytes(&bytes)
 }
 
-fn sha256_bytes(bytes: &[u8]) -> String {
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -3034,7 +1428,7 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     hex
 }
 
-fn path_string(path: &std::path::Path) -> String {
+pub(crate) fn path_string(path: &std::path::Path) -> String {
     path.display().to_string()
 }
 
@@ -3050,9 +1444,9 @@ fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrEr
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct CargoProfileDebugDefault {
-    profile: &'static str,
-    env_var: &'static str,
+pub(crate) struct CargoProfileDebugDefault {
+    pub(crate) profile: &'static str,
+    pub(crate) env_var: &'static str,
 }
 
 impl CargoProfileDebugDefault {
@@ -3687,7 +2081,7 @@ fn prepend_paths(
 
 /// Return the first positional argument (skipping flags) of the cargo
 /// front-door args, which is conventionally the cargo subcommand.
-fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
+pub(crate) fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
     let mut skip_next = false;
     for arg in args {
         if skip_next {
@@ -3771,7 +2165,7 @@ async fn ensure_known_subcommand_tool(
     Ok(vec![dir])
 }
 
-fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
+pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
     if let Some(path) = toolchain_binary_override(tool) {
         return Ok(path);
     }
@@ -3920,7 +2314,7 @@ fn windows_path_exts() -> Vec<String> {
         .collect()
 }
 
-fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
+pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
     let start_dir = std::env::current_dir().ok();
     soldr_core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
 }
@@ -3942,13 +2336,13 @@ fn parse_tool_spec(spec: &str) -> (String, VersionSpec) {
     }
 }
 
-struct ZccacheBuildSession {
-    binary_path: std::path::PathBuf,
-    cache_dir: std::path::PathBuf,
-    session_id: String,
-    session_log_path: std::path::PathBuf,
-    journal_path: std::path::PathBuf,
-    session_stats_path: std::path::PathBuf,
+pub(crate) struct ZccacheBuildSession {
+    pub(crate) binary_path: std::path::PathBuf,
+    pub(crate) cache_dir: std::path::PathBuf,
+    pub(crate) session_id: String,
+    pub(crate) session_log_path: std::path::PathBuf,
+    pub(crate) journal_path: std::path::PathBuf,
+    pub(crate) session_stats_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4254,7 +2648,7 @@ pub(crate) fn run_zccache_command_in_cache_dir(
     )
 }
 
-fn run_zccache_command_strings_in_cache_dir(
+pub(crate) fn run_zccache_command_strings_in_cache_dir(
     binary: &std::path::Path,
     args: &[String],
     cache_dir: &std::path::Path,
@@ -4420,7 +2814,7 @@ fn zccache_command_failure_message_strings(
     )
 }
 
-fn command_stderr(output: &std::process::Output) -> String {
+pub(crate) fn command_stderr(output: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if stderr.is_empty() {
         format!("exit status {}", output.status)
@@ -4454,7 +2848,7 @@ fn real_toolchain_binary_env_var(tool: &str) -> String {
     value
 }
 
-fn rustup_binary() -> std::path::PathBuf {
+pub(crate) fn rustup_binary() -> std::path::PathBuf {
     non_empty_env_path(TEST_RUSTUP_BIN_ENV_VAR).unwrap_or_else(|| "rustup".into())
 }
 
@@ -4463,7 +2857,7 @@ fn zccache_binary_override() -> Option<std::path::PathBuf> {
         .or_else(|| non_empty_env_path(soldr_cache::ZCCACHE_BINARY_ENV_VAR))
 }
 
-fn non_empty_env_path(env_var: &str) -> Option<std::path::PathBuf> {
+pub(crate) fn non_empty_env_path(env_var: &str) -> Option<std::path::PathBuf> {
     let value = std::env::var_os(env_var)?;
     if value.is_empty() {
         return None;
