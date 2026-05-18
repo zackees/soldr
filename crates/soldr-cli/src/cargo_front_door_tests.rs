@@ -84,3 +84,118 @@ fn first_cargo_subcommand_stops_at_passthrough_separator() {
         None
     );
 }
+
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|s| (*s).to_string()).collect()
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_direct_build() {
+    assert!(cargo_args_are_cacheable(&argv(&["build"])));
+    assert!(cargo_args_are_cacheable(&argv(&["build", "--release"])));
+    assert!(cargo_args_are_cacheable(&argv(&["b"])));
+}
+
+#[test]
+fn cargo_args_are_not_cacheable_for_direct_clean() {
+    assert!(!cargo_args_are_cacheable(&argv(&["clean"])));
+    assert!(!cargo_args_are_cacheable(&argv(&["fmt"])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_short_exec_single_token() {
+    assert!(cargo_args_are_cacheable(&argv(&["watch", "-x", "build"])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_short_exec_multi_token() {
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "-x",
+        "build --release",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_long_exec_equals_form() {
+    assert!(cargo_args_are_cacheable(&argv(&["watch", "--exec=build"])));
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "--exec=build --release",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_long_exec_space_form() {
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch", "--exec", "build",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_shell_form_strips_leading_cargo() {
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "-s",
+        "cargo build --release",
+    ])));
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "--shell",
+        "cargo build --release",
+    ])));
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "--shell=cargo build --release",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_not_cacheable_for_watch_with_uncacheable_inner() {
+    assert!(!cargo_args_are_cacheable(&argv(&["watch", "-x", "clean"])));
+    assert!(!cargo_args_are_cacheable(&argv(&["watch", "-x", "fmt"])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_when_any_inner_is_cacheable() {
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch", "-x", "build", "-x", "clean",
+    ])));
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch", "-x", "clean", "-x", "build",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_not_cacheable_for_bare_watch() {
+    assert!(!cargo_args_are_cacheable(&argv(&["watch"])));
+    assert!(!cargo_args_are_cacheable(&argv(&["watch", "--clear"])));
+}
+
+#[test]
+fn cargo_args_ignore_exec_after_passthrough_separator() {
+    // Anything after `--` is not parsed as a watch-flag value.
+    assert!(!cargo_args_are_cacheable(&argv(&[
+        "watch", "--", "-x", "build",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_inner_release_flag() {
+    // `-x 'build --release'` — tokens after `build` should not break the
+    // detection, and the outer cacheable answer is still true.
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "watch",
+        "-x",
+        "build --release --workspace",
+    ])));
+}
+
+#[test]
+fn cargo_args_are_cacheable_for_watch_with_toolchain_pin() {
+    // `+nightly` is a cargo toolchain shorthand that should be skipped when
+    // locating the `watch` subcommand.
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "+nightly", "watch", "-x", "build",
+    ])));
+}
