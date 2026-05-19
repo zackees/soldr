@@ -8,6 +8,9 @@ mod cargo_front_door;
 mod doctor;
 mod gc;
 mod linker;
+mod optimize;
+mod optimize_detect;
+mod optimize_windows;
 mod rust_plan;
 mod self_relocate;
 mod toolchain;
@@ -223,6 +226,10 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Apply platform-specific hot-cache optimizations (Windows
+    /// Defender exclusions today; future platforms TBD). Auto-skips on
+    /// CI. See `docs/API.md` for the full matrix.
+    Optimize(optimize::OptimizeArgs),
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -520,6 +527,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         },
         Commands::Doctor { json } => {
             std::process::exit(doctor::run_doctor(json)?);
+        }
+        Commands::Optimize(args) => {
+            std::process::exit(optimize::run_optimize(args)?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
