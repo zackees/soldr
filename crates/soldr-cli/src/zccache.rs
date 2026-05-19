@@ -536,4 +536,58 @@ mod tests {
         assert!(!is_sccache_wrapper(OsStr::new("zccache")));
         assert!(!is_sccache_wrapper(OsStr::new("sccache-proxy")));
     }
+
+    // Parent-cache L1.x env injection (issue #352). The decision function
+    // takes the inherited values of `ZCCACHE_PATH_REMAP` (set by the user)
+    // and `SOLDR_PATH_REMAP` (soldr-side escape hatch) and decides whether
+    // soldr should inject `ZCCACHE_PATH_REMAP=auto` onto the spawned cargo
+    // child. None means do not inject; Some(value) means inject that value.
+    //
+    // Rules:
+    //   1. If the user already set ZCCACHE_PATH_REMAP, do not override.
+    //   2. Otherwise read SOLDR_PATH_REMAP (default `auto`). `off`
+    //      (case-insensitive) suppresses the injection. Anything else, or
+    //      unset, injects `auto`.
+
+    #[test]
+    fn path_remap_injects_auto_when_nothing_set() {
+        assert_eq!(resolve_path_remap_env(None, None), Some("auto"));
+    }
+
+    #[test]
+    fn path_remap_skips_when_soldr_override_is_off() {
+        assert_eq!(resolve_path_remap_env(None, Some("off")), None);
+    }
+
+    #[test]
+    fn path_remap_skips_when_soldr_override_is_off_case_insensitive() {
+        assert_eq!(resolve_path_remap_env(None, Some("OFF")), None);
+        assert_eq!(resolve_path_remap_env(None, Some("Off")), None);
+        assert_eq!(resolve_path_remap_env(None, Some(" off ")), None);
+    }
+
+    #[test]
+    fn path_remap_injects_auto_when_soldr_override_is_auto() {
+        assert_eq!(resolve_path_remap_env(None, Some("auto")), Some("auto"));
+        assert_eq!(resolve_path_remap_env(None, Some("AUTO")), Some("auto"));
+    }
+
+    #[test]
+    fn path_remap_preserves_user_value_when_zccache_already_set_to_non_auto() {
+        assert_eq!(resolve_path_remap_env(Some("disabled"), None), None);
+        assert_eq!(
+            resolve_path_remap_env(Some("disabled"), Some("auto")),
+            None
+        );
+        assert_eq!(resolve_path_remap_env(Some(""), None), None);
+    }
+
+    #[test]
+    fn path_remap_preserves_user_value_when_zccache_already_auto() {
+        // User explicitly set `auto` — soldr must not double-inject. The
+        // decision function returns None because the env is already correct
+        // in the inherited environment.
+        assert_eq!(resolve_path_remap_env(Some("auto"), None), None);
+        assert_eq!(resolve_path_remap_env(Some("auto"), Some("off")), None);
+    }
 }
