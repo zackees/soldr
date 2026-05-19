@@ -49,7 +49,7 @@ jobs:
       # Pinned to the current @v0 expected by
       # .github/scripts/verify_setup_soldr_pin.py.
       - name: Set up soldr
-        uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+        uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
 
       - name: Run parent-cache benchmark
         shell: bash

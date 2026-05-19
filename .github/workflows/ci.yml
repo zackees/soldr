@@ -34,7 +34,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
         with:
           linker: platform-default
           # Formatting does not benefit from a restored target directory, but
@@ -77,7 +77,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
         with:
           linker: platform-default
 
@@ -114,7 +114,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
         with:
           linker: platform-default
 
@@ -142,14 +142,14 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.94.1
           targets: x86_64-pc-windows-msvc
           components: rustfmt, clippy
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ci-windows-x64
           shared-key: windows-x86_64-msvc
