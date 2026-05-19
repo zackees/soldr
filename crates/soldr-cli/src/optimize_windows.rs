@@ -11,10 +11,12 @@ use super::optimize::{ActionStatus, ExclusionAction, PathAction};
 /// Environment variable injected by the parent soldr process when it
 /// re-launches itself elevated. The helper subprocess writes its JSON
 /// status to this path so the parent can read and report it.
+#[cfg(target_os = "windows")]
 pub(crate) const SOLDR_OPTIMIZE_HELPER_OUTPUT_ENV: &str = "SOLDR_OPTIMIZE_HELPER_OUTPUT";
 
 /// Sentinel flag the parent passes to the elevated helper to make it
 /// skip its own UAC self-relaunch loop.
+#[cfg(target_os = "windows")]
 pub(crate) const ELEVATED_HELPER_FLAG: &str = "--as-elevated-helper";
 
 /// Test seam: when set, the helper that would normally call
@@ -27,6 +29,7 @@ pub(crate) const SOLDR_TEST_DEFENDER_LOG_ENV: &str = "SOLDR_TEST_DEFENDER_LOG";
 /// Test seam: when set, treats the current process as if it is
 /// running with administrator privileges regardless of the real
 /// token. Bypasses the UAC self-relaunch path in tests.
+#[cfg(target_os = "windows")]
 pub(crate) const SOLDR_TEST_ASSUME_ADMIN_ENV: &str = "SOLDR_TEST_ASSUME_ADMIN";
 
 /// Test seam: when set, returns the contents of this file as the
@@ -232,15 +235,7 @@ pub(crate) fn relaunch_elevated(
     Ok(status.code().unwrap_or(1))
 }
 
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn relaunch_elevated(
-    _powershell: &Path,
-    _args: &[String],
-    _helper_output_path: &Path,
-) -> Result<i32, String> {
-    Err("UAC self-relaunch is only supported on Windows".into())
-}
-
+#[cfg(target_os = "windows")]
 fn build_powershell_arg_list(args: &[String]) -> String {
     if args.is_empty() {
         // PowerShell rejects empty Start-Process ArgumentList; pass a
@@ -251,6 +246,7 @@ fn build_powershell_arg_list(args: &[String]) -> String {
     format!("@({})", parts.join(","))
 }
 
+#[cfg(target_os = "windows")]
 fn ps_quote(value: &str) -> String {
     let escaped = value.replace('\'', "''");
     format!("'{}'", escaped)
@@ -266,11 +262,13 @@ mod tests {
         assert!(exclusion_list_contains(&list, "c:/users/you/.soldr/cache"));
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn ps_quote_doubles_single_quotes() {
         assert_eq!(ps_quote("a'b"), "'a''b'");
     }
 
+    #[cfg(target_os = "windows")]
     #[test]
     fn build_powershell_arg_list_emits_array_literal() {
         let args = vec!["optimize".to_string(), "--scope".to_string()];
