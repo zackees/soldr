@@ -1,0 +1,193 @@
+name: Parent Cache Bench
+
+# Tier L1.x benchmark for issue #352.
+#
+# Proves the parent-cache (worktree-cache-sharing) speedup is real and acts
+# as a regression gate. Three timed `soldr cargo build` invocations:
+#
+#   A) Build the original checkout to populate zccache.
+#   B) Build a second worktree at the same commit with
+#      ZCCACHE_PATH_REMAP=auto. Should hit the parent cache and finish
+#      much faster than (A).
+#   C) Build the same worktree as control with SOLDR_PATH_REMAP=off and
+#      a fresh target/. Should NOT hit the parent cache, validating that
+#      the speedup is attributable to the remap.
+#
+# The ratio C/B is the parent-cache speedup. Default fail threshold: 5x.
+
+on:
+  workflow_dispatch:
+    inputs:
+      threshold_ratio:
+        description: "Warm-with-remap build must be at least this many times faster than the no-remap control."
+        required: true
+        default: "5"
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/soldr-cache/src/lib.rs"
+      - "crates/soldr-cli/src/zccache.rs"
+      - ".github/workflows/parent-cache-bench.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Parent cache speedup
+    runs-on: ubuntu-24.04
+    env:
+      THRESHOLD: ${{ inputs.threshold_ratio || '5' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Pinned to the current @v0 expected by
+      # .github/scripts/verify_setup_soldr_pin.py.
+      - name: Set up soldr
+        uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+
+      - name: Isolate zccache state
+        id: isolate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Force a fresh zccache root so the only cache state in the
+          # benchmark comes from worktree A's build. Without this, a
+          # populated cache restored by setup-soldr (or left over from
+          # the runner image) would mask whether worktree B is hitting
+          # the parent cache or its own warm cache.
+          cache_root="$(mktemp -d "${RUNNER_TEMP}/soldr-bench-cache.XXXXXX")"
+          echo "SOLDR_CACHE_DIR=${cache_root}" >> "$GITHUB_ENV"
+          echo "cache_root=${cache_root}" >> "$GITHUB_OUTPUT"
+          echo "isolated SOLDR_CACHE_DIR=${cache_root}"
+
+      - name: Build worktree A (populate parent cache)
+        id: build_a
+        shell: bash
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          soldr cargo build --workspace --locked --release
+          end=$(date +%s)
+          seconds=$((end - start))
+          echo "seconds=${seconds}" >> "$GITHUB_OUTPUT"
+          echo "worktree A build: ${seconds}s"
+
+      - name: Add worktree B
+        id: add_b
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree_b="${RUNNER_TEMP}/worktree-b"
+          # Clean any leftover from a previous run on the same runner.
+          if [ -e "${worktree_b}" ]; then
+            rm -rf "${worktree_b}"
+          fi
+          git worktree add "${worktree_b}" HEAD
+          echo "worktree_b=${worktree_b}" >> "$GITHUB_OUTPUT"
+
+      - name: Build worktree B with ZCCACHE_PATH_REMAP=auto (warm)
+        id: build_b_warm
+        shell: bash
+        env:
+          WORKTREE_B: ${{ steps.add_b.outputs.worktree_b }}
+        run: |
+          set -euo pipefail
+          cd "${WORKTREE_B}"
+          # Explicit even though this is the default — pinning the env
+          # here means a future flip in defaults does not silently change
+          # what this benchmark measures.
+          start=$(date +%s)
+          env ZCCACHE_PATH_REMAP=auto soldr cargo build --workspace --locked --release
+          end=$(date +%s)
+          seconds=$((end - start))
+          echo "seconds=${seconds}" >> "$GITHUB_OUTPUT"
+          echo "worktree B warm-with-remap build: ${seconds}s"
+
+      - name: Reset worktree B target/ for control run
+        shell: bash
+        env:
+          WORKTREE_B: ${{ steps.add_b.outputs.worktree_b }}
+        run: |
+          set -euo pipefail
+          rm -rf "${WORKTREE_B}/target"
+
+      - name: Build worktree B with SOLDR_PATH_REMAP=off (control)
+        id: build_b_control
+        shell: bash
+        env:
+          WORKTREE_B: ${{ steps.add_b.outputs.worktree_b }}
+        run: |
+          set -euo pipefail
+          cd "${WORKTREE_B}"
+          start=$(date +%s)
+          env SOLDR_PATH_REMAP=off soldr cargo build --workspace --locked --release
+          end=$(date +%s)
+          seconds=$((end - start))
+          echo "seconds=${seconds}" >> "$GITHUB_OUTPUT"
+          echo "worktree B control (no remap) build: ${seconds}s"
+
+      - name: Compare timings
+        id: compare
+        shell: bash
+        env:
+          A_SECONDS: ${{ steps.build_a.outputs.seconds }}
+          WARM_SECONDS: ${{ steps.build_b_warm.outputs.seconds }}
+          CONTROL_SECONDS: ${{ steps.build_b_control.outputs.seconds }}
+        run: |
+          set -euo pipefail
+          # Use awk for the ratio so we avoid bash's integer-only math.
+          ratio=$(awk -v c="${CONTROL_SECONDS}" -v w="${WARM_SECONDS}" \
+            'BEGIN { if (w <= 0) { print "inf" } else { printf "%.2f\n", c / w } }')
+          echo "ratio=${ratio}" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "=== Parent-cache benchmark results ==="
+          echo "  worktree A (populate):           ${A_SECONDS}s"
+          echo "  worktree B warm (PATH_REMAP=auto): ${WARM_SECONDS}s"
+          echo "  worktree B control (PATH_REMAP off, fresh target/): ${CONTROL_SECONDS}s"
+          echo "  speedup ratio (control / warm):  ${ratio}x"
+          echo "  fail threshold:                  ${THRESHOLD}x"
+
+      - name: Write job summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          A_SECONDS: ${{ steps.build_a.outputs.seconds }}
+          WARM_SECONDS: ${{ steps.build_b_warm.outputs.seconds }}
+          CONTROL_SECONDS: ${{ steps.build_b_control.outputs.seconds }}
+          RATIO: ${{ steps.compare.outputs.ratio }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Parent-cache benchmark (issue #352)"
+            echo ""
+            echo "| Step | Wall seconds |"
+            echo "|---|---|"
+            echo "| Worktree A (populate) | \`${A_SECONDS:-n/a}\` |"
+            echo "| Worktree B warm with \`ZCCACHE_PATH_REMAP=auto\` | \`${WARM_SECONDS:-n/a}\` |"
+            echo "| Worktree B control with \`SOLDR_PATH_REMAP=off\` | \`${CONTROL_SECONDS:-n/a}\` |"
+            echo ""
+            echo "Speedup ratio (control / warm): \`${RATIO:-n/a}\`"
+            echo ""
+            echo "Fail threshold: \`${THRESHOLD}x\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce speedup threshold
+        shell: bash
+        env:
+          RATIO: ${{ steps.compare.outputs.ratio }}
+        run: |
+          set -euo pipefail
+          if [ "${RATIO}" = "inf" ]; then
+            echo "warm build measured 0s; treating as pass."
+            exit 0
+          fi
+          ok=$(awk -v r="${RATIO}" -v t="${THRESHOLD}" \
+            'BEGIN { print (r + 0 >= t + 0) ? "yes" : "no" }')
+          if [ "${ok}" != "yes" ]; then
+            echo "Parent-cache speedup ${RATIO}x is below threshold ${THRESHOLD}x" >&2
+            exit 1
+          fi
+          echo "Parent-cache speedup ${RATIO}x meets threshold ${THRESHOLD}x"
