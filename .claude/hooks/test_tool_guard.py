@@ -122,6 +122,65 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "cargo")
 
+    def test_blocks_bare_rustup(self):
+        result = check_command("rustup target add x86_64-pc-windows-msvc")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "rustup")
+
+    def test_blocks_bare_rustdoc(self):
+        result = check_command("rustdoc --output target/doc src/lib.rs")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "rustdoc")
+
+    def test_blocks_bare_rust_gdb_lldb_analyzer(self):
+        for tool in ("rust-gdb", "rust-lldb", "rust-analyzer"):
+            with self.subTest(tool=tool):
+                result = check_command(f"{tool} --version")
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], tool)
+
+    def test_allows_soldr_rustup_rustdoc(self):
+        self.assertIsNone(check_command("soldr rustup target add x86_64-pc-windows-msvc"))
+        self.assertIsNone(check_command("soldr rustdoc --output target/doc src/lib.rs"))
+        self.assertIsNone(check_command("uv run soldr rustup show"))
+
+    def test_blocks_env_prefixed_bare_cargo(self):
+        # Leading env-var assignments are not a backdoor around the policy.
+        cases = (
+            "RUSTUP_TOOLCHAIN=1.94.1 cargo build",
+            "FOO=bar BAZ=qux cargo test",
+            "CARGO_PROFILE_RELEASE_DEBUG=2 CARGO_PROFILE_RELEASE_SPLIT_DEBUGINFO=packed cargo build",
+            "CARGO_TARGET_DIR=/tmp/foo cargo check",
+        )
+        for command in cases:
+            with self.subTest(command=command):
+                result = check_command(command)
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], "cargo")
+
+    def test_blocks_env_prefixed_bare_rustup(self):
+        result = check_command("RUSTUP_HOME=/tmp/h rustup show")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "rustup")
+
+    def test_allows_env_prefixed_soldr_invocation(self):
+        # Env-var assignments before soldr are fine -- the policy is about
+        # routing the *tool*, not forbidding env overrides.
+        self.assertIsNone(check_command("SOLDR_TRUST_MODE=strict soldr cargo build"))
+        self.assertIsNone(check_command("CARGO_BUILD_JOBS=4 soldr cargo test --release"))
+        self.assertIsNone(check_command("FOO=bar uv run soldr cargo check"))
+
+    def test_blocks_env_prefixed_bare_python(self):
+        result = check_command("PYTHONPATH=/foo python ci/script.py")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "python")
+
+    def test_blocks_env_prefixed_in_compound(self):
+        # Env-prefixed bare cargo on the right side of && must still trip.
+        result = check_command("git status && RUSTUP_TOOLCHAIN=foo cargo build")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cargo")
+
 
 if __name__ == "__main__":
     unittest.main()
