@@ -335,6 +335,112 @@ Component installed-state matching is target-qualified: rustup's
 installed entry that either equals `clippy` exactly or starts with
 `clippy-`.
 
+### `soldr optimize`
+
+Apply platform-specific hot-cache optimizations to remove
+build-time penalties caused by antivirus / real-time scanners. On
+Windows this adds soldr-owned cache paths (and optionally the current
+project's `target/`) to Windows Defender's exclusion list. On macOS
+and Linux it is a no-op with a clear message — soldr's workloads do
+not require exclusions there.
+
+```bash
+soldr optimize                                # default scope: all
+soldr optimize --scope global                 # only ~/.soldr/* paths
+soldr optimize --scope project                # only <workspace>/target
+soldr optimize --scope all                    # both
+soldr optimize --dry-run --json               # plan-only output
+soldr optimize --undo --scope global          # reverse soldr-added exclusions
+```
+
+Flags:
+
+- `--scope {global|project|all}` — what to optimize. Defaults to
+  `all`.
+- `--undo` — reverse exclusions previously added by soldr. Only
+  paths tracked in `~/.soldr/managed-defender-exclusions.json` are
+  removed; entries the user added by hand are never touched.
+- `--dry-run` — print the plan and exit without invoking PowerShell.
+- `--json` — emit the stable machine-facing JSON form.
+- `--manifest-path <PATH>` — explicit `Cargo.toml` for the `project`
+  scope. When unset, soldr walks up from the current directory.
+
+Platform behavior:
+
+| Platform | Behavior |
+|---|---|
+| Windows 10 | Add Defender exclusions. UAC self-relaunch when not admin. |
+| Windows 11 pre-22H2 | Same as Windows 10, plus an info note about Dev Drive in 22H2. |
+| Windows 11 22H2+ | Same as Windows 10, plus a Dev Drive suggestion when `fsutil devdrv` is supported. |
+| Windows + Defender disabled | Prints "Defender not active; no exclusions needed." Exits 0. |
+| Windows + no PowerShell on PATH | Hard error; exits non-zero. |
+| macOS / Linux | No-op; exits 0 with a message. |
+
+The global scope covers:
+
+- `~/.soldr/cache`
+- `~/.soldr/bench`
+- `~/.soldr/runtime`
+- `~/.soldr/state.redb`
+- The resolved zccache cache directory (`~/.soldr/cache/zccache`).
+  When `ZCCACHE_CACHE_DIR` is set outside soldr's default, the
+  resolved path is excluded explicitly and a warning suggests
+  unsetting the override.
+
+The project scope covers `<workspace_root>/target/`, where
+`<workspace_root>` is the nearest ancestor of the current directory
+containing a `Cargo.toml`. Without `--manifest-path` and without a
+matching ancestor, the command exits with `no Rust project detected`.
+
+UAC self-relaunch:
+
+When the current process is not elevated, soldr re-launches itself
+via `Start-Process powershell -Verb RunAs --as-elevated-helper`. The
+elevated child writes its JSON status to a temp file referenced by
+the `SOLDR_OPTIMIZE_HELPER_OUTPUT` env var; the parent reads,
+prints, and deletes it. The same exit code is propagated. If UAC is
+denied or unavailable, soldr prints instructions for running the
+helper from an elevated PowerShell and exits non-zero — soldr will
+never silently elevate via tokens or scheduled tasks.
+
+CI auto-skip:
+
+`soldr optimize` detects CI via `GITHUB_ACTIONS`, `CI`, `BUILDKITE`,
+`CIRCLECI`, `TRAVIS` (truthy values), or a non-empty `JENKINS_URL`,
+and exits 0 with a clear message. Ephemeral runners discard
+Defender state at job end, so adding exclusions is a no-op there.
+
+Example JSON output (`schema_version: 1`):
+
+```json
+{
+  "schema_version": 1,
+  "command": "optimize",
+  "platform": "Windows10",
+  "scope": "all",
+  "undo": false,
+  "dry_run": true,
+  "defender_present": true,
+  "defender_active": true,
+  "actions": [
+    {
+      "path": "C:\\Users\\you\\.soldr\\cache",
+      "action": "add",
+      "scope": "global",
+      "status": "planned"
+    }
+  ],
+  "note": "dry-run: would add 6 paths to Defender exclusions"
+}
+```
+
+Suppressing the pre-build warning:
+
+When the cargo front door detects that the soldr cache directory is
+being scanned by Defender, it emits a one-line warning to stderr
+suggesting `soldr optimize global`. Set `SOLDR_QUIET_DEFENDER=1` to
+silence it. The warning is also suppressed automatically in CI.
+
 ### `soldr gc`
 
 Review reclaimable Cargo `target/` directories tracked in
@@ -587,6 +693,8 @@ Commands:
 | `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |
 | `SOLDR_TARGET_CACHE_TAR_THREADS` | Reader-thread count for the target-cache tar walk in zccache, AND for soldr's own thin-slice manifest walk (issue #272). `auto` lets each side pick a vCPU-bounded count (capped at 8). `1` disables parallelism (sequential walk). Any positive integer sets an explicit count, clamped to `[1, 8]` on the soldr side. soldr validates the value at the cargo front door and uses it when statting bundle files for the `manifest.v2.json` thin-slice manifest; the bulk multi-GB `target/` tar walk lives in zccache. | unset (`auto`) |
 | `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (cross-platform via rustup), `fast` (mold on Linux when present on `PATH`, otherwise rust-lld; rust-lld on macOS and Windows). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` injected into the spawned cargo process; the active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. | unset |
+| `SOLDR_QUIET_DEFENDER` | Suppress the once-per-day pre-build warning emitted by the cargo front door when Defender is actively scanning the soldr cache directory (issue #358). Truthy values silence the warning; the warning is also automatically suppressed in CI environments. | unset |
+| `SOLDR_OPTIMIZE_HELPER_OUTPUT` | Internal: set by the parent soldr process when it re-launches itself elevated via `--as-elevated-helper`. The elevated child writes its JSON status to this path so the parent can read and propagate it. | unset |
 
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of its managed zccache. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
