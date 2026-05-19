@@ -24,37 +24,25 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Verify setup-soldr pin matches v0
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
-
-      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          linker: platform-default
-          # Formatting does not benefit from a restored target directory, but
-          # clippy still uses soldr's compilation cache below.
-          target-cache: false
+          toolchain: 1.94.1
+          components: rustfmt, clippy
 
-      # setup-soldr@d7be70d installs a minimal toolchain without rustfmt or
-      # clippy. Once https://github.com/zackees/setup-soldr/issues/93 lands,
-      # the shim layer + default components will make this step unnecessary.
-      - name: Install rustfmt and clippy components
-        run: rustup component add rustfmt clippy
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: lint-ubuntu
 
       - name: Check formatting
-        run: soldr cargo fmt --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js
 
       - name: Run clippy
-        run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   build-linux-x64:
     name: Linux x64
@@ -67,31 +55,27 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Verify setup-soldr pin matches v0
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
-
-      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          linker: platform-default
+          toolchain: 1.94.1
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: build-linux-x64
 
       - name: Build workspace
-        run: soldr cargo build --workspace --locked
+        run: cargo build --workspace --locked
 
       - name: Run library tests
-        run: soldr cargo test --workspace --lib --locked
+        run: cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --tests --locked
+        run: cargo test -p soldr-cli --tests --locked
 
       - name: Run fetch integration test
-        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked
 
   build-macos-x64:
     name: macOS x64
@@ -104,31 +88,27 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Verify setup-soldr pin matches v0
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
-
-      - uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          linker: platform-default
+          toolchain: 1.94.1
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: build-macos-x64
 
       - name: Build workspace
-        run: soldr cargo build --workspace --locked
+        run: cargo build --workspace --locked
 
       - name: Run library tests
-        run: soldr cargo test --workspace --lib --locked
+        run: cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --tests --locked
+        run: cargo test -p soldr-cli --tests --locked
 
       - name: Run fetch integration test
-        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked
 
   build-windows-x64:
     name: Windows x64
@@ -234,7 +214,7 @@ jobs:
 
   e2e-windows-x64:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e-windows.yml
+    uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-2025
       target: x86_64-pc-windows-msvc
@@ -244,7 +224,7 @@ jobs:
 
   e2e-windows-arm64:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e-windows.yml
+    uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-11-arm
       target: aarch64-pc-windows-msvc

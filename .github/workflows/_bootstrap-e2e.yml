@@ -56,30 +56,17 @@ jobs:
           ref: ${{ inputs.third_party_ref }}
           path: ${{ inputs.third_party_path }}
 
-      - name: Verify setup-soldr pin matches v0
-        shell: bash
-        working-directory: soldr
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
-
-      - name: Setup Soldr cache and toolchain
-        uses: zackees/setup-soldr@d66c6fc50c7dc6fd483f64bacd05526b21bfdcd6 # @v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
-          toolchain-file: soldr/rust-toolchain.toml
-          linker: platform-default
-          cache-key-suffix: bootstrap-${{ inputs.target }}
-          target-cache-mode: full
-          target-dir: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}/target-${{ inputs.target }}
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
 
-      - name: Install target toolchain support
-        shell: pwsh
-        run: |
-          rustup target add "${{ inputs.target }}"
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          workspaces: soldr -> target
+          shared-key: bootstrap-${{ inputs.target }}
 
       - name: Install musl tools
         if: contains(inputs.target, 'musl')
@@ -118,7 +105,7 @@ jobs:
         shell: pwsh
         working-directory: soldr
         run: |
-          soldr cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
+          cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
 
       - name: Resolve third-party toolchain
         id: third_party_toolchain
@@ -183,29 +170,3 @@ jobs:
         with:
           name: soldr-${{ inputs.target }}
           path: ${{ steps.soldr_binary.outputs.path }}
-
-      - name: Stop managed zccache before cache save
-        if: ${{ always() }}
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          $exeName = if ($IsWindows) { "zccache.exe" } else { "zccache" }
-          $zccache = $null
-          if (-not [string]::IsNullOrWhiteSpace($env:SOLDR_CACHE_DIR)) {
-            $soldrBin = Join-Path -Path $env:SOLDR_CACHE_DIR -ChildPath "bin"
-            if (Test-Path -LiteralPath $soldrBin) {
-              $zccache = Get-ChildItem -LiteralPath $soldrBin -Recurse -Filter $exeName -File -ErrorAction SilentlyContinue |
-                Select-Object -First 1 -ExpandProperty FullName
-            }
-          }
-          if ([string]::IsNullOrWhiteSpace($zccache)) {
-            $command = Get-Command zccache -ErrorAction SilentlyContinue
-            if ($command) {
-              $zccache = $command.Source
-            }
-          }
-          if ([string]::IsNullOrWhiteSpace($zccache)) {
-            Write-Host "zccache binary is unavailable; nothing to stop."
-            exit 0
-          }
-          & $zccache stop
