@@ -149,10 +149,7 @@ fn ci_detection_ignores_falsy_values() {
 
 #[test]
 fn platform_boundary_windows_10_22h2() {
-    assert_eq!(
-        parse_windows_build(10, 0, 19045),
-        Platform::Windows10
-    );
+    assert_eq!(parse_windows_build(10, 0, 19045), Platform::Windows10);
 }
 
 #[test]
@@ -173,10 +170,7 @@ fn platform_boundary_windows_11_22h2() {
 
 #[test]
 fn platform_windows_10_early_build_is_still_windows_10() {
-    assert_eq!(
-        parse_windows_build(10, 0, 19041),
-        Platform::Windows10
-    );
+    assert_eq!(parse_windows_build(10, 0, 19041), Platform::Windows10);
 }
 
 #[test]
