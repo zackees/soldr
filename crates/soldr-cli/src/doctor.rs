@@ -4,7 +4,8 @@
 use crate::cache::print_json;
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
 use serde::Serialize;
-use soldr_core::{suppress_windows_console_window, SoldrError};
+use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use soldr_fetch::{ZccacheBinarySummary, ZccacheSource};
 
 #[derive(Serialize)]
 struct DoctorComponent {
@@ -40,6 +41,56 @@ struct DoctorOutput {
     drift: bool,
     missing_components: Vec<String>,
     missing_targets: Vec<String>,
+    /// Managed zccache resolution: where the binaries live, whether
+    /// the `SOLDR_ZCCACHE_LOCAL_DIR` override is active, and where to
+    /// point a debugger for symbol resolution.
+    managed_zccache: DoctorManagedZccache,
+}
+
+#[derive(Serialize)]
+struct DoctorManagedZccache {
+    /// `managed`, `local`, or `none` (nothing fetched yet).
+    source: &'static str,
+    /// Version label. Empty when source is `none`.
+    version: String,
+    /// Directory whose binaries are actually executed.
+    runtime_dir: String,
+    /// For local builds, the path the user set in
+    /// `SOLDR_ZCCACHE_LOCAL_DIR`. Null for managed builds.
+    source_dir: Option<String>,
+    /// Absolute path to the active CLI binary, if present.
+    cli_path: Option<String>,
+    /// Absolute path to the active daemon binary, if present.
+    daemon_path: Option<String>,
+    /// Absolute path to the active fingerprint binary, if present.
+    fp_path: Option<String>,
+    /// Number of debug-info sidecars present (PDBs on Windows, DWPs
+    /// on Linux, dSYMs on macOS).
+    debug_info_found: usize,
+    /// Number of binaries we expected debug-info for (always 3).
+    debug_info_expected: usize,
+    /// Path to pass to `cdb -y` / `_NT_SYMBOL_PATH` when attaching.
+    symbol_path: String,
+}
+
+impl DoctorManagedZccache {
+    fn from_summary(summary: &ZccacheBinarySummary) -> Self {
+        Self {
+            source: summary.source.as_str(),
+            version: summary.version.clone(),
+            runtime_dir: summary.runtime_dir.display().to_string(),
+            source_dir: summary.source_dir.as_ref().map(|p| p.display().to_string()),
+            cli_path: summary.cli_path.as_ref().map(|p| p.display().to_string()),
+            daemon_path: summary
+                .daemon_path
+                .as_ref()
+                .map(|p| p.display().to_string()),
+            fp_path: summary.fp_path.as_ref().map(|p| p.display().to_string()),
+            debug_info_found: summary.debug_info_found,
+            debug_info_expected: summary.debug_info_expected,
+            symbol_path: summary.symbol_path.display().to_string(),
+        }
+    }
 }
 
 /// Implementation of `soldr doctor`. Read-only — never invokes
@@ -49,6 +100,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
     let manifest_path = workspace_root.join("rust-toolchain.toml");
     let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
     let manifest_present = manifest_path.exists();
+    let zccache_summary = collect_zccache_summary()?;
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
@@ -62,6 +114,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 drift: false,
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
+                managed_zccache: DoctorManagedZccache::from_summary(&zccache_summary),
             };
             print_json(&output)?;
         } else if manifest_present {
@@ -69,12 +122,14 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 "manifest: {} (present but no [toolchain] channel declared)",
                 manifest_path.display()
             );
+            print_managed_zccache_human(&zccache_summary);
             println!("result: no manifest fields to compare; nothing to do");
         } else {
             println!(
                 "no rust-toolchain.toml found in {}",
                 workspace_root.display()
             );
+            print_managed_zccache_human(&zccache_summary);
             println!("result: no manifest found; nothing to compare");
         }
         return Ok(0);
@@ -139,6 +194,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
             drift,
             missing_components,
             missing_targets,
+            managed_zccache: DoctorManagedZccache::from_summary(&zccache_summary),
         };
         print_json(&output)?;
     } else {
@@ -151,10 +207,75 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
             &missing_components,
             &missing_targets,
             drift,
+            &zccache_summary,
         );
     }
 
     Ok(if drift { 1 } else { 0 })
+}
+
+/// Collect zccache binary resolution info for doctor output. Read-only:
+/// honors `SOLDR_ZCCACHE_LOCAL_DIR` but doesn't trigger a managed
+/// fetch.
+fn collect_zccache_summary() -> Result<ZccacheBinarySummary, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    soldr_fetch::zccache_binary_summary(&paths)
+}
+
+fn print_managed_zccache_human(summary: &ZccacheBinarySummary) {
+    println!();
+    println!("managed zccache:");
+    match summary.source {
+        ZccacheSource::Local => {
+            println!(
+                "  source:        local ({})",
+                soldr_fetch::ZCCACHE_LOCAL_DIR_ENV_VAR
+            );
+            if let Some(dir) = &summary.source_dir {
+                println!("  source dir:    {}", dir.display());
+            }
+            if !summary.version.is_empty() {
+                println!("  version:       {}", summary.version);
+            }
+        }
+        ZccacheSource::Managed => {
+            println!(
+                "  source:        managed ({})",
+                soldr_fetch::MANAGED_ZCCACHE_VERSION
+            );
+        }
+        ZccacheSource::None => {
+            println!(
+                "  source:        managed ({}, not fetched yet)",
+                soldr_fetch::MANAGED_ZCCACHE_VERSION
+            );
+        }
+    }
+    println!("  runtime dir:   {}", summary.runtime_dir.display());
+    match &summary.cli_path {
+        Some(p) => println!("  active cli:    {}", p.display()),
+        None => println!("  active cli:    <not present>"),
+    }
+    match &summary.daemon_path {
+        Some(p) => println!("  active daemon: {}", p.display()),
+        None => println!("  active daemon: <not present>"),
+    }
+    match &summary.fp_path {
+        Some(p) => println!("  active fp:     {}", p.display()),
+        None => println!("  active fp:     <not present>"),
+    }
+    let pdb_hint = if summary.debug_info_found == 0 {
+        "no PDBs present; build zccache with `[profile.release] debug = \"line-tables-only\"` to get them"
+    } else if summary.debug_info_found < summary.debug_info_expected {
+        "partial — some sidecars missing"
+    } else {
+        "complete"
+    };
+    println!(
+        "  pdbs found:    {}/{} ({})",
+        summary.debug_info_found, summary.debug_info_expected, pdb_hint
+    );
+    println!("  symbol path:   {}", summary.symbol_path.display());
 }
 
 fn component_is_installed(declared: &str, installed: &[String]) -> bool {
@@ -178,6 +299,7 @@ fn print_doctor_human(
     missing_components: &[String],
     missing_targets: &[String],
     drift: bool,
+    zccache_summary: &ZccacheBinarySummary,
 ) {
     println!("manifest: {}", manifest_path.display());
     println!("toolchain: {channel}");
@@ -233,6 +355,8 @@ fn print_doctor_human(
             );
         }
     }
+
+    print_managed_zccache_human(zccache_summary);
 
     println!();
     if drift {

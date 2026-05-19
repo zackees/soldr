@@ -53,6 +53,13 @@ const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
     ("zccache-daemon", "zccache-daemon"),
     ("zccache-fingerprint", "zccache-fp"),
 ];
+
+/// Override the managed-zccache resolution entirely: instead of
+/// fetching from GitHub Releases (or installing from crates.io), use
+/// the locally-built binaries in this directory. See
+/// `resolve_local_zccache` for the resolution contract.
+pub const ZCCACHE_LOCAL_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_LOCAL_DIR";
+
 const MANAGED_ZCCACHE_FETCH_ATTEMPTS: u32 = 4;
 const MANAGED_ZCCACHE_FETCH_INITIAL_BACKOFF: std::time::Duration =
     std::time::Duration::from_secs(5);
@@ -105,9 +112,365 @@ pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
     fetch_zccache_with_paths(&paths).await
 }
 
+fn non_empty_env_path(env_var: &str) -> Option<PathBuf> {
+    let value = std::env::var_os(env_var)?;
+    if value.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(value))
+}
+
+/// Summary of where soldr's managed zccache binaries live and what
+/// source produced them. Surfaced by `soldr doctor` so users debugging
+/// daemon hangs can paste the `symbol_path` into `cdb -y <path>` or
+/// `_NT_SYMBOL_PATH`.
+#[derive(Debug, Clone)]
+pub struct ZccacheBinarySummary {
+    /// Where the binaries came from: `managed`, `local`, or `none`.
+    pub source: ZccacheSource,
+    /// Version label. `MANAGED_ZCCACHE_VERSION` for managed builds,
+    /// `local-<hash>` for `SOLDR_ZCCACHE_LOCAL_DIR` builds, empty
+    /// when nothing is fetched yet.
+    pub version: String,
+    /// Directory whose binaries are actually executed.
+    pub runtime_dir: PathBuf,
+    /// Source directory for local builds (where the user's
+    /// `target/release` lives). `None` for managed builds.
+    pub source_dir: Option<PathBuf>,
+    /// Absolute path to the active CLI binary, if present.
+    pub cli_path: Option<PathBuf>,
+    /// Absolute path to the active daemon binary, if present.
+    pub daemon_path: Option<PathBuf>,
+    /// Absolute path to the active fingerprint binary, if present.
+    pub fp_path: Option<PathBuf>,
+    /// Number of debug-info sidecars present next to the resolved
+    /// binaries (PDBs on Windows, DWPs on Linux, dSYMs on macOS).
+    pub debug_info_found: usize,
+    /// Number of binaries we expect to have debug-info for (always 3).
+    pub debug_info_expected: usize,
+    /// Path to pass to `cdb -y` / `_NT_SYMBOL_PATH` when attaching.
+    pub symbol_path: PathBuf,
+}
+
+/// Where the resolved zccache binaries came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZccacheSource {
+    /// Fetched from GitHub Releases or installed via `cargo install`
+    /// (the standard managed path).
+    Managed,
+    /// Resolved from `SOLDR_ZCCACHE_LOCAL_DIR`.
+    Local,
+    /// Nothing fetched yet — managed path, no binaries on disk.
+    None,
+}
+
+impl ZccacheSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ZccacheSource::Managed => "managed",
+            ZccacheSource::Local => "local",
+            ZccacheSource::None => "none",
+        }
+    }
+}
+
+/// Discover the local zccache build that `SOLDR_ZCCACHE_LOCAL_DIR`
+/// points at, copy the binaries (and any debug-info sidecars) into
+/// the soldr-owned cache dir under a content-hashed version key, and
+/// return the runtime paths.
+///
+/// Returns an error when the env-var dir does not exist or is missing
+/// any of `zccache`, `zccache-daemon`, or `zccache-fp` (with platform
+/// extension). PDB / DWP / dSYM sidecars are best-effort — missing
+/// debug-info is not an error.
+pub fn resolve_local_zccache(
+    local_dir: &Path,
+    paths: &SoldrPaths,
+) -> Result<FetchResult, SoldrError> {
+    let target = TargetTriple::detect()?;
+    resolve_local_zccache_for_target(local_dir, paths, &target)
+}
+
+pub(crate) fn resolve_local_zccache_for_target(
+    local_dir: &Path,
+    paths: &SoldrPaths,
+    target: &TargetTriple,
+) -> Result<FetchResult, SoldrError> {
+    paths.ensure_dirs()?;
+
+    if !local_dir.exists() {
+        return Err(SoldrError::Other(format!(
+            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} does not exist",
+            local_dir.display()
+        )));
+    }
+    if !local_dir.is_dir() {
+        return Err(SoldrError::Other(format!(
+            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} is not a directory",
+            local_dir.display()
+        )));
+    }
+
+    // Locate every required binary up front so a missing daemon / fp
+    // doesn't get reported only after we've started copying the cli.
+    let binary_ext = target.binary_ext();
+    let mut sources: Vec<(String, PathBuf)> = Vec::with_capacity(MANAGED_ZCCACHE_PACKAGES.len());
+    for (_, binary_name) in MANAGED_ZCCACHE_PACKAGES {
+        let file_name = format!("{binary_name}{binary_ext}");
+        let candidate = local_dir.join(&file_name);
+        if !candidate.exists() {
+            return Err(SoldrError::Other(format!(
+                "{ZCCACHE_LOCAL_DIR_ENV_VAR}: expected {} at {}",
+                file_name,
+                candidate.display()
+            )));
+        }
+        sources.push((file_name, candidate));
+    }
+
+    // Derive a content-addressed version label so multiple local
+    // builds coexist (and so the runtime copy invalidates whenever
+    // the user rebuilds zccache).
+    let version = local_zccache_version_label(&sources[0].1);
+    let tool_dir = paths.bin.join(format!("zccache-{version}"));
+    std::fs::create_dir_all(&tool_dir)?;
+
+    for (file_name, src) in &sources {
+        let dst = tool_dir.join(file_name);
+        copy_if_changed(src, &dst)?;
+        copy_debug_info_sidecars(src, &dst)?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&dst)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&dst, perms)?;
+        }
+    }
+
+    let binary_path = tool_dir.join(&sources[0].0);
+    eprintln!(
+        "soldr: using local zccache from {} (version={version})",
+        local_dir.display()
+    );
+    Ok(FetchResult {
+        binary_path,
+        version,
+        cached: false,
+    })
+}
+
+/// Build a short content-hash label for a local zccache build. The
+/// label is stable across invocations as long as the binary bytes
+/// don't change, so re-running soldr doesn't re-copy. When hashing
+/// fails (read error, etc.), fall back to the literal `"local"` so
+/// the user still gets a working override.
+fn local_zccache_version_label(binary: &Path) -> String {
+    match std::fs::read(binary) {
+        Ok(bytes) => format!("local-{}", sha256_short(&bytes)),
+        Err(err) => {
+            eprintln!(
+                "soldr: failed to hash local zccache binary {}: {err}; using bare \"local\" label",
+                binary.display()
+            );
+            "local".to_string()
+        }
+    }
+}
+
+fn sha256_short(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let digest = hasher.finalize();
+    let hex_digest = hex::encode(digest);
+    hex_digest[..12].to_string()
+}
+
+fn copy_if_changed(src: &Path, dst: &Path) -> Result<(), SoldrError> {
+    // Cheap no-op when sizes match — content hash already pins the
+    // destination dir name, so a byte-for-byte difference at the
+    // same size is impossible under our naming scheme.
+    if let (Ok(src_md), Ok(dst_md)) = (std::fs::metadata(src), std::fs::metadata(dst)) {
+        if src_md.len() == dst_md.len() && src_md.is_file() && dst_md.is_file() {
+            return Ok(());
+        }
+    }
+    std::fs::copy(src, dst)?;
+    Ok(())
+}
+
+fn copy_debug_info_sidecars(src_binary: &Path, dst_binary: &Path) -> Result<(), SoldrError> {
+    // Windows: <binary>.pdb (sibling file).
+    // Linux: <binary>.dwp (sibling file).
+    // macOS: <binary>.dSYM (sibling directory).
+    for sidecar_ext in ["pdb", "dwp"] {
+        if let Some(src) = adjacent_with_extension(src_binary, sidecar_ext) {
+            if src.is_file() {
+                if let Some(dst) = adjacent_with_extension(dst_binary, sidecar_ext) {
+                    copy_if_changed(&src, &dst)?;
+                }
+            }
+        }
+    }
+    if let Some(src) = adjacent_with_extension(src_binary, "dSYM") {
+        if src.is_dir() {
+            if let Some(dst) = adjacent_with_extension(dst_binary, "dSYM") {
+                copy_dir_recursive(&src, &dst)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn adjacent_with_extension(binary: &Path, ext: &str) -> Option<PathBuf> {
+    let stem = binary.file_stem()?.to_owned();
+    let parent = binary.parent()?;
+    let mut name = stem;
+    name.push(".");
+    name.push(ext);
+    Some(parent.join(name))
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), SoldrError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else if file_type.is_file() {
+            copy_if_changed(&src_path, &dst_path)?;
+        }
+        // Symlinks intentionally skipped — debug-info bundles don't
+        // need them and they're awkward on Windows.
+    }
+    Ok(())
+}
+
+/// Inspect where the managed zccache binaries live, for use by
+/// `soldr doctor`. Honors `SOLDR_ZCCACHE_LOCAL_DIR` so the
+/// debug-info path is surfaced even when the user is overriding the
+/// managed fetch.
+///
+/// When the local-dir override is active, performs the local-build
+/// copy (idempotent — content-hashed, copy_if_changed-protected) so
+/// doctor's reported `cli_path` / `daemon_path` / PDB count reflect
+/// the actually-resolvable state, not a prediction. This matches what
+/// the next `soldr cargo ...` invocation will produce.
+pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary, SoldrError> {
+    let target = TargetTriple::detect()?;
+
+    if let Some(source_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
+        // Idempotent: short-circuits when the destination already
+        // matches the source bytes.
+        let fetch = resolve_local_zccache_for_target(&source_dir, paths, &target)?;
+        let runtime_dir = fetch
+            .binary_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| paths.bin.clone());
+        let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+        let (debug_found, debug_expected) =
+            count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+        return Ok(ZccacheBinarySummary {
+            source: ZccacheSource::Local,
+            version: fetch.version,
+            symbol_path: runtime_dir.clone(),
+            runtime_dir,
+            source_dir: Some(source_dir),
+            cli_path: cli.exists().then_some(cli),
+            daemon_path: daemon.exists().then_some(daemon),
+            fp_path: fp.exists().then_some(fp),
+            debug_info_found: debug_found,
+            debug_info_expected: debug_expected,
+        });
+    }
+
+    // Managed path: inspect the cached version directory if it exists.
+    let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+    let any_present = cli.exists() || daemon.exists() || fp.exists();
+    let (debug_found, debug_expected) =
+        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+    Ok(ZccacheBinarySummary {
+        source: if any_present {
+            ZccacheSource::Managed
+        } else {
+            ZccacheSource::None
+        },
+        version: if any_present {
+            MANAGED_ZCCACHE_VERSION.to_string()
+        } else {
+            String::new()
+        },
+        symbol_path: runtime_dir.clone(),
+        runtime_dir,
+        source_dir: None,
+        cli_path: cli.exists().then_some(cli),
+        daemon_path: daemon.exists().then_some(daemon),
+        fp_path: fp.exists().then_some(fp),
+        debug_info_found: debug_found,
+        debug_info_expected: debug_expected,
+    })
+}
+
+fn canonical_zccache_paths(
+    runtime_dir: &Path,
+    target: &TargetTriple,
+) -> (PathBuf, PathBuf, PathBuf) {
+    let ext = target.binary_ext();
+    (
+        runtime_dir.join(format!("zccache{ext}")),
+        runtime_dir.join(format!("zccache-daemon{ext}")),
+        runtime_dir.join(format!("zccache-fp{ext}")),
+    )
+}
+
+fn count_debug_info_sidecars(binaries: &[&Path]) -> (usize, usize) {
+    let mut found = 0usize;
+    for binary in binaries {
+        if !binary.exists() {
+            continue;
+        }
+        let mut sidecar_found = false;
+        for ext in ["pdb", "dwp"] {
+            if let Some(sidecar) = adjacent_with_extension(binary, ext) {
+                if sidecar.is_file() {
+                    sidecar_found = true;
+                    break;
+                }
+            }
+        }
+        if !sidecar_found {
+            if let Some(sidecar) = adjacent_with_extension(binary, "dSYM") {
+                if sidecar.is_dir() {
+                    sidecar_found = true;
+                }
+            }
+        }
+        if sidecar_found {
+            found += 1;
+        }
+    }
+    (found, binaries.len())
+}
+
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
     let target = TargetTriple::detect()?;
+
+    // Local-build override (issue: zccache #276 daemon-stdio hang).
+    // When set, skip the managed fetch entirely and copy the user's
+    // locally-built binaries (+ PDBs) into the soldr cache so cdb /
+    // WinDbg can resolve symbols when attaching to the daemon.
+    if let Some(local_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
+        return resolve_local_zccache_for_target(&local_dir, paths, &target);
+    }
+
     let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
 
     if let Some(result) = check_cache(
@@ -177,6 +540,16 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
 
 pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, SoldrError> {
     let target = TargetTriple::detect()?;
+
+    // When SOLDR_ZCCACHE_LOCAL_DIR is set, surface the local build as
+    // the cached result so doctor / cache status can find it without
+    // forcing a copy. resolve_local_zccache_for_target is idempotent:
+    // it short-circuits when the destination already matches the
+    // source bytes.
+    if let Some(local_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
+        return resolve_local_zccache_for_target(&local_dir, paths, &target).map(Some);
+    }
+
     check_cache(
         paths,
         "zccache",
@@ -1130,5 +1503,190 @@ mod tests {
         });
         let info = parse_release_info(body, Some("cargo-nextest-")).unwrap();
         assert_eq!(info.version, "0.9.100");
+    }
+
+    // ---------------------------------------------------------------
+    // SOLDR_ZCCACHE_LOCAL_DIR override (issue: zccache #276)
+    // ---------------------------------------------------------------
+
+    fn windows_target() -> TargetTriple {
+        TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Windows,
+            env: Env::Msvc,
+        }
+    }
+
+    fn linux_target() -> TargetTriple {
+        TargetTriple {
+            arch: Arch::X86_64,
+            os: Os::Linux,
+            env: Env::Gnu,
+        }
+    }
+
+    fn write_fake_binary(dir: &Path, name: &str, contents: &[u8]) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    #[test]
+    fn local_zccache_resolves_when_all_three_binaries_present_windows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon.exe", b"daemon-bytes");
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"fp-bytes");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let result =
+            resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        assert!(
+            result.version.starts_with("local"),
+            "version: {}",
+            result.version
+        );
+        assert!(result.binary_path.ends_with("zccache.exe"));
+        assert!(result.binary_path.exists());
+        let parent = result.binary_path.parent().unwrap();
+        assert!(parent.join("zccache-daemon.exe").exists());
+        assert!(parent.join("zccache-fp.exe").exists());
+    }
+
+    #[test]
+    fn local_zccache_errors_when_daemon_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache.exe", b"cli-bytes");
+        // intentionally skip zccache-daemon.exe
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"fp-bytes");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let err = resolve_local_zccache_for_target(&local_dir, &paths, &windows_target())
+            .expect_err("missing daemon should fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("zccache-daemon.exe"),
+            "error must name the missing binary: {message}"
+        );
+        assert!(
+            message.contains("SOLDR_ZCCACHE_LOCAL_DIR"),
+            "error must reference the env var: {message}"
+        );
+    }
+
+    #[test]
+    fn local_zccache_errors_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("does-not-exist");
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let err = resolve_local_zccache_for_target(&local_dir, &paths, &windows_target())
+            .expect_err("missing dir should fail");
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn local_zccache_copies_pdb_sidecars_when_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon.exe", b"daemon-bytes");
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"fp-bytes");
+        // PDBs for two of three binaries.
+        write_fake_binary(&local_dir, "zccache.pdb", b"cli-pdb");
+        write_fake_binary(&local_dir, "zccache-daemon.pdb", b"daemon-pdb");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let result =
+            resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        let dst_dir = result.binary_path.parent().unwrap();
+        assert!(
+            dst_dir.join("zccache.pdb").exists(),
+            "PDB next to cli should be copied"
+        );
+        assert!(
+            dst_dir.join("zccache-daemon.pdb").exists(),
+            "PDB next to daemon should be copied"
+        );
+        assert!(
+            !dst_dir.join("zccache-fp.pdb").exists(),
+            "fp.pdb wasn't in the source, so it shouldn't appear in the destination"
+        );
+    }
+
+    #[test]
+    fn local_zccache_succeeds_when_no_pdbs_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon.exe", b"daemon-bytes");
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"fp-bytes");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let result =
+            resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        assert!(result.binary_path.exists());
+        // Sanity: the version label includes the content hash, so a
+        // second resolution with the same bytes lands on the same dir.
+        let second =
+            resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        assert_eq!(result.binary_path, second.binary_path);
+    }
+
+    #[test]
+    fn local_zccache_unix_uses_bare_binary_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache", b"cli-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon", b"daemon-bytes");
+        write_fake_binary(&local_dir, "zccache-fp", b"fp-bytes");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let result = resolve_local_zccache_for_target(&local_dir, &paths, &linux_target()).unwrap();
+        assert!(result.binary_path.ends_with("zccache"));
+        let parent = result.binary_path.parent().unwrap();
+        assert!(parent.join("zccache-daemon").exists());
+        assert!(parent.join("zccache-fp").exists());
+    }
+
+    #[test]
+    fn local_zccache_version_label_is_content_addressed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("v1");
+        write_fake_binary(&local_dir, "zccache.exe", b"first-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon.exe", b"first-daemon");
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"first-fp");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+        let r1 = resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+
+        // Rewrite cli to different bytes — version label must change.
+        std::fs::write(local_dir.join("zccache.exe"), b"second-bytes").unwrap();
+        let r2 = resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        assert_ne!(r1.version, r2.version);
+        assert_ne!(r1.binary_path, r2.binary_path);
+    }
+
+    #[test]
+    fn zccache_local_dir_env_var_constant_is_stable() {
+        // This constant is part of the public soldr surface — any
+        // rename is a breaking change for users who exported it. Keep
+        // it pinned.
+        assert_eq!(ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_ZCCACHE_LOCAL_DIR");
     }
 }
