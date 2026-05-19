@@ -279,6 +279,82 @@ fn doctor_handles_missing_manifest() {
     );
 }
 
+#[cfg(windows)]
+const ZCCACHE_BINARY_EXT: &str = ".exe";
+#[cfg(not(windows))]
+const ZCCACHE_BINARY_EXT: &str = "";
+
+#[test]
+fn doctor_surfaces_local_zccache_override_when_env_var_set() {
+    let tmp = unique_temp_dir("doctor-local-zccache");
+    let workspace = tmp.join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let soldr_cache = tmp.join("soldr-cache");
+    fs::create_dir_all(&soldr_cache).unwrap();
+    let local_build = tmp.join("local-build");
+    fs::create_dir_all(&local_build).unwrap();
+
+    // Plant fake zccache binaries (zero-byte content is fine — soldr
+    // copies bytes, doesn't execute them in doctor mode).
+    for name in ["zccache", "zccache-daemon", "zccache-fp"] {
+        let file = local_build.join(format!("{name}{ZCCACHE_BINARY_EXT}"));
+        fs::write(&file, b"fake").unwrap();
+    }
+    // Plant PDBs for two of three so we can assert the partial count.
+    for name in ["zccache", "zccache-daemon"] {
+        let pdb = local_build.join(format!("{name}.pdb"));
+        fs::write(&pdb, b"pdb").unwrap();
+    }
+
+    // No manifest in the workspace → doctor takes the "missing
+    // manifest" path but still prints the zccache section.
+    let log_path = tmp.join("rustup.log");
+    let rustup = install_failing_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["doctor", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_CACHE_DIR", &soldr_cache)
+        .env("SOLDR_ZCCACHE_LOCAL_DIR", &local_build)
+        .output()
+        .expect("failed to run soldr doctor --json");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "doctor must exit 0 when manifest is missing\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("doctor --json must produce JSON");
+    assert_eq!(json["managed_zccache"]["source"], "local");
+    let runtime_dir = json["managed_zccache"]["runtime_dir"]
+        .as_str()
+        .expect("runtime_dir present");
+    assert!(
+        runtime_dir.contains("zccache-local-"),
+        "runtime_dir should be hash-suffixed: {runtime_dir}"
+    );
+    // 2/3 PDBs were planted.
+    assert_eq!(json["managed_zccache"]["debug_info_found"], 2);
+    assert_eq!(json["managed_zccache"]["debug_info_expected"], 3);
+
+    // Doctor's read-only inspection should have surfaced the local
+    // build path the user gave us, even before the copy happens.
+    let source_dir = json["managed_zccache"]["source_dir"]
+        .as_str()
+        .expect("source_dir present");
+    assert_eq!(
+        std::path::Path::new(source_dir)
+            .file_name()
+            .and_then(|s| s.to_str()),
+        Some("local-build")
+    );
+}
+
 #[test]
 fn doctor_reports_missing_target() {
     let workspace = unique_temp_dir("doctor-missing-target");
