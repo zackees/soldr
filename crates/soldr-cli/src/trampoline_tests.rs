@@ -269,3 +269,119 @@ fn trailing_user_args_extracts_after_separator() {
     );
     assert!(trailing_user_args(&argv(&["run", "--bin", "demo"])).is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// `.cargo/config.toml` fingerprint integration (#346). The standalone
+// `compute_cargo_config_hash` is covered in `trampoline_config.rs::tests`;
+// here we verify the hash actually reaches `compute_fingerprint` via the
+// `ParsedRunArgs` path most callers exercise.
+// ---------------------------------------------------------------------------
+
+/// Build a `ParsedRunArgs` whose `manifest_path` points at a real
+/// `Cargo.toml` inside `dir`, suitable for feeding `compute_fingerprint`.
+fn parsed_for_manifest(manifest: PathBuf) -> ParsedRunArgs {
+    ParsedRunArgs {
+        toolchain: None,
+        bin: Some("demo".to_string()),
+        release: false,
+        profile: None,
+        manifest_path: Some(manifest),
+        target: None,
+        features: vec![],
+        all_features: false,
+        no_default_features: false,
+        target_dir: None,
+        trailing: vec![],
+    }
+}
+
+/// Minimal `Cargo.toml` so `compute_fingerprint`'s canonicalize succeeds.
+fn seed_minimal_crate(dir: &Path) -> PathBuf {
+    fs::create_dir_all(dir).expect("mk crate dir");
+    fs::create_dir_all(dir.join("src")).expect("mk src");
+    fs::write(dir.join("src").join("main.rs"), "fn main() {}\n").expect("write main.rs");
+    let manifest = dir.join("Cargo.toml");
+    fs::write(
+        &manifest,
+        "[package]\nname = \"demo\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    manifest
+}
+
+#[test]
+fn fingerprint_changes_when_cargo_config_changes() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let crate_dir = temp.path().join("crate");
+    let manifest = seed_minimal_crate(&crate_dir);
+    let cargo_dir = crate_dir.join(".cargo");
+    fs::create_dir_all(&cargo_dir).expect("mk .cargo");
+    let cfg = cargo_dir.join("config.toml");
+
+    fs::write(&cfg, "[build]\nrustflags = []\n").expect("write cfg v1");
+    let parsed = parsed_for_manifest(manifest);
+    let fp1 = compute_fingerprint(&parsed).expect("fingerprint v1");
+
+    fs::write(&cfg, "[build]\nrustflags = [\"-C\", \"opt-level=0\"]\n").expect("write cfg v2");
+    let fp2 = compute_fingerprint(&parsed).expect("fingerprint v2");
+
+    assert_ne!(
+        fp1, fp2,
+        "fingerprint must change when .cargo/config.toml rustflags change"
+    );
+}
+
+#[test]
+fn fingerprint_stable_with_unchanged_cargo_config() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let crate_dir = temp.path().join("crate");
+    let manifest = seed_minimal_crate(&crate_dir);
+    let cargo_dir = crate_dir.join(".cargo");
+    fs::create_dir_all(&cargo_dir).expect("mk .cargo");
+    fs::write(
+        cargo_dir.join("config.toml"),
+        "[build]\nrustflags = [\"-C\", \"opt-level=1\"]\n",
+    )
+    .expect("write cfg");
+
+    let parsed = parsed_for_manifest(manifest);
+    let fp1 = compute_fingerprint(&parsed).expect("fingerprint v1");
+    let fp2 = compute_fingerprint(&parsed).expect("fingerprint v2");
+    assert_eq!(fp1, fp2, "identical state must yield identical fingerprint");
+}
+
+#[test]
+fn fingerprint_changes_when_cargo_config_appears() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let crate_dir = temp.path().join("crate");
+    let manifest = seed_minimal_crate(&crate_dir);
+
+    let parsed = parsed_for_manifest(manifest);
+    let fp_before = compute_fingerprint(&parsed).expect("fingerprint before");
+
+    let cargo_dir = crate_dir.join(".cargo");
+    fs::create_dir_all(&cargo_dir).expect("mk .cargo");
+    fs::write(
+        cargo_dir.join("config.toml"),
+        "[build]\nrustflags = [\"-C\", \"opt-level=0\"]\n",
+    )
+    .expect("write cfg");
+    let fp_after = compute_fingerprint(&parsed).expect("fingerprint after");
+
+    assert_ne!(
+        fp_before, fp_after,
+        "appearance of .cargo/config.toml must change the fingerprint"
+    );
+}
+
+#[test]
+fn fingerprint_stable_when_no_config_present_on_both_runs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let crate_dir = temp.path().join("crate");
+    let manifest = seed_minimal_crate(&crate_dir);
+    let parsed = parsed_for_manifest(manifest);
+
+    let fp1 = compute_fingerprint(&parsed).expect("fingerprint v1");
+    let fp2 = compute_fingerprint(&parsed).expect("fingerprint v2");
+    assert_eq!(fp1, fp2, "no-config runs must hash identically");
+}

@@ -718,6 +718,12 @@ struct FingerprintInputs<'a> {
     manifest_path: String,
     rustflags: String,
     rustc_identity: String,
+    /// blake3 hash over the canonical bytes of every `.cargo/config.toml`
+    /// (and legacy `.cargo/config`) found by walking from the manifest dir
+    /// up to the filesystem root, plus `$CARGO_HOME`. See #346 — this is
+    /// intentionally over-aggressive (unrelated edits also bust the
+    /// fingerprint) but cheap and correct.
+    cargo_config_hash: String,
 }
 
 pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, SoldrError> {
@@ -740,6 +746,10 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
         .ok_or_else(|| SoldrError::Other("Cargo.toml not found for fingerprint".into()))?;
     let canonical = fs::canonicalize(&manifest_path).unwrap_or(manifest_path);
     let manifest_string = canonical.to_string_lossy().to_string();
+    let manifest_dir = canonical
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
 
     let mut features: Vec<String> = parsed.features.clone();
     features.sort();
@@ -747,6 +757,7 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
 
     let rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     let rustc_identity = rustc_identity_cached()?;
+    let cargo_config_hash = compute_cargo_config_hash(&manifest_dir);
 
     let effective_target = effective_target_triple(parsed);
     let inputs = FingerprintInputs {
@@ -758,6 +769,7 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
         manifest_path: manifest_string,
         rustflags,
         rustc_identity,
+        cargo_config_hash,
     };
 
     let bytes = serde_json::to_vec(&inputs)
@@ -795,6 +807,14 @@ fn rustc_identity_cached() -> Result<String, SoldrError> {
 #[path = "trampoline_dep_info.rs"]
 mod dep_info;
 pub(crate) use dep_info::parse_dep_info_for_output;
+
+// ---------------------------------------------------------------------------
+// Cargo config-file hashing — see [`config_hash`] sibling module (#346).
+// ---------------------------------------------------------------------------
+
+#[path = "trampoline_config.rs"]
+mod config_hash;
+pub(crate) use config_hash::compute_cargo_config_hash;
 
 // ---------------------------------------------------------------------------
 // Exec / stat / logging helpers

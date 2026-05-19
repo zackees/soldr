@@ -442,6 +442,82 @@ fn missing_dep_info_falls_through_silently() {
 }
 
 #[test]
+fn cargo_config_change_forces_fall_through() {
+    // Issue #346: editing `.cargo/config.toml` must bust the trampoline
+    // fingerprint so the fast path can't serve a binary compiled with
+    // the old rustflags. After the resulting cargo rebuild, a third
+    // invocation should hit the fast path again with the refreshed
+    // sidecar.
+    let project = make_project("trampoline-cargo-config");
+    let cold = run_cold(&project, &[]);
+    assert!(
+        cold.status.success(),
+        "seed cold build failed:\n{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+    let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
+    assert!(sidecar.is_file(), "seed sidecar missing");
+    let cold_sidecar_text = fs::read_to_string(&sidecar).expect("read cold sidecar");
+
+    // Drop in a `.cargo/config.toml` that changes rustflags.
+    let cargo_dir = project.join(".cargo");
+    fs::create_dir_all(&cargo_dir).expect("mk .cargo");
+    fs::write(
+        cargo_dir.join("config.toml"),
+        "[build]\nrustflags = [\"-C\", \"opt-level=0\"]\n",
+    )
+    .expect("write .cargo/config.toml");
+
+    // With a broken cargo, the trampoline must fall through (because the
+    // fingerprint now includes the config bytes) and the broken stub
+    // must be invoked → non-zero exit.
+    let stub_dir = unique_temp_dir("trampoline-cargo-config-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let fell_through = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run"],
+    );
+    assert!(
+        !fell_through.status.success(),
+        "adding .cargo/config.toml must force fall-through; broken cargo must be invoked"
+    );
+
+    // Now let real cargo rebuild so the sidecar is refreshed with the
+    // updated fingerprint.
+    let rebuild = run_cold(&project, &[]);
+    assert!(
+        rebuild.status.success(),
+        "post-config rebuild failed:\n{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let warm_sidecar_text = fs::read_to_string(&sidecar).expect("read warm sidecar");
+    assert_ne!(
+        cold_sidecar_text, warm_sidecar_text,
+        "sidecar fingerprint should change after .cargo/config.toml edit"
+    );
+
+    // A third invocation should hit the fast path against the new
+    // sidecar even with a broken cargo on PATH.
+    let warm = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run", "--", "post-config"],
+    );
+    let warm_stdout = String::from_utf8_lossy(&warm.stdout);
+    let warm_stderr = String::from_utf8_lossy(&warm.stderr);
+    assert!(
+        warm.status.success(),
+        "warm trampoline path after config edit failed (cargo got spawned?)\nstdout:\n{warm_stdout}\nstderr:\n{warm_stderr}"
+    );
+    assert!(
+        warm_stdout.contains("hello post-config"),
+        "binary stdout missing on warm path after config edit: {warm_stdout}"
+    );
+}
+
+#[test]
 fn trailing_args_pass_through_to_binary() {
     let project = make_project("trampoline-trailing-args");
     let cold = run_cold(&project, &["--", "alpha", "beta"]);
