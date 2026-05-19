@@ -88,7 +88,7 @@ jobs:
         run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --tests --locked
 
       - name: Run fetch integration test
         run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
@@ -125,7 +125,7 @@ jobs:
         run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --tests --locked
 
       - name: Run fetch integration test
         run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
@@ -162,7 +162,7 @@ jobs:
         run: soldr cargo test --workspace --lib --locked
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --test cli --locked
+        run: soldr cargo test -p soldr-cli --tests --locked
 
       - name: Verify Windows defaults to MSVC under Git Bash
         if: runner.os == 'Windows'
