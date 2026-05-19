@@ -1,0 +1,60 @@
+name: Parent Cache Bench
+
+# Tier L1.x benchmark for issue #352.
+#
+# Proves the parent-cache (worktree-cache-sharing) speedup is real and acts
+# as a regression gate. All real work lives in bench/parent_cache_bench.py
+# so a local developer can run the exact same benchmark by hand:
+#
+#   uv run --script bench/parent_cache_bench.py --target zccache --threshold 5
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Build target ('self', 'zccache', or 'repo:URL')."
+        required: true
+        default: "self"
+        type: string
+      threshold_ratio:
+        description: "Warm-with-remap build must be at least this many times faster than the no-remap control."
+        required: true
+        default: "5"
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "crates/soldr-cache/src/lib.rs"
+      - "crates/soldr-cli/src/zccache.rs"
+      - ".github/workflows/parent-cache-bench.yml"
+      - "bench/parent_cache_bench.py"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Parent cache speedup
+    runs-on: ubuntu-24.04
+    env:
+      TARGET: ${{ inputs.target || 'self' }}
+      THRESHOLD: ${{ inputs.threshold_ratio || '5' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      # Pinned to the current @v0 expected by
+      # .github/scripts/verify_setup_soldr_pin.py.
+      - name: Set up soldr
+        uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+
+      - name: Run parent-cache benchmark
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --script bench/parent_cache_bench.py \
+            --target "${TARGET}" \
+            --threshold "${THRESHOLD}"
