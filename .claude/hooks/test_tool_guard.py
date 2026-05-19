@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Unit tests for the shell command tool guard hook."""
+"""Unit tests for the shell command tool guard hook.
+
+Run via uv (sibling-module resolution works because cwd is the hook dir):
+
+    uv run --no-project --directory .claude/hooks python -m unittest test_tool_guard
+"""
 
 import unittest
 
-from tool_guard import check_command, extract_command
+from tool_guard import check_command, extract_command  # type: ignore[import-not-found]
 
 
 class ToolGuardTests(unittest.TestCase):
