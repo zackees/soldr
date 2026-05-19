@@ -656,13 +656,24 @@ fn elevate_or_explain(
                     }
                 }
                 output.note = Some(format!(
-                    "elevated helper exited with code {code} but produced no parseable status"
+                    "elevated helper exited with code {code} and produced no parseable status. \
+                     Likely cause: UAC was declined or the helper crashed before writing output. \
+                     Fallback: open an Administrator PowerShell and run \
+                     `powershell -ExecutionPolicy Bypass -File bench\\add_defender_exclusions.ps1`, \
+                     or invoke `Add-MpPreference -ExclusionPath '<path>'` manually for each soldr cache path."
                 ));
                 emit_output(&output, json)?;
                 Ok(code)
             }
             Err(err) => {
-                output.note = Some(format!("UAC self-relaunch failed: {err}; re-run soldr optimize and accept the prompt, or invoke the helper from an elevated PowerShell."));
+                output.note = Some(format!(
+                    "UAC self-relaunch failed: {err}. \
+                     Fallback options: (1) re-run `soldr optimize` and accept the UAC prompt; \
+                     (2) open an Administrator PowerShell and run \
+                     `powershell -ExecutionPolicy Bypass -File bench\\add_defender_exclusions.ps1`; \
+                     (3) add the exclusions manually with `Add-MpPreference -ExclusionPath '<path>'` \
+                     for each soldr cache directory."
+                ));
                 emit_output(&output, json)?;
                 Ok(1)
             }
@@ -671,8 +682,11 @@ fn elevate_or_explain(
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (powershell, soldr_root, undo);
-        output.note =
-            Some("administrator privileges required, but UAC is only available on Windows.".into());
+        output.note = Some(
+            "Administrator privileges required, but UAC self-relaunch is only available on Windows. \
+             On macOS/Linux this code path is unreachable in normal flow -- file an issue if you hit it."
+                .into(),
+        );
         emit_output(&output, json)?;
         Ok(1)
     }
