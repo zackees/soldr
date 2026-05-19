@@ -46,7 +46,6 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -54,6 +53,11 @@ from pathlib import Path
 
 ZCCACHE_REPO_URL = "https://github.com/zackees/zccache"
 DEFAULT_THRESHOLD = 5.0
+
+# Scratch directories live under ~/.soldr/bench/ rather than %TEMP%
+# so users can add a single Defender (or other AV) exclusion that covers
+# every bench run. Random suffix avoids collisions between concurrent runs.
+SOLDR_BENCH_ROOT = Path.home() / ".soldr" / "bench"
 
 
 @dataclass
@@ -104,6 +108,54 @@ def resolve_target(target: str) -> str | None:
         file=sys.stderr,
     )
     sys.exit(2)
+
+
+def _defender_exclusion_paths() -> list[str] | None:
+    """Return Defender's current exclusion paths, or None if unavailable.
+
+    Quietly returns None if we're not on Windows, PowerShell isn't on PATH,
+    Defender isn't installed, or the user lacks permission to query it.
+    Failure here is informational only -- it should never break the bench.
+    """
+    if sys.platform != "win32":
+        return None
+    if shutil.which("powershell") is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "(Get-MpPreference).ExclusionPath",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _warn_if_no_defender_exclusion(path: Path) -> None:
+    """Print a one-line warning if Defender's exclusion list doesn't cover path."""
+    exclusions = _defender_exclusion_paths()
+    if exclusions is None:
+        return  # silent: not on Windows, or query failed
+    needle = str(path).lower()
+    covered = any(needle.startswith(excl.lower()) for excl in exclusions)
+    if not covered:
+        script = Path(__file__).parent / "add_defender_exclusions.ps1"
+        print(
+            f"WARNING: {path} is not in Windows Defender's exclusion list.\n"
+            f"  Defender real-time scanning of fresh cache writes can add 10+ minutes\n"
+            f"  to cold builds on Windows. Run once as administrator to fix:\n"
+            f"      powershell -ExecutionPolicy Bypass -File {script}\n",
+            file=sys.stderr,
+        )
 
 
 def preflight(target: str) -> None:
@@ -239,12 +291,21 @@ def main() -> int:
     target_url = resolve_target(args.target)
     preflight(args.target)
 
-    scratch_root = Path(
-        tempfile.mkdtemp(prefix="parent-cache-bench.")
-    )
+    # Predictable parent so users can add `~/.soldr/bench` once to their
+    # antivirus exclusion list and never re-pay the per-run flush penalty
+    # we see in Defender real-time scanning of fresh artifact writes.
+    SOLDR_BENCH_ROOT.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = os.urandom(3).hex()
+    scratch_root = SOLDR_BENCH_ROOT / f"parent-cache.{stamp}.{suffix}"
+    scratch_root.mkdir(parents=True, exist_ok=False)
     soldr_cache_isolated = scratch_root / "zccache"
     worktree_b = scratch_root / "worktree-b"
     cloned_source_root: Path | None = None
+
+    if sys.platform == "win32":
+        _warn_if_no_defender_exclusion(SOLDR_BENCH_ROOT)
+        _warn_if_no_defender_exclusion(Path.home() / ".soldr" / "cache")
 
     # Force a fresh zccache root so the only cache state in this benchmark
     # comes from worktree A's build. Without this, a cache left over from
