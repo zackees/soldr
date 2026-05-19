@@ -574,6 +574,7 @@ Commands:
 | `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable wrapper injection with `none` / empty | unset |
 | `SOLDR_REAL_CARGO`, `SOLDR_REAL_RUSTC`, ... | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
 | `SOLDR_ZCCACHE_BIN` | Managed zccache binary path passed from soldr front door into wrapper mode | unset |
+| `SOLDR_ZCCACHE_LOCAL_DIR` | Override the managed-zccache resolution: instead of fetching from GitHub Releases (or installing from crates.io), use the locally-built binaries in this directory. Expected to contain `zccache.exe`, `zccache-daemon.exe`, and `zccache-fp.exe` (or no-extension equivalents on Unix). Adjacent `.pdb` files (Windows), `.dwp` files (Linux), or `.dSYM` directories (macOS) are copied alongside so debuggers can resolve symbols. Used to chase the zccache daemon-stdio hang on Windows where the released binary ships without easily discoverable PDBs. Run `soldr doctor` to confirm the resolved `symbol path`. | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `SOLDR_RELOCATED_EXE` | Internal recursion guard set after Windows self-relocation | unset |
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
