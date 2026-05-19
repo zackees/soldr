@@ -71,6 +71,16 @@ pub const ZCCACHE_CACHE_DIR_ENV_VAR: &str = "ZCCACHE_CACHE_DIR";
 /// Internal marker for `ZCCACHE_CACHE_DIR` values that were injected by soldr.
 pub const MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR: &str = "SOLDR_MANAGED_ZCCACHE_CACHE_DIR";
 
+/// zccache path-remap mode. `auto` makes zccache normalize absolute source
+/// paths inside compiled artifacts so two git worktrees of the same repo
+/// can share cache hits. See issue #352.
+pub const ZCCACHE_PATH_REMAP_ENV_VAR: &str = "ZCCACHE_PATH_REMAP";
+
+/// Soldr-side escape hatch for the default `ZCCACHE_PATH_REMAP=auto`
+/// injection. Accepts `auto` (default, equivalent to unset) and `off`.
+/// See issue #352.
+pub const SOLDR_PATH_REMAP_ENV_VAR: &str = "SOLDR_PATH_REMAP";
+
 pub fn cache_enabled_env_value(enabled: bool) -> &'static str {
     if enabled {
         CACHE_ENABLED_VALUE
