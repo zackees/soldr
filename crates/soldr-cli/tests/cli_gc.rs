@@ -347,7 +347,7 @@ fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
     let entries = json["entries"].as_array().expect("entries");
     let entry = entries
         .iter()
-        .find(|e| e["path"].as_str().map_or(false, |p| PathBuf::from(p) == target))
+        .find(|e| e["path"].as_str().is_some_and(|p| target == Path::new(p)))
         .expect("seeded target missing from entries");
     assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
     assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
