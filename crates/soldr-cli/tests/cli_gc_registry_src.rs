@@ -36,7 +36,8 @@ fn seed_registry_src_crate(cargo_home: &Path, crate_dir_name: &str) -> PathBuf {
     fs::create_dir_all(&reg_root).expect("failed to create registry src root");
     let dir = reg_root.join(crate_dir_name);
     fs::create_dir_all(&dir).expect("failed to create crate dir");
-    fs::write(dir.join("lib.rs"), b"// vendored crate source\n").expect("failed to seed crate file");
+    fs::write(dir.join("lib.rs"), b"// vendored crate source\n")
+        .expect("failed to seed crate file");
     dir
 }
 

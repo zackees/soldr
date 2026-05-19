@@ -335,6 +335,16 @@ enum GcSubcommand {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
+        /// Narrow the purge to a single taxonomy kind. Mutually exclusive
+        /// with `--registry-src`. Accepted values: `cargo_target`,
+        /// `cargo_registry_src` (#323 slice 2).
+        #[arg(long, value_enum, conflicts_with = "registry_src")]
+        kind: Option<GcListKind>,
+        /// Shorthand for `--kind cargo_registry_src`. Walks
+        /// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` and deletes
+        /// the listed directories (#323 slice 2).
+        #[arg(long, conflicts_with = "kind")]
+        registry_src: bool,
     },
     /// List every `target/` directory currently tracked in the soldr
     /// registry, without applying any age or size thresholds.
@@ -342,6 +352,10 @@ enum GcSubcommand {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
+        /// Narrow the listing to a single taxonomy kind (#323 slice 2).
+        /// Accepted values: `cargo_target`, `cargo_registry_src`.
+        #[arg(long, value_enum)]
+        kind: Option<GcListKind>,
     },
     /// Run cargo's native `clean gc` against `$CARGO_HOME`. Requires
     /// a nightly toolchain because the command lives behind the
@@ -358,6 +372,19 @@ enum GcSubcommand {
     /// `clean gc`, then the soldr target purge — and, with
     /// `--aggressive`, a second cargo GC pass with tighter ages.
     Sweep(Box<GcSweepArgs>),
+}
+
+/// Taxonomy kinds accepted by `gc list --kind` / `gc purge --kind`
+/// (#323 slice 2). Unknown values are rejected at clap-parse time.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum GcListKind {
+    /// Workspace `target/` dirs tracked by the soldr registry.
+    #[value(name = "cargo_target")]
+    CargoTarget,
+    /// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` extracted
+    /// crate sources.
+    #[value(name = "cargo_registry_src")]
+    CargoRegistrySrc,
 }
 
 #[derive(clap::Args)]
@@ -752,14 +779,32 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     older_than,
                     larger_than,
                     json,
-                }) => gc::GcInvocation {
-                    mode: gc::GcMode::Purge { all },
-                    older_than,
-                    larger_than,
-                    json,
-                },
-                Some(GcSubcommand::List { json }) => {
-                    gc::run_gc_list_command(json)?;
+                    kind,
+                    registry_src,
+                }) => {
+                    // #323 slice 2: --registry-src is a shorthand for
+                    // --kind cargo_registry_src; clap already enforces
+                    // mutual exclusion.
+                    let effective_kind = if registry_src {
+                        Some(GcListKind::CargoRegistrySrc)
+                    } else {
+                        kind
+                    };
+                    match effective_kind {
+                        Some(GcListKind::CargoRegistrySrc) => {
+                            gc::run_gc_purge_registry_src_command(all, json)?;
+                            return Ok(());
+                        }
+                        Some(GcListKind::CargoTarget) | None => gc::GcInvocation {
+                            mode: gc::GcMode::Purge { all },
+                            older_than,
+                            larger_than,
+                            json,
+                        },
+                    }
+                }
+                Some(GcSubcommand::List { json, kind }) => {
+                    gc::run_gc_list_command(json, kind.map(Into::into))?;
                     return Ok(());
                 }
                 Some(GcSubcommand::Cargo(args)) => {
