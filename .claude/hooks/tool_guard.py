@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """PreToolUse hook: blocks bare Rust commands and bare python/pip.
 
 All cargo/rustc/rustfmt must go through soldr (ensures correct toolchain).

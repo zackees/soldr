@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
 """Unit tests for the shell command tool guard hook.
 
 Run via uv (sibling-module resolution works because cwd is the hook dir):

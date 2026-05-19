@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"$(git rev-parse --show-toplevel)\" && uv run --no-project python .claude/hooks/tool_guard.py",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && uv run --script .claude/hooks/tool_guard.py",
             "timeout": 5
           }
         ]
