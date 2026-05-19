@@ -34,7 +34,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@37ab11d8638b8ba9c7d4d0d9efac81bece533335 # @v0
+      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
         with:
           linker: platform-default
           # Formatting does not benefit from a restored target directory, but
@@ -77,7 +77,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@37ab11d8638b8ba9c7d4d0d9efac81bece533335 # @v0
+      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
         with:
           linker: platform-default
 
@@ -114,7 +114,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@37ab11d8638b8ba9c7d4d0d9efac81bece533335 # @v0
+      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
         with:
           linker: platform-default
 
@@ -151,7 +151,7 @@ jobs:
             python .github/scripts/verify_setup_soldr_pin.py
           fi
 
-      - uses: zackees/setup-soldr@37ab11d8638b8ba9c7d4d0d9efac81bece533335 # @v0
+      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
         with:
           linker: platform-default
 
