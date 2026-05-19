@@ -9,10 +9,17 @@ run_step() {
   "$@"
 }
 
-run_step "Build workspace" cargo build --workspace --locked
-run_step "Run library tests" cargo test --workspace --lib --locked
-run_step "Run CLI smoke tests" cargo test -p soldr-cli --test cli --locked
-run_step "Run fetch integration test" cargo test -p soldr-fetch --test fetch_crgx --locked
+if command -v soldr >/dev/null 2>&1; then
+  CARGO=(soldr cargo)
+else
+  echo "warning: soldr not on PATH; falling back to bare cargo (no caching). Install soldr to get the caching path." >&2
+  CARGO=(cargo)
+fi
+
+run_step "Build workspace" "${CARGO[@]}" build --workspace --locked
+run_step "Run library tests" "${CARGO[@]}" test --workspace --lib --locked
+run_step "Run CLI smoke tests" "${CARGO[@]}" test -p soldr-cli --tests --locked
+run_step "Run fetch integration test" "${CARGO[@]}" test -p soldr-fetch --test fetch_crgx --locked
 run_step "Run Python wrapper tests" uv run pytest -n auto tests -v --durations=0
 
 printf '\nPipeline complete.\n'

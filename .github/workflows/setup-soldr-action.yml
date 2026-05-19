@@ -149,7 +149,7 @@ jobs:
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr --no-cache cargo test -p soldr-cli --test cli --locked
+          soldr --no-cache cargo test -p soldr-cli --tests --locked
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-test-seconds={0:F3}", $timer.Elapsed.TotalSeconds))
