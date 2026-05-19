@@ -279,6 +279,15 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env_remove("SOLDR_TARGET_CACHE_MODE")
         .env_remove("SOLDR_BUILD_CACHE_MODE")
+        // Strip any relocation guard the parent process might be carrying
+        // (it inherits these when the test suite itself is run via
+        // `soldr cargo test`, because the outer soldr self-relocates and
+        // exports SOLDR_RELOCATED_EXE / SOLDR_ORIGINAL_EXE in its env).
+        // Leaving them set short-circuits relocation_guard_active() inside
+        // the copied soldr, so RUSTC_WRAPPER would point at the worktree
+        // copy instead of the runtime/soldr-self copy this test asserts.
+        .env_remove("SOLDR_RELOCATED_EXE")
+        .env_remove("SOLDR_ORIGINAL_EXE")
         .output()
         .expect("failed to run copied soldr exe");
 
