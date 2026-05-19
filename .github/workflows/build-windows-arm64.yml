@@ -10,11 +10,36 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
 jobs:
   build:
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: windows-11-arm
-      target: aarch64-pc-windows-msvc
-      binary_name: soldr.exe
-      source_ref: ${{ github.sha }}
+    name: Build Windows ARM64
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+          targets: aarch64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: build-windows-arm64
+          shared-key: windows-aarch64-msvc
+
+      - name: Build workspace
+        run: cargo build --workspace --locked --target aarch64-pc-windows-msvc
+
+      - name: Run library tests
+        run: cargo test --workspace --lib --locked --target aarch64-pc-windows-msvc
+
+      - name: Run CLI smoke tests
+        run: cargo test -p soldr-cli --tests --locked --target aarch64-pc-windows-msvc
