@@ -17,13 +17,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::cache::print_json;
 use crate::JSON_SCHEMA_VERSION;
 
+#[cfg(not(target_os = "windows"))]
+use crate::optimize_windows::{apply_exclusions, current_exclusion_list, is_admin};
 #[cfg(target_os = "windows")]
 use crate::optimize_windows::{
     apply_exclusions, current_exclusion_list, is_admin, relaunch_elevated, ELEVATED_HELPER_FLAG,
-};
-#[cfg(not(target_os = "windows"))]
-use crate::optimize_windows::{
-    apply_exclusions, current_exclusion_list, is_admin, ELEVATED_HELPER_FLAG,
 };
 
 use crate::optimize_detect::{detect_ci, detect_platform, detect_tools, find_powershell, Platform};

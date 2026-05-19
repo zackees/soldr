@@ -3,6 +3,7 @@
 //! from "unknown session" errors on Windows. Extracted from `main.rs` as
 //! part of issue #339.
 
+#[cfg(not(unix))]
 use crate::zccache::run_zccache_command_in_cache_dir;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
 use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
