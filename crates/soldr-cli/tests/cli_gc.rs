@@ -74,7 +74,7 @@ fn gc_summary_json_reports_candidates_without_deleting() {
     );
 
     let json: Value = serde_json::from_slice(&output.stdout).expect("gc --json must be JSON");
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(json["command"], "gc");
     assert_eq!(json["mode"], "summary");
     assert_eq!(json["dry_run"], true);
@@ -82,6 +82,9 @@ fn gc_summary_json_reports_candidates_without_deleting() {
     assert!(json["total_reclaimable_bytes"].as_u64().unwrap_or(0) > 0);
     assert_eq!(json["largest_candidates"].as_array().unwrap().len(), 1);
     assert_eq!(json["deleted_paths"].as_array().unwrap().len(), 0);
+    let cand = &json["largest_candidates"].as_array().unwrap()[0];
+    assert_eq!(cand["kind"].as_str(), Some("cargo_target"));
+    assert_eq!(cand["purge_safety"].as_str(), Some("derived"));
 }
 
 #[test]
@@ -266,7 +269,7 @@ fn gc_list_json_reports_built_project_target_dir() {
     );
 
     let json: Value = serde_json::from_slice(&output.stdout).expect("gc list --json must be JSON");
-    assert_eq!(json["schema_version"], 1);
+    assert_eq!(json["schema_version"], 2);
     assert_eq!(json["command"], "gc");
     assert_eq!(json["mode"], "list");
     let entry_count = json["entry_count"].as_u64().expect("entry_count");
@@ -321,7 +324,33 @@ fn gc_list_json_reports_built_project_target_dir() {
             entry.get("exists").is_none(),
             "missing rows are pruned, so `exists` should not appear on listed entries"
         );
+        assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
+        assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
     }
+}
+
+#[test]
+fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
+    let cache_root = unique_temp_dir("gc-list-kind-defaults");
+    let target = seed_gc_candidate(&cache_root, "kind-defaults-project");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["gc", "list", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr gc list --json");
+    assert!(output.status.success());
+
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["schema_version"], 2);
+
+    let entries = json["entries"].as_array().expect("entries");
+    let entry = entries
+        .iter()
+        .find(|e| e["path"].as_str().is_some_and(|p| target == Path::new(p)))
+        .expect("seeded target missing from entries");
+    assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
+    assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
 }
 
 #[test]

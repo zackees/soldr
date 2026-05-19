@@ -14,6 +14,19 @@ use std::time::Duration;
 // soldr gc — garbage-collect stale Cargo target/ directories.
 // ---------------------------------------------------------------------------
 
+// Slice 1 of #323: scaffold the kind/purge_safety discriminator on gc JSON
+// entries. Every entry emitted today is a workspace target/ dir, so every
+// entry is tagged `cargo_target` / `derived`. Later slices add walkers that
+// emit entries with other kinds (registry-src, git-checkouts, in-target
+// subtrees, …) without further schema churn.
+const KIND_CARGO_TARGET: &str = "cargo_target";
+const PURGE_SAFETY_DERIVED: &str = "derived";
+
+// gc list / gc summary entries follow their own schema version,
+// independent of the global JSON_SCHEMA_VERSION used by other commands.
+// Bumped from 1 to 2 in #323 slice 1 when kind + purge_safety were added.
+const GC_JSON_SCHEMA_VERSION: u32 = 2;
+
 #[derive(Clone, Copy)]
 pub(crate) enum GcMode {
     Summary,
@@ -36,6 +49,11 @@ struct GcCandidateOutput {
     age_human: String,
     eligible: bool,
     reason: Option<String>,
+    /// Taxonomy discriminator (#323 slice 1). Always `cargo_target` for
+    /// now — later slices emit other kinds from new walkers.
+    kind: &'static str,
+    /// Safety class for purge (#323 slice 1). Always `derived` for now.
+    purge_safety: &'static str,
 }
 
 #[derive(Serialize)]
@@ -129,7 +147,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
 
     if invocation.json {
         let output = GcOutput {
-            schema_version: JSON_SCHEMA_VERSION,
+            schema_version: GC_JSON_SCHEMA_VERSION,
             command: "gc",
             mode: if is_summary { "summary" } else { "purge" },
             dry_run: is_summary,
@@ -179,6 +197,11 @@ struct GcListEntryOutput {
     size_bytes: u64,
     size_human: String,
     file_count: u64,
+    /// Taxonomy discriminator (#323 slice 1). Always `cargo_target` for
+    /// now — later slices emit other kinds from new walkers.
+    kind: &'static str,
+    /// Safety class for purge (#323 slice 1). Always `derived` for now.
+    purge_safety: &'static str,
 }
 
 #[derive(Serialize)]
@@ -284,6 +307,8 @@ pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
                 size_bytes,
                 size_human: soldr_cache::target_registry::human_size(size_bytes),
                 file_count,
+                kind: KIND_CARGO_TARGET,
+                purge_safety: PURGE_SAFETY_DERIVED,
             }
         })
         .collect();
@@ -294,7 +319,7 @@ pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
 
     if json {
         let output = GcListOutput {
-            schema_version: JSON_SCHEMA_VERSION,
+            schema_version: GC_JSON_SCHEMA_VERSION,
             command: "gc",
             mode: "list",
             registry_path: db_path.display().to_string(),
@@ -312,8 +337,8 @@ pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
         );
         for entry in &entries {
             println!(
-                "  {}  size={}  files={}  age={}",
-                entry.path, entry.size_human, entry.file_count, entry.age_human,
+                "  {}  size={}  files={}  age={}  kind={}",
+                entry.path, entry.size_human, entry.file_count, entry.age_human, entry.kind,
             );
         }
         if pruned_missing > 0 {
@@ -540,6 +565,8 @@ fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
         age_seconds: c.age_seconds,
         eligible: c.eligible,
         reason: c.reason,
+        kind: KIND_CARGO_TARGET,
+        purge_safety: PURGE_SAFETY_DERIVED,
     }
 }
 
