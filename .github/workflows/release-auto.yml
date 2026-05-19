@@ -208,6 +208,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
       - name: Verify setup-soldr pin matches v0
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -218,6 +219,7 @@ jobs:
           fi
 
       - name: Setup Soldr toolchain
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
         uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
         with:
           linker: platform-default
@@ -227,13 +229,34 @@ jobs:
           cargo-registry-cache: false
           cache-key-suffix: release-${{ matrix.target }}
 
+      - name: Install Rust toolchain (Windows)
+        if: ${{ contains(matrix.target, 'pc-windows-msvc') }}
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target (Windows)
+        if: ${{ contains(matrix.target, 'pc-windows-msvc') }}
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+          shared-key: release-${{ matrix.target }}
+
       - name: Install target toolchain support
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
         shell: pwsh
         run: |
           rustup target add "${{ matrix.target }}"
 
       - name: Build release binary
+        if: ${{ !contains(matrix.target, 'pc-windows-msvc') }}
         run: soldr --no-cache cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+
+      - name: Build release binary (Windows)
+        if: ${{ contains(matrix.target, 'pc-windows-msvc') }}
+        run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
 
       - name: Package tarball
         if: matrix.archive == 'tar.gz'

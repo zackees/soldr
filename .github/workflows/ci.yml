@@ -141,28 +141,27 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - name: Verify setup-soldr pin matches v0
-        shell: bash
-        run: |
-          set -euo pipefail
-          if command -v python3 >/dev/null 2>&1; then
-            python3 .github/scripts/verify_setup_soldr_pin.py
-          else
-            python .github/scripts/verify_setup_soldr_pin.py
-          fi
-
-      - uses: zackees/setup-soldr@4ed67cf493c07fee9f7f6c2bc8dc94b8c2140f11 # @v0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          linker: platform-default
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ci-windows-x64
+          shared-key: windows-x86_64-msvc
 
       - name: Build workspace
-        run: soldr cargo build --workspace --locked
+        run: cargo build --workspace --locked --target x86_64-pc-windows-msvc
 
       - name: Run library tests
-        run: soldr cargo test --workspace --lib --locked
+        run: cargo test --workspace --lib --locked --target x86_64-pc-windows-msvc
 
       - name: Run CLI smoke tests
-        run: soldr cargo test -p soldr-cli --tests --locked
+        run: cargo test -p soldr-cli --tests --locked --target x86_64-pc-windows-msvc
 
       - name: Verify Windows defaults to MSVC under Git Bash
         if: runner.os == 'Windows'
@@ -170,7 +169,7 @@ jobs:
         run: bash .github/scripts/windows-msys-default-msvc.sh
 
       - name: Run fetch integration test
-        run: soldr cargo test -p soldr-fetch --test fetch_crgx --locked
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked --target x86_64-pc-windows-msvc
 
   e2e-linux-x64:
     name: build
@@ -235,7 +234,7 @@ jobs:
 
   e2e-windows-x64:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_bootstrap-e2e-windows.yml
     with:
       runner: windows-2025
       target: x86_64-pc-windows-msvc
@@ -245,7 +244,7 @@ jobs:
 
   e2e-windows-arm64:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_bootstrap-e2e-windows.yml
     with:
       runner: windows-11-arm
       target: aarch64-pc-windows-msvc

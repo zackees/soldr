@@ -47,8 +47,6 @@ jobs:
             runner: ubuntu-24.04
           - name: macOS
             runner: macos-15
-          - name: Windows
-            runner: windows-2025
 
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
