@@ -6,8 +6,8 @@ use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, Trampol
 use crate::zccache::{finish_zccache_build, prepare_rustc_wrapper};
 use crate::{
     apply_implicit_toolchain_homes, gc, linker, non_empty_env_path, resolve_toolchain_binary,
-    rust_plan, CARGO_PROFILE_DEV_DEBUG_ENV_VAR, CARGO_PROFILE_TEST_DEBUG_ENV_VAR, LINKER_ENV_VAR,
-    LOW_DISK_WARNING_THRESHOLD_BYTES, TEST_FREE_DISK_BYTES_ENV_VAR,
+    rust_plan, ZccacheSourceArg, CARGO_PROFILE_DEV_DEBUG_ENV_VAR, CARGO_PROFILE_TEST_DEBUG_ENV_VAR,
+    LINKER_ENV_VAR, LOW_DISK_WARNING_THRESHOLD_BYTES, TEST_FREE_DISK_BYTES_ENV_VAR,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -18,6 +18,7 @@ use std::collections::BTreeSet;
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
+    zccache_source: ZccacheSourceArg,
 ) -> Result<i32, SoldrError> {
     if cargo_args_use_reserved_no_cache(args) {
         return Err(SoldrError::Other(
@@ -107,7 +108,7 @@ pub(crate) async fn run_cargo_front_door(
     apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
     let session = if cache_enabled_for_cargo {
-        prepare_rustc_wrapper(&mut command, &paths).await?
+        prepare_rustc_wrapper(&mut command, &paths, zccache_source).await?
     } else {
         None
     };

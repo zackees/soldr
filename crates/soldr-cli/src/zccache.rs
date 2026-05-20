@@ -2,7 +2,8 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::{
-    current_soldr_binary, fetch_managed_zccache, non_empty_env_path, RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
+    current_soldr_binary, fetch_managed_zccache, non_empty_env_path, ZccacheSourceArg,
+    RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
 use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 
@@ -74,9 +75,12 @@ pub(crate) fn resolve_path_remap_env(
 pub(crate) async fn prepare_rustc_wrapper(
     cargo: &mut std::process::Command,
     paths: &SoldrPaths,
+    zccache_source: ZccacheSourceArg,
 ) -> Result<Option<ZccacheBuildSession>, SoldrError> {
     match rustc_wrapper_mode() {
-        RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths).await.map(Some),
+        RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths, zccache_source)
+            .await
+            .map(Some),
         RustcWrapperMode::Custom(wrapper) => {
             if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
                 let sccache_dir = soldr_cache::sccache_dir(paths);
@@ -109,22 +113,29 @@ pub(crate) fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
 async fn prepare_zccache_build(
     cargo: &mut std::process::Command,
     paths: &SoldrPaths,
+    zccache_source: ZccacheSourceArg,
 ) -> Result<ZccacheBuildSession, SoldrError> {
     let zccache_dir = managed_zccache_cache_dir(paths)?;
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
-    let fetch = fetch_managed_zccache(paths).await?;
-    if fetch.cached {
-        eprintln!(
-            "soldr: using managed zccache {}",
-            soldr_fetch::MANAGED_ZCCACHE_VERSION
-        );
-    } else {
-        eprintln!(
-            "soldr: fetched managed zccache {}",
-            soldr_fetch::MANAGED_ZCCACHE_VERSION
-        );
-    }
+    let fetch = match zccache_source {
+        ZccacheSourceArg::Managed => {
+            let fetched = fetch_managed_zccache(paths).await?;
+            if fetched.cached {
+                eprintln!(
+                    "soldr: using managed zccache {}",
+                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                );
+            } else {
+                eprintln!(
+                    "soldr: fetched managed zccache {}",
+                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                );
+            }
+            fetched
+        }
+        ZccacheSourceArg::System => soldr_fetch::resolve_system_zccache(paths)?,
+    };
 
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
