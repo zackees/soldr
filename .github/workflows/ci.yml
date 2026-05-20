@@ -44,112 +44,62 @@ jobs:
       - name: Run clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+  # Per-platform `build workspace + run unit/smoke tests` jobs.
+  # Each is a thin caller of the `_build-and-test.yml` template so
+  # the duplicated cargo invocations live in one place and every
+  # platform still shows as its own top-level entry in the GHA
+  # sidebar. Add a new platform: copy one of these blocks and tweak
+  # the inputs.
+
   build-linux-x64:
     name: Linux x64
-    if: github.ref_name == 'main'
-    runs-on: ubuntu-24.04
     needs: lint
-    env:
-      GH_TOKEN: ${{ github.token }}
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.94.1
-
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: build-linux-x64
-
-      - name: Build workspace
-        run: cargo build --workspace --locked
-
-      - name: Run library tests
-        run: cargo test --workspace --lib --locked
-
-      - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --tests --locked
-
-      - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/_build-and-test.yml
+    with:
+      runner: ubuntu-24.04
+      target: x86_64-unknown-linux-gnu
+      shared_key: build-linux-x64
 
   build-macos-x64:
     name: macOS x64
-    if: github.ref_name == 'main'
-    runs-on: macos-15-intel
     needs: lint
-    env:
-      GH_TOKEN: ${{ github.token }}
-
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.94.1
-
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: build-macos-x64
-
-      - name: Build workspace
-        run: cargo build --workspace --locked
-
-      - name: Run library tests
-        run: cargo test --workspace --lib --locked
-
-      - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --tests --locked
-
-      - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/_build-and-test.yml
+    with:
+      runner: macos-15-intel
+      target: x86_64-apple-darwin
+      shared_key: build-macos-x64
 
   build-windows-x64:
     name: Windows x64
-    if: github.ref_name == 'main'
-    runs-on: windows-2025
     needs: lint
-    env:
-      GH_TOKEN: ${{ github.token }}
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/_build-and-test.yml
+    with:
+      runner: windows-2025
+      target: x86_64-pc-windows-msvc
+      shared_key: windows-x86_64-msvc
+      cache_key: ci-windows-x64
+      install_components: rustfmt, clippy
+      verify_windows_msys_default_msvc: true
 
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.94.1
-          targets: x86_64-pc-windows-msvc
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          key: ci-windows-x64
-          shared-key: windows-x86_64-msvc
-
-      - name: Build workspace
-        run: cargo build --workspace --locked --target x86_64-pc-windows-msvc
-
-      - name: Run library tests
-        run: cargo test --workspace --lib --locked --target x86_64-pc-windows-msvc
-
-      - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --tests --locked --target x86_64-pc-windows-msvc
-
-      - name: Verify Windows defaults to MSVC under Git Bash
-        if: runner.os == 'Windows'
-        shell: bash
-        run: bash .github/scripts/windows-msys-default-msvc.sh
-
-      - name: Run fetch integration test
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked --target x86_64-pc-windows-msvc
+  build-windows-arm64:
+    # Preserves the cargo-test coverage that the standalone
+    # build-windows-arm64.yml provided before it was deleted in
+    # favour of this template + materializer pattern. The
+    # equivalent e2e-windows-arm64 job below only builds; this one
+    # runs the unit + cli + fetch test sweep.
+    name: Windows ARM64
+    needs: lint
+    if: github.ref_name == 'main'
+    uses: ./.github/workflows/_build-and-test.yml
+    with:
+      runner: windows-11-arm
+      target: aarch64-pc-windows-msvc
+      shared_key: windows-aarch64-msvc
+      cache_key: ci-windows-arm64
+      install_components: rustfmt, clippy
 
   e2e-linux-x64:
     name: build
