@@ -229,9 +229,10 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
                     ));
                     None
                 } else {
-                    notes.push(format!(
-                        "rollups: zccache analyze exited with status {:?}",
-                        result.status.code()
+                    notes.push(zccache_analyze_failure_note(
+                        result.status.code(),
+                        &result.stdout,
+                        &result.stderr,
                     ));
                     None
                 }
@@ -281,6 +282,50 @@ fn zccache_subcommand_unsupported(output: &std::process::Output, subcommand: &st
     ];
     let combined = format!("{stderr}\n{stdout}");
     needles.iter().any(|n| combined.contains(n)) && combined.contains(subcommand)
+}
+
+const ZCCACHE_ANALYZE_NOTE_LIMIT: usize = 1000;
+
+fn zccache_analyze_failure_note(status_code: Option<i32>, stdout: &[u8], stderr: &[u8]) -> String {
+    let mut note = format!("rollups: zccache analyze exited with status {status_code:?}");
+    if let Some(stderr) = zccache_output_snippet(stderr) {
+        note.push_str("; stderr: ");
+        note.push_str(&stderr);
+    }
+    if let Some(stdout) = zccache_output_snippet(stdout) {
+        note.push_str("; stdout: ");
+        note.push_str(&stdout);
+    }
+    note
+}
+
+fn zccache_output_snippet(output: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(output);
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let mut compact = String::new();
+    let mut previous_was_space = false;
+    for ch in trimmed.chars() {
+        if ch.is_whitespace() {
+            if !previous_was_space {
+                compact.push(' ');
+                previous_was_space = true;
+            }
+        } else {
+            compact.push(ch);
+            previous_was_space = false;
+        }
+    }
+
+    let mut chars = compact.chars();
+    let mut snippet: String = chars.by_ref().take(ZCCACHE_ANALYZE_NOTE_LIMIT).collect();
+    if chars.next().is_some() {
+        snippet.push_str("...");
+    }
+    Some(snippet)
 }
 
 pub(crate) fn run_cache_prune_target_command(
@@ -592,4 +637,43 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<(), SoldrError> {
         .map_err(|e| SoldrError::Other(format!("failed to serialize JSON output: {e}")))?;
     println!();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{zccache_analyze_failure_note, zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
+
+    #[test]
+    fn zccache_output_snippet_omits_empty_output() {
+        assert_eq!(zccache_output_snippet(b""), None);
+        assert_eq!(zccache_output_snippet(b" \n\t "), None);
+    }
+
+    #[test]
+    fn zccache_output_snippet_compacts_whitespace() {
+        assert_eq!(
+            zccache_output_snippet(b"  first line\n\nsecond\tline  ").as_deref(),
+            Some("first line second line")
+        );
+    }
+
+    #[test]
+    fn zccache_output_snippet_truncates_long_output() {
+        let output = "x".repeat(ZCCACHE_ANALYZE_NOTE_LIMIT + 10);
+        let snippet = zccache_output_snippet(output.as_bytes()).unwrap();
+        assert_eq!(snippet.chars().count(), ZCCACHE_ANALYZE_NOTE_LIMIT + 3);
+        assert!(snippet.ends_with("..."));
+    }
+
+    #[test]
+    fn zccache_analyze_failure_note_includes_stdout_and_stderr() {
+        let note = zccache_analyze_failure_note(
+            Some(1),
+            br#"{"status":"error","error":"bad input"}"#,
+            b"expected compile journal JSONL\n",
+        );
+        assert!(note.contains("rollups: zccache analyze exited with status Some(1)"));
+        assert!(note.contains("stderr: expected compile journal JSONL"));
+        assert!(note.contains(r#"stdout: {"status":"error","error":"bad input"}"#));
+    }
 }
