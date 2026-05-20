@@ -1,0 +1,403 @@
+name: Soldr Cold/Warm Bench
+
+# Direct port of setup-soldr's `Soldr Cache Speed Demo` workflow
+# (zackees/setup-soldr → .github/workflows/zccache-build-demo.yml),
+# but instead of `uses: ./setup-soldr` we inline the equivalent
+# steps with our own soldr binary built by `build-soldr` below.
+#
+# Three jobs:
+#
+# 1. `build-soldr` — master, builds soldr once and uploads it as an
+#    artifact. Layered actions/cache + Swatinem/rust-cache so the
+#    second dispatch on the same soldr commit is nearly free. The
+#    perf cluster has to keep working when soldr itself is broken
+#    or absent on a new platform, so this step uses bare cargo (not
+#    `soldr cargo`).
+# 2. `purge-demo-caches` — only fires when run_mode is the "Purge
+#    cache and run cold build before warm build" choice. Walks
+#    GitHub's actions/caches API and deletes prior demo entries so
+#    the cold-build job sees a clean slate.
+# 3. `cold-build` — only fires in purge mode. Builds the fixture
+#    fresh, then `soldr cache flush` + `soldr cache shutdown
+#    --wait` to make the depgraph snapshot durable before
+#    actions/cache@v4's POST step saves the zccache dir. The
+#    `--wait` is the soldr#383 contract: setup-soldr's previous
+#    flow proved that `zccache stop` returns before the daemon has
+#    actually exited, so the save races the depgraph flush and the
+#    next "warm" run hits 0% — the exact bug we want this workflow
+#    to surface here, in soldr's own repo, instead of finding it
+#    via setup-soldr's downstream demo.
+# 4. `warm-build` — always (gated on cold success in purge mode).
+#    Restores the cache, runs the same `soldr cargo build`, emits
+#    hit-rate and wall time. A passing run reports
+#    hit_rate ≈ 100%; a regression of #383 surfaces here as
+#    hit_rate ≈ 0%.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: Demo mode
+        type: choice
+        required: true
+        default: Warm build only
+        options:
+          - Warm build only
+          - Purge cache and run cold build before warm build
+      fixture:
+        description: Which fixture to build cold/warm
+        type: choice
+        required: true
+        default: medium
+        options:
+          - medium
+          - sqlite-link
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: perf-cold-warm-${{ github.ref }}-${{ inputs.fixture }}
+  cancel-in-progress: false
+
+env:
+  # Suffix in cache keys we own, so `purge-demo-caches` can find
+  # and delete them without nuking unrelated repo caches.
+  DEMO_CACHE_SUFFIX: perf-cold-warm
+  # Where soldr stores its cache root inside the runner. Both the
+  # cache restore/save and the `soldr cargo build` step have to
+  # agree on this path.
+  SOLDR_CACHE_ROOT: ${{ github.workspace }}/.soldr-perf
+
+jobs:
+  build-soldr:
+    name: build-soldr (linux)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      # Layer 1: actions/cache keyed by the source-of-truth files
+      # that determine the soldr binary. Same source = zero compile
+      # on the second dispatch.
+      - name: Restore cached soldr binary
+        id: soldr-bin-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/release/soldr
+          key: soldr-bin-linux-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock') }}
+
+      # Layer 2: cache cargo intermediates so a cache-miss rebuild
+      # is incremental. Soldr itself is deliberately NOT used to
+      # build soldr — perf must keep working when soldr is broken.
+      - name: Restore cargo intermediates
+        if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: perf-cold-warm-build-soldr-linux
+
+      - name: Build soldr (release)
+        if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
+        run: cargo build --release -p soldr-cli
+
+      - name: Stage binary
+        run: |
+          mkdir -p soldr-artifact
+          cp target/release/soldr soldr-artifact/soldr
+          chmod +x soldr-artifact/soldr
+          soldr-artifact/soldr version --json | tee soldr-artifact/version.json
+
+      - name: Upload soldr binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-cold-warm-soldr-bin-linux
+          path: soldr-artifact/
+          retention-days: 7
+
+  purge-demo-caches:
+    name: Purge demo caches
+    if: ${{ inputs.run_mode == 'Purge cache and run cold build before warm build' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete prior perf-cold-warm cache entries
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          # Enumerate every cache entry on this repo whose key
+          # carries our suffix; delete them one by one. Listing is
+          # paginated so the loop survives large runners' cache
+          # histories.
+          mapfile -t cache_keys < <(
+            gh api -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+              --paginate \
+              --jq ".actions_caches[] | select(.key | contains(\"${DEMO_CACHE_SUFFIX}\")) | .key" \
+              | sort -u
+          )
+
+          if [ "${#cache_keys[@]}" -eq 0 ]; then
+            echo "No ${DEMO_CACHE_SUFFIX} caches found (clean slate)."
+            exit 0
+          fi
+
+          {
+            echo "### Purged demo caches"
+            echo
+            echo "| Cache ID | Ref | Key |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          deleted=0
+          for key in "${cache_keys[@]}"; do
+            while read -r row; do
+              [ -z "$row" ] && continue
+              id="${row%%$'\t'*}"
+              rest="${row#*$'\t'}"
+              ref="${rest%%$'\t'*}"
+              k="${rest#*$'\t'}"
+              echo "Deleting cache ${id} (ref=${ref}): ${k}"
+              if gh api --method DELETE \
+                   -H "Accept: application/vnd.github+json" \
+                   "/repos/${GITHUB_REPOSITORY}/actions/caches/${id}"; then
+                echo "| ${id} | \`${ref}\` | \`${k}\` |" >> "$GITHUB_STEP_SUMMARY"
+                deleted=$((deleted + 1))
+              fi
+            done < <(
+              gh api -H "Accept: application/vnd.github+json" \
+                "/repos/${GITHUB_REPOSITORY}/actions/caches?key=${key}&per_page=50" \
+                --jq '.actions_caches[] | "\(.id)\t\(.ref)\t\(.key)"' || true
+            )
+          done
+
+          echo "Deleted ${deleted} cache entries across ${#cache_keys[@]} unique keys."
+
+  cold-build:
+    name: Cold build (${{ inputs.fixture }})
+    if: ${{ inputs.run_mode == 'Purge cache and run cold build before warm build' }}
+    needs:
+      - build-soldr
+      - purge-demo-caches
+    runs-on: ubuntu-24.04
+    env:
+      SOLDR_DEBUG: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Install fixture native deps
+        if: inputs.fixture == 'sqlite-link'
+        run: |
+          which gcc || sudo apt-get install -y gcc
+
+      - name: Download soldr binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-cold-warm-soldr-bin-linux
+          path: soldr-bin
+
+      - name: Stage soldr on PATH
+        run: |
+          chmod +x soldr-bin/soldr
+          mkdir -p "$HOME/.local/bin"
+          cp soldr-bin/soldr "$HOME/.local/bin/soldr"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "SOLDR_CACHE_DIR=${SOLDR_CACHE_ROOT}" >> "$GITHUB_ENV"
+
+      - name: Extract fixture
+        id: extract
+        run: |
+          fixture_dir="${RUNNER_TEMP}/cold-${{ inputs.fixture }}"
+          mkdir -p "${fixture_dir}"
+          bash perf/lib/extract.sh "${{ inputs.fixture }}" "${fixture_dir}"
+          echo "dir=${fixture_dir}/${{ inputs.fixture }}" >> "$GITHUB_OUTPUT"
+
+      # Cache restore on cold run is expected to MISS (it follows a
+      # purge). actions/cache@v4 still wires up the POST step that
+      # saves whatever lives at `path` once the job ends — that's
+      # what populates the cache for the warm-build job below.
+      - name: Restore zccache cache
+        id: zccache-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache
+          key: ${{ env.DEMO_CACHE_SUFFIX }}-zccache-${{ inputs.fixture }}-${{ hashFiles(format('perf/fixtures/{0}/Cargo.lock', inputs.fixture)) }}
+
+      - name: Build (cold)
+        id: build
+        working-directory: ${{ steps.extract.outputs.dir }}
+        run: |
+          set -o pipefail
+          start_ms=$(date +%s%3N)
+          soldr cargo build --release --locked
+          end_ms=$(date +%s%3N)
+          elapsed_ms=$((end_ms - start_ms))
+          echo "elapsed_ms=${elapsed_ms}" >> "$GITHUB_OUTPUT"
+
+      # Critical (soldr#383): flush the depgraph and wait for the
+      # daemon to actually exit BEFORE actions/cache@v4's POST step
+      # tars up SOLDR_CACHE_ROOT/cache/zccache. Without these two
+      # calls the next warm run hits 0% — exactly the failure mode
+      # this workflow exists to canary.
+      - name: Flush + shutdown soldr cache
+        run: |
+          soldr cache flush --json | tee flush.json || true
+          soldr cache shutdown --shutdown-timeout-seconds 60 --json | tee shutdown.json
+
+      - name: Emit cold summary
+        run: |
+          {
+            echo "### Cold build (${{ inputs.fixture }})"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| elapsed_ms | \`${{ steps.build.outputs.elapsed_ms }}\` |"
+            echo "| zccache-cache restore | \`${{ steps.zccache-cache.outputs.cache-hit || 'miss' }}\` |"
+            echo "| cache key | \`${{ env.DEMO_CACHE_SUFFIX }}-zccache-${{ inputs.fixture }}-...\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload cold artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-cold-warm-cold-${{ inputs.fixture }}
+          path: |
+            ${{ steps.extract.outputs.dir }}/flush.json
+            ${{ steps.extract.outputs.dir }}/shutdown.json
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session.log
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session.jsonl
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session-stats.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  warm-build:
+    name: Warm build (${{ inputs.fixture }})
+    needs:
+      - build-soldr
+      - cold-build
+    # In purge mode we wait for cold-build to succeed (otherwise the
+    # cache it was supposed to save isn't there). In warm-only mode
+    # cold-build is skipped, and we just expect a cache from a
+    # prior run to exist — same semantics as setup-soldr's demo.
+    if: ${{ always() && needs.build-soldr.result == 'success' && (inputs.run_mode != 'Purge cache and run cold build before warm build' || needs.cold-build.result == 'success') }}
+    runs-on: ubuntu-24.04
+    env:
+      SOLDR_DEBUG: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Install fixture native deps
+        if: inputs.fixture == 'sqlite-link'
+        run: |
+          which gcc || sudo apt-get install -y gcc
+
+      - name: Download soldr binary
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-cold-warm-soldr-bin-linux
+          path: soldr-bin
+
+      - name: Stage soldr on PATH
+        run: |
+          chmod +x soldr-bin/soldr
+          mkdir -p "$HOME/.local/bin"
+          cp soldr-bin/soldr "$HOME/.local/bin/soldr"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "SOLDR_CACHE_DIR=${SOLDR_CACHE_ROOT}" >> "$GITHUB_ENV"
+
+      - name: Extract fixture
+        id: extract
+        run: |
+          fixture_dir="${RUNNER_TEMP}/warm-${{ inputs.fixture }}"
+          mkdir -p "${fixture_dir}"
+          bash perf/lib/extract.sh "${{ inputs.fixture }}" "${fixture_dir}"
+          echo "dir=${fixture_dir}/${{ inputs.fixture }}" >> "$GITHUB_OUTPUT"
+
+      # Same key as cold; expects a HIT.
+      - name: Restore zccache cache
+        id: zccache-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache
+          key: ${{ env.DEMO_CACHE_SUFFIX }}-zccache-${{ inputs.fixture }}-${{ hashFiles(format('perf/fixtures/{0}/Cargo.lock', inputs.fixture)) }}
+
+      - name: Note cache miss
+        if: steps.zccache-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "::warning::warm-build started with no cached zccache state. Either this is the first run on this branch (use the 'Purge cache and run cold build before warm build' mode once), or the cold-build job failed to save a usable cache." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Build (warm)
+        id: build
+        working-directory: ${{ steps.extract.outputs.dir }}
+        run: |
+          set -o pipefail
+          start_ms=$(date +%s%3N)
+          soldr cargo build --release --locked
+          end_ms=$(date +%s%3N)
+          elapsed_ms=$((end_ms - start_ms))
+          echo "elapsed_ms=${elapsed_ms}" >> "$GITHUB_OUTPUT"
+
+      - name: Capture session stats
+        id: stats
+        run: |
+          # soldr session-end --json prints the final session stats
+          # for the just-finished build. Pipe through jq so the
+          # outputs are scalars and easy to render in the summary.
+          stats_json="$(soldr session-end --json 2>/dev/null || echo '{}')"
+          echo "${stats_json}" > session-end.json
+          hits=$(echo "${stats_json}" | jq -r '.stats.hits // 0')
+          misses=$(echo "${stats_json}" | jq -r '.stats.misses // 0')
+          rate=$(echo "${stats_json}" | jq -r '.stats.hit_rate // 0')
+          echo "hits=${hits}" >> "$GITHUB_OUTPUT"
+          echo "misses=${misses}" >> "$GITHUB_OUTPUT"
+          echo "hit_rate=${rate}" >> "$GITHUB_OUTPUT"
+
+      - name: Flush + shutdown soldr cache
+        run: |
+          soldr cache flush --json | tee flush.json || true
+          soldr cache shutdown --shutdown-timeout-seconds 60 --json | tee shutdown.json
+
+      - name: Emit warm summary
+        run: |
+          {
+            echo "### Warm build (${{ inputs.fixture }})"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| elapsed_ms | \`${{ steps.build.outputs.elapsed_ms }}\` |"
+            echo "| zccache-cache restore | \`${{ steps.zccache-cache.outputs.cache-hit || 'miss' }}\` |"
+            echo "| compile hits | \`${{ steps.stats.outputs.hits }}\` |"
+            echo "| compile misses | \`${{ steps.stats.outputs.misses }}\` |"
+            echo "| compile hit_rate | \`${{ steps.stats.outputs.hit_rate }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload warm artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: perf-cold-warm-warm-${{ inputs.fixture }}
+          path: |
+            ${{ steps.extract.outputs.dir }}/flush.json
+            ${{ steps.extract.outputs.dir }}/shutdown.json
+            ${{ steps.extract.outputs.dir }}/session-end.json
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session.log
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session.jsonl
+            ${{ env.SOLDR_CACHE_ROOT }}/cache/zccache/logs/last-session-stats.json
+          if-no-files-found: warn
+          retention-days: 14
