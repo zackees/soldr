@@ -410,6 +410,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              if \"%~1\"==\"stop\" (\n\
                echo zccache stop cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
                if defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\"\n\
+               if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER type nul > \"%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%\"\n\
                exit /b 0\n\
              )\n\
               if \"%~1\"==\"session-start\" (\n\
@@ -438,9 +439,16 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                exit /b 0\n\
              )\n\
              if \"%~1\"==\"status\" (\n\
+               if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER (\n\
+                 if exist \"%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%\" (\n\
+                   echo daemon not running 1>&2\n\
+                   exit /b 1\n\
+                 )\n\
+               )\n\
                echo hits=7\n\
                exit /b 0\n\
              )\n\
+             if \"%~1\"==\"flush\" goto soldr_zccache_flush\n\
              if \"%~1\"==\"clear\" (\n\
                echo zccache clear cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
                exit /b 0\n\
@@ -460,7 +468,23 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                exit /b 1\n\
              )\n\
              echo zccache start retried before stop 1>&2\n\
-             exit /b 66\n",
+             exit /b 66\n\
+             :soldr_zccache_flush\n\
+             echo zccache flush args=%* cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             if defined SOLDR_TEST_ZCCACHE_FLUSH_UNSUPPORTED goto soldr_zccache_flush_unsupported\n\
+             if not \"%~2\"==\"--json\" goto soldr_zccache_flush_plain\n\
+             if defined SOLDR_TEST_ZCCACHE_FLUSH_NO_JSON goto soldr_zccache_flush_no_json\n\
+             echo {{\"status\":\"ok\",\"bytes_written\":4096,\"duration_ms\":12}}\n\
+             exit /b 0\n\
+             :soldr_zccache_flush_plain\n\
+             echo flushed\n\
+             exit /b 0\n\
+             :soldr_zccache_flush_unsupported\n\
+             echo error: unrecognized subcommand 'flush' 1>&2\n\
+             exit /b 2\n\
+             :soldr_zccache_flush_no_json\n\
+             echo error: unexpected argument '--json' found 1>&2\n\
+             exit /b 2\n",
             log_path.display()
         )
     }
@@ -488,6 +512,9 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                  echo \"zccache stop cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
                    : > \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\"\n\
+                 fi\n\
+                 if [ -n \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}}\" ]; then\n\
+                   : > \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER}}\"\n\
                  fi\n\
                  exit 0\n\
                  ;;\n\
@@ -517,9 +544,30 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                 exit 0\n\
                 ;;\n\
               status)\n\
+                if [ -n \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}}\" ] && [ -e \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER}}\" ]; then\n\
+                  echo 'daemon not running' >&2\n\
+                  exit 1\n\
+                fi\n\
                 echo 'hits=7'\n\
                 exit 0\n\
-                 ;;\n\
+                ;;\n\
+              flush)\n\
+                echo \"zccache flush args=$* cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                if [ -n \"${{SOLDR_TEST_ZCCACHE_FLUSH_UNSUPPORTED:-}}\" ]; then\n\
+                  echo \"error: unrecognized subcommand 'flush'\" >&2\n\
+                  exit 2\n\
+                fi\n\
+                if [ \"${{2:-}}\" = \"--json\" ]; then\n\
+                  if [ -n \"${{SOLDR_TEST_ZCCACHE_FLUSH_NO_JSON:-}}\" ]; then\n\
+                    echo \"error: unexpected argument '--json' found\" >&2\n\
+                    exit 2\n\
+                  fi\n\
+                  printf '{{\"status\":\"ok\",\"bytes_written\":4096,\"duration_ms\":12}}\\n'\n\
+                else\n\
+                  echo 'flushed'\n\
+                fi\n\
+                exit 0\n\
+                ;;\n\
                clear)\n\
                  echo \"zccache clear cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
                  exit 0\n\
