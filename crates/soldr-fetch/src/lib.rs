@@ -559,6 +559,77 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
     )
 }
 
+/// Locate `zccache` on the system `PATH` and use it directly instead
+/// of the managed-fetch path. Requires the daemon/fingerprint sibling
+/// binaries to live next to `zccache` in the same directory, which is
+/// how every supported zccache installer lays them out.
+///
+/// Driven by the top-level `--zccache=system` CLI flag.
+pub fn resolve_system_zccache(_paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
+    let target = TargetTriple::detect()?;
+    resolve_system_zccache_for_target(&target)
+}
+
+pub(crate) fn resolve_system_zccache_for_target(
+    target: &TargetTriple,
+) -> Result<FetchResult, SoldrError> {
+    let path_dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|value| std::env::split_paths(&value).collect())
+        .unwrap_or_default();
+    resolve_system_zccache_with_path_dirs(target, &path_dirs)
+}
+
+pub(crate) fn resolve_system_zccache_with_path_dirs(
+    target: &TargetTriple,
+    path_dirs: &[PathBuf],
+) -> Result<FetchResult, SoldrError> {
+    let binary_ext = target.binary_ext();
+    let zccache_name = format!("zccache{binary_ext}");
+    let zccache_path = find_in_dirs(path_dirs, &zccache_name).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "`--zccache=system` requested but `{zccache_name}` was not found on PATH; install zccache or drop the flag to use the managed download"
+        ))
+    })?;
+
+    let dir = zccache_path.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "system zccache at {} has no parent directory",
+            zccache_path.display()
+        ))
+    })?;
+
+    for sibling in ["zccache-daemon", "zccache-fp"] {
+        let sibling_path = dir.join(format!("{sibling}{binary_ext}"));
+        if !sibling_path.is_file() {
+            return Err(SoldrError::Other(format!(
+                "`--zccache=system`: expected {} next to {}",
+                sibling_path.display(),
+                zccache_path.display()
+            )));
+        }
+    }
+
+    eprintln!(
+        "soldr: using system zccache at {}",
+        zccache_path.display()
+    );
+    Ok(FetchResult {
+        binary_path: zccache_path,
+        version: "system".to_string(),
+        cached: false,
+    })
+}
+
+fn find_in_dirs(dirs: &[PathBuf], file_name: &str) -> Option<PathBuf> {
+    for dir in dirs {
+        let candidate = dir.join(file_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 fn managed_zccache_repo() -> RepoInfo {
     RepoInfo {
         owner: "zackees".to_string(),
@@ -1688,5 +1759,73 @@ mod tests {
         // rename is a breaking change for users who exported it. Keep
         // it pinned.
         assert_eq!(ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_ZCCACHE_LOCAL_DIR");
+    }
+
+    // ---------------------------------------------------------------
+    // --zccache=system resolver
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn system_zccache_resolves_when_all_three_binaries_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        write_fake_binary(&bin_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&bin_dir, "zccache-daemon.exe", b"daemon-bytes");
+        write_fake_binary(&bin_dir, "zccache-fp.exe", b"fp-bytes");
+
+        let dirs = vec![bin_dir.clone()];
+        let result = resolve_system_zccache_with_path_dirs(&windows_target(), &dirs).unwrap();
+        assert_eq!(result.version, "system");
+        assert_eq!(result.binary_path, bin_dir.join("zccache.exe"));
+    }
+
+    #[test]
+    fn system_zccache_errors_when_zccache_not_on_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let dirs = vec![bin_dir];
+        let err = resolve_system_zccache_with_path_dirs(&windows_target(), &dirs)
+            .expect_err("missing zccache on PATH must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("--zccache=system"),
+            "error must reference the flag: {message}"
+        );
+        assert!(
+            message.contains("PATH"),
+            "error must reference PATH: {message}"
+        );
+    }
+
+    #[test]
+    fn system_zccache_errors_when_daemon_sibling_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        write_fake_binary(&bin_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&bin_dir, "zccache-fp.exe", b"fp-bytes");
+
+        let dirs = vec![bin_dir];
+        let err = resolve_system_zccache_with_path_dirs(&windows_target(), &dirs)
+            .expect_err("missing daemon sibling must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains("zccache-daemon.exe"),
+            "error must name the missing sibling: {message}"
+        );
+    }
+
+    #[test]
+    fn system_zccache_unix_uses_bare_binary_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bin_dir = tmp.path().join("bin");
+        write_fake_binary(&bin_dir, "zccache", b"cli-bytes");
+        write_fake_binary(&bin_dir, "zccache-daemon", b"daemon-bytes");
+        write_fake_binary(&bin_dir, "zccache-fp", b"fp-bytes");
+
+        let dirs = vec![bin_dir.clone()];
+        let result = resolve_system_zccache_with_path_dirs(&linux_target(), &dirs).unwrap();
+        assert!(result.binary_path.ends_with("zccache"));
     }
 }

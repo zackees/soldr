@@ -57,6 +57,7 @@ Current cache-control behavior:
 - caching is enabled by default for `soldr cargo ...`
 - `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
+- `soldr --zccache=system cargo ...` uses the `zccache` already on PATH instead of fetching the pinned managed release. The `zccache-daemon` and `zccache-fp` sibling binaries must live in the same directory as `zccache`. `--zccache=managed` (the default) restores the managed-fetch behavior.
 - zccache integration currently targets Rust builds through the cargo front door
 - managed zccache artifacts and daemon state live under Soldr's cache root through `ZCCACHE_CACHE_DIR`
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins

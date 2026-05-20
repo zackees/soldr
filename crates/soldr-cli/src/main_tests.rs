@@ -105,6 +105,22 @@ fn self_relocate_gate_targets_managed_cacheable_cargo_builds() {
         "cargo".into(),
         "test".into(),
     ]));
+    // --zccache <value> in either form is a value-taking flag; the
+    // self-relocate parser must not stop at the value as if it were the
+    // subcommand.
+    assert!(should_self_relocate_for_invocation(&[
+        "soldr".into(),
+        "--zccache".into(),
+        "system".into(),
+        "cargo".into(),
+        "build".into(),
+    ]));
+    assert!(should_self_relocate_for_invocation(&[
+        "soldr".into(),
+        "--zccache=system".into(),
+        "cargo".into(),
+        "build".into(),
+    ]));
     assert!(!should_self_relocate_for_invocation(&[
         "soldr".into(),
         "cargo".into(),
@@ -127,6 +143,22 @@ fn self_relocate_gate_targets_managed_cacheable_cargo_builds() {
         "cargo".into(),
         "build".into(),
     ]));
+}
+
+#[test]
+fn cli_parses_zccache_flag_values() {
+    let default = Cli::try_parse_from(["soldr", "cargo", "build"]).unwrap();
+    assert_eq!(default.zccache, ZccacheSourceArg::Managed);
+
+    let system = Cli::try_parse_from(["soldr", "--zccache=system", "cargo", "build"]).unwrap();
+    assert_eq!(system.zccache, ZccacheSourceArg::System);
+
+    let managed =
+        Cli::try_parse_from(["soldr", "--zccache", "managed", "cargo", "build"]).unwrap();
+    assert_eq!(managed.zccache, ZccacheSourceArg::Managed);
+
+    let invalid = Cli::try_parse_from(["soldr", "--zccache=bogus", "cargo", "build"]);
+    assert!(invalid.is_err(), "unknown zccache source must fail clap");
 }
 
 #[test]

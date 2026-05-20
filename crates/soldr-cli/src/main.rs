@@ -98,8 +98,24 @@ struct Cli {
     /// Disable soldr's compilation cache for this invocation
     #[arg(long)]
     no_cache: bool,
+    /// Pick the zccache binary backing the compilation cache.
+    ///
+    /// `managed` (default) fetches the pinned zccache release into
+    /// `~/.soldr/`. `system` uses the `zccache` already on PATH
+    /// (must have `zccache-daemon` and `zccache-fp` as siblings).
+    #[arg(long, value_enum, default_value_t = ZccacheSourceArg::Managed, value_name = "SOURCE")]
+    zccache: ZccacheSourceArg,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum ZccacheSourceArg {
+    /// Use the soldr-managed zccache release (default).
+    #[default]
+    Managed,
+    /// Use the `zccache` binary already installed on PATH.
+    System,
 }
 
 #[derive(Subcommand)]
@@ -482,10 +498,14 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
 
 async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     let cache_enabled = !cli.no_cache;
+    let zccache_source = cli.zccache;
 
     match cli.command {
         Commands::Cargo { args } => {
-            std::process::exit(cargo_front_door::run_cargo_front_door(&args, cache_enabled).await?);
+            std::process::exit(
+                cargo_front_door::run_cargo_front_door(&args, cache_enabled, zccache_source)
+                    .await?,
+            );
         }
         Commands::Rustc { args } => {
             std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);
@@ -686,6 +706,12 @@ fn should_self_relocate_for_invocation(raw_args: &[String]) -> bool {
             "--no-cache" => {
                 cache_enabled = false;
                 idx += 1;
+            }
+            "--zccache" => {
+                // Value lives in the next token; skip both so the
+                // subcommand check below lands on `cargo` instead of
+                // the value.
+                idx += 2;
             }
             "--" => return false,
             arg if arg.starts_with('-') => idx += 1,
