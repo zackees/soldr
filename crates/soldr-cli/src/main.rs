@@ -465,6 +465,27 @@ enum CacheSubcommand {
         /// before returning a non-zero status.
         #[arg(long, value_name = "SECONDS", default_value_t = 30)]
         shutdown_timeout_seconds: u64,
+        /// Skip the post-signal poll that confirms the daemon process
+        /// has actually exited. By default `shutdown` blocks until
+        /// `zccache status` reports the daemon is gone (or the
+        /// `--shutdown-timeout-seconds` deadline elapses); pass
+        /// `--no-wait` only when you genuinely do not care
+        /// (interactive shells). See soldr#383.
+        #[arg(long)]
+        no_wait: bool,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Synchronously serialize the in-memory depgraph (and any other
+    /// in-memory zccache state) to disk without stopping the daemon.
+    ///
+    /// Returns 0 only after the bytes are durable (zccache fsync'd the
+    /// snapshot). Pair with `cache shutdown` in CI post steps to
+    /// guarantee the tar snapshot captures the freshest depgraph even
+    /// when the daemon is later killed by an external signal. See
+    /// soldr#383.
+    Flush {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
@@ -661,15 +682,20 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 archive_logs,
                 no_depgraph_save,
                 shutdown_timeout_seconds,
+                no_wait,
                 json: shutdown_json,
             }) => {
                 cache::run_cache_shutdown_command(
                     archive_logs,
                     no_depgraph_save,
                     shutdown_timeout_seconds,
+                    !no_wait,
                     shutdown_json || json,
                 )
                 .await?;
+            }
+            Some(CacheSubcommand::Flush { json: flush_json }) => {
+                cache::run_cache_flush_command(flush_json || json).await?;
             }
             Some(CacheSubcommand::PruneTarget {
                 path,

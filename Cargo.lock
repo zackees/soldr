@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.7.26"
+version = "0.7.27"
 dependencies = [
  "blake3",
  "filetime",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.7.26"
+version = "0.7.27"
 dependencies = [
  "blake3",
  "clap",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.7.26"
+version = "0.7.27"
 dependencies = [
  "serde",
  "tempfile",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.7.26"
+version = "0.7.27"
 dependencies = [
  "flate2",
  "hex",

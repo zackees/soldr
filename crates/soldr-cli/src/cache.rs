@@ -675,9 +675,33 @@ struct CacheShutdownOutput {
     /// Whether a graceful `zccache stop` ran. False when the daemon was
     /// already stopped or no zccache binary has ever been fetched.
     daemon_stopped: bool,
+    /// Whether the daemon process was observed to have actually exited
+    /// after `zccache stop` (per soldr#383, `zccache stop` returns
+    /// before the daemon process has exited, so soldr polls
+    /// `zccache status` until the daemon stops responding).
+    /// `false` when the daemon was never running, when polling was
+    /// disabled with `--no-wait`, or when polling timed out.
+    daemon_exited: bool,
     /// Where session logs were archived to, if `--archive-logs` was
     /// supplied.
     archive_dir: Option<String>,
+    /// Diagnostic notes for the human-facing print path.
+    notes: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CacheFlushOutput {
+    schema_version: u32,
+    command: &'static str,
+    cache_dir: String,
+    /// True after `zccache flush` returned 0. False when zccache does
+    /// not yet support the `flush` subcommand or when the daemon was
+    /// never running.
+    flushed: bool,
+    /// Parsed contents of `zccache flush --json` stdout when zccache
+    /// emits it. `null` when zccache only prints a text summary or
+    /// when flush was not run.
+    stats: Option<serde_json::Value>,
     /// Diagnostic notes for the human-facing print path.
     notes: Vec<String>,
 }
@@ -904,6 +928,7 @@ pub(crate) async fn run_cache_shutdown_command(
     archive_logs: Option<std::path::PathBuf>,
     no_depgraph_save: bool,
     shutdown_timeout_seconds: u64,
+    wait: bool,
     json: bool,
 ) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
@@ -917,6 +942,7 @@ pub(crate) async fn run_cache_shutdown_command(
         cache_dir: zccache_dir.display().to_string(),
         session_id: None,
         daemon_stopped: false,
+        daemon_exited: false,
         archive_dir: None,
         notes: Vec::new(),
     };
@@ -1016,13 +1042,52 @@ pub(crate) async fn run_cache_shutdown_command(
         notes.push("managed zccache binary not yet fetched; nothing to stop".into());
     }
 
-    // shutdown_timeout_seconds is reserved for future polling once
-    // `zccache stop` exposes an async surface. Today the command blocks
-    // until the daemon exits, so the timeout is informational; record
-    // it in the output for observability.
-    let _ = shutdown_timeout_seconds;
+    // Step 4 (soldr#383): block until the daemon process has actually
+    // exited. `zccache stop` returns before the OS has reaped the
+    // daemon, so without this poll the caller (setup-soldr's post step)
+    // races the daemon's still-in-flight depgraph save with its
+    // `tar | zstd` of the cache directory. The result reproduced in
+    // soldr#383's evidence: zero warm-run cache hits because the
+    // depgraph file was never durable on disk by the time the tar
+    // started.
+    //
+    // Poll `zccache status` (the same surface the user runs by hand)
+    // every 100ms until it reports the daemon is gone, or until the
+    // shutdown deadline elapses. We deliberately use the existing
+    // `daemon not running` heuristic so the polling code does not need
+    // to know zccache's IPC layout.
+    let mut polled_for_exit = false;
+    if wait && output.daemon_stopped {
+        if let Some(fetch) = fetch.as_ref() {
+            polled_for_exit = true;
+            match poll_zccache_daemon_exit(
+                &fetch.binary_path,
+                &zccache_dir,
+                std::time::Duration::from_secs(shutdown_timeout_seconds),
+            ) {
+                DaemonExitPollResult::Exited => {
+                    output.daemon_exited = true;
+                }
+                DaemonExitPollResult::TimedOut => {
+                    notes.push(format!(
+                        "daemon did not exit within {shutdown_timeout_seconds}s after `zccache stop`; depgraph state may not be durable on disk"
+                    ));
+                }
+                DaemonExitPollResult::PollFailed(err) => {
+                    notes.push(format!(
+                        "could not confirm daemon exit (polling `zccache status` failed): {err}"
+                    ));
+                }
+            }
+        }
+    }
+    if !wait {
+        notes.push("polling disabled via --no-wait; daemon exit not confirmed".into());
+    }
 
     output.notes = notes;
+
+    let timed_out = polled_for_exit && !output.daemon_exited;
 
     if json {
         let line = serde_json::to_string(&output)
@@ -1038,12 +1103,198 @@ pub(crate) async fn run_cache_shutdown_command(
         }
         println!(
             "  daemon: {}",
-            if output.daemon_stopped {
-                "stopped"
+            if output.daemon_exited {
+                "exited"
+            } else if output.daemon_stopped {
+                "signalled (exit not confirmed)"
             } else {
                 "no-op"
             }
         );
+        for note in &output.notes {
+            println!("  note: {note}");
+        }
+    }
+
+    if timed_out {
+        // soldr#383: surface a non-zero exit when the daemon outlives
+        // the polling deadline so the caller (CI) can fail loud
+        // instead of racing the depgraph flush with a `tar`. The
+        // human-readable note above already explains what happened.
+        return Err(SoldrError::Other(format!(
+            "cache shutdown: daemon process did not exit within {shutdown_timeout_seconds}s"
+        )));
+    }
+    Ok(())
+}
+
+/// Result of polling `zccache status` after a `zccache stop`. Used by
+/// `run_cache_shutdown_command` to determine whether the daemon's
+/// depgraph snapshot is durable on disk.
+enum DaemonExitPollResult {
+    /// `zccache status` reported the daemon is no longer running.
+    Exited,
+    /// Deadline elapsed before the daemon stopped responding.
+    TimedOut,
+    /// `zccache status` itself failed in an unexpected way (e.g. the
+    /// binary became unreadable). The shutdown is treated as
+    /// indeterminate.
+    PollFailed(String),
+}
+
+fn poll_zccache_daemon_exit(
+    binary: &std::path::Path,
+    zccache_dir: &std::path::Path,
+    timeout: std::time::Duration,
+) -> DaemonExitPollResult {
+    let deadline = std::time::Instant::now() + timeout;
+    let poll_interval = std::time::Duration::from_millis(100);
+    loop {
+        match run_zccache_command_raw_in_cache_dir(binary, &["status"], zccache_dir) {
+            Ok(output) => {
+                // If `zccache status` errored out with a
+                // daemon-not-running phrase, the daemon is gone and
+                // the on-disk state from `stop` is durable.
+                if !output.status.success() && zccache_daemon_already_stopped(&output) {
+                    return DaemonExitPollResult::Exited;
+                }
+                // Some zccache builds may print the daemon-stopped
+                // marker on stdout while still exiting 0 (e.g. a
+                // future "status --json" with state="stopped"). Cover
+                // that path too without committing to a JSON schema.
+                let combined = format!(
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                )
+                .to_ascii_lowercase();
+                if combined.contains("daemon not running")
+                    || combined.contains("no daemon")
+                    || combined.contains("connection refused")
+                {
+                    return DaemonExitPollResult::Exited;
+                }
+            }
+            Err(err) => {
+                // Spawning zccache itself failed — surface the cause,
+                // do not retry.
+                return DaemonExitPollResult::PollFailed(err.to_string());
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return DaemonExitPollResult::TimedOut;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let zccache_dir = managed_zccache_cache_dir(&paths)?;
+    let fetch = cached_managed_zccache(&paths)?;
+
+    let mut output = CacheFlushOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "cache flush",
+        cache_dir: zccache_dir.display().to_string(),
+        flushed: false,
+        stats: None,
+        notes: Vec::new(),
+    };
+
+    if let Some(fetch) = fetch.as_ref() {
+        // soldr#383 contract: ask zccache to fsync its in-memory
+        // depgraph (and any other state) to disk and return only once
+        // the bytes are durable. Prefer the JSON form so we can
+        // re-emit the upstream stats verbatim; fall back to plain
+        // `zccache flush` when the build does not yet support
+        // `--json`.
+        let result = run_zccache_command_raw_in_cache_dir(
+            &fetch.binary_path,
+            &["flush", "--json"],
+            &zccache_dir,
+        )?;
+        if result.status.success() {
+            output.flushed = true;
+            let stdout = String::from_utf8_lossy(&result.stdout);
+            let trimmed = stdout.trim();
+            if !trimmed.is_empty() {
+                output.stats = serde_json::from_str(trimmed).ok();
+                if output.stats.is_none() {
+                    output.notes.push(format!(
+                        "zccache flush --json stdout was not valid JSON: {}",
+                        zccache_output_snippet(trimmed.as_bytes())
+                            .unwrap_or_else(|| "<empty>".into())
+                    ));
+                }
+            }
+        } else if zccache_flag_unsupported(&result, "--json") {
+            // zccache does not yet implement `flush --json`. Retry the
+            // bare form so we still get a durable on-disk snapshot.
+            let retry =
+                run_zccache_command_raw_in_cache_dir(&fetch.binary_path, &["flush"], &zccache_dir)?;
+            if retry.status.success() {
+                output.flushed = true;
+                output.notes.push(format!(
+                    "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
+                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                ));
+            } else if zccache_subcommand_unsupported(&retry, "flush") {
+                output.notes.push(format!(
+                    "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
+                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                ));
+            } else if zccache_daemon_already_stopped(&retry) {
+                output.notes.push(
+                    "daemon was not running; nothing to flush (state on disk is already durable)"
+                        .into(),
+                );
+            } else {
+                return Err(SoldrError::Other(format!(
+                    "zccache flush failed: {}",
+                    command_stderr(&retry)
+                )));
+            }
+        } else if zccache_subcommand_unsupported(&result, "flush") {
+            output.notes.push(format!(
+                "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
+                soldr_fetch::MANAGED_ZCCACHE_VERSION
+            ));
+        } else if zccache_daemon_already_stopped(&result) {
+            output.notes.push(
+                "daemon was not running; nothing to flush (state on disk is already durable)"
+                    .into(),
+            );
+        } else {
+            return Err(SoldrError::Other(format!(
+                "zccache flush --json failed: {}",
+                command_stderr(&result)
+            )));
+        }
+    } else {
+        output
+            .notes
+            .push("managed zccache binary not yet fetched; nothing to flush".into());
+    }
+
+    if json {
+        let line = serde_json::to_string(&output)
+            .map_err(|e| SoldrError::Other(format!("failed to serialize cache flush: {e}")))?;
+        println!("{line}");
+    } else {
+        println!("soldr cache flush");
+        println!(
+            "  status: {}",
+            if output.flushed { "flushed" } else { "no-op" }
+        );
+        if let Some(stats) = &output.stats {
+            if let Some(bytes) = stats.get("bytes_written").and_then(|v| v.as_u64()) {
+                println!("  bytes_written: {bytes}");
+            }
+            if let Some(secs) = stats.get("duration_ms").and_then(|v| v.as_u64()) {
+                println!("  duration_ms: {secs}");
+            }
+        }
         for note in &output.notes {
             println!("  note: {note}");
         }
@@ -1211,5 +1462,23 @@ mod tests {
         assert!(note.contains("rollups: zccache analyze exited with status Some(1)"));
         assert!(note.contains("stderr: expected compile journal JSONL"));
         assert!(note.contains(r#"stdout: {"status":"error","error":"bad input"}"#));
+    }
+
+    /// soldr#383: the shutdown poll uses a real zccache binary as its
+    /// daemon-alive oracle. With a missing binary path, the poll must
+    /// terminate quickly with `PollFailed`, never silently loop until
+    /// the deadline expires (which would mask the underlying error).
+    #[test]
+    fn poll_zccache_daemon_exit_surfaces_spawn_failure() {
+        use super::{poll_zccache_daemon_exit, DaemonExitPollResult};
+        use std::time::Duration;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let bogus = tmp.path().join("definitely-not-zccache");
+        let result = poll_zccache_daemon_exit(&bogus, tmp.path(), Duration::from_millis(50));
+        assert!(
+            matches!(result, DaemonExitPollResult::PollFailed(_)),
+            "expected PollFailed when zccache binary cannot be spawned"
+        );
     }
 }
