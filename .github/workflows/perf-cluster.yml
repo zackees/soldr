@@ -55,12 +55,11 @@ permissions:
   contents: read
 
 concurrency:
-  # Push-driven iteration: cancel the stale run when a new push lands
-  # so the loop doesn't pile up runners. Manual dispatches share the
-  # same group; if you want a dispatch to survive a follow-up push,
-  # dispatch against a different ref.
+  # Never cancel a perf run in flight — every measurement is a data
+  # point we want to keep, even if a follow-up push lands before this
+  # one finishes. Runs queue per-ref instead of superseding.
   group: perf-cluster-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-soldr:
