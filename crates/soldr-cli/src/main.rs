@@ -246,6 +246,48 @@ enum Commands {
     /// Defender exclusions today; future platforms TBD). Auto-skips on
     /// CI. See `docs/API.md` for the full matrix.
     Optimize(optimize::OptimizeArgs),
+    /// Start a zccache session and return its identifier.
+    ///
+    /// Idempotent: when `ZCCACHE_SESSION_ID` is already set in the
+    /// environment (and `--id` is not), emits the existing session
+    /// metadata without contacting the daemon. Otherwise boots the
+    /// daemon if necessary and runs `zccache session-start`.
+    #[command(name = "session-start")]
+    SessionStart {
+        /// Explicit session id. Without this flag soldr lets zccache
+        /// assign one.
+        #[arg(long, value_name = "UUID")]
+        id: Option<String>,
+        /// Override the session log path. Defaults to the soldr-managed
+        /// `<cache>/zccache/logs/last-session.log`.
+        #[arg(long, value_name = "PATH")]
+        log: Option<std::path::PathBuf>,
+        /// Override the per-session JSONL journal path. Defaults to the
+        /// soldr-managed `<cache>/zccache/logs/last-session.jsonl`.
+        #[arg(long, value_name = "PATH")]
+        journal: Option<std::path::PathBuf>,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// End a zccache session and emit its finalized stats.
+    ///
+    /// Idempotent: a second call against an already-finalized session
+    /// reports the prior stats (or notes that the session is gone)
+    /// without erroring.
+    #[command(name = "session-end")]
+    SessionEnd {
+        /// Session id to end. Defaults to `$ZCCACHE_SESSION_ID`.
+        #[arg(long, value_name = "UUID")]
+        id: Option<String>,
+        /// After ending the session, drop its journal/log files from
+        /// disk so the next session-start begins from a clean slate.
+        #[arg(long)]
+        clear: bool,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -386,6 +428,30 @@ enum CacheSubcommand {
     /// at session-end) and, when available, calls `zccache analyze` for
     /// per-tool/per-extension breakdown over the per-session journal.
     Report {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Gracefully end the active session and stop the zccache daemon.
+    ///
+    /// Synchronous: does not return until the daemon process has
+    /// exited, so the caller can safely snapshot the cache directory
+    /// after this completes. Triggers the depgraph flush that landed in
+    /// zccache 1.8.0.
+    Shutdown {
+        /// If set, copy the session log/journal/stats files into
+        /// `<dir>/<session-id>/` before stopping the daemon. The
+        /// directory (and any missing parents) is created on demand.
+        #[arg(long, value_name = "DIR")]
+        archive_logs: Option<std::path::PathBuf>,
+        /// Skip the depgraph flush prior to stopping the daemon
+        /// (debugging only; surface to skip the new 1.8.x persistence).
+        #[arg(long)]
+        no_depgraph_save: bool,
+        /// Maximum seconds to wait for the daemon process to exit
+        /// before returning a non-zero status.
+        #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+        shutdown_timeout_seconds: u64,
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
@@ -572,6 +638,20 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             Some(CacheSubcommand::Report { json: report_json }) => {
                 cache::run_cache_report_command(report_json || json)?;
             }
+            Some(CacheSubcommand::Shutdown {
+                archive_logs,
+                no_depgraph_save,
+                shutdown_timeout_seconds,
+                json: shutdown_json,
+            }) => {
+                cache::run_cache_shutdown_command(
+                    archive_logs,
+                    no_depgraph_save,
+                    shutdown_timeout_seconds,
+                    shutdown_json || json,
+                )
+                .await?;
+            }
             Some(CacheSubcommand::PruneTarget {
                 path,
                 dry_run,
@@ -657,6 +737,17 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 },
             };
             gc::run_gc_command(invocation)?;
+        }
+        Commands::SessionStart {
+            id,
+            log,
+            journal,
+            json,
+        } => {
+            cache::run_session_start_command(id, log, journal, json).await?;
+        }
+        Commands::SessionEnd { id, clear, json } => {
+            cache::run_session_end_command(id, clear, json)?;
         }
         Commands::External(args) => {
             if args.is_empty() {

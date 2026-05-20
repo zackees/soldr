@@ -396,7 +396,7 @@ pub(crate) fn run_zccache_command_strings_in_cache_dir(
     })
 }
 
-fn start_zccache_with_recovery(
+pub(crate) fn start_zccache_with_recovery(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<(), SoldrError> {
