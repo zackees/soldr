@@ -1,0 +1,100 @@
+name: _Build and Test
+
+# Reusable template that captures the per-platform "build the
+# workspace and run our smoke test suite" pattern. Callers in
+# ci.yml materialise one top-level job per platform so each shows
+# up as its own entry in the GitHub Actions sidebar (no matrix
+# expansion, no `(arch)` suffix hidden behind a parent name).
+#
+# The pattern is intentionally the same shape as `_bootstrap-e2e.yml`
+# (the existing reusable that handles soldr→third-party builds): one
+# template, N explicit callers.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      shared_key:
+        # Swatinem/rust-cache shared-key; usually the platform-arch
+        # pair (e.g. "windows-x86_64-msvc").
+        required: true
+        type: string
+      cache_key:
+        # Optional extra key segment so two callers on the same
+        # platform (e.g. workspace build vs. lint) don't collide
+        # inside the same shared-key bucket.
+        required: false
+        type: string
+        default: ''
+      run_fetch_test:
+        # The crates.io fetch integration test (soldr-fetch) is
+        # heavy and not platform-conditional. Disable when a caller
+        # only wants the unit-test sweep.
+        required: false
+        type: boolean
+        default: true
+      install_components:
+        # Comma-separated rustup components (e.g. "rustfmt,clippy").
+        # Empty by default; Windows callers pass the components they
+        # need on the build runner.
+        required: false
+        type: string
+        default: ''
+      verify_windows_msys_default_msvc:
+        # Windows-x64 only: regression guard from
+        # .github/scripts/windows-msys-default-msvc.sh. Other
+        # platforms have no equivalent.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: ${{ inputs.target }}
+    runs-on: ${{ inputs.runner }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RUST_BACKTRACE: "1"
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+          components: ${{ inputs.install_components }}
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: ${{ inputs.cache_key }}
+          shared-key: ${{ inputs.shared_key }}
+
+      - name: Build workspace
+        run: cargo build --workspace --locked --target ${{ inputs.target }}
+
+      - name: Run library tests
+        run: cargo test --workspace --lib --locked --target ${{ inputs.target }}
+
+      - name: Run CLI smoke tests
+        run: cargo test -p soldr-cli --tests --locked --target ${{ inputs.target }}
+
+      - name: Verify Windows defaults to MSVC under Git Bash
+        if: inputs.verify_windows_msys_default_msvc == true && runner.os == 'Windows'
+        shell: bash
+        run: bash .github/scripts/windows-msys-default-msvc.sh
+
+      - name: Run fetch integration test
+        if: inputs.run_fetch_test == true
+        run: cargo test -p soldr-fetch --test fetch_crgx --locked --target ${{ inputs.target }}
