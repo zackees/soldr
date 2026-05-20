@@ -12,6 +12,7 @@ mod optimize;
 mod optimize_detect;
 mod optimize_windows;
 mod rust_plan;
+mod save_load;
 mod self_relocate;
 mod toolchain;
 mod trampoline;
@@ -288,6 +289,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Bundle a build-cache directory plus a content-verified
+    /// snapshot of source-file mtimes into a single `.tar.zst`
+    /// archive. The output is consumed by `soldr load` to restore
+    /// both the cache and Cargo-friendly source mtimes on a fresh
+    /// checkout.
+    Save(save_load::SaveArgs),
+    /// Restore an archive produced by `soldr save`: unpack the cache
+    /// to the destination directory and replay each source-file
+    /// mtime, but only when the current file's size and BLAKE3 hash
+    /// still match the snapshot (so we cannot underbuild after a
+    /// real source change).
+    Load(save_load::LoadArgs),
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -616,6 +629,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
+        }
+        Commands::Save(args) => {
+            std::process::exit(save_load::run_save(args));
+        }
+        Commands::Load(args) => {
+            std::process::exit(save_load::run_load(args));
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;

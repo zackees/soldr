@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+// Wire format for `soldr save` / `soldr load` archives. One archive
+// captures the state of a build cache directory PLUS the mtimes of
+// the source files Cargo will fingerprint on the next build.
+//
+// Forward-compat: every new field must be optional (proto3 default
+// semantics make all scalar fields optional). Readers must accept
+// unknown fields and skip them. Bump `version` for breaking changes.
+
+package soldr.save.v1;
+
+// Top-level manifest stored at the well-known path
+// `SOLDR_MANIFEST.pb` at the root of the archive.
+message Manifest {
+  // Schema version. Currently 1. Bump only for breaking format changes.
+  uint32 version = 1;
+
+  // Wall-clock time the archive was produced (ms since UNIX epoch).
+  // Pure diagnostic; not enforced on load.
+  int64 saved_at_ms = 2;
+
+  // Absolute path of the workspace at save time. Diagnostic only;
+  // load happily targets a different absolute path.
+  string workspace = 3;
+
+  // The cache directory's basename inside the archive (always "cache"
+  // in this implementation; reserved as a field in case future
+  // versions support multi-cache archives).
+  string cache_dir_name = 4;
+
+  // Source file entries. The path is workspace-relative POSIX and
+  // sorted ascending for determinism.
+  repeated SourceFile files = 5;
+
+  // Counters for diagnostic reporting on load. Optional; readers
+  // recompute from `files.len()` if zero.
+  uint64 source_file_count = 6;
+  uint64 cache_file_count = 7;
+}
+
+message SourceFile {
+  // Workspace-relative path, forward slashes on every platform.
+  string path = 1;
+
+  // mtime in milliseconds since UNIX epoch, matching what Node's
+  // fs.Stats.mtimeMs / Rust's SystemTime exposes after rounding.
+  int64 mtime_ms = 2;
+
+  // File size in bytes. Cheap rejection signal on replay — if the
+  // size differs, skip the hash check entirely.
+  uint64 size = 3;
+
+  // BLAKE3 hash of the file content. We ship the full 32 bytes so
+  // future tooling can validate beyond the 128-bit prefix we use
+  // for the replay decision. (Hash size adds <0.5 KB per 1000 files
+  // after zstd — not worth truncating.)
+  bytes blake3 = 4;
+}
