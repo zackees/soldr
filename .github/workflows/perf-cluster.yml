@@ -41,6 +41,7 @@ on:
         default: false
   push:
     branches:
+      - main
       - 'perf/**'
       - 'evaluate/**'
     paths:
