@@ -2,15 +2,19 @@ name: Soldr Perf Cluster
 
 # Manual-only — see perf/README.md for the design and what each cell
 # is supposed to prove. Workers receive a soldr binary built once
-# (and cached!) by the master job and exercise one
-# platform × fixture × scenario combination against it, reporting
-# hit rate, daemon RSS, and on-disk footprint.
+# (and cached!) by the master job and exercise every selected
+# scenario for one (platform, fixture) cell in a single runner.
+# Grouping by (platform, fixture) instead of per-scenario amortises
+# runner startup, toolchain install, soldr download, and apt-get over
+# all selected scenarios for that fixture; each scenario still gets
+# a clean per-scenario workdir + cache root so isolation is
+# preserved.
 
 on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: Platform subset, or "all" (v2 ships linux only)
+        description: Platform subset, or "all" (currently ships linux only)
         type: string
         required: true
         default: linux
@@ -43,10 +47,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # v2 ships linux only; win / mac-arm / mac-x86 rows added in
-        # a follow-up once perf/lib/common.sh has cross-platform RSS
-        # pollers. The dispatch input still accepts those names so
-        # the surface stays stable.
+        # Currently ships linux only; win / mac-arm / mac-x86 rows
+        # drop in here once perf/lib/common.sh has cross-platform
+        # RSS pollers. The dispatch input still accepts those names
+        # so the surface stays stable.
         include:
           - platform: linux
             runs_on: ubuntu-24.04
@@ -75,8 +79,7 @@ jobs:
       # cache-miss rebuild is incremental, not from scratch. Only
       # exercised when the binary cache misses. Soldr itself is NOT
       # used here on purpose — perf must work even when soldr is
-      # broken or absent on a new platform (see commit message of
-      # the PR that introduced this).
+      # broken or absent on a new platform.
       - name: Restore cargo intermediates
         if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -102,23 +105,19 @@ jobs:
           retention-days: 7
 
   bench:
-    name: ${{ matrix.platform }} / ${{ matrix.fixture }} / ${{ matrix.scenario }}
+    name: bench (${{ matrix.platform }} / ${{ matrix.fixture }})
     needs: build-soldr
     strategy:
       fail-fast: false
       matrix:
         platform: [linux]
         fixture: [medium, sqlite-link]
-        scenario:
-          - cold-tar-untar-warm
-          - worktree-share
-          - touch-no-change
         include:
           - platform: linux
             runs_on: ubuntu-24.04
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - name: Skip when not selected
+      - name: Gate cell against dispatch inputs
         id: gate
         env:
           REQ_PLATFORMS: ${{ inputs.platforms }}
@@ -126,7 +125,6 @@ jobs:
           REQ_SCENARIOS: ${{ inputs.scenarios }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
-          M_SCENARIO:    ${{ matrix.scenario }}
         run: |
           in_subset() {
             local req="$1" val="$2"
@@ -134,13 +132,27 @@ jobs:
             [[ ",${req}," == *",${val},"* ]] && return 0
             return 1
           }
+
+          # Cell is gated on (platform, fixture) only. Scenarios that
+          # are not selected are filtered out of the per-cell loop
+          # below, so a cell with zero selected scenarios still skips
+          # the rest of the steps but does not consume bench-time.
+          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change"
+          selected_scenarios=""
+          for s in ${ALL_SCENARIOS}; do
+            if in_subset "${REQ_SCENARIOS}" "${s}"; then
+              selected_scenarios="${selected_scenarios:+${selected_scenarios} }${s}"
+            fi
+          done
+
           if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
              && in_subset "${REQ_FIXTURES}" "${M_FIXTURE}" \
-             && in_subset "${REQ_SCENARIOS}" "${M_SCENARIO}"; then
+             && [[ -n "${selected_scenarios}" ]]; then
             echo "selected=true" >> "$GITHUB_OUTPUT"
+            echo "scenarios=${selected_scenarios}" >> "$GITHUB_OUTPUT"
           else
             echo "selected=false" >> "$GITHUB_OUTPUT"
-            echo "Cell (${M_PLATFORM}, ${M_FIXTURE}, ${M_SCENARIO}) not selected by dispatch inputs; skipping." >> "$GITHUB_STEP_SUMMARY"
+            echo "Cell (${M_PLATFORM}, ${M_FIXTURE}) not selected by dispatch inputs (or zero matching scenarios); skipping." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Checkout
@@ -184,45 +196,62 @@ jobs:
           which soldr
           soldr version --json
 
-      - name: Prepare workdir
+      - name: Run selected scenarios
         if: steps.gate.outputs.selected == 'true'
-        id: prep
-        run: |
-          workdir="${RUNNER_TEMP}/perf-${{ matrix.platform }}-${{ matrix.fixture }}-${{ matrix.scenario }}"
-          mkdir -p "${workdir}"
-          bash perf/lib/extract.sh "${{ matrix.fixture }}" "${workdir}"
-          echo "workdir=${workdir}" >> "$GITHUB_OUTPUT"
-
-      - name: Run scenario
-        if: steps.gate.outputs.selected == 'true'
-        id: scenario
+        id: run
         env:
           SOLDR_DEBUG: ${{ inputs.debug == true && '1' || '' }}
+          SELECTED_SCENARIOS: ${{ steps.gate.outputs.scenarios }}
+          M_PLATFORM: ${{ matrix.platform }}
+          M_FIXTURE: ${{ matrix.fixture }}
         run: |
           set -o pipefail
-          workdir="${{ steps.prep.outputs.workdir }}"
-          fixture_dir="${workdir}/${{ matrix.fixture }}"
-          out_json="${workdir}/result.json"
 
-          # Header for the summary table; the scenario script
-          # appends a row via measure::append_summary_md.
+          out_root="${RUNNER_TEMP}/perf-${M_PLATFORM}-${M_FIXTURE}"
+          mkdir -p "${out_root}"
+          echo "out_root=${out_root}" >> "$GITHUB_OUTPUT"
+
+          # One header for the cell; each scenario appends a row via
+          # measure::append_summary_md.
           {
-            echo "## ${{ matrix.platform }} / ${{ matrix.fixture }} / ${{ matrix.scenario }}"
+            echo "## ${M_PLATFORM} / ${M_FIXTURE}"
             echo
             echo "| scenario | cold/A ms | warm/B ms | hits/misses | hit rate | peak daemon RSS |"
             echo "| --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          bash "perf/scenarios/${{ matrix.scenario }}/run.sh" "${fixture_dir}" | tee "${out_json}"
+          status=0
+          for scenario in ${SELECTED_SCENARIOS}; do
+            # Per-scenario workdir keeps cache dirs / tarball / RSS
+            # CSV isolated even though all scenarios share this runner.
+            workdir="${out_root}/${scenario}"
+            mkdir -p "${workdir}"
+            bash perf/lib/extract.sh "${M_FIXTURE}" "${workdir}"
+
+            echo "::group::scenario: ${scenario}"
+            if bash "perf/scenarios/${scenario}/run.sh" "${workdir}/${M_FIXTURE}" \
+                 | tee "${workdir}/result.json"; then
+              :
+            else
+              # Don't abort the loop on a single scenario failure —
+              # the other scenarios on this fixture are independent
+              # signals worth collecting. Final exit status reflects
+              # the worst case.
+              echo "scenario ${scenario} failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "${status}"
 
       - name: Upload raw results
         if: steps.gate.outputs.selected == 'true' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}-${{ matrix.scenario }}
+          name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}
           path: |
-            ${{ steps.prep.outputs.workdir }}/result.json
-            ${{ steps.prep.outputs.workdir }}/*-shutdown.json
-            ${{ steps.prep.outputs.workdir }}/rss-*.csv
+            ${{ steps.run.outputs.out_root }}/*/result.json
+            ${{ steps.run.outputs.out_root }}/*/*-shutdown.json
+            ${{ steps.run.outputs.out_root }}/*/rss-*.csv
           if-no-files-found: warn
           retention-days: 14
