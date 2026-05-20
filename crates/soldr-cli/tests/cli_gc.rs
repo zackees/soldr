@@ -219,6 +219,10 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
 fn gc_list_json_reports_built_project_target_dir() {
     let cache_root = unique_temp_dir("gc-list-build");
     let project_dir = unique_temp_dir("gc-list-project");
+    // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
+    // doesn't see the developer's real `~/.cargo` and inject
+    // cargo_registry_src entries into this test's assertions.
+    let sandbox_cargo_home = unique_temp_dir("gc-list-build-cargo-home");
 
     fs::write(
         project_dir.join("Cargo.toml"),
@@ -258,6 +262,7 @@ fn gc_list_json_reports_built_project_target_dir() {
     let output = Command::new(soldr_bin)
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("CARGO_HOME", &sandbox_cargo_home)
         .output()
         .expect("failed to run soldr gc list --json");
 
@@ -357,6 +362,9 @@ fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
 fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
     let cache_root = unique_temp_dir("gc-list-prune");
     let dev_root = cache_root.join("dev-root");
+    // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
+    // doesn't contribute extra entries to entry_count assertions.
+    let sandbox_cargo_home = unique_temp_dir("gc-list-prune-cargo-home");
 
     let live_workspace = dev_root.join("live-project");
     let live_target = live_workspace.join("target");
@@ -386,6 +394,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("CARGO_HOME", &sandbox_cargo_home)
         .output()
         .expect("failed to run soldr gc list --json");
     assert!(

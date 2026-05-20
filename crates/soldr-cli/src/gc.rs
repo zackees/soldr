@@ -20,7 +20,29 @@ use std::time::Duration;
 // emit entries with other kinds (registry-src, git-checkouts, in-target
 // subtrees, …) without further schema churn.
 const KIND_CARGO_TARGET: &str = "cargo_target";
+// Slice 2 of #323: `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` extracted
+// crate sources. `purge_safety: derived` — cargo regenerates from the
+// matching `.crate` tarball in `registry/cache/` on demand.
+const KIND_CARGO_REGISTRY_SRC: &str = "cargo_registry_src";
 const PURGE_SAFETY_DERIVED: &str = "derived";
+
+/// Taxonomy kinds accepted by `gc list --kind` / `gc purge --kind`
+/// (#323 slice 2). The CLI's clap `ValueEnum` converts into this so the
+/// gc module owns its own taxonomy without re-exporting clap types.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GcListKindFilter {
+    CargoTarget,
+    CargoRegistrySrc,
+}
+
+impl From<crate::GcListKind> for GcListKindFilter {
+    fn from(value: crate::GcListKind) -> Self {
+        match value {
+            crate::GcListKind::CargoTarget => GcListKindFilter::CargoTarget,
+            crate::GcListKind::CargoRegistrySrc => GcListKindFilter::CargoRegistrySrc,
+        }
+    }
+}
 
 // gc list / gc summary entries follow their own schema version,
 // independent of the global JSON_SCHEMA_VERSION used by other commands.
@@ -197,11 +219,16 @@ struct GcListEntryOutput {
     size_bytes: u64,
     size_human: String,
     file_count: u64,
-    /// Taxonomy discriminator (#323 slice 1). Always `cargo_target` for
-    /// now — later slices emit other kinds from new walkers.
+    /// Taxonomy discriminator (#323 slice 1). `cargo_target` is the
+    /// only kind today; slice 2 also emits `cargo_registry_src`.
     kind: &'static str,
     /// Safety class for purge (#323 slice 1). Always `derived` for now.
     purge_safety: &'static str,
+    /// `<name>@<version>` parsed from the directory name. Present on
+    /// `cargo_registry_src` entries and omitted (via `skip_serializing_if`)
+    /// on `cargo_target` entries that lack the concept (#323 slice 2).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_crate: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -269,7 +296,10 @@ fn fast_directory_size_and_files(path: &std::path::Path) -> (u64, u64) {
         )
 }
 
-pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
+pub(crate) fn run_gc_list_command(
+    json: bool,
+    kind_filter: Option<GcListKindFilter>,
+) -> Result<(), SoldrError> {
     use rayon::prelude::*;
 
     let paths = SoldrPaths::new()?;
@@ -294,24 +324,40 @@ pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
         }
     });
 
-    let entries: Vec<GcListEntryOutput> = live_rows
-        .into_par_iter()
-        .map(|row| {
-            let (size_bytes, file_count) = fast_directory_size_and_files(&row.path);
-            let age_seconds = now.saturating_sub(row.last_used);
-            GcListEntryOutput {
-                path: absolute_path_string(&row.path),
-                last_used_unix: row.last_used,
-                age_seconds,
-                age_human: soldr_cache::target_registry::human_age(age_seconds),
-                size_bytes,
-                size_human: soldr_cache::target_registry::human_size(size_bytes),
-                file_count,
-                kind: KIND_CARGO_TARGET,
-                purge_safety: PURGE_SAFETY_DERIVED,
-            }
-        })
-        .collect();
+    let include_targets =
+        kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoTarget));
+    let include_registry_src =
+        kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoRegistrySrc));
+
+    let mut entries: Vec<GcListEntryOutput> = if include_targets {
+        live_rows
+            .into_par_iter()
+            .map(|row| {
+                let (size_bytes, file_count) = fast_directory_size_and_files(&row.path);
+                let age_seconds = now.saturating_sub(row.last_used);
+                GcListEntryOutput {
+                    path: absolute_path_string(&row.path),
+                    last_used_unix: row.last_used,
+                    age_seconds,
+                    age_human: soldr_cache::target_registry::human_age(age_seconds),
+                    size_bytes,
+                    size_human: soldr_cache::target_registry::human_size(size_bytes),
+                    file_count,
+                    kind: KIND_CARGO_TARGET,
+                    purge_safety: PURGE_SAFETY_DERIVED,
+                    owner_crate: None,
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if include_registry_src {
+        if let Some(cargo_home) = soldr_core::resolve_cargo_home() {
+            entries.extend(walk_cargo_registry_src(&cargo_home, now));
+        }
+    }
 
     let pruned_missing = registry
         .remove_many(&missing_paths)
@@ -347,6 +393,211 @@ pub(crate) fn run_gc_list_command(json: bool) -> Result<(), SoldrError> {
                 if pruned_missing == 1 { "" } else { "s" }
             );
         }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// cargo_registry_src walker (#323 slice 2).
+// ---------------------------------------------------------------------------
+
+/// Walk `$CARGO_HOME/registry/src/<registry-hash-dir>/<crate>-<vers>/`
+/// and produce a `GcListEntryOutput` per crate directory.
+///
+/// `last_used` is derived from the directory's own filesystem mtime.
+/// Cargo's `~/.cargo/.global-cache` SQLite database has more accurate
+/// last-access data; reading it is tracked as a follow-up (see issue
+/// linked in the slice 2 PR body).
+fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcListEntryOutput> {
+    let registry_src = cargo_home.join("registry").join("src");
+    let registry_dirs = match std::fs::read_dir(&registry_src) {
+        Ok(iter) => iter,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out: Vec<GcListEntryOutput> = Vec::new();
+    for reg_entry in registry_dirs.flatten() {
+        let reg_path = reg_entry.path();
+        let Ok(reg_meta) = reg_entry.metadata() else {
+            continue;
+        };
+        if !reg_meta.is_dir() {
+            continue;
+        }
+        let crate_dirs = match std::fs::read_dir(&reg_path) {
+            Ok(iter) => iter,
+            Err(_) => continue,
+        };
+        for crate_entry in crate_dirs.flatten() {
+            let crate_path = crate_entry.path();
+            let Ok(meta) = crate_entry.metadata() else {
+                continue;
+            };
+            if !meta.is_dir() {
+                continue;
+            }
+            let dir_name = match crate_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let owner_crate = parse_crate_owner(&dir_name);
+            let (size_bytes, file_count) = fast_directory_size_and_files(&crate_path);
+            let last_used_unix = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let age_seconds = now.saturating_sub(last_used_unix);
+            out.push(GcListEntryOutput {
+                path: absolute_path_string(&crate_path),
+                last_used_unix,
+                age_seconds,
+                age_human: soldr_cache::target_registry::human_age(age_seconds),
+                size_bytes,
+                size_human: soldr_cache::target_registry::human_size(size_bytes),
+                file_count,
+                kind: KIND_CARGO_REGISTRY_SRC,
+                purge_safety: PURGE_SAFETY_DERIVED,
+                owner_crate,
+            });
+        }
+    }
+    out
+}
+
+/// Parse `<crate>-<vers>` directory names into `Some("<crate>@<vers>")`.
+///
+/// Algorithm: find the **last** `'-'` whose suffix starts with an ASCII
+/// digit. That suffix is the semver; everything before is the crate
+/// name. Returns `None` if the input has no such hyphen (e.g. a bare
+/// `serde/` dir from an aberrant layout).
+fn parse_crate_owner(dir_name: &str) -> Option<String> {
+    let bytes = dir_name.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate().rev() {
+        if b == b'-' && idx + 1 < bytes.len() && bytes[idx + 1].is_ascii_digit() {
+            let (name, rest) = dir_name.split_at(idx);
+            // rest includes the leading '-'; strip it.
+            let version = &rest[1..];
+            if name.is_empty() {
+                return None;
+            }
+            return Some(format!("{name}@{version}"));
+        }
+    }
+    None
+}
+
+#[derive(Serialize)]
+struct GcPurgeRegistrySrcOutput {
+    schema_version: u32,
+    command: &'static str,
+    mode: &'static str,
+    kind: &'static str,
+    selected_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
+    reclaimed_bytes: u64,
+    reclaimed_human: String,
+    deleted_paths: Vec<String>,
+    failures: Vec<GcPurgeRegistrySrcFailure>,
+}
+
+#[derive(Serialize)]
+struct GcPurgeRegistrySrcFailure {
+    path: String,
+    error: String,
+}
+
+/// `soldr gc purge --registry-src --all` — walk
+/// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` and `remove_dir_all`
+/// each entry. Failures are reported in the JSON summary; the command
+/// exits with success even on per-dir failure so callers can scrape
+/// the summary (matches the existing `gc purge` workspace-target
+/// behavior, which writes failures to a log file).
+pub(crate) fn run_gc_purge_registry_src_command(
+    purge_all: bool,
+    json: bool,
+) -> Result<(), SoldrError> {
+    let cargo_home = soldr_core::resolve_cargo_home().ok_or_else(|| {
+        SoldrError::Other(
+            "could not resolve $CARGO_HOME (no env var, no home directory)".to_string(),
+        )
+    })?;
+    let now = soldr_cache::target_registry::current_unix_seconds()
+        .map_err(|e| SoldrError::Other(format!("gc purge --registry-src clock error: {e}")))?;
+    let entries = walk_cargo_registry_src(&cargo_home, now);
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --registry-src: cargo_home={}",
+            cargo_home.display()
+        );
+        eprintln!(
+            "soldr gc purge --registry-src: {} crate source directory{} on disk",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        );
+    }
+
+    let mut selected: Vec<&GcListEntryOutput> = Vec::new();
+    for entry in &entries {
+        let should_delete = purge_all
+            || prompt_yes_no_default_yes(&format!(
+                "soldr gc: delete {} ({}, age {}) ? [Y/n] ",
+                entry.path, entry.size_human, entry.age_human,
+            ));
+        if should_delete {
+            selected.push(entry);
+        }
+    }
+
+    let mut deleted_paths: Vec<String> = Vec::new();
+    let mut failures: Vec<GcPurgeRegistrySrcFailure> = Vec::new();
+    let mut reclaimed_bytes: u64 = 0;
+    for entry in &selected {
+        let path = std::path::PathBuf::from(&entry.path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                reclaimed_bytes = reclaimed_bytes.saturating_add(entry.size_bytes);
+                deleted_paths.push(entry.path.clone());
+            }
+            Err(e) => failures.push(GcPurgeRegistrySrcFailure {
+                path: entry.path.clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --registry-src: selected {}; succeeded {}; failed {}; reclaimed {}",
+            selected.len(),
+            deleted_paths.len(),
+            failures.len(),
+            soldr_cache::target_registry::human_size(reclaimed_bytes),
+        );
+        for failure in &failures {
+            eprintln!(
+                "soldr gc purge --registry-src: failed to delete {}: {}",
+                failure.path, failure.error
+            );
+        }
+    } else {
+        let output = GcPurgeRegistrySrcOutput {
+            schema_version: GC_JSON_SCHEMA_VERSION,
+            command: "gc",
+            mode: "purge",
+            kind: KIND_CARGO_REGISTRY_SRC,
+            selected_count: selected.len(),
+            succeeded_count: deleted_paths.len(),
+            failed_count: failures.len(),
+            reclaimed_bytes,
+            reclaimed_human: soldr_cache::target_registry::human_size(reclaimed_bytes),
+            deleted_paths,
+            failures,
+        };
+        print_json(&output)?;
     }
     Ok(())
 }
