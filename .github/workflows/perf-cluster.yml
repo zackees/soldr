@@ -25,6 +25,12 @@ on:
   workflow_dispatch:
     inputs:
       platforms:
+        # mac-x86 is intentionally not listed (Intel macs are EOL on
+        # GHA's roadmap). Until a matrix row exists for a given
+        # platform its cells gate themselves out via the
+        # bench/build-soldr gate steps, so the dispatch UI stays
+        # stable as cross-platform RSS pollers land in
+        # perf/lib/common.sh.
         description: Platform subset
         type: choice
         required: true
@@ -32,6 +38,8 @@ on:
         options:
           - all
           - linux
+          - mac-arm
+          - win
       fixtures:
         description: Fixture subset
         type: choice
