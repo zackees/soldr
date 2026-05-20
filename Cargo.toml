@@ -38,6 +38,11 @@ tar = "0.4"
 toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
+prost = "0.13"
+walkdir = "2"
+jwalk = "0.8"
+zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
+filetime = "0.2"
 
 [workspace.lints.rust]
 unused_mut = "deny"

@@ -5,18 +5,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Compilation caching for soldr (the zccache half)"
+description = "Compilation caching for soldr (the zccache half) — plus `save`/`load` archive transport"
 
 [dependencies]
 soldr-core = { workspace = true }
 blake3 = { workspace = true }
+filetime = { workspace = true }
+jwalk = { workspace = true }
+prost = { workspace = true }
+rayon = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tar = { workspace = true }
 thiserror = { workspace = true }
 tempfile = { workspace = true }
+tracing = { workspace = true }
+walkdir = { workspace = true }
+zstd = { workspace = true }
 redb = { workspace = true }
 
 [dev-dependencies]
+filetime = { workspace = true }
 tempfile = { workspace = true }
 
 [lints]
