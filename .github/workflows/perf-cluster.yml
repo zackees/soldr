@@ -1,0 +1,166 @@
+name: Soldr Perf Cluster
+
+# Manual-only — see perf/README.md for the design and what each cell
+# is supposed to prove. Workers receive a soldr binary built once by
+# the master job and exercise one scenario × fixture combination
+# against it, reporting hit rate, daemon RSS, and on-disk footprint.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: Comma-separated subset to run, or "all"
+        type: string
+        required: true
+        default: all
+      debug:
+        description: Verbose tracing + retain raw RSS CSVs
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf-cluster-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-soldr:
+    name: Build soldr (master)
+    runs-on: ubuntu-24.04
+    outputs:
+      soldr_version: ${{ steps.version.outputs.soldr_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: |
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Build soldr (release)
+        # Bootstrapping build: we cannot use `soldr cargo` because we
+        # are *producing* the soldr binary. Bare cargo is correct here.
+        run: cargo build --release -p soldr-cli
+
+      - name: Stage binary
+        run: |
+          mkdir -p soldr-artifact
+          cp target/release/soldr soldr-artifact/soldr
+          chmod +x soldr-artifact/soldr
+          soldr-artifact/soldr version --json | tee soldr-artifact/version.json
+
+      - id: version
+        name: Capture version for matrix annotation
+        run: |
+          v="$(jq -r .soldr_version soldr-artifact/version.json)"
+          echo "soldr_version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload soldr binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: soldr-bin-linux
+          path: soldr-artifact/
+          retention-days: 7
+
+  bench:
+    name: ${{ matrix.scenario }}
+    needs: build-soldr
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - cold-tar-untar-warm
+          - worktree-share
+          - touch-no-change
+    steps:
+      - name: Skip when not selected
+        id: gate
+        env:
+          REQUESTED: ${{ inputs.scenarios }}
+          THIS: ${{ matrix.scenario }}
+        run: |
+          if [[ "${REQUESTED}" == "all" ]] || [[ ",${REQUESTED}," == *",${THIS},"* ]]; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Scenario '${THIS}' not in requested subset '${REQUESTED}', skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Checkout
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          # Workers need cargo on PATH so soldr cargo can dispatch to
+          # it. Soldr fetches/manages zccache itself on first use.
+          rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
+
+      - name: Download soldr binary
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: soldr-bin-linux
+          path: soldr-bin
+
+      - name: Stage soldr on PATH
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          chmod +x soldr-bin/soldr
+          mkdir -p "$HOME/.local/bin"
+          cp soldr-bin/soldr "$HOME/.local/bin/soldr"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify soldr is the artifact build
+        if: steps.gate.outputs.selected == 'true'
+        run: |
+          which soldr
+          soldr version --json
+
+      - name: Prepare workdir
+        if: steps.gate.outputs.selected == 'true'
+        id: prep
+        run: |
+          workdir="${RUNNER_TEMP}/perf-${{ matrix.scenario }}"
+          mkdir -p "${workdir}"
+          bash perf/lib/extract.sh medium "${workdir}"
+          echo "workdir=${workdir}" >> "$GITHUB_OUTPUT"
+
+      - name: Run scenario
+        if: steps.gate.outputs.selected == 'true'
+        id: scenario
+        env:
+          SOLDR_DEBUG: ${{ inputs.debug == true && '1' || '' }}
+        run: |
+          set -o pipefail
+          workdir="${{ steps.prep.outputs.workdir }}"
+          fixture_dir="${workdir}/medium"
+          out_json="${workdir}/result.json"
+
+          # Header for the summary table; subsequent rows are appended
+          # by the scenario script via measure::append_summary_md.
+          {
+            echo "## ${{ matrix.scenario }}"
+            echo
+            echo "| scenario | cold/A ms | warm/B ms | hits/misses | hit rate | peak daemon RSS |"
+            echo "| --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          bash "perf/scenarios/${{ matrix.scenario }}/run.sh" "${fixture_dir}" | tee "${out_json}"
+
+      - name: Upload raw results
+        if: steps.gate.outputs.selected == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-results-${{ matrix.scenario }}-linux
+          path: |
+            ${{ steps.prep.outputs.workdir }}/result.json
+            ${{ steps.prep.outputs.workdir }}/*-shutdown.json
+            ${{ steps.prep.outputs.workdir }}/rss-*.csv
+          if-no-files-found: warn
+          retention-days: 14
