@@ -49,21 +49,21 @@ on:
           - all
           - medium
           - sqlite-link
-      scenario_cold:
-        description: Run scenario "cold-tar-untar-warm"
-        type: boolean
+      scenarios:
+        # Single-select dropdown to match the platforms / fixtures
+        # shape. Arbitrary subsets (e.g. "cold + worktree but not
+        # touch") aren't expressible here today — pick `all` or one
+        # specific scenario. If subsets become a regular need, swap
+        # back to per-scenario booleans.
+        description: Scenario subset
+        type: choice
         required: true
-        default: true
-      scenario_worktree:
-        description: Run scenario "worktree-share"
-        type: boolean
-        required: true
-        default: true
-      scenario_touch:
-        description: Run scenario "touch-no-change"
-        type: boolean
-        required: true
-        default: true
+        default: all
+        options:
+          - all
+          - cold-tar-untar-warm
+          - worktree-share
+          - touch-no-change
       debug:
         description: Verbose tracing + retain raw RSS CSVs
         type: boolean
@@ -195,15 +195,11 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS:     ${{ inputs.platforms || 'linux' }}
-          REQ_FIXTURES:      ${{ inputs.fixtures  || 'all' }}
-          # Per-scenario booleans. Empty (push event) => enabled,
-          # 'true' => enabled, 'false' => disabled.
-          SCENARIO_COLD:     ${{ inputs.scenario_cold }}
-          SCENARIO_WORKTREE: ${{ inputs.scenario_worktree }}
-          SCENARIO_TOUCH:    ${{ inputs.scenario_touch }}
-          M_PLATFORM:        ${{ matrix.platform }}
-          M_FIXTURE:         ${{ matrix.fixture }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
+          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
         run: |
           in_subset() {
             local req="$1" val="$2"
@@ -216,11 +212,13 @@ jobs:
           # are not selected are filtered out of the per-cell loop
           # below, so a cell with zero selected scenarios still skips
           # the rest of the steps but does not consume bench-time.
+          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change"
           selected_scenarios=""
-          [[ "${SCENARIO_COLD:-true}"     != "false" ]] && selected_scenarios+=" cold-tar-untar-warm"
-          [[ "${SCENARIO_WORKTREE:-true}" != "false" ]] && selected_scenarios+=" worktree-share"
-          [[ "${SCENARIO_TOUCH:-true}"    != "false" ]] && selected_scenarios+=" touch-no-change"
-          selected_scenarios="${selected_scenarios# }"
+          for s in ${ALL_SCENARIOS}; do
+            if in_subset "${REQ_SCENARIOS}" "${s}"; then
+              selected_scenarios="${selected_scenarios:+${selected_scenarios} }${s}"
+            fi
+          done
 
           if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
              && in_subset "${REQ_FIXTURES}" "${M_FIXTURE}" \
@@ -393,23 +391,18 @@ jobs:
       - name: Evaluate scenarios for ${{ matrix.fixture }}
         if: steps.gate.outputs.selected == 'true'
         env:
-          MIN_SPEEDUP:       ${{ matrix.min_speedup }}
-          # Mirror bench's per-scenario booleans; empty = enabled.
-          SCENARIO_COLD:     ${{ inputs.scenario_cold }}
-          SCENARIO_WORKTREE: ${{ inputs.scenario_worktree }}
-          SCENARIO_TOUCH:    ${{ inputs.scenario_touch }}
-          M_PLATFORM:        ${{ matrix.platform }}
-          M_FIXTURE:         ${{ matrix.fixture }}
+          MIN_SPEEDUP:   ${{ matrix.min_speedup }}
+          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
         run: |
           set -uo pipefail
 
-          enabled_for() {
-            case "$1" in
-              cold-tar-untar-warm) [[ "${SCENARIO_COLD:-true}"     != "false" ]] ;;
-              worktree-share)      [[ "${SCENARIO_WORKTREE:-true}" != "false" ]] ;;
-              touch-no-change)     [[ "${SCENARIO_TOUCH:-true}"    != "false" ]] ;;
-              *) return 1 ;;
-            esac
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
           }
 
           # scenario -> "fail" or "warn". cold-tar-untar-warm is the
@@ -447,7 +440,7 @@ jobs:
 
           status=0
           for scenario in cold-tar-untar-warm worktree-share touch-no-change; do
-            if ! enabled_for "${scenario}"; then
+            if ! in_subset "${REQ_SCENARIOS}" "${scenario}"; then
               echo "scenario ${scenario} not selected by dispatch input; skipping"
               continue
             fi
