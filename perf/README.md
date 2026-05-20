@@ -2,8 +2,18 @@
 
 `workflow_dispatch`-triggered GitHub Actions workflow that measures
 soldr's cache hit rate, daemon memory, and on-disk footprint across a
-matrix of *scenarios* (how the cache flows between invocations) and
-*fixtures* (what is being cached).
+three-axis matrix:
+
+- **Platform** — which OS the worker runs on. v2 ships `linux`; `win`
+  and `mac-arm` / `mac-x86` slot in as matrix-row additions once the
+  RSS sidecar in `lib/common.sh` grows cross-platform branches.
+- **Fixture** — what is being cached. `medium` (pure-Rust dep graph)
+  and `sqlite-link` (Rust + a bundled C library) today.
+- **Scenario** — how the cache flows between invocations. Three
+  scenarios today, each pinning a single failure mode.
+
+Dispatch inputs accept comma-separated subsets per axis (or `all`)
+so a one-cell debug run is a single picker tweak in the Actions UI.
 
 ## Why this exists
 
@@ -34,25 +44,44 @@ single JSON line plus a markdown row to `$GITHUB_STEP_SUMMARY`:
 4. **Wall time** is wrapped around each build step.
 
 The raw CSV and JSON payloads are uploaded as
-`perf-results-<scenario>-<os>` artifacts so you can re-analyse a run
-without re-firing the workflow.
+`perf-results-<platform>-<fixture>-<scenario>` artifacts so you can
+re-analyse a run without re-firing the workflow.
+
+## How the master build is cached
+
+The `build-soldr` job uses two layered caches keyed by platform so
+the second dispatch on the same soldr commit is essentially free:
+
+1. **`actions/cache`** keyed by
+   `soldr-bin-<platform>-<hashFiles('crates/**','Cargo.{toml,lock}')>`
+   over `target/release/soldr` — same source, same platform, no
+   compile.
+2. **`Swatinem/rust-cache@v2`** under that, exercised only on a
+   cache miss, so the rare rebuild is incremental.
+
+Soldr itself is deliberately **not** used to build soldr in this
+workflow. The perf cluster has to keep working when soldr is broken
+or absent on a new platform, so the bootstrap path stays on bare
+cargo + stock GHA caches.
 
 ## Layout
 
 ```
 perf/
 ├── fixtures/
-│   ├── medium/           # source-of-truth Rust project (Cargo.toml + src/)
-│   ├── medium.tar.gz     # byte-deterministic archive, checked in
-│   └── regen.sh          # rebuilds the tarball from the source dir
+│   ├── medium/             # pure-Rust dep graph (~200 crates)
+│   ├── medium.tar.gz
+│   ├── sqlite-link/        # Rust + bundled C (libsqlite3 via cc-rs)
+│   ├── sqlite-link.tar.gz
+│   └── regen.sh            # rebuilds <name>.tar.gz from <name>/
 ├── lib/
-│   ├── common.sh         # measure::* helpers (rss poller, du, summary)
-│   └── extract.sh        # untar a fixture into $WORKDIR
+│   ├── common.sh           # measure::* helpers (rss poller, du, summary)
+│   └── extract.sh          # untar a fixture into $WORKDIR
 ├── scenarios/
 │   ├── cold-tar-untar-warm/run.sh
 │   ├── worktree-share/run.sh
 │   └── touch-no-change/run.sh
-└── README.md             # this file
+└── README.md               # this file
 ```
 
 ## Adding a new fixture
