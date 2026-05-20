@@ -44,10 +44,35 @@ use tempfile::TempDir;
 fn ensure_fake_zccache_stub() -> PathBuf {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let output = Command::new(&cargo)
+
+    let soldr_bin = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let bin_dir = soldr_bin
+        .parent()
+        .expect("CARGO_BIN_EXE_soldr should have a parent dir");
+
+    // When the outer `cargo test` runs with `--target <triple>` (CI on
+    // Windows / macOS / Linux), `CARGO_BIN_EXE_soldr` resolves to
+    // `target/<triple>/debug/soldr[.exe]`. Without `--target` it is
+    // `target/debug/soldr[.exe]`. We need the inner `cargo build` to
+    // emit the stub into the *same* directory so the assertion below
+    // finds it — otherwise the inner build defaults to `target/debug`
+    // and the test fails with "expected stub at .../<triple>/debug/...".
+    let target_triple = bin_dir
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .filter(|name| *name != "target")
+        .map(str::to_owned);
+
+    let mut command = Command::new(&cargo);
+    command
         .args(["build", "--quiet", "--manifest-path"])
         .arg(format!("{manifest_dir}/Cargo.toml"))
-        .args(["--bin", "fake-zccache-265-stub", "--features", "test-stubs"])
+        .args(["--bin", "fake-zccache-265-stub", "--features", "test-stubs"]);
+    if let Some(triple) = target_triple.as_deref() {
+        command.args(["--target", triple]);
+    }
+    let output = command
         .output()
         .expect("failed to invoke cargo build for fake-zccache-265-stub");
     assert!(
@@ -57,10 +82,6 @@ fn ensure_fake_zccache_stub() -> PathBuf {
         String::from_utf8_lossy(&output.stderr),
     );
 
-    let soldr_bin = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
-    let bin_dir = soldr_bin
-        .parent()
-        .expect("CARGO_BIN_EXE_soldr should have a parent dir");
     let stub_name = if cfg!(windows) {
         "fake-zccache-265-stub.exe"
     } else {
