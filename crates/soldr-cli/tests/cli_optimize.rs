@@ -95,6 +95,10 @@ fn optimize_ci_auto_skip_emits_skip_message() {
     );
 }
 
+// Windows-only: on macOS/Linux `optimize` short-circuits with a no-op
+// note before resolving the project scope (see optimize.rs:336), so
+// the `no Rust project detected` error never fires off-Windows.
+#[cfg(target_os = "windows")]
 #[test]
 fn optimize_project_scope_errors_when_no_cargo_toml() {
     let workspace = unique_temp_dir("soldr-optimize-no-cargo");
