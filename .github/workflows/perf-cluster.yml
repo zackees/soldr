@@ -198,6 +198,7 @@ jobs:
           REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
           REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
           REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
+          REF_NAME:      ${{ github.ref_name }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -207,6 +208,20 @@ jobs:
             [[ ",${req}," == *",${val},"* ]] && return 0
             return 1
           }
+
+          # Branch-aware narrowing: `perf/<axis-value>/**` (or
+          # `perf/<axis-value>-**`) forces the corresponding axis to
+          # that value, overriding the dispatch input. Push events
+          # get this for free; dispatching `fixtures=all` from a
+          # perf/sqlite/foo branch still runs sqlite-link only.
+          # Extend this case for new fixtures/scenarios as needed.
+          if   [[ "${REF_NAME}" =~ ^perf/sqlite(/|-) ]]; then
+            echo "Branch ${REF_NAME} narrows fixtures -> sqlite-link"
+            REQ_FIXTURES="sqlite-link"
+          elif [[ "${REF_NAME}" =~ ^perf/medium(/|-) ]]; then
+            echo "Branch ${REF_NAME} narrows fixtures -> medium"
+            REQ_FIXTURES="medium"
+          fi
 
           # Cell is gated on (platform, fixture) only. Scenarios that
           # are not selected are filtered out of the per-cell loop
@@ -360,6 +375,7 @@ jobs:
         env:
           REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
           REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
+          REF_NAME:      ${{ github.ref_name }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -369,6 +385,13 @@ jobs:
             [[ ",${req}," == *",${val},"* ]] && return 0
             return 1
           }
+
+          # Branch-aware fixture narrowing — must match bench gate.
+          if   [[ "${REF_NAME}" =~ ^perf/sqlite(/|-) ]]; then
+            REQ_FIXTURES="sqlite-link"
+          elif [[ "${REF_NAME}" =~ ^perf/medium(/|-) ]]; then
+            REQ_FIXTURES="medium"
+          fi
 
           # Scenario subset is evaluated per-scenario inside the
           # assertion step (each scenario emits its own JSON), so the
