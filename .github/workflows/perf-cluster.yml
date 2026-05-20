@@ -1,14 +1,20 @@
 name: Soldr Perf Cluster
 
-# Manual-only — see perf/README.md for the design and what each cell
-# is supposed to prove. Workers receive a soldr binary built once
-# (and cached!) by the master job and exercise every selected
-# scenario for one (platform, fixture) cell in a single runner.
-# Grouping by (platform, fixture) instead of per-scenario amortises
-# runner startup, toolchain install, soldr download, and apt-get over
-# all selected scenarios for that fixture; each scenario still gets
-# a clean per-scenario workdir + cache root so isolation is
-# preserved.
+# See perf/README.md for the design and what each cell is supposed
+# to prove. Workers receive a soldr binary built once (and cached!)
+# by the master job and exercise every selected scenario for one
+# (platform, fixture) cell in a single runner. Grouping by
+# (platform, fixture) instead of per-scenario amortises runner
+# startup, toolchain install, soldr download, and apt-get over all
+# selected scenarios for that fixture; each scenario still gets a
+# clean per-scenario workdir + cache root so isolation is preserved.
+#
+# Triggered by `workflow_dispatch` (manual button) and by pushes to
+# `perf/**` / `evaluate/**` branches — the AI perf-iteration loop.
+# ci.yml has a matching `branches-ignore` so perf branches only run
+# this workflow. Push events don't supply workflow_dispatch inputs,
+# so each `inputs.X` consumer falls back to the dispatch default via
+# `inputs.X || '<default>'`.
 
 on:
   workflow_dispatch:
@@ -33,13 +39,28 @@ on:
         type: boolean
         required: true
         default: false
+  push:
+    branches:
+      - 'perf/**'
+      - 'evaluate/**'
+    paths:
+      - '.github/workflows/perf-cluster.yml'
+      - 'perf/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
 
 concurrency:
+  # Push-driven iteration: cancel the stale run when a new push lands
+  # so the loop doesn't pile up runners. Manual dispatches share the
+  # same group; if you want a dispatch to survive a follow-up push,
+  # dispatch against a different ref.
   group: perf-cluster-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build-soldr:
@@ -65,7 +86,7 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
           M_PLATFORM:    ${{ matrix.platform }}
         run: |
           if [[ "${REQ_PLATFORMS}" == "all" ]] \
@@ -144,9 +165,9 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
-          REQ_FIXTURES:  ${{ inputs.fixtures }}
-          REQ_SCENARIOS: ${{ inputs.scenarios }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
+          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -307,8 +328,8 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
-          REQ_FIXTURES:  ${{ inputs.fixtures }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -341,7 +362,7 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         env:
           MIN_SPEEDUP:   ${{ matrix.min_speedup }}
-          REQ_SCENARIOS: ${{ inputs.scenarios }}
+          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
