@@ -153,8 +153,7 @@ fn cli_parses_zccache_flag_values() {
     let system = Cli::try_parse_from(["soldr", "--zccache=system", "cargo", "build"]).unwrap();
     assert_eq!(system.zccache, ZccacheSourceArg::System);
 
-    let managed =
-        Cli::try_parse_from(["soldr", "--zccache", "managed", "cargo", "build"]).unwrap();
+    let managed = Cli::try_parse_from(["soldr", "--zccache", "managed", "cargo", "build"]).unwrap();
     assert_eq!(managed.zccache, ZccacheSourceArg::Managed);
 
     let invalid = Cli::try_parse_from(["soldr", "--zccache=bogus", "cargo", "build"]);
