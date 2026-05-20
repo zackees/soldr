@@ -240,8 +240,8 @@ jobs:
           {
             echo "## ${M_PLATFORM} / ${M_FIXTURE}"
             echo
-            echo "| scenario | cold/A ms | warm/B ms | hits/misses | hit rate | peak daemon RSS |"
-            echo "| --- | --- | --- | --- | --- | --- |"
+            echo "| scenario | cold/A ms | warm/B ms | speedup | hits/misses | hit rate | peak daemon RSS |"
+            echo "| --- | --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           status=0
@@ -279,3 +279,179 @@ jobs:
             ${{ steps.run.outputs.out_root }}/*/rss-*.csv
           if-no-files-found: warn
           retention-days: 14
+
+  evaluate:
+    # Per-fixture gate: pull each scenario's result.json and check the
+    # warm-vs-cold speedup against MIN_SPEEDUP. cold-tar-untar-warm is
+    # the hard gate (fails the workflow); worktree-share and
+    # touch-no-change are soft today (::warning::) — they'll be
+    # promoted to hard once their baselines are trusted. Matrix has
+    # one row per fixture so each fixture's "Evaluate" cell shows up
+    # as its own check in the GHA UI.
+    name: Evaluate ${{ matrix.fixture }}
+    needs: bench
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+            fixture: medium
+            min_speedup: "3.0"
+          - platform: linux
+            runs_on: ubuntu-24.04
+            fixture: sqlite-link
+            min_speedup: "3.0"
+    runs-on: ${{ matrix.runs_on }}
+    steps:
+      - name: Gate cell against dispatch inputs
+        id: gate
+        env:
+          REQ_PLATFORMS: ${{ inputs.platforms }}
+          REQ_FIXTURES:  ${{ inputs.fixtures }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
+        run: |
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+
+          # Scenario subset is evaluated per-scenario inside the
+          # assertion step (each scenario emits its own JSON), so the
+          # cell-level gate only checks platform + fixture.
+          if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
+             && in_subset "${REQ_FIXTURES}"  "${M_FIXTURE}"; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "selected=false" >> "$GITHUB_OUTPUT"
+            echo "Evaluate (${M_PLATFORM}, ${M_FIXTURE}) not selected by dispatch inputs; skipping." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Download perf results for ${{ matrix.fixture }}
+        if: steps.gate.outputs.selected == 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}
+          path: perf-results
+
+      - name: Evaluate scenarios for ${{ matrix.fixture }}
+        if: steps.gate.outputs.selected == 'true'
+        env:
+          MIN_SPEEDUP:   ${{ matrix.min_speedup }}
+          REQ_SCENARIOS: ${{ inputs.scenarios }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
+        run: |
+          set -uo pipefail
+
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+
+          # scenario -> "fail" or "warn". cold-tar-untar-warm is the
+          # only gate today; the others are soft until their baselines
+          # stabilize (see workflow header).
+          mode_for() {
+            case "$1" in
+              cold-tar-untar-warm) echo "fail" ;;
+              worktree-share|touch-no-change) echo "warn" ;;
+              *) echo "warn" ;;
+            esac
+          }
+
+          # Each scenario emits a different (cold_key, warm_key) pair.
+          # Centralizing here keeps the assertion loop scenario-agnostic.
+          cold_key_for() {
+            case "$1" in
+              worktree-share) echo "a_ms" ;;
+              *) echo "cold_ms" ;;
+            esac
+          }
+          warm_key_for() {
+            case "$1" in
+              worktree-share) echo "b_ms" ;;
+              *) echo "warm_ms" ;;
+            esac
+          }
+
+          {
+            echo "## Evaluate ${M_PLATFORM} / ${M_FIXTURE}"
+            echo
+            echo "| scenario | cold ms | warm ms | speedup | threshold | mode | result |"
+            echo "| --- | --- | --- | --- | --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          status=0
+          for scenario in cold-tar-untar-warm worktree-share touch-no-change; do
+            if ! in_subset "${REQ_SCENARIOS}" "${scenario}"; then
+              echo "scenario ${scenario} not selected by dispatch input; skipping"
+              continue
+            fi
+
+            mode="$(mode_for "${scenario}")"
+            cold_key="$(cold_key_for "${scenario}")"
+            warm_key="$(warm_key_for "${scenario}")"
+
+            result_json="$(find perf-results -type f -path "*/${scenario}/result.json" | head -n1)"
+            if [[ -z "${result_json}" ]]; then
+              echo "| ${scenario} | - | - | - | >= ${MIN_SPEEDUP}x | ${mode} | MISSING |" >> "$GITHUB_STEP_SUMMARY"
+              if [[ "${mode}" == "fail" ]]; then
+                echo "::error::${scenario}/result.json not found in ${M_FIXTURE} artifact"
+                status=1
+              else
+                echo "::warning::${scenario}/result.json not found in ${M_FIXTURE} artifact"
+              fi
+              continue
+            fi
+
+            cold_ms="$(jq -r --arg k "${cold_key}" '.[$k] // empty' "${result_json}")"
+            warm_ms="$(jq -r --arg k "${warm_key}" '.[$k] // empty' "${result_json}")"
+
+            if [[ -z "${cold_ms}" || -z "${warm_ms}" ]]; then
+              echo "| ${scenario} | ${cold_ms:--} | ${warm_ms:--} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-JSON |" >> "$GITHUB_STEP_SUMMARY"
+              if [[ "${mode}" == "fail" ]]; then
+                echo "::error::${scenario} result.json missing ${cold_key}/${warm_key}"
+                status=1
+              else
+                echo "::warning::${scenario} result.json missing ${cold_key}/${warm_key}"
+              fi
+              continue
+            fi
+
+            # Treat a 0ms warm build as a measurement bug, not a win.
+            if (( warm_ms <= 0 )); then
+              echo "| ${scenario} | ${cold_ms} | ${warm_ms} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-WARM |" >> "$GITHUB_STEP_SUMMARY"
+              if [[ "${mode}" == "fail" ]]; then
+                echo "::error::${scenario} ${warm_key}=${warm_ms} is non-positive"
+                status=1
+              else
+                echo "::warning::${scenario} ${warm_key}=${warm_ms} is non-positive"
+              fi
+              continue
+            fi
+
+            speedup="$(awk -v c="${cold_ms}" -v w="${warm_ms}" 'BEGIN { printf "%.2f", c / w }')"
+            pass="$(awk -v s="${speedup}" -v t="${MIN_SPEEDUP}" 'BEGIN { print (s >= t) ? "1" : "0" }')"
+
+            if [[ "${pass}" == "1" ]]; then
+              echo "| ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | ${mode} | PASS |" >> "$GITHUB_STEP_SUMMARY"
+              echo "${scenario}: ${speedup}x >= ${MIN_SPEEDUP}x — PASS"
+            else
+              if [[ "${mode}" == "fail" ]]; then
+                echo "| ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | fail | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::${scenario} (${M_FIXTURE}) only ${speedup}x faster (need >= ${MIN_SPEEDUP}x)"
+                status=1
+              else
+                echo "| ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | warn | WARN |" >> "$GITHUB_STEP_SUMMARY"
+                echo "::warning::${scenario} (${M_FIXTURE}) only ${speedup}x faster (need >= ${MIN_SPEEDUP}x); soft gate — not failing today"
+              fi
+            fi
+          done
+
+          exit "${status}"

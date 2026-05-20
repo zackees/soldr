@@ -93,9 +93,17 @@ else
     growth_ratio="0"
 fi
 
+# Speedup = a (cold) / b (warm-equivalent) (Nx). Guard against 0ms b.
+if (( b_elapsed_ms > 0 )); then
+    speedup="$(awk -v a="${a_elapsed_ms}" -v b="${b_elapsed_ms}" 'BEGIN { printf "%.2f", a / b }')"
+else
+    speedup="0.00"
+fi
+
 measure::emit_summary_json "${SCENARIO}" \
     "a_ms=${a_elapsed_ms}" \
     "b_ms=${b_elapsed_ms}" \
+    "speedup=${speedup}" \
     "b_hits=${b_hits}" \
     "b_misses=${b_misses}" \
     "b_hit_rate=${b_hit_rate}" \
@@ -105,4 +113,4 @@ measure::emit_summary_json "${SCENARIO}" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
     "peak_compile_rss_bytes=${peak_compile_rss}"
 
-measure::append_summary_md "| ${SCENARIO} | ${a_elapsed_ms} ms | ${b_elapsed_ms} ms | ${b_hits}/${b_misses} | ${b_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
+measure::append_summary_md "| ${SCENARIO} | ${a_elapsed_ms} ms | ${b_elapsed_ms} ms | ${speedup}x | ${b_hits}/${b_misses} | ${b_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
