@@ -20,6 +20,19 @@ matrix still finishes in a reasonable wall time.
 compiler instantiates each crate and dead-code elimination cannot
 prune them away.
 
+### `sqlite-link`
+
+A Rust binary that links libsqlite3 statically via rusqlite's
+`bundled` feature. The dep graph stays small (rusqlite + serde +
+anyhow, ~30 crates), but the build pipeline includes a non-trivial
+C compilation stage (cc-rs / clang) for libsqlite3 itself — exactly
+the fingerprint surface that `medium` does not exercise. If
+soldr's caching regresses on build-script outputs or native-linker
+artifacts, this row goes red before `medium` does.
+
+Requires a C compiler on the worker. CI workers `apt-get install gcc`
+on demand; local builds rely on whatever cc-rs already finds.
+
 ## Regenerating tarballs
 
 ```bash

@@ -1,15 +1,26 @@
 name: Soldr Perf Cluster
 
 # Manual-only — see perf/README.md for the design and what each cell
-# is supposed to prove. Workers receive a soldr binary built once by
-# the master job and exercise one scenario × fixture combination
-# against it, reporting hit rate, daemon RSS, and on-disk footprint.
+# is supposed to prove. Workers receive a soldr binary built once
+# (and cached!) by the master job and exercise one
+# platform × fixture × scenario combination against it, reporting
+# hit rate, daemon RSS, and on-disk footprint.
 
 on:
   workflow_dispatch:
     inputs:
+      platforms:
+        description: Platform subset, or "all" (v2 ships linux only)
+        type: string
+        required: true
+        default: linux
+      fixtures:
+        description: Fixture subset, or "all"
+        type: string
+        required: true
+        default: all
       scenarios:
-        description: Comma-separated subset to run, or "all"
+        description: Scenario subset, or "all"
         type: string
         required: true
         default: all
@@ -28,10 +39,19 @@ concurrency:
 
 jobs:
   build-soldr:
-    name: Build soldr (master)
-    runs-on: ubuntu-24.04
-    outputs:
-      soldr_version: ${{ steps.version.outputs.soldr_version }}
+    name: build-soldr (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # v2 ships linux only; win / mac-arm / mac-x86 rows added in
+        # a follow-up once perf/lib/common.sh has cross-platform RSS
+        # pollers. The dispatch input still accepts those names so
+        # the surface stays stable.
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+    runs-on: ${{ matrix.runs_on }}
+    if: ${{ inputs.platforms == 'all' || contains(format(',{0},', inputs.platforms), format(',{0},', matrix.platform)) }}
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -40,9 +60,31 @@ jobs:
         run: |
           rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
 
+      # Layer 1: actions/cache keyed by the source-of-truth files that
+      # determine the soldr binary. Same source on the same platform =
+      # zero-compile restore of the prebuilt binary. PRs that only
+      # touch perf/ reuse a cached binary indefinitely.
+      - name: Restore cached soldr binary
+        id: soldr-bin-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: target/release/soldr
+          key: soldr-bin-${{ matrix.platform }}-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock') }}
+
+      # Layer 2: cache cargo intermediates (registry, target/) so a
+      # cache-miss rebuild is incremental, not from scratch. Only
+      # exercised when the binary cache misses. Soldr itself is NOT
+      # used here on purpose — perf must work even when soldr is
+      # broken or absent on a new platform (see commit message of
+      # the PR that introduced this).
+      - name: Restore cargo intermediates
+        if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: perf-build-soldr-${{ matrix.platform }}
+
       - name: Build soldr (release)
-        # Bootstrapping build: we cannot use `soldr cargo` because we
-        # are *producing* the soldr binary. Bare cargo is correct here.
+        if: steps.soldr-bin-cache.outputs.cache-hit != 'true'
         run: cargo build --release -p soldr-cli
 
       - name: Stage binary
@@ -52,42 +94,53 @@ jobs:
           chmod +x soldr-artifact/soldr
           soldr-artifact/soldr version --json | tee soldr-artifact/version.json
 
-      - id: version
-        name: Capture version for matrix annotation
-        run: |
-          v="$(jq -r .soldr_version soldr-artifact/version.json)"
-          echo "soldr_version=${v}" >> "$GITHUB_OUTPUT"
-
       - name: Upload soldr binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: soldr-bin-linux
+          name: soldr-bin-${{ matrix.platform }}
           path: soldr-artifact/
           retention-days: 7
 
   bench:
-    name: ${{ matrix.scenario }}
+    name: ${{ matrix.platform }} / ${{ matrix.fixture }} / ${{ matrix.scenario }}
     needs: build-soldr
-    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
+        platform: [linux]
+        fixture: [medium, sqlite-link]
         scenario:
           - cold-tar-untar-warm
           - worktree-share
           - touch-no-change
+        include:
+          - platform: linux
+            runs_on: ubuntu-24.04
+    runs-on: ${{ matrix.runs_on }}
     steps:
       - name: Skip when not selected
         id: gate
         env:
-          REQUESTED: ${{ inputs.scenarios }}
-          THIS: ${{ matrix.scenario }}
+          REQ_PLATFORMS: ${{ inputs.platforms }}
+          REQ_FIXTURES:  ${{ inputs.fixtures }}
+          REQ_SCENARIOS: ${{ inputs.scenarios }}
+          M_PLATFORM:    ${{ matrix.platform }}
+          M_FIXTURE:     ${{ matrix.fixture }}
+          M_SCENARIO:    ${{ matrix.scenario }}
         run: |
-          if [[ "${REQUESTED}" == "all" ]] || [[ ",${REQUESTED}," == *",${THIS},"* ]]; then
+          in_subset() {
+            local req="$1" val="$2"
+            [[ "${req}" == "all" ]] && return 0
+            [[ ",${req}," == *",${val},"* ]] && return 0
+            return 1
+          }
+          if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
+             && in_subset "${REQ_FIXTURES}" "${M_FIXTURE}" \
+             && in_subset "${REQ_SCENARIOS}" "${M_SCENARIO}"; then
             echo "selected=true" >> "$GITHUB_OUTPUT"
           else
             echo "selected=false" >> "$GITHUB_OUTPUT"
-            echo "Scenario '${THIS}' not in requested subset '${REQUESTED}', skipping." >> "$GITHUB_STEP_SUMMARY"
+            echo "Cell (${M_PLATFORM}, ${M_FIXTURE}, ${M_SCENARIO}) not selected by dispatch inputs; skipping." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Checkout
@@ -101,11 +154,20 @@ jobs:
           # it. Soldr fetches/manages zccache itself on first use.
           rustup show active-toolchain || rustup toolchain install stable --profile minimal --no-self-update
 
+      - name: Install fixture native deps
+        if: steps.gate.outputs.selected == 'true' && matrix.fixture == 'sqlite-link'
+        run: |
+          # rusqlite's `bundled` feature compiles libsqlite3 from C
+          # via cc-rs. ubuntu-24.04 ships gcc already, but be
+          # explicit so a future image change does not silently break
+          # this row.
+          which gcc || sudo apt-get install -y gcc
+
       - name: Download soldr binary
         if: steps.gate.outputs.selected == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: soldr-bin-linux
+          name: soldr-bin-${{ matrix.platform }}
           path: soldr-bin
 
       - name: Stage soldr on PATH
@@ -126,9 +188,9 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         id: prep
         run: |
-          workdir="${RUNNER_TEMP}/perf-${{ matrix.scenario }}"
+          workdir="${RUNNER_TEMP}/perf-${{ matrix.platform }}-${{ matrix.fixture }}-${{ matrix.scenario }}"
           mkdir -p "${workdir}"
-          bash perf/lib/extract.sh medium "${workdir}"
+          bash perf/lib/extract.sh "${{ matrix.fixture }}" "${workdir}"
           echo "workdir=${workdir}" >> "$GITHUB_OUTPUT"
 
       - name: Run scenario
@@ -139,13 +201,13 @@ jobs:
         run: |
           set -o pipefail
           workdir="${{ steps.prep.outputs.workdir }}"
-          fixture_dir="${workdir}/medium"
+          fixture_dir="${workdir}/${{ matrix.fixture }}"
           out_json="${workdir}/result.json"
 
-          # Header for the summary table; subsequent rows are appended
-          # by the scenario script via measure::append_summary_md.
+          # Header for the summary table; the scenario script
+          # appends a row via measure::append_summary_md.
           {
-            echo "## ${{ matrix.scenario }}"
+            echo "## ${{ matrix.platform }} / ${{ matrix.fixture }} / ${{ matrix.scenario }}"
             echo
             echo "| scenario | cold/A ms | warm/B ms | hits/misses | hit rate | peak daemon RSS |"
             echo "| --- | --- | --- | --- | --- | --- |"
@@ -157,7 +219,7 @@ jobs:
         if: steps.gate.outputs.selected == 'true' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: perf-results-${{ matrix.scenario }}-linux
+          name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}-${{ matrix.scenario }}
           path: |
             ${{ steps.prep.outputs.workdir }}/result.json
             ${{ steps.prep.outputs.workdir }}/*-shutdown.json
