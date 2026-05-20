@@ -79,9 +79,17 @@ trap - EXIT
 peak_daemon_rss="$(measure::peak_daemon_rss_bytes "${RSS_CSV}")"
 peak_compile_rss="$(measure::peak_compile_rss_bytes "${RSS_CSV}")"
 
+# Speedup = cold / warm (Nx). Guard against 0ms warm.
+if (( warm_elapsed_ms > 0 )); then
+    speedup="$(awk -v c="${cold_elapsed_ms}" -v w="${warm_elapsed_ms}" 'BEGIN { printf "%.2f", c / w }')"
+else
+    speedup="0.00"
+fi
+
 measure::emit_summary_json "${SCENARIO}" \
     "cold_ms=${cold_elapsed_ms}" \
     "warm_ms=${warm_elapsed_ms}" \
+    "speedup=${speedup}" \
     "warm_hits=${warm_hits}" \
     "warm_misses=${warm_misses}" \
     "warm_hit_rate=${warm_hit_rate}" \
@@ -89,4 +97,4 @@ measure::emit_summary_json "${SCENARIO}" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
     "peak_compile_rss_bytes=${peak_compile_rss}"
 
-measure::append_summary_md "| ${SCENARIO} | ${cold_elapsed_ms} ms | ${warm_elapsed_ms} ms | ${warm_hits}/${warm_misses} | ${warm_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
+measure::append_summary_md "| ${SCENARIO} | ${cold_elapsed_ms} ms | ${warm_elapsed_ms} ms | ${speedup}x | ${warm_hits}/${warm_misses} | ${warm_hit_rate} | $(( peak_daemon_rss / 1024 / 1024 )) MiB |"
