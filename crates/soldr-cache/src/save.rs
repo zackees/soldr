@@ -44,8 +44,48 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 pub mod proto {
-    //! prost-generated types from `proto/manifest.proto`.
-    include!(concat!(env!("OUT_DIR"), "/soldr.save.v1.rs"));
+    //! Hand-written prost types corresponding to `proto/manifest.proto`.
+    //!
+    //! We write these by hand rather than running `prost-build` from a
+    //! build script because the codegen pulls in `protoc` (the C++
+    //! protobuf compiler) at build time, and we don't want to require
+    //! every CI runner / contributor to install it. The schema is tiny
+    //! and stable; the `.proto` file is preserved as the source of
+    //! truth for anyone reading the wire format. If you change one,
+    //! change the other — and bump `Manifest::version` if the change
+    //! is breaking.
+
+    use prost::Message;
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct Manifest {
+        #[prost(uint32, tag = "1")]
+        pub version: u32,
+        #[prost(int64, tag = "2")]
+        pub saved_at_ms: i64,
+        #[prost(string, tag = "3")]
+        pub workspace: ::prost::alloc::string::String,
+        #[prost(string, tag = "4")]
+        pub cache_dir_name: ::prost::alloc::string::String,
+        #[prost(message, repeated, tag = "5")]
+        pub files: ::prost::alloc::vec::Vec<SourceFile>,
+        #[prost(uint64, tag = "6")]
+        pub source_file_count: u64,
+        #[prost(uint64, tag = "7")]
+        pub cache_file_count: u64,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct SourceFile {
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        #[prost(int64, tag = "2")]
+        pub mtime_ms: i64,
+        #[prost(uint64, tag = "3")]
+        pub size: u64,
+        #[prost(bytes = "vec", tag = "4")]
+        pub blake3: ::prost::alloc::vec::Vec<u8>,
+    }
 }
 
 pub use proto::{Manifest, SourceFile};
