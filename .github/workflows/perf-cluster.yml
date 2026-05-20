@@ -1,43 +1,86 @@
 name: Soldr Perf Cluster
 
-# Manual-only — see perf/README.md for the design and what each cell
-# is supposed to prove. Workers receive a soldr binary built once
-# (and cached!) by the master job and exercise every selected
-# scenario for one (platform, fixture) cell in a single runner.
-# Grouping by (platform, fixture) instead of per-scenario amortises
-# runner startup, toolchain install, soldr download, and apt-get over
-# all selected scenarios for that fixture; each scenario still gets
-# a clean per-scenario workdir + cache root so isolation is
-# preserved.
+# See perf/README.md for the design and what each cell is supposed
+# to prove. Workers receive a soldr binary built once (and cached!)
+# by the master job and exercise every selected scenario for one
+# (platform, fixture) cell in a single runner. Grouping by
+# (platform, fixture) instead of per-scenario amortises runner
+# startup, toolchain install, soldr download, and apt-get over all
+# selected scenarios for that fixture; each scenario still gets a
+# clean per-scenario workdir + cache root so isolation is preserved.
+#
+# Triggered by `workflow_dispatch` (manual button) and by pushes to
+# `main` / `perf/**` / `evaluate/**`. ci.yml has a matching
+# `branches-ignore` so perf branches only run this workflow.
+#
+# Input UI: GHA does not support multi-select. Platforms and fixtures
+# are `choice` dropdowns (their enums are tiny; `all` is the only
+# multi-value case). Scenarios are three booleans so arbitrary
+# subsets like "cold-tar-untar-warm + worktree-share" are
+# expressible. Push events leave every `inputs.X` empty — gate steps
+# treat empty as the dispatch default (`linux` / `all` / scenario
+# enabled) via `inputs.X || '<default>'` and `:-true` bash fallbacks.
 
 on:
   workflow_dispatch:
     inputs:
       platforms:
-        description: Platform subset, or "all" (currently ships linux only)
-        type: string
+        description: Platform subset
+        type: choice
         required: true
         default: linux
+        options:
+          - all
+          - linux
       fixtures:
-        description: Fixture subset, or "all"
-        type: string
+        description: Fixture subset
+        type: choice
         required: true
         default: all
-      scenarios:
-        description: Scenario subset, or "all"
-        type: string
+        options:
+          - all
+          - medium
+          - sqlite-link
+      scenario_cold:
+        description: Run scenario "cold-tar-untar-warm"
+        type: boolean
         required: true
-        default: all
+        default: true
+      scenario_worktree:
+        description: Run scenario "worktree-share"
+        type: boolean
+        required: true
+        default: true
+      scenario_touch:
+        description: Run scenario "touch-no-change"
+        type: boolean
+        required: true
+        default: true
       debug:
         description: Verbose tracing + retain raw RSS CSVs
         type: boolean
         required: true
         default: false
+  push:
+    branches:
+      - main
+      - 'perf/**'
+      - 'evaluate/**'
+    paths:
+      - '.github/workflows/perf-cluster.yml'
+      - 'perf/**'
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
 
 permissions:
   contents: read
 
 concurrency:
+  # Never cancel a perf run in flight — every measurement is a data
+  # point we want to keep, even if a follow-up push lands before this
+  # one finishes. Runs queue per-ref instead of superseding.
   group: perf-cluster-${{ github.ref }}
   cancel-in-progress: false
 
@@ -65,7 +108,7 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
           M_PLATFORM:    ${{ matrix.platform }}
         run: |
           if [[ "${REQ_PLATFORMS}" == "all" ]] \
@@ -144,11 +187,15 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
-          REQ_FIXTURES:  ${{ inputs.fixtures }}
-          REQ_SCENARIOS: ${{ inputs.scenarios }}
-          M_PLATFORM:    ${{ matrix.platform }}
-          M_FIXTURE:     ${{ matrix.fixture }}
+          REQ_PLATFORMS:     ${{ inputs.platforms || 'linux' }}
+          REQ_FIXTURES:      ${{ inputs.fixtures  || 'all' }}
+          # Per-scenario booleans. Empty (push event) => enabled,
+          # 'true' => enabled, 'false' => disabled.
+          SCENARIO_COLD:     ${{ inputs.scenario_cold }}
+          SCENARIO_WORKTREE: ${{ inputs.scenario_worktree }}
+          SCENARIO_TOUCH:    ${{ inputs.scenario_touch }}
+          M_PLATFORM:        ${{ matrix.platform }}
+          M_FIXTURE:         ${{ matrix.fixture }}
         run: |
           in_subset() {
             local req="$1" val="$2"
@@ -161,13 +208,11 @@ jobs:
           # are not selected are filtered out of the per-cell loop
           # below, so a cell with zero selected scenarios still skips
           # the rest of the steps but does not consume bench-time.
-          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change"
           selected_scenarios=""
-          for s in ${ALL_SCENARIOS}; do
-            if in_subset "${REQ_SCENARIOS}" "${s}"; then
-              selected_scenarios="${selected_scenarios:+${selected_scenarios} }${s}"
-            fi
-          done
+          [[ "${SCENARIO_COLD:-true}"     != "false" ]] && selected_scenarios+=" cold-tar-untar-warm"
+          [[ "${SCENARIO_WORKTREE:-true}" != "false" ]] && selected_scenarios+=" worktree-share"
+          [[ "${SCENARIO_TOUCH:-true}"    != "false" ]] && selected_scenarios+=" touch-no-change"
+          selected_scenarios="${selected_scenarios# }"
 
           if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}" \
              && in_subset "${REQ_FIXTURES}" "${M_FIXTURE}" \
@@ -307,8 +352,8 @@ jobs:
       - name: Gate cell against dispatch inputs
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms }}
-          REQ_FIXTURES:  ${{ inputs.fixtures }}
+          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -340,18 +385,23 @@ jobs:
       - name: Evaluate scenarios for ${{ matrix.fixture }}
         if: steps.gate.outputs.selected == 'true'
         env:
-          MIN_SPEEDUP:   ${{ matrix.min_speedup }}
-          REQ_SCENARIOS: ${{ inputs.scenarios }}
-          M_PLATFORM:    ${{ matrix.platform }}
-          M_FIXTURE:     ${{ matrix.fixture }}
+          MIN_SPEEDUP:       ${{ matrix.min_speedup }}
+          # Mirror bench's per-scenario booleans; empty = enabled.
+          SCENARIO_COLD:     ${{ inputs.scenario_cold }}
+          SCENARIO_WORKTREE: ${{ inputs.scenario_worktree }}
+          SCENARIO_TOUCH:    ${{ inputs.scenario_touch }}
+          M_PLATFORM:        ${{ matrix.platform }}
+          M_FIXTURE:         ${{ matrix.fixture }}
         run: |
           set -uo pipefail
 
-          in_subset() {
-            local req="$1" val="$2"
-            [[ "${req}" == "all" ]] && return 0
-            [[ ",${req}," == *",${val},"* ]] && return 0
-            return 1
+          enabled_for() {
+            case "$1" in
+              cold-tar-untar-warm) [[ "${SCENARIO_COLD:-true}"     != "false" ]] ;;
+              worktree-share)      [[ "${SCENARIO_WORKTREE:-true}" != "false" ]] ;;
+              touch-no-change)     [[ "${SCENARIO_TOUCH:-true}"    != "false" ]] ;;
+              *) return 1 ;;
+            esac
           }
 
           # scenario -> "fail" or "warn". cold-tar-untar-warm is the
@@ -389,7 +439,7 @@ jobs:
 
           status=0
           for scenario in cold-tar-untar-warm worktree-share touch-no-change; do
-            if ! in_subset "${REQ_SCENARIOS}" "${scenario}"; then
+            if ! enabled_for "${scenario}"; then
               echo "scenario ${scenario} not selected by dispatch input; skipping"
               continue
             fi
