@@ -29,7 +29,6 @@ at `target/x86_64-unknown-linux-gnu/{debug,release}/soldr`).
 
 from __future__ import annotations
 
-import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -76,18 +75,15 @@ def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
     if not _docker_available():
         pytest.skip("docker daemon not reachable")
 
-    if platform.system().lower() == "windows":
-        pytest.skip(
-            "Windows host can build only a windows .exe; this test mounts a "
-            "linux ELF. Re-run on linux or after a `cargo build --target "
-            "x86_64-unknown-linux-gnu` cross-build."
-        )
-
     soldr_bin = _locate_linux_soldr_binary()
     if soldr_bin is None:
         pytest.skip(
-            "no linux soldr binary found; build with `cargo build -p soldr-cli` "
-            "on linux or cross-build to x86_64-unknown-linux-gnu first."
+            "no linux soldr binary found at "
+            "target/x86_64-unknown-linux-gnu/{release,debug}/soldr or "
+            "target/{release,debug}/soldr — build with `cargo build "
+            "--release --target x86_64-unknown-linux-gnu -p soldr-cli` "
+            "first (on a linux host, or via `docker run rust:1.94.1-slim` "
+            "from a Windows host with Docker Desktop)."
         )
 
     soldr_cache = tmp_path / "soldr-cache"
