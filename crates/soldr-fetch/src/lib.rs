@@ -322,18 +322,26 @@ pub(crate) fn copy_debug_info_sidecars(
     // Windows: <binary>.pdb (sibling file).
     // Linux: <binary>.dwp (sibling file).
     // macOS: <binary>.dSYM (sibling directory).
+    //
+    // Rust + MSVC emits PDBs whose stem is the crate name with hyphens
+    // replaced by underscores (e.g. `zccache-daemon.exe` ships
+    // `zccache_daemon.pdb`). Search both naming variants so we never
+    // silently miss an MSVC sidecar (issue #365).
     for sidecar_ext in ["pdb", "dwp"] {
-        if let Some(src) = adjacent_with_extension(src_binary, sidecar_ext) {
+        for src in adjacent_sidecar_candidates(src_binary, sidecar_ext) {
             if src.is_file() {
-                if let Some(dst) = adjacent_with_extension(dst_binary, sidecar_ext) {
+                // Mirror the source basename into the destination so
+                // the copied PDB lines up with the debug record cdb
+                // reads out of the binary header.
+                if let Some(dst) = sidecar_dst_matching_src(&src, dst_binary, sidecar_ext) {
                     copy_if_changed(&src, &dst)?;
                 }
             }
         }
     }
-    if let Some(src) = adjacent_with_extension(src_binary, "dSYM") {
+    for src in adjacent_sidecar_candidates(src_binary, "dSYM") {
         if src.is_dir() {
-            if let Some(dst) = adjacent_with_extension(dst_binary, "dSYM") {
+            if let Some(dst) = sidecar_dst_matching_src(&src, dst_binary, "dSYM") {
                 copy_dir_recursive(&src, &dst)?;
             }
         }
@@ -348,6 +356,44 @@ pub(crate) fn adjacent_with_extension(binary: &Path, ext: &str) -> Option<PathBu
     name.push(".");
     name.push(ext);
     Some(parent.join(name))
+}
+
+/// Sidecar lookup candidates for `binary`, trying first the literal
+/// stem and then the hyphen-to-underscore variant (Rust+MSVC PDB
+/// naming). Issue #365.
+pub(crate) fn adjacent_sidecar_candidates(binary: &Path, ext: &str) -> Vec<PathBuf> {
+    let mut out = Vec::with_capacity(2);
+    if let Some(primary) = adjacent_with_extension(binary, ext) {
+        out.push(primary);
+    }
+    if let (Some(stem), Some(parent)) =
+        (binary.file_stem().and_then(|s| s.to_str()), binary.parent())
+    {
+        if stem.contains('-') {
+            let underscored = stem.replace('-', "_");
+            out.push(parent.join(format!("{underscored}.{ext}")));
+        }
+    }
+    out
+}
+
+/// Pick the destination filename when copying a discovered sidecar
+/// next to `dst_binary`. If `src` already uses the underscored MSVC
+/// variant (e.g. `zccache_daemon.pdb`), preserve that name so the
+/// debug-info record embedded in the binary continues to match.
+fn sidecar_dst_matching_src(src: &Path, dst_binary: &Path, ext: &str) -> Option<PathBuf> {
+    let src_name = src.file_name()?;
+    let dst_parent = dst_binary.parent()?;
+    let primary = adjacent_with_extension(dst_binary, ext);
+    let primary_matches = primary
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .is_some_and(|name| name == src_name);
+    if primary_matches {
+        primary
+    } else {
+        Some(dst_parent.join(src_name))
+    }
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), SoldrError> {
@@ -542,18 +588,23 @@ fn count_debug_info_sidecars(binaries: &[&Path]) -> (usize, usize) {
             continue;
         }
         let mut sidecar_found = false;
-        for ext in ["pdb", "dwp"] {
-            if let Some(sidecar) = adjacent_with_extension(binary, ext) {
+        // Try `pdb` and `dwp` against both the literal binary stem and
+        // the hyphen-to-underscore variant — Rust+MSVC writes PDBs as
+        // `<crate_name>.pdb` even when the binary is `<crate-name>.exe`
+        // (issue #365).
+        'file_exts: for ext in ["pdb", "dwp"] {
+            for sidecar in adjacent_sidecar_candidates(binary, ext) {
                 if sidecar.is_file() {
                     sidecar_found = true;
-                    break;
+                    break 'file_exts;
                 }
             }
         }
         if !sidecar_found {
-            if let Some(sidecar) = adjacent_with_extension(binary, "dSYM") {
+            for sidecar in adjacent_sidecar_candidates(binary, "dSYM") {
                 if sidecar.is_dir() {
                     sidecar_found = true;
+                    break;
                 }
             }
         }
@@ -1819,6 +1870,96 @@ mod tests {
             !dst_dir.join("zccache-fp.pdb").exists(),
             "fp.pdb wasn't in the source, so it shouldn't appear in the destination"
         );
+    }
+
+    #[test]
+    fn local_zccache_copies_msvc_underscored_pdb_sidecars() {
+        // Rust + MSVC writes PDBs as `<crate_name>.pdb`, replacing
+        // hyphens with underscores. The hyphen-only matcher in
+        // `adjacent_with_extension` missed these so a fresh MSVC
+        // release build of zccache reported `pdbs found: 1/3`
+        // (issue #365).
+        let tmp = tempfile::tempdir().unwrap();
+        let local_dir = tmp.path().join("local-build");
+        write_fake_binary(&local_dir, "zccache.exe", b"cli-bytes");
+        write_fake_binary(&local_dir, "zccache-daemon.exe", b"daemon-bytes");
+        write_fake_binary(&local_dir, "zccache-fp.exe", b"fp-bytes");
+        // All three PDBs in MSVC naming.
+        write_fake_binary(&local_dir, "zccache.pdb", b"cli-pdb");
+        write_fake_binary(&local_dir, "zccache_daemon.pdb", b"daemon-pdb");
+        write_fake_binary(&local_dir, "zccache_fp.pdb", b"fp-pdb");
+
+        let soldr_root = tmp.path().join("soldr");
+        let paths = SoldrPaths::with_root(soldr_root);
+
+        let result =
+            resolve_local_zccache_for_target(&local_dir, &paths, &windows_target()).unwrap();
+        let dst_dir = result.binary_path.parent().unwrap();
+        // PDBs land at the destination under their MSVC names so the
+        // CodeView debug record embedded in the binary continues to
+        // match (cdb compares by GUID, but only after locating the file
+        // by basename — keep the same basename).
+        assert!(
+            dst_dir.join("zccache.pdb").exists(),
+            "cli PDB should be copied: {dst_dir:?}",
+        );
+        assert!(
+            dst_dir.join("zccache_daemon.pdb").exists(),
+            "underscored daemon PDB should be copied: {dst_dir:?}",
+        );
+        assert!(
+            dst_dir.join("zccache_fp.pdb").exists(),
+            "underscored fp PDB should be copied: {dst_dir:?}",
+        );
+
+        // Doctor's debug-info counter must agree — issue #365 acceptance
+        // criterion says a fresh MSVC build should report `3/3`.
+        let (found, expected) = count_debug_info_sidecars(&[
+            dst_dir.join("zccache.exe").as_path(),
+            dst_dir.join("zccache-daemon.exe").as_path(),
+            dst_dir.join("zccache-fp.exe").as_path(),
+        ]);
+        assert_eq!(expected, 3);
+        assert_eq!(found, 3, "all three PDBs must be discovered");
+    }
+
+    #[test]
+    fn count_debug_info_sidecars_finds_underscored_pdb_variants() {
+        // Direct unit test for the doctor counter — exercised without
+        // going through resolve_local_zccache_for_target. Plants a
+        // synthetic tree with MSVC-style underscored PDBs and confirms
+        // all three are counted.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("zccache.exe"), b"cli").unwrap();
+        std::fs::write(dir.join("zccache-daemon.exe"), b"daemon").unwrap();
+        std::fs::write(dir.join("zccache-fp.exe"), b"fp").unwrap();
+        std::fs::write(dir.join("zccache.pdb"), b"cli-pdb").unwrap();
+        std::fs::write(dir.join("zccache_daemon.pdb"), b"daemon-pdb").unwrap();
+        std::fs::write(dir.join("zccache_fp.pdb"), b"fp-pdb").unwrap();
+
+        let (found, expected) = count_debug_info_sidecars(&[
+            dir.join("zccache.exe").as_path(),
+            dir.join("zccache-daemon.exe").as_path(),
+            dir.join("zccache-fp.exe").as_path(),
+        ]);
+        assert_eq!(expected, 3);
+        assert_eq!(found, 3, "all three PDBs should be discovered");
+    }
+
+    #[test]
+    fn count_debug_info_sidecars_still_finds_hyphenated_pdbs() {
+        // Some toolchains (or hand-renamed assets) emit hyphenated
+        // PDBs. Keep them working alongside the underscored variant.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("zccache-daemon.exe"), b"daemon").unwrap();
+        std::fs::write(dir.join("zccache-daemon.pdb"), b"daemon-pdb").unwrap();
+
+        let (found, expected) =
+            count_debug_info_sidecars(&[dir.join("zccache-daemon.exe").as_path()]);
+        assert_eq!(expected, 1);
+        assert_eq!(found, 1);
     }
 
     #[test]

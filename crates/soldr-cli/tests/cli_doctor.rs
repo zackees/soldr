@@ -353,6 +353,32 @@ fn doctor_surfaces_local_zccache_override_when_env_var_set() {
             .and_then(|s| s.to_str()),
         Some("local-build")
     );
+
+    // Issue #365 — every binary soldr resolves (cli, daemon, fp) must
+    // live under the override dir. The previous coverage only asserted
+    // the runtime_dir hash; this confirms the per-binary paths the
+    // child process actually executes are all under it. This is the
+    // path soldr propagates to cargo via SOLDR_ZCCACHE_BIN and the
+    // path the zccache CLI uses for its sibling-daemon lookup.
+    let cli_path = json["managed_zccache"]["cli_path"]
+        .as_str()
+        .expect("cli_path present");
+    let daemon_path = json["managed_zccache"]["daemon_path"]
+        .as_str()
+        .expect("daemon_path present");
+    let fp_path = json["managed_zccache"]["fp_path"]
+        .as_str()
+        .expect("fp_path present");
+    for (label, value) in [("cli", cli_path), ("daemon", daemon_path), ("fp", fp_path)] {
+        assert!(
+            value.starts_with(runtime_dir),
+            "{label}_path must live under runtime_dir; runtime_dir={runtime_dir} {label}_path={value}"
+        );
+        assert!(
+            value.contains("zccache-local-"),
+            "{label}_path must resolve under the SOLDR_ZCCACHE_LOCAL_DIR-derived dir: {value}"
+        );
+    }
 }
 
 #[test]
