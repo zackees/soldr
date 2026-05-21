@@ -135,6 +135,91 @@ soldr --no-cache cargo test
 
 For cross-target builds (`soldr cargo --target ...`), the target's Rust standard library must be provisioned separately — see the [native vs cross targets](../README.md#native-vs-cross-targets) section of the README.
 
+### `soldr cook`
+
+Content-addressable dependency pre-build (issue #359). `cook` is a shim
+around [`cargo-chef`](https://github.com/LukeMathWalker/cargo-chef) — soldr
+ships no Rust reimplementation of the recipe logic; it fetches the pinned
+`cargo-chef` binary (currently v0.1.73), drives `cargo chef prepare` to
+synthesise a `recipe.json` derived only from `Cargo.toml` + `Cargo.lock`,
+then drives `cargo chef cook` to compile a stub project containing those
+deps. The output lands in `target/` with no project source code touched,
+so any subsequent `soldr cargo build` reuses the compiled deps.
+
+Both phases route through `soldr cargo` so they automatically pick up
+zccache (`RUSTC_WRAPPER`), `ZCCACHE_PATH_REMAP=auto`, the soldr linker
+selection, and the soldr-managed `CARGO_HOME` / `RUSTUP_HOME`.
+
+```bash
+soldr cook                                  # debug cook, ephemeral recipe
+soldr cook --release                        # release cook, ephemeral recipe
+soldr cook --release --target x86_64-unknown-linux-musl
+soldr cook --release --recipe-path recipe.json --prepare-only   # Docker phase 1
+soldr cook --release --recipe-path recipe.json --cook-only      # Docker phase 2
+soldr cook --release --keep-recipe          # cook + leave recipe.json behind
+soldr cook --release -- --features extra,fast --no-default-features
+```
+
+Recognised flags:
+
+- `--release` — forwarded to `cargo chef cook --release`.
+- `--target <triple>` — forwarded to `cargo chef cook --target <triple>`.
+- `--workspace` (alias `--all`) — forwarded to `cargo chef cook --workspace`.
+- `--profile <name>` — forwarded to `cargo chef cook --profile <name>`.
+- `-p` / `--package <name>` — repeatable; forwarded as `--package <name>`.
+- `--recipe-path <path>` — write/read the recipe at this absolute or
+  manifest-relative path. Without this flag the recipe lives in a temp
+  dir and is deleted on exit.
+- `--keep-recipe` — retain the recipe on disk (at `--recipe-path` if
+  supplied, else `<cwd>/recipe.json`) so you can inspect it.
+- `--prepare-only` — run `cargo chef prepare` only and exit. Used for
+  the Docker recipe-layer pattern below.
+- `--cook-only` — skip `prepare`; requires `--recipe-path`. Used for the
+  Docker cook-layer pattern below.
+- Anything after `--` is forwarded verbatim to `cargo chef cook` (e.g.
+  `--features`, `--no-default-features`, `--all-features`, `--tests`,
+  `--benches`).
+
+**Docker recipe pattern** — the canonical use case the issue highlights:
+
+```dockerfile
+FROM rust:1 AS chef
+RUN cargo install soldr
+WORKDIR /app
+
+FROM chef AS planner
+COPY . .
+RUN soldr cook --release --prepare-only --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Heavy step — cached as long as recipe.json (i.e. Cargo.lock) is stable.
+RUN soldr cook --release --cook-only --recipe-path recipe.json
+COPY . .
+RUN soldr cargo build --release --bin myapp
+```
+
+**Local-dev pattern** — first-time setup on a fresh clone:
+
+```bash
+git clone <repo> && cd <repo>
+soldr cook --release         # one-time dep prebuild; ~10 min cold, ~0s warm
+soldr cargo build --release  # builds only the project on top
+```
+
+**Cargo.lock missing.** `soldr cook` continues with a warning if
+`Cargo.lock` is absent — cargo-chef will derive the recipe from
+`Cargo.toml` alone, which weakens content-addressability. For
+deterministic builds, commit `Cargo.lock` (libraries should still ship
+`Cargo.lock` for reproducibility under `soldr cook`, even though cargo
+normally `.gitignore`s lockfiles in library crates).
+
+**Companion automation.** [`zackees/setup-soldr#110`](https://github.com/zackees/setup-soldr/issues/110)
+proposes a GitHub Action that key-tarballs the resulting `target/` by
+`Cargo.lock` hash; with `soldr cook` available as a primitive that
+action's implementation reduces to: hash `Cargo.lock` → restore tarball
+→ on miss, `soldr cook` + tar + save.
+
 ### `soldr status`
 
 Show cache and target information.
