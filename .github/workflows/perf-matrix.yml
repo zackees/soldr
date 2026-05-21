@@ -1,4 +1,4 @@
-name: Soldr Perf Cluster
+name: Perf Matrix
 
 # See PERF.md (root of repo) for the user-facing branch-naming
 # convention and the full per-branch scope table. perf/README.md
@@ -57,18 +57,16 @@ on:
           - cold-tar-untar-warm
           - worktree-share
           - touch-no-change
-      debug:
-        description: Verbose tracing + retain raw RSS CSVs
-        type: boolean
-        required: true
-        default: false
+      # The `debug` input was removed: verbose tracing + raw RSS CSV
+      # retention is now always on. The downstream consumer sets
+      # SOLDR_DEBUG=1 unconditionally.
   push:
     branches:
       - main
       - 'perf/**'
       - 'evaluate/**'
     paths:
-      - '.github/workflows/perf-cluster.yml'
+      - '.github/workflows/perf-matrix.yml'
       - 'perf/**'
       - 'crates/**'
       - 'Cargo.toml'
@@ -82,7 +80,7 @@ concurrency:
   # Never cancel a perf run in flight — every measurement is a data
   # point we want to keep, even if a follow-up push lands before this
   # one finishes. Runs queue per-ref instead of superseding.
-  group: perf-cluster-${{ github.ref }}
+  group: perf-matrix-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -372,7 +370,10 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         id: run
         env:
-          SOLDR_DEBUG: ${{ inputs.debug == true && '1' || '' }}
+          # Verbose tracing + raw RSS CSV retention always on — no
+          # dispatch toggle. Saves the cost of a missed debug flag
+          # the next time something breaks.
+          SOLDR_DEBUG: "1"
           SELECTED_SCENARIOS: ${{ steps.gate.outputs.scenarios }}
           M_PLATFORM: ${{ matrix.platform }}
           M_FIXTURE: ${{ matrix.fixture }}

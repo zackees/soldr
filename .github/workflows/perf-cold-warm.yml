@@ -10,7 +10,7 @@ name: Soldr Cold/Warm Bench
 # 1. `build-soldr` — master, builds soldr once and uploads it as an
 #    artifact. Layered actions/cache + Swatinem/rust-cache so the
 #    second dispatch on the same soldr commit is nearly free. The
-#    perf cluster has to keep working when soldr itself is broken
+#    perf matrix has to keep working when soldr itself is broken
 #    or absent on a new platform, so this step uses bare cargo (not
 #    `soldr cargo`).
 # 2. `purge-demo-caches` — only fires when run_mode is the "Purge

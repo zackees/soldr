@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > [!IMPORTANT]
 > ## ⚡ Performance work → read [PERF.md](PERF.md) FIRST ⚡
 >
-> **The perf-cluster GitHub Action is the MOST important workflow in this repo.**
+> **The Perf Matrix GitHub Action is the MOST important workflow in this repo.**
 > If you are testing, measuring, optimizing, or regressing soldr's performance
 > — read **[PERF.md](PERF.md)** before doing anything else.
 >

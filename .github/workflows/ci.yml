@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    # Skip perf-iteration branches — they only need perf-cluster.yml,
+    # Skip perf-iteration branches — they only need perf-matrix.yml,
     # not the full Lint/build/e2e sweep. (`branches` and
     # `branches-ignore` are mutually exclusive, so this replaces the
     # previous `branches: ['**']` catch-all.)
