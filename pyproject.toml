@@ -41,6 +41,9 @@ features = []
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+markers = [
+    "act_integration: Docker-based integration tests that reproduce the nektos/act bootstrap path (deselect with '-m \"not act_integration\"'); skipped unless explicitly selected via '-m act_integration' or '--act-integration'.",
+]
 
 [tool.ruff]
 target-version = "py310"

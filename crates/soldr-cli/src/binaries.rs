@@ -167,7 +167,8 @@ pub(crate) fn rustup_resolution_failure(tool: &str, stderr: &[u8]) -> SoldrError
     SoldrError::Other(format!(
         "failed to resolve {tool} via rustup: {raw_failure}\n\
 CI hint: if this repository pins Rust in rust-toolchain.toml, preinstall that exact channel instead of a generic stable toolchain.\n\
-CI hint: export RUSTUP_TOOLCHAIN to that exact channel for later cargo, rustc, and soldr cargo steps, or use the documented setup-soldr action path (uses: zackees/soldr@<ref> or uses: ./)."
+CI hint: export RUSTUP_TOOLCHAIN to that exact channel for later cargo, rustc, and soldr cargo steps, or use the documented setup-soldr action path (uses: zackees/soldr@<ref> or uses: ./).\n\
+Bootstrap hint: if rustup itself is missing on this host, run `soldr bootstrap` to install it into soldr's managed bin dir (or unset SOLDR_NO_BOOTSTRAP and re-run if you previously opted out)."
     ))
 }
 
@@ -204,8 +205,38 @@ fn real_toolchain_binary_env_var(tool: &str) -> String {
     value
 }
 
+/// Resolve the rustup binary to spawn for any subprocess call. Always
+/// honours `SOLDR_TEST_RUSTUP_BIN` for tests. Then prefers `rustup` already on
+/// `PATH` or the soldr-managed copy under `<SoldrPaths::bin>/rustup`. If
+/// neither exists and the user has not opted out via `SOLDR_NO_BOOTSTRAP=1`,
+/// triggers a one-shot bootstrap (`rustup-init`) that installs rustup into
+/// the soldr-managed bin dir before returning that path.
 pub(crate) fn rustup_binary() -> std::path::PathBuf {
-    non_empty_env_path(TEST_RUSTUP_BIN_ENV_VAR).unwrap_or_else(|| "rustup".into())
+    if let Some(path) = non_empty_env_path(TEST_RUSTUP_BIN_ENV_VAR) {
+        return path;
+    }
+    if let Ok(paths) = SoldrPaths::new() {
+        if let Some(existing) = soldr_fetch::discover_rustup(&paths) {
+            return existing;
+        }
+        match soldr_fetch::auto_bootstrap_if_missing_blocking(&paths) {
+            Ok(soldr_fetch::AutoBootstrapOutcome::AlreadyInstalled(p)) => return p,
+            Ok(soldr_fetch::AutoBootstrapOutcome::Installed(report)) => return report.rustup_path,
+            Ok(soldr_fetch::AutoBootstrapOutcome::OptedOut) => {
+                // Fall through to the bare "rustup" path; the subsequent
+                // resolution failure surfaces the standard diagnostic plus
+                // the `SOLDR_NO_BOOTSTRAP` hint.
+            }
+            Err(err) => {
+                eprintln!(
+                    "soldr: auto-bootstrap failed ({err}). Falling back to `rustup` on PATH. \
+                     Run `soldr bootstrap` manually or unset {} to retry.",
+                    soldr_fetch::NO_BOOTSTRAP_ENV_VAR
+                );
+            }
+        }
+    }
+    "rustup".into()
 }
 
 pub(crate) fn zccache_binary_override() -> Option<std::path::PathBuf> {
@@ -277,6 +308,8 @@ mod tests {
         assert!(rendered.contains("generic stable toolchain"));
         assert!(rendered.contains("RUSTUP_TOOLCHAIN"));
         assert!(rendered.contains("setup-soldr action path"));
+        assert!(rendered.contains("soldr bootstrap"));
+        assert!(rendered.contains("SOLDR_NO_BOOTSTRAP"));
     }
 
     #[test]

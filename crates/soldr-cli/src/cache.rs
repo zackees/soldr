@@ -1463,10 +1463,7 @@ fn run_install_zccache_remove(json: bool) -> Result<(), SoldrError> {
         };
         print_json(&output)?;
     } else if removed {
-        println!(
-            "soldr install-zccache --remove: removed {}",
-            dir.display()
-        );
+        println!("soldr install-zccache --remove: removed {}", dir.display());
     } else {
         println!(
             "soldr install-zccache --remove: no pinned install at {} (nothing to do)",
