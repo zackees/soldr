@@ -213,6 +213,39 @@ Automatic pruning via `RUSTC_WRAPPER` pre/post-compile hooks is
 deferred to a follow-up — the manual subcommand is intentionally
 opt-in until the behaviour is trusted on real `target/` directories.
 
+### `soldr update-zccache`
+
+Install zccache binaries into soldr's private dir so soldr stops
+fetching the managed GitHub release. Pins a user-supplied set of three
+zccache binaries (`zccache`, `zccache-daemon`, `zccache-fp`) into
+`<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...`
+invocations resolve the pinned binaries automatically.
+
+```bash
+soldr update-zccache <SOURCE>   # system | <path> | <url>
+soldr update-zccache --remove   # un-pin, idempotent
+soldr update-zccache --status   # report sidecar + drift
+soldr update-zccache --json     # structured output
+```
+
+`<SOURCE>` accepts:
+
+- `system` — copy the `zccache`, `zccache-daemon`, `zccache-fp`
+  binaries already on `PATH`.
+- A directory path containing the three binaries.
+- An archive file (`.zip` / `.tar.gz` / `.tgz` / `.tar.zst`) — recursive
+  search for binaries handles nested release layouts like
+  `zccache-vX.Y.Z/`.
+- An `http(s)://` URL pointing at such an archive.
+
+Resolution chain becomes:
+
+1. `SOLDR_ZCCACHE_LOCAL_DIR` env var (unchanged, highest priority).
+2. Pinned install at `<SoldrPaths::bin>/zccache-pinned/` (this command).
+3. Managed GitHub Releases fetch (unchanged, default).
+
+Exactly one of `<SOURCE>`, `--remove`, or `--status` must be provided.
+
 ### `soldr version`
 
 Print soldr version.

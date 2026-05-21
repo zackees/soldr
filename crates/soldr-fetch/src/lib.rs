@@ -15,6 +15,16 @@ pub use trust::{
     CHECKSUMS_FILE_ENV_VAR, TRUST_MODE_ENV_VAR,
 };
 
+pub mod install_zccache;
+
+pub use install_zccache::{
+    install_zccache_from_source, pinned_version_drift_from_managed, pinned_zccache_dir,
+    read_pinned_sidecar, remove_pinned_zccache, resolve_pinned_zccache, InstallReport,
+    InstallSource, PinnedBinaryRecord, PinnedResolution, PinnedSidecar, PINNED_ZCCACHE_DIRNAME,
+    PINNED_ZCCACHE_SIDECAR_FILENAME, PINNED_ZCCACHE_SIDECAR_SCHEMA_VERSION,
+    ZCCACHE_PINNED_BINARY_NAMES,
+};
+
 use soldr_core::{
     suppress_windows_console_window, Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple,
 };
@@ -160,6 +170,9 @@ pub enum ZccacheSource {
     Managed,
     /// Resolved from `SOLDR_ZCCACHE_LOCAL_DIR`.
     Local,
+    /// Installed via `soldr update-zccache` into the
+    /// `<SoldrPaths::bin>/zccache-pinned/` directory.
+    Pinned,
     /// Nothing fetched yet — managed path, no binaries on disk.
     None,
 }
@@ -169,6 +182,7 @@ impl ZccacheSource {
         match self {
             ZccacheSource::Managed => "managed",
             ZccacheSource::Local => "local",
+            ZccacheSource::Pinned => "pinned",
             ZccacheSource::None => "none",
         }
     }
@@ -279,7 +293,7 @@ fn local_zccache_version_label(binary: &Path) -> String {
     }
 }
 
-fn sha256_short(bytes: &[u8]) -> String {
+pub(crate) fn sha256_short(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -288,7 +302,7 @@ fn sha256_short(bytes: &[u8]) -> String {
     hex_digest[..12].to_string()
 }
 
-fn copy_if_changed(src: &Path, dst: &Path) -> Result<(), SoldrError> {
+pub(crate) fn copy_if_changed(src: &Path, dst: &Path) -> Result<(), SoldrError> {
     // Cheap no-op when sizes match — content hash already pins the
     // destination dir name, so a byte-for-byte difference at the
     // same size is impossible under our naming scheme.
@@ -301,7 +315,10 @@ fn copy_if_changed(src: &Path, dst: &Path) -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn copy_debug_info_sidecars(src_binary: &Path, dst_binary: &Path) -> Result<(), SoldrError> {
+pub(crate) fn copy_debug_info_sidecars(
+    src_binary: &Path,
+    dst_binary: &Path,
+) -> Result<(), SoldrError> {
     // Windows: <binary>.pdb (sibling file).
     // Linux: <binary>.dwp (sibling file).
     // macOS: <binary>.dSYM (sibling directory).
@@ -324,7 +341,7 @@ fn copy_debug_info_sidecars(src_binary: &Path, dst_binary: &Path) -> Result<(), 
     Ok(())
 }
 
-fn adjacent_with_extension(binary: &Path, ext: &str) -> Option<PathBuf> {
+pub(crate) fn adjacent_with_extension(binary: &Path, ext: &str) -> Option<PathBuf> {
     let stem = binary.file_stem()?.to_owned();
     let parent = binary.parent()?;
     let mut name = stem;
@@ -361,6 +378,72 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), SoldrError> {
 /// doctor's reported `cli_path` / `daemon_path` / PDB count reflect
 /// the actually-resolvable state, not a prediction. This matches what
 /// the next `soldr cargo ...` invocation will produce.
+/// Snapshot of the managed (GitHub-Releases) zccache state on disk.
+/// Always reports what the managed path *would* produce on next fetch,
+/// even when the pinned-install path is currently winning resolution.
+/// Used by `soldr doctor` to differentiate the two paths and annotate
+/// "(superseded by pinned)" on the managed section when appropriate.
+pub fn managed_only_zccache_summary(
+    paths: &SoldrPaths,
+) -> Result<ZccacheBinarySummary, SoldrError> {
+    let target = TargetTriple::detect()?;
+    let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+    let any_present = cli.exists() || daemon.exists() || fp.exists();
+    let (debug_found, debug_expected) =
+        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+    Ok(ZccacheBinarySummary {
+        source: if any_present {
+            ZccacheSource::Managed
+        } else {
+            ZccacheSource::None
+        },
+        version: if any_present {
+            MANAGED_ZCCACHE_VERSION.to_string()
+        } else {
+            String::new()
+        },
+        symbol_path: runtime_dir.clone(),
+        runtime_dir,
+        source_dir: None,
+        cli_path: cli.exists().then_some(cli),
+        daemon_path: daemon.exists().then_some(daemon),
+        fp_path: fp.exists().then_some(fp),
+        debug_info_found: debug_found,
+        debug_info_expected: debug_expected,
+    })
+}
+
+/// Snapshot of the pinned-install state independent of resolution
+/// priority. Returns `Ok(None)` when no `source.json` exists. Used by
+/// `soldr doctor` so the pinned section can render even when something
+/// further up the resolution chain (e.g. `SOLDR_ZCCACHE_LOCAL_DIR`)
+/// wins.
+pub fn pinned_zccache_summary(
+    paths: &SoldrPaths,
+) -> Result<Option<ZccacheBinarySummary>, SoldrError> {
+    let target = TargetTriple::detect()?;
+    let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? else {
+        return Ok(None);
+    };
+    let runtime_dir = pinned.runtime_dir.clone();
+    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+    let (debug_found, debug_expected) =
+        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+    Ok(Some(ZccacheBinarySummary {
+        source: ZccacheSource::Pinned,
+        version: pinned.version,
+        symbol_path: runtime_dir.clone(),
+        runtime_dir,
+        source_dir: None,
+        cli_path: cli.exists().then_some(cli),
+        daemon_path: daemon.exists().then_some(daemon),
+        fp_path: fp.exists().then_some(fp),
+        debug_info_found: debug_found,
+        debug_info_expected: debug_expected,
+    }))
+}
+
 pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary, SoldrError> {
     let target = TargetTriple::detect()?;
 
@@ -382,6 +465,28 @@ pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary
             symbol_path: runtime_dir.clone(),
             runtime_dir,
             source_dir: Some(source_dir),
+            cli_path: cli.exists().then_some(cli),
+            daemon_path: daemon.exists().then_some(daemon),
+            fp_path: fp.exists().then_some(fp),
+            debug_info_found: debug_found,
+            debug_info_expected: debug_expected,
+        });
+    }
+
+    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+        // `soldr update-zccache` install. Reports `pinned` so
+        // doctor can surface the override (and warn the managed path
+        // is superseded).
+        let runtime_dir = pinned.runtime_dir.clone();
+        let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+        let (debug_found, debug_expected) =
+            count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+        return Ok(ZccacheBinarySummary {
+            source: ZccacheSource::Pinned,
+            version: pinned.version,
+            symbol_path: runtime_dir.clone(),
+            runtime_dir,
+            source_dir: None,
             cli_path: cli.exists().then_some(cli),
             daemon_path: daemon.exists().then_some(daemon),
             fp_path: fp.exists().then_some(fp),
@@ -418,7 +523,7 @@ pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary
     })
 }
 
-fn canonical_zccache_paths(
+pub(crate) fn canonical_zccache_paths(
     runtime_dir: &Path,
     target: &TargetTriple,
 ) -> (PathBuf, PathBuf, PathBuf) {
@@ -469,6 +574,22 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
     // WinDbg can resolve symbols when attaching to the daemon.
     if let Some(local_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
         return resolve_local_zccache_for_target(&local_dir, paths, &target);
+    }
+
+    // Pinned install (`soldr update-zccache <SOURCE>`). Sits
+    // between the env-var override and the managed download so users
+    // who pinned once never go back to the GitHub-Releases path.
+    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+        eprintln!(
+            "soldr: using pinned zccache from {} (version={})",
+            pinned.runtime_dir.display(),
+            pinned.version
+        );
+        return Ok(FetchResult {
+            binary_path: pinned.binary_path,
+            version: pinned.version,
+            cached: true,
+        });
     }
 
     let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
@@ -550,6 +671,14 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         return resolve_local_zccache_for_target(&local_dir, paths, &target).map(Some);
     }
 
+    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+        return Ok(Some(FetchResult {
+            binary_path: pinned.binary_path,
+            version: pinned.version,
+            cached: true,
+        }));
+    }
+
     check_cache(
         paths,
         "zccache",
@@ -609,10 +738,7 @@ pub(crate) fn resolve_system_zccache_with_path_dirs(
         }
     }
 
-    eprintln!(
-        "soldr: using system zccache at {}",
-        zccache_path.display()
-    );
+    eprintln!("soldr: using system zccache at {}", zccache_path.display());
     Ok(FetchResult {
         binary_path: zccache_path,
         version: "system".to_string(),
@@ -620,7 +746,7 @@ pub(crate) fn resolve_system_zccache_with_path_dirs(
     })
 }
 
-fn find_in_dirs(dirs: &[PathBuf], file_name: &str) -> Option<PathBuf> {
+pub(crate) fn find_in_dirs(dirs: &[PathBuf], file_name: &str) -> Option<PathBuf> {
     for dir in dirs {
         let candidate = dir.join(file_name);
         if candidate.is_file() {
@@ -854,7 +980,7 @@ struct AssetInfo {
     download_url: String,
 }
 
-fn http_client() -> Result<reqwest::Client, SoldrError> {
+pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
     reqwest::Client::builder()
         .user_agent(format!("soldr/{}", soldr_core::version()))
         .build()
@@ -1324,7 +1450,7 @@ async fn download_and_extract(
     Ok(binary_path)
 }
 
-fn desired_binary_names(binary_names: &[&str], target: &TargetTriple) -> Vec<String> {
+pub(crate) fn desired_binary_names(binary_names: &[&str], target: &TargetTriple) -> Vec<String> {
     binary_names
         .iter()
         .map(|binary_name| format!("{binary_name}{}", target.binary_ext()))
