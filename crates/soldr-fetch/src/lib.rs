@@ -170,7 +170,7 @@ pub enum ZccacheSource {
     Managed,
     /// Resolved from `SOLDR_ZCCACHE_LOCAL_DIR`.
     Local,
-    /// Installed via `soldr cache install-zccache` into the
+    /// Installed via `soldr update-zccache` into the
     /// `<SoldrPaths::bin>/zccache-pinned/` directory.
     Pinned,
     /// Nothing fetched yet — managed path, no binaries on disk.
@@ -474,7 +474,7 @@ pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary
     }
 
     if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
-        // `soldr cache install-zccache` install. Reports `pinned` so
+        // `soldr update-zccache` install. Reports `pinned` so
         // doctor can surface the override (and warn the managed path
         // is superseded).
         let runtime_dir = pinned.runtime_dir.clone();
@@ -576,7 +576,7 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
         return resolve_local_zccache_for_target(&local_dir, paths, &target);
     }
 
-    // Pinned install (`soldr cache install-zccache <SOURCE>`). Sits
+    // Pinned install (`soldr update-zccache <SOURCE>`). Sits
     // between the env-var override and the managed download so users
     // who pinned once never go back to the GitHub-Releases path.
     if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {

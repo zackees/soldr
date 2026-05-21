@@ -1334,11 +1334,11 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<(), SoldrError> {
 }
 
 // ---------------------------------------------------------------------------
-// install-zccache (soldr cache install-zccache <SOURCE> / --remove / --status)
+// update-zccache (soldr update-zccache <SOURCE> / --remove / --status)
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
-struct InstallZccacheOutput {
+struct UpdateZccacheOutput {
     schema_version: u32,
     command: &'static str,
     install_dir: String,
@@ -1351,7 +1351,7 @@ struct InstallZccacheOutput {
 }
 
 #[derive(Serialize)]
-struct InstallZccacheRemoveOutput {
+struct UpdateZccacheRemoveOutput {
     schema_version: u32,
     command: &'static str,
     removed: bool,
@@ -1360,7 +1360,7 @@ struct InstallZccacheRemoveOutput {
 
 /// `--status` payload when the pinned install exists.
 #[derive(Serialize)]
-struct InstallZccacheStatusOutput {
+struct UpdateZccacheStatusOutput {
     schema_version: u32,
     command: &'static str,
     pinned: serde_json::Value,
@@ -1370,14 +1370,14 @@ struct InstallZccacheStatusOutput {
 
 /// `--status` payload when no pinned install exists.
 #[derive(Serialize)]
-struct InstallZccacheStatusMissingOutput {
+struct UpdateZccacheStatusMissingOutput {
     schema_version: u32,
     command: &'static str,
     pinned: Option<()>,
     managed_version: &'static str,
 }
 
-pub(crate) async fn run_cache_install_zccache(
+pub(crate) async fn run_update_zccache(
     source: Option<String>,
     remove: bool,
     status: bool,
@@ -1392,14 +1392,14 @@ pub(crate) async fn run_cache_install_zccache(
         .count();
     if chosen == 0 {
         return Err(SoldrError::Other(
-            "install-zccache: provide a SOURCE (`system`, a path, or a URL), or pass --remove / --status".into(),
+            "update-zccache: provide a SOURCE (`system`, a path, or a URL), or pass --remove / --status".into(),
         ));
     }
     if remove {
-        return run_install_zccache_remove(json);
+        return run_update_zccache_remove(json);
     }
     if status {
-        return run_install_zccache_status(json);
+        return run_update_zccache_status(json);
     }
     let raw = source.expect("source presence checked above");
     let parsed = soldr_fetch::InstallSource::parse(&raw)?;
@@ -1410,9 +1410,9 @@ pub(crate) async fn run_cache_install_zccache(
 
 fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Result<(), SoldrError> {
     if json {
-        let output = InstallZccacheOutput {
+        let output = UpdateZccacheOutput {
             schema_version: JSON_SCHEMA_VERSION,
-            command: "cache install-zccache",
+            command: "update-zccache",
             install_dir: report.install_dir.clone(),
             source_kind: report.source_kind.clone(),
             source_value: report.source_value.clone(),
@@ -1423,7 +1423,7 @@ fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Resul
         };
         print_json(&output)?;
     } else {
-        println!("soldr cache install-zccache");
+        println!("soldr update-zccache");
         println!("  install dir:  {}", report.install_dir);
         println!(
             "  source:       {} ({})",
@@ -1450,33 +1450,33 @@ fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Resul
     Ok(())
 }
 
-fn run_install_zccache_remove(json: bool) -> Result<(), SoldrError> {
+fn run_update_zccache_remove(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let dir = soldr_fetch::pinned_zccache_dir(&paths);
     let removed = soldr_fetch::remove_pinned_zccache(&paths)?;
     if json {
-        let output = InstallZccacheRemoveOutput {
+        let output = UpdateZccacheRemoveOutput {
             schema_version: JSON_SCHEMA_VERSION,
-            command: "cache install-zccache --remove",
+            command: "update-zccache --remove",
             removed,
             path: dir.display().to_string(),
         };
         print_json(&output)?;
     } else if removed {
         println!(
-            "soldr cache install-zccache --remove: removed {}",
+            "soldr update-zccache --remove: removed {}",
             dir.display()
         );
     } else {
         println!(
-            "soldr cache install-zccache --remove: no pinned install at {} (nothing to do)",
+            "soldr update-zccache --remove: no pinned install at {} (nothing to do)",
             dir.display()
         );
     }
     Ok(())
 }
 
-fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
+fn run_update_zccache_status(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let sidecar = soldr_fetch::read_pinned_sidecar(&paths)?;
     match sidecar {
@@ -1484,18 +1484,18 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
             let drift = soldr_fetch::pinned_version_drift_from_managed(&sidecar);
             if json {
                 let pinned_value = serde_json::to_value(&sidecar).map_err(|e| {
-                    SoldrError::Other(format!("install-zccache status: serialize sidecar: {e}"))
+                    SoldrError::Other(format!("update-zccache status: serialize sidecar: {e}"))
                 })?;
-                let output = InstallZccacheStatusOutput {
+                let output = UpdateZccacheStatusOutput {
                     schema_version: JSON_SCHEMA_VERSION,
-                    command: "cache install-zccache --status",
+                    command: "update-zccache --status",
                     pinned: pinned_value,
                     drift_from_managed: drift,
                     managed_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
                 };
                 print_json(&output)?;
             } else {
-                println!("soldr cache install-zccache --status");
+                println!("soldr update-zccache --status");
                 println!(
                     "  install dir:  {}",
                     soldr_fetch::pinned_zccache_dir(&paths).display()
@@ -1521,7 +1521,7 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
                 }
                 if drift {
                     println!(
-                        "  warning:      pinned version {} is different from soldr's managed default {} — consider `soldr cache install-zccache --remove` to use the managed version",
+                        "  warning:      pinned version {} is different from soldr's managed default {} — consider `soldr update-zccache --remove` to use the managed version",
                         sidecar.version,
                         soldr_fetch::MANAGED_ZCCACHE_VERSION
                     );
@@ -1530,9 +1530,9 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
         }
         None => {
             if json {
-                let output = InstallZccacheStatusMissingOutput {
+                let output = UpdateZccacheStatusMissingOutput {
                     schema_version: JSON_SCHEMA_VERSION,
-                    command: "cache install-zccache --status",
+                    command: "update-zccache --status",
                     pinned: None,
                     managed_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
                 };
@@ -1623,7 +1623,7 @@ fn ymdhms_to_unix_seconds(y: i32, m: u32, d: u32, h: u32, min: u32, s: u32) -> i
 }
 
 #[cfg(test)]
-mod install_zccache_tests {
+mod update_zccache_tests {
     use super::*;
 
     #[test]

@@ -1,4 +1,4 @@
-//! Integration tests for `soldr cache install-zccache` (the library
+//! Integration tests for `soldr update-zccache` (the library
 //! half — pure path/archive/system flows, no CLI subprocess).
 //!
 //! Uses fake binary bytes everywhere; nothing here requires a real

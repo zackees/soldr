@@ -45,7 +45,7 @@ struct DoctorOutput {
     /// view even when the active source is a pinned install; the
     /// pinned section below explains the override.
     managed_zccache: DoctorManagedZccache,
-    /// `Some` when `soldr cache install-zccache` has been run.
+    /// `Some` when `soldr update-zccache` has been run.
     pinned_zccache: Option<DoctorPinnedZccache>,
     /// `true` when the active resolution is the pinned install (i.e.
     /// the managed path is superseded for the next `soldr cargo ...`).
@@ -254,7 +254,7 @@ struct ZccacheDoctorBundle {
     /// reports the GitHub-Releases view, even when the pinned dir wins
     /// resolution.
     managed: ZccacheBinarySummary,
-    /// Pinned-install snapshot, when `soldr cache install-zccache`
+    /// Pinned-install snapshot, when `soldr update-zccache`
     /// has been run.
     pinned: Option<ZccacheBinarySummary>,
     /// JSON-friendly form of the pinned section.
@@ -347,7 +347,7 @@ fn print_pinned_zccache_human(
     if soldr_fetch::pinned_version_drift_from_managed(sidecar) {
         println!(
             "  warning:       pinned version {} differs from soldr's managed default {} — \
-consider `soldr cache install-zccache --remove` to switch back to the managed version",
+consider `soldr update-zccache --remove` to switch back to the managed version",
             sidecar.version,
             soldr_fetch::MANAGED_ZCCACHE_VERSION
         );

@@ -289,6 +289,34 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Install zccache binaries into soldr's private dir so soldr stops
+    /// fetching the managed GitHub release. Pins a user-supplied set of
+    /// three zccache binaries (zccache, zccache-daemon, zccache-fp) into
+    /// `<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...`
+    /// invocations resolve the pinned binaries automatically.
+    ///
+    /// Exactly one of `<source>`, `--remove`, or `--status` must be
+    /// provided. `<source>` accepts `system`, a directory or archive
+    /// path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL
+    /// pointing at such an archive.
+    #[command(name = "update-zccache")]
+    UpdateZccache {
+        /// Source for the three zccache binaries. Mutually exclusive
+        /// with `--remove` / `--status`.
+        #[arg(value_name = "SOURCE", conflicts_with_all = ["remove", "status"])]
+        source: Option<String>,
+        /// Delete the pinned install and fall back to the managed
+        /// fetch on next run. Idempotent.
+        #[arg(long, conflicts_with_all = ["source", "status"])]
+        remove: bool,
+        /// Print the install dir, source, version, and per-binary
+        /// sha256s of the pinned install (if any).
+        #[arg(long, conflicts_with_all = ["source", "remove"])]
+        status: bool,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
     /// Bundle a build-cache directory plus a content-verified
     /// snapshot of source-file mtimes into a single `.tar.zst`
     /// archive. The output is consumed by `soldr load` to restore
@@ -517,33 +545,6 @@ enum CacheSubcommand {
         #[arg(long)]
         json: bool,
     },
-    /// Pin a specific zccache build (system PATH, local path, or
-    /// archive URL) so soldr stops fetching the managed GitHub release.
-    /// Subsequent `soldr cargo ...` invocations resolve the pinned
-    /// binaries from `<SoldrPaths::bin>/zccache-pinned/` automatically.
-    ///
-    /// Exactly one of `<source>`, `--remove`, or `--status` must be
-    /// provided. `<source>` accepts `system`, a directory or archive
-    /// path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL
-    /// pointing at such an archive.
-    #[command(name = "install-zccache")]
-    InstallZccache {
-        /// Source for the three zccache binaries. Mutually exclusive
-        /// with `--remove` / `--status`.
-        #[arg(value_name = "SOURCE", conflicts_with_all = ["remove", "status"])]
-        source: Option<String>,
-        /// Delete the pinned install and fall back to the managed
-        /// fetch on next run. Idempotent.
-        #[arg(long, conflicts_with_all = ["source", "status"])]
-        remove: bool,
-        /// Print the install dir, source, version, and per-binary
-        /// sha256s of the pinned install (if any).
-        #[arg(long, conflicts_with_all = ["source", "remove"])]
-        status: bool,
-        /// Emit the stable machine-facing JSON form for this command.
-        #[arg(long)]
-        json: bool,
-    },
     /// Prune stale per-prefix build artifacts from a cargo `target/`
     /// directory, keeping only the newest entry per
     /// `(parent_dir, prefix)` bucket inside
@@ -705,6 +706,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
         }
+        Commands::UpdateZccache {
+            source,
+            remove,
+            status,
+            json,
+        } => {
+            cache::run_update_zccache(source, remove, status, json).await?;
+        }
         Commands::Save(args) => {
             std::process::exit(save_load::run_save(args));
         }
@@ -750,15 +759,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
             Some(CacheSubcommand::Flush { json: flush_json }) => {
                 cache::run_cache_flush_command(flush_json || json).await?;
-            }
-            Some(CacheSubcommand::InstallZccache {
-                source,
-                remove,
-                status,
-                json: install_json,
-            }) => {
-                cache::run_cache_install_zccache(source, remove, status, install_json || json)
-                    .await?;
             }
             Some(CacheSubcommand::PruneTarget {
                 path,
