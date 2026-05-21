@@ -137,6 +137,16 @@ async fn prepare_zccache_build(
         ZccacheSourceArg::System => soldr_fetch::resolve_system_zccache(paths)?,
     };
 
+    // When the resolved zccache CLI binary differs from the one a
+    // previous soldr invocation started the daemon with, the live
+    // daemon is stale relative to what we just resolved. This matters
+    // most for `SOLDR_ZCCACHE_LOCAL_DIR` debugging (issue #365): the
+    // user expects `cargo` invocations to actually run their freshly
+    // built daemon, but `zccache start` is a no-op when any daemon
+    // is already alive, so a managed daemon from a previous build
+    // would keep handling requests. Evict it explicitly here.
+    evict_zccache_daemon_if_binary_changed(&fetch.binary_path, &zccache_dir)?;
+
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
     let session_log_path = soldr_cache::session_log_path(&zccache_dir);
@@ -396,6 +406,69 @@ pub(crate) fn run_zccache_command_strings_in_cache_dir(
     })
 }
 
+/// Name of the marker file inside the zccache cache dir that records
+/// which CLI binary path soldr last started a daemon with. When the
+/// resolved binary path changes between runs (e.g. user toggled
+/// `SOLDR_ZCCACHE_LOCAL_DIR`, bumped `MANAGED_ZCCACHE_VERSION`, or
+/// rebuilt zccache locally so its content-hashed dir name changed),
+/// soldr evicts the live daemon before starting so the next
+/// `zccache start` actually spawns the new binary. Issue #365.
+pub(crate) const ZCCACHE_LAST_CLI_BINARY_SENTINEL: &str = "soldr-last-cli-binary";
+
+/// Pure decision: should soldr evict the running zccache daemon
+/// before starting a fresh one?
+///
+/// `current` is the absolute path of the CLI binary the current
+/// invocation just resolved. `previous` is the contents of the
+/// sentinel file from the last invocation (already trimmed), or
+/// `None` if the sentinel is absent or unreadable.
+///
+/// First run (no sentinel) returns `false` — nothing to evict.
+/// Path change returns `true`. Same path returns `false`.
+pub(crate) fn should_evict_zccache_daemon(current: &str, previous: Option<&str>) -> bool {
+    match previous {
+        None => false,
+        Some(prev) if prev == current => false,
+        Some(_) => true,
+    }
+}
+
+/// If a previous invocation recorded a different CLI binary path,
+/// run `zccache stop` to evict the stale daemon. Best-effort: any
+/// I/O failure is logged but not propagated, because the start path
+/// below has its own stale-daemon recovery.
+pub(crate) fn evict_zccache_daemon_if_binary_changed(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<(), SoldrError> {
+    let sentinel = cache_dir.join(ZCCACHE_LAST_CLI_BINARY_SENTINEL);
+    let resolved = binary.display().to_string();
+    let prev = std::fs::read_to_string(&sentinel)
+        .ok()
+        .map(|s| s.trim().to_string());
+
+    if should_evict_zccache_daemon(&resolved, prev.as_deref()) {
+        eprintln!(
+            "soldr: zccache CLI binary changed since last build; stopping stale daemon to force a fresh spawn (issue #365)",
+        );
+        if let Err(err) = run_zccache_command_raw_in_cache_dir(binary, &["stop"], cache_dir) {
+            // Stop failures shouldn't block the build — the start
+            // path below has its own stale-daemon recovery.
+            eprintln!("soldr: zccache stop reported {err}; continuing");
+        }
+    }
+
+    // Record the current resolution so future invocations can detect
+    // the next change. Best-effort write — failure here is non-fatal.
+    if let Err(err) = std::fs::write(&sentinel, &resolved) {
+        eprintln!(
+            "soldr: failed to record current zccache CLI binary at {}: {err}",
+            sentinel.display()
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn start_zccache_with_recovery(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
@@ -637,5 +710,53 @@ mod tests {
         // in the inherited environment.
         assert_eq!(resolve_path_remap_env(Some("auto"), None), None);
         assert_eq!(resolve_path_remap_env(Some("auto"), Some("off")), None);
+    }
+
+    // ---------------------------------------------------------------
+    // Stale-daemon eviction when the resolved CLI binary changes
+    // between soldr invocations (issue #365).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn evict_decision_skips_first_run_with_no_sentinel() {
+        // Nothing recorded yet — no daemon to evict.
+        assert!(!should_evict_zccache_daemon(
+            "/path/zccache-1.8.1/zccache.exe",
+            None
+        ));
+    }
+
+    #[test]
+    fn evict_decision_skips_when_path_unchanged() {
+        let current = "/path/zccache-1.8.1/zccache.exe";
+        assert!(!should_evict_zccache_daemon(current, Some(current)));
+    }
+
+    #[test]
+    fn evict_decision_triggers_when_local_dir_overrides_managed() {
+        // The user just exported SOLDR_ZCCACHE_LOCAL_DIR but a stale
+        // managed daemon is still alive. Issue #365 acceptance: the
+        // next soldr invocation must evict.
+        let previous = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
+        let current = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
+        assert!(should_evict_zccache_daemon(current, Some(previous)));
+    }
+
+    #[test]
+    fn evict_decision_triggers_when_local_dir_rebuilt() {
+        // User rebuilt zccache; content hash changed; the resolved
+        // CLI path is a different `zccache-local-<hash>` directory.
+        let previous = "/home/u/.soldr/bin/zccache-local-aaaaaaaaaaaa/zccache.exe";
+        let current = "/home/u/.soldr/bin/zccache-local-bbbbbbbbbbbb/zccache.exe";
+        assert!(should_evict_zccache_daemon(current, Some(previous)));
+    }
+
+    #[test]
+    fn evict_decision_triggers_when_local_dir_reverts_to_managed() {
+        // User unset SOLDR_ZCCACHE_LOCAL_DIR — switching back to the
+        // managed path must also evict the stale local daemon.
+        let previous = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
+        let current = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
+        assert!(should_evict_zccache_daemon(current, Some(previous)));
     }
 }
