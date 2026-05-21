@@ -287,6 +287,13 @@ pub(crate) fn strip_no_trampoline_flag(args: &[String]) -> (Vec<String>, bool) {
 /// `--example`, custom `--target-dir`, an unknown flag that takes a
 /// value).
 pub(crate) fn parse_run_args(args: &[String]) -> Option<ParsedRunArgs> {
+    parse_cargo_args(args, &["run", "r"])
+}
+
+/// Shared parser for the trampoline. Accepts only invocations whose first
+/// positional matches one of `accepted_subs`. The verb itself is consumed
+/// but not recorded — callers already know which they asked for.
+pub(crate) fn parse_cargo_args(args: &[String], accepted_subs: &[&str]) -> Option<ParsedRunArgs> {
     let mut toolchain: Option<String> = None;
     let mut bin: Option<String> = None;
     let mut release = false;
@@ -299,11 +306,11 @@ pub(crate) fn parse_run_args(args: &[String]) -> Option<ParsedRunArgs> {
     let mut target_dir: Option<PathBuf> = None;
 
     let mut iter = args.iter();
-    // Look for `run`, possibly after `+toolchain` and global flags.
-    let mut saw_run = false;
+    // Look for the verb, possibly after `+toolchain` and global flags.
+    let mut saw_verb = false;
     while let Some(arg) = iter.next() {
         if arg == "--" {
-            // Not yet at `run` — nothing here for us.
+            // Not yet at the verb — nothing here for us.
             return None;
         }
         if let Some(rest) = arg.strip_prefix('+') {
@@ -331,14 +338,14 @@ pub(crate) fn parse_run_args(args: &[String]) -> Option<ParsedRunArgs> {
             // A non-value-taking global flag we don't model.
             return None;
         }
-        if arg == "run" || arg == "r" {
-            saw_run = true;
+        if accepted_subs.contains(&arg.as_str()) {
+            saw_verb = true;
             break;
         }
         // Some other subcommand.
         return None;
     }
-    if !saw_run {
+    if !saw_verb {
         return None;
     }
 
@@ -527,7 +534,7 @@ pub(crate) fn compute_layout(parsed: &ParsedRunArgs, bin: &str) -> Layout {
     }
 }
 
-fn resolve_target_dir(parsed: &ParsedRunArgs, manifest_dir: &Path) -> PathBuf {
+pub(crate) fn resolve_target_dir(parsed: &ParsedRunArgs, manifest_dir: &Path) -> PathBuf {
     if let Some(explicit) = parsed.target_dir.as_ref() {
         return absolutize(explicit.clone(), manifest_dir);
     }
@@ -546,7 +553,7 @@ fn resolve_target_dir(parsed: &ParsedRunArgs, manifest_dir: &Path) -> PathBuf {
 /// the auto-detected host triple that soldr injects when neither of those
 /// is set. On non-Windows hosts cargo defaults to the unprefixed
 /// `target/<profile>/` layout, so we return `None`.
-fn effective_target_triple(parsed: &ParsedRunArgs) -> Option<String> {
+pub(crate) fn effective_target_triple(parsed: &ParsedRunArgs) -> Option<String> {
     if let Some(t) = parsed.target.as_deref() {
         return Some(t.to_string());
     }
@@ -573,7 +580,7 @@ fn absolutize(path: PathBuf, base: &Path) -> PathBuf {
     }
 }
 
-fn find_nearest_manifest() -> Option<PathBuf> {
+pub(crate) fn find_nearest_manifest() -> Option<PathBuf> {
     let mut current = std::env::current_dir().ok()?;
     loop {
         let candidate = current.join("Cargo.toml");
@@ -840,37 +847,37 @@ fn exec_binary(binary: &Path, args: &[String]) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
-fn mtime_nanos(meta: &fs::Metadata) -> Option<i64> {
+pub(crate) fn mtime_nanos(meta: &fs::Metadata) -> Option<i64> {
     let mtime = meta.modified().ok()?;
     let dur = mtime.duration_since(SystemTime::UNIX_EPOCH).ok()?;
     i64::try_from(dur.as_nanos()).ok()
 }
 
-fn size_as_i64(meta: &fs::Metadata) -> Option<i64> {
+pub(crate) fn size_as_i64(meta: &fs::Metadata) -> Option<i64> {
     i64::try_from(meta.len()).ok()
 }
 
-fn trampoline_env_disabled() -> bool {
+pub(crate) fn trampoline_env_disabled() -> bool {
     matches!(
         std::env::var(NO_TRAMPOLINE_ENV_VAR).ok().as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }
 
-fn trampoline_log_enabled() -> bool {
+pub(crate) fn trampoline_log_enabled() -> bool {
     matches!(
         std::env::var(TRAMPOLINE_LOG_ENV_VAR).ok().as_deref(),
         Some("1") | Some("true") | Some("yes")
     )
 }
 
-fn log_fall_through(reason: &str) {
+pub(crate) fn log_fall_through(reason: &str) {
     if trampoline_log_enabled() {
         eprintln!("soldr trampoline: fall-through: {reason}");
     }
 }
 
-fn log_event(message: &str) {
+pub(crate) fn log_event(message: &str) {
     if trampoline_log_enabled() {
         eprintln!("soldr trampoline: {message}");
     }

@@ -16,6 +16,7 @@ mod save_load;
 mod self_relocate;
 mod toolchain;
 mod trampoline;
+mod trampoline_workspace;
 mod wrapper;
 mod zccache;
 
