@@ -24,8 +24,14 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORKDIR="$(cd -- "${FIXTURE_DIR}/.." && pwd)"
 CACHE_COLD="${WORKDIR}/cache-cold"
 CACHE_WARM="${WORKDIR}/cache-warm"
-SNAPSHOT="${WORKDIR}/cache-snapshot.tar.gz"
+# Round 2a: swap raw tar for `soldr save`/`soldr load`. Output is
+# zstd-compressed (`.tar.zst`) and bundles both the cache tree and a
+# content-verified source-mtime snapshot — so warm cargo fingerprints
+# don't blow up on the first stat after `cargo clean`.
+SNAPSHOT="${WORKDIR}/cache-snapshot.tar.zst"
 RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
+
+echo "scenario: using soldr cache save/load (round 2a)" >&2
 
 mkdir -p "${CACHE_COLD}" "${CACHE_WARM}"
 
@@ -41,21 +47,49 @@ cold_start_ms="$(measure::now_ms)"
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
+# Capture zccache's own cache report for cold side (symmetric with
+# warm) so round 2 can compare entry counts / sizes before flush.
+SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache report --json \
+    > "${WORKDIR}/cold-cache-report.json" 2>/dev/null || true
+
 # Flush + shutdown so the depgraph snapshot is durable before tar.
 SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache flush --json >/dev/null 2>&1 || true
 SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/cold-shutdown.json" || true
 
+# Copy zccache's per-session logs out of the cache tree (daemon is
+# now gone) so the upload-artifact glob picks them up.
+cp -R "${CACHE_COLD}/cache/zccache/logs" "${WORKDIR}/cold-zccache-logs" 2>/dev/null || true
+
 cold_cache_bytes="$(measure::cache_bytes "${CACHE_COLD}")"
 
 # --- Snapshot ------------------------------------------------------
 
-tar -C "${CACHE_COLD}" -czf "${SNAPSHOT}" cache
+# `soldr save` bundles the contents of --cache-dir into <out> under
+# the archive's top-level `cache/` prefix. Pointing it at
+# ${CACHE_COLD}/cache preserves the exact on-disk layout the raw
+# `tar -C ${CACHE_COLD} -czf snap cache` round 1 used, so the warm
+# side sees ${CACHE_WARM}/cache/... after load, matching what
+# SOLDR_CACHE_DIR=${CACHE_WARM} expects.
+soldr save \
+    --cache-dir "${CACHE_COLD}/cache" \
+    --workspace "${FIXTURE_DIR}" \
+    --out "${SNAPSHOT}" \
+    --json >"${WORKDIR}/save-report.json"
 tar_bytes="$(wc -c <"${SNAPSHOT}")"
 
 # --- Restore into a clean cache dir --------------------------------
 
-tar -C "${CACHE_WARM}" -xzf "${SNAPSHOT}"
+# Symmetric: --cache-dir ${CACHE_WARM}/cache makes `soldr load`
+# strip the archive's `cache/` prefix and lay everything back under
+# ${CACHE_WARM}/cache/... `soldr load` creates the dir if missing,
+# so the earlier `mkdir -p ${CACHE_WARM}` (kept for clarity) is
+# redundant but harmless.
+soldr load \
+    --archive "${SNAPSHOT}" \
+    --cache-dir "${CACHE_WARM}/cache" \
+    --workspace "${FIXTURE_DIR}" \
+    --json >"${WORKDIR}/load-report.json"
 
 # Force cargo to think every unit needs to be recompiled. soldr will
 # then ask zccache for each unit; hit rate measures restore fidelity.
@@ -70,10 +104,32 @@ warm_start_ms="$(measure::now_ms)"
 )
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 
-warm_stats="$(SOLDR_CACHE_DIR="${CACHE_WARM}" measure::session_end_json)"
-warm_hits="$(echo "${warm_stats}" | jq -r '.stats.hits // 0')"
-warm_misses="$(echo "${warm_stats}" | jq -r '.stats.misses // 0')"
-warm_hit_rate="$(echo "${warm_stats}" | jq -r '.stats.hit_rate // 0')"
+# Copy zccache's per-session logs out of the cache tree so the
+# upload-artifact glob picks them up. We do this for both cold (after
+# cold flush+shutdown above) and warm (here) — round 1 wants ground-
+# truth fingerprint data to drive round 2's hypothesis.
+cp -R "${CACHE_WARM}/cache/zccache/logs" "${WORKDIR}/warm-zccache-logs" 2>/dev/null || true
+
+# Prefer zccache's authoritative on-disk stats file over `soldr
+# session-end --json`. The latter requires an active session and
+# returns empty after daemon idle-shutdown, which masks real hits/misses
+# as 0/0.
+WARM_STATS_FILE="${CACHE_WARM}/cache/zccache/logs/last-session-stats.json"
+if [[ -s "${WARM_STATS_FILE}" ]]; then
+    warm_hits="$(jq -r '.stats.hits // .hits // 0' "${WARM_STATS_FILE}")"
+    warm_misses="$(jq -r '.stats.misses // .misses // 0' "${WARM_STATS_FILE}")"
+    warm_hit_rate="$(jq -r '.stats.hit_rate // .hit_rate // 0' "${WARM_STATS_FILE}")"
+    warm_stats_source="file"
+else
+    warm_stats="$(SOLDR_CACHE_DIR="${CACHE_WARM}" measure::session_end_json)"
+    warm_hits="$(echo "${warm_stats}" | jq -r '.stats.hits // 0')"
+    warm_misses="$(echo "${warm_stats}" | jq -r '.stats.misses // 0')"
+    warm_hit_rate="$(echo "${warm_stats}" | jq -r '.stats.hit_rate // 0')"
+    warm_stats_source="session-end"
+fi
+
+SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cache report --json \
+    > "${WORKDIR}/warm-cache-report.json" 2>/dev/null || true
 
 SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/warm-shutdown.json" || true
@@ -105,9 +161,11 @@ measure::emit_summary_json "${SCENARIO}" \
     "warm_hits=${warm_hits}" \
     "warm_misses=${warm_misses}" \
     "warm_hit_rate=${warm_hit_rate}" \
+    "warm_stats_source=${warm_stats_source}" \
     "cold_cache_bytes=${cold_cache_bytes}" \
     "warm_cache_bytes=${warm_cache_bytes}" \
     "tarball_bytes=${tar_bytes}" \
+    "archive_mode=soldr-save-load" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
     "peak_compile_rss_bytes=${peak_compile_rss}"
 
