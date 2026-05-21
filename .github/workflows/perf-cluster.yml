@@ -425,6 +425,10 @@ jobs:
             ${{ steps.run.outputs.out_root }}/*/result.json
             ${{ steps.run.outputs.out_root }}/*/*-shutdown.json
             ${{ steps.run.outputs.out_root }}/*/rss-*.csv
+            ${{ steps.run.outputs.out_root }}/*/warm-cache-report.json
+            ${{ steps.run.outputs.out_root }}/*/cold-cache-report.json
+            ${{ steps.run.outputs.out_root }}/*/warm-zccache-logs/**
+            ${{ steps.run.outputs.out_root }}/*/cold-zccache-logs/**
           if-no-files-found: warn
           retention-days: 14
 
