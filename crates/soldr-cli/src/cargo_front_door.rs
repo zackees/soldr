@@ -148,6 +148,15 @@ pub(crate) async fn run_cargo_front_door(
         if let Some(plan) = trampoline_plan.as_ref() {
             refresh_sidecar_after_cargo(plan);
         }
+    } else if let Some(plan) = plan_ctx.as_ref() {
+        // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
+        // emitted, then rustc aborted before the `.rlib` codegen pass)
+        // in `target/<triple>/<profile>/deps/`. Subsequent invocations
+        // then fail with `E0463: can't find crate` because cargo passes
+        // `--extern X=orphan.rmeta` to dependents and rustc cannot link
+        // an rmeta-only crate. Sweep them so the next build rebuilds
+        // cleanly. See soldr#410.
+        rust_plan::prune_orphan_rmetas_after_failed_build(plan);
     }
     if let Some(session) = session {
         finish_zccache_build(&session)?;

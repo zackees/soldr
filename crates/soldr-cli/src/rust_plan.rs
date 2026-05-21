@@ -448,6 +448,138 @@ pub(crate) fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
     }
 }
 
+/// Walk `deps_dir` shallowly and delete every `.rmeta` file whose filename
+/// stem has no matching `.rlib`, `.so`, `.dylib`, or `.dll` sibling.
+/// Returns the number of files deleted. See soldr#410: a half-completed
+/// rustc invocation (rmeta emitted before codegen finishes) leaves orphan
+/// rmetas that poison the next `cargo build` with
+/// `E0463: can't find crate`. Best-effort — IO errors are reported via
+/// stderr and skipped so the caller can still surface the original cargo
+/// failure.
+pub(crate) fn prune_orphan_rmetas_in_deps(deps_dir: &std::path::Path) -> usize {
+    let entries = match std::fs::read_dir(deps_dir) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+
+    let mut rmeta_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut companion_stems: std::collections::HashSet<std::ffi::OsString> =
+        std::collections::HashSet::new();
+
+    for entry in entries.flatten() {
+        let file_type = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let Some(ext) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|s| s.to_ascii_lowercase())
+        else {
+            continue;
+        };
+        let Some(stem) = path.file_stem() else {
+            continue;
+        };
+        match ext.as_str() {
+            "rmeta" => rmeta_paths.push(path.clone()),
+            "rlib" | "so" | "dylib" | "dll" => {
+                companion_stems.insert(stem.to_owned());
+            }
+            _ => {}
+        }
+    }
+
+    let mut deleted = 0;
+    for rmeta in rmeta_paths {
+        let Some(stem) = rmeta.file_stem() else {
+            continue;
+        };
+        if companion_stems.contains(stem) {
+            continue;
+        }
+        match std::fs::remove_file(&rmeta) {
+            Ok(()) => deleted += 1,
+            Err(e) => eprintln!(
+                "soldr warning: failed to prune orphan rmeta {}: {e}",
+                rmeta.display()
+            ),
+        }
+    }
+    deleted
+}
+
+/// Apply [`prune_orphan_rmetas_in_deps`] to the deps directory implied by
+/// the active artifact plan. `target_dir` from the plan is the workspace
+/// `target/` root (per `cargo metadata`); the actual deps live under
+/// `<target>/[<triple>/]<profile>/deps/`. We walk every directory named
+/// `deps` up to a small depth so we cover both the host-target layout
+/// (`target/<profile>/deps/`) and the explicit-target layout
+/// (`target/<triple>/<profile>/deps/`) without needing to thread the
+/// triple/profile through the call site.
+pub(crate) fn prune_orphan_rmetas_after_failed_build(plan: &RustArtifactPlanContext) {
+    let target_root = std::path::PathBuf::from(&plan.target_dir);
+    let mut total = 0usize;
+    for deps_dir in find_deps_dirs(&target_root, 3) {
+        total = total.saturating_add(prune_orphan_rmetas_in_deps(&deps_dir));
+    }
+    if total > 0 {
+        eprintln!(
+            "soldr: pruned {total} orphan .rmeta file(s) under {} after failed cargo build (soldr#410)",
+            target_root.display()
+        );
+    }
+}
+
+/// Locate `deps/` subdirectories under `root` up to `max_depth` levels
+/// deep (inclusive). Designed to find the cargo `target/[<triple>/]<profile>/deps/`
+/// trees without descending into unrelated directories like `incremental/`,
+/// `build/`, or `doc/`.
+fn find_deps_dirs(root: &std::path::Path, max_depth: usize) -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    walk_for_deps_dirs(root, max_depth, &mut out);
+    out
+}
+
+#[cfg(test)]
+pub(crate) fn find_deps_dirs_for_test(
+    root: &std::path::Path,
+    max_depth: usize,
+) -> Vec<std::path::PathBuf> {
+    find_deps_dirs(root, max_depth)
+}
+
+fn walk_for_deps_dirs(
+    dir: &std::path::Path,
+    remaining_depth: usize,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == "deps") {
+            out.push(path.clone());
+            // Do not descend further: cargo never nests another `deps/`
+            // inside a `deps/`, and we want to keep the walk shallow.
+            continue;
+        }
+        if remaining_depth > 0 {
+            walk_for_deps_dirs(&path, remaining_depth - 1, out);
+        }
+    }
+}
+
 fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
     let raw = std::env::var(TARGET_CACHE_MODE_ENV_VAR).unwrap_or_default();
     let mode = raw.trim().to_ascii_lowercase();
