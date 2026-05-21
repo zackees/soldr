@@ -3,6 +3,7 @@ use soldr_core::{suppress_windows_console_window, SoldrError};
 use soldr_fetch::VersionSpec;
 
 mod binaries;
+mod bootstrap;
 mod cache;
 mod cargo_front_door;
 mod cook;
@@ -252,6 +253,20 @@ enum Commands {
     Toolchain {
         #[command(subcommand)]
         subcommand: ToolchainSubcommand,
+    },
+    /// Install `rustup` itself into the soldr-managed bin dir when the
+    /// host has no system-managed toolchain manager. Idempotent — a
+    /// re-run with rustup already present prints the resolved path and
+    /// exits 0. Fetches `rustup-init` from
+    /// `https://static.rust-lang.org/rustup/dist/<host-triple>/` under
+    /// the same `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` policy as
+    /// every other soldr-fetched binary. Set `SOLDR_NO_BOOTSTRAP=1` to
+    /// disable the implicit auto-install that runs from
+    /// `soldr cargo` / `soldr rustup ...` when rustup is missing.
+    Bootstrap {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
     },
     /// Diagnose drift between `rust-toolchain.toml` and the
     /// currently installed rustup state. Read-only — never mutates
@@ -721,6 +736,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 std::process::exit(toolchain::run_toolchain_prepare()?);
             }
         },
+        Commands::Bootstrap { json } => {
+            std::process::exit(bootstrap::run_bootstrap(json).await?);
+        }
         Commands::Doctor { json } => {
             std::process::exit(doctor::run_doctor(json)?);
         }

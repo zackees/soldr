@@ -27,6 +27,15 @@ pub use install_zccache::{
     ZCCACHE_PINNED_BINARY_NAMES,
 };
 
+pub mod rustup_init;
+
+pub use rustup_init::{
+    auto_bootstrap_if_missing, auto_bootstrap_if_missing_blocking, bootstrap_rustup,
+    bootstrap_rustup_blocking, discover_rustup, managed_cargo_home, managed_rustup_home,
+    managed_rustup_path, rustup_init_download_url, rustup_init_host_triple, AutoBootstrapOutcome,
+    BootstrapReport, NO_BOOTSTRAP_ENV_VAR, RUSTUP_INIT_TRIPLE_ENV_VAR, RUSTUP_INIT_URL_ENV_VAR,
+};
+
 use soldr_core::{
     suppress_windows_console_window, Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple,
 };
