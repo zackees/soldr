@@ -120,6 +120,8 @@ Anything not registered falls through the generic External subcommand, which res
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
 - `README.md` — User-facing motivation and prior art comparison
 
+If you are looking to test performance of soldr, then please see [PERF.md](PERF.md).
+
 ## Dogfooding
 
 The repo builds itself through soldr so every contributor populates and hits the same cache.

@@ -1,25 +1,18 @@
 name: Soldr Perf Cluster
 
-# See perf/README.md for the design and what each cell is supposed
-# to prove. Workers receive a soldr binary built once (and cached!)
-# by the master job and exercise every selected scenario for one
-# (platform, fixture) cell in a single runner. Grouping by
-# (platform, fixture) instead of per-scenario amortises runner
-# startup, toolchain install, soldr download, and apt-get over all
-# selected scenarios for that fixture; each scenario still gets a
-# clean per-scenario workdir + cache root so isolation is preserved.
+# See PERF.md (root of repo) for the user-facing branch-naming
+# convention and the full per-branch scope table. perf/README.md
+# explains the per-scenario design rationale.
 #
 # Triggered by `workflow_dispatch` (manual button) and by pushes to
 # `main` / `perf/**` / `evaluate/**`. ci.yml has a matching
 # `branches-ignore` so perf branches only run this workflow.
 #
-# Input UI: GHA does not support multi-select. Platforms and fixtures
-# are `choice` dropdowns (their enums are tiny; `all` is the only
-# multi-value case). Scenarios are three booleans so arbitrary
-# subsets like "cold-tar-untar-warm + worktree-share" are
-# expressible. Push events leave every `inputs.X` empty — gate steps
-# treat empty as the dispatch default (`linux` / `all` / scenario
-# enabled) via `inputs.X || '<default>'` and `:-true` bash fallbacks.
+# Effective scope is computed by the `setup` job from the branch
+# name (hierarchical `perf/<plat>-<fix>-<scen>`) on push events, or
+# from the dispatch inputs on workflow_dispatch events. Downstream
+# build-soldr / bench / evaluate gates consult
+# `needs.setup.outputs.{platforms,fixtures,scenarios}`.
 
 on:
   workflow_dispatch:
@@ -93,7 +86,111 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  setup:
+    # Resolve the effective (platforms, fixtures, scenarios) scope
+    # once and pipe the result to every downstream gate via job
+    # outputs. Two sources:
+    #
+    # 1. `workflow_dispatch` -> use the dispatch inputs verbatim.
+    # 2. `push` -> parse the branch name. `main` and `perf/all` are
+    #    full-sweep aliases. `perf/<P>-<F>-<S>` narrows on the named
+    #    axis tokens (see PERF.md for the full table). Unknown
+    #    perf/* branches fall back to a full sweep with an
+    #    `::notice::` so the dev still gets useful data while
+    #    iterating on a feature branch.
+    name: setup
+    runs-on: ubuntu-24.04
+    outputs:
+      platforms: ${{ steps.parse.outputs.platforms }}
+      fixtures:  ${{ steps.parse.outputs.fixtures }}
+      scenarios: ${{ steps.parse.outputs.scenarios }}
+      source:    ${{ steps.parse.outputs.source }}
+    steps:
+      - name: Parse scope
+        id: parse
+        env:
+          EVENT:    ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_PLAT:  ${{ inputs.platforms }}
+          IN_FIX:   ${{ inputs.fixtures }}
+          IN_SCEN:  ${{ inputs.scenarios }}
+        run: |
+          set -euo pipefail
+
+          PLAT="all"; FIX="all"; SCEN="all"; SOURCE="default"
+
+          if [[ "${EVENT}" == "workflow_dispatch" ]]; then
+            PLAT="${IN_PLAT:-linux}"
+            FIX="${IN_FIX:-all}"
+            SCEN="${IN_SCEN:-all}"
+            SOURCE="dispatch"
+          else
+            case "${REF_NAME}" in
+              main|perf/all)
+                SOURCE="alias:${REF_NAME}"
+                ;;
+              perf/*)
+                triple="${REF_NAME#perf/}"
+                # Strict 3-token split. Branches with fewer or more
+                # tokens fall through to the unknown-branch arm.
+                IFS='-' read -r tp tf ts rest <<<"${triple}"
+                bad=0
+                # Platform token
+                case "${tp}" in
+                  all|linux|win) plat="${tp}" ;;
+                  mac)           plat="mac-arm" ;;
+                  *)             bad=1 ;;
+                esac
+                # Fixture token
+                case "${tf}" in
+                  all|medium) fix="${tf}" ;;
+                  sqlite)     fix="sqlite-link" ;;
+                  *)          bad=1 ;;
+                esac
+                # Scenario token
+                case "${ts}" in
+                  all)      scen="all" ;;
+                  cold)     scen="cold-tar-untar-warm" ;;
+                  worktree) scen="worktree-share" ;;
+                  touch)    scen="touch-no-change" ;;
+                  *)        bad=1 ;;
+                esac
+                if [[ -n "${rest}" || "${bad}" == "1" ]]; then
+                  echo "::notice::Branch '${REF_NAME}' does not match perf/<plat>-<fix>-<scen>; running full sweep. See PERF.md."
+                  SOURCE="unknown-perf:${REF_NAME}"
+                else
+                  PLAT="${plat}"; FIX="${fix}"; SCEN="${scen}"
+                  SOURCE="branch:${REF_NAME}"
+                fi
+                ;;
+              *)
+                # evaluate/** and anything else covered by the push
+                # filter that isn't main/perf — run full.
+                SOURCE="non-perf:${REF_NAME}"
+                ;;
+            esac
+          fi
+
+          {
+            echo "## Scope"
+            echo ""
+            echo "| axis | value |"
+            echo "| --- | --- |"
+            echo "| event | ${EVENT} |"
+            echo "| ref | ${REF_NAME} |"
+            echo "| source | ${SOURCE} |"
+            echo "| platforms | ${PLAT} |"
+            echo "| fixtures | ${FIX} |"
+            echo "| scenarios | ${SCEN} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "platforms=${PLAT}" >> "$GITHUB_OUTPUT"
+          echo "fixtures=${FIX}"   >> "$GITHUB_OUTPUT"
+          echo "scenarios=${SCEN}" >> "$GITHUB_OUTPUT"
+          echo "source=${SOURCE}"  >> "$GITHUB_OUTPUT"
+
   build-soldr:
+    needs: setup
     name: build-soldr (${{ matrix.platform }})
     strategy:
       fail-fast: false
@@ -113,10 +210,10 @@ jobs:
       # same context is available at `runs-on:` and inside step
       # `if:` blocks. Mirrors the gate-step pattern used by the
       # bench job below.
-      - name: Gate cell against dispatch inputs
+      - name: Gate cell against resolved scope
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
           M_PLATFORM:    ${{ matrix.platform }}
         run: |
           if [[ "${REQ_PLATFORMS}" == "all" ]] \
@@ -124,7 +221,7 @@ jobs:
             echo "selected=true" >> "$GITHUB_OUTPUT"
           else
             echo "selected=false" >> "$GITHUB_OUTPUT"
-            echo "Platform ${M_PLATFORM} not selected by dispatch input '${REQ_PLATFORMS}'; skipping build." >> "$GITHUB_STEP_SUMMARY"
+            echo "Platform ${M_PLATFORM} not in scope '${REQ_PLATFORMS}'; skipping build." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Checkout
@@ -181,7 +278,7 @@ jobs:
 
   bench:
     name: bench (${{ matrix.platform }} / ${{ matrix.fixture }})
-    needs: build-soldr
+    needs: [setup, build-soldr]
     strategy:
       fail-fast: false
       matrix:
@@ -192,13 +289,12 @@ jobs:
             runs_on: ubuntu-24.04
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - name: Gate cell against dispatch inputs
+      - name: Gate cell against resolved scope
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
-          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
-          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
-          REF_NAME:      ${{ github.ref_name }}
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
+          REQ_FIXTURES:  ${{ needs.setup.outputs.fixtures }}
+          REQ_SCENARIOS: ${{ needs.setup.outputs.scenarios }}
           M_PLATFORM:    ${{ matrix.platform }}
           M_FIXTURE:     ${{ matrix.fixture }}
         run: |
@@ -208,20 +304,6 @@ jobs:
             [[ ",${req}," == *",${val},"* ]] && return 0
             return 1
           }
-
-          # Branch-aware narrowing: `perf/<axis-value>/**` (or
-          # `perf/<axis-value>-**`) forces the corresponding axis to
-          # that value, overriding the dispatch input. Push events
-          # get this for free; dispatching `fixtures=all` from a
-          # perf/sqlite/foo branch still runs sqlite-link only.
-          # Extend this case for new fixtures/scenarios as needed.
-          if   [[ "${REF_NAME}" =~ ^perf/sqlite(/|-) ]]; then
-            echo "Branch ${REF_NAME} narrows fixtures -> sqlite-link"
-            REQ_FIXTURES="sqlite-link"
-          elif [[ "${REF_NAME}" =~ ^perf/medium(/|-) ]]; then
-            echo "Branch ${REF_NAME} narrows fixtures -> medium"
-            REQ_FIXTURES="medium"
-          fi
 
           # Cell is gated on (platform, fixture) only. Scenarios that
           # are not selected are filtered out of the per-cell loop
@@ -356,7 +438,7 @@ jobs:
     # (::warning::) — they'll be promoted to hard once their
     # baselines are trusted.
     name: Evaluate ${{ matrix.platform }}
-    needs: bench
+    needs: [setup, bench]
     strategy:
       fail-fast: false
       matrix:
@@ -366,10 +448,10 @@ jobs:
             min_speedup: "3.0"
     runs-on: ${{ matrix.runs_on }}
     steps:
-      - name: Gate cell against dispatch inputs
+      - name: Gate cell against resolved scope
         id: gate
         env:
-          REQ_PLATFORMS: ${{ inputs.platforms || 'linux' }}
+          REQ_PLATFORMS: ${{ needs.setup.outputs.platforms }}
           M_PLATFORM:    ${{ matrix.platform }}
         run: |
           in_subset() {
@@ -379,10 +461,9 @@ jobs:
             return 1
           }
 
-          # Fixture/scenario subsetting + branch-aware narrowing
-          # happens inside the evaluate step. The cell-level gate
-          # only decides whether this whole platform's evaluator
-          # should run at all.
+          # Fixture/scenario subsetting is done inside the evaluate
+          # step (via needs.setup.outputs). The cell-level gate only
+          # decides whether this whole platform's evaluator runs.
           if in_subset "${REQ_PLATFORMS}" "${M_PLATFORM}"; then
             echo "selected=true" >> "$GITHUB_OUTPUT"
           else
@@ -405,9 +486,8 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         env:
           MIN_SPEEDUP:   ${{ matrix.min_speedup }}
-          REQ_FIXTURES:  ${{ inputs.fixtures  || 'all' }}
-          REQ_SCENARIOS: ${{ inputs.scenarios || 'all' }}
-          REF_NAME:      ${{ github.ref_name }}
+          REQ_FIXTURES:  ${{ needs.setup.outputs.fixtures }}
+          REQ_SCENARIOS: ${{ needs.setup.outputs.scenarios }}
           M_PLATFORM:    ${{ matrix.platform }}
         run: |
           set -uo pipefail
@@ -418,13 +498,6 @@ jobs:
             [[ ",${req}," == *",${val},"* ]] && return 0
             return 1
           }
-
-          # Branch-aware fixture narrowing — must match bench gate.
-          if   [[ "${REF_NAME}" =~ ^perf/sqlite(/|-) ]]; then
-            REQ_FIXTURES="sqlite-link"
-          elif [[ "${REF_NAME}" =~ ^perf/medium(/|-) ]]; then
-            REQ_FIXTURES="medium"
-          fi
 
           # scenario -> "fail" or "warn". cold-tar-untar-warm is the
           # only gate today; the others are soft until their baselines
