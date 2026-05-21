@@ -5,6 +5,7 @@
 
 mod bundle_walk;
 mod manifest;
+mod orphan_rmeta;
 mod plan_build;
 mod warm_restore;
 mod wire_compat;
