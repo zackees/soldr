@@ -325,6 +325,47 @@ fn rustflags_change_forces_fall_through() {
 }
 
 #[test]
+fn cargo_config_rustflags_edit_forces_fall_through() {
+    // Regression test for issue #346: editing `.cargo/config.toml`
+    // [build] rustflags must bust the trampoline fingerprint even when
+    // the env var `RUSTFLAGS` is unchanged.
+    let project = make_project("trampoline-cargo-config-rustflags");
+    // Seed: cold build with no .cargo/config.toml — sidecar records a
+    // fingerprint that includes the empty-config digest.
+    let cold = run_cold(&project, &[]);
+    assert!(
+        cold.status.success(),
+        "seed cold build failed:\n{}",
+        String::from_utf8_lossy(&cold.stderr)
+    );
+
+    // Add `.cargo/config.toml` declaring new rustflags. After this edit
+    // the trampoline must not fast-path the stale binary; if it does,
+    // the broken-cargo stub never runs and the assertion below fails.
+    let cargo_dir = project.join(".cargo");
+    fs::create_dir_all(&cargo_dir).expect("create .cargo");
+    fs::write(
+        cargo_dir.join("config.toml"),
+        "[build]\nrustflags = [\"-C\", \"opt-level=0\"]\n",
+    )
+    .expect("write .cargo/config.toml");
+
+    let stub_dir = unique_temp_dir("trampoline-cargo-config-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let out = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run"],
+    );
+    assert!(
+        !out.status.success(),
+        ".cargo/config.toml [build] rustflags edit should force trampoline fall-through; broken cargo must be invoked\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
 fn release_profile_has_distinct_sidecar() {
     let project = make_project("trampoline-release");
     // Cold debug build.
