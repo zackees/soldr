@@ -20,6 +20,12 @@ pub struct ToolSpec {
     /// Optional release-tag prefix used to filter monorepo releases, e.g.
     /// `"cargo-audit/"` to pick only `cargo-audit/v0.21.0`-style tags.
     pub tag_prefix: Option<&'static str>,
+    /// Optional pinned release version (without the leading `v`). When set,
+    /// fetches resolve to exactly this version instead of the upstream
+    /// `latest` release. Used for tools whose upstream release stream has
+    /// drifted away from the platform coverage soldr depends on (e.g.
+    /// `cargo-chef` stopped publishing Windows/macOS archives after v0.1.73).
+    pub pinned_version: Option<&'static str>,
 }
 
 pub const KNOWN_TOOLS: &[ToolSpec] = &[
@@ -30,6 +36,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-nextest",
         repo: Some(("nextest-rs", "nextest")),
         tag_prefix: Some("cargo-nextest-"),
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-deny",
@@ -37,6 +44,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-deny",
         repo: Some(("EmbarkStudios", "cargo-deny")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-audit",
@@ -44,6 +52,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-audit",
         repo: Some(("rustsec", "rustsec")),
         tag_prefix: Some("cargo-audit/"),
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-llvm-cov",
@@ -51,6 +60,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-llvm-cov",
         repo: Some(("taiki-e", "cargo-llvm-cov")),
         tag_prefix: None,
+        pinned_version: None,
     },
     // Phase 3 — dev ergonomics.
     ToolSpec {
@@ -59,6 +69,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-udeps",
         repo: Some(("est31", "cargo-udeps")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-semver-checks",
@@ -66,6 +77,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-semver-checks",
         repo: Some(("obi1kenobi", "cargo-semver-checks")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-expand",
@@ -73,6 +85,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-expand",
         repo: Some(("dtolnay", "cargo-expand")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cargo-watch",
@@ -80,6 +93,20 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-watch",
         repo: Some(("watchexec", "cargo-watch")),
         tag_prefix: None,
+        pinned_version: None,
+    },
+    // `cargo-chef` powers the `soldr cook` content-addressable dep-prebuild
+    // (issue #359). Pinned to v0.1.73 — the most recent release that still
+    // ships pre-built archives for Windows MSVC and macOS in addition to the
+    // Linux assets the newer releases publish. Bumping the pin past v0.1.73
+    // costs Windows/macOS coverage until upstream restores those targets.
+    ToolSpec {
+        crate_name: "cargo-chef",
+        cargo_subcommand: Some("chef"),
+        binary_name: "cargo-chef",
+        repo: Some(("LukeMathWalker", "cargo-chef")),
+        tag_prefix: None,
+        pinned_version: Some(CARGO_CHEF_PINNED_VERSION),
     },
     // Phase 4 — build + docs. None of these are cargo subcommands — they are
     // top-level tools invoked as `soldr cross ...`, `soldr mdbook ...`, etc.
@@ -89,6 +116,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cross",
         repo: Some(("cross-rs", "cross")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "mdbook",
@@ -96,6 +124,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "mdbook",
         repo: Some(("rust-lang", "mdBook")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "cbindgen",
@@ -103,6 +132,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cbindgen",
         repo: Some(("mozilla", "cbindgen")),
         tag_prefix: None,
+        pinned_version: None,
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     ToolSpec {
@@ -111,6 +141,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "wasm-pack",
         repo: Some(("rustwasm", "wasm-pack")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "trunk",
@@ -118,6 +149,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "trunk",
         repo: Some(("trunk-rs", "trunk")),
         tag_prefix: None,
+        pinned_version: None,
     },
     ToolSpec {
         crate_name: "sccache",
@@ -125,6 +157,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "sccache",
         repo: Some(("mozilla", "sccache")),
         tag_prefix: None,
+        pinned_version: None,
     },
     // Self-trampoline: `soldr --as <version>` fetches this entry so an older
     // soldr binary can handle the rest of the invocation.
@@ -134,8 +167,14 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "soldr",
         repo: Some(("zackees", "soldr")),
         tag_prefix: None,
+        pinned_version: None,
     },
 ];
+
+/// Pinned `cargo-chef` release that `soldr cook` resolves by default. See the
+/// `cargo-chef` entry in [`KNOWN_TOOLS`] for the rationale (last release with
+/// Windows MSVC + macOS prebuilds).
+pub const CARGO_CHEF_PINNED_VERSION: &str = "0.1.73";
 
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {
     KNOWN_TOOLS.iter().find(|t| t.crate_name == crate_name)
@@ -199,6 +238,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn cargo_chef_is_registered_and_pinned() {
+        // soldr cook (issue #359) is a shim around cargo-chef. Both the
+        // registry entry and the pinned-version constant are part of the
+        // public contract; if either changes, downstream users see a
+        // different cargo-chef.
+        let spec = lookup_by_crate("cargo-chef").expect("cargo-chef must be registered");
+        assert_eq!(spec.cargo_subcommand, Some("chef"));
+        assert_eq!(spec.binary_name, "cargo-chef");
+        assert_eq!(spec.repo, Some(("LukeMathWalker", "cargo-chef")));
+        assert_eq!(spec.pinned_version, Some(CARGO_CHEF_PINNED_VERSION));
+        assert_eq!(CARGO_CHEF_PINNED_VERSION, "0.1.73");
+        assert_eq!(
+            lookup_by_cargo_subcommand("chef").map(|s| s.crate_name),
+            Some("cargo-chef")
+        );
     }
 
     #[test]
