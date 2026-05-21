@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # Standalone workspace so cargo never tries to fold this into the
-# parent soldr workspace at crates/. The perf cluster builds this
+# parent soldr workspace at crates/. The perf matrix builds this
 # fixture in isolation under $RUNNER_TEMP, but checking in
 # `[workspace]` here makes ad-hoc local builds work too.
 [workspace]

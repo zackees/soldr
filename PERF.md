@@ -1,6 +1,6 @@
 # PERF.md — testing soldr performance
 
-soldr has one performance workflow: **`.github/workflows/perf-cluster.yml`** (the "Soldr Perf Cluster"). Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
+soldr has one performance workflow: **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix"). Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
 
 For the per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md).
 

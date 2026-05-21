@@ -60,7 +60,7 @@ the second dispatch on the same soldr commit is essentially free:
    cache miss, so the rare rebuild is incremental.
 
 Soldr itself is deliberately **not** used to build soldr in this
-workflow. The perf cluster has to keep working when soldr is broken
+workflow. The perf matrix has to keep working when soldr is broken
 or absent on a new platform, so the bootstrap path stays on bare
 cargo + stock GHA caches.
 
@@ -100,7 +100,7 @@ perf/
    fixture's working directory as its first positional argument and
    writes a single JSON line to stdout.
 2. Add the scenario name to the matrix in
-   `.github/workflows/perf-cluster.yml`.
+   `.github/workflows/perf-matrix.yml`.
 
 ## Running locally
 

@@ -1,6 +1,6 @@
-# Perf Cluster Optimization Loop
+# Perf Matrix Optimization Loop
 
-You are a ralph-loop agent driving `.github/workflows/perf-cluster.yml`
+You are a ralph-loop agent driving `.github/workflows/perf-matrix.yml`
 down from **~17 minutes** to **≤ 9 minutes** of total wall time, with
 the stronger invariant that **every warm build is ≤ ½ of its cold
 parent**. You will iterate: change code, push a commit to one
@@ -15,7 +15,7 @@ iteration.
 ## Stop condition (read this twice)
 
 You are done when **all** of the following are true on the most
-recent perf-cluster run on your branch:
+recent perf-matrix run on your branch:
 
 1. The whole workflow run (max of `bench (linux / medium)` and
    `bench (linux / sqlite-link)`, plus `build-soldr`) finishes in
@@ -153,10 +153,10 @@ cache sharing — don't.
 
 Each iteration:
 
-1. **Read the latest perf-cluster run** for your branch:
+1. **Read the latest perf-matrix run** for your branch:
 
    ```bash
-   gh run list -R zackees/soldr --workflow=perf-cluster.yml --branch <your-branch> --limit 3
+   gh run list -R zackees/soldr --workflow=perf-matrix.yml --branch <your-branch> --limit 3
    gh run view <run-id> -R zackees/soldr
    gh run view --job <medium-job-id> -R zackees/soldr --log \
      | grep -E "scenario:|Compiling|Installing|hits:|compilations:|^\\{\"scenario\""
@@ -176,7 +176,7 @@ Each iteration:
    ```bash
    git add -A && git commit -m "perf: <what changed and why, ≤80 chars>"
    git push
-   gh workflow run perf-cluster.yml -R zackees/soldr --ref <your-branch>
+   gh workflow run perf-matrix.yml -R zackees/soldr --ref <your-branch>
    ```
 
 5. **Wait for the run.** `gh run watch <run-id>` blocks until done.
@@ -220,7 +220,7 @@ Each iteration:
 
 - **Do not edit `LOOP.md` itself.** It's your spec. Edit it only if
   the user explicitly tells you to.
-- **Do not change perf-cluster.yml's structure (jobs, matrix axes,
+- **Do not change perf-matrix.yml's structure (jobs, matrix axes,
   triggers).** Optimize within the existing shape. The user has
   spent multiple PRs nailing this shape down; don't churn it.
 - **Do not delete scenarios or fixtures.** They each pin a specific
@@ -248,9 +248,9 @@ Each iteration:
 - `CLAUDE.md` — repo invariants, especially the
   "Local zccache for debugging" section about
   `SOLDR_ZCCACHE_LOCAL_DIR`
-- `.github/workflows/perf-cluster.yml` — the workflow itself
+- `.github/workflows/perf-matrix.yml` — the workflow itself
 
-Run `cat .github/workflows/perf-cluster.yml` and
+Run `cat .github/workflows/perf-matrix.yml` and
 `cat perf/scenarios/cold-tar-untar-warm/run.sh` before iteration 1
 so you have the full surface in head.
 
