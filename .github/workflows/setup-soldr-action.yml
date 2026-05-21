@@ -53,12 +53,22 @@ jobs:
 
       - name: Verify setup-soldr pin matches v0
         shell: bash
+        # Non-blocking: a stale pin warns visibly in the PR checks list
+        # (the step turns yellow) but does not fail the job. We'll handle
+        # the pin bump out-of-band rather than gating every unrelated PR
+        # on an upstream tag move.
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           if command -v python3 >/dev/null 2>&1; then
             python3 .github/scripts/verify_setup_soldr_pin.py
           else
             python .github/scripts/verify_setup_soldr_pin.py
+          fi
+          status=$?
+          if [[ $status -ne 0 ]]; then
+            echo "::warning title=setup-soldr pin stale::Pin in .github/workflows/setup-soldr-action.yml does not match @v0 — non-blocking; bump out-of-band."
+            exit $status
           fi
 
       - id: setup
