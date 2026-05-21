@@ -299,7 +299,7 @@ enum Commands {
     /// provided. `<source>` accepts `system`, a directory or archive
     /// path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL
     /// pointing at such an archive.
-    #[command(name = "install-zccache")]
+    #[command(name = "install-zccache", alias = "update-zccache")]
     InstallZccache {
         /// Source for the three zccache binaries. Mutually exclusive
         /// with `--remove` / `--status`.
