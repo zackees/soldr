@@ -24,8 +24,14 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 WORKDIR="$(cd -- "${FIXTURE_DIR}/.." && pwd)"
 CACHE_COLD="${WORKDIR}/cache-cold"
 CACHE_WARM="${WORKDIR}/cache-warm"
-SNAPSHOT="${WORKDIR}/cache-snapshot.tar.gz"
+# Round 2a: swap raw tar for `soldr save`/`soldr load`. Output is
+# zstd-compressed (`.tar.zst`) and bundles both the cache tree and a
+# content-verified source-mtime snapshot — so warm cargo fingerprints
+# don't blow up on the first stat after `cargo clean`.
+SNAPSHOT="${WORKDIR}/cache-snapshot.tar.zst"
 RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
+
+echo "scenario: using soldr cache save/load (round 2a)" >&2
 
 mkdir -p "${CACHE_COLD}" "${CACHE_WARM}"
 
@@ -59,12 +65,31 @@ cold_cache_bytes="$(measure::cache_bytes "${CACHE_COLD}")"
 
 # --- Snapshot ------------------------------------------------------
 
-tar -C "${CACHE_COLD}" -czf "${SNAPSHOT}" cache
+# `soldr save` bundles the contents of --cache-dir into <out> under
+# the archive's top-level `cache/` prefix. Pointing it at
+# ${CACHE_COLD}/cache preserves the exact on-disk layout the raw
+# `tar -C ${CACHE_COLD} -czf snap cache` round 1 used, so the warm
+# side sees ${CACHE_WARM}/cache/... after load, matching what
+# SOLDR_CACHE_DIR=${CACHE_WARM} expects.
+soldr save \
+    --cache-dir "${CACHE_COLD}/cache" \
+    --workspace "${FIXTURE_DIR}" \
+    --out "${SNAPSHOT}" \
+    --json >"${WORKDIR}/save-report.json"
 tar_bytes="$(wc -c <"${SNAPSHOT}")"
 
 # --- Restore into a clean cache dir --------------------------------
 
-tar -C "${CACHE_WARM}" -xzf "${SNAPSHOT}"
+# Symmetric: --cache-dir ${CACHE_WARM}/cache makes `soldr load`
+# strip the archive's `cache/` prefix and lay everything back under
+# ${CACHE_WARM}/cache/... `soldr load` creates the dir if missing,
+# so the earlier `mkdir -p ${CACHE_WARM}` (kept for clarity) is
+# redundant but harmless.
+soldr load \
+    --archive "${SNAPSHOT}" \
+    --cache-dir "${CACHE_WARM}/cache" \
+    --workspace "${FIXTURE_DIR}" \
+    --json >"${WORKDIR}/load-report.json"
 
 # Force cargo to think every unit needs to be recompiled. soldr will
 # then ask zccache for each unit; hit rate measures restore fidelity.
@@ -140,6 +165,7 @@ measure::emit_summary_json "${SCENARIO}" \
     "cold_cache_bytes=${cold_cache_bytes}" \
     "warm_cache_bytes=${warm_cache_bytes}" \
     "tarball_bytes=${tar_bytes}" \
+    "archive_mode=soldr-save-load" \
     "peak_daemon_rss_bytes=${peak_daemon_rss}" \
     "peak_compile_rss_bytes=${peak_compile_rss}"
 
