@@ -213,7 +213,7 @@ Automatic pruning via `RUSTC_WRAPPER` pre/post-compile hooks is
 deferred to a follow-up — the manual subcommand is intentionally
 opt-in until the behaviour is trusted on real `target/` directories.
 
-### `soldr update-zccache`
+### `soldr install-zccache`
 
 Install zccache binaries into soldr's private dir so soldr stops
 fetching the managed GitHub release. Pins a user-supplied set of three
@@ -222,10 +222,10 @@ zccache binaries (`zccache`, `zccache-daemon`, `zccache-fp`) into
 invocations resolve the pinned binaries automatically.
 
 ```bash
-soldr update-zccache <SOURCE>   # system | <path> | <url>
-soldr update-zccache --remove   # un-pin, idempotent
-soldr update-zccache --status   # report sidecar + drift
-soldr update-zccache --json     # structured output
+soldr install-zccache <SOURCE>   # system | <path> | <url>
+soldr install-zccache --remove   # un-pin, idempotent
+soldr install-zccache --status   # report sidecar + drift
+soldr install-zccache --json     # structured output
 ```
 
 `<SOURCE>` accepts:

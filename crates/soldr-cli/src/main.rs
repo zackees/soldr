@@ -299,8 +299,8 @@ enum Commands {
     /// provided. `<source>` accepts `system`, a directory or archive
     /// path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL
     /// pointing at such an archive.
-    #[command(name = "update-zccache")]
-    UpdateZccache {
+    #[command(name = "install-zccache")]
+    InstallZccache {
         /// Source for the three zccache binaries. Mutually exclusive
         /// with `--remove` / `--status`.
         #[arg(value_name = "SOURCE", conflicts_with_all = ["remove", "status"])]
@@ -706,13 +706,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
         }
-        Commands::UpdateZccache {
+        Commands::InstallZccache {
             source,
             remove,
             status,
             json,
         } => {
-            cache::run_update_zccache(source, remove, status, json).await?;
+            cache::run_install_zccache(source, remove, status, json).await?;
         }
         Commands::Save(args) => {
             std::process::exit(save_load::run_save(args));
