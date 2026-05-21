@@ -718,6 +718,12 @@ struct FingerprintInputs<'a> {
     manifest_path: String,
     rustflags: String,
     rustc_identity: String,
+    /// Digest of every `.cargo/config.toml` (+ legacy `.cargo/config`)
+    /// cargo would discover walking from the manifest dir up to the
+    /// filesystem root, plus `$CARGO_HOME/config.toml`. Added for #346:
+    /// the trampoline previously only hashed `RUSTFLAGS` from the env,
+    /// so a config-file edit silently fast-pathed the stale binary.
+    cargo_config_digest: String,
 }
 
 pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, SoldrError> {
@@ -739,6 +745,10 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
         .or_else(find_nearest_manifest)
         .ok_or_else(|| SoldrError::Other("Cargo.toml not found for fingerprint".into()))?;
     let canonical = fs::canonicalize(&manifest_path).unwrap_or(manifest_path);
+    let manifest_dir = canonical
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
     let manifest_string = canonical.to_string_lossy().to_string();
 
     let mut features: Vec<String> = parsed.features.clone();
@@ -747,6 +757,7 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
 
     let rustflags = std::env::var("RUSTFLAGS").unwrap_or_default();
     let rustc_identity = rustc_identity_cached()?;
+    let cargo_config_digest = cargo_config_digest(&manifest_dir);
 
     let effective_target = effective_target_triple(parsed);
     let inputs = FingerprintInputs {
@@ -758,6 +769,7 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
         manifest_path: manifest_string,
         rustflags,
         rustc_identity,
+        cargo_config_digest,
     };
 
     let bytes = serde_json::to_vec(&inputs)
@@ -795,6 +807,15 @@ fn rustc_identity_cached() -> Result<String, SoldrError> {
 #[path = "trampoline_dep_info.rs"]
 mod dep_info;
 pub(crate) use dep_info::parse_dep_info_for_output;
+
+// ---------------------------------------------------------------------------
+// `.cargo/config.toml` content digest (issue #346) — see [`config`] sibling
+// module.
+// ---------------------------------------------------------------------------
+
+#[path = "trampoline_config.rs"]
+mod config;
+pub(crate) use config::cargo_config_digest;
 
 // ---------------------------------------------------------------------------
 // Exec / stat / logging helpers
