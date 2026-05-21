@@ -1,4 +1,4 @@
-//! Integration tests for `soldr update-zccache` at the CLI surface.
+//! Integration tests for `soldr install-zccache` at the CLI surface.
 //! Covers argv parsing, JSON output, mutual-exclusion errors, and the
 //! round-trip from `install` → `--status` → `--remove`.
 
@@ -36,22 +36,22 @@ fn seed_source_dir(root: &Path) -> PathBuf {
 }
 
 #[test]
-fn update_zccache_from_directory_writes_sidecar() {
-    let tmp = unique_temp_dir("update-zccache-dir");
+fn install_zccache_from_directory_writes_sidecar() {
+    let tmp = unique_temp_dir("install-zccache-dir");
     let cache_root = tmp.join("soldr-root");
     let src = seed_source_dir(&tmp);
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache"])
+        .args(["install-zccache"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("failed to run update-zccache");
+        .expect("failed to run install-zccache");
 
     assert!(
         output.status.success(),
-        "update-zccache failed: stdout={} stderr={}",
+        "install-zccache failed: stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
@@ -71,23 +71,23 @@ fn update_zccache_from_directory_writes_sidecar() {
 }
 
 #[test]
-fn update_zccache_json_round_trip() {
-    let tmp = unique_temp_dir("update-zccache-json");
+fn install_zccache_json_round_trip() {
+    let tmp = unique_temp_dir("install-zccache-json");
     let cache_root = tmp.join("soldr-root");
     let src = seed_source_dir(&tmp);
 
     // install --json
     let install = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--json"])
+        .args(["install-zccache", "--json"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache --json");
+        .expect("install-zccache --json");
     assert!(install.status.success());
     let install_json: Value =
         serde_json::from_slice(&install.stdout).expect("install --json should emit valid JSON");
-    assert_eq!(install_json["command"], "update-zccache");
+    assert_eq!(install_json["command"], "install-zccache");
     assert_eq!(install_json["source_kind"], "path");
     assert_eq!(
         install_json["binaries"]["zccache"]["size_bytes"],
@@ -96,15 +96,15 @@ fn update_zccache_json_round_trip() {
 
     // --status --json
     let status = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--status", "--json"])
+        .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache --status --json");
+        .expect("install-zccache --status --json");
     assert!(status.status.success());
     let status_json: Value =
         serde_json::from_slice(&status.stdout).expect("status --json should emit valid JSON");
-    assert_eq!(status_json["command"], "update-zccache --status");
+    assert_eq!(status_json["command"], "install-zccache --status");
     assert_eq!(status_json["pinned"]["source_kind"], "path");
     assert_eq!(status_json["managed_version"], "1.8.1");
     assert!(
@@ -114,35 +114,35 @@ fn update_zccache_json_round_trip() {
 
     // --remove --json
     let remove = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--remove", "--json"])
+        .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache --remove --json");
+        .expect("install-zccache --remove --json");
     assert!(remove.status.success());
     let remove_json: Value = serde_json::from_slice(&remove.stdout).expect("remove --json");
     assert_eq!(remove_json["removed"], true);
 
     // Second remove is idempotent: removed=false.
     let remove2 = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--remove", "--json"])
+        .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache --remove --json (second)");
+        .expect("install-zccache --remove --json (second)");
     assert!(remove2.status.success());
     let remove2_json: Value = serde_json::from_slice(&remove2.stdout).expect("remove --json 2");
     assert_eq!(remove2_json["removed"], false);
 }
 
 #[test]
-fn update_zccache_status_with_no_install_reports_managed_default() {
-    let tmp = unique_temp_dir("update-zccache-status-empty");
+fn install_zccache_status_with_no_install_reports_managed_default() {
+    let tmp = unique_temp_dir("install-zccache-status-empty");
     let cache_root = tmp.join("soldr-root");
     fs::create_dir_all(&cache_root).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--status", "--json"])
+        .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
@@ -154,16 +154,16 @@ fn update_zccache_status_with_no_install_reports_managed_default() {
 }
 
 #[test]
-fn update_zccache_no_source_no_flags_errors() {
-    let tmp = unique_temp_dir("update-zccache-empty-args");
+fn install_zccache_no_source_no_flags_errors() {
+    let tmp = unique_temp_dir("install-zccache-empty-args");
     let cache_root = tmp.join("soldr-root");
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache"])
+        .args(["install-zccache"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache (no args)");
+        .expect("install-zccache (no args)");
     assert!(!output.status.success(), "expected non-zero exit");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -173,17 +173,17 @@ fn update_zccache_no_source_no_flags_errors() {
 }
 
 #[test]
-fn update_zccache_mutually_exclusive_flags_rejected() {
-    let tmp = unique_temp_dir("update-zccache-mutex");
+fn install_zccache_mutually_exclusive_flags_rejected() {
+    let tmp = unique_temp_dir("install-zccache-mutex");
     let cache_root = tmp.join("soldr-root");
 
     // clap should reject `--remove` + `--status` outright.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "--remove", "--status"])
+        .args(["install-zccache", "--remove", "--status"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache --remove --status");
+        .expect("install-zccache --remove --status");
     assert!(
         !output.status.success(),
         "expected mutual-exclusion failure"
@@ -191,11 +191,11 @@ fn update_zccache_mutually_exclusive_flags_rejected() {
 
     // SOURCE + --remove is also rejected.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache", "system", "--remove"])
+        .args(["install-zccache", "system", "--remove"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache SOURCE --remove");
+        .expect("install-zccache SOURCE --remove");
     assert!(
         !output.status.success(),
         "expected mutual-exclusion failure (SOURCE + --remove)"
@@ -203,19 +203,19 @@ fn update_zccache_mutually_exclusive_flags_rejected() {
 }
 
 #[test]
-fn update_zccache_unknown_extension_errors() {
-    let tmp = unique_temp_dir("update-zccache-unknown-ext");
+fn install_zccache_unknown_extension_errors() {
+    let tmp = unique_temp_dir("install-zccache-unknown-ext");
     let cache_root = tmp.join("soldr-root");
     let bogus = tmp.join("zccache.7z");
     fs::write(&bogus, b"junk").unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["update-zccache"])
+        .args(["install-zccache"])
         .arg(&bogus)
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
-        .expect("update-zccache with bogus archive");
+        .expect("install-zccache with bogus archive");
     assert!(!output.status.success(), "expected unknown-ext failure");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
