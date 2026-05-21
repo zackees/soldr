@@ -42,10 +42,12 @@ Requires: python>=3.10, git, soldr on PATH. uv to launch the script.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -87,6 +89,16 @@ def parse_args() -> argparse.Namespace:
         "--keep",
         action="store_true",
         help="Don't delete scratch directories on exit.",
+    )
+    parser.add_argument(
+        "--stall-profile-seconds",
+        type=int,
+        default=int(os.environ.get("STALL_PROFILE_SECONDS", 600)),
+        help=(
+            "Once a stage has been running this long without finishing, start "
+            "snapshotting process CPU/memory/IO every 30s so it's possible to "
+            "diagnose what's stalling. Default 600 (10 min). Pass 0 to disable."
+        ),
     )
     return parser.parse_args()
 
@@ -212,15 +224,128 @@ def run_streaming(
         raise subprocess.CalledProcessError(rc, cmd)
 
 
+def _capture_process_snapshot(
+    label: str,
+    elapsed_seconds: float,
+    previous_cpu_times: dict[int, float],
+) -> dict[int, float]:
+    """Print top-N processes by CPU-time delta since the last snapshot.
+
+    Compares cumulative CPU time per pid between successive calls. The
+    delta is the wall-CPU each process consumed during the interval --
+    high values point at the process that's actually doing work (or being
+    actively scanned by Defender / locking the disk / etc.). Defender's
+    real-time scanner runs in MsMpEng.exe, so seeing it dominate is the
+    "Defender is the bottleneck" signal we wanted.
+
+    Best-effort: returns the previous map unchanged on any failure.
+    Windows-only; macOS/Linux callers should never reach here.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-Process | Where-Object { $_.CPU -ne $null } | "
+                "Select-Object Name,Id,CPU,WorkingSet,Handles | "
+                "ConvertTo-Json -Compress",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return previous_cpu_times
+        parsed = json.loads(result.stdout)
+        if isinstance(parsed, dict):
+            parsed = [parsed]
+        current: dict[int, float] = {}
+        rows = []
+        for p in parsed:
+            pid = int(p["Id"])
+            cpu = float(p["CPU"])
+            current[pid] = cpu
+            delta = cpu - previous_cpu_times.get(pid, cpu)
+            rows.append((delta, p))
+        rows.sort(key=lambda r: r[0], reverse=True)
+        stamp = datetime.now().strftime("%H:%M:%S")
+        print(
+            f"[{stamp}] [profile-{label}] STALL DETECTED at elapsed={elapsed_seconds:.0f}s; "
+            f"top processes by CPU-time delta this 30s window:",
+            flush=True,
+        )
+        for delta, p in rows[:8]:
+            name = str(p.get("Name", "?"))
+            pid = int(p.get("Id", 0))
+            mem_mb = int(p.get("WorkingSet", 0)) // 1_048_576
+            handles = int(p.get("Handles", 0))
+            print(
+                f"[{stamp}] [profile-{label}] "
+                f"{name:30s} pid={pid:6d} cpu+={delta:7.2f}s mem={mem_mb:5d}MB handles={handles}",
+                flush=True,
+            )
+        return current
+    except (subprocess.SubprocessError, OSError, json.JSONDecodeError, ValueError) as exc:
+        print(f"[profile-{label}] snapshot failed: {exc}", flush=True)
+        return previous_cpu_times
+
+
+def _stall_profiler(
+    label: str,
+    start_time: float,
+    stop_event: threading.Event,
+    threshold_seconds: int,
+    interval_seconds: int = 30,
+) -> None:
+    """Background thread: snapshots process activity once a stage stalls.
+
+    No-op on non-Windows or when threshold_seconds <= 0. Otherwise wakes
+    every interval_seconds; once elapsed exceeds threshold, dumps a
+    snapshot and continues until stop_event is set.
+    """
+    if sys.platform != "win32" or threshold_seconds <= 0:
+        return
+    cpu_times: dict[int, float] = {}
+    while not stop_event.is_set():
+        elapsed = time.monotonic() - start_time
+        if elapsed >= threshold_seconds:
+            cpu_times = _capture_process_snapshot(label, elapsed, cpu_times)
+        if stop_event.wait(interval_seconds):
+            break
+
+
 def time_build(
     label: str,
     cwd: Path,
     env: dict[str, str] | None = None,
+    stall_profile_seconds: int = 600,
 ) -> BuildResult:
-    """Time a soldr-wrapped cargo workspace release build."""
+    """Time a soldr-wrapped cargo workspace release build.
+
+    If the stage runs longer than stall_profile_seconds (default 10 min),
+    a background watchdog starts snapshotting per-process CPU and IO
+    every 30s so we can attribute the wait to a specific process
+    (MsMpEng.exe = Defender, zccache.exe = daemon, etc.). Set to 0 to
+    disable.
+    """
     cmd = ["soldr", "cargo", "build", "--workspace", "--locked", "--release"]
     start = time.monotonic()
-    run_streaming(label, cmd, cwd, env=env)
+    stop_event = threading.Event()
+    profiler: threading.Thread | None = None
+    if sys.platform == "win32" and stall_profile_seconds > 0:
+        profiler = threading.Thread(
+            target=_stall_profiler,
+            args=(label, start, stop_event, stall_profile_seconds),
+            daemon=True,
+        )
+        profiler.start()
+    try:
+        run_streaming(label, cmd, cwd, env=env)
+    finally:
+        stop_event.set()
+        if profiler is not None:
+            profiler.join(timeout=5)
     end = time.monotonic()
     return BuildResult(label=label, seconds=end - start)
 
@@ -341,7 +466,7 @@ def main() -> int:
 
         # Stage A: build the source repo cold.
         print("--- Stage A: build worktree A (cold, populate parent cache) ---")
-        a = time_build("A", cwd=worktree_a)
+        a = time_build("A", cwd=worktree_a, stall_profile_seconds=args.stall_profile_seconds)
         print(f"Stage A finished in {a.seconds:.2f}s\n")
 
         # Stage B setup: add the sibling worktree.
@@ -358,7 +483,12 @@ def main() -> int:
         # Stage B: warm build with remap explicit (pinned even though it's
         # the default -- guards against drift if soldr's default flips).
         print("--- Stage B: build worktree B (warm, ZCCACHE_PATH_REMAP=auto) ---")
-        b = time_build("B-warm", cwd=worktree_b, env={"ZCCACHE_PATH_REMAP": "auto"})
+        b = time_build(
+            "B-warm",
+            cwd=worktree_b,
+            env={"ZCCACHE_PATH_REMAP": "auto"},
+            stall_profile_seconds=args.stall_profile_seconds,
+        )
         print(f"Stage B finished in {b.seconds:.2f}s\n")
 
         # Stage C: control build, no remap, fresh target/.
@@ -367,7 +497,12 @@ def main() -> int:
             "--- Stage C: build worktree B "
             "(control, SOLDR_PATH_REMAP=off, fresh target/) ---"
         )
-        c = time_build("C-control", cwd=worktree_b, env={"SOLDR_PATH_REMAP": "off"})
+        c = time_build(
+            "C-control",
+            cwd=worktree_b,
+            env={"SOLDR_PATH_REMAP": "off"},
+            stall_profile_seconds=args.stall_profile_seconds,
+        )
         print(f"Stage C finished in {c.seconds:.2f}s\n")
 
         # Ratio.
