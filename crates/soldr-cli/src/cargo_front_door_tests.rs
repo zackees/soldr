@@ -97,6 +97,21 @@ fn cargo_args_are_cacheable_for_direct_build() {
 }
 
 #[test]
+fn cargo_args_are_cacheable_for_chef_cook() {
+    // soldr cook (issue #359) routes `cargo chef cook` through this front
+    // door. The outer process orchestrates an inner `cargo build` against
+    // a stub project, so we must seed RUSTC_WRAPPER for the inner build
+    // to pick zccache up.
+    assert!(cargo_args_are_cacheable(&argv(&["chef", "cook"])));
+    assert!(cargo_args_are_cacheable(&argv(&[
+        "chef",
+        "cook",
+        "--release",
+    ])));
+    assert!(cargo_args_are_cacheable(&argv(&["chef", "prepare"])));
+}
+
+#[test]
 fn cargo_args_are_not_cacheable_for_direct_clean() {
     assert!(!cargo_args_are_cacheable(&argv(&["clean"])));
     assert!(!cargo_args_are_cacheable(&argv(&["fmt"])));

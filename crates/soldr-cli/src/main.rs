@@ -5,6 +5,7 @@ use soldr_fetch::VersionSpec;
 mod binaries;
 mod cache;
 mod cargo_front_door;
+mod cook;
 mod doctor;
 mod gc;
 mod linker;
@@ -123,6 +124,23 @@ pub(crate) enum ZccacheSourceArg {
 enum Commands {
     /// Run Cargo through soldr's front door
     Cargo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Content-addressable dep prebuild via the bundled `cargo-chef`
+    /// (issue #359). Splits a project build into a recipe phase
+    /// (`cargo chef prepare`) and a stub-project compile phase
+    /// (`cargo chef cook`) so the dep set can be cached as an output
+    /// layer (Docker), a tarball (CI), or just a warm `target/` (local
+    /// dev) that survives source-code commits. Routes both phases
+    /// through the cargo front door so zccache, `ZCCACHE_PATH_REMAP=auto`,
+    /// and the soldr-managed toolchain homes all apply.
+    ///
+    /// Recognised flags (everything else: pass after `--`):
+    /// `--release`, `--target <triple>`, `--workspace`, `--profile <name>`,
+    /// `-p`/`--package <name>` (repeatable), `--recipe-path <path>`,
+    /// `--keep-recipe`, `--prepare-only`, `--cook-only`.
+    Cook {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
@@ -661,6 +679,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 cargo_front_door::run_cargo_front_door(&args, cache_enabled, zccache_source)
                     .await?,
             );
+        }
+        Commands::Cook { args } => {
+            std::process::exit(cook::run_cook(&args, cache_enabled, zccache_source).await?);
         }
         Commands::Rustc { args } => {
             std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);

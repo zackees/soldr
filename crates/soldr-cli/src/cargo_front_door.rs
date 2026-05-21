@@ -924,6 +924,12 @@ fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
             | "fix"
             | "install"
             | "nextest"
+            // cargo-chef (powering `soldr cook`, issue #359): the outer
+            // process orchestrates an inner `cargo build` against a stub
+            // project. Treat `chef` as cacheable so RUSTC_WRAPPER, the
+            // soldr-managed toolchain homes, and ZCCACHE_PATH_REMAP all
+            // propagate to that inner build.
+            | "chef"
     )
 }
 
@@ -1222,9 +1228,13 @@ async fn ensure_known_subcommand_tool(
         return Ok(Vec::new());
     };
 
+    let version = spec
+        .pinned_version
+        .map(|v| VersionSpec::Exact(v.to_string()))
+        .unwrap_or(VersionSpec::Latest);
+
     eprintln!("soldr: fetching {}...", spec.crate_name);
-    let result =
-        soldr_fetch::fetch_tool_with_paths(spec.crate_name, &VersionSpec::Latest, paths).await?;
+    let result = soldr_fetch::fetch_tool_with_paths(spec.crate_name, &version, paths).await?;
 
     if result.cached {
         eprintln!(
