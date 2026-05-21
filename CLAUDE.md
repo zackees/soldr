@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> [!IMPORTANT]
+> ## ⚡ Performance work → read [PERF.md](PERF.md) FIRST ⚡
+>
+> **The perf-cluster GitHub Action is the MOST important workflow in this repo.**
+> If you are testing, measuring, optimizing, or regressing soldr's performance
+> — read **[PERF.md](PERF.md)** before doing anything else.
+>
+> Branch naming (`perf/<plat>-<fix>-<scen>`) controls exactly which cells run.
+> Pushing to a wrong branch name silently runs the full sweep — costly and slow.
+> **Do not guess.** PERF.md has the complete 48-pattern scope table.
+
 ## What is soldr
 
 A single Rust binary with two jobs:
@@ -115,6 +126,7 @@ Anything not registered falls through the generic External subcommand, which res
 
 ## Reference Docs
 
+- **`PERF.md` — Performance testing. Read this BEFORE running any perf work. See callout at the top of this file.**
 - `DESIGN.md` — Authoritative implementation guide, architecture decisions, phase roadmap
 - `docs/API.md` — Full CLI specification, environment variables, cache layout
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
