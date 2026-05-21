@@ -1,4 +1,4 @@
-//! `soldr update-zccache <SOURCE>` implementation.
+//! `soldr install-zccache <SOURCE>` implementation.
 //!
 //! Pins a user-supplied set of three zccache binaries
 //! (`zccache`, `zccache-daemon`, `zccache-fp`) into
@@ -42,7 +42,7 @@ pub const PINNED_ZCCACHE_SIDECAR_SCHEMA_VERSION: u32 = 1;
 /// `MANAGED_ZCCACHE_PACKAGES` but exposes only the runtime side.
 pub const ZCCACHE_PINNED_BINARY_NAMES: [&str; 3] = ["zccache", "zccache-daemon", "zccache-fp"];
 
-/// Source the user passed to `update-zccache`.
+/// Source the user passed to `install-zccache`.
 #[derive(Debug, Clone)]
 pub enum InstallSource {
     /// Search the system `PATH` for the three binaries.
@@ -61,7 +61,7 @@ impl InstallSource {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err(SoldrError::Other(
-                "update-zccache: source must not be empty".into(),
+                "install-zccache: source must not be empty".into(),
             ));
         }
         if trimmed.eq_ignore_ascii_case("system") {
@@ -160,7 +160,7 @@ pub fn read_pinned_sidecar(paths: &SoldrPaths) -> Result<Option<PinnedSidecar>, 
     }
     let bytes = std::fs::read(&sidecar).map_err(|e| {
         SoldrError::Other(format!(
-            "update-zccache: failed to read sidecar {}: {e}",
+            "install-zccache: failed to read sidecar {}: {e}",
             sidecar.display()
         ))
     })?;
@@ -168,7 +168,7 @@ pub fn read_pinned_sidecar(paths: &SoldrPaths) -> Result<Option<PinnedSidecar>, 
         .map(Some)
         .map_err(|e| {
             SoldrError::Other(format!(
-                "update-zccache: malformed sidecar {}: {e}",
+                "install-zccache: malformed sidecar {}: {e}",
                 sidecar.display()
             ))
         })
@@ -192,8 +192,8 @@ pub(crate) fn resolve_pinned_zccache_for_target(
     let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, target);
     if !cli.exists() || !daemon.exists() || !fp.exists() {
         return Err(SoldrError::Other(format!(
-            "update-zccache: sidecar at {} present but one or more binaries missing in {} \
-             (run `soldr update-zccache --remove` to reset)",
+            "install-zccache: sidecar at {} present but one or more binaries missing in {} \
+             (run `soldr install-zccache --remove` to reset)",
             pinned_sidecar_path(paths).display(),
             runtime_dir.display()
         )));
@@ -207,7 +207,7 @@ pub(crate) fn resolve_pinned_zccache_for_target(
 
 /// Install the three zccache binaries from `source` into the pinned
 /// directory and write the `source.json` sidecar. Existing pinned files
-/// are overwritten so re-running `update-zccache` is idempotent.
+/// are overwritten so re-running `install-zccache` is idempotent.
 pub async fn install_zccache_from_source(
     source: &InstallSource,
     paths: &SoldrPaths,
@@ -244,7 +244,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
         InstallSource::Path(p) => {
             if !p.exists() {
                 return Err(SoldrError::Other(format!(
-                    "update-zccache: path does not exist: {}",
+                    "install-zccache: path does not exist: {}",
                     p.display()
                 )));
             }
@@ -262,7 +262,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
                 dir
             } else {
                 return Err(SoldrError::Other(format!(
-                    "update-zccache: {} is neither a regular file nor a directory",
+                    "install-zccache: {} is neither a regular file nor a directory",
                     p.display()
                 )));
             }
@@ -270,7 +270,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
         InstallSource::Url(url) => {
             let download = tempfile::NamedTempFile::new_in(&paths.bin).map_err(|e| {
                 SoldrError::Other(format!(
-                    "update-zccache: failed to create download temp file: {e}"
+                    "install-zccache: failed to create download temp file: {e}"
                 ))
             })?;
             download_url_to(url, download.path()).await?;
@@ -327,7 +327,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
 
         let bytes = std::fs::read(&dst).map_err(|e| {
             SoldrError::Other(format!(
-                "update-zccache: failed to read {} for sha256: {e}",
+                "install-zccache: failed to read {} for sha256: {e}",
                 dst.display()
             ))
         })?;
@@ -355,7 +355,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
     let (cli_binary, _) = staged
         .first()
         .map(|(name, src)| (pinned_dir.join(name), src))
-        .ok_or_else(|| SoldrError::Other("update-zccache: no staged binaries".into()))?;
+        .ok_or_else(|| SoldrError::Other("install-zccache: no staged binaries".into()))?;
     let version = probe_zccache_version(&cli_binary);
 
     let installed_at = format_iso8601_utc(std::time::SystemTime::now());
@@ -370,7 +370,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
     };
     let sidecar_path = pinned_sidecar_path(paths);
     let mut sidecar_bytes = serde_json::to_vec_pretty(&sidecar).map_err(|e| {
-        SoldrError::Other(format!("update-zccache: failed to serialize sidecar: {e}"))
+        SoldrError::Other(format!("install-zccache: failed to serialize sidecar: {e}"))
     })?;
     // Trailing newline matches what `serde_json::to_writer_pretty` plus
     // a `println!()` produces elsewhere in the codebase.
@@ -401,15 +401,15 @@ fn missing_binary_error_message(
     let _ = binary_ext;
     match source {
         InstallSource::System => format!(
-            "update-zccache: `{missing}` not found on PATH; install zccache or pick a different source"
+            "install-zccache: `{missing}` not found on PATH; install zccache or pick a different source"
         ),
         InstallSource::Path(p) => format!(
-            "update-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — `{missing}` was not found under {} (source: {})",
+            "install-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — `{missing}` was not found under {} (source: {})",
             dir_displayed,
             p.display()
         ),
         InstallSource::Url(url) => format!(
-            "update-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — `{missing}` was not found in downloaded archive (source: {url})"
+            "install-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — `{missing}` was not found in downloaded archive (source: {url})"
         ),
     }
 }
@@ -455,7 +455,7 @@ pub(crate) fn stage_from_system_path_with_dirs(
     }
     if !missing.is_empty() {
         return Err(SoldrError::Other(format!(
-            "update-zccache: source=system but the following binaries were not found on PATH: {}",
+            "install-zccache: source=system but the following binaries were not found on PATH: {}",
             missing.join(", ")
         )));
     }
@@ -485,7 +485,7 @@ fn consolidate_extracted_binaries(
     for name in names {
         let Some(src) = found.get(name) else {
             return Err(SoldrError::Other(format!(
-                "update-zccache: archive missing required binary `{name}`"
+                "install-zccache: archive missing required binary `{name}`"
             )));
         };
         let dst = unified_root.join(name);
@@ -552,7 +552,7 @@ pub(crate) fn extract_archive_file(archive: &Path, dest: &Path) -> Result<(), So
         extract_tar_zst_to_dir(archive, dest)
     } else {
         Err(SoldrError::Other(format!(
-            "update-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — got {} (unsupported extension)",
+            "install-zccache: expected directory or .zip/.tar.gz/.tar.zst archive containing zccache, zccache-daemon, zccache-fp — got {} (unsupported extension)",
             archive.display()
         )))
     }
@@ -615,17 +615,17 @@ async fn download_url_to(url: &str, dest: &Path) -> Result<(), SoldrError> {
         .get(url)
         .send()
         .await
-        .map_err(|e| SoldrError::Network(format!("update-zccache: GET {url}: {e}")))?;
+        .map_err(|e| SoldrError::Network(format!("install-zccache: GET {url}: {e}")))?;
     if !resp.status().is_success() {
         return Err(SoldrError::Network(format!(
-            "update-zccache: download failed: HTTP {} ({url})",
+            "install-zccache: download failed: HTTP {} ({url})",
             resp.status()
         )));
     }
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| SoldrError::Network(format!("update-zccache: read body: {e}")))?;
+        .map_err(|e| SoldrError::Network(format!("install-zccache: read body: {e}")))?;
     std::fs::write(dest, &bytes)?;
     Ok(())
 }
@@ -685,7 +685,7 @@ pub fn remove_pinned_zccache(paths: &SoldrPaths) -> Result<bool, SoldrError> {
     }
     std::fs::remove_dir_all(&pinned_dir).map_err(|e| {
         SoldrError::Other(format!(
-            "update-zccache: failed to remove {}: {e}",
+            "install-zccache: failed to remove {}: {e}",
             pinned_dir.display()
         ))
     })?;
