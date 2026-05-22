@@ -94,6 +94,12 @@ jobs:
       - name: Verify Windows defaults to MSVC under Git Bash
         if: inputs.verify_windows_msys_default_msvc == true && runner.os == 'Windows'
         shell: bash
+        env:
+          # The build step above passes `--target ${{ inputs.target }}`, so cargo
+          # writes the binary to `target/<triple>/debug/`, not `target/debug/`.
+          # The script defaults to the no-target path; point it at the
+          # matrix-aware location explicitly. See issue #418.
+          SOLDR_EXE: ${{ github.workspace }}\target\${{ inputs.target }}\debug\soldr.exe
         run: bash .github/scripts/windows-msys-default-msvc.sh
 
       - name: Run fetch integration test
