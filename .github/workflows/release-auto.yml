@@ -181,6 +181,23 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             binary: soldr
+          # musl variants ship statically-linked Linux binaries that run on
+          # alpine and other libc-less distros. CI already exercises these
+          # via `_bootstrap-e2e.yml`'s `e2e-linux-*-musl` jobs, so the
+          # toolchain + linker story is known-good. See `bench/docker/`
+          # and zackees/zccache's perf harness, both of which rebuild
+          # soldr-cli for musl from source per run because no pre-built
+          # binary existed before this matrix expansion.
+          - name: Linux x64 (musl)
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+            binary: soldr
+          - name: Linux ARM64 (musl)
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            archive: tar.gz
+            binary: soldr
           - name: macOS x64
             runner: macos-15-intel
             target: x86_64-apple-darwin
@@ -213,6 +230,36 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
+      # Mirrors `_bootstrap-e2e.yml`'s musl-tools install: retried apt
+      # update + install, --no-install-recommends to narrow the input
+      # surface (#41), and an installed-version log line so the workflow
+      # run is auditable.
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempts=0
+          max_attempts=3
+          until sudo apt-get update; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get update failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          attempts=0
+          until sudo apt-get install -y --no-install-recommends musl-tools; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get install musl-tools failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
+
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -243,11 +290,20 @@ jobs:
           Compress-Archive -Path "dist\package\${{ matrix.binary }}" -DestinationPath "dist\$name.zip" -Force
 
       - name: Install uv
+        # PyPI wheel build is gnu-only for now. musllinux wheels need a
+        # docker-based smoke test (the smoke step below cannot install a
+        # musllinux wheel on the glibc-based release runner), and that
+        # plumbing is out of scope for the initial musl-binary ship.
+        # Users on alpine still get pip install via the source dist or
+        # the GitHub Releases tarball; the npm wrapper picks up the musl
+        # tarball directly via libc detection.
+        if: ${{ !contains(matrix.target, 'musl') }}
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: false
 
       - name: Build hardened wheel from shared target directory
+        if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
         run: |
           set -euo pipefail
@@ -262,6 +318,7 @@ jobs:
             --out dist
 
       - name: Verify wheel ships the bin script at the spec path
+        if: ${{ !contains(matrix.target, 'musl') }}
         shell: python
         run: |
           import zipfile
@@ -319,11 +376,27 @@ jobs:
           )
 
       - name: Smoke test wheel
+        if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
         run: |
           uv venv .venv
           uv pip install --python .venv dist/*.whl
           .venv/bin/soldr --version || .venv/Scripts/soldr.exe --version
+
+      - name: Smoke test standalone musl binary
+        # The wheel smoke test above is unreachable for musl rows (the
+        # release runner is glibc, can't install a musllinux wheel). The
+        # standalone musl binary is statically linked so it CAN run on
+        # glibc — verify that the build actually produced a working
+        # executable, otherwise we'd ship an untested artifact.
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          test -x "$binary" || { echo "missing release binary: $binary" >&2; exit 1; }
+          file "$binary" || true
+          "./$binary" --version
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -332,7 +405,8 @@ jobs:
             dist/soldr-*.tar.gz
             dist/soldr-*.zip
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - if: ${{ !contains(matrix.target, 'musl') }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl

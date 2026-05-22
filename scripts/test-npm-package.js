@@ -75,13 +75,41 @@ assert.deepStrictEqual(pkg.files, [
 const bin = fs.readFileSync(path.join(root, pkg.bin.soldr), "utf8");
 assert(bin.startsWith("#!/usr/bin/env node"), "bin/soldr.js must have a node shebang");
 
-assert.strictEqual(install.platformTarget("linux", "x64").triple, "x86_64-unknown-linux-gnu");
-assert.strictEqual(install.platformTarget("linux", "arm64").triple, "aarch64-unknown-linux-gnu");
+// Linux: triple selection branches on libc. `platformTarget` accepts an
+// explicit `libc` arg so tests don't depend on the runtime detector.
+assert.strictEqual(
+  install.platformTarget("linux", "x64", "gnu").triple,
+  "x86_64-unknown-linux-gnu",
+);
+assert.strictEqual(
+  install.platformTarget("linux", "x64", "musl").triple,
+  "x86_64-unknown-linux-musl",
+);
+assert.strictEqual(
+  install.platformTarget("linux", "arm64", "gnu").triple,
+  "aarch64-unknown-linux-gnu",
+);
+assert.strictEqual(
+  install.platformTarget("linux", "arm64", "musl").triple,
+  "aarch64-unknown-linux-musl",
+);
+// Default (no libc arg) falls back to detectLibc; on most CI hosts that's
+// gnu. We don't assert the triple here — just that the call resolves.
+assert.ok(install.platformTarget("linux", "x64").triple.startsWith("x86_64-unknown-linux-"));
 assert.strictEqual(install.platformTarget("darwin", "x64").triple, "x86_64-apple-darwin");
 assert.strictEqual(install.platformTarget("darwin", "arm64").triple, "aarch64-apple-darwin");
 assert.strictEqual(install.platformTarget("win32", "x64").triple, "x86_64-pc-windows-msvc");
 assert.strictEqual(install.platformTarget("win32", "arm64").triple, "aarch64-pc-windows-msvc");
 assert.throws(() => install.platformTarget("freebsd", "x64"), /unsupported platform/);
+
+// detectLibc must return null on non-Linux platforms so the platform key
+// stays `<platform>-<arch>` rather than `<platform>-<arch>-gnu`.
+assert.strictEqual(install.detectLibc("darwin"), null);
+assert.strictEqual(install.detectLibc("win32"), null);
+// On Linux it must always resolve to one of the two known families so
+// `platformTarget` can build a well-formed key.
+const linuxLibc = install.detectLibc("linux");
+assert.ok(linuxLibc === "gnu" || linuxLibc === "musl", `unexpected libc: ${linuxLibc}`);
 
 assert.strictEqual(
   install.checksumFor("abc123  soldr-v0.7.5-x86_64-unknown-linux-gnu.tar.gz\n", "soldr-v0.7.5-x86_64-unknown-linux-gnu.tar.gz"),
