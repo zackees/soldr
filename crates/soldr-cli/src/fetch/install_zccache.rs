@@ -141,8 +141,13 @@ pub struct PinnedResolution {
 
 /// Path to the pinned install dir for a given soldr root. The dir may
 /// not exist yet; callers must check.
+///
+/// Sources from `paths.pinned_bin` (NOT `paths.bin`) so that a pin
+/// registered against the default cache root remains visible when a
+/// build re-roots with `SOLDR_CACHE_DIR=/x`. See issue #426 for the
+/// failure that motivated the split.
 pub fn pinned_zccache_dir(paths: &SoldrPaths) -> PathBuf {
-    paths.bin.join(PINNED_ZCCACHE_DIRNAME)
+    paths.pinned_bin.join(PINNED_ZCCACHE_DIRNAME)
 }
 
 fn pinned_sidecar_path(paths: &SoldrPaths) -> PathBuf {

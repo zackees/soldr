@@ -531,10 +531,34 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
 
     match cached_active_zccache(paths)? {
         Some(fetch) => {
-            let output =
-                run_zccache_command_in_cache_dir(&fetch.binary_path, &["status"], &zccache_dir)?;
-            let stdout = output.stdout.trim();
-            let status_lines = stdout.lines().map(str::to_owned).collect();
+            // Use the raw helper so a non-zero exit with a "daemon not
+            // running" stderr surfaces as success-with-empty-status rather
+            // than a hard error — issue #426 made this case reachable in
+            // tests by exposing a host-side pin under custom SOLDR_CACHE_DIR
+            // contexts whose daemon hasn't been spawned yet. Mirrors the
+            // tolerance already in place for `zccache stop` polling.
+            let raw = run_zccache_command_raw_in_cache_dir(
+                &fetch.binary_path,
+                &["status"],
+                &zccache_dir,
+            )?;
+            let (status_lines, status_empty) = if raw.status.success() {
+                let stdout = String::from_utf8_lossy(&raw.stdout);
+                let trimmed = stdout.trim();
+                (
+                    trimmed.lines().map(str::to_owned).collect(),
+                    trimmed.is_empty(),
+                )
+            } else if zccache_daemon_already_stopped(&raw) {
+                (Vec::new(), false)
+            } else {
+                let stderr = String::from_utf8_lossy(&raw.stderr);
+                return Err(SoldrError::Other(format!(
+                    "zccache status exited with {:?}: {}",
+                    raw.status.code(),
+                    stderr.trim()
+                )));
+            };
             let source = crate::fetch::classify_zccache_source(paths, &fetch.binary_path);
             Ok(ZccacheStatusSnapshot {
                 cache_dir: zccache_dir.display().to_string(),
@@ -549,7 +573,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
                 binary_source: source.as_str(),
                 binary_fetched: true,
                 status_lines,
-                status_empty: stdout.is_empty(),
+                status_empty,
             })
         }
         None => Ok(ZccacheStatusSnapshot {
