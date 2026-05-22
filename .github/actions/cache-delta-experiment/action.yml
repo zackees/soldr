@@ -274,6 +274,55 @@ runs:
         ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
       run: ${{ inputs.build-cmd }}
 
+    - name: Diagnose cache-hit posture
+      # Warm runs were showing the full per-build delta size,
+      # suggesting either (a) zccache isn't hitting the restored
+      # entries, or (b) the mtime-based diff over-counts. This step
+      # prints the per-session zccache stats and a sample of cache
+      # file mtimes so we can tell which it is on the next run.
+      if: always()
+      shell: bash
+      env:
+        SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
+        ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
+      run: |
+        set +e
+        MARK="${{ steps.keys.outputs.cook-mark }}"
+        ZCCACHE_DIR="${{ steps.keys.outputs.zccache-dir }}"
+
+        echo "## Cache delta diagnostic" >> "$GITHUB_STEP_SUMMARY"
+        echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "--- soldr cache report ---"
+        soldr cache report --json 2>&1 | head -80 || true
+
+        echo ""
+        echo "--- cache dir size + counts ---"
+        if [ -d "$ZCCACHE_DIR" ]; then
+          du -sh "$ZCCACHE_DIR" || true
+          echo "total files: $(find "$ZCCACHE_DIR" -type f 2>/dev/null | wc -l)"
+        fi
+
+        echo ""
+        echo "--- cook-mark mtime ---"
+        if [ -f "$MARK" ]; then
+          stat -c '%Y %n  (%y)' "$MARK"
+        fi
+
+        echo ""
+        echo "--- 5 oldest files in cache (epoch + path) ---"
+        find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
+          | sort -n | head -5
+
+        echo ""
+        echo "--- 5 newest files in cache ---"
+        find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
+          | sort -rn | head -5
+
+        echo ""
+        echo "--- files newer than cook-mark (sample) ---"
+        ( cd "$ZCCACHE_DIR" && find . -type f -newer "$MARK" 2>/dev/null | head -10 )
+
     - name: Package build delta
       id: delta-tar
       shell: bash
