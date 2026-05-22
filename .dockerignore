@@ -1,0 +1,33 @@
+# Keep the docker build context small. soldr docker harnesses live
+# under `bench/docker/<name>/` and only need Cargo.{toml,lock},
+# rust-toolchain.toml, and crates/ — see e.g.
+# bench/docker/update-zccache-pin-honored/Dockerfile.
+
+# Rust build output (multi-GB on a warm cache)
+target/
+**/target/
+
+# VCS / IDE / Python build caches that have no business in the image
+.git/
+.github/
+.venv/
+.vscode/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+
+# Local secrets, env files
+.env
+.env.*
+
+# Top-level non-code that bloats the context without helping any build
+*.md
+docs/
+benchmarks/
+
+# But keep the harness's own README + scripts copyable
+!bench/docker/**
+
+# Top-level test/working dirs that occasionally accumulate
+.claude/
