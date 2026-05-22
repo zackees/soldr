@@ -81,9 +81,17 @@ const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
 /// `resolve_local_zccache` for the resolution contract.
 pub const ZCCACHE_LOCAL_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_LOCAL_DIR";
 
-const MANAGED_ZCCACHE_FETCH_ATTEMPTS: u32 = 4;
-const MANAGED_ZCCACHE_FETCH_INITIAL_BACKOFF: std::time::Duration =
-    std::time::Duration::from_secs(5);
+/// Retry budget for the GitHub-Releases + crates.io fetch chain inside
+/// `fetch_repo_binary_with_paths`. Transient errors
+/// (`SoldrError::Network`, `SoldrError::ToolNotFound`) retry up to
+/// `REPO_FETCH_ATTEMPTS` times with exponential backoff starting at
+/// `REPO_FETCH_INITIAL_BACKOFF`. The same values previously lived as
+/// `MANAGED_ZCCACHE_FETCH_*` constants used at a single call site; they
+/// now apply to every fetch in soldr (zccache, crgx, cargo-chef, every
+/// ecosystem tool) so users and CI don't have to babysit transient
+/// GitHub API hiccups.
+const REPO_FETCH_ATTEMPTS: u32 = 4;
+const REPO_FETCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
 const MANAGED_ZCCACHE_INSTALL_ATTEMPTS: u32 = 3;
 const MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF: std::time::Duration =
     std::time::Duration::from_secs(10);
@@ -714,40 +722,22 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
     }
 
     let release_version = VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.to_string());
-    // A version bump that merges before the upstream GitHub release and the
-    // crates.io index have fully propagated will see a brief window where both
-    // sources return "not found". Retry the release fetch with backoff so the
-    // window can pass before we fall back to cargo install.
+    // `fetch_repo_binary_with_paths` retries transient fetch errors
+    // internally (issue: flaky GitHub-Releases lookups during propagation
+    // windows surfaced as macOS CI flake on PR #431). Anything that
+    // survives those retries is either a hard 404 or a non-transient
+    // network class — both of which the cargo install fallback below can
+    // handle.
     let repo = managed_zccache_repo();
-    let mut backoff = MANAGED_ZCCACHE_FETCH_INITIAL_BACKOFF;
-    let mut attempt = 1u32;
-    let release_outcome = loop {
-        match fetch_repo_binary_with_paths(
-            "zccache",
-            &binary_names,
-            &repo,
-            &release_version,
-            None,
-            paths,
-        )
-        .await
-        {
-            Ok(result) => break Ok(result),
-            Err(err)
-                if attempt < MANAGED_ZCCACHE_FETCH_ATTEMPTS
-                    && should_retry_managed_zccache_fetch(&err) =>
-            {
-                eprintln!(
-                    "soldr: transient error fetching managed zccache (attempt {attempt}/{}): {err}; retrying in {:?}",
-                    MANAGED_ZCCACHE_FETCH_ATTEMPTS, backoff
-                );
-                std::thread::sleep(backoff);
-                backoff = backoff.saturating_mul(2);
-                attempt += 1;
-            }
-            Err(err) => break Err(err),
-        }
-    };
+    let release_outcome = fetch_repo_binary_with_paths(
+        "zccache",
+        &binary_names,
+        &repo,
+        &release_version,
+        None,
+        paths,
+    )
+    .await;
 
     match release_outcome {
         Ok(result) => return Ok(result),
@@ -876,10 +866,6 @@ fn should_fallback_to_managed_zccache_cargo_install(error: &SoldrError) -> bool 
     matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
 }
 
-fn should_retry_managed_zccache_fetch(error: &SoldrError) -> bool {
-    matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
-}
-
 fn install_zccache_from_crates_io(
     paths: &SoldrPaths,
     version: &str,
@@ -986,6 +972,49 @@ fn install_zccache_from_crates_io(
 }
 
 async fn fetch_repo_binary_with_paths(
+    cache_name: &str,
+    binary_names: &[&str],
+    repo: &RepoInfo,
+    version: &VersionSpec,
+    tag_prefix: Option<&str>,
+    paths: &SoldrPaths,
+) -> Result<FetchResult, SoldrError> {
+    let mut backoff = REPO_FETCH_INITIAL_BACKOFF;
+    let mut attempt: u32 = 1;
+    loop {
+        match fetch_repo_binary_once(cache_name, binary_names, repo, version, tag_prefix, paths)
+            .await
+        {
+            Ok(result) => return Ok(result),
+            Err(err) if attempt < REPO_FETCH_ATTEMPTS && is_transient_fetch_error(&err) => {
+                eprintln!(
+                    "soldr: transient error fetching {cache_name} from {}/{} (attempt {attempt}/{}): {err}; retrying in {:?}",
+                    repo.owner, repo.repo, REPO_FETCH_ATTEMPTS, backoff,
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Classify whether an error from the repo-fetch chain is worth retrying.
+/// `ToolNotFound` covers GitHub-Releases 404s during release propagation
+/// windows + crates.io index-not-ready windows; `Network` covers DNS
+/// blips, connection resets, and TLS handshake failures. Anything else
+/// (malformed JSON, archive extraction errors, IO errors) is treated as
+/// terminal — retrying wouldn't help.
+fn is_transient_fetch_error(err: &SoldrError) -> bool {
+    matches!(err, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
+}
+
+/// One attempt at the full repo-binary fetch pipeline. Cache check →
+/// release lookup → asset match → download + extract. Wrapped in
+/// `fetch_repo_binary_with_paths`'s retry loop so transient failures
+/// don't bubble up to the user.
+async fn fetch_repo_binary_once(
     cache_name: &str,
     binary_names: &[&str],
     repo: &RepoInfo,
@@ -1768,6 +1797,30 @@ mod tests {
         assert!(!should_fallback_to_managed_zccache_cargo_install(
             &SoldrError::Other("checksum mismatch".into())
         ));
+    }
+
+    #[test]
+    fn transient_fetch_predicate_only_retries_network_and_not_found() {
+        // `is_transient_fetch_error` gates the retry loop inside
+        // `fetch_repo_binary_with_paths`. The two transient classes —
+        // GitHub-Releases 404 during propagation, network hiccups — must
+        // retry; everything else (malformed archive, missing asset for
+        // the target triple, IO errors) is terminal.
+        assert!(is_transient_fetch_error(&SoldrError::ToolNotFound(
+            "no release found for yfedoseev/crgx".into(),
+        )));
+        assert!(is_transient_fetch_error(&SoldrError::Network(
+            "github api unavailable".into(),
+        )));
+        assert!(!is_transient_fetch_error(&SoldrError::Archive(
+            "corrupt archive".into(),
+        )));
+        assert!(!is_transient_fetch_error(&SoldrError::Other(
+            "no asset matches target x86_64-pc-windows-msvc".into(),
+        )));
+        assert!(!is_transient_fetch_error(&SoldrError::UnsupportedPlatform(
+            "wasm32".into(),
+        )));
     }
 
     #[test]
