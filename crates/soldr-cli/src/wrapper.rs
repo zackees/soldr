@@ -4,6 +4,7 @@
 //! part of issue #339.
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::startup_profile::WrapperProfile;
 #[cfg(not(unix))]
 use crate::zccache::run_zccache_command_in_cache_dir;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
@@ -22,7 +23,10 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
     WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
 }
 
-pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> {
+pub(crate) fn run_rustc_wrapper(
+    raw_args: &[String],
+    mut profile: WrapperProfile,
+) -> Result<i32, SoldrError> {
     let tool_arg = raw_args
         .get(1)
         .ok_or_else(|| SoldrError::Other("missing tool path in wrapper mode".into()))?;
@@ -32,12 +36,15 @@ pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> 
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(tool_arg);
 
+    profile.mark("tool_resolved");
+
     // Per-build target/ tracking for `soldr gc`. Best-effort: if we
     // can't resolve a workspace target dir cheaply, or the redb
     // upsert fails for any reason, skip silently — never fail a build.
     if tool_stem == "rustc" {
         record_target_dir_in_registry(&raw_args[2..]);
     }
+    profile.mark("target_dir_recorded");
 
     // When the source argument is "-" (stdin), rustc reads the source from
     // the process's stdin. If we pass this invocation to zccache as-is,
@@ -55,6 +62,7 @@ pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> 
     } else {
         None
     };
+    profile.mark("stdin_handled");
 
     // Build the effective arg list, replacing "-" with the temp file path.
     let effective_args: std::borrow::Cow<[String]> = if let Some(ref tmp) = stdin_tempfile {
@@ -73,6 +81,11 @@ pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> 
     // clippy-driver or other workspace wrappers.
     if tool_stem == "rustc" && crate::cache_lib::cache_enabled_in_current_process() {
         if let Some(zccache) = zccache_binary_override() {
+            profile.mark("zccache_resolved");
+            // On Unix `run_wrapper_through_zccache` exec()'s and never
+            // returns, so the profile MUST emit before that — finish()
+            // is the last in-process work we can attribute.
+            profile.finish("before_zccache_exec");
             return run_wrapper_through_zccache(&effective_args, &zccache);
         }
     }
@@ -89,6 +102,7 @@ pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> 
     command.args(&effective_args[2..]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
+    profile.finish("before_tool_spawn");
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))

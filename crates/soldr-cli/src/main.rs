@@ -19,6 +19,7 @@ mod optimize_windows;
 mod rust_plan;
 mod save_load;
 mod self_relocate;
+mod startup_profile;
 mod toolchain;
 mod trampoline;
 mod trampoline_workspace;
@@ -669,6 +670,13 @@ async fn main() {
     }
 
     if raw_args.len() > 1 && wrapper::is_wrapper_invocation(&raw_args[1]) {
+        // Per-phase startup timing for #440. `WrapperProfile::new()` is a
+        // cheap branch + one `var_os` syscall when SOLDR_PROFILE_STARTUP
+        // is unset, so the dominant production path pays effectively
+        // nothing. When set, the profile captures `Instant::now()` at
+        // each boundary down to the exec call.
+        let mut profile = startup_profile::WrapperProfile::new();
+        profile.mark("args_collected");
         if let Some(version) = soldr_as_env_pin() {
             if should_trampoline(&version) {
                 std::process::exit(
@@ -678,7 +686,10 @@ async fn main() {
                 );
             }
         }
-        std::process::exit(wrapper::run_rustc_wrapper(&raw_args).unwrap_or_else(report_and_exit));
+        profile.mark("pin_check_done");
+        std::process::exit(
+            wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit),
+        );
     }
 
     // `--as <version>` trampoline. Peeled off before clap so the fetched
