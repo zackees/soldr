@@ -105,10 +105,14 @@ kind = "lint"
 
 [[mutations]]
 id = "soldr-cli"
-label = "Top-crate edit"
+label = "Top-of-tree edit"
 path = "crates/soldr-cli/src/main.rs"
 
 [[mutations]]
 id = "soldr-core"
-label = "Lower-crate edit"
-path = "crates/soldr-core/src/lib.rs"
+# Pre-monocrate this was `crates/soldr-core/src/lib.rs` (its own
+# crate). After PR #415 the file moved to
+# `crates/soldr-cli/src/core.rs`. The mutation `id` stays as
+# "soldr-core" so historic benchmark records remain comparable.
+label = "Lower-module edit"
+path = "crates/soldr-cli/src/core.rs"

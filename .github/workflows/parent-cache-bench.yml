@@ -25,7 +25,7 @@ on:
     branches:
       - main
     paths:
-      - "crates/soldr-cache/src/lib.rs"
+      - "crates/soldr-cli/src/cache_lib/**"
       - "crates/soldr-cli/src/zccache.rs"
       - ".github/workflows/parent-cache-bench.yml"
       - "bench/parent_cache_bench.py"

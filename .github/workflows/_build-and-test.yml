@@ -32,9 +32,10 @@ on:
         type: string
         default: ''
       run_fetch_test:
-        # The crates.io fetch integration test (soldr-fetch) is
-        # heavy and not platform-conditional. Disable when a caller
-        # only wants the unit-test sweep.
+        # The crates.io fetch integration test (tests/fetch_crgx.rs in
+        # the monocrate soldr-cli) is heavy and not platform-
+        # conditional. Disable when a caller only wants the unit-test
+        # sweep.
         required: false
         type: boolean
         default: true
@@ -97,4 +98,4 @@ jobs:
 
       - name: Run fetch integration test
         if: inputs.run_fetch_test == true
-        run: cargo test -p soldr-fetch --test fetch_crgx --locked --target ${{ inputs.target }}
+        run: cargo test -p soldr-cli --test fetch_crgx --locked --target ${{ inputs.target }}
