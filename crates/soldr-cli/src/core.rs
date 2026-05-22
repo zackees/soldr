@@ -1349,16 +1349,26 @@ min_age_secs = 7200
 
     #[test]
     fn suppress_windows_console_window_preserves_piped_output() {
+        // Use absolute paths so this test does NOT race with the
+        // PATH-mutating tests elsewhere in this module (the
+        // `resolve_runtime_rustc_*` family temporarily sets PATH to a
+        // synthetic tool dir; if their `EnvVarGuard` hasn't dropped by
+        // the time this test runs in parallel, `Command::new("sh")`
+        // fails with `NotFound` because the shell isn't on the
+        // synthetic PATH). Surfaced as an intermittent Linux CI
+        // failure on PR #431.
         #[cfg(windows)]
         let mut command = {
-            let mut command = Command::new("cmd");
+            let comspec = std::env::var_os("ComSpec")
+                .unwrap_or_else(|| std::ffi::OsString::from(r"C:\Windows\System32\cmd.exe"));
+            let mut command = Command::new(comspec);
             command.args(["/C", "echo soldr-no-window"]);
             command
         };
 
         #[cfg(not(windows))]
         let mut command = {
-            let mut command = Command::new("sh");
+            let mut command = Command::new("/bin/sh");
             command.args(["-c", "printf soldr-no-window"]);
             command
         };

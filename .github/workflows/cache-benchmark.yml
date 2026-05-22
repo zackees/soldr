@@ -74,7 +74,7 @@ jobs:
             arch: aarch64
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - uses: dtolnay/rust-toolchain@aad518f59d88bae90133242f9ddac7f8bbc5dddf # 1.94.1
         with:
@@ -375,7 +375,7 @@ jobs:
 
       - name: Upload native SQLite benchmark artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: native-sqlite-benchmark-${{ matrix.target }}
           path: benchmark-summary/native-sqlite-${{ matrix.target }}.json
@@ -394,7 +394,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Resolve benchmark config
         id: config
@@ -610,7 +610,7 @@ jobs:
           PY
 
       - name: Download native SQLite benchmark artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: native-sqlite-benchmark-*
           path: benchmark-summary/native-sqlite
@@ -697,7 +697,7 @@ jobs:
 
       - name: Upload raw benchmark artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cache-benchmark-raw
           path: benchmark-summary/cache-benchmark-results.json
@@ -705,7 +705,7 @@ jobs:
 
       - name: Upload benchmark summary artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cache-benchmark-summary
           path: benchmark-summary/cache-benchmark-summary.json
@@ -713,7 +713,7 @@ jobs:
 
       - name: Upload benchmark www artifact
         if: ${{ always() }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cache-benchmark-www
           path: benchmark-summary/site
