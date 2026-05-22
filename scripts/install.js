@@ -13,13 +13,23 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
 const TARGETS = {
-  "linux-x64": {
+  "linux-x64-gnu": {
     triple: "x86_64-unknown-linux-gnu",
     archive: "tar.gz",
     binary: "soldr",
   },
-  "linux-arm64": {
+  "linux-x64-musl": {
+    triple: "x86_64-unknown-linux-musl",
+    archive: "tar.gz",
+    binary: "soldr",
+  },
+  "linux-arm64-gnu": {
     triple: "aarch64-unknown-linux-gnu",
+    archive: "tar.gz",
+    binary: "soldr",
+  },
+  "linux-arm64-musl": {
+    triple: "aarch64-unknown-linux-musl",
     archive: "tar.gz",
     binary: "soldr",
   },
@@ -45,10 +55,53 @@ const TARGETS = {
   },
 };
 
-function platformTarget(platform = process.platform, arch = process.arch) {
-  const target = TARGETS[`${platform}-${arch}`];
+// Detect whether the running Linux uses musl or glibc. Three layered probes:
+//   1. process.report.header.glibcVersionRuntime is the documented Node
+//      surface for runtime glibc version — present on glibc, absent /
+//      empty on musl. Same approach used by @swc/core, @napi-rs/*, etc.
+//   2. Filesystem check for `/lib/ld-musl-*.so.1` covers cases where the
+//      Node binary itself is glibc (e.g. someone running glibc Node on
+//      alpine via apk add nodejs-current) but the system is musl — the
+//      soldr binary we download must match the SYSTEM libc, not Node's.
+//   3. Final fallback: assume glibc. The mismatch will surface
+//      immediately at runtime as "soldr: not found" or
+//      "soldr: error while loading shared libraries", which is louder
+//      than silently downloading the wrong tarball.
+function detectLibc(platform = process.platform) {
+  if (platform !== "linux") {
+    return null;
+  }
+  try {
+    const header = process.report && process.report.getReport && process.report.getReport().header;
+    if (header && typeof header.glibcVersionRuntime === "string" && header.glibcVersionRuntime.length > 0) {
+      return "gnu";
+    }
+    if (header && Object.prototype.hasOwnProperty.call(header, "glibcVersionRuntime")) {
+      // Field present but empty / null → Node was built against musl.
+      return "musl";
+    }
+  } catch (err) {
+    // process.report can throw on locked-down environments; fall through.
+  }
+  try {
+    const entries = fs.readdirSync("/lib");
+    if (entries.some((name) => /^ld-musl-.+\.so\.1$/.test(name))) {
+      return "musl";
+    }
+  } catch (err) {
+    // /lib may not be readable in heavily sandboxed containers; fall through.
+  }
+  return "gnu";
+}
+
+function platformTarget(platform = process.platform, arch = process.arch, libc = detectLibc(platform)) {
+  const key =
+    platform === "linux"
+      ? `${platform}-${arch}-${libc || "gnu"}`
+      : `${platform}-${arch}`;
+  const target = TARGETS[key];
   if (!target) {
-    throw new Error(`unsupported platform for soldr npm package: ${platform}-${arch}`);
+    throw new Error(`unsupported platform for soldr npm package: ${key}`);
   }
   return target;
 }
@@ -235,6 +288,7 @@ if (require.main === module) {
 
 module.exports = {
   checksumFor,
+  detectLibc,
   platformTarget,
   releaseBaseUrl,
 };
