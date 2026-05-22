@@ -51,12 +51,12 @@ The release-governance and hermetic-input follow-up items remain tracked in issu
 
 Current release assets follow this shape:
 
-- `soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz`
-- `soldr-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz`
-- `soldr-vX.Y.Z-x86_64-apple-darwin.tar.gz`
-- `soldr-vX.Y.Z-aarch64-apple-darwin.tar.gz`
-- `soldr-vX.Y.Z-x86_64-pc-windows-msvc.zip`
-- `soldr-vX.Y.Z-aarch64-pc-windows-msvc.zip`
+- `soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst`
+- `soldr-vX.Y.Z-aarch64-unknown-linux-gnu.tar.zst`
+- `soldr-vX.Y.Z-x86_64-apple-darwin.tar.zst`
+- `soldr-vX.Y.Z-aarch64-apple-darwin.tar.zst`
+- `soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst`
+- `soldr-vX.Y.Z-aarch64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
 ## Step 1: Verify The Checksum
@@ -72,9 +72,9 @@ sha256sum -c soldr-vX.Y.Z-SHA256SUMS.txt --ignore-missing
 On Windows PowerShell:
 
 ```powershell
-$expected = Select-String -Path soldr-vX.Y.Z-SHA256SUMS.txt -Pattern 'soldr-vX.Y.Z-x86_64-pc-windows-msvc.zip' |
+$expected = Select-String -Path soldr-vX.Y.Z-SHA256SUMS.txt -Pattern 'soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst' |
   ForEach-Object { ($_ -split '\s+')[0] }
-$actual = (Get-FileHash .\soldr-vX.Y.Z-x86_64-pc-windows-msvc.zip -Algorithm SHA256).Hash.ToLower()
+$actual = (Get-FileHash .\soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst -Algorithm SHA256).Hash.ToLower()
 if ($expected -ne $actual) { throw "checksum mismatch" }
 ```
 
@@ -87,14 +87,14 @@ Use GitHub CLI's attestation support to verify the artifact provenance.
 This is the primary documented verification path for `soldr`:
 
 ```bash
-gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst \
   --repo zackees/soldr
 ```
 
 For stricter identity validation, also pin the signer workflow:
 
 ```bash
-gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz \
+gh attestation verify soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst \
   --repo zackees/soldr \
   --signer-workflow zackees/soldr/.github/workflows/release-auto.yml
 ```
@@ -119,7 +119,7 @@ GitHub CLI also supports downloading attestation bundles and verifying them offl
 Relevant commands:
 
 ```bash
-gh attestation download soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz --repo zackees/soldr
+gh attestation download soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst --repo zackees/soldr
 gh attestation trusted-root
 ```
 

@@ -112,8 +112,30 @@ const linuxLibc = install.detectLibc("linux");
 assert.ok(linuxLibc === "gnu" || linuxLibc === "musl", `unexpected libc: ${linuxLibc}`);
 
 assert.strictEqual(
-  install.checksumFor("abc123  soldr-v0.7.5-x86_64-unknown-linux-gnu.tar.gz\n", "soldr-v0.7.5-x86_64-unknown-linux-gnu.tar.gz"),
+  install.checksumFor(
+    "abc123  soldr-v0.7.29-x86_64-unknown-linux-gnu.tar.zst\n",
+    "soldr-v0.7.29-x86_64-unknown-linux-gnu.tar.zst",
+  ),
   "abc123",
 );
+
+// Every TARGETS entry must drop the `archive` field — the combined
+// archive format is fixed (.tar.zst) so the per-target field is dead
+// data. Catch a regression early if anyone re-adds it.
+for (const [key, target] of Object.entries(install.TARGETS || {})) {
+  assert.ok(
+    typeof target.triple === "string" && target.triple.length > 0,
+    `TARGETS[${key}].triple must be a non-empty string`,
+  );
+  assert.ok(
+    typeof target.binary === "string" && target.binary.length > 0,
+    `TARGETS[${key}].binary must be a non-empty string`,
+  );
+  assert.strictEqual(
+    target.archive,
+    undefined,
+    `TARGETS[${key}].archive must be removed — archive format is fixed at .tar.zst`,
+  );
+}
 
 console.log("npm package and PyPI version checks passed");

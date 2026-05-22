@@ -171,52 +171,46 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # All targets now produce a single `.tar.zst` archive that
+          # bundles the soldr binary alongside the matching-target zccache
+          # trio (zccache, zccache-daemon, zccache-fp). One fetch from
+          # GitHub Releases gives you both — see the `Stage soldr + zccache
+          # trio` and `Package combined archive (tar.zst level 19)` steps
+          # below. zccache-on-Linux ships musl-only upstream, so the
+          # Linux gnu rows pull the musl zccache (statically linked, runs
+          # on glibc) — same target-mapping shorthand the runtime
+          # `MANAGED_ZCCACHE_VERSION` resolution path uses.
           - name: Linux x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
-            archive: tar.gz
             binary: soldr
           - name: Linux ARM64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            archive: tar.gz
             binary: soldr
-          # musl variants ship statically-linked Linux binaries that run on
-          # alpine and other libc-less distros. CI already exercises these
-          # via `_bootstrap-e2e.yml`'s `e2e-linux-*-musl` jobs, so the
-          # toolchain + linker story is known-good. See `bench/docker/`
-          # and zackees/zccache's perf harness, both of which rebuild
-          # soldr-cli for musl from source per run because no pre-built
-          # binary existed before this matrix expansion.
           - name: Linux x64 (musl)
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
-            archive: tar.gz
             binary: soldr
           - name: Linux ARM64 (musl)
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            archive: tar.gz
             binary: soldr
           - name: macOS x64
             runner: macos-15-intel
             target: x86_64-apple-darwin
-            archive: tar.gz
             binary: soldr
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
-            archive: tar.gz
             binary: soldr
           - name: Windows x64
             runner: windows-2025
             target: x86_64-pc-windows-msvc
-            archive: zip
             binary: soldr.exe
           - name: Windows ARM64
             runner: windows-11-arm
             target: aarch64-pc-windows-msvc
-            archive: zip
             binary: soldr.exe
 
     steps:
@@ -268,26 +262,193 @@ jobs:
       - name: Build release binary
         run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
 
-      - name: Package tarball
-        if: matrix.archive == 'tar.gz'
+      - name: Install zstd
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v zstd >/dev/null 2>&1; then
+            echo "zstd already on PATH: $(zstd --version | head -n1)"
+            exit 0
+          fi
+          case "$RUNNER_OS" in
+            Linux)
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends zstd
+              ;;
+            macOS)
+              brew install zstd
+              ;;
+            Windows)
+              # Chocolatey is preinstalled on the windows-2025 / windows-11-arm
+              # GitHub-hosted runners. `--no-progress` keeps the workflow log
+              # readable; `-y` accepts the EULA-ish prompt.
+              choco install zstandard --no-progress -y
+              # Chocolatey installs to `C:\ProgramData\chocolatey\bin` which
+              # may not be on PATH for the current step. Add it for any
+              # follow-on bash/pwsh that needs zstd.
+              echo "C:\\ProgramData\\chocolatey\\bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              echo "unsupported RUNNER_OS=$RUNNER_OS for zstd install" >&2
+              exit 1
+              ;;
+          esac
+          zstd --version | head -n1
+
+      - name: Fetch matched zccache release for combined archive
+        # Pulls the matching-target zccache binaries from
+        # github.com/zackees/zccache's release for whichever version soldr
+        # currently pins (`MANAGED_ZCCACHE_VERSION` in
+        # `crates/soldr-cli/src/fetch/mod.rs`). The Linux gnu / Linux musl
+        # rows both pull the musl zccache because that's the only Linux
+        # asset upstream publishes; statically linked, runs on glibc.
+        shell: bash
+        run: |
+          set -euo pipefail
+          zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          if [ -z "$zccache_version" ]; then
+            echo "could not read MANAGED_ZCCACHE_VERSION from fetch/mod.rs" >&2
+            exit 1
+          fi
+          echo "zccache_version=$zccache_version"
+
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-*)
+              zccache_target=x86_64-unknown-linux-musl; ext=tar.gz ;;
+            aarch64-unknown-linux-*)
+              zccache_target=aarch64-unknown-linux-musl; ext=tar.gz ;;
+            x86_64-apple-darwin|aarch64-apple-darwin)
+              zccache_target="${{ matrix.target }}"; ext=tar.gz ;;
+            x86_64-pc-windows-msvc|aarch64-pc-windows-msvc)
+              zccache_target="${{ matrix.target }}"; ext=zip ;;
+            *)
+              echo "no zccache target mapping for ${{ matrix.target }}" >&2
+              exit 1 ;;
+          esac
+          echo "zccache_target=$zccache_target ext=$ext"
+
+          asset="zccache-v${zccache_version}-${zccache_target}.${ext}"
+          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
+          mkdir -p dist/package dist/zccache-stage
+          # Generous retry budget — the same release-propagation 404 window
+          # that motivated the soldr-side retry refactor (#432) applies
+          # here too, and on the release runner we can't fall back to
+          # cargo install.
+          curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
+            --output "/tmp/${asset}" "${url}"
+
+          case "$ext" in
+            tar.gz) tar -xzf "/tmp/${asset}" -C dist/zccache-stage ;;
+            zip)    unzip -oq "/tmp/${asset}" -d dist/zccache-stage ;;
+          esac
+
+          suffix=""
+          if [ "$ext" = "zip" ]; then suffix=".exe"; fi
+          for b in zccache zccache-daemon zccache-fp; do
+            src="dist/zccache-stage/${b}${suffix}"
+            if [ ! -f "$src" ]; then
+              echo "expected ${b}${suffix} in extracted zccache archive; got:" >&2
+              ls -la dist/zccache-stage/ >&2
+              exit 1
+            fi
+            cp "$src" "dist/package/${b}${suffix}"
+            chmod +x "dist/package/${b}${suffix}" 2>/dev/null || true
+          done
+
+      - name: Stage soldr binary alongside zccache trio
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+             "dist/package/${{ matrix.binary }}"
+          chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
+          ls -la dist/package/
+
+      - name: Write manifest.json
+        # Drop a small JSON descriptor into the archive root so downstream
+        # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
+        # have one stable source of truth for what's inside: soldr +
+        # zccache versions, target triples, per-binary sha256s, archive
+        # format. Schema is versioned so we can extend later without
+        # breaking parsers.
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          commit_sha="${{ needs.prepare.outputs.commit_sha }}"
+          soldr_target="${{ matrix.target }}"
+          zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          case "$soldr_target" in
+            x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
+            aarch64-unknown-linux-*) zccache_target=aarch64-unknown-linux-musl ;;
+            *)                       zccache_target="$soldr_target" ;;
+          esac
+          suffix=""
+          case "$soldr_target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+
+          sha256_of() {
+            # Cross-platform sha256: macOS lacks `sha256sum` by default,
+            # so fall back to `shasum -a 256` (or fail loudly).
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1" | awk '{print $1}'
+            else
+              shasum -a 256 "$1" | awk '{print $1}'
+            fi
+          }
+
+          soldr_sha=$(sha256_of "dist/package/soldr${suffix}")
+          zccache_sha=$(sha256_of "dist/package/zccache${suffix}")
+          zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")
+          zccache_fp_sha=$(sha256_of "dist/package/zccache-fp${suffix}")
+          built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          cat > dist/package/manifest.json <<EOF
+          {
+            "schema_version": 1,
+            "soldr": {
+              "version": "${version}",
+              "target": "${soldr_target}",
+              "binary": "soldr${suffix}",
+              "sha256": "${soldr_sha}",
+              "commit_sha": "${commit_sha}"
+            },
+            "zccache": {
+              "version": "${zccache_version}",
+              "target": "${zccache_target}",
+              "binaries": [
+                { "name": "zccache${suffix}",        "sha256": "${zccache_sha}" },
+                { "name": "zccache-daemon${suffix}", "sha256": "${zccache_daemon_sha}" },
+                { "name": "zccache-fp${suffix}",     "sha256": "${zccache_fp_sha}" }
+              ]
+            },
+            "archive": {
+              "format": "tar.zst",
+              "compression_level": 19
+            },
+            "built_at": "${built_at}"
+          }
+          EOF
+
+          echo "--- manifest.json ---"
+          cat dist/package/manifest.json
+
+      - name: Package combined archive (tar.zst level 19)
+        # zstd level 19 hits the recommended sweet spot per agent
+        # guidance: substantially smaller than tar.gz (~40-50% reduction
+        # observed on similar 4-binary bundles) without the memory /
+        # build-time blow-up of --ultra 22. `-T0` uses all cores so the
+        # extra CPU work doesn't dominate the release step's wall time.
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
-          mkdir -p dist/package
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "dist/package/${{ matrix.binary }}"
-          tar -C dist/package -czf "dist/${name}.tar.gz" "${{ matrix.binary }}"
-
-      - name: Package zip
-        if: matrix.archive == 'zip'
-        shell: pwsh
-        run: |
-          $version = "${{ needs.prepare.outputs.version }}"
-          $name = "soldr-$version-${{ matrix.target }}"
-          New-Item -ItemType Directory -Force -Path dist\package | Out-Null
-          Copy-Item "target\${{ matrix.target }}\release\${{ matrix.binary }}" "dist\package\${{ matrix.binary }}"
-          Compress-Archive -Path "dist\package\${{ matrix.binary }}" -DestinationPath "dist\$name.zip" -Force
+          tar -cf - -C dist/package . \
+            | zstd -19 -T0 -o "dist/${name}.tar.zst"
+          ls -la "dist/${name}.tar.zst"
+          echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
 
       - name: Install uv
         # PyPI wheel build is gnu-only for now. musllinux wheels need a
@@ -398,12 +559,61 @@ jobs:
           file "$binary" || true
           "./$binary" --version
 
+      - name: Smoke test combined tar.zst archive
+        # Round-trip: extract the freshly-packaged combined archive into a
+        # scratch dir, list its contents, and run soldr from there. Catches
+        # mistakes in the tar layout / file modes / zstd compression /
+        # bundled-zccache binary names before the artifact reaches the GH
+        # release. Cross-arch archives can't be executed (e.g. aarch64
+        # build on x86_64 host) so the `--version` step is gated to
+        # native-arch combinations.
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          archive="dist/soldr-${version}-${{ matrix.target }}.tar.zst"
+          test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
+
+          extract=$(mktemp -d)
+          tar --use-compress-program=unzstd -xf "$archive" -C "$extract"
+          echo "--- extracted layout ---"
+          ls -la "$extract"
+
+          # Every archive must ship the 4 expected binaries (soldr,
+          # zccache, zccache-daemon, zccache-fp) with their platform
+          # extension, plus a manifest.json describing the bundle.
+          suffix=""
+          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          for required in \
+            "${{ matrix.binary }}" \
+            "zccache${suffix}" \
+            "zccache-daemon${suffix}" \
+            "zccache-fp${suffix}" \
+            "manifest.json"; do
+            test -f "$extract/$required" \
+              || { echo "missing $required in $archive" >&2; exit 1; }
+          done
+          echo "--- extracted manifest.json ---"
+          cat "$extract/manifest.json"
+
+          # Run soldr only when the archive's target matches the runner's
+          # native arch. ubuntu-24.04 / windows-2025 are x86_64; the
+          # ubuntu-24.04-arm / windows-11-arm runners are aarch64; macOS is
+          # whatever the matrix entry says (Intel vs ARM).
+          runner_arch=$(uname -m)
+          case "$runner_arch:${{ matrix.target }}" in
+            x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
+              "$extract/${{ matrix.binary }}" --version
+              ;;
+            *)
+              echo "skipping --version (runner $runner_arch vs target ${{ matrix.target }})"
+              ;;
+          esac
+
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-soldr-${{ matrix.target }}
-          path: |
-            dist/soldr-*.tar.gz
-            dist/soldr-*.zip
+          path: dist/soldr-*.tar.zst
 
       - if: ${{ !contains(matrix.target, 'musl') }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
