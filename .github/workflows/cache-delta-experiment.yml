@@ -1,21 +1,22 @@
 name: Cache delta experiment
 
 # Exercises `.github/actions/cache-delta-experiment` (and its cleanup
-# sibling) against soldr's own dogfood build. Goal: validate that the
-# two-layer cook/delta machinery actually works end-to-end on a real
-# GH runner before deciding whether to graduate it to setup-soldr.
+# sibling) against soldr's own dogfood build, side-by-side with a
+# `baseline` job that runs the same cook + build under a single
+# `actions/cache` step. The third job (`compare`) gathers the two
+# jobs' outputs into a markdown table so we can read the "upload bytes
+# saved" number directly from the workflow summary.
 #
-# What this workflow proves on a single run:
-#   * The composite action restores both layers without error.
-#   * `soldr cook` runs to completion with the layered cache in place.
-#   * `soldr cargo build` runs after cook and the mark file separates
-#     cook writes from build writes (delta-bytes > 0 on cold runs).
-#   * Cleanup saves both layers under their respective keys.
+# This is the slice where the experiment starts emitting actionable
+# numbers — every measurement run prints both:
+#   * delta-job total upload bytes   = cook + delta layer uploads
+#   * baseline-job upload bytes      = single zccache dir tarball
+#   * ratio                          = delta / baseline (lower is better)
 #
-# What it does NOT prove (deferred to the comparison-reporter PR):
-#   * Whether the delta save is materially smaller than the baseline
-#     single-cache save. Comparison needs a side-by-side run against
-#     the current single-cache dogfood — that's PR 3.
+# On a cold run the two should be similar (both upload the full cook
+# output). On a warm run with unchanged Cargo.lock the delta job
+# should upload ~the delta-bytes only, while the baseline re-uploads
+# the entire zccache dir.
 #
 # Trigger surface kept small: workflow_dispatch for manual measurement
 # runs, plus path-filtered push so iterating on the action itself
@@ -33,9 +34,15 @@ permissions:
   contents: read
 
 jobs:
-  bench:
+  delta:
     name: Linux x64 (delta-cache)
     runs-on: ubuntu-24.04
+    outputs:
+      cook-cache-hit: ${{ steps.delta-cache.outputs.cook-cache-hit }}
+      delta-cache-hit: ${{ steps.delta-cache.outputs.delta-cache-hit }}
+      cook-bytes: ${{ steps.measure.outputs.cook-bytes }}
+      delta-bytes: ${{ steps.delta-cache.outputs.delta-bytes }}
+      total-bytes: ${{ steps.measure.outputs.total-bytes }}
     env:
       # Isolate the experiment's soldr cache from setup-soldr's own
       # runtime cache. Same pattern the dogfood smoke uses for its
@@ -83,23 +90,195 @@ jobs:
           cook-cmd: soldr cook --tests
           build-cmd: soldr cargo build --package soldr-cli --locked
 
-      - name: Report cache layer hits
-        if: always()
-        shell: bash
-        run: |
-          echo "## Cache delta layer results" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "| metric | value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| cook-cache-hit | \`${{ steps.delta-cache.outputs.cook-cache-hit }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| delta-cache-hit | \`${{ steps.delta-cache.outputs.delta-cache-hit }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| cook-key | \`${{ steps.delta-cache.outputs.cook-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| delta-key | \`${{ steps.delta-cache.outputs.delta-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| delta-bytes | \`${{ steps.delta-cache.outputs.delta-bytes }}\` |" >> "$GITHUB_STEP_SUMMARY"
-
       - name: Save layers (cleanup)
         # Runs regardless of build outcome so a failed build still
         # saves whatever the cook step produced — the next run
         # benefits even if this one tripped on a regression.
         if: always()
         uses: ./.github/actions/cache-delta-experiment-cleanup
+
+      - id: measure
+        name: Measure upload bytes
+        if: always()
+        # The cook archive is only PACKED-FOR-UPLOAD when the cook
+        # cache key missed on restore. Otherwise it was just the
+        # restored file on disk and represented zero "new" upload
+        # bytes for this run. Splitting cook-upload-bytes vs.
+        # cook-archive-bytes-on-disk is what lets the warm-run
+        # comparison story land: steady-state runs upload only the
+        # tiny delta, not the full cook layer every time.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cook_archive="${RUNNER_TEMP}/soldr-cook-layer.tar.zst"
+          delta_archive="${RUNNER_TEMP}/soldr-delta-layer.tar.zst"
+
+          cook_hit="${{ steps.delta-cache.outputs.cook-cache-hit }}"
+          delta_bytes="${{ steps.delta-cache.outputs.delta-bytes }}"
+          if [ -z "${delta_bytes}" ]; then delta_bytes=0; fi
+
+          cook_bytes=0
+          if [ "${cook_hit}" != "true" ] && [ -f "${cook_archive}" ]; then
+            cook_bytes=$(wc -c < "${cook_archive}" | awk '{print $1}')
+          fi
+
+          total=$((cook_bytes + delta_bytes))
+          {
+            echo "cook-bytes=${cook_bytes}"
+            echo "total-bytes=${total}"
+          } >> "$GITHUB_OUTPUT"
+          echo "delta job upload bytes: cook=${cook_bytes} delta=${delta_bytes} total=${total}"
+
+  baseline:
+    name: Linux x64 (single-cache baseline)
+    runs-on: ubuntu-24.04
+    outputs:
+      cache-hit: ${{ steps.restore.outputs.cache-hit }}
+      upload-bytes: ${{ steps.measure.outputs.upload-bytes }}
+    env:
+      # Different path than the delta job so the two jobs' caches
+      # don't share state and skew the comparison.
+      SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
+        with:
+          cache: false
+          linker: platform-default
+          cache-dir: ${{ runner.temp }}/cache-delta-exp-baseline-setup
+          build-cache: false
+          target-cache: false
+
+      - id: keys
+        name: Compute baseline key
+        shell: bash
+        run: |
+          set -euo pipefail
+          OS="${{ runner.os }}"
+          ARCH="${{ runner.arch }}"
+          if [ -f Cargo.lock ]; then
+            LOCK_HASH=$(sha256sum Cargo.lock | cut -c1-16)
+          else
+            LOCK_HASH="no-lock"
+          fi
+          if [ -f rust-toolchain.toml ]; then
+            TC_HASH=$(sha256sum rust-toolchain.toml | cut -c1-16)
+          else
+            TC_HASH="no-tc"
+          fi
+          PREFIX="soldr-baseline-${OS}-${ARCH}-${LOCK_HASH}-${TC_HASH}"
+          {
+            echo "key=${PREFIX}-${{ github.sha }}"
+            echo "restore=${PREFIX}-"
+            echo "zccache-dir=${SOLDR_CACHE_DIR}/cache/zccache"
+          } >> "$GITHUB_OUTPUT"
+          mkdir -p "${SOLDR_CACHE_DIR}/cache/zccache"
+
+      - id: restore
+        name: Restore baseline cache (single layer)
+        # Same `actions/cache` pattern the existing dogfood uses
+        # (setup-soldr-action.yml:129-137). One key, the whole
+        # zccache dir under it. No layering. This is what soldr
+        # users get today; the delta-job is what they could get
+        # if we ship the layered approach.
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ steps.keys.outputs.zccache-dir }}
+          key: ${{ steps.keys.outputs.key }}
+          restore-keys: ${{ steps.keys.outputs.restore }}
+
+      - name: Run cook + build (baseline)
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr cook --tests
+          soldr cargo build --package soldr-cli --locked
+
+      - id: measure
+        name: Measure baseline upload size
+        if: always()
+        shell: bash
+        # actions/cache@v4 saves the whole `path:` value on every
+        # exact-key miss, which is every commit (because the key
+        # embeds github.sha). We approximate the upload bytes by
+        # tarring the same dir under matching compression. Slightly
+        # tighter than actions/cache's internal compression, so the
+        # baseline number is a LOWER BOUND on what actions/cache
+        # actually uploads — making the comparison favor the
+        # baseline a little. Acceptable for the experiment.
+        run: |
+          set -euo pipefail
+          archive="${RUNNER_TEMP}/baseline-upload-estimate.tar.zst"
+          zccache_dir="${{ steps.keys.outputs.zccache-dir }}"
+          if [ -d "$zccache_dir" ]; then
+            tar --use-compress-program='zstd -19 -T0' -cf "$archive" -C "$zccache_dir" .
+            bytes=$(wc -c < "$archive" | awk '{print $1}')
+          else
+            bytes=0
+          fi
+          echo "upload-bytes=${bytes}" >> "$GITHUB_OUTPUT"
+          echo "baseline upload (estimated): ${bytes} bytes"
+
+  compare:
+    name: Side-by-side comparison
+    needs: [delta, baseline]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Emit comparison summary
+        shell: bash
+        env:
+          DELTA_COOK_HIT: ${{ needs.delta.outputs.cook-cache-hit }}
+          DELTA_DELTA_HIT: ${{ needs.delta.outputs.delta-cache-hit }}
+          DELTA_COOK_BYTES: ${{ needs.delta.outputs.cook-bytes }}
+          DELTA_DELTA_BYTES: ${{ needs.delta.outputs.delta-bytes }}
+          DELTA_TOTAL_BYTES: ${{ needs.delta.outputs.total-bytes }}
+          BASELINE_HIT: ${{ needs.baseline.outputs.cache-hit }}
+          BASELINE_BYTES: ${{ needs.baseline.outputs.upload-bytes }}
+        run: |
+          set -euo pipefail
+          fmt_bytes() {
+            local b="${1:-0}"
+            # Print as MiB with one decimal place when ≥1 MiB, else bytes.
+            awk -v b="$b" 'BEGIN {
+              if (b == 0) { print "0 B"; exit }
+              if (b >= 1048576) { printf "%.1f MiB (%d B)\n", b/1048576, b; exit }
+              if (b >= 1024)    { printf "%.1f KiB (%d B)\n", b/1024, b;    exit }
+              printf "%d B\n", b
+            }'
+          }
+          ratio() {
+            local d="${1:-0}"; local b="${2:-0}"
+            awk -v d="$d" -v b="$b" 'BEGIN {
+              if (b == 0) { print "n/a"; exit }
+              printf "%.2fx (%.1f%%)\n", d/b, (d*100)/b
+            }'
+          }
+
+          delta_total_fmt=$(fmt_bytes "${DELTA_TOTAL_BYTES:-0}")
+          delta_cook_fmt=$(fmt_bytes "${DELTA_COOK_BYTES:-0}")
+          delta_delta_fmt=$(fmt_bytes "${DELTA_DELTA_BYTES:-0}")
+          baseline_fmt=$(fmt_bytes "${BASELINE_BYTES:-0}")
+          ratio_fmt=$(ratio "${DELTA_TOTAL_BYTES:-0}" "${BASELINE_BYTES:-0}")
+
+          {
+            echo "## Cache delta vs single-cache baseline"
+            echo ""
+            echo "| metric | delta job | baseline job |"
+            echo "|---|---|---|"
+            echo "| cache-hit (cook / single) | \`${DELTA_COOK_HIT}\` | \`${BASELINE_HIT}\` |"
+            echo "| cache-hit (delta) | \`${DELTA_DELTA_HIT}\` | n/a |"
+            echo "| upload bytes — cook layer | ${delta_cook_fmt} | included in baseline single layer |"
+            echo "| upload bytes — delta layer | ${delta_delta_fmt} | n/a |"
+            echo "| **upload bytes — total** | **${delta_total_fmt}** | **${baseline_fmt}** |"
+            echo "| ratio (delta / baseline) | colspan: ${ratio_fmt} | |"
+            echo ""
+            echo "_Cold runs: ratio ~1.0 expected (both upload the full cook output)._"
+            echo "_Warm runs (same Cargo.lock + rust-toolchain.toml): delta should drop to per-PR-only writes, baseline re-uploads everything._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "--- comparison ---"
+          echo "delta-total=${DELTA_TOTAL_BYTES:-0} bytes (cook=${DELTA_COOK_BYTES:-0} delta=${DELTA_DELTA_BYTES:-0})"
+          echo "baseline=${BASELINE_BYTES:-0} bytes"
+          echo "ratio (delta/baseline)=${ratio_fmt}"
