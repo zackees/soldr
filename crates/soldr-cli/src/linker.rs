@@ -11,7 +11,7 @@
 //! and `CARGO_TARGET_*_RUSTFLAGS` via the env hash, so no separate
 //! invalidation hook is required.
 
-use soldr_core::{suppress_windows_console_window, SoldrError};
+use crate::core::{suppress_windows_console_window, SoldrError};
 use std::ffi::OsStr;
 use std::str::FromStr;
 

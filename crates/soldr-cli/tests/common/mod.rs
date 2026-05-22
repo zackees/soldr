@@ -52,9 +52,9 @@ pub(crate) fn seed_gc_candidate(cache_root: &Path, label: &str) -> PathBuf {
     .expect("failed to write gc config");
 
     let registry =
-        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
             .expect("failed to open target registry");
-    let now = soldr_cache::target_registry::current_unix_seconds()
+    let now = soldr_cli::cache_lib::target_registry::current_unix_seconds()
         .expect("failed to get current unix seconds");
     registry
         .upsert_with_time(&target, now - 120)
@@ -75,9 +75,9 @@ pub(crate) fn seed_gc_file_candidate(cache_root: &Path, label: &str) -> PathBuf 
     .expect("failed to write gc config");
 
     let registry =
-        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
             .expect("failed to open target registry");
-    let now = soldr_cache::target_registry::current_unix_seconds()
+    let now = soldr_cli::cache_lib::target_registry::current_unix_seconds()
         .expect("failed to get current unix seconds");
     registry
         .upsert_with_time(&target, now - 120)

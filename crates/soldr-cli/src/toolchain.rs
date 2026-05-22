@@ -2,8 +2,8 @@
 //! `soldr rustup` front door, and `soldr toolchain install` / `prepare`.
 //! Extracted from `main.rs` as part of issue #339.
 
+use crate::core::{suppress_windows_console_window, SoldrError};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, rustup_binary};
-use soldr_core::{suppress_windows_console_window, SoldrError};
 
 /// Run a rustup-managed toolchain binary with pass-through args.
 pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
@@ -61,7 +61,7 @@ fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> 
     }
 
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let Some(channel) = manifest.channel else {
         return Ok(args.to_vec());
     };
@@ -94,7 +94,7 @@ fn rustup_args_specify_toolchain(args: &[String]) -> bool {
 /// Implementation of `soldr toolchain install`.
 pub(crate) fn run_toolchain_install() -> Result<i32, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let Some(channel) = manifest.channel.as_deref() else {
         eprintln!(
             "soldr: no rust-toolchain.toml channel found; nothing to install. \
@@ -109,7 +109,7 @@ pub(crate) fn run_toolchain_install() -> Result<i32, SoldrError> {
 /// Implementation of `soldr toolchain prepare`.
 pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
-    let manifest = soldr_core::read_rust_toolchain_manifest(&workspace_root)?;
+    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let Some(channel) = manifest.channel.as_deref() else {
         eprintln!(
             "soldr: no rust-toolchain.toml channel found; nothing to prepare. \
@@ -161,7 +161,7 @@ pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
 /// `rust-toolchain.toml` at exec time, so no explicit channel is
 /// passed.
 fn install_plugins(
-    plugins: &std::collections::BTreeMap<String, soldr_core::PluginSpec>,
+    plugins: &std::collections::BTreeMap<String, crate::core::PluginSpec>,
 ) -> Result<i32, SoldrError> {
     for (name, spec) in plugins {
         let code = cargo_install_plugin(name, spec)?;
@@ -172,14 +172,14 @@ fn install_plugins(
     Ok(0)
 }
 
-fn cargo_install_plugin(name: &str, spec: &soldr_core::PluginSpec) -> Result<i32, SoldrError> {
+fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i32, SoldrError> {
     let cargo = resolve_toolchain_binary("cargo")?;
     let mut command = std::process::Command::new(&cargo);
     command.arg("install").arg(name);
 
     let (version, locked, features, no_default_features) = match spec {
-        soldr_core::PluginSpec::Version(value) => (Some(value.as_str()), None, None, None),
-        soldr_core::PluginSpec::Detailed {
+        crate::core::PluginSpec::Version(value) => (Some(value.as_str()), None, None, None),
+        crate::core::PluginSpec::Detailed {
             version,
             locked,
             features,

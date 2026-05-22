@@ -7,6 +7,7 @@ use crate::cargo_front_door::{
     file_hash_or_missing, first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
     workspace_manifest_hashes, CargoProfileDebugDefault,
 };
+use crate::core::{suppress_windows_console_window, SoldrError};
 use crate::zccache::{
     command_stderr, normalize_path_for_compare, run_zccache_command_strings_in_cache_dir,
     ZccacheBuildSession,
@@ -18,7 +19,6 @@ use crate::{
     WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
 };
 use serde::{Deserialize, Serialize};
-use soldr_core::{suppress_windows_console_window, SoldrError};
 use std::collections::BTreeSet;
 
 #[derive(Debug, Deserialize)]

@@ -10,8 +10,8 @@
 
 use std::path::PathBuf;
 
+use crate::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
 use clap::Args;
-use soldr_cache::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
 
 #[derive(Debug, Args)]
 pub struct SaveArgs {

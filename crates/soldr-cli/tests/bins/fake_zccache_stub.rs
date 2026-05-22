@@ -3,7 +3,7 @@
 //! Models three stub modes:
 //!
 //! * `session-start` invocation: emit a JSON object on stdout that
-//!   `soldr_cache::parse_zccache_session_id` accepts, and exit 0. Also
+//!   `soldr_cli::cache_lib::parse_zccache_session_id` accepts, and exit 0. Also
 //!   records the invocation in the state file under `session_starts`.
 //! * Wrapper-style invocation (first positional arg is not a known
 //!   zccache subcommand): consult the state file to decide whether to

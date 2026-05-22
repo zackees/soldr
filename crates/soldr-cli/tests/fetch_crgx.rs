@@ -7,7 +7,7 @@
 //! Requires network access. Run with:
 //!   cargo test -p soldr-fetch --test fetch_crgx
 
-use soldr_fetch::{fetch_tool, VersionSpec};
+use soldr_cli::fetch::{fetch_tool, VersionSpec};
 
 #[tokio::test]
 async fn fetch_crgx_and_run() {

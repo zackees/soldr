@@ -19,13 +19,13 @@
 //! Debug-info sidecars (`.pdb`, `.dwp`, `.dSYM`) are copied next to
 //! every binary, mirroring the `SOLDR_ZCCACHE_LOCAL_DIR` behaviour.
 
-use crate::{
+use super::{
     canonical_zccache_paths, copy_debug_info_sidecars, copy_if_changed, desired_binary_names,
     find_in_dirs, http_client, suppress_windows_console_window, MANAGED_ZCCACHE_VERSION,
 };
+use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use soldr_core::{SoldrError, SoldrPaths, TargetTriple};
 use std::path::{Path, PathBuf};
 
 /// Directory name (under `SoldrPaths::bin`) where the pinned zccache
@@ -366,7 +366,7 @@ pub(crate) async fn install_zccache_from_source_for_target(
         version: version.clone(),
         binaries: binaries.clone(),
         installed_at: installed_at.clone(),
-        soldr_version: soldr_core::version().to_string(),
+        soldr_version: crate::core::version().to_string(),
     };
     let sidecar_path = pinned_sidecar_path(paths);
     let mut sidecar_bytes = serde_json::to_vec_pretty(&sidecar).map_err(|e| {

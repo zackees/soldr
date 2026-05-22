@@ -2,6 +2,8 @@
 //! injection, low-disk warning, and the cargo arg-parsing helpers shared
 //! with `rust_plan`. Extracted from `main.rs` as part of issue #339.
 
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::fetch::VersionSpec;
 use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
 use crate::trampoline_workspace::{
     detect_workspace_verb, refresh_workspace_sidecar_after_cargo, try_workspace_trampoline,
@@ -15,8 +17,6 @@ use crate::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
-use soldr_fetch::VersionSpec;
 use std::collections::BTreeSet;
 use std::io::Write;
 
@@ -121,8 +121,8 @@ pub(crate) async fn run_cargo_front_door(
     };
 
     command.env(
-        soldr_cache::CACHE_ENABLED_ENV_VAR,
-        soldr_cache::cache_enabled_env_value(cache_enabled_for_cargo),
+        crate::cache_lib::CACHE_ENABLED_ENV_VAR,
+        crate::cache_lib::cache_enabled_env_value(cache_enabled_for_cargo),
     );
     if build_like_cargo {
         // Cargo front door only: keep startup/low-disk warnings off unrelated
@@ -535,7 +535,7 @@ fn default_cargo_build_target(args: &[String]) -> Result<Option<String>, SoldrEr
         return Ok(None);
     }
 
-    Ok(Some(soldr_core::TargetTriple::detect()?.triple()))
+    Ok(Some(crate::core::TargetTriple::detect()?.triple()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -794,11 +794,11 @@ fn cargo_config_paths(start_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn cargo_home_dir_for_config() -> Option<std::path::PathBuf> {
-    std::env::var_os(soldr_core::CARGO_HOME_ENV_VAR)
+    std::env::var_os(crate::core::CARGO_HOME_ENV_VAR)
         .filter(|value| !value.is_empty())
         .map(std::path::PathBuf::from)
         .or_else(|| {
-            soldr_core::user_home_dir()
+            crate::core::user_home_dir()
                 .ok()
                 .map(|home| home.join(".cargo"))
         })
@@ -919,8 +919,8 @@ fn should_emit_cargo_debug_default_warning(
     paths: &SoldrPaths,
     repo_path: &std::path::Path,
 ) -> bool {
-    let db_path = soldr_cache::state_db_path(paths);
-    soldr_cache::state_db::StateDb::open(&db_path)
+    let db_path = crate::cache_lib::state_db_path(paths);
+    crate::cache_lib::state_db::StateDb::open(&db_path)
         .and_then(|db| db.should_emit_cargo_debug_default_warning(repo_path))
         .unwrap_or(true)
 }
@@ -981,7 +981,7 @@ fn resolve_active_target_triple(
     if let Some(target) = cargo_args_target_value(args) {
         return Ok(target);
     }
-    Ok(soldr_core::TargetTriple::detect()?.triple())
+    Ok(crate::core::TargetTriple::detect()?.triple())
 }
 
 fn cargo_args_target_value(args: &[String]) -> Option<String> {
@@ -1221,7 +1221,7 @@ pub(crate) fn low_disk_warning_for_free_bytes(free_bytes: u64, use_color: bool) 
     };
     Some(format!(
         "soldr: {warning}: disk space is low ({} free). Run `soldr gc` to review reclaimable Rust target directories.",
-        soldr_cache::target_registry::human_size(free_bytes),
+        crate::cache_lib::target_registry::human_size(free_bytes),
     ))
 }
 
@@ -1367,7 +1367,7 @@ async fn ensure_known_subcommand_tool(
     let Some(sub) = first_cargo_subcommand(args) else {
         return Ok(Vec::new());
     };
-    let Some(spec) = soldr_fetch::lookup_by_cargo_subcommand(sub) else {
+    let Some(spec) = crate::fetch::lookup_by_cargo_subcommand(sub) else {
         return Ok(Vec::new());
     };
 
@@ -1377,7 +1377,7 @@ async fn ensure_known_subcommand_tool(
         .unwrap_or(VersionSpec::Latest);
 
     eprintln!("soldr: fetching {}...", spec.crate_name);
-    let result = soldr_fetch::fetch_tool_with_paths(spec.crate_name, &version, paths).await?;
+    let result = crate::fetch::fetch_tool_with_paths(spec.crate_name, &version, paths).await?;
 
     if result.cached {
         eprintln!(

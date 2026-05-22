@@ -19,9 +19,9 @@
 //! 3. If no pin exists and mode is `strict`, refuses to install. In
 //!    `permissive` mode it installs and prints a `trust: unverified` warning.
 
+use crate::core::SoldrError;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use soldr_core::SoldrError;
 use std::collections::HashMap;
 use std::path::Path;
 

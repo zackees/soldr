@@ -207,7 +207,7 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
     );
 
     let registry =
-        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
             .expect("failed to open target registry");
     assert!(
         registry.get(&target).unwrap().is_some(),
@@ -374,10 +374,11 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
     let missing_target = dev_root.join("ghost-project").join("target");
 
     {
-        let registry =
-            soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
-                .expect("failed to open target registry");
-        let now = soldr_cache::target_registry::current_unix_seconds()
+        let registry = soldr_cli::cache_lib::target_registry::TargetRegistry::open(
+            &cache_root.join("state.redb"),
+        )
+        .expect("failed to open target registry");
+        let now = soldr_cli::cache_lib::target_registry::current_unix_seconds()
             .expect("failed to read clock for seeding");
         registry
             .upsert_with_time(&live_target, now - 30)
@@ -418,7 +419,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
     }
 
     let registry_after =
-        soldr_cache::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
+        soldr_cli::cache_lib::target_registry::TargetRegistry::open(&cache_root.join("state.redb"))
             .expect("failed to reopen registry");
     assert!(
         registry_after.get(&missing_target).unwrap().is_none(),

@@ -18,7 +18,7 @@ use std::{
 use thiserror::Error;
 
 /// Default file name for the soldr state database under `~/.soldr/`.
-pub const DATA_DB_FILE: &str = crate::state_db::STATE_DB_FILE;
+pub const DATA_DB_FILE: &str = super::state_db::STATE_DB_FILE;
 
 /// Default staleness threshold (10 days) used by `soldr gc` and the
 /// startup warning.

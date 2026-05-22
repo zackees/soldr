@@ -1,6 +1,6 @@
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
-use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use std::{
     fs::{self, File, OpenOptions},
     io::Read,

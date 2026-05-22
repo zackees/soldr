@@ -10,7 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use soldr_cache::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
+use soldr_cli::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
 
 fn write(path: &Path, content: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();

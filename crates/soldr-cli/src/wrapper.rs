@@ -3,10 +3,10 @@
 //! from "unknown session" errors on Windows. Extracted from `main.rs` as
 //! part of issue #339.
 
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 #[cfg(not(unix))]
 use crate::zccache::run_zccache_command_in_cache_dir;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
-use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
 /// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
@@ -71,7 +71,7 @@ pub(crate) fn run_rustc_wrapper(raw_args: &[String]) -> Result<i32, SoldrError> 
 
     // Only route through zccache for actual rustc invocations, not
     // clippy-driver or other workspace wrappers.
-    if tool_stem == "rustc" && soldr_cache::cache_enabled_in_current_process() {
+    if tool_stem == "rustc" && crate::cache_lib::cache_enabled_in_current_process() {
         if let Some(zccache) = zccache_binary_override() {
             return run_wrapper_through_zccache(&effective_args, &zccache);
         }
@@ -232,7 +232,10 @@ fn run_wrapper_through_zccache_windows(
 
     let mut retry = std::process::Command::new(zccache);
     retry.args(&raw_args[1..]);
-    retry.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &new_session_id);
+    retry.env(
+        crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
+        &new_session_id,
+    );
     suppress_windows_console_window(&mut retry);
     let retry_status = retry.status()?;
     Ok(retry_status.code().unwrap_or(1))
@@ -261,18 +264,18 @@ pub(crate) fn stderr_indicates_unknown_session(stderr: &[u8]) -> bool {
 /// allocates a replacement before retrying the wrapper invocation once.
 #[cfg(not(unix))]
 fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, SoldrError> {
-    let cache_dir = std::env::var_os(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR)
+    let cache_dir = std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
         .map(std::path::PathBuf::from)
         .ok_or_else(|| {
             SoldrError::Other(format!(
                 "{} is not set in the wrapper environment; cannot allocate replacement zccache session",
-                soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR
+                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR
             ))
         })?;
 
-    let session_log_path = soldr_cache::session_log_path(&cache_dir);
+    let session_log_path = crate::cache_lib::session_log_path(&cache_dir);
     let session_log_path_arg = session_log_path.display().to_string();
-    let journal_path = soldr_cache::session_journal_path(&cache_dir);
+    let journal_path = crate::cache_lib::session_journal_path(&cache_dir);
     let journal_path_arg = journal_path.display().to_string();
     let session_json = run_zccache_command_in_cache_dir(
         zccache,
@@ -286,7 +289,7 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
         ],
         &cache_dir,
     )?;
-    soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
+    crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
         SoldrError::Other(format!(
             "failed to parse zccache session id from output: {}",
             session_json.stdout.trim()
@@ -300,13 +303,13 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
 /// `rustc_args` is the slice of args that follows the rustc binary
 /// path in the wrapper invocation (i.e. `raw_args[2..]`).
 fn record_target_dir_in_registry(rustc_args: &[String]) {
-    let Some(target) = soldr_cache::target_registry::resolve_workspace_target_dir(rustc_args)
+    let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
     else {
         return;
     };
     let Ok(paths) = SoldrPaths::new() else { return };
-    let db_path = soldr_cache::data_db_path(&paths);
-    let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) else {
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
         return;
     };
     let _ = registry.upsert(&target);

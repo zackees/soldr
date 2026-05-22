@@ -22,7 +22,7 @@
 //! 6. If `target/.cargo-lock` or any `target/<profile>/.cargo-lock` is
 //!    present, refuse to run — that signals an active build.
 
-use crate::target_registry::RegistryError;
+use super::target_registry::RegistryError;
 use std::{
     collections::HashMap,
     fs,

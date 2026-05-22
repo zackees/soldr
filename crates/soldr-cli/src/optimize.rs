@@ -7,10 +7,10 @@
 //! current process is not elevated. On macOS / Linux the subcommand is
 //! a no-op with a clear message.
 
+use crate::cache_lib::zccache_dir;
+use crate::core::{SoldrError, SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
-use soldr_cache::zccache_dir;
-use soldr_core::{SoldrError, SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -318,8 +318,9 @@ pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
 
     let paths = SoldrPaths::new()?;
     let zccache_path = zccache_dir(&paths);
-    let zccache_overridden = std::env::var_os(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR).is_some()
-        && std::env::var_os(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR).is_none();
+    let zccache_overridden = std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
+        .is_some()
+        && std::env::var_os(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR).is_none();
 
     // CI auto-skip.
     if let Some(label) = ci_label {
@@ -382,7 +383,7 @@ pub(crate) fn run_optimize(args: OptimizeArgs) -> Result<i32, SoldrError> {
             warnings.push(format!(
                 "ZCCACHE_CACHE_DIR is set externally; resolved zccache dir ({}) is being excluded explicitly. Unset {} to revert to soldr's managed location unless you have a specific reason.",
                 zccache_path.display(),
-                soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
             ));
         }
         if std::env::var_os(SOLDR_CACHE_DIR_ENV_VAR).is_some() {

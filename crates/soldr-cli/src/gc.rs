@@ -3,9 +3,9 @@
 
 use crate::cache::print_json;
 use crate::cargo_front_door::{available_space, existing_filesystem_probe_path};
+use crate::core::{SoldrError, SoldrPaths};
 use crate::{GcCargoArgs, GcSweepArgs, JSON_SCHEMA_VERSION, SOLDR_GC_CARGO_TOOLCHAIN_ENV_VAR};
 use serde::Serialize;
-use soldr_core::{SoldrError, SoldrPaths};
 use std::io::Write;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -103,7 +103,7 @@ struct GcOutput {
 }
 
 pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError> {
-    use soldr_cache::gc::{
+    use crate::cache_lib::gc::{
         cleanup_old_gc_logs, parse_duration, parse_size, scan, write_gc_error_log, GcOptions,
         GcPurgeSummary,
     };
@@ -118,10 +118,10 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
 
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths);
-    let db_path = soldr_cache::data_db_path(&paths);
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
-    let gc_log_dir = soldr_cache::gc_log_dir(&paths);
+    let gc_log_dir = crate::cache_lib::gc_log_dir(&paths);
     cleanup_old_gc_logs(&gc_log_dir)
         .map_err(|e| SoldrError::Other(format!("failed to clean old gc logs: {e}")))?;
 
@@ -177,7 +177,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
             candidate_count: report.candidates.len(),
             skipped_count: report.skipped.len(),
             total_reclaimable_bytes,
-            total_reclaimable_human: soldr_cache::target_registry::human_size(
+            total_reclaimable_human: crate::cache_lib::target_registry::human_size(
                 total_reclaimable_bytes,
             ),
             largest_candidates: gc_largest_candidates(&report.candidates, 5)
@@ -200,7 +200,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
             succeeded_count: purge_summary.succeeded_count,
             failed_count: purge_summary.failed_count,
             reclaimed_bytes: purge_summary.reclaimed_bytes,
-            reclaimed_human: soldr_cache::target_registry::human_size(
+            reclaimed_human: crate::cache_lib::target_registry::human_size(
                 purge_summary.reclaimed_bytes,
             ),
             error_log_path: error_log_path.map(|p| p.display().to_string()),
@@ -283,7 +283,7 @@ fn fast_directory_size_and_files(path: &std::path::Path) -> (u64, u64) {
             if entry_meta.file_type().is_symlink() {
                 (0, 0)
             } else if entry_meta.is_dir() {
-                soldr_cache::target_registry::directory_size_and_files(&entry_path)
+                crate::cache_lib::target_registry::directory_size_and_files(&entry_path)
             } else if entry_meta.is_file() {
                 (entry_meta.len(), 1)
             } else {
@@ -303,13 +303,13 @@ pub(crate) fn run_gc_list_command(
     use rayon::prelude::*;
 
     let paths = SoldrPaths::new()?;
-    let db_path = soldr_cache::data_db_path(&paths);
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
     let rows = registry
         .list()
         .map_err(|e| SoldrError::Other(format!("gc list failed: {e}")))?;
-    let now = soldr_cache::target_registry::current_unix_seconds()
+    let now = crate::cache_lib::target_registry::current_unix_seconds()
         .map_err(|e| SoldrError::Other(format!("gc list clock error: {e}")))?;
 
     // Partition rows into those still on disk and those that have
@@ -339,9 +339,9 @@ pub(crate) fn run_gc_list_command(
                     path: absolute_path_string(&row.path),
                     last_used_unix: row.last_used,
                     age_seconds,
-                    age_human: soldr_cache::target_registry::human_age(age_seconds),
+                    age_human: crate::cache_lib::target_registry::human_age(age_seconds),
                     size_bytes,
-                    size_human: soldr_cache::target_registry::human_size(size_bytes),
+                    size_human: crate::cache_lib::target_registry::human_size(size_bytes),
                     file_count,
                     kind: KIND_CARGO_TARGET,
                     purge_safety: PURGE_SAFETY_DERIVED,
@@ -354,7 +354,7 @@ pub(crate) fn run_gc_list_command(
     };
 
     if include_registry_src {
-        if let Some(cargo_home) = soldr_core::resolve_cargo_home() {
+        if let Some(cargo_home) = crate::core::resolve_cargo_home() {
             entries.extend(walk_cargo_registry_src(&cargo_home, now));
         }
     }
@@ -453,9 +453,9 @@ fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcList
                 path: absolute_path_string(&crate_path),
                 last_used_unix,
                 age_seconds,
-                age_human: soldr_cache::target_registry::human_age(age_seconds),
+                age_human: crate::cache_lib::target_registry::human_age(age_seconds),
                 size_bytes,
-                size_human: soldr_cache::target_registry::human_size(size_bytes),
+                size_human: crate::cache_lib::target_registry::human_size(size_bytes),
                 file_count,
                 kind: KIND_CARGO_REGISTRY_SRC,
                 purge_safety: PURGE_SAFETY_DERIVED,
@@ -519,12 +519,12 @@ pub(crate) fn run_gc_purge_registry_src_command(
     purge_all: bool,
     json: bool,
 ) -> Result<(), SoldrError> {
-    let cargo_home = soldr_core::resolve_cargo_home().ok_or_else(|| {
+    let cargo_home = crate::core::resolve_cargo_home().ok_or_else(|| {
         SoldrError::Other(
             "could not resolve $CARGO_HOME (no env var, no home directory)".to_string(),
         )
     })?;
-    let now = soldr_cache::target_registry::current_unix_seconds()
+    let now = crate::cache_lib::target_registry::current_unix_seconds()
         .map_err(|e| SoldrError::Other(format!("gc purge --registry-src clock error: {e}")))?;
     let entries = walk_cargo_registry_src(&cargo_home, now);
 
@@ -575,7 +575,7 @@ pub(crate) fn run_gc_purge_registry_src_command(
             selected.len(),
             deleted_paths.len(),
             failures.len(),
-            soldr_cache::target_registry::human_size(reclaimed_bytes),
+            crate::cache_lib::target_registry::human_size(reclaimed_bytes),
         );
         for failure in &failures {
             eprintln!(
@@ -593,7 +593,7 @@ pub(crate) fn run_gc_purge_registry_src_command(
             succeeded_count: deleted_paths.len(),
             failed_count: failures.len(),
             reclaimed_bytes,
-            reclaimed_human: soldr_cache::target_registry::human_size(reclaimed_bytes),
+            reclaimed_human: crate::cache_lib::target_registry::human_size(reclaimed_bytes),
             deleted_paths,
             failures,
         };
@@ -603,13 +603,13 @@ pub(crate) fn run_gc_purge_registry_src_command(
 }
 
 fn run_gc_purge_candidates(
-    registry: &soldr_cache::target_registry::TargetRegistry,
-    candidates: &[soldr_cache::gc::GcCandidate],
+    registry: &crate::cache_lib::target_registry::TargetRegistry,
+    candidates: &[crate::cache_lib::gc::GcCandidate],
     purge_all: bool,
     json: bool,
-) -> Result<soldr_cache::gc::GcPurgeSummary, SoldrError> {
+) -> Result<crate::cache_lib::gc::GcPurgeSummary, SoldrError> {
     let worker_count = gc_purge_worker_count();
-    let (job_tx, job_rx) = mpsc::channel::<soldr_cache::gc::GcCandidate>();
+    let (job_tx, job_rx) = mpsc::channel::<crate::cache_lib::gc::GcCandidate>();
     let (result_tx, result_rx) = mpsc::channel();
     let job_rx = Arc::new(Mutex::new(job_rx));
     let mut workers = Vec::new();
@@ -626,8 +626,8 @@ fn run_gc_purge_candidates(
                     };
                     match next {
                         Ok(candidate) => {
-                            let _ =
-                                result_tx.send(soldr_cache::gc::delete_candidate_dir(candidate));
+                            let _ = result_tx
+                                .send(crate::cache_lib::gc::delete_candidate_dir(candidate));
                         }
                         Err(_) => break,
                     }
@@ -682,7 +682,7 @@ fn run_gc_purge_candidates(
         eprintln!();
     }
 
-    soldr_cache::gc::apply_purge_outcomes(registry, outcomes)
+    crate::cache_lib::gc::apply_purge_outcomes(registry, outcomes)
         .map_err(|e| SoldrError::Other(format!("failed to update gc registry: {e}")))
 }
 
@@ -702,13 +702,13 @@ fn print_gc_purge_progress(completed: usize, selected: usize) {
     let _ = std::io::stderr().flush();
 }
 
-fn gc_total_reclaimable_bytes(candidates: &[soldr_cache::gc::GcCandidate]) -> u64 {
+fn gc_total_reclaimable_bytes(candidates: &[crate::cache_lib::gc::GcCandidate]) -> u64 {
     candidates.iter().map(|c| c.size_bytes).sum()
 }
 
 fn print_gc_summary(
     db_path: &std::path::Path,
-    report: &soldr_cache::gc::GcReport,
+    report: &crate::cache_lib::gc::GcReport,
     total_reclaimable_bytes: u64,
 ) {
     println!("soldr gc: registry: {}", db_path.display());
@@ -720,7 +720,7 @@ fn print_gc_summary(
         } else {
             "s"
         },
-        soldr_cache::target_registry::human_size(total_reclaimable_bytes)
+        crate::cache_lib::target_registry::human_size(total_reclaimable_bytes)
     );
     println!(
         "soldr gc: skipped: {}; dropped missing rows: {}",
@@ -736,8 +736,8 @@ fn print_gc_summary(
             println!(
                 "  {}  size={}  last_used={}",
                 cand.path.display(),
-                soldr_cache::target_registry::human_size(cand.size_bytes),
-                soldr_cache::target_registry::human_age(cand.age_seconds),
+                crate::cache_lib::target_registry::human_size(cand.size_bytes),
+                crate::cache_lib::target_registry::human_age(cand.age_seconds),
             );
         }
         println!("Run 'soldr gc purge' to delete eligible target directories.");
@@ -746,7 +746,7 @@ fn print_gc_summary(
 
 fn print_gc_purge_scan(
     db_path: &std::path::Path,
-    report: &soldr_cache::gc::GcReport,
+    report: &crate::cache_lib::gc::GcReport,
     total_reclaimable_bytes: u64,
 ) {
     eprintln!(
@@ -756,7 +756,7 @@ fn print_gc_purge_scan(
         if report.candidates.len() == 1 { "" } else { "s" },
         report.skipped.len(),
         report.dropped_missing,
-        soldr_cache::target_registry::human_size(total_reclaimable_bytes)
+        crate::cache_lib::target_registry::human_size(total_reclaimable_bytes)
     );
 
     if report.candidates.is_empty() {
@@ -767,15 +767,15 @@ fn print_gc_purge_scan(
             eprintln!(
                 "  {}  size={}  age={}",
                 cand.path.display(),
-                soldr_cache::target_registry::human_size(cand.size_bytes),
-                soldr_cache::target_registry::human_age(cand.age_seconds),
+                crate::cache_lib::target_registry::human_size(cand.size_bytes),
+                crate::cache_lib::target_registry::human_age(cand.age_seconds),
             );
         }
     }
 }
 
 fn print_gc_purge_result(
-    summary: &soldr_cache::gc::GcPurgeSummary,
+    summary: &crate::cache_lib::gc::GcPurgeSummary,
     error_log_path: Option<&std::path::Path>,
 ) {
     eprintln!(
@@ -783,7 +783,7 @@ fn print_gc_purge_result(
         summary.selected_count,
         summary.succeeded_count,
         summary.failed_count,
-        soldr_cache::target_registry::human_size(summary.reclaimed_bytes)
+        crate::cache_lib::target_registry::human_size(summary.reclaimed_bytes)
     );
     if let Some(path) = error_log_path {
         eprintln!(
@@ -794,9 +794,9 @@ fn print_gc_purge_result(
 }
 
 fn gc_largest_candidates(
-    candidates: &[soldr_cache::gc::GcCandidate],
+    candidates: &[crate::cache_lib::gc::GcCandidate],
     limit: usize,
-) -> Vec<soldr_cache::gc::GcCandidate> {
+) -> Vec<crate::cache_lib::gc::GcCandidate> {
     let mut largest = candidates.to_vec();
     largest.sort_by(|a, b| {
         b.size_bytes
@@ -807,12 +807,12 @@ fn gc_largest_candidates(
     largest
 }
 
-fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
+fn gc_candidate_output(c: crate::cache_lib::gc::GcCandidate) -> GcCandidateOutput {
     GcCandidateOutput {
         path: c.path.display().to_string(),
-        size_human: soldr_cache::target_registry::human_size(c.size_bytes),
+        size_human: crate::cache_lib::target_registry::human_size(c.size_bytes),
         size_bytes: c.size_bytes,
-        age_human: soldr_cache::target_registry::human_age(c.age_seconds),
+        age_human: crate::cache_lib::target_registry::human_age(c.age_seconds),
         age_seconds: c.age_seconds,
         eligible: c.eligible,
         reason: c.reason,
@@ -821,12 +821,12 @@ fn gc_candidate_output(c: soldr_cache::gc::GcCandidate) -> GcCandidateOutput {
     }
 }
 
-fn prompt_gc_purge_candidate(cand: &soldr_cache::gc::GcCandidate) -> bool {
+fn prompt_gc_purge_candidate(cand: &crate::cache_lib::gc::GcCandidate) -> bool {
     prompt_yes_no_default_yes(&format!(
         "soldr gc: delete {} ({}, age {}) ? [Y/n] ",
         cand.path.display(),
-        soldr_cache::target_registry::human_size(cand.size_bytes),
-        soldr_cache::target_registry::human_age(cand.age_seconds),
+        crate::cache_lib::target_registry::human_size(cand.size_bytes),
+        crate::cache_lib::target_registry::human_age(cand.age_seconds),
     ))
 }
 
@@ -857,12 +857,12 @@ fn resolve_gc_dev_roots(paths: &SoldrPaths) -> Vec<std::path::PathBuf> {
         .unwrap_or_default()
         .into_iter()
         .filter(|r| !r.trim().is_empty())
-        .map(|r| soldr_core::expand_user_home(&r))
+        .map(|r| crate::core::expand_user_home(&r))
         .collect::<Vec<_>>();
     if !configured.is_empty() {
         return configured;
     }
-    if let Ok(home) = soldr_core::user_home_dir() {
+    if let Ok(home) = crate::core::user_home_dir() {
         return vec![home.join("dev")];
     }
     Vec::new()
@@ -1048,7 +1048,7 @@ fn invoke_cargo_native_gc(
     let mut command = std::process::Command::new("rustup");
     command.arg("run").arg(&toolchain).arg("cargo");
     command.args(&cargo_argv);
-    soldr_core::suppress_windows_console_window(&mut command);
+    crate::core::suppress_windows_console_window(&mut command);
 
     eprintln!(
         "soldr gc cargo: rustup run {toolchain} cargo {}",
@@ -1106,7 +1106,7 @@ fn resolve_gc_cargo_toolchain(flag: Option<&str>) -> String {
 fn rustup_run_available_for(toolchain: &str) -> bool {
     let mut command = std::process::Command::new("rustup");
     command.args(["toolchain", "list"]);
-    soldr_core::suppress_windows_console_window(&mut command);
+    crate::core::suppress_windows_console_window(&mut command);
     let output = match command.output() {
         Ok(o) => o,
         Err(_) => return false,
@@ -1133,7 +1133,7 @@ pub(crate) fn run_gc_locations_command(json: bool) -> Result<(), SoldrError> {
             command: "gc",
             mode: "locations",
             total_size_bytes,
-            total_size_human: soldr_cache::target_registry::human_size(total_size_bytes),
+            total_size_human: crate::cache_lib::target_registry::human_size(total_size_bytes),
             locations: entries,
         };
         print_json(&output)?;
@@ -1141,7 +1141,7 @@ pub(crate) fn run_gc_locations_command(json: bool) -> Result<(), SoldrError> {
         println!("soldr gc locations:");
         println!(
             "  total tracked size: {}",
-            soldr_cache::target_registry::human_size(total_size_bytes)
+            crate::cache_lib::target_registry::human_size(total_size_bytes)
         );
         for entry in &entries {
             println!(
@@ -1165,7 +1165,7 @@ pub(crate) fn run_gc_locations_command(json: bool) -> Result<(), SoldrError> {
 fn enumerate_cache_locations(paths: &SoldrPaths) -> Vec<GcLocationOutput> {
     let mut entries: Vec<GcLocationOutput> = Vec::new();
 
-    if let Some(cargo_home) = soldr_core::resolve_cargo_home() {
+    if let Some(cargo_home) = crate::core::resolve_cargo_home() {
         for (kind, suffix, owner, purge_safety) in &[
             ("cargo_registry_src", "registry/src", "cargo", "regenerable"),
             (
@@ -1201,7 +1201,7 @@ fn enumerate_cache_locations(paths: &SoldrPaths) -> Vec<GcLocationOutput> {
         ));
     }
 
-    if let Some(rustup_home) = soldr_core::resolve_rustup_home() {
+    if let Some(rustup_home) = crate::core::resolve_rustup_home() {
         entries.push(gc_location_for(
             "rustup_toolchains",
             &rustup_home.join("toolchains"),
@@ -1249,7 +1249,7 @@ fn gc_location_for(
         path: path.display().to_string(),
         exists,
         size_bytes,
-        size_human: soldr_cache::target_registry::human_size(size_bytes),
+        size_human: crate::cache_lib::target_registry::human_size(size_bytes),
         file_count,
         owner,
         purge_safety,
@@ -1339,8 +1339,10 @@ fn aggressive_cargo_args(json: bool, dry_run: bool, min_age_secs: u64) -> GcCarg
     // age. Express the result back in seconds (cargo accepts `s` /
     // `secs` / `seconds`).
     let clamp = |days: u64| -> String {
-        let secs =
-            soldr_cache::auto_gc::clamp_age_to_floor(days.saturating_mul(86_400), min_age_secs);
+        let secs = crate::cache_lib::auto_gc::clamp_age_to_floor(
+            days.saturating_mul(86_400),
+            min_age_secs,
+        );
         format!("{secs}secs")
     };
     GcCargoArgs {
@@ -1365,15 +1367,15 @@ fn run_soldr_target_purge_for_sweep(
     purge_all: bool,
     json: bool,
 ) -> Result<SoldrTargetsSummary, SoldrError> {
-    use soldr_cache::gc::{parse_duration, parse_size, scan, GcOptions};
+    use crate::cache_lib::gc::{parse_duration, parse_size, scan, GcOptions};
     let paths = SoldrPaths::new()?;
     let dev_roots = resolve_gc_dev_roots(&paths);
-    let db_path = soldr_cache::data_db_path(&paths);
-    let registry = soldr_cache::target_registry::TargetRegistry::open(&db_path)
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
 
     let cfg = paths.load_config();
-    let older_than_seconds = soldr_cache::auto_gc::clamp_age_to_floor(
+    let older_than_seconds = crate::cache_lib::auto_gc::clamp_age_to_floor(
         parse_duration("10d").map_err(SoldrError::Other)?,
         cfg.auto_gc.min_age_secs,
     );
@@ -1396,7 +1398,9 @@ fn run_soldr_target_purge_for_sweep(
         succeeded_count: purge_summary.succeeded_count,
         failed_count: purge_summary.failed_count,
         reclaimed_bytes: purge_summary.reclaimed_bytes,
-        reclaimed_human: soldr_cache::target_registry::human_size(purge_summary.reclaimed_bytes),
+        reclaimed_human: crate::cache_lib::target_registry::human_size(
+            purge_summary.reclaimed_bytes,
+        ),
     })
 }
 
@@ -1430,7 +1434,7 @@ pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
     if !config.enabled {
         return;
     }
-    let marker = soldr_cache::auto_gc_throttle_marker_path(paths);
+    let marker = crate::cache_lib::auto_gc_throttle_marker_path(paths);
     if !auto_gc_throttle_expired(&marker, AUTO_GC_THROTTLE_SECONDS) {
         return;
     }
@@ -1438,7 +1442,7 @@ pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
     // doesn't cause us to immediately rerun on the next invocation.
     let _ = touch_auto_gc_marker(&marker);
 
-    let log_path = soldr_cache::auto_gc_log_path(paths);
+    let log_path = crate::cache_lib::auto_gc_log_path(paths);
     let paths_root = paths.root.clone();
     let _ = std::thread::Builder::new()
         .name("soldr-auto-gc".to_string())
@@ -1478,18 +1482,18 @@ fn touch_auto_gc_marker(marker: &std::path::Path) -> std::io::Result<()> {
 }
 
 fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::PathBuf) {
-    use soldr_cache::auto_gc::DiskFreeProbe as _;
+    use crate::cache_lib::auto_gc::DiskFreeProbe as _;
     let start = std::time::Instant::now();
     let paths = SoldrPaths::with_root(paths_root);
     let config = paths.load_config().auto_gc;
-    let (validated, warnings) = soldr_cache::auto_gc::validate_config(&config);
+    let (validated, warnings) = crate::cache_lib::auto_gc::validate_config(&config);
     for warning in &warnings {
         let _ = append_auto_gc_log_line(&log_path, &format!("warning: {warning}"));
     }
 
     let auto_paths = enumerate_auto_gc_paths(&paths);
     let probe = SystemVolumeProbe;
-    let plans = soldr_cache::auto_gc::plan_auto_gc(&validated, &auto_paths, &probe, &probe);
+    let plans = crate::cache_lib::auto_gc::plan_auto_gc(&validated, &auto_paths, &probe, &probe);
     if plans.is_empty() {
         return; // Either disabled or no volume is below trigger.
     }
@@ -1498,7 +1502,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         let line = format!(
             "auto-gc volume={} free_gib={:.2} trigger_gib={} target_gib={} paths={} status=detected",
             plan.volume_key,
-            (plan.free_bytes as f64) / (soldr_cache::auto_gc::GIB as f64),
+            (plan.free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
             validated.trigger_free_gb,
             validated.target_free_gb,
             plan.paths.len()
@@ -1512,7 +1516,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         let cargo_volume_paths = plan
             .paths
             .iter()
-            .filter(|p| matches!(p.kind, soldr_cache::auto_gc::AutoGcPathKind::CargoHome))
+            .filter(|p| matches!(p.kind, crate::cache_lib::auto_gc::AutoGcPathKind::CargoHome))
             .count();
         if cargo_volume_paths > 0 {
             let outcome = run_conservative_cargo_gc_background(&log_path);
@@ -1533,18 +1537,18 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         let mut free_bytes = probe.free_bytes(&plan.paths[0].path).unwrap_or(0);
         let target_bytes = validated
             .target_free_gb
-            .saturating_mul(soldr_cache::auto_gc::GIB);
+            .saturating_mul(crate::cache_lib::auto_gc::GIB);
 
         // Tier 2: soldr target purge (only if volume holds workspace
         // targets and we're still under target).
-        if soldr_cache::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some() {
+        if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some() {
             let workspace_targets: Vec<_> = plan
                 .paths
                 .iter()
                 .filter(|p| {
                     matches!(
                         p.kind,
-                        soldr_cache::auto_gc::AutoGcPathKind::WorkspaceTarget
+                        crate::cache_lib::auto_gc::AutoGcPathKind::WorkspaceTarget
                     )
                 })
                 .map(|p| p.path.clone())
@@ -1563,17 +1567,18 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                         "tier=2 volume={} reclaimed_bytes={} free_gib={:.2}",
                         plan.volume_key,
                         reclaimed,
-                        (free_bytes as f64) / (soldr_cache::auto_gc::GIB as f64),
+                        (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
                     ),
                 );
             }
         }
 
         // Tier 3: aggressive cargo GC (clamped to min_age_secs).
-        if soldr_cache::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some()
+        if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some()
             && cargo_volume_paths > 0
         {
-            let ages = soldr_cache::auto_gc::TIER3_AGES.clamped_seconds(validated.min_age_secs);
+            let ages =
+                crate::cache_lib::auto_gc::TIER3_AGES.clamped_seconds(validated.min_age_secs);
             let outcome = run_aggressive_cargo_gc_background(&log_path, &ages);
             last_tier = 3;
             free_bytes = probe.free_bytes(&plan.paths[0].path).unwrap_or(free_bytes);
@@ -1585,12 +1590,12 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                     outcome.exit_code,
                     outcome.skipped,
                     outcome.reason.as_deref().unwrap_or("ran"),
-                    (free_bytes as f64) / (soldr_cache::auto_gc::GIB as f64),
+                    (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
                 ),
             );
         }
 
-        if soldr_cache::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_none()
+        if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_none()
             && free_bytes < target_bytes
         {
             let _ = append_auto_gc_log_line(
@@ -1599,7 +1604,7 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                     "auto-gc warning volume={} free_gib={:.2} target_gib={} \
                     tiers exhausted; run `soldr gc sweep --aggressive`",
                     plan.volume_key,
-                    (free_bytes as f64) / (soldr_cache::auto_gc::GIB as f64),
+                    (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
                     validated.target_free_gb,
                 ),
             );
@@ -1658,7 +1663,7 @@ fn run_conservative_cargo_gc_background(log_path: &std::path::Path) -> AutoGcCar
 
 fn run_aggressive_cargo_gc_background(
     log_path: &std::path::Path,
-    ages: &soldr_cache::auto_gc::CargoGcAgeSeconds,
+    ages: &crate::cache_lib::auto_gc::CargoGcAgeSeconds,
 ) -> AutoGcCargoOutcome {
     let args = GcCargoArgs {
         dry_run: false,
@@ -1697,15 +1702,15 @@ fn run_soldr_target_purge_background(
     workspace_targets: &[std::path::PathBuf],
     min_age_secs: u64,
 ) -> u64 {
-    use soldr_cache::gc::{parse_size, scan, GcOptions};
-    let db_path = soldr_cache::data_db_path(paths);
-    let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) else {
+    use crate::cache_lib::gc::{parse_size, scan, GcOptions};
+    let db_path = crate::cache_lib::data_db_path(paths);
+    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
         return 0;
     };
     let larger_than_bytes = parse_size("256M").unwrap_or(256 * 1024 * 1024);
     // Auto-GC always honors at least the configured min-age floor.
     // We never go below 1h.
-    let older_than_seconds = soldr_cache::auto_gc::clamp_age_to_floor(min_age_secs, 3600);
+    let older_than_seconds = crate::cache_lib::auto_gc::clamp_age_to_floor(min_age_secs, 3600);
     let options = GcOptions {
         older_than_seconds,
         larger_than_bytes,
@@ -1725,7 +1730,7 @@ fn run_soldr_target_purge_background(
             continue;
         }
         let bytes = cand.size_bytes;
-        let outcome = soldr_cache::gc::delete_candidate_dir(cand);
+        let outcome = crate::cache_lib::gc::delete_candidate_dir(cand);
         if outcome.removed {
             reclaimed = reclaimed.saturating_add(bytes);
             let _ = registry.remove(&outcome.candidate.path);
@@ -1735,32 +1740,32 @@ fn run_soldr_target_purge_background(
 }
 
 /// Enumerate every soldr-owned path for the auto-GC orchestrator.
-fn enumerate_auto_gc_paths(paths: &SoldrPaths) -> Vec<soldr_cache::auto_gc::AutoGcPath> {
-    let mut out: Vec<soldr_cache::auto_gc::AutoGcPath> = Vec::new();
-    if let Some(cargo_home) = soldr_core::resolve_cargo_home() {
-        out.push(soldr_cache::auto_gc::AutoGcPath {
-            kind: soldr_cache::auto_gc::AutoGcPathKind::CargoHome,
+fn enumerate_auto_gc_paths(paths: &SoldrPaths) -> Vec<crate::cache_lib::auto_gc::AutoGcPath> {
+    let mut out: Vec<crate::cache_lib::auto_gc::AutoGcPath> = Vec::new();
+    if let Some(cargo_home) = crate::core::resolve_cargo_home() {
+        out.push(crate::cache_lib::auto_gc::AutoGcPath {
+            kind: crate::cache_lib::auto_gc::AutoGcPathKind::CargoHome,
             path: cargo_home,
         });
     }
-    if let Some(rustup_home) = soldr_core::resolve_rustup_home() {
-        out.push(soldr_cache::auto_gc::AutoGcPath {
-            kind: soldr_cache::auto_gc::AutoGcPathKind::RustupHome,
+    if let Some(rustup_home) = crate::core::resolve_rustup_home() {
+        out.push(crate::cache_lib::auto_gc::AutoGcPath {
+            kind: crate::cache_lib::auto_gc::AutoGcPathKind::RustupHome,
             path: rustup_home,
         });
     }
-    out.push(soldr_cache::auto_gc::AutoGcPath {
-        kind: soldr_cache::auto_gc::AutoGcPathKind::SoldrCache,
+    out.push(crate::cache_lib::auto_gc::AutoGcPath {
+        kind: crate::cache_lib::auto_gc::AutoGcPathKind::SoldrCache,
         path: paths.cache.clone(),
     });
-    let db_path = soldr_cache::data_db_path(paths);
+    let db_path = crate::cache_lib::data_db_path(paths);
     if db_path.exists() {
-        if let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) {
+        if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
             if let Ok(rows) = registry.list() {
                 for row in rows {
                     if row.path.exists() {
-                        out.push(soldr_cache::auto_gc::AutoGcPath {
-                            kind: soldr_cache::auto_gc::AutoGcPathKind::WorkspaceTarget,
+                        out.push(crate::cache_lib::auto_gc::AutoGcPath {
+                            kind: crate::cache_lib::auto_gc::AutoGcPathKind::WorkspaceTarget,
                             path: row.path,
                         });
                     }
@@ -1776,14 +1781,14 @@ fn enumerate_auto_gc_paths(paths: &SoldrPaths) -> Vec<soldr_cache::auto_gc::Auto
 /// path's root component when neither is available.
 struct SystemVolumeProbe;
 
-impl soldr_cache::auto_gc::DiskFreeProbe for SystemVolumeProbe {
+impl crate::cache_lib::auto_gc::DiskFreeProbe for SystemVolumeProbe {
     fn free_bytes(&self, path: &std::path::Path) -> Option<u64> {
         let probe = existing_filesystem_probe_path(path);
         available_space(&probe).ok()
     }
 }
 
-impl soldr_cache::auto_gc::VolumeProbe for SystemVolumeProbe {
+impl crate::cache_lib::auto_gc::VolumeProbe for SystemVolumeProbe {
     fn volume_key(&self, path: &std::path::Path) -> Option<String> {
         let probe = existing_filesystem_probe_path(path);
         volume_key_for_path(&probe)
@@ -1845,21 +1850,21 @@ fn rotate_auto_gc_log_if_needed(log_path: &std::path::Path, max_bytes: u64) -> s
 
 pub(crate) fn emit_startup_target_warning_if_due() {
     let Ok(paths) = SoldrPaths::new() else { return };
-    let db_path = soldr_cache::data_db_path(&paths);
+    let db_path = crate::cache_lib::data_db_path(&paths);
     if !db_path.exists() {
         return;
     }
-    let Ok(registry) = soldr_cache::target_registry::TargetRegistry::open(&db_path) else {
+    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
         return;
     };
-    let options = soldr_cache::gc::GcOptions {
-        older_than_seconds: soldr_cache::target_registry::DEFAULT_STALE_AGE_SECONDS,
-        larger_than_bytes: soldr_cache::target_registry::DEFAULT_STALE_SIZE_BYTES,
+    let options = crate::cache_lib::gc::GcOptions {
+        older_than_seconds: crate::cache_lib::target_registry::DEFAULT_STALE_AGE_SECONDS,
+        larger_than_bytes: crate::cache_lib::target_registry::DEFAULT_STALE_SIZE_BYTES,
         dev_roots: resolve_gc_dev_roots(&paths),
         dry_run: true,
     };
-    let marker = soldr_cache::gc_warning_marker_path(&paths);
-    match soldr_cache::gc::maybe_build_startup_warning(&registry, &options, &marker) {
+    let marker = crate::cache_lib::gc_warning_marker_path(&paths);
+    match crate::cache_lib::gc::maybe_build_startup_warning(&registry, &options, &marker) {
         Ok(Some(message)) => eprintln!("{message}"),
         Ok(None) => {}
         Err(_) => {}
