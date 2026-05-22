@@ -35,16 +35,39 @@ fn seed_source_dir(root: &Path) -> PathBuf {
     src
 }
 
+/// Per-test isolated home directory used to anchor the pinned-zccache
+/// install (issue #426 — `paths.pinned_bin` lives under `$HOME/.soldr/bin/`
+/// regardless of `SOLDR_CACHE_DIR`). Without this, every test in this
+/// binary would write into the same `$HOME/.soldr/bin/zccache-pinned/`
+/// at the same time when cargo runs them in parallel — Linux CI surfaces
+/// the race as "Directory not empty (os error 39)" during `remove_dir_all`
+/// + `create_dir_all` in `install_zccache_from_source`.
+fn unique_home_dir(label: &str) -> PathBuf {
+    let home = unique_temp_dir(&format!("{label}-home"));
+    // pre-create .soldr/bin to match what `SoldrPaths::ensure_dirs()` would
+    // do on a fresh production install; keeps test setup mirroring reality.
+    fs::create_dir_all(home.join(".soldr").join("bin")).expect("seed home/.soldr/bin");
+    home
+}
+
+/// Path the pin lands at under the per-test isolated home dir.
+fn pinned_dir_in(home_root: &Path) -> PathBuf {
+    home_root.join(".soldr").join("bin").join("zccache-pinned")
+}
+
 #[test]
 fn install_zccache_from_directory_writes_sidecar() {
     let tmp = unique_temp_dir("install-zccache-dir");
     let cache_root = tmp.join("soldr-root");
+    let home_root = unique_home_dir("install-zccache-dir");
     let src = seed_source_dir(&tmp);
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("failed to run install-zccache");
@@ -56,7 +79,8 @@ fn install_zccache_from_directory_writes_sidecar() {
         String::from_utf8_lossy(&output.stderr)
     );
 
-    let pinned = cache_root.join("bin").join("zccache-pinned");
+    // The pin is home-anchored (issue #426), not under SOLDR_CACHE_DIR.
+    let pinned = pinned_dir_in(&home_root);
     assert!(pinned.join(bin_name("zccache")).exists());
     assert!(pinned.join(bin_name("zccache-daemon")).exists());
     assert!(pinned.join(bin_name("zccache-fp")).exists());
@@ -74,6 +98,7 @@ fn install_zccache_from_directory_writes_sidecar() {
 fn install_zccache_json_round_trip() {
     let tmp = unique_temp_dir("install-zccache-json");
     let cache_root = tmp.join("soldr-root");
+    let home_root = unique_home_dir("install-zccache-json");
     let src = seed_source_dir(&tmp);
 
     // install --json
@@ -81,6 +106,8 @@ fn install_zccache_json_round_trip() {
         .args(["install-zccache", "--json"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache --json");
@@ -98,6 +125,8 @@ fn install_zccache_json_round_trip() {
     let status = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache --status --json");
@@ -106,7 +135,7 @@ fn install_zccache_json_round_trip() {
         serde_json::from_slice(&status.stdout).expect("status --json should emit valid JSON");
     assert_eq!(status_json["command"], "install-zccache --status");
     assert_eq!(status_json["pinned"]["source_kind"], "path");
-    assert_eq!(status_json["managed_version"], "1.8.1");
+    assert_eq!(status_json["managed_version"], "1.8.2");
     assert!(
         status_json["drift_from_managed"].is_boolean(),
         "drift_from_managed must be a bool"
@@ -116,6 +145,8 @@ fn install_zccache_json_round_trip() {
     let remove = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache --remove --json");
@@ -127,6 +158,8 @@ fn install_zccache_json_round_trip() {
     let remove2 = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache --remove --json (second)");
@@ -140,27 +173,33 @@ fn install_zccache_status_with_no_install_reports_managed_default() {
     let tmp = unique_temp_dir("install-zccache-status-empty");
     let cache_root = tmp.join("soldr-root");
     fs::create_dir_all(&cache_root).unwrap();
+    let home_root = unique_home_dir("install-zccache-status-empty");
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("status with no install");
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).expect("status --json");
     assert!(json["pinned"].is_null(), "pinned should be null: {json}");
-    assert_eq!(json["managed_version"], "1.8.1");
+    assert_eq!(json["managed_version"], "1.8.2");
 }
 
 #[test]
 fn install_zccache_no_source_no_flags_errors() {
     let tmp = unique_temp_dir("install-zccache-empty-args");
     let cache_root = tmp.join("soldr-root");
+    let home_root = unique_home_dir("install-zccache-empty-args");
 
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache (no args)");
@@ -176,11 +215,14 @@ fn install_zccache_no_source_no_flags_errors() {
 fn install_zccache_mutually_exclusive_flags_rejected() {
     let tmp = unique_temp_dir("install-zccache-mutex");
     let cache_root = tmp.join("soldr-root");
+    let home_root = unique_home_dir("install-zccache-mutex");
 
     // clap should reject `--remove` + `--status` outright.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "--remove", "--status"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache --remove --status");
@@ -193,6 +235,8 @@ fn install_zccache_mutually_exclusive_flags_rejected() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache", "system", "--remove"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache SOURCE --remove");
@@ -206,6 +250,7 @@ fn install_zccache_mutually_exclusive_flags_rejected() {
 fn install_zccache_unknown_extension_errors() {
     let tmp = unique_temp_dir("install-zccache-unknown-ext");
     let cache_root = tmp.join("soldr-root");
+    let home_root = unique_home_dir("install-zccache-unknown-ext");
     let bogus = tmp.join("zccache.7z");
     fs::write(&bogus, b"junk").unwrap();
 
@@ -213,6 +258,8 @@ fn install_zccache_unknown_extension_errors() {
         .args(["install-zccache"])
         .arg(&bogus)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .output()
         .expect("install-zccache with bogus archive");
