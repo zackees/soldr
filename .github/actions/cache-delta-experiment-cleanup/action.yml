@@ -1,0 +1,123 @@
+name: "soldr cache delta cleanup (experiment)"
+description: >
+  Save side of the experimental two-layer cook/delta cache. Pair with
+  the sibling `cache-delta-experiment` setup action; this one reads
+  the state file written there, then issues up to two
+  `actions/cache/save` calls — one for the freshly-rebuilt cook layer
+  (only when the cook-side restore missed its exact key) and one for
+  the per-PR delta tarball (always, when non-empty).
+
+  See `cache-delta-experiment/action.yml` for the design rationale
+  (mtime-mark based diff, content-addressable zccache layout, etc).
+
+runs:
+  using: "composite"
+  steps:
+    - name: Load state from setup
+      if: always()
+      id: state
+      shell: bash
+      run: |
+        set -euo pipefail
+        STATE_FILE="${RUNNER_TEMP}/soldr-cache-delta-state/state.env"
+        if [ ! -f "$STATE_FILE" ]; then
+          echo "no state file at $STATE_FILE — was the setup action skipped?"
+          # Emit empty outputs so downstream `if:` conditions short-circuit.
+          {
+            echo "have-state=false"
+            echo "cook-key="
+            echo "cook-archive="
+            echo "cook-cache-hit="
+            echo "delta-key="
+            echo "delta-archive="
+            echo "delta-bytes=0"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # shellcheck disable=SC1090
+        . "$STATE_FILE"
+        {
+          echo "have-state=true"
+          echo "cook-key=${COOK_KEY}"
+          echo "cook-archive=${COOK_ARCHIVE}"
+          echo "cook-cache-hit=${COOK_CACHE_HIT}"
+          echo "delta-key=${DELTA_KEY}"
+          echo "delta-archive=${DELTA_ARCHIVE}"
+          echo "delta-bytes=${DELTA_BYTES}"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "loaded state:"
+        cat "$STATE_FILE"
+
+    - name: Package cook layer (only when cook key missed)
+      # `cache-hit` is the exact-key indicator from actions/cache@v4.
+      # Empty / 'false' means the layer was missing OR the only match
+      # was a restore-key prefix fallback — in either case, the cache
+      # dir's current contents are fresher than what's stored under
+      # COOK_KEY, so we should save.
+      if: always() && steps.state.outputs.have-state == 'true' && steps.state.outputs.cook-cache-hit != 'true'
+      id: cook-pack
+      shell: bash
+      run: |
+        set -euo pipefail
+        ARCHIVE="${{ steps.state.outputs.cook-archive }}"
+        # Source the state file to pick up ZCCACHE_DIR (the source
+        # path) — composite action outputs would have worked too,
+        # but state files keep the contract minimal across the
+        # ~6 vars we ferry between setup and cleanup.
+        STATE_FILE="${RUNNER_TEMP}/soldr-cache-delta-state/state.env"
+        # shellcheck disable=SC1090
+        . "$STATE_FILE"
+
+        if [ ! -d "$ZCCACHE_DIR" ]; then
+          echo "no zccache dir to tar — skipping cook layer save"
+          echo "packed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "packing cook layer from $ZCCACHE_DIR to $ARCHIVE"
+        ( cd "$ZCCACHE_DIR" \
+          && tar --use-compress-program='zstd -19 -T0' -cf "$ARCHIVE" . )
+        echo "cook layer size: $(du -h "$ARCHIVE" | cut -f1)"
+        echo "packed=true" >> "$GITHUB_OUTPUT"
+
+    - name: Save cook layer
+      if: always() && steps.cook-pack.outputs.packed == 'true'
+      uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ${{ steps.state.outputs.cook-archive }}
+        key: ${{ steps.state.outputs.cook-key }}
+
+    - name: Save delta layer
+      # Only save when the delta packer in setup actually produced a
+      # tarball — empty deltas (no build writes) skip the upload.
+      if: always() && steps.state.outputs.have-state == 'true' && steps.state.outputs.delta-bytes != '0' && steps.state.outputs.delta-archive != ''
+      uses: actions/cache/save@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ${{ steps.state.outputs.delta-archive }}
+        key: ${{ steps.state.outputs.delta-key }}
+
+    - name: Summarize
+      if: always() && steps.state.outputs.have-state == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "## soldr cache delta cleanup" >> "$GITHUB_STEP_SUMMARY"
+        echo "| layer | key | saved |" >> "$GITHUB_STEP_SUMMARY"
+        echo "|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+        cook_saved="no (exact-key hit on restore)"
+        if [ "${{ steps.cook-pack.outputs.packed }}" = "true" ]; then
+          cook_saved="yes ($(du -h "${{ steps.state.outputs.cook-archive }}" 2>/dev/null | cut -f1))"
+        fi
+        delta_saved="no (empty delta)"
+        if [ "${{ steps.state.outputs.delta-bytes }}" != "0" ] && [ -n "${{ steps.state.outputs.delta-archive }}" ]; then
+          delta_saved="yes (${{ steps.state.outputs.delta-bytes }} B)"
+        fi
+        echo "| cook  | \`${{ steps.state.outputs.cook-key }}\` | ${cook_saved} |" >> "$GITHUB_STEP_SUMMARY"
+        echo "| delta | \`${{ steps.state.outputs.delta-key }}\` | ${delta_saved} |" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Cleanup state
+      if: always()
+      shell: bash
+      run: rm -rf "${RUNNER_TEMP}/soldr-cache-delta-state"
