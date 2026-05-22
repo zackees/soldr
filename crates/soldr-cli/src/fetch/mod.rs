@@ -199,6 +199,49 @@ impl ZccacheSource {
     }
 }
 
+/// Classify which source produced a resolved zccache binary path.
+///
+/// Uses the same precedence rules as `fetch_zccache_with_paths`:
+/// `SOLDR_ZCCACHE_LOCAL_DIR` -> pinned-install -> managed cache. The
+/// classification is path-prefix-based, so callers that already have a
+/// `FetchResult` from the fetch path can ask "where did this binary
+/// come from" without re-running the resolution.
+///
+/// Returns [`ZccacheSource::None`] when the path matches none of the
+/// known source directories. Practical callers should treat that as
+/// "managed" since the unlabelled fallback comes from the managed
+/// download, but the explicit `None` lets diagnostics distinguish a
+/// path soldr cannot recognize (a test override binary, for example)
+/// from one it can.
+pub fn classify_zccache_source(paths: &SoldrPaths, binary_path: &Path) -> ZccacheSource {
+    let parent = match binary_path.parent() {
+        Some(p) => p,
+        None => return ZccacheSource::None,
+    };
+
+    // Local-build override: binaries land in a content-hashed
+    // `zccache-local-<sha>` subdir under `paths.bin`. Match the dir name
+    // pattern unconditionally so we still classify correctly if
+    // `SOLDR_ZCCACHE_LOCAL_DIR` is no longer set in the current env.
+    if let Some(name) = parent.file_name().and_then(|s| s.to_str()) {
+        if name.starts_with("zccache-local-") {
+            return ZccacheSource::Local;
+        }
+    }
+
+    let pinned_dir = install_zccache::pinned_zccache_dir(paths);
+    if parent == pinned_dir.as_path() {
+        return ZccacheSource::Pinned;
+    }
+
+    let managed_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+    if parent == managed_dir.as_path() {
+        return ZccacheSource::Managed;
+    }
+
+    ZccacheSource::None
+}
+
 /// Discover the local zccache build that `SOLDR_ZCCACHE_LOCAL_DIR`
 /// points at, copy the binaries (and any debug-info sidecars) into
 /// the soldr-owned cache dir under a content-hashed version key, and
@@ -641,12 +684,16 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
     // Pinned install (`soldr install-zccache <SOURCE>`). Sits
     // between the env-var override and the managed download so users
     // who pinned once never go back to the GitHub-Releases path.
+    //
+    // We deliberately do NOT print a "using pinned zccache from ..."
+    // line here: the cargo front door now emits a source-aware
+    // `soldr: zccache source: pinned|local|managed (...)` line via
+    // `classify_zccache_source` so users see exactly which binary won
+    // resolution. See issue #420 — the old per-branch eprintln paired
+    // with prepare_zccache_build's hard-coded "soldr: using managed
+    // zccache 1.8.1" was the smoking gun that fooled the perf-cluster
+    // debugging session.
     if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
-        eprintln!(
-            "soldr: using pinned zccache from {} (version={})",
-            pinned.runtime_dir.display(),
-            pinned.version
-        );
         return Ok(FetchResult {
             binary_path: pinned.binary_path,
             version: pinned.version,

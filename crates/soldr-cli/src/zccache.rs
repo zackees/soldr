@@ -2,8 +2,9 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::fetch::ZccacheSource;
 use crate::{
-    current_soldr_binary, fetch_managed_zccache, non_empty_env_path, ZccacheSourceArg,
+    current_soldr_binary, fetch_active_zccache, non_empty_env_path, ZccacheSourceArg,
     RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
 
@@ -119,23 +120,62 @@ async fn prepare_zccache_build(
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
     let fetch = match zccache_source {
-        ZccacheSourceArg::Managed => {
-            let fetched = fetch_managed_zccache(paths).await?;
-            if fetched.cached {
+        ZccacheSourceArg::Managed => fetch_active_zccache(paths).await?,
+        ZccacheSourceArg::System => crate::fetch::resolve_system_zccache(paths)?,
+    };
+
+    // Source-aware diagnostic (issue #420). The old "soldr: using
+    // managed zccache 1.8.1" line printed even when the pinned install
+    // won resolution, which sent three perf-cluster runs chasing the
+    // wrong binary. Print exactly one line that names the actual
+    // source, runtime dir, and version of the binary we just resolved.
+    let source = if matches!(zccache_source, ZccacheSourceArg::System) {
+        ZccacheSource::None // `--zccache=system` doesn't go through the precedence chain.
+    } else {
+        crate::fetch::classify_zccache_source(paths, &fetch.binary_path)
+    };
+    let runtime_dir = fetch
+        .binary_path
+        .parent()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<unknown>".into());
+    match source {
+        ZccacheSource::Pinned => eprintln!(
+            "soldr: zccache source: pinned ({runtime_dir}) version={}",
+            fetch.version
+        ),
+        ZccacheSource::Local => eprintln!(
+            "soldr: zccache source: local ({runtime_dir}) version={}",
+            fetch.version
+        ),
+        ZccacheSource::Managed => {
+            if fetch.cached {
                 eprintln!(
-                    "soldr: using managed zccache {}",
-                    crate::fetch::MANAGED_ZCCACHE_VERSION
+                    "soldr: zccache source: managed ({runtime_dir}) version={} (cached)",
+                    fetch.version
                 );
             } else {
                 eprintln!(
-                    "soldr: fetched managed zccache {}",
-                    crate::fetch::MANAGED_ZCCACHE_VERSION
+                    "soldr: zccache source: managed ({runtime_dir}) version={} (downloaded)",
+                    fetch.version
                 );
             }
-            fetched
         }
-        ZccacheSourceArg::System => crate::fetch::resolve_system_zccache(paths)?,
-    };
+        ZccacheSource::None => {
+            if matches!(zccache_source, ZccacheSourceArg::System) {
+                eprintln!(
+                    "soldr: zccache source: system ({runtime_dir}) version={}",
+                    fetch.version
+                );
+            } else {
+                eprintln!(
+                    "soldr: zccache source: unrecognized ({runtime_dir}) version={} \
+                     — likely SOLDR_TEST_ZCCACHE_BIN override",
+                    fetch.version
+                );
+            }
+        }
+    }
 
     // When the resolved zccache CLI binary differs from the one a
     // previous soldr invocation started the daemon with, the live
