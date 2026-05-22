@@ -1,0 +1,332 @@
+name: "soldr cache delta (experiment)"
+description: >
+  Experimental two-layer cache for the `soldr cook` + `soldr cargo build`
+  flow on GitHub Actions. Cook output goes into a coarse-grained "cook
+  layer" keyed on Cargo.lock + rust-toolchain.toml; per-PR build writes
+  go into a fine-grained "delta layer" keyed on cook-key + src/** hash.
+
+  The save side lives in the sibling `cache-delta-experiment-cleanup`
+  action — that one tars the in-cache files written between the cook
+  mark and the end of the build, then uploads them as a separate
+  `actions/cache` entry. Restoring is two `actions/cache/restore`
+  steps that both untar into the same soldr cache dir; the build
+  sees one merged directory.
+
+  Caveats:
+    * Experimental. Names will change before this graduates to
+      setup-soldr.
+    * Linux/macOS only for now; the find -newer + tar pipeline
+      hasn't been audited for Windows quirks.
+    * Cook can delete files but the delta tarball can only ADD;
+      stale cache entries accumulate until a periodic prune.
+    * Assumes soldr is already on PATH (this action does NOT install
+      soldr — pair it with setup-soldr or equivalent).
+
+inputs:
+  cook-cmd:
+    description: >
+      Shell command that runs the cargo-chef-style dep prebuild.
+      Example: `soldr cook` or `soldr cargo chef cook ...`. Runs after
+      both cache layers are restored. Required.
+    required: true
+  build-cmd:
+    description: >
+      Shell command that runs the actual project build. Example:
+      `soldr cargo build --release`. Runs after `cook-cmd` and after
+      the mark file is touched, so all of its cache writes flow into
+      the delta layer. Required.
+    required: true
+  cache-dir:
+    description: >
+      Soldr cache directory whose `cache/zccache/` subtree the layered
+      cache covers. Falls back to `$SOLDR_CACHE_DIR` or
+      `$HOME/.soldr` when empty.
+    required: false
+    default: ""
+  shared-key:
+    description: >
+      Extra key segment for matrix isolation (typically the Rust
+      target triple).
+    required: false
+    default: ""
+  cook-restore-fallback:
+    description: >
+      Whether to allow restore-key prefix fallback when the exact
+      cook key misses. Keep "true" for cheap incremental upgrades
+      (small Cargo.lock churn); set "false" for strict
+      reproducibility.
+    required: false
+    default: "true"
+  delta-restore-fallback:
+    description: >
+      Whether to allow restore-key prefix fallback for the per-PR
+      delta layer.
+    required: false
+    default: "true"
+
+outputs:
+  cook-cache-hit:
+    description: "Whether the cook layer was restored from an exact-key match."
+    value: ${{ steps.restore-cook.outputs.cache-hit }}
+  delta-cache-hit:
+    description: "Whether the delta layer was restored from an exact-key match."
+    value: ${{ steps.restore-delta.outputs.cache-hit }}
+  cook-key:
+    description: "The full cache key used for the cook layer (echo for reporting)."
+    value: ${{ steps.keys.outputs.cook-key }}
+  delta-key:
+    description: "The full cache key used for the delta layer (echo for reporting)."
+    value: ${{ steps.keys.outputs.delta-key }}
+  delta-archive:
+    description: >
+      Path to the per-build delta tarball produced after the build
+      step. Empty if no new files were written during the build.
+    value: ${{ steps.delta-tar.outputs.archive }}
+  delta-bytes:
+    description: "Size of the delta tarball in bytes (or 0 when empty)."
+    value: ${{ steps.delta-tar.outputs.bytes }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Compute cache keys + paths
+      id: keys
+      shell: bash
+      run: |
+        set -euo pipefail
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+        SHARED="${{ inputs.shared-key }}"
+
+        CACHE_DIR="${{ inputs.cache-dir }}"
+        if [ -z "$CACHE_DIR" ]; then
+          CACHE_DIR="${SOLDR_CACHE_DIR:-$HOME/.soldr}"
+        fi
+        ZCCACHE_DIR="${CACHE_DIR}/cache/zccache"
+
+        # Hash inputs that gate the cook layer. The cook output depends
+        # on the dep graph (Cargo.lock) and toolchain version
+        # (rust-toolchain.toml), so any change to either invalidates
+        # cook. src/** is intentionally NOT in this hash — that's the
+        # whole point of the layering.
+        sha_of() {
+          local file="$1"
+          if [ ! -f "$file" ]; then
+            echo "no-${file##*/}"
+            return
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$file" | cut -c1-16
+          else
+            shasum -a 256 "$file" | cut -c1-16
+          fi
+        }
+
+        # Multi-input hash: concat the per-file SHAs, hash that.
+        COOK_HASH="$(printf '%s\n' "$(sha_of Cargo.lock)" "$(sha_of rust-toolchain.toml)" \
+          | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
+          | cut -c1-16)"
+
+        # Delta layer also depends on the source tree. Hash every file
+        # under `src/` in the workspace root, ignoring untracked and
+        # build outputs. Cheap (find + cat + sha256) on repos up to a
+        # few thousand files.
+        if [ -d src ]; then
+          SRC_HASH="$(find src -type f -print0 \
+            | LC_ALL=C sort -z \
+            | xargs -0 cat \
+            | { command -v sha256sum >/dev/null 2>&1 && sha256sum || shasum -a 256; } \
+            | cut -c1-16)"
+        else
+          SRC_HASH="no-src"
+        fi
+
+        if [ -n "$SHARED" ]; then
+          COOK_PREFIX="soldr-cook-${OS}-${ARCH}-${SHARED}"
+          DELTA_PREFIX="soldr-delta-${OS}-${ARCH}-${SHARED}"
+        else
+          COOK_PREFIX="soldr-cook-${OS}-${ARCH}"
+          DELTA_PREFIX="soldr-delta-${OS}-${ARCH}"
+        fi
+
+        COOK_KEY="${COOK_PREFIX}-${COOK_HASH}"
+        DELTA_KEY="${DELTA_PREFIX}-${COOK_HASH}-${SRC_HASH}"
+
+        # restore-keys hierarchy: exact → cook-scoped → cook-prefix
+        if [ "${{ inputs.cook-restore-fallback }}" = "true" ]; then
+          COOK_RESTORE="${COOK_PREFIX}-"
+        else
+          COOK_RESTORE=""
+        fi
+        if [ "${{ inputs.delta-restore-fallback }}" = "true" ]; then
+          DELTA_RESTORE="$(printf '%s-%s-\n%s-\n' "${DELTA_PREFIX}" "${COOK_HASH}" "${DELTA_PREFIX}")"
+        else
+          DELTA_RESTORE=""
+        fi
+
+        COOK_ARCHIVE="${RUNNER_TEMP}/soldr-cook-layer.tar.zst"
+        DELTA_ARCHIVE="${RUNNER_TEMP}/soldr-delta-layer.tar.zst"
+        COOK_MARK="${RUNNER_TEMP}/soldr-cook-mark"
+
+        {
+          echo "cache-dir=${CACHE_DIR}"
+          echo "zccache-dir=${ZCCACHE_DIR}"
+          echo "cook-key=${COOK_KEY}"
+          echo "cook-restore=${COOK_RESTORE}"
+          echo "cook-archive=${COOK_ARCHIVE}"
+          echo "delta-key=${DELTA_KEY}"
+          echo "delta-archive=${DELTA_ARCHIVE}"
+          echo "cook-mark=${COOK_MARK}"
+        } >> "$GITHUB_OUTPUT"
+
+        # delta-restore is multi-line — use the heredoc syntax so the
+        # GITHUB_OUTPUT delimiter handling is right.
+        {
+          echo "delta-restore<<EOF_DELTA"
+          printf '%s' "${DELTA_RESTORE}"
+          echo
+          echo "EOF_DELTA"
+        } >> "$GITHUB_OUTPUT"
+
+        mkdir -p "${ZCCACHE_DIR}"
+        echo "computed keys:"
+        echo "  cook-key:  ${COOK_KEY}"
+        echo "  delta-key: ${DELTA_KEY}"
+        echo "  cache-dir: ${CACHE_DIR}"
+
+    - name: Restore cook layer
+      id: restore-cook
+      uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ${{ steps.keys.outputs.cook-archive }}
+        key: ${{ steps.keys.outputs.cook-key }}
+        restore-keys: ${{ steps.keys.outputs.cook-restore }}
+
+    - name: Apply cook layer (if restored)
+      shell: bash
+      run: |
+        set -euo pipefail
+        ARCHIVE="${{ steps.keys.outputs.cook-archive }}"
+        ZCCACHE_DIR="${{ steps.keys.outputs.zccache-dir }}"
+        if [ -f "$ARCHIVE" ]; then
+          echo "applying cook layer from $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+          mkdir -p "$ZCCACHE_DIR"
+          tar --use-compress-program=unzstd -xf "$ARCHIVE" -C "$ZCCACHE_DIR"
+        else
+          echo "no cook layer to apply (cold start)"
+        fi
+
+    - name: Restore delta layer
+      id: restore-delta
+      uses: actions/cache/restore@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+      with:
+        path: ${{ steps.keys.outputs.delta-archive }}
+        key: ${{ steps.keys.outputs.delta-key }}
+        restore-keys: ${{ steps.keys.outputs.delta-restore }}
+
+    - name: Apply delta layer (if restored)
+      shell: bash
+      run: |
+        set -euo pipefail
+        ARCHIVE="${{ steps.keys.outputs.delta-archive }}"
+        ZCCACHE_DIR="${{ steps.keys.outputs.zccache-dir }}"
+        if [ -f "$ARCHIVE" ]; then
+          echo "applying delta layer from $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+          # `--touch` would force mtimes to NOW, which would defeat the
+          # delta machinery on later runs. Keep the archive's recorded
+          # mtimes so the cook-mark touch (below, after cook) cleanly
+          # separates THIS run's build writes from everything that
+          # came before.
+          tar --use-compress-program=unzstd -xf "$ARCHIVE" -C "$ZCCACHE_DIR"
+        else
+          echo "no delta layer to apply"
+        fi
+
+    - name: Run cook command
+      shell: bash
+      env:
+        SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
+      run: ${{ inputs.cook-cmd }}
+
+    - name: Touch cook mark
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Wait long enough that anything cook wrote during this step
+        # has a strictly older mtime. `sleep 1` is enough on every
+        # filesystem we target — mtimes are second-resolution at worst.
+        sleep 1
+        touch "${{ steps.keys.outputs.cook-mark }}"
+        echo "cook mark touched at $(date -u +%FT%TZ)"
+
+    - name: Run build command
+      shell: bash
+      env:
+        SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
+      run: ${{ inputs.build-cmd }}
+
+    - name: Package build delta
+      id: delta-tar
+      shell: bash
+      run: |
+        set -euo pipefail
+        MARK="${{ steps.keys.outputs.cook-mark }}"
+        ZCCACHE_DIR="${{ steps.keys.outputs.zccache-dir }}"
+        ARCHIVE="${{ steps.keys.outputs.delta-archive }}"
+
+        if [ ! -d "$ZCCACHE_DIR" ]; then
+          echo "zccache dir missing — no delta to package"
+          echo "archive=" >> "$GITHUB_OUTPUT"
+          echo "bytes=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Files newer than the mark = writes from THIS run's build
+        # step. zccache is content-addressable so writes are immutable
+        # once placed; a "newer" file is unambiguously a new entry.
+        LIST="${RUNNER_TEMP}/soldr-delta-files.lst"
+        ( cd "$ZCCACHE_DIR" \
+          && find . -type f -newer "$MARK" -print0 > "$LIST" ) || true
+
+        if [ ! -s "$LIST" ]; then
+          # find may emit one trailing NUL even for an empty match
+          # set; the -s check after `find` redirects covers the
+          # zero-bytes case across BSD vs GNU find. Belt-and-braces:
+          # also use grep -cq to confirm at least one NUL-terminated
+          # token.
+          if ! tr -d '\0' < "$LIST" | grep -q .; then
+            echo "no files newer than cook mark — empty delta"
+            rm -f "$ARCHIVE"
+            echo "archive=" >> "$GITHUB_OUTPUT"
+            echo "bytes=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+        fi
+
+        FILE_COUNT="$(tr -cd '\0' < "$LIST" | wc -c | awk '{print $1}')"
+        echo "delta contains $FILE_COUNT files; archiving to $ARCHIVE"
+        ( cd "$ZCCACHE_DIR" \
+          && tar --null -T "$LIST" --use-compress-program='zstd -19 -T0' -cf "$ARCHIVE" )
+
+        BYTES="$(wc -c < "$ARCHIVE" | awk '{print $1}')"
+        echo "delta archive size: ${BYTES} bytes"
+        echo "archive=${ARCHIVE}" >> "$GITHUB_OUTPUT"
+        echo "bytes=${BYTES}" >> "$GITHUB_OUTPUT"
+
+    - name: Stash state for cleanup action
+      shell: bash
+      run: |
+        set -euo pipefail
+        STATE_DIR="${RUNNER_TEMP}/soldr-cache-delta-state"
+        mkdir -p "$STATE_DIR"
+        cat > "$STATE_DIR/state.env" <<EOF
+        COOK_KEY=${{ steps.keys.outputs.cook-key }}
+        COOK_ARCHIVE=${{ steps.keys.outputs.cook-archive }}
+        COOK_CACHE_HIT=${{ steps.restore-cook.outputs.cache-hit }}
+        DELTA_KEY=${{ steps.keys.outputs.delta-key }}
+        DELTA_ARCHIVE=${{ steps.keys.outputs.delta-archive }}
+        DELTA_BYTES=${{ steps.delta-tar.outputs.bytes }}
+        ZCCACHE_DIR=${{ steps.keys.outputs.zccache-dir }}
+        COOK_MARK=${{ steps.keys.outputs.cook-mark }}
+        EOF
+        echo "wrote $STATE_DIR/state.env"
