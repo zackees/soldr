@@ -213,8 +213,11 @@ jobs:
         # Same step-level SOLDR_CACHE_DIR pattern as the delta job —
         # otherwise soldr falls back to $HOME/.soldr and the cache
         # restored via actions/cache above lives in the wrong place.
+        # ZCCACHE_CACHE_DIR must stay coordinated with SOLDR_CACHE_DIR
+        # or managed-zccache mode refuses to run.
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline/cache/zccache
         run: |
           set -euo pipefail
           soldr cook

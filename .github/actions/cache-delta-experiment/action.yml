@@ -244,8 +244,15 @@ runs:
 
     - name: Run cook command
       shell: bash
+      # setup-soldr exports ZCCACHE_CACHE_DIR pointing at *its* cache
+      # dir; soldr (in managed-zccache mode) refuses to run when
+      # ZCCACHE_CACHE_DIR doesn't match the SOLDR_CACHE_DIR-derived
+      # path. Override BOTH here so they stay coordinated under the
+      # caller-supplied cache-dir. Same pattern setup-soldr-action.yml
+      # uses for the dogfood smoke (lines 142-143).
       env:
         SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
+        ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
       run: ${{ inputs.cook-cmd }}
 
     - name: Touch cook mark
@@ -261,8 +268,10 @@ runs:
 
     - name: Run build command
       shell: bash
+      # See the cook step above for the env-pair rationale.
       env:
         SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
+        ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
       run: ${{ inputs.build-cmd }}
 
     - name: Package build delta
