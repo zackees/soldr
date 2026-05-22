@@ -6,7 +6,7 @@
 //! parses flags, builds a [`GcOptions`], and prints the
 //! [`GcReport`] / decides whether to invoke [`GcPlan::apply`].
 
-use crate::target_registry::{
+use super::target_registry::{
     current_unix_seconds, directory_size, evaluate_safety_guards, human_age, human_size,
     workspace_root_for_target, GuardOutcome, RegistryError, TargetRegistry,
     DEFAULT_STALE_AGE_SECONDS, DEFAULT_STALE_SIZE_BYTES,
@@ -420,8 +420,8 @@ fn split_numeric_suffix(s: &str) -> (&str, &str) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::target_registry::TargetRegistry;
     use super::*;
-    use crate::target_registry::TargetRegistry;
     use std::path::PathBuf;
     use tempfile::tempdir;
 

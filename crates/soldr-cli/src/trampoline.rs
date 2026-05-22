@@ -11,9 +11,9 @@
 //!
 //! No content hashing — the bar is cargo's own correctness model.
 
+use crate::core::SoldrError;
 use crate::resolve_toolchain_binary;
 use serde::{Deserialize, Serialize};
-use soldr_core::SoldrError;
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -566,7 +566,7 @@ pub(crate) fn effective_target_triple(parsed: &ParsedRunArgs) -> Option<String> 
         }
     }
     if cfg!(windows) {
-        soldr_core::TargetTriple::detect().ok().map(|t| t.triple())
+        crate::core::TargetTriple::detect().ok().map(|t| t.triple())
     } else {
         None
     }

@@ -8,25 +8,37 @@ repository.workspace = true
 description = "CLI for soldr — instant tools, instant builds"
 
 [dependencies]
-soldr-core = { workspace = true }
-soldr-fetch = { workspace = true }
-soldr-cache = { workspace = true }
+# Folded in from former soldr-core / soldr-fetch / soldr-cache crates
+# (see crates/soldr-cli/src/{core,fetch,cache_lib}/).
 blake3 = { workspace = true }
 clap = { workspace = true }
+filetime = { workspace = true }
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+hex = { workspace = true }
+jwalk = { workspace = true }
+prost = { workspace = true }
+rayon = { workspace = true }
+redb = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
+tar = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
+toml = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-rayon = { workspace = true }
-fs2 = { workspace = true }
-toml = { workspace = true }
-tempfile = { workspace = true }
-flate2 = { workspace = true }
+walkdir = { workspace = true }
+zip = { workspace = true }
+zstd = { workspace = true }
 
 [dev-dependencies]
+filetime = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [features]
 # Internal feature flag that enables test-only fixture binaries (e.g.
@@ -38,6 +50,15 @@ test-stubs = []
 
 [lints]
 workspace = true
+
+# Thin library entry that re-exports the modules consumed by integration
+# tests under `tests/`. Production code goes through the `[[bin]]` target
+# below; lib.rs only exists so `tests/save_roundtrip.rs` & co. can keep
+# `use soldr_cli::cache_lib::save::*`-style imports after the four-crate
+# collapse landed.
+[lib]
+name = "soldr_cli"
+path = "src/lib.rs"
 
 [[bin]]
 name = "soldr"

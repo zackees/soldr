@@ -1,9 +1,9 @@
 //! Driver for `soldr bootstrap`. Thin wrapper over
-//! [`soldr_fetch::bootstrap_rustup`] that prints a user-facing summary or the
+//! [`crate::fetch::bootstrap_rustup`] that prints a user-facing summary or the
 //! stable machine-facing JSON form.
 
+use crate::core::{SoldrError, SoldrPaths};
 use serde::Serialize;
-use soldr_core::{SoldrError, SoldrPaths};
 
 #[derive(Serialize)]
 struct BootstrapJson {
@@ -19,10 +19,10 @@ const SCHEMA_VERSION: u32 = 1;
 
 pub(crate) async fn run_bootstrap(json: bool) -> Result<i32, SoldrError> {
     let paths = SoldrPaths::new()?;
-    let report = soldr_fetch::bootstrap_rustup(&paths).await?;
+    let report = crate::fetch::bootstrap_rustup(&paths).await?;
 
-    let cargo_home = soldr_fetch::managed_cargo_home(&paths);
-    let rustup_home = soldr_fetch::managed_rustup_home(&paths);
+    let cargo_home = crate::fetch::managed_cargo_home(&paths);
+    let rustup_home = crate::fetch::managed_rustup_home(&paths);
 
     if json {
         let payload = BootstrapJson {

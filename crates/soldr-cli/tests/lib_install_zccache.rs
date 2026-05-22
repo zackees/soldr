@@ -4,8 +4,8 @@
 //! Uses fake binary bytes everywhere; nothing here requires a real
 //! zccache. Tests that touch the network are guarded by `#[ignore]`.
 
-use soldr_core::SoldrPaths;
-use soldr_fetch::{
+use soldr_cli::core::SoldrPaths;
+use soldr_cli::fetch::{
     install_zccache_from_source, pinned_version_drift_from_managed, pinned_zccache_dir,
     read_pinned_sidecar, remove_pinned_zccache, resolve_pinned_zccache, InstallSource,
     MANAGED_ZCCACHE_VERSION,
@@ -340,7 +340,7 @@ async fn resolution_chain_pinned_overrides_managed_default() {
         .expect("install");
 
     // cached_zccache_binary picks pinned over managed.
-    let cached = soldr_fetch::cached_zccache_binary(&paths)
+    let cached = soldr_cli::fetch::cached_zccache_binary(&paths)
         .unwrap()
         .expect("pinned must be reported as cached");
     let pinned_dir = pinned_zccache_dir(&paths);

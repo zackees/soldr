@@ -286,8 +286,8 @@ fn build_cook_context_ephemeral_recipe_lives_in_owned_tempdir() {
 #[test]
 fn cargo_chef_pin_constant_matches_known_tools_registry() {
     assert_eq!(
-        soldr_fetch::CARGO_CHEF_PINNED_VERSION,
-        soldr_fetch::lookup_by_crate("cargo-chef")
+        crate::fetch::CARGO_CHEF_PINNED_VERSION,
+        crate::fetch::lookup_by_crate("cargo-chef")
             .and_then(|s| s.pinned_version)
             .expect("cargo-chef must carry a pinned_version")
     );

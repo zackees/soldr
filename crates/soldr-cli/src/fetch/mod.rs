@@ -36,7 +36,7 @@ pub use rustup_init::{
     BootstrapReport, NO_BOOTSTRAP_ENV_VAR, RUSTUP_INIT_TRIPLE_ENV_VAR, RUSTUP_INIT_URL_ENV_VAR,
 };
 
-use soldr_core::{
+use crate::core::{
     suppress_windows_console_window, Arch, Env, Os, SoldrError, SoldrPaths, TargetTriple,
 };
 use std::path::{Path, PathBuf};
@@ -1044,7 +1044,7 @@ struct AssetInfo {
 
 pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
     reqwest::Client::builder()
-        .user_agent(format!("soldr/{}", soldr_core::version()))
+        .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
         .map_err(|e| SoldrError::Network(e.to_string()))
 }

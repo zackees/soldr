@@ -3,8 +3,8 @@
 //! soldr owns the build UX and cache policy, while zccache provides the actual
 //! compiler-cache engine and daemon.
 
+use crate::core::SoldrPaths;
 use serde::Deserialize;
-use soldr_core::SoldrPaths;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -167,7 +167,7 @@ mod tests {
         session_journal_path, session_log_path, session_stats_path, zccache_dir,
         CACHE_DISABLED_VALUE, CACHE_ENABLED_VALUE,
     };
-    use soldr_core::SoldrPaths;
+    use crate::core::SoldrPaths;
     use std::{ffi::OsStr, path::Path};
 
     #[test]

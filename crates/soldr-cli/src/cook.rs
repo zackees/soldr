@@ -4,7 +4,7 @@
 //! 1. Validates that `Cargo.toml` (and ideally `Cargo.lock`) live in the
 //!    cwd, so cargo-chef has something to read.
 //! 2. Resolves the pinned `cargo-chef` binary via the standard fetch
-//!    pipeline (registry entry in `soldr_fetch::known_tools`).
+//!    pipeline (registry entry in `crate::fetch::known_tools`).
 //! 3. Routes `cargo chef prepare` and `cargo chef cook` through the
 //!    existing cargo front door so the underlying compile picks up
 //!    zccache (RUSTC_WRAPPER), `ZCCACHE_PATH_REMAP=auto`, the soldr
@@ -16,8 +16,8 @@
 //! resulting `target/` tarball.
 
 use crate::cargo_front_door;
+use crate::core::SoldrError;
 use crate::ZccacheSourceArg;
-use soldr_core::SoldrError;
 use std::path::{Path, PathBuf};
 
 /// Parsed `soldr cook` invocation surface. Mirrors the relevant subset of

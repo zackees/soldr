@@ -1,13 +1,14 @@
 use clap::{Parser, Subcommand};
-use soldr_core::{suppress_windows_console_window, SoldrError};
-use soldr_fetch::VersionSpec;
 
 mod binaries;
 mod bootstrap;
 mod cache;
+mod cache_lib;
 mod cargo_front_door;
 mod cook;
+mod core;
 mod doctor;
+mod fetch;
 mod gc;
 mod linker;
 mod optimize;
@@ -21,6 +22,9 @@ mod trampoline;
 mod trampoline_workspace;
 mod wrapper;
 mod zccache;
+
+use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
 pub(crate) use binaries::{
@@ -925,7 +929,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let tool_args = &args[1..];
 
             eprintln!("soldr: fetching {crate_name}...");
-            let result = soldr_fetch::fetch_tool(&crate_name, &version).await?;
+            let result = crate::fetch::fetch_tool(&crate_name, &version).await?;
 
             if result.cached {
                 eprintln!("soldr: using cached {crate_name} v{}", result.version);
@@ -1063,7 +1067,7 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
 
     eprintln!("soldr: trampolining to soldr@{version}...");
     let result =
-        soldr_fetch::fetch_tool("soldr", &VersionSpec::Exact(normalize_version(version))).await?;
+        crate::fetch::fetch_tool("soldr", &VersionSpec::Exact(normalize_version(version))).await?;
 
     if result.cached {
         eprintln!(

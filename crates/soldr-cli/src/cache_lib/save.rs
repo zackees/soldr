@@ -44,7 +44,8 @@ use rayon::prelude::*;
 use thiserror::Error;
 
 pub mod proto {
-    //! Hand-written prost types corresponding to `proto/manifest.proto`.
+    //! Hand-written prost types corresponding to `manifest.proto` in this
+    //! directory.
     //!
     //! We write these by hand rather than running `prost-build` from a
     //! build script because the codegen pulls in `protoc` (the C++

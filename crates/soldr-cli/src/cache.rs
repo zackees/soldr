@@ -1,13 +1,13 @@
 //! Status, cache inspection, cache prune-target, version, and cache-clearing
 //! commands. Extracted from `main.rs` as part of issue #339.
 
+use crate::core::{SoldrError, SoldrPaths};
 use crate::zccache::{
     command_stderr, managed_zccache_cache_dir, run_zccache_command_in_cache_dir,
     run_zccache_command_raw_in_cache_dir, start_zccache_with_recovery,
 };
 use crate::{cached_managed_zccache, fetch_managed_zccache, JSON_SCHEMA_VERSION};
 use serde::Serialize;
-use soldr_core::{SoldrError, SoldrPaths};
 
 pub(crate) fn clear_zccache_cache() -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
@@ -27,7 +27,7 @@ pub(crate) fn clear_zccache_cache() -> Result<(), SoldrError> {
     if !cleared_anything {
         println!(
             "managed zccache {} not fetched yet",
-            soldr_fetch::MANAGED_ZCCACHE_VERSION
+            crate::fetch::MANAGED_ZCCACHE_VERSION
         );
     }
     Ok(())
@@ -112,23 +112,23 @@ pub(crate) fn version_output() -> VersionOutput {
     VersionOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "version",
-        soldr_version: soldr_core::version().to_string(),
+        soldr_version: crate::core::version().to_string(),
     }
 }
 
 pub(crate) fn collect_status_output(cache_enabled: bool) -> Result<StatusOutput, SoldrError> {
-    let target = soldr_core::TargetTriple::detect()?;
+    let target = crate::core::TargetTriple::detect()?;
     let paths = SoldrPaths::new()?;
     Ok(StatusOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "status",
-        soldr_version: soldr_core::version().to_string(),
+        soldr_version: crate::core::version().to_string(),
         target: target.to_string(),
         root_dir: paths.root.display().to_string(),
         cache_dir: paths.cache.display().to_string(),
         cache_default_enabled: true,
         cache_enabled_for_invocation: cache_enabled,
-        managed_zccache_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+        managed_zccache_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
         zccache: collect_zccache_status(&paths)?,
     })
 }
@@ -138,8 +138,8 @@ pub(crate) fn collect_cache_output() -> Result<CacheOutput, SoldrError> {
     Ok(CacheOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache",
-        soldr_version: soldr_core::version().to_string(),
-        managed_zccache_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+        soldr_version: crate::core::version().to_string(),
+        managed_zccache_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
         zccache: collect_zccache_status(&paths)?,
     })
 }
@@ -175,8 +175,8 @@ struct CacheReportOutput {
 fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
-    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
+    let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
     let journal_present = journal_path.exists();
 
@@ -225,7 +225,7 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
                 } else if zccache_subcommand_unsupported(&result, "analyze") {
                     notes.push(format!(
                         "rollups: managed zccache {} does not yet support `analyze` — upgrade to 1.5.0+",
-                        soldr_fetch::MANAGED_ZCCACHE_VERSION
+                        crate::fetch::MANAGED_ZCCACHE_VERSION
                     ));
                     None
                 } else {
@@ -254,8 +254,8 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     Ok(CacheReportOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache report",
-        soldr_version: soldr_core::version().to_string(),
-        managed_zccache_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+        soldr_version: crate::core::version().to_string(),
+        managed_zccache_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
         session_stats_path: session_stats_path.display().to_string(),
         session_stats_present,
         journal_path: journal_path.display().to_string(),
@@ -334,11 +334,11 @@ pub(crate) fn run_cache_prune_target_command(
     json: bool,
 ) -> Result<(), SoldrError> {
     let canonical = std::path::absolute(&target_dir).unwrap_or_else(|_| target_dir.clone());
-    let opts = soldr_cache::prune_target::PruneTargetOptions {
+    let opts = crate::cache_lib::prune_target::PruneTargetOptions {
         target_dir: canonical.clone(),
         dry_run,
     };
-    let report = soldr_cache::prune_target::prune_target(&opts)
+    let report = crate::cache_lib::prune_target::prune_target(&opts)
         .map_err(|e| SoldrError::Other(format!("cache prune-target failed: {e}")))?;
 
     if json {
@@ -353,7 +353,7 @@ pub(crate) fn run_cache_prune_target_command(
 fn build_cache_prune_target_output(
     target_dir: &std::path::Path,
     dry_run: bool,
-    report: &soldr_cache::prune_target::PruneTargetReport,
+    report: &crate::cache_lib::prune_target::PruneTargetReport,
 ) -> CachePruneTargetOutput {
     CachePruneTargetOutput {
         schema_version: JSON_SCHEMA_VERSION,
@@ -364,7 +364,7 @@ fn build_cache_prune_target_output(
         kept: report.kept,
         deleted: report.deleted,
         reclaimed_bytes: report.reclaimed_bytes,
-        reclaimed_human: soldr_cache::target_registry::human_size(report.reclaimed_bytes),
+        reclaimed_human: crate::cache_lib::target_registry::human_size(report.reclaimed_bytes),
         entries: report
             .entries
             .iter()
@@ -373,11 +373,11 @@ fn build_cache_prune_target_output(
                 prefix: entry.prefix.clone(),
                 hash: entry.hash.clone(),
                 size_bytes: entry.size_bytes,
-                size_human: soldr_cache::target_registry::human_size(entry.size_bytes),
+                size_human: crate::cache_lib::target_registry::human_size(entry.size_bytes),
                 mtime_unix: entry.mtime_unix,
                 action: match entry.action {
-                    soldr_cache::prune_target::PruneAction::Keep => "keep",
-                    soldr_cache::prune_target::PruneAction::Delete => "delete",
+                    crate::cache_lib::prune_target::PruneAction::Keep => "keep",
+                    crate::cache_lib::prune_target::PruneAction::Delete => "delete",
                 },
             })
             .collect(),
@@ -387,7 +387,7 @@ fn build_cache_prune_target_output(
 fn print_cache_prune_target_text(
     target_dir: &std::path::Path,
     dry_run: bool,
-    report: &soldr_cache::prune_target::PruneTargetReport,
+    report: &crate::cache_lib::prune_target::PruneTargetReport,
 ) {
     println!("soldr cache prune-target: {}", target_dir.display());
     println!(
@@ -403,11 +403,11 @@ fn print_cache_prune_target_text(
         report.scanned,
         report.kept,
         report.deleted,
-        soldr_cache::target_registry::human_size(report.reclaimed_bytes),
+        crate::cache_lib::target_registry::human_size(report.reclaimed_bytes),
     );
     let mut shown = 0usize;
     for entry in &report.entries {
-        if entry.action != soldr_cache::prune_target::PruneAction::Delete {
+        if entry.action != crate::cache_lib::prune_target::PruneAction::Delete {
             continue;
         }
         if shown == 0 {
@@ -419,7 +419,7 @@ fn print_cache_prune_target_text(
         println!(
             "    - {} ({})",
             entry.path.display(),
-            soldr_cache::target_registry::human_size(entry.size_bytes),
+            crate::cache_lib::target_registry::human_size(entry.size_bytes),
         );
         shown += 1;
     }
@@ -517,11 +517,11 @@ fn print_cache_report_output(output: &CacheReportOutput) {
 
 fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, SoldrError> {
     let zccache_dir = managed_zccache_cache_dir(paths)?;
-    let session_log_path = soldr_cache::session_log_path(&zccache_dir);
+    let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
     let session_log_present = session_log_path.exists();
-    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let journal_present = journal_path.exists();
-    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
+    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
 
     match cached_managed_zccache(paths)? {
@@ -627,7 +627,7 @@ fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
     } else {
         println!(
             "zccache binary: not fetched yet (will fetch managed zccache {} on the first cache-enabled build)",
-            soldr_fetch::MANAGED_ZCCACHE_VERSION
+            crate::fetch::MANAGED_ZCCACHE_VERSION
         );
     }
 }
@@ -717,9 +717,10 @@ pub(crate) async fn run_session_start_command(
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
 
-    let session_log_path = log.unwrap_or_else(|| soldr_cache::session_log_path(&zccache_dir));
-    let journal_path = journal.unwrap_or_else(|| soldr_cache::session_journal_path(&zccache_dir));
-    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
+    let session_log_path = log.unwrap_or_else(|| crate::cache_lib::session_log_path(&zccache_dir));
+    let journal_path =
+        journal.unwrap_or_else(|| crate::cache_lib::session_journal_path(&zccache_dir));
+    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
 
     // Idempotent path: if ZCCACHE_SESSION_ID is already set and the
     // caller did not pass an explicit --id, reuse the existing session
@@ -727,7 +728,7 @@ pub(crate) async fn run_session_start_command(
     // setup-soldr can call session-start repeatedly without spawning
     // orphan sessions.
     if id.is_none() {
-        if let Ok(existing) = std::env::var(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR) {
+        if let Ok(existing) = std::env::var(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR) {
             let trimmed = existing.trim();
             if !trimmed.is_empty() {
                 let output = SessionStartOutput {
@@ -765,7 +766,7 @@ pub(crate) async fn run_session_start_command(
     }
     let session_json = run_zccache_command_in_cache_dir(&fetch.binary_path, &args, &zccache_dir)?;
     let session_id =
-        soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
+        crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
             SoldrError::Other(format!(
                 "failed to parse zccache session id from output: {}",
                 session_json.stdout.trim()
@@ -811,7 +812,7 @@ pub(crate) fn run_session_end_command(
     json: bool,
 ) -> Result<(), SoldrError> {
     let session_id = match id.or_else(|| {
-        std::env::var(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR)
+        std::env::var(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR)
             .ok()
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
@@ -820,7 +821,7 @@ pub(crate) fn run_session_end_command(
         None => {
             return Err(SoldrError::Other(format!(
                 "session-end requires --id or ${} to be set",
-                soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR
+                crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR
             )));
         }
     };
@@ -906,9 +907,9 @@ fn zccache_session_already_ended(output: &std::process::Output) -> bool {
 fn clear_session_artifacts(zccache_dir: &std::path::Path) -> Result<bool, SoldrError> {
     let mut removed_any = false;
     for path in [
-        soldr_cache::session_journal_path(zccache_dir),
-        soldr_cache::session_log_path(zccache_dir),
-        soldr_cache::session_stats_path(zccache_dir),
+        crate::cache_lib::session_journal_path(zccache_dir),
+        crate::cache_lib::session_log_path(zccache_dir),
+        crate::cache_lib::session_stats_path(zccache_dir),
     ] {
         match std::fs::remove_file(&path) {
             Ok(()) => removed_any = true,
@@ -947,7 +948,7 @@ pub(crate) async fn run_cache_shutdown_command(
         notes: Vec::new(),
     };
 
-    let env_session_id = std::env::var(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR)
+    let env_session_id = std::env::var(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR)
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
@@ -982,9 +983,9 @@ pub(crate) async fn run_cache_shutdown_command(
         std::fs::create_dir_all(&target)?;
         let mut copied = 0u32;
         for path in [
-            soldr_cache::session_log_path(&zccache_dir),
-            soldr_cache::session_journal_path(&zccache_dir),
-            soldr_cache::session_stats_path(&zccache_dir),
+            crate::cache_lib::session_log_path(&zccache_dir),
+            crate::cache_lib::session_journal_path(&zccache_dir),
+            crate::cache_lib::session_stats_path(&zccache_dir),
         ] {
             if !path.exists() {
                 continue;
@@ -1237,12 +1238,12 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
                 output.flushed = true;
                 output.notes.push(format!(
                     "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
-                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                    crate::fetch::MANAGED_ZCCACHE_VERSION
                 ));
             } else if zccache_subcommand_unsupported(&retry, "flush") {
                 output.notes.push(format!(
                     "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
-                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                    crate::fetch::MANAGED_ZCCACHE_VERSION
                 ));
             } else if zccache_daemon_already_stopped(&retry) {
                 output.notes.push(
@@ -1258,7 +1259,7 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         } else if zccache_subcommand_unsupported(&result, "flush") {
             output.notes.push(format!(
                 "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
-                soldr_fetch::MANAGED_ZCCACHE_VERSION
+                crate::fetch::MANAGED_ZCCACHE_VERSION
             ));
         } else if zccache_daemon_already_stopped(&result) {
             output.notes.push(
@@ -1345,7 +1346,7 @@ struct InstallZccacheOutput {
     source_kind: String,
     source_value: String,
     version: String,
-    binaries: std::collections::BTreeMap<String, soldr_fetch::PinnedBinaryRecord>,
+    binaries: std::collections::BTreeMap<String, crate::fetch::PinnedBinaryRecord>,
     installed_at: String,
     soldr_version: String,
 }
@@ -1402,13 +1403,13 @@ pub(crate) async fn run_install_zccache(
         return run_install_zccache_status(json);
     }
     let raw = source.expect("source presence checked above");
-    let parsed = soldr_fetch::InstallSource::parse(&raw)?;
+    let parsed = crate::fetch::InstallSource::parse(&raw)?;
     let paths = SoldrPaths::new()?;
-    let report = soldr_fetch::install_zccache_from_source(&parsed, &paths).await?;
+    let report = crate::fetch::install_zccache_from_source(&parsed, &paths).await?;
     emit_install_report(&report, json)
 }
 
-fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Result<(), SoldrError> {
+fn emit_install_report(report: &crate::fetch::InstallReport, json: bool) -> Result<(), SoldrError> {
     if json {
         let output = InstallZccacheOutput {
             schema_version: JSON_SCHEMA_VERSION,
@@ -1439,11 +1440,11 @@ fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Resul
                 record.size_bytes
             );
         }
-        if report.version != "unknown" && report.version != soldr_fetch::MANAGED_ZCCACHE_VERSION {
+        if report.version != "unknown" && report.version != crate::fetch::MANAGED_ZCCACHE_VERSION {
             println!(
                 "  note:         pinned version {} differs from managed default {}",
                 report.version,
-                soldr_fetch::MANAGED_ZCCACHE_VERSION
+                crate::fetch::MANAGED_ZCCACHE_VERSION
             );
         }
     }
@@ -1452,8 +1453,8 @@ fn emit_install_report(report: &soldr_fetch::InstallReport, json: bool) -> Resul
 
 fn run_install_zccache_remove(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
-    let dir = soldr_fetch::pinned_zccache_dir(&paths);
-    let removed = soldr_fetch::remove_pinned_zccache(&paths)?;
+    let dir = crate::fetch::pinned_zccache_dir(&paths);
+    let removed = crate::fetch::remove_pinned_zccache(&paths)?;
     if json {
         let output = InstallZccacheRemoveOutput {
             schema_version: JSON_SCHEMA_VERSION,
@@ -1475,10 +1476,10 @@ fn run_install_zccache_remove(json: bool) -> Result<(), SoldrError> {
 
 fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
-    let sidecar = soldr_fetch::read_pinned_sidecar(&paths)?;
+    let sidecar = crate::fetch::read_pinned_sidecar(&paths)?;
     match sidecar {
         Some(sidecar) => {
-            let drift = soldr_fetch::pinned_version_drift_from_managed(&sidecar);
+            let drift = crate::fetch::pinned_version_drift_from_managed(&sidecar);
             if json {
                 let pinned_value = serde_json::to_value(&sidecar).map_err(|e| {
                     SoldrError::Other(format!("install-zccache status: serialize sidecar: {e}"))
@@ -1488,14 +1489,14 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
                     command: "install-zccache --status",
                     pinned: pinned_value,
                     drift_from_managed: drift,
-                    managed_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+                    managed_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
                 };
                 print_json(&output)?;
             } else {
                 println!("soldr install-zccache --status");
                 println!(
                     "  install dir:  {}",
-                    soldr_fetch::pinned_zccache_dir(&paths).display()
+                    crate::fetch::pinned_zccache_dir(&paths).display()
                 );
                 println!(
                     "  source:       {} ({})",
@@ -1520,7 +1521,7 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
                     println!(
                         "  warning:      pinned version {} is different from soldr's managed default {} — consider `soldr install-zccache --remove` to use the managed version",
                         sidecar.version,
-                        soldr_fetch::MANAGED_ZCCACHE_VERSION
+                        crate::fetch::MANAGED_ZCCACHE_VERSION
                     );
                 }
             }
@@ -1531,13 +1532,13 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
                     schema_version: JSON_SCHEMA_VERSION,
                     command: "install-zccache --status",
                     pinned: None,
-                    managed_version: soldr_fetch::MANAGED_ZCCACHE_VERSION,
+                    managed_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
                 };
                 print_json(&output)?;
             } else {
                 println!(
                     "no pinned zccache installed; using managed default {}",
-                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                    crate::fetch::MANAGED_ZCCACHE_VERSION
                 );
             }
         }
@@ -1732,7 +1733,7 @@ mod tests {
         std::fs::create_dir_all(zccache_dir.join("logs")).expect("logs dir");
 
         // Only the log file exists; the journal and stats files are absent.
-        let log = soldr_cache::session_log_path(zccache_dir);
+        let log = crate::cache_lib::session_log_path(zccache_dir);
         std::fs::write(&log, b"hello").expect("write log");
 
         let removed = clear_session_artifacts(zccache_dir).expect("clear");

@@ -30,7 +30,7 @@
 //! to cargo or the soldr purge so we never accidentally torch a build
 //! mid-flight.
 
-use soldr_core::AutoGcConfig;
+use crate::core::AutoGcConfig;
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},

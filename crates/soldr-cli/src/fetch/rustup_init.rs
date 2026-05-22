@@ -25,9 +25,9 @@
 //! other soldr-fetched binary: pin via `SOLDR_CHECKSUMS_FILE`,
 //! `SOLDR_TRUST_MODE=strict` refuses unpinned fetches.
 
-use crate::http_client;
-use crate::trust::{sha256_of, verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
-use soldr_core::{SoldrError, SoldrPaths};
+use super::http_client;
+use super::trust::{sha256_of, verify_download, PinnedChecksumStore, TrustMode, VerifyOutcome};
+use crate::core::{SoldrError, SoldrPaths};
 use std::path::{Path, PathBuf};
 
 /// Opt-out env var. When set to a truthy value (`1`, `true`, `yes`, `on`,
@@ -432,6 +432,7 @@ mod tests {
 
     #[test]
     fn host_triple_uses_unknown_linux_gnu_on_linux_x86_64() {
+        let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TRIPLE_ENV_VAR);
         if std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64" {
             assert_eq!(
@@ -443,6 +444,7 @@ mod tests {
 
     #[test]
     fn host_triple_uses_pc_windows_msvc_on_windows_x86_64() {
+        let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TRIPLE_ENV_VAR);
         if std::env::consts::OS == "windows" && std::env::consts::ARCH == "x86_64" {
             assert_eq!(rustup_init_host_triple().unwrap(), "x86_64-pc-windows-msvc");
@@ -451,12 +453,14 @@ mod tests {
 
     #[test]
     fn host_triple_honors_override_env_var() {
+        let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::set(RUSTUP_INIT_TRIPLE_ENV_VAR, "aarch64-apple-darwin");
         assert_eq!(rustup_init_host_triple().unwrap(), "aarch64-apple-darwin");
     }
 
     #[test]
     fn download_url_appends_exe_for_windows_triple_only() {
+        let _env_lock = test_env_lock();
         let _url = EnvVarGuard::remove(RUSTUP_INIT_URL_ENV_VAR);
         let _triple = EnvVarGuard::set(RUSTUP_INIT_TRIPLE_ENV_VAR, "x86_64-pc-windows-msvc");
         assert_eq!(
@@ -473,6 +477,7 @@ mod tests {
 
     #[test]
     fn download_url_override_short_circuits_triple_resolution() {
+        let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::set(
             RUSTUP_INIT_URL_ENV_VAR,
             "http://127.0.0.1:9/rustup-init-test",
@@ -495,8 +500,21 @@ mod tests {
 
     #[test]
     fn auto_bootstrap_reports_opted_out_when_env_var_set() {
-        // PATH probe might find a system rustup. The test only matters when
-        // rustup isn't around — skip when it is.
+        // Take the env lock BEFORE the PATH probe so the two
+        // `which_on_path` invocations (one here, one inside
+        // `discover_rustup`) see the same PATH. Without the lock, a
+        // concurrent test mutating PATH between those two calls could
+        // let us slip past the skip-check, then find rustup inside
+        // auto_bootstrap_if_missing_blocking, then panic with
+        // "expected OptedOut, got AlreadyInstalled(...)" — observed
+        // when this module's tests share a process with the rest of
+        // the suite after the four-crate → one-crate collapse.
+        let _env_lock = test_env_lock();
+        // The test only exercises the OptedOut path. Skip when rustup
+        // is already discoverable on PATH — the early `if let Some` in
+        // auto_bootstrap_if_missing_blocking would then return
+        // AlreadyInstalled, which is correct but not what we're
+        // testing.
         if which_on_path("rustup").is_some() {
             return;
         }
@@ -509,8 +527,23 @@ mod tests {
         }
     }
 
+    /// Module-wide lock that serialises every test in this file that
+    /// touches the process-wide env. Every such test must call
+    /// `test_env_lock()` at the top and bind its return value for the
+    /// scope of the test. This was harmless when the rustup_init
+    /// module lived in its own crate (`cargo test` gave it a dedicated
+    /// process), but became necessary after the four-crate → one-crate
+    /// collapse — the env mutations now share a process with every
+    /// other test in `soldr-cli`.
+    fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// RAII helper so tests can mutate process env without leaking the
-    /// mutation across cases.
+    /// mutation across cases. Does NOT take the env lock — the
+    /// enclosing test must already hold one via `test_env_lock()` for
+    /// the full duration of all guards it constructs.
     struct EnvVarGuard {
         key: String,
         prior: Option<String>,

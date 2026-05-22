@@ -1,12 +1,12 @@
 //! Toolchain / rustup / zccache binary resolution helpers. Extracted from
 //! `main.rs` as part of issue #339.
 
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::fetch::VersionSpec;
 use crate::{
     REAL_TOOLCHAIN_BINARY_ENV_PREFIX, TEST_CARGO_BIN_ENV_VAR, TEST_RUSTC_BIN_ENV_VAR,
     TEST_RUSTUP_BIN_ENV_VAR, TEST_ZCCACHE_BIN_ENV_VAR,
 };
-use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
-use soldr_fetch::VersionSpec;
 
 pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
     if let Some(path) = toolchain_binary_override(tool) {
@@ -32,13 +32,13 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
             }
         }
         Ok(output) => {
-            if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+            if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
                 return Ok(path);
             }
             return Err(rustup_resolution_failure(tool, &output.stderr));
         }
         Err(err) => {
-            if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+            if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
                 return Ok(path);
             }
             return Err(SoldrError::Other(format!(
@@ -47,7 +47,7 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
         }
     }
 
-    if let Some(path) = soldr_core::probe_toolchain_binary(tool, start_dir.as_deref()) {
+    if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
         return Ok(path);
     }
 
@@ -159,7 +159,7 @@ fn windows_path_exts() -> Vec<String> {
 
 pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
     let start_dir = std::env::current_dir().ok();
-    soldr_core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+    crate::core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
 }
 
 pub(crate) fn rustup_resolution_failure(tool: &str, stderr: &[u8]) -> SoldrError {
@@ -216,13 +216,13 @@ pub(crate) fn rustup_binary() -> std::path::PathBuf {
         return path;
     }
     if let Ok(paths) = SoldrPaths::new() {
-        if let Some(existing) = soldr_fetch::discover_rustup(&paths) {
+        if let Some(existing) = crate::fetch::discover_rustup(&paths) {
             return existing;
         }
-        match soldr_fetch::auto_bootstrap_if_missing_blocking(&paths) {
-            Ok(soldr_fetch::AutoBootstrapOutcome::AlreadyInstalled(p)) => return p,
-            Ok(soldr_fetch::AutoBootstrapOutcome::Installed(report)) => return report.rustup_path,
-            Ok(soldr_fetch::AutoBootstrapOutcome::OptedOut) => {
+        match crate::fetch::auto_bootstrap_if_missing_blocking(&paths) {
+            Ok(crate::fetch::AutoBootstrapOutcome::AlreadyInstalled(p)) => return p,
+            Ok(crate::fetch::AutoBootstrapOutcome::Installed(report)) => return report.rustup_path,
+            Ok(crate::fetch::AutoBootstrapOutcome::OptedOut) => {
                 // Fall through to the bare "rustup" path; the subsequent
                 // resolution failure surfaces the standard diagnostic plus
                 // the `SOLDR_NO_BOOTSTRAP` hint.
@@ -231,7 +231,7 @@ pub(crate) fn rustup_binary() -> std::path::PathBuf {
                 eprintln!(
                     "soldr: auto-bootstrap failed ({err}). Falling back to `rustup` on PATH. \
                      Run `soldr bootstrap` manually or unset {} to retry.",
-                    soldr_fetch::NO_BOOTSTRAP_ENV_VAR
+                    crate::fetch::NO_BOOTSTRAP_ENV_VAR
                 );
             }
         }
@@ -241,7 +241,7 @@ pub(crate) fn rustup_binary() -> std::path::PathBuf {
 
 pub(crate) fn zccache_binary_override() -> Option<std::path::PathBuf> {
     non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR)
-        .or_else(|| non_empty_env_path(soldr_cache::ZCCACHE_BINARY_ENV_VAR))
+        .or_else(|| non_empty_env_path(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR))
 }
 
 pub(crate) fn non_empty_env_path(env_var: &str) -> Option<std::path::PathBuf> {
@@ -258,30 +258,30 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
 
 pub(crate) async fn fetch_managed_zccache(
     paths: &SoldrPaths,
-) -> Result<soldr_fetch::FetchResult, SoldrError> {
+) -> Result<crate::fetch::FetchResult, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return Ok(soldr_fetch::FetchResult {
+        return Ok(crate::fetch::FetchResult {
             binary_path,
-            version: soldr_fetch::MANAGED_ZCCACHE_VERSION.to_string(),
+            version: crate::fetch::MANAGED_ZCCACHE_VERSION.to_string(),
             cached: true,
         });
     }
 
-    soldr_fetch::fetch_zccache_with_paths(paths).await
+    crate::fetch::fetch_zccache_with_paths(paths).await
 }
 
 pub(crate) fn cached_managed_zccache(
     paths: &SoldrPaths,
-) -> Result<Option<soldr_fetch::FetchResult>, SoldrError> {
+) -> Result<Option<crate::fetch::FetchResult>, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return Ok(Some(soldr_fetch::FetchResult {
+        return Ok(Some(crate::fetch::FetchResult {
             binary_path,
-            version: soldr_fetch::MANAGED_ZCCACHE_VERSION.to_string(),
+            version: crate::fetch::MANAGED_ZCCACHE_VERSION.to_string(),
             cached: true,
         }));
     }
 
-    soldr_fetch::cached_zccache_binary(paths)
+    crate::fetch::cached_zccache_binary(paths)
 }
 
 #[cfg(test)]
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn known_subcommand_registry_recognizes_phase_two_tools() {
         for sub in ["nextest", "deny", "audit", "llvm-cov"] {
-            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+            let spec = crate::fetch::lookup_by_cargo_subcommand(sub)
                 .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
             assert_eq!(spec.cargo_subcommand, Some(sub));
             assert!(spec.crate_name.starts_with("cargo-"));
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn known_subcommand_registry_recognizes_phase_three_tools() {
         for sub in ["udeps", "semver-checks", "expand", "watch"] {
-            let spec = soldr_fetch::lookup_by_cargo_subcommand(sub)
+            let spec = crate::fetch::lookup_by_cargo_subcommand(sub)
                 .unwrap_or_else(|| panic!("missing registry entry for cargo {sub}"));
             assert_eq!(spec.cargo_subcommand, Some(sub));
             assert!(spec.crate_name.starts_with("cargo-"));
@@ -342,7 +342,7 @@ mod tests {
             "trunk",
             "sccache",
         ] {
-            let spec = soldr_fetch::lookup_by_crate(crate_name)
+            let spec = crate::fetch::lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
             assert_eq!(spec.cargo_subcommand, None);
         }
@@ -350,7 +350,7 @@ mod tests {
 
     #[test]
     fn soldr_itself_is_registered_for_self_trampoline() {
-        let spec = soldr_fetch::lookup_by_crate("soldr")
+        let spec = crate::fetch::lookup_by_crate("soldr")
             .expect("soldr should be registered in known_tools for --as trampoline");
         assert_eq!(spec.binary_name, "soldr");
         assert_eq!(spec.repo, Some(("zackees", "soldr")));

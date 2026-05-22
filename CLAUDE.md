@@ -46,17 +46,20 @@ uv run maturin build --release         # Build wheel
 
 ## Architecture
 
-Four-crate Rust workspace under `crates/`:
+**Monocrate.** Single Rust crate `soldr-cli` under `crates/soldr-cli/`, four module trees inside it. The four-crate split collapsed in 2026-05; see `crates/soldr-cli/tests/monocrate_guard.rs` for the regression test that fails the build if anyone re-introduces a second crate.
 
-- **soldr-core** — Shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types. No I/O beyond config files.
-- **soldr-fetch** — Binary resolution. Ships two sub-modules:
+- **`src/core.rs`** (formerly `soldr-core`) — Shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types. No I/O beyond config files.
+- **`src/fetch/`** (formerly `soldr-fetch`) — Binary resolution. Ships several sub-modules:
   - `known_tools` — registry of ecosystem tools with explicit GitHub `(owner, repo)`, cargo subcommand mapping, and optional monorepo tag prefix (e.g. `cargo-audit/v0.21.0`). Keeps dispatch off the crates.io round-trip and handles per-tool release quirks.
   - `trust` — SHA-256 computation + `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` enforcement. Every fetch emits a `trust: verified` or `trust: unverified` line and a pin mismatch is a hard error regardless of mode.
+  - `install_zccache` / `rustup_init` — pinned zccache install flow + rustup auto-bootstrap.
   - Resolution chain: local cache → registry-or-crates.io repo lookup → GitHub Releases asset download → extract.
-- **soldr-cache** — `RUSTC_WRAPPER` logic: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction.
-- **soldr-cli** — Thin dispatch layer. `main()` with mode detection, clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
+- **`src/cache_lib/`** (formerly `soldr-cache`) — `RUSTC_WRAPPER` logic: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, plus the `soldr save` / `soldr load` archive transport and the auto-GC orchestrator.
+- **`src/main.rs` + sibling cli modules** — Mode detection in `main()`, clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
 
-Dependency flow: `soldr-cli → {soldr-core, soldr-fetch, soldr-cache}`, both fetch and cache depend on `soldr-core`.
+A thin `src/lib.rs` re-exports `pub mod core; pub mod fetch; pub mod cache_lib;` so the four library integration tests (`tests/fetch_crgx.rs`, `tests/lib_install_zccache.rs`, `tests/save_bench.rs`, `tests/save_roundtrip.rs`) can keep using `use soldr_cli::core::*`-style imports after the collapse. The lib and bin trees each declare the three folded-in modules independently, so those modules compile twice — accept the small build-time cost for the test ergonomics.
+
+Dependency flow inside the crate: every module reaches into `crate::core::*` for shared types; `fetch` and `cache_lib` each consume `core`; the cli-side modules consume all three.
 
 Python package (`src/soldr/`) wraps the CLI binary via Maturin as `soldr._native`.
 

@@ -22,7 +22,7 @@ use crate::trampoline::{
     NO_TRAMPOLINE_ENV_VAR,
 };
 use serde::{Deserialize, Serialize};
-use soldr_core::SoldrError;
+use crate::core::SoldrError;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;

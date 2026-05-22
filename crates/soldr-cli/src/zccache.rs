@@ -1,11 +1,11 @@
 //! Zccache build-session orchestration and zccache subprocess helpers.
 //! Extracted from `main.rs` as part of issue #339.
 
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::{
     current_soldr_binary, fetch_managed_zccache, non_empty_env_path, ZccacheSourceArg,
     RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
-use soldr_core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 
 pub(crate) struct ZccacheBuildSession {
     pub(crate) binary_path: std::path::PathBuf,
@@ -83,21 +83,21 @@ pub(crate) async fn prepare_rustc_wrapper(
             .map(Some),
         RustcWrapperMode::Custom(wrapper) => {
             if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
-                let sccache_dir = soldr_cache::sccache_dir(paths);
+                let sccache_dir = crate::cache_lib::sccache_dir(paths);
                 std::fs::create_dir_all(&sccache_dir)?;
                 cargo.env("SCCACHE_DIR", sccache_dir);
             }
             cargo.env("RUSTC_WRAPPER", wrapper);
-            cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
-            cargo.env_remove(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
-            cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
             Ok(None)
         }
         RustcWrapperMode::Disabled => {
             cargo.env_remove("RUSTC_WRAPPER");
-            cargo.env_remove(soldr_cache::ZCCACHE_BINARY_ENV_VAR);
-            cargo.env_remove(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
-            cargo.env_remove(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
+            cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
             Ok(None)
         }
     }
@@ -124,17 +124,17 @@ async fn prepare_zccache_build(
             if fetched.cached {
                 eprintln!(
                     "soldr: using managed zccache {}",
-                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                    crate::fetch::MANAGED_ZCCACHE_VERSION
                 );
             } else {
                 eprintln!(
                     "soldr: fetched managed zccache {}",
-                    soldr_fetch::MANAGED_ZCCACHE_VERSION
+                    crate::fetch::MANAGED_ZCCACHE_VERSION
                 );
             }
             fetched
         }
-        ZccacheSourceArg::System => soldr_fetch::resolve_system_zccache(paths)?,
+        ZccacheSourceArg::System => crate::fetch::resolve_system_zccache(paths)?,
     };
 
     // When the resolved zccache CLI binary differs from the one a
@@ -149,11 +149,11 @@ async fn prepare_zccache_build(
 
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
-    let session_log_path = soldr_cache::session_log_path(&zccache_dir);
+    let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
     let session_log_path_arg = session_log_path.display().to_string();
-    let journal_path = soldr_cache::session_journal_path(&zccache_dir);
+    let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let journal_path_arg = journal_path.display().to_string();
-    let session_stats_path = soldr_cache::session_stats_path(&zccache_dir);
+    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let session_json = run_zccache_command_in_cache_dir(
         &fetch.binary_path,
         &[
@@ -167,7 +167,7 @@ async fn prepare_zccache_build(
         &zccache_dir,
     )?;
     let session_id =
-        soldr_cache::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
+        crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
             SoldrError::Other(format!(
                 "failed to parse zccache session id from output: {}",
                 session_json.stdout.trim()
@@ -175,20 +175,23 @@ async fn prepare_zccache_build(
         })?;
 
     cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
-    cargo.env(soldr_cache::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
-    cargo.env(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
-    cargo.env(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
-    cargo.env(soldr_cache::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
+    cargo.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
+    cargo.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
+    cargo.env(
+        crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+        &zccache_dir,
+    );
+    cargo.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
 
     // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto so
     // multiple worktrees of the same repo share zccache hits. Honor any
     // user-supplied ZCCACHE_PATH_REMAP, and the SOLDR_PATH_REMAP=off
     // escape hatch.
-    let user_zccache = std::env::var(soldr_cache::ZCCACHE_PATH_REMAP_ENV_VAR).ok();
-    let soldr_override = std::env::var(soldr_cache::SOLDR_PATH_REMAP_ENV_VAR).ok();
+    let user_zccache = std::env::var(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR).ok();
+    let soldr_override = std::env::var(crate::cache_lib::SOLDR_PATH_REMAP_ENV_VAR).ok();
     if let Some(value) = resolve_path_remap_env(user_zccache.as_deref(), soldr_override.as_deref())
     {
-        cargo.env(soldr_cache::ZCCACHE_PATH_REMAP_ENV_VAR, value);
+        cargo.env(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR, value);
     }
 
     Ok(ZccacheBuildSession {
@@ -340,17 +343,17 @@ pub(crate) struct CommandOutput {
 pub(crate) fn managed_zccache_cache_dir(
     paths: &SoldrPaths,
 ) -> Result<std::path::PathBuf, SoldrError> {
-    let zccache_dir = normalize_path_for_compare(&soldr_cache::zccache_dir(paths))?;
+    let zccache_dir = normalize_path_for_compare(&crate::cache_lib::zccache_dir(paths))?;
     let inherited_soldr_managed_dir =
-        non_empty_env_path(soldr_cache::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
+        non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
             .map(|path| normalize_path_for_compare(&path))
             .transpose()?;
-    if let Some(explicit) = non_empty_env_path(soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR) {
+    if let Some(explicit) = non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR) {
         let explicit = normalize_path_for_compare(&explicit)?;
         if explicit != zccache_dir && inherited_soldr_managed_dir.as_ref() != Some(&explicit) {
             return Err(SoldrError::Other(format!(
                 "{} is managed by soldr for managed zccache builds. Unset it, set SOLDR_CACHE_DIR to choose soldr's cache root, or set SOLDR_RUSTC_WRAPPER to use a custom wrapper.",
-                soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR
+                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR
             )));
         }
     }
@@ -376,7 +379,7 @@ pub(crate) fn run_zccache_command_in_cache_dir(
         binary,
         args,
         &[(
-            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
             cache_dir.as_os_str(),
         )],
     )
@@ -391,7 +394,7 @@ pub(crate) fn run_zccache_command_strings_in_cache_dir(
         binary,
         args,
         &[(
-            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
             cache_dir.as_os_str(),
         )],
     )?;
@@ -541,7 +544,7 @@ pub(crate) fn run_zccache_command_raw_in_cache_dir(
         binary,
         args,
         &[(
-            soldr_cache::ZCCACHE_CACHE_DIR_ENV_VAR,
+            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
             cache_dir.as_os_str(),
         )],
     )
