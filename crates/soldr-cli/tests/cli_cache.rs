@@ -343,6 +343,51 @@ fn cache_report_json_surfaces_persisted_session_stats() {
     assert_eq!(json["last_session"]["hit_rate"].as_f64(), Some(0.7));
 }
 
+/// Regression for soldr#430. `last_session` must be a verbatim passthrough
+/// of `last-session-stats.json` so new zccache schema additions (e.g.
+/// PROTOCOL_VERSION 9's `phase_profile`) reach downstream consumers
+/// without a soldr-side change. If someone "cleans up" `last_session`
+/// into a typed struct, this test fails.
+#[test]
+fn cache_report_json_passes_through_unknown_session_stat_fields() {
+    let cache_root = unique_temp_dir("cache-report-forward-compat");
+    let zccache_dir = cache_root.join("cache").join("zccache");
+    let stats_path = zccache_dir.join("logs").join("last-session-stats.json");
+    fs::create_dir_all(stats_path.parent().expect("stats parent missing"))
+        .expect("failed to create logs dir");
+    fs::write(
+        &stats_path,
+        r#"{
+            "status":"ok",
+            "hits":11,
+            "phase_profile":{"hit_count":103,"miss_count":4,"buckets":[1,2,3]},
+            "future_field":"please don't drop me"
+        }"#,
+    )
+    .expect("failed to seed session stats");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cache", "report", "--json"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .output()
+        .expect("failed to run soldr cache report --json");
+
+    assert!(
+        output.status.success(),
+        "cache report --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let json: Value =
+        serde_json::from_slice(&output.stdout).expect("cache report --json must produce JSON");
+    assert_eq!(json["last_session"]["hits"], 11);
+    assert_eq!(json["last_session"]["phase_profile"]["hit_count"], 103);
+    assert_eq!(json["last_session"]["phase_profile"]["miss_count"], 4);
+    assert_eq!(json["last_session"]["phase_profile"]["buckets"][2], 3);
+    assert_eq!(json["last_session"]["future_field"], "please don't drop me");
+}
+
 #[test]
 fn clean_clears_managed_zccache_and_state_dir() {
     let cache_root = unique_temp_dir("clean-command");

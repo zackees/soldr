@@ -164,7 +164,14 @@ struct CacheReportOutput {
     /// Whether the journal file exists on disk.
     journal_present: bool,
     /// Verbatim contents of `last-session-stats.json`, parsed into a JSON
-    /// value. `null` if the file is missing or unparseable.
+    /// value. `null` if the file is missing or unparseable. Kept as a raw
+    /// `Value` (not a typed struct) on purpose: zccache evolves its
+    /// `SessionStats` shape across protocol versions, and downstream
+    /// consumers (perf-rust-cluster, `ci/perf_local.py`) rely on new
+    /// fields like `phase_profile` (zccache PROTOCOL_VERSION 9) reaching
+    /// them without a soldr release. See soldr#430 — the
+    /// `cache_report_json_passes_through_unknown_session_stat_fields`
+    /// integration test locks this contract in.
     last_session: Option<serde_json::Value>,
     /// Output of `zccache analyze --json` over the per-session journal,
     /// when the managed zccache supports it. `null` otherwise.
