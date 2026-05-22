@@ -300,7 +300,7 @@ jobs:
             echo "| upload bytes — cook layer | ${delta_cook_fmt} | included in baseline single layer |"
             echo "| upload bytes — delta layer | ${delta_delta_fmt} | n/a |"
             echo "| **upload bytes — total** | **${delta_total_fmt}** | **${baseline_fmt}** |"
-            echo "| ratio (delta / baseline) | colspan: ${ratio_fmt} | |"
+            echo "| ratio (delta / baseline) | ${ratio_fmt} | _lower is better_ |"
             echo ""
             echo "_Cold runs: ratio ~1.0 expected (both upload the full cook output)._"
             echo "_Warm runs (same Cargo.lock + rust-toolchain.toml): delta should drop to per-PR-only writes, baseline re-uploads everything._"
