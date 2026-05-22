@@ -18,6 +18,7 @@ Exit codes:
 
 import json
 import re
+import shlex
 import sys
 
 
@@ -39,9 +40,13 @@ RUST_TOOLS = {
 
 PYTHON_TOOLS = {"python", "python3", "pip", "pip3"}
 
-SOLDR_PREFIXES = ("soldr ", "uv run soldr ")
-UV_RUN_PREFIX = "uv run "
-UV_PIP_PREFIX = "uv pip "
+# Shell control operators that end one top-level command and start another.
+# `|` is intentionally absent — the hook has never split on pipes (a bare
+# `cargo build | tee log` should still be blocked because `cargo` is the
+# head of the pipeline; `grep foo | cargo install` slipping through is a
+# pre-existing gap the shlex switch deliberately does not change).
+SEGMENT_OPERATORS = {";", ";;", "&&", "||"}
+
 UV_RUN_FLAGS_WITH_VALUES = {
     "--config-setting",
     "--directory",
@@ -77,6 +82,47 @@ def strip_env_prefix(tokens):
     return tokens[i:]
 
 
+def tokenize_segments(command):
+    """Yield the token list for each top-level shell segment in `command`.
+
+    Uses `shlex` with `punctuation_chars=';&|'` so unquoted `;`, `&&`,
+    `||` (and pipe runs) emerge as their own tokens while content
+    inside single or double quotes stays in one token. That means
+    `bash -c 'cargo build'` is a single segment headed by `bash` —
+    the inner `cargo` lives inside a quoted argument and is invisible
+    to the policy (it never reaches the host shell as a bare command).
+
+    Malformed quoting falls back to the old regex behavior so the
+    hook errs on the side of inspecting more, not less.
+    """
+
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|")
+        lex.whitespace_split = True
+        tokens = list(lex)
+    except ValueError:
+        # Unclosed quote / other shlex parse error: fall back to the
+        # legacy split-on-operators behavior so we still inspect each
+        # rough segment instead of letting the whole command through.
+        tokens = []
+        for raw_seg in re.split(r"&&|\|\||;", command):
+            tokens.extend(raw_seg.split())
+            tokens.append(";")
+        if tokens and tokens[-1] == ";":
+            tokens.pop()
+
+    current = []
+    for token in tokens:
+        if token in SEGMENT_OPERATORS:
+            if current:
+                yield current
+            current = []
+        else:
+            current.append(token)
+    if current:
+        yield current
+
+
 def uv_run_target(parts):
     """Return the uv-run command target after leading uv options.
 
@@ -107,36 +153,28 @@ def check_command(command):
 
     Returns (tool, reason) if forbidden, None if allowed.
     """
-    # ── Per-segment checks ───────────────────────────────────────────
-    segments = re.split(r"&&|\|\||;", command)
-
-    for seg in segments:
-        seg = seg.strip()
-        if not seg:
-            continue
-
-        # Strip leading env-var assignments so they can't be used as a
-        # backdoor: `RUSTUP_TOOLCHAIN=foo cargo build` is the same policy
-        # violation as `cargo build`.
-        tokens = strip_env_prefix(seg.split())
+    for segment_tokens in tokenize_segments(command):
+        tokens = strip_env_prefix(segment_tokens)
         if not tokens:
             continue
 
-        # Reconstruct the cleaned command for prefix checks.
-        stripped = " ".join(tokens)
-
-        # Skip if Rust tooling is explicitly routed through soldr.
-        if any(stripped.startswith(p) for p in SOLDR_PREFIXES):
+        # `soldr <tool>` and `uv run soldr <tool>` are the canonical
+        # entry points — allow them outright.
+        if tokens[0] == "soldr":
+            continue
+        if tokens[:3] == ["uv", "run", "soldr"]:
             continue
 
-        if stripped.startswith(UV_PIP_PREFIX):
+        # `uv pip ...` is the canonical pip replacement — allow.
+        if tokens[:2] == ["uv", "pip"]:
             continue
 
         first_word = tokens[0]
 
-        if stripped.startswith(UV_RUN_PREFIX):
-            # `uv run soldr ...` was handled above. Block the old `uv run cargo`
-            # console-script shim path so Rust tooling has one canonical entry.
+        # `uv run <something>`: allow uv-run-of-a-script, but block the
+        # old `uv run cargo` console-script shim so Rust tooling has
+        # one canonical entry point.
+        if tokens[:2] == ["uv", "run"]:
             run_target = uv_run_target(tokens)
             if run_target in RUST_TOOLS:
                 return (

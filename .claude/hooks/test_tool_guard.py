@@ -181,6 +181,79 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "cargo")
 
+    # ── Quoting respect ───────────────────────────────────────────────
+    # The hook splits unquoted shell operators but must NOT split on
+    # operators that live inside a quoted argument. Otherwise legitimate
+    # wrapping commands (`bash -c '...'`, `docker run ... bash -c '...'`,
+    # `ssh host '...'`) get false-positive blocked.
+
+    def test_allows_bash_dash_c_single_quoted_cargo(self):
+        # The inner `cargo build` is a quoted -c arg, not a host shell
+        # command. The host invocation is `bash`, which is fine.
+        self.assertIsNone(check_command("bash -c 'cargo build'"))
+
+    def test_allows_bash_dash_c_double_quoted_cargo(self):
+        self.assertIsNone(check_command('bash -c "cargo build"'))
+
+    def test_allows_sh_dash_c_with_compound_cargo(self):
+        # Even when the quoted script contains operators, the host
+        # invocation is `sh -c '...'` — one segment, headed by `sh`.
+        self.assertIsNone(check_command("sh -c 'cargo build && cargo test'"))
+
+    def test_allows_docker_run_with_quoted_cargo(self):
+        # Real motivating case: `docker run ... bash -c '... cargo ...'`
+        # should not trip the host policy.
+        self.assertIsNone(check_command(
+            "docker run --rm -v /work:/w img bash -c 'cargo build --release'"
+        ))
+
+    def test_allows_docker_run_bare_cargo_after_image(self):
+        # `docker run img cargo build` — cargo is an arg to docker, not
+        # a host process. Whitelisting docker explicitly is not needed
+        # because the first token is `docker`, which isn't in RUST_TOOLS.
+        self.assertIsNone(check_command(
+            "docker run --rm -v /work:/w img cargo build --release"
+        ))
+
+    def test_allows_ssh_with_remote_cargo(self):
+        # `ssh host cargo build` — the cargo runs on the remote host.
+        # First token is `ssh`, not in RUST_TOOLS.
+        self.assertIsNone(check_command("ssh host cargo build"))
+
+    def test_allows_echo_of_cargo_string(self):
+        # `echo 'cargo build'` is text, not an invocation.
+        self.assertIsNone(check_command("echo 'cargo build'"))
+
+    def test_blocks_cargo_after_quoted_wrapper(self):
+        # Mixing styles: a quoted wrapper segment followed by a real
+        # bare cargo invocation must still trip on the second segment.
+        result = check_command("bash -c 'echo ok' && cargo test")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cargo")
+
+    def test_blocks_cargo_when_operator_unquoted(self):
+        # Unquoted `;` is still a segment separator: `echo hi ; cargo build`
+        # exposes `cargo build` as a bare host command and must trip.
+        result = check_command("echo hi ; cargo build")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cargo")
+
+    def test_blocks_cargo_with_trailing_background_amp(self):
+        # `cargo build &` — `&` is a control operator but `cargo` is
+        # still the head of the segment.
+        result = check_command("cargo build &")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cargo")
+
+    def test_malformed_quoting_falls_back_safely(self):
+        # An unclosed quote shouldn't crash the hook AND shouldn't open
+        # a backdoor. The legacy regex fallback inspects every rough
+        # segment so a bare cargo on either side of the broken quote
+        # still trips.
+        result = check_command("echo 'unclosed && cargo build")
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "cargo")
+
 
 if __name__ == "__main__":
     unittest.main()
