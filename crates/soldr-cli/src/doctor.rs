@@ -41,6 +41,11 @@ struct DoctorOutput {
     drift: bool,
     missing_components: Vec<String>,
     missing_targets: Vec<String>,
+    /// Which source `soldr cargo build` would actually invoke right
+    /// now: `"pinned"`, `"local"`, `"managed"`, or `"none"`. Added in
+    /// issue #420 so JSON consumers don't have to derive it by
+    /// inspecting `pinned_zccache_active`.
+    active_zccache_source: &'static str,
     /// Managed zccache state on disk. Always reports the managed-path
     /// view even when the active source is a pinned install; the
     /// pinned section below explains the override.
@@ -135,6 +140,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 drift: false,
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
+                active_zccache_source: bundle.active.source.as_str(),
                 managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
                 pinned_zccache: bundle.pinned_doctor.clone(),
                 pinned_zccache_active: bundle.pinned_active,
@@ -217,6 +223,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
             drift,
             missing_components,
             missing_targets,
+            active_zccache_source: bundle.active.source.as_str(),
             managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
             pinned_zccache: bundle.pinned_doctor.clone(),
             pinned_zccache_active: bundle.pinned_active,
@@ -246,9 +253,9 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
 /// printer can surface both sections.
 struct ZccacheDoctorBundle {
     /// Active resolution (what `soldr cargo` would use right now).
-    /// Retained for diagnostic context even though every print path
-    /// derives its summary from `managed` / `pinned`.
-    #[allow(dead_code)]
+    /// Now surfaced as the leading "active zccache source:" diagnostic
+    /// line so users can see at a glance which source wins resolution
+    /// before reading the per-section detail (issue #420).
     active: ZccacheBinarySummary,
     /// Managed-path-only state for the "managed zccache:" section. Always
     /// reports the GitHub-Releases view, even when the pinned dir wins
@@ -314,6 +321,13 @@ fn collect_zccache_bundle() -> Result<ZccacheDoctorBundle, SoldrError> {
 }
 
 fn print_zccache_sections(bundle: &ZccacheDoctorBundle) {
+    // Issue #420: lead with a one-liner naming the source that
+    // `soldr cargo build` will actually invoke, so users debugging
+    // pin-related issues don't have to cross-reference the "pinned
+    // zccache:" and "managed zccache:" sections to figure out which
+    // one is live.
+    println!();
+    println!("active zccache source: {}", bundle.active.source.as_str());
     if let (Some(summary), Some(sidecar)) = (bundle.pinned.as_ref(), bundle.pinned_sidecar.as_ref())
     {
         print_pinned_zccache_human(summary, sidecar);

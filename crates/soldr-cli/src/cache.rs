@@ -6,7 +6,7 @@ use crate::zccache::{
     command_stderr, managed_zccache_cache_dir, run_zccache_command_in_cache_dir,
     run_zccache_command_raw_in_cache_dir, start_zccache_with_recovery,
 };
-use crate::{cached_managed_zccache, fetch_managed_zccache, JSON_SCHEMA_VERSION};
+use crate::{cached_active_zccache, fetch_active_zccache, JSON_SCHEMA_VERSION};
 use serde::Serialize;
 
 pub(crate) fn clear_zccache_cache() -> Result<(), SoldrError> {
@@ -14,7 +14,7 @@ pub(crate) fn clear_zccache_cache() -> Result<(), SoldrError> {
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
     let mut cleared_anything = false;
 
-    if let Some(fetch) = cached_managed_zccache(&paths)? {
+    if let Some(fetch) = cached_active_zccache(&paths)? {
         let _ = run_zccache_command_in_cache_dir(&fetch.binary_path, &["clear"], &zccache_dir)?;
         println!("cleared zccache artifact cache");
         cleared_anything = true;
@@ -103,6 +103,11 @@ pub(crate) struct ZccacheStatusSnapshot {
     session_stats_path: String,
     session_stats_present: bool,
     binary_path: Option<String>,
+    /// Which precedence chain branch produced `binary_path`:
+    /// `"pinned"`, `"local"`, `"managed"`, or `"none"`. Surfaced so
+    /// `soldr cache` / `soldr status` consumers don't have to derive
+    /// it from the path (issue #420).
+    binary_source: &'static str,
     binary_fetched: bool,
     status_lines: Vec<String>,
     status_empty: bool,
@@ -204,7 +209,7 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     };
 
     let rollups = if journal_present {
-        match cached_managed_zccache(&paths)? {
+        match cached_active_zccache(&paths)? {
             Some(fetch) => {
                 let journal_arg = journal_path.display().to_string();
                 let result = run_zccache_command_raw_in_cache_dir(
@@ -524,12 +529,13 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
 
-    match cached_managed_zccache(paths)? {
+    match cached_active_zccache(paths)? {
         Some(fetch) => {
             let output =
                 run_zccache_command_in_cache_dir(&fetch.binary_path, &["status"], &zccache_dir)?;
             let stdout = output.stdout.trim();
             let status_lines = stdout.lines().map(str::to_owned).collect();
+            let source = crate::fetch::classify_zccache_source(paths, &fetch.binary_path);
             Ok(ZccacheStatusSnapshot {
                 cache_dir: zccache_dir.display().to_string(),
                 state_dir: zccache_dir.display().to_string(),
@@ -540,6 +546,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
                 session_stats_path: session_stats_path.display().to_string(),
                 session_stats_present,
                 binary_path: Some(fetch.binary_path.display().to_string()),
+                binary_source: source.as_str(),
                 binary_fetched: true,
                 status_lines,
                 status_empty: stdout.is_empty(),
@@ -555,6 +562,7 @@ fn collect_zccache_status(paths: &SoldrPaths) -> Result<ZccacheStatusSnapshot, S
             session_stats_path: session_stats_path.display().to_string(),
             session_stats_present,
             binary_path: None,
+            binary_source: "none",
             binary_fetched: false,
             status_lines: Vec::new(),
             status_empty: false,
@@ -616,7 +624,10 @@ fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
     );
 
     if let Some(binary_path) = &snapshot.binary_path {
-        println!("zccache binary: {binary_path}");
+        println!(
+            "zccache binary: {binary_path} (source: {})",
+            snapshot.binary_source
+        );
         if snapshot.status_empty {
             println!("zccache status: no output");
         } else {
@@ -747,7 +758,7 @@ pub(crate) async fn run_session_start_command(
         }
     }
 
-    let fetch = fetch_managed_zccache(&paths).await?;
+    let fetch = fetch_active_zccache(&paths).await?;
     start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
 
     let log_arg = session_log_path.display().to_string();
@@ -828,7 +839,7 @@ pub(crate) fn run_session_end_command(
 
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let fetch = cached_managed_zccache(&paths)?.ok_or_else(|| {
+    let fetch = cached_active_zccache(&paths)?.ok_or_else(|| {
         SoldrError::Other(
             "managed zccache binary not yet fetched — run a cache-enabled build first".into(),
         )
@@ -936,7 +947,7 @@ pub(crate) async fn run_cache_shutdown_command(
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
     let mut notes: Vec<String> = Vec::new();
 
-    let fetch = cached_managed_zccache(&paths)?;
+    let fetch = cached_active_zccache(&paths)?;
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache shutdown",
@@ -1192,7 +1203,7 @@ fn poll_zccache_daemon_exit(
 pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let fetch = cached_managed_zccache(&paths)?;
+    let fetch = cached_active_zccache(&paths)?;
 
     let mut output = CacheFlushOutput {
         schema_version: JSON_SCHEMA_VERSION,

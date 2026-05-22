@@ -28,8 +28,8 @@ use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
 pub(crate) use binaries::{
-    apply_implicit_toolchain_homes, cached_managed_zccache, current_soldr_binary,
-    fetch_managed_zccache, non_empty_env_path, parse_tool_spec, resolve_toolchain_binary,
+    apply_implicit_toolchain_homes, cached_active_zccache, current_soldr_binary,
+    fetch_active_zccache, non_empty_env_path, parse_tool_spec, resolve_toolchain_binary,
     rustup_binary, rustup_resolution_failure, zccache_binary_override,
 };
 

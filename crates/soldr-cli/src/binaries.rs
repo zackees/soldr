@@ -256,7 +256,15 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
-pub(crate) async fn fetch_managed_zccache(
+/// Resolve the active zccache binary, honoring the
+/// `SOLDR_ZCCACHE_LOCAL_DIR` -> pinned-install -> managed-cache ->
+/// managed-download precedence chain implemented by
+/// [`crate::fetch::fetch_zccache_with_paths`]. Despite the historical
+/// "managed" name on its callers (see issue #420), the resolution path
+/// already honors `soldr install-zccache` pins ahead of the managed
+/// download — this helper just adds the `SOLDR_TEST_ZCCACHE_BIN` test
+/// override on top.
+pub(crate) async fn fetch_active_zccache(
     paths: &SoldrPaths,
 ) -> Result<crate::fetch::FetchResult, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
@@ -270,7 +278,11 @@ pub(crate) async fn fetch_managed_zccache(
     crate::fetch::fetch_zccache_with_paths(paths).await
 }
 
-pub(crate) fn cached_managed_zccache(
+/// Same precedence chain as [`fetch_active_zccache`] but only reports
+/// what is already on disk — never triggers a managed download. Returns
+/// `Ok(None)` when nothing has been fetched yet AND no pin / local
+/// override is in effect.
+pub(crate) fn cached_active_zccache(
     paths: &SoldrPaths,
 ) -> Result<Option<crate::fetch::FetchResult>, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
