@@ -15,9 +15,17 @@ use std::{
 #[test]
 fn status_reports_cache_control_defaults() {
     let cache_root = unique_temp_dir("status");
+    // Redirect HOME / USERPROFILE so the test doesn't see the developer's
+    // host-side pin under `~/.soldr/bin/zccache-pinned/`. After issue #426
+    // the pin is home-anchored and survives SOLDR_CACHE_DIR overrides — so
+    // a stale host pin would otherwise leak into the test as a fetched
+    // binary and break the "not fetched yet" assertion below.
+    let home_root = unique_temp_dir("status-home");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .arg("status")
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .output()
         .expect("failed to run soldr status");
 
@@ -49,9 +57,15 @@ fn status_reports_cache_control_defaults() {
 #[test]
 fn status_json_reports_stable_machine_fields() {
     let cache_root = unique_temp_dir("status-json");
+    // See sibling `status_reports_cache_control_defaults`: redirect home
+    // discovery so the developer's host-side pin (issue #426) can't leak
+    // into the test as a "binary already fetched" signal.
+    let home_root = unique_temp_dir("status-json-home");
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .output()
         .expect("failed to run soldr status --json");
 

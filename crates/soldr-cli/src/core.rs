@@ -605,6 +605,13 @@ pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
 pub struct SoldrPaths {
     pub root: PathBuf,
     pub bin: PathBuf,
+    /// Directory holding the pinned-zccache install (issue #426). Lives at
+    /// the user's home-anchored `~/.soldr/bin/` independent of
+    /// `SOLDR_CACHE_DIR`, so a pin registered against the default cache dir
+    /// remains visible to builds that re-root with `SOLDR_CACHE_DIR=/x`.
+    /// For synthetic-root construction (`SoldrPaths::with_root`, used by
+    /// tests) this collapses into `bin` so test isolation is preserved.
+    pub pinned_bin: PathBuf,
     pub cache: PathBuf,
     pub config_file: PathBuf,
 }
@@ -615,14 +622,53 @@ impl SoldrPaths {
     }
 
     fn from_root_env_value(value: Option<&OsStr>) -> Result<Self, SoldrError> {
-        let root = soldr_root_from_env_var(value)
-            .unwrap_or_else(|| home_dir().map(|home| home.join(".soldr")))?;
-        Ok(Self::with_root(root))
+        let env_root = soldr_root_from_env_var(value).transpose()?;
+        Self::from_env_root_and_home(env_root, home_dir().map(|h| h.join(".soldr")))
+    }
+
+    /// Inner constructor split out so tests can inject explicit `env_root`
+    /// + `home_root` values without mutating the process env. Other tests
+    /// in this binary read HOME / USERPROFILE too, so global env mutation
+    /// in a unit test races with parallel cases.
+    fn from_env_root_and_home(
+        env_root: Option<PathBuf>,
+        home_root: Result<PathBuf, SoldrError>,
+    ) -> Result<Self, SoldrError> {
+        let root = match (&env_root, &home_root) {
+            (Some(env), _) => env.clone(),
+            (None, Ok(home)) => home.clone(),
+            (None, Err(_)) => return Err(SoldrError::NoHomeDir),
+        };
+        // The pin must NOT move when SOLDR_CACHE_DIR overrides the rest of
+        // the install root (issue #426 — pinned binaries are a machine-level
+        // user preference, not per-cache-dir state). When no $HOME / no
+        // USERPROFILE is available — e.g. a headless CI sandbox that relies
+        // entirely on SOLDR_CACHE_DIR — fall back to the env-rooted bin/ so
+        // the pin lives somewhere accessible; that env does lose the
+        // cross-SOLDR_CACHE_DIR survival property, but it matches today's
+        // behavior so nothing regresses.
+        let pinned_bin = match &home_root {
+            Ok(home) => home.join("bin"),
+            Err(_) => root.join("bin"),
+        };
+        Ok(Self {
+            bin: root.join("bin"),
+            pinned_bin,
+            cache: root.join("cache"),
+            config_file: root.join("config.toml"),
+            root,
+        })
     }
 
     pub fn with_root(root: PathBuf) -> Self {
+        let bin = root.join("bin");
         Self {
-            bin: root.join("bin"),
+            bin: bin.clone(),
+            // Tests use synthetic roots and rely on the pin landing inside
+            // the test workspace. Collapse pinned_bin into bin so isolation
+            // works; production goes through `from_root_env_value` which
+            // anchors pinned_bin at the user's home.
+            pinned_bin: bin,
             cache: root.join("cache"),
             config_file: root.join("config.toml"),
             root,
@@ -631,6 +677,7 @@ impl SoldrPaths {
 
     pub fn ensure_dirs(&self) -> Result<(), SoldrError> {
         std::fs::create_dir_all(&self.bin)?;
+        std::fs::create_dir_all(&self.pinned_bin)?;
         std::fs::create_dir_all(&self.cache)?;
         Ok(())
     }
@@ -1020,6 +1067,76 @@ mod tests {
         assert!(paths.root.ends_with(".soldr"));
         assert!(paths.bin.ends_with("bin"));
         assert!(paths.cache.ends_with("cache"));
+    }
+
+    #[test]
+    fn pinned_bin_survives_soldr_cache_dir_override() {
+        // Issue #426: SOLDR_CACHE_DIR overrides the install root (and bin/
+        // and cache/ along with it), but the pin must keep living at the
+        // home-anchored ~/.soldr/bin/ so a pin registered against the
+        // default cache dir stays visible to builds that re-root the cache.
+        //
+        // We exercise `from_env_root_and_home` directly so the test
+        // doesn't have to mutate HOME / USERPROFILE — that would race with
+        // every other case in this binary that reads them.
+        let home_root = PathBuf::from("/synthetic-home/.soldr");
+        let env_root = PathBuf::from("/synthetic-cache-dir");
+        let paths =
+            SoldrPaths::from_env_root_and_home(Some(env_root.clone()), Ok(home_root.clone()))
+                .unwrap();
+
+        assert_eq!(paths.root, env_root, "root follows SOLDR_CACHE_DIR");
+        assert_eq!(
+            paths.bin,
+            env_root.join("bin"),
+            "bin/ follows SOLDR_CACHE_DIR (managed binaries stay per-cache-dir)"
+        );
+        assert_eq!(
+            paths.pinned_bin,
+            home_root.join("bin"),
+            "pinned_bin stays at $HOME/.soldr/bin/ regardless of SOLDR_CACHE_DIR"
+        );
+        assert_ne!(
+            paths.bin, paths.pinned_bin,
+            "the whole point of the fix: bin and pinned_bin diverge under env override"
+        );
+    }
+
+    #[test]
+    fn pinned_bin_equals_bin_when_no_cache_dir_override() {
+        // No SOLDR_CACHE_DIR → root falls back to home → bin == pinned_bin.
+        // No behavior change in the dominant case.
+        let home_root = PathBuf::from("/synthetic-home/.soldr");
+        let paths = SoldrPaths::from_env_root_and_home(None, Ok(home_root.clone())).unwrap();
+        assert_eq!(paths.root, home_root);
+        assert_eq!(paths.bin, home_root.join("bin"));
+        assert_eq!(paths.pinned_bin, paths.bin);
+    }
+
+    #[test]
+    fn pinned_bin_falls_back_to_env_root_when_no_home_available() {
+        // Headless sandbox case: SOLDR_CACHE_DIR set but no $HOME /
+        // USERPROFILE. pinned_bin must NOT panic — it falls back to the
+        // env-rooted bin/ (loses cross-SOLDR_CACHE_DIR survival, but
+        // matches today's behavior so nothing regresses).
+        let env_root = PathBuf::from("/sandbox/.soldr");
+        let paths =
+            SoldrPaths::from_env_root_and_home(Some(env_root.clone()), Err(SoldrError::NoHomeDir))
+                .unwrap();
+        assert_eq!(paths.pinned_bin, env_root.join("bin"));
+        assert_eq!(paths.pinned_bin, paths.bin);
+    }
+
+    #[test]
+    fn pinned_bin_collapses_into_bin_with_synthetic_root() {
+        // `SoldrPaths::with_root` is the test-construction path used by
+        // integration tests. The pin dir must live inside the synthetic
+        // root so test workspaces can register pins without escaping to
+        // the host's home dir.
+        let root = PathBuf::from("/tmp/synthetic-soldr-root");
+        let paths = SoldrPaths::with_root(root.clone());
+        assert_eq!(paths.bin, root.join("bin"));
+        assert_eq!(paths.pinned_bin, paths.bin);
     }
 
     #[test]
