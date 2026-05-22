@@ -345,11 +345,16 @@ jobs:
 
           suffix=""
           if [ "$ext" = "zip" ]; then suffix=".exe"; fi
+          # zccache release archives nest binaries under
+          # `zccache-v<version>-<target>/`. Older releases were flat, and
+          # nothing in the contract guarantees future archives won't
+          # change shape again — so locate each binary by name anywhere
+          # inside the staging tree instead of hard-coding a prefix.
           for b in zccache zccache-daemon zccache-fp; do
-            src="dist/zccache-stage/${b}${suffix}"
-            if [ ! -f "$src" ]; then
+            src=$(find dist/zccache-stage -type f -name "${b}${suffix}" -print -quit)
+            if [ -z "$src" ] || [ ! -f "$src" ]; then
               echo "expected ${b}${suffix} in extracted zccache archive; got:" >&2
-              ls -la dist/zccache-stage/ >&2
+              find dist/zccache-stage -maxdepth 3 -print >&2
               exit 1
             fi
             cp "$src" "dist/package/${b}${suffix}"
