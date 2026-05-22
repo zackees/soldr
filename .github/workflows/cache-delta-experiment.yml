@@ -43,11 +43,6 @@ jobs:
       cook-bytes: ${{ steps.measure.outputs.cook-bytes }}
       delta-bytes: ${{ steps.delta-cache.outputs.delta-bytes }}
       total-bytes: ${{ steps.measure.outputs.total-bytes }}
-    env:
-      # Isolate the experiment's soldr cache from setup-soldr's own
-      # runtime cache. Same pattern the dogfood smoke uses for its
-      # build-under-test cache (setup-soldr-action.yml:113-127).
-      SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-soldr
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -68,6 +63,14 @@ jobs:
 
       - name: Show soldr environment
         shell: bash
+        # SOLDR_CACHE_DIR is set at step level because the `runner`
+        # context isn't available in job-level `env:` — GitHub
+        # rejects the workflow at parse time. Each step that depends
+        # on the path repeats the same `${{ runner.temp }}/...`
+        # expression. The trade for the duplication is that the
+        # workflow actually parses.
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-soldr
         run: |
           soldr version --json
           echo "SOLDR_CACHE_DIR=${SOLDR_CACHE_DIR}"
@@ -80,7 +83,7 @@ jobs:
         # delta. Cleanup happens in the dedicated step below.
         uses: ./.github/actions/cache-delta-experiment
         with:
-          cache-dir: ${{ env.SOLDR_CACHE_DIR }}
+          cache-dir: ${{ runner.temp }}/cache-delta-exp-soldr
           shared-key: x86_64-unknown-linux-gnu
           # Cook + build commands. Both go through soldr so the
           # zccache RUSTC_WRAPPER picks up the layered cache dir
@@ -111,7 +114,6 @@ jobs:
         run: |
           set -euo pipefail
           cook_archive="${RUNNER_TEMP}/soldr-cook-layer.tar.zst"
-          delta_archive="${RUNNER_TEMP}/soldr-delta-layer.tar.zst"
 
           cook_hit="${{ steps.delta-cache.outputs.cook-cache-hit }}"
           delta_bytes="${{ steps.delta-cache.outputs.delta-bytes }}"
@@ -135,10 +137,6 @@ jobs:
     outputs:
       cache-hit: ${{ steps.restore.outputs.cache-hit }}
       upload-bytes: ${{ steps.measure.outputs.upload-bytes }}
-    env:
-      # Different path than the delta job so the two jobs' caches
-      # don't share state and skew the comparison.
-      SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -153,6 +151,10 @@ jobs:
       - id: keys
         name: Compute baseline key
         shell: bash
+        # SOLDR_CACHE_DIR at step level (see delta job above for why
+        # the `runner.temp` context can't live in job-level env).
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
         run: |
           set -euo pipefail
           OS="${{ runner.os }}"
@@ -190,6 +192,11 @@ jobs:
 
       - name: Run cook + build (baseline)
         shell: bash
+        # Same step-level SOLDR_CACHE_DIR pattern as the delta job —
+        # otherwise soldr falls back to $HOME/.soldr and the cache
+        # restored via actions/cache above lives in the wrong place.
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
         run: |
           set -euo pipefail
           soldr cook --tests
