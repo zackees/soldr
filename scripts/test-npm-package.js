@@ -138,4 +138,24 @@ for (const [key, target] of Object.entries(install.TARGETS || {})) {
   );
 }
 
+// BUNDLED_BINARIES must include soldr, the zccache trio, and crgx.
+// Locks the per-archive layout contract so a future bundling
+// refactor can't quietly drop a binary.
+assert.ok(
+  Array.isArray(install.BUNDLED_BINARIES),
+  "install.BUNDLED_BINARIES must be exported as an array",
+);
+for (const required of [
+  "soldr",
+  "zccache",
+  "zccache-daemon",
+  "zccache-fp",
+  "crgx",
+]) {
+  assert.ok(
+    install.BUNDLED_BINARIES.includes(required),
+    `BUNDLED_BINARIES must include "${required}" (got ${JSON.stringify(install.BUNDLED_BINARIES)})`,
+  );
+}
+
 console.log("npm package and PyPI version checks passed");

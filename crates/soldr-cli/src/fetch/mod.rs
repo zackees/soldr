@@ -81,6 +81,22 @@ const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
 /// `resolve_local_zccache` for the resolution contract.
 pub const ZCCACHE_LOCAL_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_LOCAL_DIR";
 
+/// Pinned crgx version that soldr's release pipeline source-builds and
+/// bundles into the combined `.tar.zst` archive (see PR follow-up to
+/// #434 — combined archive now ships zccache + crgx). Also surfaced
+/// via `lookup_by_crate("crgx").pinned_version` so the
+/// `fetch_repo_binary` fallback resolves the same version when the
+/// bundled binary is not available.
+pub const MANAGED_CRGX_VERSION: &str = "0.1.0";
+
+/// Override the runtime crgx resolution: when set, soldr uses the
+/// `crgx` (or `crgx.exe`) binary in this directory ahead of any
+/// GitHub-Releases / crates.io fetch. The npm shim (`bin/soldr.js`)
+/// and the setup-soldr action point this at the directory containing
+/// the bundled binary so the first `soldr crgx ...` call needs no
+/// network round trip. Mirrors `SOLDR_ZCCACHE_LOCAL_DIR`.
+pub const CRGX_LOCAL_DIR_ENV_VAR: &str = "SOLDR_CRGX_LOCAL_DIR";
+
 /// Retry budget for the GitHub-Releases + crates.io fetch chain inside
 /// `fetch_repo_binary_with_paths`. Transient errors
 /// (`SoldrError::Network`, `SoldrError::ToolNotFound`) retry up to
@@ -113,6 +129,19 @@ pub async fn fetch_tool_with_paths(
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
 
+    // Bundled-crgx escape hatch: when the npm shim or setup-soldr
+    // action ships a bundled crgx (see release-auto.yml's "Build crgx
+    // from pinned source" step) they export SOLDR_CRGX_LOCAL_DIR
+    // pointing at the directory holding the binary. Honor it ahead of
+    // every other resolution path so first-use carries no network
+    // round trip. Mirrors the SOLDR_ZCCACHE_LOCAL_DIR contract used by
+    // the bundled zccache trio (#434).
+    if crate_name == "crgx" {
+        if let Some(local_dir) = non_empty_env_path(CRGX_LOCAL_DIR_ENV_VAR) {
+            return resolve_local_crgx(&local_dir);
+        }
+    }
+
     if let Some(spec) = lookup_by_crate(crate_name) {
         let repo = match spec.repo {
             Some((owner, name)) => RepoInfo {
@@ -121,11 +150,21 @@ pub async fn fetch_tool_with_paths(
             },
             None => resolve_repo(crate_name).await?,
         };
+        // Honor `spec.pinned_version` when the caller didn't pass an
+        // explicit `@version` — mirrors the cargo-front-door's
+        // existing pin substitution so `soldr crgx` and
+        // `soldr cargo chef` resolve the same way from both entry
+        // points. Lets the `External` dispatch in main.rs go through
+        // the registry pin without each call site re-implementing it.
+        let effective_version = match (version, spec.pinned_version) {
+            (VersionSpec::Latest, Some(pin)) => VersionSpec::Exact(pin.to_string()),
+            _ => version.clone(),
+        };
         return fetch_repo_binary_with_paths(
             spec.crate_name,
             &[spec.binary_name],
             &repo,
-            version,
+            &effective_version,
             spec.tag_prefix,
             paths,
         )
@@ -134,6 +173,36 @@ pub async fn fetch_tool_with_paths(
 
     let repo = resolve_repo(crate_name).await?;
     fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, None, paths).await
+}
+
+/// Resolve crgx to the binary in `local_dir` set via
+/// `SOLDR_CRGX_LOCAL_DIR`. Returns the path verbatim — no copy, no
+/// content hashing — because crgx is a single binary with no
+/// daemon/sidecar siblings (contrast with `resolve_local_zccache`
+/// which normalizes a trio plus debug-info sidecars).
+fn resolve_local_crgx(local_dir: &Path) -> Result<FetchResult, SoldrError> {
+    if !local_dir.is_dir() {
+        return Err(SoldrError::Other(format!(
+            "{}={} is not a directory",
+            CRGX_LOCAL_DIR_ENV_VAR,
+            local_dir.display(),
+        )));
+    }
+    let binary_name = if cfg!(windows) { "crgx.exe" } else { "crgx" };
+    let binary = local_dir.join(binary_name);
+    if !binary.is_file() {
+        return Err(SoldrError::Other(format!(
+            "{}={} but {} is missing",
+            CRGX_LOCAL_DIR_ENV_VAR,
+            local_dir.display(),
+            binary.display(),
+        )));
+    }
+    Ok(FetchResult {
+        binary_path: binary,
+        version: format!("local-{MANAGED_CRGX_VERSION}"),
+        cached: true,
+    })
 }
 
 pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
@@ -2205,5 +2274,70 @@ mod tests {
         let dirs = vec![bin_dir.clone()];
         let result = resolve_system_zccache_with_path_dirs(&linux_target(), &dirs).unwrap();
         assert!(result.binary_path.ends_with("zccache"));
+    }
+
+    // ── Bundled crgx (SOLDR_CRGX_LOCAL_DIR) ─────────────────────────
+    // Locks the contract used by the npm shim and setup-soldr action:
+    // when the env var points at a directory containing `crgx`
+    // (`crgx.exe` on Windows), `resolve_local_crgx` returns that path
+    // verbatim with `cached: true` and a `local-<version>` label.
+
+    fn crgx_binary_name() -> &'static str {
+        if cfg!(windows) {
+            "crgx.exe"
+        } else {
+            "crgx"
+        }
+    }
+
+    #[test]
+    fn resolve_local_crgx_returns_binary_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join(crgx_binary_name());
+        std::fs::write(&stub, b"stub").unwrap();
+
+        let result = resolve_local_crgx(tmp.path()).expect("should resolve");
+        assert_eq!(result.binary_path, stub);
+        assert!(result.cached, "bundled path must report cached=true");
+        assert!(
+            result.version.starts_with("local-"),
+            "version should be `local-<ver>`, got: {}",
+            result.version
+        );
+        assert!(
+            result.version.contains(MANAGED_CRGX_VERSION),
+            "version should embed MANAGED_CRGX_VERSION, got: {}",
+            result.version
+        );
+    }
+
+    #[test]
+    fn resolve_local_crgx_errors_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nonexistent = tmp.path().join("not-a-dir");
+
+        let err = resolve_local_crgx(&nonexistent).expect_err("missing dir should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not a directory"),
+            "error must explain the dir is missing, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_local_crgx_errors_when_binary_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Empty directory — no crgx binary inside.
+
+        let err = resolve_local_crgx(tmp.path()).expect_err("missing binary should error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("is missing"),
+            "error must explain the binary is missing, got: {msg}"
+        );
+        assert!(
+            msg.contains(crgx_binary_name()),
+            "error should name the expected binary, got: {msg}"
+        );
     }
 }
