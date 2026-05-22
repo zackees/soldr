@@ -1,0 +1,105 @@
+name: Cache delta experiment
+
+# Exercises `.github/actions/cache-delta-experiment` (and its cleanup
+# sibling) against soldr's own dogfood build. Goal: validate that the
+# two-layer cook/delta machinery actually works end-to-end on a real
+# GH runner before deciding whether to graduate it to setup-soldr.
+#
+# What this workflow proves on a single run:
+#   * The composite action restores both layers without error.
+#   * `soldr cook` runs to completion with the layered cache in place.
+#   * `soldr cargo build` runs after cook and the mark file separates
+#     cook writes from build writes (delta-bytes > 0 on cold runs).
+#   * Cleanup saves both layers under their respective keys.
+#
+# What it does NOT prove (deferred to the comparison-reporter PR):
+#   * Whether the delta save is materially smaller than the baseline
+#     single-cache save. Comparison needs a side-by-side run against
+#     the current single-cache dogfood — that's PR 3.
+#
+# Trigger surface kept small: workflow_dispatch for manual measurement
+# runs, plus path-filtered push so iterating on the action itself
+# round-trips through CI without paying for full PR-event coverage.
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/actions/cache-delta-experiment/**"
+      - ".github/actions/cache-delta-experiment-cleanup/**"
+      - ".github/workflows/cache-delta-experiment.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Linux x64 (delta-cache)
+    runs-on: ubuntu-24.04
+    env:
+      # Isolate the experiment's soldr cache from setup-soldr's own
+      # runtime cache. Same pattern the dogfood smoke uses for its
+      # build-under-test cache (setup-soldr-action.yml:113-127).
+      SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-soldr
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - id: setup-soldr
+        # zackees/setup-soldr@v0 pinned to a full SHA per the repo
+        # ruleset. Disable setup-soldr's own caching — the
+        # cache-delta-experiment action owns caching for this
+        # workflow. Build-cache + target-cache off for the same
+        # reason; we want exactly one cache mechanism active so the
+        # measurements are clean.
+        uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
+        with:
+          cache: false
+          linker: platform-default
+          cache-dir: ${{ runner.temp }}/cache-delta-exp-setup
+          build-cache: false
+          target-cache: false
+
+      - name: Show soldr environment
+        shell: bash
+        run: |
+          soldr version --json
+          echo "SOLDR_CACHE_DIR=${SOLDR_CACHE_DIR}"
+          echo "soldr path: $(which soldr)"
+
+      - id: delta-cache
+        name: Run cook + build with layered cache
+        # The composite action restores both layers, runs cook,
+        # touches the mark, runs build, and packages the post-build
+        # delta. Cleanup happens in the dedicated step below.
+        uses: ./.github/actions/cache-delta-experiment
+        with:
+          cache-dir: ${{ env.SOLDR_CACHE_DIR }}
+          shared-key: x86_64-unknown-linux-gnu
+          # Cook + build commands. Both go through soldr so the
+          # zccache RUSTC_WRAPPER picks up the layered cache dir
+          # naturally. --tests on cook is intentional — we want
+          # cook to prepare the dev-deps tree so the build step
+          # below benefits from the same cache.
+          cook-cmd: soldr cook --tests
+          build-cmd: soldr cargo build --package soldr-cli --locked
+
+      - name: Report cache layer hits
+        if: always()
+        shell: bash
+        run: |
+          echo "## Cache delta layer results" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| metric | value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| cook-cache-hit | \`${{ steps.delta-cache.outputs.cook-cache-hit }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| delta-cache-hit | \`${{ steps.delta-cache.outputs.delta-cache-hit }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| cook-key | \`${{ steps.delta-cache.outputs.cook-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| delta-key | \`${{ steps.delta-cache.outputs.delta-key }}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| delta-bytes | \`${{ steps.delta-cache.outputs.delta-bytes }}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save layers (cleanup)
+        # Runs regardless of build outcome so a failed build still
+        # saves whatever the cook step produced — the next run
+        # benefits even if this one tripped on a regression.
+        if: always()
+        uses: ./.github/actions/cache-delta-experiment-cleanup
