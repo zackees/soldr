@@ -106,7 +106,11 @@ jobs:
               printf '\n// cache benchmark mutation: soldr-cli\n' >> crates/soldr-cli/src/main.rs
               ;;
             soldr-core)
-              printf '\n// cache benchmark mutation: soldr-core\n' >> crates/soldr-core/src/lib.rs
+              # Post-monocrate (PR #415): soldr-core became
+              # `crates/soldr-cli/src/core.rs`. The mutation still
+              # touches the same logical module so cache-hit
+              # expectations are preserved.
+              printf '\n// cache benchmark mutation: soldr-core\n' >> crates/soldr-cli/src/core.rs
               ;;
             *)
               echo "unsupported benchmark mutation: ${{ inputs.mutation }}" >&2
