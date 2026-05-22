@@ -276,6 +276,11 @@ fn classify_zccache_source_tags_each_branch_correctly() {
 fn install_then_doctor_subprocess_reports_pinned_active_source() {
     let tmp = unique_temp_dir("cli-install-doctor");
     let cache_root = tmp.join("soldr-root");
+    // Issue #426: the pin lives under $HOME/.soldr/bin/ now, so every
+    // subprocess that installs MUST get its own HOME — otherwise parallel
+    // test cases race on a shared pin dir.
+    let home_root = unique_temp_dir("cli-install-doctor-home");
+    fs::create_dir_all(home_root.join(".soldr").join("bin")).expect("seed home/.soldr/bin");
     let pin_src = seed_pin_source(&tmp);
 
     // 1. Pin the staged binaries via the CLI.
@@ -283,6 +288,8 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
         .args(["install-zccache", "--json"])
         .arg(&pin_src)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .output()
@@ -298,6 +305,8 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
     let doctor = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["doctor", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .output()
@@ -326,6 +335,8 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
     let doctor_human = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["doctor"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .output()
@@ -342,12 +353,18 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
 fn install_then_cache_subprocess_reports_pinned_source() {
     let tmp = unique_temp_dir("cli-install-cache");
     let cache_root = tmp.join("soldr-root");
+    // Issue #426: see the matching comment in
+    // `install_then_doctor_subprocess_reports_pinned_active_source`.
+    let home_root = unique_temp_dir("cli-install-cache-home");
+    fs::create_dir_all(home_root.join(".soldr").join("bin")).expect("seed home/.soldr/bin");
     let pin_src = seed_pin_source(&tmp);
 
     let install = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["install-zccache"])
         .arg(&pin_src)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .output()
@@ -361,6 +378,8 @@ fn install_then_cache_subprocess_reports_pinned_source() {
     let cache = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["cache", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("HOME", &home_root)
+        .env("USERPROFILE", &home_root)
         .env_remove("SOLDR_ZCCACHE_LOCAL_DIR")
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
         .output()
