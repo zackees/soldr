@@ -246,3 +246,72 @@ fn should_trampoline_matches_current_version_as_no_op() {
     )));
     assert!(should_trampoline("0.0.0-not-this-version"));
 }
+
+#[test]
+fn soldr_builtin_verbs_match_clap_subcommands_and_aliases() {
+    // Issue #412: the SOLDR_BUILTIN_VERBS const drives the fuzzy
+    // suggestion engine. If it drifts from the actual `Commands`
+    // enum (someone adds a verb but forgets to update the list, or
+    // renames one without updating the alias entry), users get
+    // either bogus "did you mean?" hints or NO hint when one would
+    // have helped. This test walks clap's discovered subcommands +
+    // their `#[command(alias = ...)]` annotations and asserts every
+    // discovered name is in the const, and vice versa.
+    use clap::CommandFactory;
+
+    let cmd = Cli::command();
+    let mut discovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for sub in cmd.get_subcommands() {
+        discovered.insert(sub.get_name().to_string());
+        for alias in sub.get_all_aliases() {
+            discovered.insert(alias.to_string());
+        }
+    }
+    let declared: std::collections::BTreeSet<String> =
+        SOLDR_BUILTIN_VERBS.iter().map(|s| s.to_string()).collect();
+
+    let missing_from_const: Vec<_> = discovered.difference(&declared).collect();
+    let extra_in_const: Vec<_> = declared.difference(&discovered).collect();
+    assert!(
+        missing_from_const.is_empty() && extra_in_const.is_empty(),
+        "SOLDR_BUILTIN_VERBS is out of sync with the Commands enum.\n  \
+         missing from const (clap knows, fuzzy-match doesn't): {missing_from_const:?}\n  \
+         extra in const   (fuzzy-match knows, clap doesn't): {extra_in_const:?}\n\
+         Update SOLDR_BUILTIN_VERBS in `main.rs` to match.",
+    );
+}
+
+#[test]
+fn fuzzy_match_with_soldr_verbs_recognizes_issue_412_examples() {
+    // Black-box sanity check that the in-tree const list + the
+    // shared fuzzy engine actually produce the suggestions the issue
+    // documents as acceptance criteria. Cheap to keep alongside the
+    // pure-logic tests in fuzzy_match.rs because it locks in the
+    // const → suggestion contract end-to-end.
+    use crate::fuzzy_match::suggest_close_match;
+
+    let typo = "update-zccacheee";
+    let suggestion = suggest_close_match(typo, SOLDR_BUILTIN_VERBS);
+    assert!(
+        matches!(suggestion, Some("update-zccache" | "install-zccache")),
+        "expected install-zccache (or alias) for {typo:?}; got {suggestion:?}",
+    );
+
+    let typo = "installzccache";
+    assert_eq!(
+        suggest_close_match(typo, SOLDR_BUILTIN_VERBS),
+        Some("install-zccache"),
+    );
+
+    // Acceptance criterion: completely-different verb produces no
+    // hint (no false suggestion).
+    assert_eq!(
+        suggest_close_match("completely-made-up-name", SOLDR_BUILTIN_VERBS),
+        None,
+    );
+
+    // Acceptance criterion: a verb that IS a known built-in must
+    // NOT produce a hint — the regular dispatch handles it. Tested
+    // by suggest_close_match returning None on exact match.
+    assert_eq!(suggest_close_match("doctor", SOLDR_BUILTIN_VERBS), None);
+}

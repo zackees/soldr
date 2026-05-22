@@ -1458,6 +1458,17 @@ async fn ensure_known_subcommand_tool(
         return Ok(Vec::new());
     };
     let Some(spec) = crate::fetch::lookup_by_cargo_subcommand(sub) else {
+        // Issue #412: when the typed subcommand isn't in
+        // `known_tools` but LOOKS like a typo of one that IS, drop a
+        // "did you mean?" hint on stderr. We still return Ok(empty)
+        // so the underlying cargo invocation continues as today —
+        // the suggestion is advisory and cargo's own external-command
+        // dispatch may still find the tool on PATH.
+        let known = crate::fetch::known_cargo_subcommands();
+        if let Some(suggestion) = crate::fuzzy_match::suggest_close_match(sub, &known) {
+            eprintln!("soldr: '{sub}' is not a cargo subcommand soldr ships a prebuilt for.");
+            eprintln!("soldr: did you mean: cargo {suggestion}?");
+        }
         return Ok(Vec::new());
     };
 

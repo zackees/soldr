@@ -200,6 +200,19 @@ pub fn lookup_by_cargo_subcommand(sub: &str) -> Option<&'static ToolSpec> {
     KNOWN_TOOLS.iter().find(|t| t.cargo_subcommand == Some(sub))
 }
 
+/// Every cargo subcommand soldr knows how to fetch a prebuilt binary
+/// for, as a flat list of `&'static str` for use in the fuzzy-match
+/// suggestion path (issue #412). Order matches `KNOWN_TOOLS`
+/// declaration — which is also the tie-break order
+/// `fuzzy_match::suggest_close_match` uses, so the deterministic
+/// pick on equal-distance candidates stays predictable.
+pub fn known_cargo_subcommands() -> Vec<&'static str> {
+    KNOWN_TOOLS
+        .iter()
+        .filter_map(|t| t.cargo_subcommand)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
