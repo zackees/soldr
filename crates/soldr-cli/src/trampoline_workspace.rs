@@ -15,6 +15,7 @@
 //! recorded source's stat doesn't match, we fall through to real cargo —
 //! partial skip would leave cargo's incremental state inconsistent.
 
+use crate::core::SoldrError;
 use crate::trampoline::{
     compute_fingerprint, effective_target_triple, find_nearest_manifest, log_event,
     log_fall_through, mtime_nanos, parse_cargo_args, resolve_target_dir, size_as_i64,
@@ -22,7 +23,6 @@ use crate::trampoline::{
     NO_TRAMPOLINE_ENV_VAR,
 };
 use serde::{Deserialize, Serialize};
-use crate::core::SoldrError;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
