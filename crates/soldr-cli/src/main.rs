@@ -10,6 +10,7 @@ mod cook;
 mod core;
 mod doctor;
 mod fetch;
+mod fuzzy_match;
 mod gc;
 mod linker;
 mod optimize;
@@ -126,6 +127,48 @@ pub(crate) enum ZccacheSourceArg {
     /// Use the `zccache` binary already installed on PATH.
     System,
 }
+
+/// Flat list of every built-in soldr verb that clap recognizes,
+/// PLUS aliases (e.g. `update-zccache` for `install-zccache`,
+/// `purge-targets` for `gc`). Used by the fuzzy-match suggestion
+/// path in `Commands::External` (issue #412) to detect typos /
+/// pre-rename verbs that fell through to the external-tool fetch.
+///
+/// Must stay in sync with the `Commands` enum + `#[command(alias = ...)]`
+/// attributes below. A unit test in `main_tests.rs` walks the const
+/// against clap's discovered subcommands and fails when they drift,
+/// so adding a new verb here without updating the enum (or vice
+/// versa) trips the build.
+const SOLDR_BUILTIN_VERBS: &[&str] = &[
+    "cargo",
+    "cook",
+    "rustc",
+    "rustfmt",
+    "clippy-driver",
+    "rustdoc",
+    "rust-gdb",
+    "rust-lldb",
+    "rust-analyzer",
+    "status",
+    "clean",
+    "purge",
+    "config",
+    "cache",
+    "version",
+    "gc",
+    "purge-targets", // alias of `gc`
+    "rustup",
+    "toolchain",
+    "bootstrap",
+    "doctor",
+    "optimize",
+    "session-start",
+    "session-end",
+    "install-zccache",
+    "update-zccache", // alias of `install-zccache`
+    "save",
+    "load",
+];
 
 #[derive(Subcommand)]
 enum Commands {
@@ -928,6 +971,18 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
             let (crate_name, version) = parse_tool_spec(&args[0]);
             let tool_args = &args[1..];
+
+            // Issue #412: when the user typed a verb that LOOKS like
+            // a typo or a renamed built-in (e.g. `update-zccacheee`,
+            // `installzccache`), emit a "did you mean?" hint before
+            // we fire the network fetch. The fetch still runs — the
+            // suggestion is advisory.
+            if let Some(suggestion) =
+                fuzzy_match::suggest_close_match(&crate_name, &SOLDR_BUILTIN_VERBS)
+            {
+                eprintln!("soldr: '{crate_name}' is not a known built-in soldr verb.");
+                eprintln!("soldr: did you mean: {suggestion}?");
+            }
 
             eprintln!("soldr: fetching {crate_name}...");
             let result = crate::fetch::fetch_tool(&crate_name, &version).await?;
