@@ -12,48 +12,30 @@ const path = require("path");
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
+// Every release ships a single .tar.zst per target that bundles soldr
+// alongside its matching-target zccache trio (zccache, zccache-daemon,
+// zccache-fp). One fetch installs both, and `bin/soldr.js` wires
+// SOLDR_ZCCACHE_LOCAL_DIR to the install dir so soldr finds the
+// sibling binaries without going through the managed-download path.
+const ARCHIVE_EXT = "tar.zst";
+
 const TARGETS = {
-  "linux-x64-gnu": {
-    triple: "x86_64-unknown-linux-gnu",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "linux-x64-musl": {
-    triple: "x86_64-unknown-linux-musl",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "linux-arm64-gnu": {
-    triple: "aarch64-unknown-linux-gnu",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "linux-arm64-musl": {
-    triple: "aarch64-unknown-linux-musl",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "darwin-x64": {
-    triple: "x86_64-apple-darwin",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "darwin-arm64": {
-    triple: "aarch64-apple-darwin",
-    archive: "tar.gz",
-    binary: "soldr",
-  },
-  "win32-x64": {
-    triple: "x86_64-pc-windows-msvc",
-    archive: "zip",
-    binary: "soldr.exe",
-  },
-  "win32-arm64": {
-    triple: "aarch64-pc-windows-msvc",
-    archive: "zip",
-    binary: "soldr.exe",
-  },
+  "linux-x64-gnu": { triple: "x86_64-unknown-linux-gnu", binary: "soldr" },
+  "linux-x64-musl": { triple: "x86_64-unknown-linux-musl", binary: "soldr" },
+  "linux-arm64-gnu": { triple: "aarch64-unknown-linux-gnu", binary: "soldr" },
+  "linux-arm64-musl": { triple: "aarch64-unknown-linux-musl", binary: "soldr" },
+  "darwin-x64": { triple: "x86_64-apple-darwin", binary: "soldr" },
+  "darwin-arm64": { triple: "aarch64-apple-darwin", binary: "soldr" },
+  "win32-x64": { triple: "x86_64-pc-windows-msvc", binary: "soldr.exe" },
+  "win32-arm64": { triple: "aarch64-pc-windows-msvc", binary: "soldr.exe" },
 };
+
+// Files we expect to find at the root of every extracted release
+// archive. Names line up with what `release-auto.yml`'s
+// `Fetch matched zccache release` step + `Stage soldr binary` step
+// drop into `dist/package/` before the tar.zst is built. `.exe` suffix
+// is appended at install time based on `target.binary`.
+const BUNDLED_BINARIES = ["soldr", "zccache", "zccache-daemon", "zccache-fp"];
 
 // Detect whether the running Linux uses musl or glibc. Three layered probes:
 //   1. process.report.header.glibcVersionRuntime is the documented Node
@@ -181,31 +163,32 @@ function run(command, args, options = {}) {
   }
 }
 
-function extractArchive(archivePath, archiveType, destination) {
-  if (archiveType === "tar.gz") {
-    run("tar", ["-xzf", archivePath, "-C", destination]);
-    return;
+function extractArchive(archivePath, destination) {
+  // GNU tar 1.31+ and bsdtar (default on macOS / Windows) both support
+  // `--zstd` for zstandard. If a host's tar predates that flag, fall
+  // back to `--use-compress-program=unzstd` which only needs the
+  // `unzstd` CLI on PATH — installed alongside `zstd` on every modern
+  // package manager. As a last resort, `zstd` decompresses to a temp
+  // .tar and we extract that explicitly.
+  const attempts = [
+    ["tar", ["--zstd", "-xf", archivePath, "-C", destination]],
+    ["tar", ["--use-compress-program=unzstd", "-xf", archivePath, "-C", destination]],
+  ];
+  for (const [cmd, args] of attempts) {
+    const result = childProcess.spawnSync(cmd, args, { stdio: "inherit" });
+    if (!result.error && result.status === 0) {
+      return;
+    }
+    if (result.error && result.error.code === "ENOENT") {
+      throw result.error;
+    }
+    // status != 0 → fall through to the next strategy.
   }
-
-  if (archiveType === "zip" && process.platform === "win32") {
-    run("powershell", [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      "Expand-Archive -LiteralPath $env:SOLDR_NPM_ARCHIVE -DestinationPath $env:SOLDR_NPM_EXTRACT -Force",
-    ], {
-      env: {
-        ...process.env,
-        SOLDR_NPM_ARCHIVE: archivePath,
-        SOLDR_NPM_EXTRACT: destination,
-      },
-    });
-    return;
-  }
-
-  run("tar", ["-xf", archivePath, "-C", destination]);
+  // Last resort: decompress to a sibling .tar, then untar.
+  const intermediate = `${archivePath}.tar`;
+  run("zstd", ["-d", "-o", intermediate, archivePath]);
+  run("tar", ["-xf", intermediate, "-C", destination]);
+  fs.rmSync(intermediate, { force: true });
 }
 
 function findExtractedBinary(root, binaryName) {
@@ -233,7 +216,7 @@ async function install() {
 
   const version = PACKAGE_JSON.version;
   const target = platformTarget();
-  const filename = `soldr-v${version}-${target.triple}.${target.archive}`;
+  const filename = `soldr-v${version}-${target.triple}.${ARCHIVE_EXT}`;
   const baseUrl = releaseBaseUrl(version);
   const archiveUrl = `${baseUrl}/${filename}`;
   const checksumUrl = `${baseUrl}/soldr-v${version}-SHA256SUMS.txt`;
@@ -256,24 +239,43 @@ async function install() {
     const extractDir = path.join(tmp, "extract");
     fs.writeFileSync(archivePath, archive);
     fs.mkdirSync(extractDir, { recursive: true });
-    extractArchive(archivePath, target.archive, extractDir);
-
-    const extracted = findExtractedBinary(extractDir, target.binary);
-    if (!extracted) {
-      throw new Error(`release archive did not contain ${target.binary}`);
-    }
+    extractArchive(archivePath, extractDir);
 
     const nativeDir = path.join(PACKAGE_ROOT, "bin", "native");
     fs.rmSync(nativeDir, { recursive: true, force: true });
     fs.mkdirSync(nativeDir, { recursive: true });
 
-    const destination = path.join(nativeDir, target.binary);
-    fs.copyFileSync(extracted, destination);
-    if (process.platform !== "win32") {
-      fs.chmodSync(destination, 0o755);
+    // Copy every bundled binary so soldr can find its sibling zccache
+    // via SOLDR_ZCCACHE_LOCAL_DIR (wired up by `bin/soldr.js` before
+    // exec). The archive layout is flat — all four binaries live at the
+    // archive root.
+    const binaryExt = target.binary.endsWith(".exe") ? ".exe" : "";
+    for (const baseName of BUNDLED_BINARIES) {
+      const fileName = `${baseName}${binaryExt}`;
+      const src = findExtractedBinary(extractDir, fileName);
+      if (!src) {
+        throw new Error(`release archive ${filename} did not contain ${fileName}`);
+      }
+      const dst = path.join(nativeDir, fileName);
+      fs.copyFileSync(src, dst);
+      if (process.platform !== "win32") {
+        fs.chmodSync(dst, 0o755);
+      }
     }
 
-    console.log(`soldr: installed ${target.triple} binary`);
+    // Drop manifest.json alongside the binaries so downstream tooling
+    // (and humans reading `bin/native/`) can introspect provenance —
+    // soldr / zccache versions, target triples, build commit, sha256s.
+    // Best-effort: archives shipped before the manifest convention
+    // landed simply won't have one.
+    const manifestSrc = findExtractedBinary(extractDir, "manifest.json");
+    if (manifestSrc) {
+      fs.copyFileSync(manifestSrc, path.join(nativeDir, "manifest.json"));
+    }
+
+    console.log(
+      `soldr: installed ${target.triple} (soldr + zccache trio) into ${nativeDir}`,
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
@@ -287,6 +289,9 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ARCHIVE_EXT,
+  BUNDLED_BINARIES,
+  TARGETS,
   checksumFor,
   detectLibc,
   platformTarget,

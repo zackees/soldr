@@ -8,19 +8,26 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
+
+# Soldr releases ship a single .tar.zst archive per target since the
+# combined-bundle refactor (#XXX). The archive contains soldr +
+# zccache + zccache-daemon + zccache-fp + manifest.json at its root.
+# The setup-soldr action extracts all four binaries into the install
+# dir and exports SOLDR_ZCCACHE_LOCAL_DIR so soldr's runtime resolution
+# wires up the bundled zccache without a managed-download round trip.
+ARCHIVE_EXT = "tar.zst"
+ZCCACHE_BUNDLED_BINARIES = ("zccache", "zccache-daemon", "zccache-fp")
 
 
 def _normalize_version(value: str) -> str:
     return value[1:] if value.startswith("v") else value
 
 
-def _detect_target() -> tuple[str, str, str]:
+def _detect_target() -> tuple[str, str]:
     machine = platform.machine().lower()
     if machine in {"x86_64", "amd64"}:
         arch = "x86_64"
@@ -31,11 +38,14 @@ def _detect_target() -> tuple[str, str, str]:
 
     system = platform.system()
     if system == "Linux":
-        return f"{arch}-unknown-linux-gnu", "tar.gz", "soldr"
+        # Linux gnu variant runs everywhere this action runs (the
+        # GitHub-hosted Linux runners are glibc). musl variant exists
+        # too but isn't needed here.
+        return f"{arch}-unknown-linux-gnu", "soldr"
     if system == "Darwin":
-        return f"{arch}-apple-darwin", "tar.gz", "soldr"
+        return f"{arch}-apple-darwin", "soldr"
     if system == "Windows":
-        return f"{arch}-pc-windows-msvc", "zip", "soldr.exe"
+        return f"{arch}-pc-windows-msvc", "soldr.exe"
 
     raise RuntimeError(f"unsupported operating system: {system}")
 
@@ -77,26 +87,49 @@ def _installed_version(binary_path: Path) -> str | None:
     return str(payload["soldr_version"])
 
 
-def _select_asset(release: dict[str, object], target: str, archive_ext: str) -> tuple[str, str]:
+def _select_asset(release: dict[str, object], target: str) -> tuple[str, str]:
     assets = release.get("assets") or []
+    suffix = f"-{target}.{ARCHIVE_EXT}"
     for asset in assets:
         if not isinstance(asset, dict):
             continue
         name = str(asset.get("name", ""))
-        if target in name and name.endswith(archive_ext):
+        if name.endswith(suffix):
             return name, str(asset["browser_download_url"])
-    raise RuntimeError(f"no release asset found for target {target}")
+    raise RuntimeError(
+        f"no release asset found for target {target} (looking for *{suffix})"
+    )
 
 
-def _extract_binary(archive_path: Path, archive_ext: str, binary_name: str, out_dir: Path) -> Path:
+def _extract_archive(archive_path: Path, out_dir: Path) -> None:
+    """Extract a .tar.zst archive using the system tar's --zstd flag.
+
+    Both GNU tar 1.31+ (Linux) and bsdtar (default on macOS / Windows)
+    speak --zstd; the alternative `--use-compress-program=unzstd`
+    path covers older GNU tar versions that may linger on long-lived
+    runners. Last-resort fallback decompresses with the zstd CLI to a
+    sibling .tar then untars that.
+    """
+
     out_dir.mkdir(parents=True, exist_ok=True)
-    if archive_ext == "zip":
-        with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(out_dir)
-    else:
-        with tarfile.open(archive_path, "r:gz") as archive:
-            archive.extractall(out_dir)
+    attempts = (
+        ["tar", "--zstd", "-xf", str(archive_path), "-C", str(out_dir)],
+        ["tar", "--use-compress-program=unzstd", "-xf", str(archive_path), "-C", str(out_dir)],
+    )
+    for cmd in attempts:
+        result = subprocess.run(cmd, check=False)
+        if result.returncode == 0:
+            return
+    intermediate = archive_path.with_suffix(archive_path.suffix + ".tar")
+    subprocess.run(["zstd", "-d", "-o", str(intermediate), str(archive_path)], check=True)
+    subprocess.run(["tar", "-xf", str(intermediate), "-C", str(out_dir)], check=True)
+    try:
+        intermediate.unlink()
+    except OSError:
+        pass
 
+
+def _locate_binary(out_dir: Path, binary_name: str) -> Path:
     for candidate in out_dir.rglob(binary_name):
         if candidate.is_file():
             return candidate
@@ -120,20 +153,51 @@ def main() -> None:
             return
 
     repo = os.environ.get("SOLDR_REPO", "zackees/soldr").strip() or "zackees/soldr"
-    target, archive_ext, binary_name = _detect_target()
+    target, binary_name = _detect_target()
     release = _fetch_release(repo, requested_version)
-    asset_name, download_url = _select_asset(release, target, archive_ext)
+    asset_name, download_url = _select_asset(release, target)
     tag_name = str(release["tag_name"])
+    zccache_ext = ".exe" if os.name == "nt" else ""
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
         archive_path = tmp_dir / asset_name
         extract_dir = tmp_dir / "extract"
         urllib.request.urlretrieve(download_url, archive_path)
-        source = _extract_binary(archive_path, archive_ext, binary_name, extract_dir)
+        _extract_archive(archive_path, extract_dir)
+
+        # Stage soldr.
+        source = _locate_binary(extract_dir, binary_name)
         shutil.copy2(source, binary_path)
         if os.name != "nt":
             binary_path.chmod(binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+        # Stage the bundled zccache trio next to soldr so the install
+        # dir works as a self-contained SOLDR_ZCCACHE_LOCAL_DIR.
+        for base in ZCCACHE_BUNDLED_BINARIES:
+            file_name = f"{base}{zccache_ext}"
+            zccache_src = _locate_binary(extract_dir, file_name)
+            zccache_dst = install_dir / file_name
+            shutil.copy2(zccache_src, zccache_dst)
+            if os.name != "nt":
+                zccache_dst.chmod(
+                    zccache_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                )
+
+        # Optional: surface manifest.json next to the binaries.
+        manifest_src = extract_dir.rglob("manifest.json")
+        for candidate in manifest_src:
+            if candidate.is_file():
+                shutil.copy2(candidate, install_dir / "manifest.json")
+                break
+
+    # Export SOLDR_ZCCACHE_LOCAL_DIR to GITHUB_ENV so subsequent steps
+    # see the bundled zccache without a managed-fetch round trip. Don't
+    # clobber an explicit caller setting if it's already in the env.
+    github_env = os.environ.get("GITHUB_ENV")
+    if github_env and not os.environ.get("SOLDR_ZCCACHE_LOCAL_DIR"):
+        with open(github_env, "a", encoding="utf-8") as fh:
+            fh.write(f"SOLDR_ZCCACHE_LOCAL_DIR={install_dir}\n")
 
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
