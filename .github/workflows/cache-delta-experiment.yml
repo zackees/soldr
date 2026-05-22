@@ -53,8 +53,15 @@ jobs:
         # workflow. Build-cache + target-cache off for the same
         # reason; we want exactly one cache mechanism active so the
         # measurements are clean.
+        #
+        # version: 0.7.29 because setup-soldr@v0's default is 0.7.24
+        # which predates `soldr cook` (the cook subcommand was added
+        # in PR #409, first released in 0.7.25). Without this pin
+        # the cook-cmd step falls through to External tool fetch
+        # and dies with `tool not found: cook`.
         uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
         with:
+          version: "0.7.29"
           cache: false
           linker: platform-default
           cache-dir: ${{ runner.temp }}/cache-delta-exp-setup
@@ -142,6 +149,8 @@ jobs:
 
       - uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
         with:
+          # 0.7.29 brings `soldr cook` — see delta job above for why.
+          version: "0.7.29"
           cache: false
           linker: platform-default
           cache-dir: ${{ runner.temp }}/cache-delta-exp-baseline-setup
