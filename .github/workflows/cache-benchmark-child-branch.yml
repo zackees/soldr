@@ -49,7 +49,7 @@ jobs:
       seconds: ${{ steps.measure.outputs.seconds }}
       result: ${{ steps.measure.outputs.result }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.child_branch != '' && inputs.child_branch || github.ref }}
 
@@ -103,7 +103,7 @@ jobs:
 
       - name: Upload cold timing artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: child-branch-probe-cold
           path: |
@@ -123,7 +123,7 @@ jobs:
       soldr_version: ${{ steps.setup.outputs.soldr-version }}
       toolchain: ${{ steps.setup.outputs.toolchain }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ inputs.child_branch != '' && inputs.child_branch || github.ref }}
 
@@ -206,7 +206,7 @@ jobs:
 
       - name: Upload warm timing artifacts
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: child-branch-probe-warm
           path: |
@@ -223,7 +223,7 @@ jobs:
       - warm-soldr
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Build report
         id: report
@@ -245,7 +245,7 @@ jobs:
           python3 .github/scripts/cache_benchmark_child_branch_report.py
 
       - name: Upload report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: child-branch-probe-report
           path: parent-child-zccache-report.md
