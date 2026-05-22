@@ -4,6 +4,7 @@ mod binaries;
 mod bootstrap;
 mod cache;
 mod cache_lib;
+mod cargo_diagnostics;
 mod cargo_front_door;
 mod cook;
 mod core;

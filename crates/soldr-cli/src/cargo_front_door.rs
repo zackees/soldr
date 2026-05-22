@@ -179,16 +179,40 @@ pub(crate) async fn run_cargo_front_door(
     // user sees diagnostics live AND we have a copy to store in the
     // sidecar for the next run. For build/check we don't need the output;
     // just inherit fds via .status().
+    //
+    // We ALSO opt into capture when stderr is not a terminal (CI / Docker
+    // / `soldr cargo build 2>file`) so the cargo_diagnostics scanner can
+    // recognize the missing-host-tool failure pattern from #422 and
+    // rewrap cargo's terse `failed to execute command: (os error 2)`
+    // with platform-aware install hints. Interactive TTY users keep
+    // `.status()` inheritance (and therefore cargo's live progress bar)
+    // since changing stderr to a pipe would force cargo into its
+    // non-TTY rendering mode.
+    use std::io::IsTerminal;
     let needs_clippy_capture = matches!(
         workspace_plan.as_ref().map(|p| p.verb),
         Some(WorkspaceVerb::Clippy)
     );
-    let (status, clippy_capture) = if needs_clippy_capture {
+    let capture_for_diagnostics = !needs_clippy_capture && !std::io::stderr().is_terminal();
+    let (status, clippy_capture, diagnostic_capture) = if needs_clippy_capture {
         let (status, capture) = run_command_capturing_clippy(&mut command)?;
-        (status, Some(capture))
+        (status, Some(capture), None)
+    } else if capture_for_diagnostics {
+        let (status, captured) = run_command_capturing_diagnostic_tail(&mut command)?;
+        (status, None, Some(captured))
     } else {
-        (command.status()?, None)
+        (command.status()?, None, None)
     };
+    // Extract whatever stderr text we captured BEFORE the success
+    // branch moves `clippy_capture` into `refresh_workspace_sidecar_after_cargo`.
+    // Used below in the !status.success() block by cargo_diagnostics.
+    let captured_stderr_for_diagnosis: Option<String> =
+        if let Some(capture) = clippy_capture.as_ref() {
+            Some(String::from_utf8_lossy(&capture.stderr).into_owned())
+        } else {
+            diagnostic_capture
+        };
+
     if status.success() {
         if let Some(plan) = plan_ctx.as_ref() {
             rust_plan::run_zccache_rust_plan(plan, "save", true)?;
@@ -210,6 +234,24 @@ pub(crate) async fn run_cargo_front_door(
         // cleanly. See soldr#410.
         rust_plan::prune_orphan_rmetas_after_failed_build(plan);
     }
+
+    // After cargo fails, look at whatever stderr we captured for a
+    // recognizable build-script-spawn-ENOENT pattern (#422 — minimal
+    // Rust containers without a host C toolchain). The capture
+    // sources are `clippy_capture.stderr` for clippy runs and the
+    // dedicated diagnostic-tail buffer otherwise. TTY users captured
+    // nothing — they see cargo's own error untouched and skip this
+    // path.
+    if !status.success() {
+        if let Some(stderr_text) = captured_stderr_for_diagnosis.as_deref() {
+            if let Some(diag) = crate::cargo_diagnostics::detect_build_script_failure(stderr_text) {
+                let rendered = crate::cargo_diagnostics::render_diagnosis(&diag);
+                let stderr = std::io::stderr();
+                let _ = stderr.lock().write_all(rendered.as_bytes());
+            }
+        }
+    }
+
     if let Some(session) = session {
         finish_zccache_build(&session)?;
     }
@@ -283,6 +325,54 @@ fn run_command_capturing_clippy(
         exit_code: status.code().unwrap_or(1),
     };
     Ok((status, capture))
+}
+
+/// Run cargo with both streams tee'd to the user's stdout/stderr AND
+/// stderr accumulated into a [`String`] for post-failure scanning by
+/// [`crate::cargo_diagnostics`]. Stdout is NOT buffered — we only need
+/// stderr for diagnosis, and cargo can emit megabytes of compile
+/// progress to stdout that would just sit unused in RAM.
+///
+/// Used in the non-clippy, non-TTY branch of `run_cargo_front_door`
+/// (#422): when stderr is piped to a CI log / Docker stream / file,
+/// cargo's progress-bar UX is already gone, so the extra
+/// pipe-and-tee doesn't degrade interactive output.
+fn run_command_capturing_diagnostic_tail(
+    command: &mut std::process::Command,
+) -> Result<(std::process::ExitStatus, String), SoldrError> {
+    use std::io::Read;
+
+    command.stderr(std::process::Stdio::piped());
+    // stdout stays inherited — we don't need its bytes.
+    let mut child = command.spawn().map_err(|err| {
+        SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
+    })?;
+    let mut child_stderr = child.stderr.take().expect("piped");
+
+    let stderr_handle = std::thread::spawn(move || -> Vec<u8> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let stderr = std::io::stderr();
+        loop {
+            match child_stderr.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    let _ = stderr.lock().write_all(&chunk[..n]);
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = stderr.lock().flush();
+        buf
+    });
+
+    let status = child.wait().map_err(|err| {
+        SoldrError::Other(format!("wait on cargo diagnostic capture failed: {err}"))
+    })?;
+    let bytes = stderr_handle.join().unwrap_or_default();
+    let captured = String::from_utf8_lossy(&bytes).into_owned();
+    Ok((status, captured))
 }
 
 /// True when the cargo argv resolves to `cargo run` (or `cargo r`).
