@@ -285,6 +285,13 @@ runs:
       env:
         SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
         ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
+      # `set +e` disables errexit but GHA still uses `bash -e -o pipefail`,
+      # and `head -N` truncates pipes → SIGPIPE → upstream find exits
+      # non-zero → pipefail propagates → step fails. Wrap each
+      # potentially-fallible command with `|| true` and finish with
+      # `exit 0` so the diagnostic NEVER turns a successful build
+      # red. `if: always()` only saves us if the step's own exit
+      # code is 0.
       run: |
         set +e
         MARK="${{ steps.keys.outputs.cook-mark }}"
@@ -306,22 +313,24 @@ runs:
         echo ""
         echo "--- cook-mark mtime ---"
         if [ -f "$MARK" ]; then
-          stat -c '%Y %n  (%y)' "$MARK"
+          stat -c '%Y %n  (%y)' "$MARK" || true
         fi
 
         echo ""
         echo "--- 5 oldest files in cache (epoch + path) ---"
-        find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
-          | sort -n | head -5
+        ( find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
+          | sort -n | head -5 ) || true
 
         echo ""
         echo "--- 5 newest files in cache ---"
-        find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
-          | sort -rn | head -5
+        ( find "$ZCCACHE_DIR" -type f -printf '%T@ %p\n' 2>/dev/null \
+          | sort -rn | head -5 ) || true
 
         echo ""
         echo "--- files newer than cook-mark (sample) ---"
-        ( cd "$ZCCACHE_DIR" && find . -type f -newer "$MARK" 2>/dev/null | head -10 )
+        ( cd "$ZCCACHE_DIR" 2>/dev/null && find . -type f -newer "$MARK" 2>/dev/null | head -10 ) || true
+
+        exit 0
 
     - name: Package build delta
       id: delta-tar
