@@ -14,9 +14,10 @@ const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
 // Every release ships a single .tar.zst per target that bundles soldr
 // alongside its matching-target zccache trio (zccache, zccache-daemon,
-// zccache-fp). One fetch installs both, and `bin/soldr.js` wires
-// SOLDR_ZCCACHE_LOCAL_DIR to the install dir so soldr finds the
-// sibling binaries without going through the managed-download path.
+// zccache-fp) and a same-target crgx. One fetch installs everything,
+// and `bin/soldr.js` wires SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR
+// to the install dir so soldr finds the sibling binaries without going
+// through the managed-download path.
 const ARCHIVE_EXT = "tar.zst";
 
 const TARGETS = {
@@ -32,10 +33,17 @@ const TARGETS = {
 
 // Files we expect to find at the root of every extracted release
 // archive. Names line up with what `release-auto.yml`'s
-// `Fetch matched zccache release` step + `Stage soldr binary` step
-// drop into `dist/package/` before the tar.zst is built. `.exe` suffix
-// is appended at install time based on `target.binary`.
-const BUNDLED_BINARIES = ["soldr", "zccache", "zccache-daemon", "zccache-fp"];
+// `Fetch matched zccache release`, `Stage soldr binary`, and
+// `Build crgx from pinned source` steps drop into `dist/package/`
+// before the tar.zst is built. `.exe` suffix is appended at install
+// time based on `target.binary`.
+const BUNDLED_BINARIES = [
+  "soldr",
+  "zccache",
+  "zccache-daemon",
+  "zccache-fp",
+  "crgx",
+];
 
 // Detect whether the running Linux uses musl or glibc. Three layered probes:
 //   1. process.report.header.glibcVersionRuntime is the documented Node
@@ -246,9 +254,10 @@ async function install() {
     fs.mkdirSync(nativeDir, { recursive: true });
 
     // Copy every bundled binary so soldr can find its sibling zccache
-    // via SOLDR_ZCCACHE_LOCAL_DIR (wired up by `bin/soldr.js` before
-    // exec). The archive layout is flat — all four binaries live at the
-    // archive root.
+    // via SOLDR_ZCCACHE_LOCAL_DIR and its sibling crgx via
+    // SOLDR_CRGX_LOCAL_DIR (both wired up by `bin/soldr.js` before
+    // exec). The archive layout is flat — all five binaries live at
+    // the archive root.
     const binaryExt = target.binary.endsWith(".exe") ? ".exe" : "";
     for (const baseName of BUNDLED_BINARIES) {
       const fileName = `${baseName}${binaryExt}`;
@@ -274,7 +283,7 @@ async function install() {
     }
 
     console.log(
-      `soldr: installed ${target.triple} (soldr + zccache trio) into ${nativeDir}`,
+      `soldr: installed ${target.triple} (soldr + zccache trio + crgx) into ${nativeDir}`,
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

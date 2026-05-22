@@ -365,6 +365,69 @@ jobs:
           chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
           ls -la dist/package/
 
+      - name: Build crgx from pinned source
+        # Source-build crgx instead of fetching an upstream release asset:
+        # crgx upstream (yfedoseev/crgx) currently doesn't ship
+        # aarch64-unknown-linux-musl or aarch64-pc-windows-msvc binaries,
+        # and building from a pinned tag gives soldr full control over
+        # provenance — the combined archive's manifest.json carries the
+        # crgx source commit + per-target sha256 so downstream consumers
+        # can verify exactly what shipped.
+        #
+        # The toolchain installed at the top of the job
+        # (dtolnay/rust-toolchain @ 1.94.1 with the target added) and,
+        # for musl rows, musl-tools already on PATH, are sufficient — no
+        # extra docker / cross step needed. Crgx requires edition 2024
+        # which 1.94.1 supports.
+        shell: bash
+        run: |
+          set -euo pipefail
+          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          if [ -z "$crgx_version" ]; then
+            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-cli/src/fetch/mod.rs" >&2
+            exit 1
+          fi
+          echo "crgx_version=$crgx_version"
+
+          work_dir="${RUNNER_TEMP}/crgx-build"
+          rm -rf "$work_dir"
+          # Pin to the exact tag — depth 1 keeps the clone small. The
+          # tag → commit sha lookup is recorded in manifest.json below
+          # so a re-build is exactly reproducible from the manifest.
+          git clone --depth 1 --branch "v${crgx_version}" \
+            https://github.com/yfedoseev/crgx.git "$work_dir"
+          crgx_commit=$(git -C "$work_dir" rev-parse HEAD)
+          echo "crgx_commit=$crgx_commit"
+          echo "CRGX_SOURCE_COMMIT=$crgx_commit" >> "$GITHUB_ENV"
+
+          # `--locked` honors crgx's Cargo.lock so the build is
+          # byte-for-byte reproducible across release runs. Use the
+          # same target the soldr binary was just built for — the
+          # cargo toolchain is shared with the soldr build step above,
+          # so no extra setup-uv / install-musl / install-rust is
+          # needed here.
+          cargo build \
+            --release \
+            --manifest-path "$work_dir/Cargo.toml" \
+            --target "${{ matrix.target }}" \
+            --locked
+
+          suffix=""
+          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+
+          built="$work_dir/target/${{ matrix.target }}/release/crgx${suffix}"
+          if [ ! -f "$built" ]; then
+            echo "crgx not built at expected path: $built" >&2
+            ls -la "$work_dir/target/${{ matrix.target }}/release/" >&2 || true
+            exit 1
+          fi
+          file "$built" || true
+
+          cp "$built" "dist/package/crgx${suffix}"
+          chmod +x "dist/package/crgx${suffix}" 2>/dev/null || true
+          ls -la dist/package/
+
       - name: Write manifest.json
         # Drop a small JSON descriptor into the archive root so downstream
         # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
@@ -380,6 +443,9 @@ jobs:
           soldr_target="${{ matrix.target }}"
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          crgx_commit="${CRGX_SOURCE_COMMIT:-unknown}"
           case "$soldr_target" in
             x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
             aarch64-unknown-linux-*) zccache_target=aarch64-unknown-linux-musl ;;
@@ -402,11 +468,16 @@ jobs:
           zccache_sha=$(sha256_of "dist/package/zccache${suffix}")
           zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")
           zccache_fp_sha=$(sha256_of "dist/package/zccache-fp${suffix}")
+          crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+          # schema_version 2 adds the `crgx` block. Consumers that
+          # only understand v1 still get a usable v2 manifest because
+          # the existing fields are unchanged; the new block is
+          # additive. Bump again on any field rename or removal.
           cat > dist/package/manifest.json <<EOF
           {
-            "schema_version": 1,
+            "schema_version": 2,
             "soldr": {
               "version": "${version}",
               "target": "${soldr_target}",
@@ -422,6 +493,13 @@ jobs:
                 { "name": "zccache-daemon${suffix}", "sha256": "${zccache_daemon_sha}" },
                 { "name": "zccache-fp${suffix}",     "sha256": "${zccache_fp_sha}" }
               ]
+            },
+            "crgx": {
+              "version": "${crgx_version}",
+              "target": "${soldr_target}",
+              "binary": "crgx${suffix}",
+              "sha256": "${crgx_sha}",
+              "source_commit": "${crgx_commit}"
             },
             "archive": {
               "format": "tar.zst",
@@ -579,9 +657,10 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship the 4 expected binaries (soldr,
-          # zccache, zccache-daemon, zccache-fp) with their platform
-          # extension, plus a manifest.json describing the bundle.
+          # Every archive must ship the 5 expected binaries (soldr,
+          # zccache, zccache-daemon, zccache-fp, crgx) with their
+          # platform extension, plus a manifest.json describing the
+          # bundle.
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
           for required in \
@@ -589,6 +668,7 @@ jobs:
             "zccache${suffix}" \
             "zccache-daemon${suffix}" \
             "zccache-fp${suffix}" \
+            "crgx${suffix}" \
             "manifest.json"; do
             test -f "$extract/$required" \
               || { echo "missing $required in $archive" >&2; exit 1; }
@@ -604,6 +684,11 @@ jobs:
           case "$runner_arch:${{ matrix.target }}" in
             x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
               "$extract/${{ matrix.binary }}" --version
+              # Smoke the bundled crgx too — same arch gate. crgx is
+              # self-contained (no daemon, no sidecars), so --version
+              # is enough to prove the binary loads and the static
+              # linkage works on the host.
+              "$extract/crgx${suffix}" --version
               ;;
             *)
               echo "skipping --version (runner $runner_arch vs target ${{ matrix.target }})"

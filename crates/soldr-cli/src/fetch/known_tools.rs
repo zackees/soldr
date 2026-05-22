@@ -169,6 +169,22 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         tag_prefix: None,
         pinned_version: None,
     },
+    // `crgx` is bundled into the combined soldr release archive
+    // (release-auto.yml source-builds it from a pinned crgx tag), so
+    // first-use needs no network round trip. The registry entry is the
+    // fallback path when the bundle is unavailable (sideloaded soldr
+    // binary, custom install, etc.) — it pins to the same upstream
+    // version the bundle ships so `soldr crgx ...` is reproducible
+    // across both paths. See SOLDR_CRGX_LOCAL_DIR for the runtime
+    // override used by the npm shim and setup-soldr action.
+    ToolSpec {
+        crate_name: "crgx",
+        cargo_subcommand: None,
+        binary_name: "crgx",
+        repo: Some(("yfedoseev", "crgx")),
+        tag_prefix: None,
+        pinned_version: Some(super::MANAGED_CRGX_VERSION),
+    },
 ];
 
 /// Pinned `cargo-chef` release that `soldr cook` resolves by default. See the
@@ -256,6 +272,27 @@ mod tests {
             lookup_by_cargo_subcommand("chef").map(|s| s.crate_name),
             Some("cargo-chef")
         );
+    }
+
+    #[test]
+    fn crgx_is_registered_and_pinned_to_managed_version() {
+        // soldr bundles crgx into the combined release archive (see
+        // release-auto.yml's `Build crgx from pinned source` step).
+        // The registry entry MUST pin to `MANAGED_CRGX_VERSION` so the
+        // fallback fetch path resolves to the same version the bundle
+        // ships. If these drift apart, `soldr crgx` from a sideloaded
+        // binary lands on a different version than the bundled one —
+        // exactly the cross-source inconsistency the pin is meant to
+        // prevent.
+        let spec = lookup_by_crate("crgx").expect("crgx must be registered");
+        assert_eq!(spec.cargo_subcommand, None);
+        assert_eq!(spec.binary_name, "crgx");
+        assert_eq!(spec.repo, Some(("yfedoseev", "crgx")));
+        assert_eq!(
+            spec.pinned_version,
+            Some(super::super::MANAGED_CRGX_VERSION)
+        );
+        assert_eq!(super::super::MANAGED_CRGX_VERSION, "0.1.0");
     }
 
     #[test]
