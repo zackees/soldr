@@ -250,9 +250,18 @@ runs:
       # path. Override BOTH here so they stay coordinated under the
       # caller-supplied cache-dir. Same pattern setup-soldr-action.yml
       # uses for the dogfood smoke (lines 142-143).
+      #
+      # ZCCACHE_PATH_REMAP=auto explicitly: the first warm run showed
+      # zccache hit_rate=0 with 199 misses — soldr's
+      # parent-cache-sharing path-remap injection (which is supposed
+      # to be default-on for managed builds per CLAUDE.md) wasn't in
+      # the inherited env. Without remap, absolute source paths get
+      # baked into cache keys → cross-run drift kills hits. Force it
+      # here so cold writes and warm reads end up with the same keys.
       env:
         SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
         ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
+        ZCCACHE_PATH_REMAP: auto
       run: ${{ inputs.cook-cmd }}
 
     - name: Touch cook mark
@@ -268,10 +277,14 @@ runs:
 
     - name: Run build command
       shell: bash
-      # See the cook step above for the env-pair rationale.
+      # See the cook step above for the env-trio rationale. ALL of
+      # SOLDR_CACHE_DIR / ZCCACHE_CACHE_DIR / ZCCACHE_PATH_REMAP must
+      # stay aligned with the cook step so the cache keys cook
+      # produced are the same ones build looks up.
       env:
         SOLDR_CACHE_DIR: ${{ steps.keys.outputs.cache-dir }}
         ZCCACHE_CACHE_DIR: ${{ steps.keys.outputs.zccache-dir }}
+        ZCCACHE_PATH_REMAP: auto
       run: ${{ inputs.build-cmd }}
 
     - name: Diagnose cache-hit posture
@@ -299,6 +312,21 @@ runs:
 
         echo "## Cache delta diagnostic" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
+
+        echo "--- cache-key environment ---"
+        # zccache hash keys depend on a handful of env vars + the
+        # workspace layout (path-remap mode). Print what we actually
+        # have so cache-miss debugging is grounded.
+        env | grep -E '^(ZCCACHE_|SOLDR_|RUSTUP_TOOLCHAIN|RUSTC|CARGO_)' \
+          | LC_ALL=C sort || true
+        echo ""
+        echo "--- .git present in workspace? ---"
+        if [ -d .git ]; then
+          echo "yes ($(git rev-parse --short HEAD 2>/dev/null || echo '??'))"
+        else
+          echo "no — path-remap auto-detect falls back to no remap"
+        fi
+        echo ""
 
         echo "--- soldr cache report ---"
         soldr cache report --json 2>&1 | head -80 || true
