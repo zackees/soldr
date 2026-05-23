@@ -1,0 +1,227 @@
+//! Phase 3: when the soldr-daemon's session linked a zccache daemon,
+//! shutting down the soldr-daemon must spawn `zccache stop` against the
+//! cache-pinned binary before the soldr-daemon exits.
+//!
+//! The test installs a fake `zccache` binary under
+//! `<cache>/bin/zccache-pinned/zccache[.exe]` that logs every invocation
+//! to a stamp file. After the LinkZccache fire-and-forget + Shutdown
+//! RPC, the stamp file must contain a `stop` line — proving the
+//! shutdown hook fired.
+
+#![allow(clippy::print_stdout)]
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use soldr_cli::daemon::{client, db};
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    std::fs::create_dir_all(&dir).expect("create tempdir");
+    dir
+}
+
+fn soldr_daemon_bin() -> PathBuf {
+    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let parent = soldr.parent().expect("parent");
+    let stem = if cfg!(windows) {
+        "soldr-daemon.exe"
+    } else {
+        "soldr-daemon"
+    };
+    parent.join(stem)
+}
+
+fn install_fake_zccache(cache_root: &Path, log_path: &Path) -> PathBuf {
+    let dir = cache_root.join("bin").join("zccache-pinned");
+    std::fs::create_dir_all(&dir).expect("create pinned dir");
+    #[cfg(windows)]
+    let bin = dir.join("zccache.exe");
+    #[cfg(not(windows))]
+    let bin = dir.join("zccache");
+
+    #[cfg(windows)]
+    {
+        // On Windows we can't easily author a script that the daemon
+        // can spawn via Command::new for an .exe path. Use a .cmd
+        // shim and the daemon's `zccache stop` will resolve it via
+        // Command::new which on Windows supports launching .cmd
+        // shims directly only when invoked through the shell. To
+        // sidestep that, write a *.cmd file at the same path
+        // alongside the .exe and have the daemon target the .cmd.
+        // But the daemon resolver only looks for .exe. Simplest
+        // portable approach: ship a tiny .bat script renamed to .exe
+        // won't work either.
+        //
+        // Compromise: skip the test on Windows. The Linux/macOS
+        // pathways exercise the same daemon code; Windows-specific
+        // shutdown behavior is verified via the lifecycle integration
+        // tests that already cover the same execve path.
+        let _ = log_path;
+        let _ = bin;
+        return PathBuf::new();
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = format!(
+            "#!/bin/sh\n\
+             echo \"zccache $*\" >> \"{}\"\n\
+             exit 0\n",
+            log_path.display()
+        );
+        std::fs::write(&bin, script).expect("write fake zccache");
+        let mut perms = std::fs::metadata(&bin).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).expect("chmod");
+        bin
+    }
+}
+
+struct DaemonProc {
+    child: Option<Child>,
+}
+
+impl DaemonProc {
+    fn spawn(cache_root: &Path, home_root: &Path) -> Self {
+        let mut cmd = Command::new(soldr_daemon_bin());
+        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
+            .env("SOLDR_CACHE_DIR", cache_root)
+            .env("HOME", home_root)
+            .env("USERPROFILE", home_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let child = cmd.spawn().expect("spawn");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let pid_file = cache_root
+            .join("cache")
+            .join("soldr-daemon")
+            .join("daemon.pid");
+        while Instant::now() < deadline {
+            if pid_file.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Self { child: Some(child) }
+    }
+
+    fn wait(&mut self, max: Duration) -> Option<std::process::ExitStatus> {
+        let Some(child) = self.child.as_mut() else {
+            return None;
+        };
+        let deadline = Instant::now() + max;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        None
+    }
+}
+
+impl Drop for DaemonProc {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+struct EnvScope {
+    keys: Vec<&'static str>,
+    prior: Vec<Option<OsString>>,
+}
+
+impl EnvScope {
+    fn set(pairs: &[(&'static str, &Path)]) -> Self {
+        let mut prior = Vec::with_capacity(pairs.len());
+        let mut keys = Vec::with_capacity(pairs.len());
+        for (k, v) in pairs {
+            prior.push(std::env::var_os(k));
+            std::env::set_var(k, v);
+            keys.push(*k);
+        }
+        Self { keys, prior }
+    }
+}
+
+impl Drop for EnvScope {
+    fn drop(&mut self) {
+        for (k, p) in self.keys.iter().zip(self.prior.iter()) {
+            match p {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
+#[cfg(not(windows))]
+#[test]
+fn linked_zccache_is_stopped_on_daemon_shutdown() {
+    let cache_root = unique_temp_dir("zccache-link-cache");
+    let home_root = unique_temp_dir("zccache-link-home");
+    let log_path = unique_temp_dir("zccache-link-log").join("zccache-calls.log");
+
+    // Install a fake zccache that logs every invocation.
+    let _bin = install_fake_zccache(&cache_root, &log_path);
+
+    let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
+
+    let _scope = EnvScope::set(&[
+        ("SOLDR_CACHE_DIR", cache_root.as_path()),
+        ("HOME", home_root.as_path()),
+        ("USERPROFILE", home_root.as_path()),
+    ]);
+    let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
+
+    // Wait until the daemon is fully accepting connections.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let sock = client::default_sock_path(&paths);
+    let mut linked = false;
+    while Instant::now() < deadline {
+        if client::submit_fire_and_forget(
+            &sock,
+            &soldr_cli::daemon::protocol::Request::LinkZccache { zccache_pid: 42 },
+        )
+        .is_ok()
+        {
+            linked = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(linked, "LinkZccache fire-and-forget never succeeded");
+
+    // Confirm the linkage landed in redb (via Status reply).
+    let info = client::status(&sock).expect("status");
+    assert_eq!(info.linked_zccache_pid, Some(42));
+
+    // Trigger shutdown via the explicit RPC.
+    client::shutdown(&sock).expect("shutdown");
+    let status = daemon
+        .wait(Duration::from_secs(5))
+        .expect("daemon exits within 5s");
+    assert!(status.success(), "daemon exit status = {status:?}");
+
+    // The fake zccache must have been invoked with `stop`.
+    let calls = std::fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        calls.lines().any(|l| l.trim() == "zccache stop"),
+        "expected `zccache stop` invocation; log contents:\n{calls}"
+    );
+
+    // And the linked PID must have been cleared on shutdown.
+    let pid = db::get_linked_zccache_pid(&cache_root.join("state.redb")).expect("get");
+    assert_eq!(pid, None, "linked zccache pid must be cleared on shutdown");
+}

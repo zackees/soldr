@@ -7,7 +7,7 @@ use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
 use crate::cache_lib::{daemon_sock_path, data_db_path};
 use crate::core::SoldrPaths;
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
-use crate::daemon::protocol::{Request, Response, StatusInfo};
+use crate::daemon::protocol::{BuildRecord, Request, Response, StatusInfo};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -77,6 +77,98 @@ pub fn shutdown(sock_path: &Path) -> Result<(), ClientError> {
             "unexpected response: {other:?}"
         ))),
     }
+}
+
+pub fn list_builds(
+    sock_path: &Path,
+    limit: u32,
+    since_ms: Option<i64>,
+) -> Result<Vec<BuildRecord>, ClientError> {
+    match submit_request(sock_path, &Request::ListBuilds { limit, since_ms })? {
+        Response::Builds(rows) => Ok(rows),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+pub fn list_slow_builds(
+    sock_path: &Path,
+    threshold_ms: u64,
+    limit: u32,
+) -> Result<Vec<BuildRecord>, ClientError> {
+    match submit_request(
+        sock_path,
+        &Request::ListSlowBuilds {
+            threshold_ms,
+            limit,
+        },
+    )? {
+        Response::Builds(rows) => Ok(rows),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// Convenience: build session lifecycle and per-compile fire-and-forget
+/// helpers. Each one is best-effort — if the daemon isn't reachable,
+/// the cargo build still completes; we just lose the timing data.
+pub fn build_session_start(
+    paths: &SoldrPaths,
+    session_id: u64,
+    repo_root: &Path,
+    started_at_ms: i64,
+) {
+    let sock = default_sock_path(paths);
+    let _ = submit_fire_and_forget(
+        &sock,
+        &Request::BuildSessionStart {
+            session_id,
+            repo_root: repo_root.display().to_string(),
+            started_at_ms,
+        },
+    );
+}
+
+pub fn build_session_end(paths: &SoldrPaths, session_id: u64, exit_code: i32, ended_at_ms: i64) {
+    let sock = default_sock_path(paths);
+    let _ = submit_fire_and_forget(
+        &sock,
+        &Request::BuildSessionEnd {
+            session_id,
+            exit_code,
+            ended_at_ms,
+        },
+    );
+}
+
+pub fn record_compile(
+    paths: &SoldrPaths,
+    session_id: u64,
+    crate_name: &str,
+    target_dir: &Path,
+    started_at_ms: i64,
+    duration_us: Option<u64>,
+) {
+    let sock = default_sock_path(paths);
+    let _ = submit_fire_and_forget(
+        &sock,
+        &Request::RecordCompile {
+            session_id,
+            crate_name: crate_name.to_string(),
+            target_dir: target_dir.display().to_string(),
+            started_at_ms,
+            duration_us,
+        },
+    );
+}
+
+pub fn link_zccache(paths: &SoldrPaths, zccache_pid: u32) {
+    let sock = default_sock_path(paths);
+    let _ = submit_fire_and_forget(&sock, &Request::LinkZccache { zccache_pid });
 }
 
 /// Wrapper-side entry point. Tries the daemon first; on any failure,

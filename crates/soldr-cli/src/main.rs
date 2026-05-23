@@ -444,6 +444,34 @@ enum DaemonSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Query recorded build sessions.
+    Builds {
+        #[command(subcommand)]
+        command: DaemonBuildsSubcommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DaemonBuildsSubcommand {
+    /// List recent build sessions, newest first.
+    List {
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long, value_name = "UNIX_MS")]
+        since_ms: Option<i64>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the slowest finished build sessions whose `total_wall_ms`
+    /// meets the threshold (default 60s).
+    Slow {
+        #[arg(long, default_value_t = 60_000, value_name = "MS")]
+        threshold_ms: u64,
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1284,6 +1312,61 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
     }
 }
 
+fn render_builds(
+    result: Result<Vec<crate::daemon::protocol::BuildRecord>, crate::daemon::client::ClientError>,
+    json: bool,
+) -> Result<(), SoldrError> {
+    use crate::daemon::client::ClientError;
+    match result {
+        Ok(rows) => {
+            if json {
+                let payload = serde_json::json!({
+                    "builds": rows.iter().map(|r| serde_json::json!({
+                        "session_id": r.session_id,
+                        "repo_root": r.repo_root,
+                        "started_at_ms": r.started_at_ms,
+                        "ended_at_ms": r.ended_at_ms,
+                        "exit_code": r.exit_code,
+                        "total_wall_ms": r.total_wall_ms,
+                        "crate_count": r.crate_count,
+                        "slowest_crate_us": r.slowest_crate_us,
+                        "slowest_crate_name": r.slowest_crate_name,
+                    })).collect::<Vec<_>>(),
+                });
+                println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+            } else if rows.is_empty() {
+                println!("(no recorded builds)");
+            } else {
+                for r in rows {
+                    let wall = r
+                        .total_wall_ms
+                        .map(|m| format!("{m}ms"))
+                        .unwrap_or_else(|| "running".into());
+                    let exit = r
+                        .exit_code
+                        .map(|c| format!("exit={c}"))
+                        .unwrap_or_else(|| "exit=?".into());
+                    let slowest = r.slowest_crate_name.as_deref().unwrap_or("(none)");
+                    println!(
+                        "session_id={} repo={} wall={} {} crates={} slowest={}",
+                        r.session_id, r.repo_root, wall, exit, r.crate_count, slowest
+                    );
+                }
+            }
+            Ok(())
+        }
+        Err(ClientError::NotRunning) => {
+            if json {
+                println!("{}", serde_json::json!({"running": false, "builds": []}));
+            } else {
+                println!("soldr-daemon: not running");
+            }
+            Ok(())
+        }
+        Err(e) => Err(SoldrError::Other(format!("daemon builds failed: {e:?}"))),
+    }
+}
+
 fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
     use crate::daemon::lifecycle::{is_live, try_spawn_detached};
@@ -1362,6 +1445,18 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
                 Ok(())
             }
             Err(e) => Err(SoldrError::Other(format!("daemon status failed: {e:?}"))),
+        },
+        DaemonSubcommand::Builds { command } => match command {
+            DaemonBuildsSubcommand::List {
+                limit,
+                since_ms,
+                json,
+            } => render_builds(client::list_builds(&sock, limit, since_ms), json),
+            DaemonBuildsSubcommand::Slow {
+                threshold_ms,
+                limit,
+                json,
+            } => render_builds(client::list_slow_builds(&sock, threshold_ms, limit), json),
         },
     }
 }

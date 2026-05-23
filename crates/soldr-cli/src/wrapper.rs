@@ -312,7 +312,9 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
 }
 
 /// Best-effort upsert of the workspace `target/` dir into the soldr
-/// state registry on every wrapper invocation. Silent on failure.
+/// state registry on every wrapper invocation, plus (Phase 2) a
+/// `RecordCompile` event for per-build session correlation. Silent on
+/// failure.
 ///
 /// `rustc_args` is the slice of args that follows the rustc binary
 /// path in the wrapper invocation (i.e. `raw_args[2..]`).
@@ -331,12 +333,60 @@ fn record_target_dir_in_registry(rustc_args: &[String]) {
 
     crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
 
+    // Phase 2: per-crate compile event when this wrapper invocation is
+    // part of a soldr-front-door build session. The wrapper `exec()`s
+    // into zccache on Unix and never returns, so only the start-side
+    // timestamp is observable on Unix; `duration_us = None` documents
+    // that.
+    if let Some(session_id) = read_build_session_id_env() {
+        let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
+        let started_at_ms = current_unix_ms();
+        crate::daemon::client::record_compile(
+            &paths,
+            session_id,
+            crate_name,
+            &target,
+            started_at_ms,
+            None,
+        );
+    }
+
     if crate::daemon::lifecycle::is_live(&paths).is_none() {
         // Best-effort detached spawn so the *next* wrapper invocation
         // can hit the daemon. Errors are swallowed: if the daemon never
         // comes up, the fallback path above keeps the registry correct.
         let _ = crate::daemon::lifecycle::try_spawn_detached();
     }
+}
+
+fn read_build_session_id_env() -> Option<u64> {
+    std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+}
+
+fn current_unix_ms() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Pull `--crate-name X` (or `--crate-name=X`) from a rustc arg list.
+/// Cargo always passes this flag — but the wrapper must tolerate
+/// unusual invocations that don't.
+fn parse_crate_name(args: &[String]) -> Option<&str> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == "--crate-name" {
+            return iter.next().map(String::as_str);
+        }
+        if let Some(value) = arg.strip_prefix("--crate-name=") {
+            return Some(value);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

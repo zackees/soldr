@@ -129,6 +129,11 @@ pub const CACHE_DISABLED_VALUE: &str = "0";
 /// Per-build session identifier recognized by zccache.
 pub const ZCCACHE_SESSION_ID_ENV_VAR: &str = "ZCCACHE_SESSION_ID";
 
+/// soldr's per-build session id, propagated from the cargo front door
+/// into every wrapper invocation so the daemon can correlate per-crate
+/// `RecordCompile` events to a single build session.
+pub const SOLDR_BUILD_SESSION_ID_ENV_VAR: &str = "SOLDR_BUILD_SESSION_ID";
+
 /// Managed zccache binary path propagated from the soldr front door into
 /// wrapper-mode children.
 pub const ZCCACHE_BINARY_ENV_VAR: &str = "SOLDR_ZCCACHE_BIN";
