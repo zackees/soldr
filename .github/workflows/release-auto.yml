@@ -769,7 +769,14 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.should_publish_pypi == 'true'
+      - publish
+    # Mirror publish-npm: only publish to PyPI if the GitHub Release
+    # for this version is in place (or wasn't needed because the tag
+    # already exists from a prior partial run). This avoids the
+    # "0.7.29 lost the GH release but landed on PyPI" failure mode
+    # where consumers can `pip install` a version whose source-of-truth
+    # release URL 404s.
+    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && ((needs.prepare.outputs.should_publish_github_release == 'true' && needs.publish.result == 'success') || (needs.prepare.outputs.should_publish_github_release != 'true' && needs.build.result == 'success'))
     runs-on: ubuntu-24.04
 
     steps:
