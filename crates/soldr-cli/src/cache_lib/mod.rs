@@ -15,6 +15,7 @@ pub mod gc;
 pub mod prune_target;
 pub mod save;
 pub mod state_db;
+pub mod strip_target;
 pub mod target_registry;
 
 /// Directory for the auto-GC structured log (`~/.soldr/logs/auto-gc.log`).

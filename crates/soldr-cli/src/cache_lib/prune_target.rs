@@ -220,6 +220,38 @@ pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, Regi
 /// same suffix layout.
 const SUBDIRS_WITH_HASH_SUFFIXES: &[&str] = &["deps", ".fingerprint", "incremental", "build"];
 
+/// Files cargo writes that the wrapper must NEVER strip from an
+/// archived `target/` snapshot. Removing any of these on the load side
+/// invalidates the entire snapshot in cargo's eyes — dropping
+/// `.rustc_info.json` forces a full rebuild because cargo re-probes the
+/// toolchain on the next invocation.
+///
+/// Patterns are documentary only; the trim path enumerates them
+/// explicitly rather than glob-matching. Keep this list and the
+/// trim-target implementation in sync.
+pub const MUST_KEEP_BIT_EXACT: &[&str] = &[
+    "CACHEDIR.TAG",
+    ".rustc_info.json",
+    ".fingerprint/*/dep-*",
+    ".fingerprint/*/output-*",
+    ".fingerprint/*/invoked.timestamp",
+];
+
+/// Files that must NEVER appear inside an archived `target/` snapshot.
+/// `.cargo-lock` is a transient flock sentinel — replaying it on the
+/// load side would falsely signal an in-flight build to cargo. The
+/// pre-archive trim path explicitly skips these names; the existing
+/// [`find_active_cargo_lock`] also refuses to prune while one is
+/// present locally.
+pub const NEVER_ARCHIVE: &[&str] = &[".cargo-lock"];
+
+/// Profile-relative subdirectory whose contents are rustc's incremental
+/// compilation database. Excluded from CI-profile archives because
+/// rustc resets the incremental session on every fresh runner and
+/// the per-process cache contributes ~0% hit rate against the next
+/// CI job's invocation.
+pub const INCREMENTAL_SUBDIR: &str = "incremental";
+
 fn collect_scan_dirs(target_dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let profiles = match fs::read_dir(target_dir) {

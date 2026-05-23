@@ -654,6 +654,55 @@ enum CacheSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Trim cargo-recreatable noise from a `target/` directory before
+    /// it is archived for CI cache transport. Composes:
+    ///
+    ///   * orphan hash-sibling pruning (same as `cache prune-target`),
+    ///   * strip of build-script logspam, recreatable binaries, and
+    ///     debug sidecars (CI profile only),
+    ///   * removal of `target/<profile>/incremental/` (CI profile only).
+    ///
+    /// The CI profile is intended for `setup-soldr` to call before its
+    /// `actions/cache@v4` save step so the rehydrate ships dramatically
+    /// fewer bytes. Local profile only runs the hash-sibling prune.
+    ///
+    /// Dry-run by default. Pass `--force` to actually delete entries.
+    /// Refuses to run when a `.cargo-lock` is present (active build).
+    #[command(name = "trim-target")]
+    TrimTarget {
+        /// Path to the cargo `target/` directory to trim.
+        path: std::path::PathBuf,
+        /// Trim profile selector. `local` (default): only orphan
+        /// hash-sibling prune. `ci`: also strip recreatable noise +
+        /// remove incremental/.
+        #[arg(long, value_enum, default_value_t = TrimProfileArg::Local)]
+        profile: TrimProfileArg,
+        /// Explicit dry-run mode (this is the default).
+        #[arg(long, conflicts_with_all = ["force", "no_dry_run"])]
+        dry_run: bool,
+        /// Negate the dry-run default and actually delete entries.
+        #[arg(long = "no-dry-run", conflicts_with = "dry_run")]
+        no_dry_run: bool,
+        /// Actually delete entries. Equivalent to `--no-dry-run`.
+        #[arg(long, conflicts_with = "dry_run")]
+        force: bool,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// Trim profile presets for `cache trim-target`. Local keeps everything
+/// a developer might want to inspect (incremental/, examples/, large
+/// build-script stderr); CI strips it all in service of a smaller
+/// archive.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum TrimProfileArg {
+    /// Lightweight: only prune orphan hash siblings.
+    Local,
+    /// Aggressive: prune + strip recreatable noise + drop
+    /// `incremental/`.
+    Ci,
 }
 
 #[tokio::main]
@@ -871,6 +920,27 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // is the documented default so we accept it explicitly.
                 let _ = dry_run;
                 cache::run_cache_prune_target_command(path, effective_dry_run, prune_json || json)?;
+            }
+            Some(CacheSubcommand::TrimTarget {
+                path,
+                profile,
+                dry_run,
+                no_dry_run,
+                force,
+                json: trim_json,
+            }) => {
+                let effective_dry_run = !(force || no_dry_run);
+                let _ = dry_run;
+                let trim_profile = match profile {
+                    TrimProfileArg::Local => cache::TrimProfile::Local,
+                    TrimProfileArg::Ci => cache::TrimProfile::Ci,
+                };
+                cache::run_cache_trim_target_command(
+                    path,
+                    trim_profile,
+                    effective_dry_run,
+                    trim_json || json,
+                )?;
             }
             None => {
                 let output = cache::collect_cache_output()?;
