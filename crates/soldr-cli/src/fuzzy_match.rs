@@ -98,10 +98,10 @@ pub(crate) fn levenshtein(a: &str, b: &str) -> usize {
 /// of the query length for longer strings.
 fn distance_threshold(query: &str) -> usize {
     let len = query.chars().count();
-    // ceil(0.3 × len) without floating-point: (len * 3 + 9) / 10
+    // ceil(0.3 × len) without floating-point: `(len * 3).div_ceil(10)`
     // gives the same value as `(len as f64 * 0.3).ceil() as usize`
     // for non-negative integer len up to usize::MAX / 4.
-    let scaled = (len * 3 + 9) / 10;
+    let scaled = (len * 3).div_ceil(10);
     scaled.max(2)
 }
 
@@ -123,7 +123,7 @@ pub(crate) fn suggest_close_match<'a>(query: &str, candidates: &'a [&'a str]) ->
         return None;
     }
     // Exact match → no suggestion (the regular dispatch handles it).
-    if candidates.iter().any(|c| *c == query) {
+    if candidates.contains(&query) {
         return None;
     }
 

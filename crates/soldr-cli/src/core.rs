@@ -22,6 +22,7 @@ pub enum Arch {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::enum_variant_names)] // `MacOs` ends with `Os` by design — it's the canonical Rust spelling.
 pub enum Os {
     Linux,
     MacOs,

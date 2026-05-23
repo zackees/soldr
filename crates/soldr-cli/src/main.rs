@@ -1,3 +1,10 @@
+// Mirror lib.rs: the bin tree compiles the same `fetch::*`,
+// `cache_lib::*`, `core::*` modules independently of the lib tree.
+// Items declared for external (lib) callers are dead from the bin's
+// perspective and would trip `-D warnings` on CI. lib.rs has the same
+// allow.
+#![allow(dead_code, unused_imports)]
+
 use clap::{Parser, Subcommand};
 
 mod binaries;
@@ -1119,7 +1126,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // we fire the network fetch. The fetch still runs — the
             // suggestion is advisory.
             if let Some(suggestion) =
-                fuzzy_match::suggest_close_match(&crate_name, &SOLDR_BUILTIN_VERBS)
+                fuzzy_match::suggest_close_match(&crate_name, SOLDR_BUILTIN_VERBS)
             {
                 eprintln!("soldr: '{crate_name}' is not a known built-in soldr verb.");
                 eprintln!("soldr: did you mean: {suggestion}?");
