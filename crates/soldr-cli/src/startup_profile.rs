@@ -154,26 +154,46 @@ impl WrapperProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
 
-    /// Local RAII guard that sets / restores the profile env var so
-    /// these tests don't race with each other. Mirrors the pattern
-    /// used by other env-touching tests in this crate.
+    /// Test-wide lock that serializes the env-var mutations below.
+    /// Without it, parallel test execution can clobber
+    /// `SOLDR_PROFILE_STARTUP` between `EnvGuard::set` and the
+    /// next-line `WrapperProfile::new()` read — caught by CI Linux
+    /// x64 where `mark_records_phase_when_enabled` flaked with
+    /// `phases.len() == 0` instead of `2`. Reproes locally too if
+    /// you re-run the suite a few times.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Local RAII guard that sets / restores the profile env var
+    /// AND holds `ENV_LOCK` for the lifetime of the guard.
     struct EnvGuard {
         key: &'static str,
         prior: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             let prior = std::env::var_os(key);
             std::env::set_var(key, value);
-            Self { key, prior }
+            Self {
+                key,
+                prior,
+                _guard: guard,
+            }
         }
 
         fn unset(key: &'static str) -> Self {
+            let guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
             let prior = std::env::var_os(key);
             std::env::remove_var(key);
-            Self { key, prior }
+            Self {
+                key,
+                prior,
+                _guard: guard,
+            }
         }
     }
 
