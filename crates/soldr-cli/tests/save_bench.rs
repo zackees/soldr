@@ -80,10 +80,11 @@ fn perf_roundtrip_realistic() {
     let t0 = Instant::now();
     let sreport = save(&SaveOptions {
         workspace: Some(&ws),
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
     let save_elapsed = t0.elapsed();
@@ -98,9 +99,10 @@ fn perf_roundtrip_realistic() {
     let t0 = Instant::now();
     let lreport = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache_restored,
+        cache_dir: Some(&cache_restored),
         workspace: Some(&ws),
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
     let load_elapsed = t0.elapsed();
