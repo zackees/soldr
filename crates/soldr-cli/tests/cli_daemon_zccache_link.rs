@@ -201,8 +201,15 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     }
     assert!(linked, "LinkZccache fire-and-forget never succeeded");
 
-    // Confirm the linkage landed in redb (via Status reply).
-    let info = client::status(&sock).expect("status");
+    // Confirm the linkage landed via Status. LinkZccache is fire-and-
+    // forget so the server task may not have applied it yet — poll
+    // up to 2 s before failing.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut info = client::status(&sock).expect("status");
+    while info.linked_zccache_pid.is_none() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+        info = client::status(&sock).expect("status");
+    }
     assert_eq!(info.linked_zccache_pid, Some(42));
 
     // Trigger shutdown via the explicit RPC.
