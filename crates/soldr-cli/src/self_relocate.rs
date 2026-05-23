@@ -15,6 +15,10 @@ pub(crate) const FORCE_RELOCATION_ENV_VAR: &str = "SOLDR_TEST_SELF_RELOCATE_FORC
 
 const RUNTIME_DIR: &str = "runtime";
 const SELF_DIR: &str = "soldr-self";
+/// Sibling of `SELF_DIR` used by the soldr-daemon trampoline. Same
+/// copy / hash / GC machinery, different sub-tree so a stale daemon
+/// runtime can be reaped without touching the soldr-self copies.
+const DAEMON_DIR: &str = "soldr-daemon";
 const LOCK_FILENAME: &str = ".lock";
 const GC_MARKER_FILENAME: &str = ".last-gc";
 const LAST_USED_FILENAME: &str = "last-used";
@@ -44,7 +48,7 @@ pub(crate) fn maybe_reexec_from_runtime(raw_args: &[String]) -> Result<Option<i3
         return Ok(None);
     }
 
-    let relocated_exe = ensure_relocated_exe(&paths, &current_exe)?;
+    let relocated_exe = ensure_relocated_exe_in(&runtime_root, &current_exe)?;
     run_periodic_runtime_gc(&paths, Some(&relocated_exe));
 
     let mut command = Command::new(&relocated_exe);
@@ -58,13 +62,42 @@ pub(crate) fn maybe_reexec_from_runtime(raw_args: &[String]) -> Result<Option<i3
 }
 
 pub(crate) fn run_periodic_runtime_gc(paths: &SoldrPaths, current_exe: Option<&Path>) {
-    let runtime_root = runtime_root(paths);
+    run_periodic_gc_in(&runtime_root(paths), current_exe);
+}
+
+/// Copy `daemon_src` into `~/.soldr/runtime/soldr-daemon/<hash>/` and
+/// return the relocated path. Reuses the soldr-self relocation
+/// machinery so the daemon running in long-lived processes is
+/// decoupled from the source path (worktree, cargo target/, package
+/// installer) — uninstall/upgrade/rm of the source no longer needs to
+/// wait for the daemon to exit. Returns `daemon_src` unchanged if the
+/// source already lives under the daemon-runtime root.
+pub(crate) fn ensure_daemon_relocated(
+    paths: &SoldrPaths,
+    daemon_src: &Path,
+) -> Result<PathBuf, SoldrError> {
+    let runtime_root = daemon_runtime_root(paths);
+    fs::create_dir_all(&runtime_root)?;
+    if path_is_under(daemon_src, &runtime_root) {
+        return Ok(daemon_src.to_path_buf());
+    }
+    ensure_relocated_exe_in(&runtime_root, daemon_src)
+}
+
+/// Periodic GC sweep for the daemon-runtime sub-tree. Same cadence and
+/// stale threshold as the soldr-self GC so a long-lived workspace
+/// can't grow unbounded copies.
+pub(crate) fn run_periodic_daemon_runtime_gc(paths: &SoldrPaths, current_exe: Option<&Path>) {
+    run_periodic_gc_in(&daemon_runtime_root(paths), current_exe);
+}
+
+fn run_periodic_gc_in(runtime_root: &Path, current_exe: Option<&Path>) {
     let current_dir = current_exe.and_then(Path::parent);
     let Ok(now) = current_unix_seconds() else {
         return;
     };
     let _ = maybe_run_periodic_gc_at(
-        &runtime_root,
+        runtime_root,
         current_dir,
         now,
         GC_INTERVAL_SECONDS,
@@ -94,10 +127,9 @@ fn truthy_env(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn ensure_relocated_exe(paths: &SoldrPaths, current_exe: &Path) -> Result<PathBuf, SoldrError> {
-    let runtime_root = runtime_root(paths);
-    fs::create_dir_all(&runtime_root)?;
-    let _lock = lock_runtime_root(&runtime_root)?;
+fn ensure_relocated_exe_in(runtime_root: &Path, current_exe: &Path) -> Result<PathBuf, SoldrError> {
+    fs::create_dir_all(runtime_root)?;
+    let _lock = lock_runtime_root(runtime_root)?;
 
     let identity = exe_identity(current_exe)?;
     let dest_dir = runtime_root.join(&identity.dir_name);
@@ -147,6 +179,10 @@ fn ensure_relocated_exe(paths: &SoldrPaths, current_exe: &Path) -> Result<PathBu
 
 fn runtime_root(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(RUNTIME_DIR).join(SELF_DIR)
+}
+
+pub(crate) fn daemon_runtime_root(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(RUNTIME_DIR).join(DAEMON_DIR)
 }
 
 fn lock_runtime_root(runtime_root: &Path) -> Result<File, SoldrError> {
@@ -385,7 +421,8 @@ mod tests {
         fs::write(&source, b"binary-content").expect("write source");
         let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
 
-        let relocated = ensure_relocated_exe(&paths, &source).expect("relocate exe");
+        let relocated =
+            ensure_relocated_exe_in(&runtime_root(&paths), &source).expect("relocate exe");
         let expected_hash = hash_file(&source).expect("hash source");
 
         assert!(relocated.is_file());
@@ -406,8 +443,35 @@ mod tests {
             .join(LAST_USED_FILENAME)
             .is_file());
 
-        let second = ensure_relocated_exe(&paths, &source).expect("reuse relocated exe");
+        let second =
+            ensure_relocated_exe_in(&runtime_root(&paths), &source).expect("reuse relocated exe");
         assert_eq!(second, relocated);
+    }
+
+    #[test]
+    fn ensure_daemon_relocated_copies_into_daemon_subtree() {
+        let temp = TempDir::new().expect("tempdir");
+        let source = temp.path().join("soldr-daemon.exe");
+        fs::write(&source, b"daemon-bin").expect("write daemon");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+
+        let relocated = ensure_daemon_relocated(&paths, &source).expect("relocate daemon");
+        assert!(relocated.is_file());
+        assert_eq!(fs::read(&relocated).expect("read relocated"), b"daemon-bin");
+        // Sub-tree must be the daemon root, NOT soldr-self.
+        let daemon_root = daemon_runtime_root(&paths);
+        assert!(
+            relocated.starts_with(&daemon_root),
+            "relocated path {} not under daemon root {}",
+            relocated.display(),
+            daemon_root.display(),
+        );
+        assert!(!relocated.starts_with(runtime_root(&paths)));
+
+        // Calling again with a source already under the daemon root
+        // is a no-op (returns the same path).
+        let reused = ensure_daemon_relocated(&paths, &relocated).expect("noop relocation");
+        assert_eq!(reused, relocated);
     }
 
     #[test]

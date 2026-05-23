@@ -602,6 +602,7 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
 
 pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
 
+#[derive(Clone)]
 pub struct SoldrPaths {
     pub root: PathBuf,
     pub bin: PathBuf,
@@ -628,8 +629,8 @@ impl SoldrPaths {
 
     /// Inner constructor split out so tests can inject explicit `env_root`
     /// + `home_root` values without mutating the process env. Other tests
-    /// in this binary read HOME / USERPROFILE too, so global env mutation
-    /// in a unit test races with parallel cases.
+    ///   in this binary read HOME / USERPROFILE too, so global env mutation
+    ///   in a unit test races with parallel cases.
     fn from_env_root_and_home(
         env_root: Option<PathBuf>,
         home_root: Result<PathBuf, SoldrError>,

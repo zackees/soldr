@@ -10,6 +10,7 @@ description = "CLI for soldr — instant tools, instant builds"
 [dependencies]
 # Folded in from former soldr-core / soldr-fetch / soldr-cache crates
 # (see crates/soldr-cli/src/{core,fetch,cache_lib}/).
+bincode = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
@@ -34,6 +35,13 @@ tracing-subscriber = { workspace = true }
 walkdir = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
+
+# libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
+# and detached spawn (setsid). On Windows the equivalent
+# OpenProcess / GetExitCodeProcess calls are declared inline so no
+# extra crate is needed.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 filetime = { workspace = true }
@@ -63,6 +71,13 @@ path = "src/lib.rs"
 [[bin]]
 name = "soldr"
 path = "src/main.rs"
+
+[[bin]]
+# Long-lived daemon that owns target/ tracking and (future phases) build
+# event correlation + linked zccache shutdown. Auto-started by the
+# wrapper on first invocation; falls back to direct redb on any error.
+name = "soldr-daemon"
+path = "src/bin/soldr_daemon.rs"
 
 [[bin]]
 # Test fixture for crates/soldr-cli/tests/cli_unknown_session_retry.rs
