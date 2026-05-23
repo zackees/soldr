@@ -160,10 +160,20 @@ fn doctor_reports_drift_when_component_missing() {
         },
     );
 
+    // Isolate SOLDR_CACHE_DIR / HOME / USERPROFILE so the doctor's
+    // zccache-bundle probe (which inspects `~/.soldr/bin/zccache-pinned/`)
+    // can't trip on a stale pinned install in the host's real
+    // `~/.soldr/`. Without this, a stale pinned-zccache `source.json`
+    // on the dev machine causes `soldr doctor` to exit 1 with empty
+    // stdout — a real bug worth fixing in `resolve_pinned_zccache`
+    // separately, but the test should be hermetic regardless.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_CACHE_DIR", &workspace)
+        .env("HOME", &workspace)
+        .env("USERPROFILE", &workspace)
         .output()
         .expect("failed to run soldr doctor --json");
 
@@ -215,10 +225,20 @@ fn doctor_reports_no_drift_when_everything_installed() {
         },
     );
 
+    // Isolate SOLDR_CACHE_DIR / HOME / USERPROFILE so the doctor's
+    // zccache-bundle probe (which inspects `~/.soldr/bin/zccache-pinned/`)
+    // can't trip on a stale pinned install in the host's real
+    // `~/.soldr/`. Without this, a stale pinned-zccache `source.json`
+    // on the dev machine causes `soldr doctor` to exit 1 with empty
+    // stdout — a real bug worth fixing in `resolve_pinned_zccache`
+    // separately, but the test should be hermetic regardless.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_CACHE_DIR", &workspace)
+        .env("HOME", &workspace)
+        .env("USERPROFILE", &workspace)
         .output()
         .expect("failed to run soldr doctor --json");
 
@@ -402,10 +422,20 @@ fn doctor_reports_missing_target() {
         },
     );
 
+    // Isolate SOLDR_CACHE_DIR / HOME / USERPROFILE so the doctor's
+    // zccache-bundle probe (which inspects `~/.soldr/bin/zccache-pinned/`)
+    // can't trip on a stale pinned install in the host's real
+    // `~/.soldr/`. Without this, a stale pinned-zccache `source.json`
+    // on the dev machine causes `soldr doctor` to exit 1 with empty
+    // stdout — a real bug worth fixing in `resolve_pinned_zccache`
+    // separately, but the test should be hermetic regardless.
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_CACHE_DIR", &workspace)
+        .env("HOME", &workspace)
+        .env("USERPROFILE", &workspace)
         .output()
         .expect("failed to run soldr doctor --json");
 
