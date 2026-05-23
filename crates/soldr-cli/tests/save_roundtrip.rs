@@ -75,10 +75,11 @@ fn roundtrip_basic_mtime_restoration() {
 
     let report = save(&SaveOptions {
         workspace: Some(&ws),
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
     assert!(
@@ -103,9 +104,10 @@ fn roundtrip_basic_mtime_restoration() {
 
     let lreport = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         workspace: Some(&ws),
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
 
@@ -145,10 +147,11 @@ fn load_skips_content_changed_files() {
     let (_g, ws, cache, archive) = fixture();
     save(&SaveOptions {
         workspace: Some(&ws),
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
 
@@ -166,9 +169,10 @@ fn load_skips_content_changed_files() {
 
     let lreport = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         workspace: Some(&ws),
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
 
@@ -189,10 +193,11 @@ fn load_skips_missing_files() {
     let (_g, ws, cache, archive) = fixture();
     save(&SaveOptions {
         workspace: Some(&ws),
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
 
@@ -200,9 +205,10 @@ fn load_skips_missing_files() {
 
     let lreport = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         workspace: Some(&ws),
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
 
@@ -217,10 +223,11 @@ fn load_skips_size_mismatch_without_hashing() {
     let (_g, ws, cache, archive) = fixture();
     save(&SaveOptions {
         workspace: Some(&ws),
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
 
@@ -229,9 +236,10 @@ fn load_skips_size_mismatch_without_hashing() {
 
     let lreport = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         workspace: Some(&ws),
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
 
@@ -246,21 +254,255 @@ fn cache_only_archive_skips_mtime_replay() {
     let (_g, _ws, cache, archive) = fixture();
     save(&SaveOptions {
         workspace: None,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         out: &archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        mtimes_only: false,
     })
     .expect("save ok");
     fs::remove_dir_all(&cache).unwrap();
     let r = load(&LoadOptions {
         archive: &archive,
-        cache_dir: &cache,
+        cache_dir: Some(&cache),
         workspace: None,
         threads: None,
+        mtimes_only: false,
     })
     .expect("load ok");
     assert_eq!(r.cache_files_restored, 4);
     assert_eq!(r.source_files_in_manifest, 0);
     assert_eq!(r.mtimes_applied, 0);
+}
+
+// ---- mtimes-only mode (setup-soldr's preserve-source-mtimes feature
+// promoted into the soldr CLI; see plan PR 2). ----
+
+#[test]
+fn mtimes_only_save_and_load_roundtrip() {
+    let (_g, ws, _cache, archive) = fixture();
+
+    // Snapshot original mtimes so we can verify they survive the round
+    // trip. The fixture writes files with whatever the current clock
+    // says; we pin them to known values for assertion stability.
+    for (rel, ms) in [
+        ("Cargo.toml", 1_700_000_000_000i64),
+        ("Cargo.lock", 1_700_000_010_000),
+        ("src/main.rs", 1_700_000_020_000),
+        ("src/lib.rs", 1_700_000_030_000),
+        ("crates/sub/Cargo.toml", 1_700_000_040_000),
+        ("crates/sub/src/lib.rs", 1_700_000_050_000),
+    ] {
+        touch(&ws.join(rel), ms);
+    }
+
+    let sreport = save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: None,
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect("mtimes-only save ok");
+
+    assert!(
+        sreport.source_files >= 6,
+        "saw {} source files",
+        sreport.source_files
+    );
+    assert_eq!(
+        sreport.cache_files, 0,
+        "mtimes-only must NOT bundle any cache files"
+    );
+    assert!(sreport.archive_bytes > 0, "archive must not be empty");
+
+    // Simulate actions/checkout pushing every mtime forward — the
+    // standard CI scenario this feature exists to neutralize.
+    let later = 1_900_000_000_000i64;
+    for rel in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "src/main.rs",
+        "src/lib.rs",
+        "crates/sub/Cargo.toml",
+        "crates/sub/src/lib.rs",
+    ] {
+        touch(&ws.join(rel), later);
+        assert_eq!(mtime_ms(&ws.join(rel)), later, "fixture mtime push failed");
+    }
+
+    let lreport = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: None,
+        workspace: Some(&ws),
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect("mtimes-only load ok");
+
+    assert_eq!(
+        lreport.cache_files_restored, 0,
+        "mtimes-only must NOT restore any cache files"
+    );
+    assert_eq!(lreport.mtimes_applied, sreport.source_files);
+    assert_eq!(lreport.mtimes_skipped_missing, 0);
+    assert_eq!(lreport.mtimes_skipped_size_mismatch, 0);
+    assert_eq!(lreport.mtimes_skipped_modified, 0);
+
+    // The pinned mtimes should be back where they were before checkout
+    // pushed them forward.
+    for (rel, want) in [
+        ("Cargo.toml", 1_700_000_000_000i64),
+        ("Cargo.lock", 1_700_000_010_000),
+        ("src/main.rs", 1_700_000_020_000),
+        ("src/lib.rs", 1_700_000_030_000),
+    ] {
+        let got = mtime_ms(&ws.join(rel));
+        assert_eq!(
+            got, want,
+            "{rel}: mtime not restored (got {got}, want {want})"
+        );
+    }
+}
+
+#[test]
+fn mtimes_only_load_refuses_modified_source() {
+    let (_g, ws, _cache, archive) = fixture();
+
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: None,
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect("save ok");
+
+    // Modify a source file with SAME-SIZE content so we exercise the
+    // blake3 gate (size-mismatch would short-circuit before hashing).
+    // The blake3 gate must refuse to apply the mtime — protecting
+    // against the underbuild scenario.
+    let original = b"fn main() {}\n"; // 13 bytes
+    let altered = b"fn x_n() {}\n\n"; // 13 bytes, same length, different bytes
+    assert_eq!(
+        original.len(),
+        altered.len(),
+        "test prep: lengths must match"
+    );
+    write(&ws.join("src/main.rs"), altered);
+    let now_before = mtime_ms(&ws.join("src/main.rs"));
+
+    let r = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: None,
+        workspace: Some(&ws),
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect("load ok");
+
+    assert!(
+        r.mtimes_skipped_modified >= 1,
+        "blake3-modified source must be counted as skipped_modified, got {r:?}"
+    );
+    assert_eq!(
+        r.mtimes_skipped_size_mismatch, 0,
+        "no size mismatch expected, got {r:?}"
+    );
+
+    // Verify on disk: the modified file's mtime was NOT rewound.
+    let now_after = mtime_ms(&ws.join("src/main.rs"));
+    assert_eq!(
+        now_before, now_after,
+        "modified file's mtime must be left alone"
+    );
+}
+
+#[test]
+fn mtimes_only_save_without_workspace_errors() {
+    let (_g, _ws, _cache, archive) = fixture();
+    let err = save(&SaveOptions {
+        workspace: None,
+        cache_dir: None,
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect_err("save --mtimes-only without workspace must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("workspace") || msg.contains("--workspace"),
+        "error message must mention workspace: {msg}"
+    );
+}
+
+#[test]
+fn mtimes_only_save_with_cache_dir_errors() {
+    let (_g, ws, cache, archive) = fixture();
+    let err = save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect_err("save --mtimes-only WITH cache-dir must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cache") || msg.contains("--cache-dir"),
+        "error message must mention cache: {msg}"
+    );
+}
+
+#[test]
+fn mtimes_only_load_rejects_cache_entries() {
+    // Build a real cache+manifest archive, then try to load it as
+    // mtimes-only. The load must refuse the first cache entry it sees.
+    let (_g, ws, cache, archive) = fixture();
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+    })
+    .expect("normal save ok");
+
+    let err = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: None,
+        workspace: Some(&ws),
+        threads: None,
+        mtimes_only: true,
+    })
+    .expect_err("mtimes-only load of cache-bearing archive must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("mtimes_only") || msg.contains("cache"),
+        "error message must mention the cache entry rejection: {msg}"
+    );
+}
+
+#[test]
+fn save_without_cache_or_mtimes_only_errors() {
+    let (_g, ws, _cache, archive) = fixture();
+    let err = save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: None,
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+    })
+    .expect_err("save without cache and without mtimes_only must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--cache-dir") || msg.contains("--mtimes-only"),
+        "error message must mention required flag: {msg}"
+    );
 }

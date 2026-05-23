@@ -15,13 +15,15 @@ use clap::Args;
 
 #[derive(Debug, Args)]
 pub struct SaveArgs {
-    /// Build-cache directory whose contents should be bundled.
+    /// Build-cache directory whose contents should be bundled. Omit
+    /// when `--mtimes-only` is set (manifest-only archive).
     #[arg(long, value_name = "DIR")]
-    pub cache_dir: PathBuf,
+    pub cache_dir: Option<PathBuf>,
 
     /// Workspace whose tracked source files should be snapshotted.
     /// Omit to produce a cache-only archive (no mtime snapshot — load
-    /// will still restore the cache but skip the replay).
+    /// will still restore the cache but skip the replay). Required when
+    /// `--mtimes-only` is set.
     #[arg(long, value_name = "DIR")]
     pub workspace: Option<PathBuf>,
 
@@ -40,9 +42,17 @@ pub struct SaveArgs {
     pub threads: Option<usize>,
 
     /// Emit a machine-readable JSON line summarising the save. Stable
-    /// schema: `{"source_files","cache_files","archive_bytes","elapsed_ms"}`.
+    /// schema: `{"source_files","cache_files","archive_bytes","elapsed_ms","mtimes_only"}`.
     #[arg(long)]
     pub json: bool,
+
+    /// Produce a manifest-only archive — only the source-file mtime
+    /// snapshot, no cache payload. Requires `--workspace`; mutually
+    /// exclusive with `--cache-dir`. This is the setup-soldr
+    /// `preserve-source-mtimes` feature, promoted into the soldr CLI
+    /// so any wrapper can produce the same sidecar.
+    #[arg(long = "mtimes-only")]
+    pub mtimes_only: bool,
 }
 
 #[derive(Debug, Args)]
@@ -51,12 +61,13 @@ pub struct LoadArgs {
     #[arg(long, value_name = "FILE")]
     pub archive: PathBuf,
 
-    /// Destination cache directory. Created if it doesn't exist.
+    /// Destination cache directory. Created if it doesn't exist. Omit
+    /// when `--mtimes-only` is set.
     #[arg(long, value_name = "DIR")]
-    pub cache_dir: PathBuf,
+    pub cache_dir: Option<PathBuf>,
 
     /// Workspace where source-file mtimes should be replayed. Omit
-    /// to restore the cache only.
+    /// to restore the cache only. Required when `--mtimes-only` is set.
     #[arg(long, value_name = "DIR")]
     pub workspace: Option<PathBuf>,
 
@@ -69,15 +80,22 @@ pub struct LoadArgs {
     /// schema: see `soldr save --json`'s counterpart fields.
     #[arg(long)]
     pub json: bool,
+
+    /// Treat the archive as a manifest-only snapshot — apply mtimes
+    /// only, refuse to extract any cache entries. Requires
+    /// `--workspace`; mutually exclusive with `--cache-dir`.
+    #[arg(long = "mtimes-only")]
+    pub mtimes_only: bool,
 }
 
 pub fn run_save(args: SaveArgs) -> i32 {
     let opts = SaveOptions {
         workspace: args.workspace.as_deref(),
-        cache_dir: &args.cache_dir,
+        cache_dir: args.cache_dir.as_deref(),
         out: &args.out,
         zstd_level: args.zstd_level,
         threads: args.threads,
+        mtimes_only: args.mtimes_only,
     };
     let report = match save(&opts) {
         Ok(r) => r,
@@ -88,16 +106,21 @@ pub fn run_save(args: SaveArgs) -> i32 {
     };
     if args.json {
         println!(
-            "{{\"source_files\":{},\"cache_files\":{},\"archive_bytes\":{},\"elapsed_ms\":{}}}",
-            report.source_files, report.cache_files, report.archive_bytes, report.elapsed_ms,
-        );
-    } else {
-        println!(
-            "soldr save: source_files={} cache_files={} archive_bytes={} elapsed_ms={} out={}",
+            "{{\"source_files\":{},\"cache_files\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"mtimes_only\":{}}}",
             report.source_files,
             report.cache_files,
             report.archive_bytes,
             report.elapsed_ms,
+            args.mtimes_only,
+        );
+    } else {
+        println!(
+            "soldr save: source_files={} cache_files={} archive_bytes={} elapsed_ms={} mtimes_only={} out={}",
+            report.source_files,
+            report.cache_files,
+            report.archive_bytes,
+            report.elapsed_ms,
+            args.mtimes_only,
             args.out.display(),
         );
     }
@@ -107,9 +130,10 @@ pub fn run_save(args: SaveArgs) -> i32 {
 pub fn run_load(args: LoadArgs) -> i32 {
     let opts = LoadOptions {
         archive: &args.archive,
-        cache_dir: &args.cache_dir,
+        cache_dir: args.cache_dir.as_deref(),
         workspace: args.workspace.as_deref(),
         threads: args.threads,
+        mtimes_only: args.mtimes_only,
     };
     let report = match load(&opts) {
         Ok(r) => r,

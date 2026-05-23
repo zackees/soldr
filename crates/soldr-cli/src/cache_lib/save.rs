@@ -259,10 +259,12 @@ fn rel_to_posix(rel: &Path) -> String {
 #[derive(Debug, Clone)]
 pub struct SaveOptions<'a> {
     /// Workspace root to snapshot source mtimes from. `None` skips the
-    /// source-file portion entirely (cache-only archive).
+    /// source-file portion entirely (cache-only archive). Required when
+    /// `mtimes_only` is `true`.
     pub workspace: Option<&'a Path>,
-    /// Cache directory whose contents will be bundled.
-    pub cache_dir: &'a Path,
+    /// Cache directory whose contents will be bundled. `None` is only
+    /// permitted when `mtimes_only` is `true` (manifest-only archive).
+    pub cache_dir: Option<&'a Path>,
     /// Destination archive path.
     pub out: &'a Path,
     /// zstd compression level (1..=22). 3 is a good default; anything
@@ -271,6 +273,14 @@ pub struct SaveOptions<'a> {
     /// Number of rayon threads for the hash + tar walk. `None` uses the
     /// global rayon pool (`num_cpus`).
     pub threads: Option<usize>,
+    /// Produce a manifest-only archive: skip the cache-dir walk and
+    /// write a tar.zst whose sole entry is `SOLDR_MANIFEST.pb`. Requires
+    /// `workspace` to be `Some`. The intent is a standalone source-file
+    /// mtime snapshot that setup-soldr (or any other CI wrapper) can
+    /// produce + restore without bundling an artifact cache. The on-disk
+    /// shape is otherwise byte-identical to a normal save, so the same
+    /// `load()` path consumes it.
+    pub mtimes_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -281,15 +291,53 @@ pub struct SaveReport {
     pub elapsed_ms: u64,
 }
 
+/// Validate save inputs:
+/// * When `mtimes_only`, `workspace` MUST be `Some` and `cache_dir`
+///   MUST be `None` (passing both would silently ignore one of them).
+/// * Otherwise `cache_dir` MUST be `Some` (cache-only archives are the
+///   historical baseline behavior; an archive with neither a cache nor a
+///   workspace is empty and almost certainly a CLI mistake).
+fn validate_save_inputs(opts: &SaveOptions<'_>) -> Result<()> {
+    if opts.mtimes_only {
+        if opts.workspace.is_none() {
+            return Err(SaveLoadError::BareIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "soldr save --mtimes-only requires a --workspace to snapshot",
+            )));
+        }
+        if opts.cache_dir.is_some() {
+            return Err(SaveLoadError::BareIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "soldr save --mtimes-only must NOT be combined with --cache-dir",
+            )));
+        }
+    } else if opts.cache_dir.is_none() {
+        return Err(SaveLoadError::BareIo(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "soldr save requires either --cache-dir or --mtimes-only",
+        )));
+    }
+    Ok(())
+}
+
 /// Bundle `cache_dir` + a workspace-source-mtime snapshot into a single
 /// `.tar.zst` at `out`.
+///
+/// When [`SaveOptions::mtimes_only`] is `true`, the cache walk is skipped
+/// entirely and the archive contains only `SOLDR_MANIFEST.pb`. That mode
+/// requires `workspace` to be `Some` — there is nothing else to snapshot.
 pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
+    validate_save_inputs(opts)?;
     let start = std::time::Instant::now();
 
     // Build the manifest (parallel hash if a workspace is provided)
     // AND enumerate cache files concurrently. The two walks touch
     // disjoint directory trees, so running them in parallel halves
     // page-cache-cold first-walk latency on big workspaces.
+    //
+    // In `mtimes_only` mode the cache half is a no-op closure — we
+    // keep the join shape so the source walk still benefits from the
+    // shared rayon pool.
     let pool = build_pool(opts.threads)?;
     let (source_result, cache_files_paths): (Result<Vec<SourceFile>>, Result<Vec<PathBuf>>) = pool
         .install(|| {
@@ -315,10 +363,12 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                         .collect()
                 },
                 || -> Result<Vec<PathBuf>> {
-                    if opts.cache_dir.exists() {
-                        walk_cache_files(opts.cache_dir, opts.threads)
-                    } else {
-                        Ok(Vec::new())
+                    if opts.mtimes_only {
+                        return Ok(Vec::new());
+                    }
+                    match opts.cache_dir {
+                        Some(dir) if dir.exists() => walk_cache_files(dir, opts.threads),
+                        _ => Ok(Vec::new()),
                     }
                 },
             )
@@ -336,7 +386,16 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
             .workspace
             .map(|p| p.display().to_string())
             .unwrap_or_default(),
-        cache_dir_name: CACHE_DIR_NAME.into(),
+        // Empty cache_dir_name signals an mtimes-only archive to any
+        // future reader that wants to short-circuit the cache-extract
+        // path without re-parsing the SaveOptions. The existing reader
+        // tolerates either value because it strips the CACHE_DIR_NAME
+        // prefix only when a `cache/...` entry shows up in the tar.
+        cache_dir_name: if opts.mtimes_only {
+            String::new()
+        } else {
+            CACHE_DIR_NAME.into()
+        },
         source_file_count: manifest_files.len() as u64,
         cache_file_count: 0,
         files: manifest_files,
@@ -393,10 +452,16 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
         // zstd encoder, which does the heavy CPU work in its own
         // thread pool.
         if !cache_files_paths.is_empty() {
+            // cache_files_paths is non-empty only when we enumerated a
+            // real cache_dir above (i.e. not the mtimes_only branch),
+            // so this expect() is unreachable in practice.
+            let cache_dir = opts
+                .cache_dir
+                .expect("cache_files_paths non-empty implies cache_dir was set");
             cache_files = cache_files_paths.len() as u64;
             for abs in &cache_files_paths {
                 let rel = abs
-                    .strip_prefix(opts.cache_dir)
+                    .strip_prefix(cache_dir)
                     .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
                 let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
                 archive_path.push(rel);
@@ -438,11 +503,21 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
 #[derive(Debug, Clone)]
 pub struct LoadOptions<'a> {
     pub archive: &'a Path,
-    pub cache_dir: &'a Path,
+    /// Destination cache directory. `None` is only permitted when
+    /// `mtimes_only` is `true`; in that mode any `cache/...` tar entry
+    /// is treated as a hard error since the archive should not have
+    /// contained one.
+    pub cache_dir: Option<&'a Path>,
     /// Workspace whose source-file mtimes should be replayed. `None`
-    /// skips the mtime-replay step (cache-only load).
+    /// skips the mtime-replay step (cache-only load). Required when
+    /// `mtimes_only` is `true`.
     pub workspace: Option<&'a Path>,
     pub threads: Option<usize>,
+    /// Treat the archive as a manifest-only snapshot. Skip the cache
+    /// extraction step (the archive should not contain any `cache/...`
+    /// entries; one is an error). Requires `workspace` to be `Some` —
+    /// otherwise the load is a no-op.
+    pub mtimes_only: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -456,6 +531,34 @@ pub struct LoadReport {
     pub elapsed_ms: u64,
 }
 
+/// Validate load inputs:
+/// * When `mtimes_only`, `workspace` MUST be `Some` and `cache_dir`
+///   MUST be `None`. Mixing the two is a CLI mistake.
+/// * Otherwise `cache_dir` MUST be `Some` (the load has to know where
+///   to extract cache entries).
+fn validate_load_inputs(opts: &LoadOptions<'_>) -> Result<()> {
+    if opts.mtimes_only {
+        if opts.workspace.is_none() {
+            return Err(SaveLoadError::BareIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "soldr load --mtimes-only requires a --workspace to replay into",
+            )));
+        }
+        if opts.cache_dir.is_some() {
+            return Err(SaveLoadError::BareIo(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "soldr load --mtimes-only must NOT be combined with --cache-dir",
+            )));
+        }
+    } else if opts.cache_dir.is_none() {
+        return Err(SaveLoadError::BareIo(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "soldr load requires either --cache-dir or --mtimes-only",
+        )));
+    }
+    Ok(())
+}
+
 /// Decompress + restore an archive produced by [`save`].
 ///
 /// The implementation pipelines two operations:
@@ -465,10 +568,17 @@ pub struct LoadReport {
 ///      archive `save` produces), hand the mtime-replay work off to
 ///      the thread pool so it runs concurrently with the remaining
 ///      cache-file extraction.
+///
+/// When [`LoadOptions::mtimes_only`] is `true`, only the manifest entry
+/// is consumed; any `cache/...` entry in the archive is rejected as a
+/// hard error (the producer should not have included one).
 pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
+    validate_load_inputs(opts)?;
     let start = std::time::Instant::now();
 
-    std::fs::create_dir_all(opts.cache_dir).map_err(|e| io(opts.cache_dir, e))?;
+    if let Some(dir) = opts.cache_dir {
+        std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+    }
 
     let in_file = File::open(opts.archive).map_err(|e| io(opts.archive, e))?;
     let buf = BufReader::with_capacity(16 * 1024 * 1024, in_file);
@@ -515,14 +625,25 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             continue;
         }
 
-        // Expect everything else under `cache/`.
+        // Expect everything else under `cache/`. In mtimes_only mode
+        // there should be no such entries — a producer-side bug if
+        // there is one, so reject it loudly.
         let stripped = match path.strip_prefix(CACHE_DIR_NAME) {
             Ok(p) => p.to_path_buf(),
             Err(_) => {
                 return Err(SaveLoadError::BadArchivePath(path.display().to_string()));
             }
         };
-        let dest = opts.cache_dir.join(&stripped);
+        if opts.mtimes_only {
+            return Err(SaveLoadError::BadArchivePath(format!(
+                "mtimes_only load refuses cache entry: {}",
+                path.display()
+            )));
+        }
+        // cache_dir is guaranteed Some by validate_load_inputs when we
+        // reach this branch.
+        let cache_dir = opts.cache_dir.expect("cache_dir checked at entry");
+        let dest = cache_dir.join(&stripped);
         if entry.header().entry_type() == tar::EntryType::Directory {
             std::fs::create_dir_all(&dest).map_err(|e| io(&dest, e))?;
             continue;
