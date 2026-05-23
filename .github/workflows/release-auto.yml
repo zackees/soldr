@@ -730,16 +730,51 @@ jobs:
           pattern: release-soldr-*
           merge-multiple: true
 
+      # Wheels ship as GH-release assets alongside the .tar.zst archives.
+      # This is parity with what `publish-pypi` uploads to PyPI: the same
+      # 6 platform wheels become offline-installable via
+      # `pip install <release-asset-url>`, and the assets are attestation-
+      # covered via the same SHA256SUMS file below.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: dist
+          pattern: pypi-soldr-*
+          merge-multiple: true
+
       - name: Generate release checksums
         shell: bash
         run: |
           set -euo pipefail
           cd dist
+          # Glob expansion happens before the `>` redirect creates the
+          # output file, so SHA256SUMS.txt is never present in the set
+          # it's writing.
           sha256sum soldr-* > "soldr-${{ needs.prepare.outputs.version }}-SHA256SUMS.txt"
 
       - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-checksums: dist/soldr-${{ needs.prepare.outputs.version }}-SHA256SUMS.txt
+
+      # Pre-create the tag via the git refs API instead of letting
+      # `gh release create --target <sha>` create it implicitly.
+      # Rationale: on workflow_dispatch runs (vs push) the GITHUB_TOKEN
+      # cannot create-via-release at a protected branch's HEAD — `gh
+      # release create` returns "HTTP 403: Resource not accessible by
+      # integration" even though the job log shows `Contents: write`.
+      # The /git/refs endpoint accepts the same token at this repo, so
+      # creating the tag first lets the subsequent release-create see an
+      # existing tag and skip the implicit-tag-creation that was the
+      # source of the 403.
+      - name: Pre-create release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -X POST \
+            -f "ref=refs/tags/${{ needs.prepare.outputs.version }}" \
+            -f "sha=${{ needs.prepare.outputs.commit_sha }}"
 
       - name: Create draft GitHub Release
         env:
