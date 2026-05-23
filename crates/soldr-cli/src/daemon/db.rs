@@ -4,10 +4,10 @@
 //! and the wrapper / GC tools open the same file directly.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
-//! - `daemon_builds`   : u64 session_id  → bincoded BuildRecord
-//! - `daemon_events`   : u64 event_id    → bincoded Event
-//! - `daemon_meta`     : &str meta_key   → u64 value (next event id;
-//!                                          linked zccache PID; etc.)
+//! - `daemon_builds`  : u64 session_id → bincoded BuildRecord
+//! - `daemon_events`  : u64 event_id   → bincoded Event
+//! - `daemon_meta`    : `&str` key     → u64 (next event id, linked
+//!   zccache PID, ...)
 
 use crate::cache_lib::target_registry::RegistryError;
 use crate::daemon::protocol::BuildRecord;

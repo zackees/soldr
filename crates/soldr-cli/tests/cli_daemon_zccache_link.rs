@@ -8,7 +8,7 @@
 //! RPC, the stamp file must contain a `stop` line — proving the
 //! shutdown hook fired.
 
-#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stdout, dead_code, unused_imports)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -65,7 +65,7 @@ fn install_fake_zccache(cache_root: &Path, log_path: &Path) -> PathBuf {
         // tests that already cover the same execve path.
         let _ = log_path;
         let _ = bin;
-        return PathBuf::new();
+        PathBuf::new()
     }
     #[cfg(not(windows))]
     {
@@ -114,9 +114,7 @@ impl DaemonProc {
     }
 
     fn wait(&mut self, max: Duration) -> Option<std::process::ExitStatus> {
-        let Some(child) = self.child.as_mut() else {
-            return None;
-        };
+        let child = self.child.as_mut()?;
         let deadline = Instant::now() + max;
         while Instant::now() < deadline {
             if let Ok(Some(status)) = child.try_wait() {
