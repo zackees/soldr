@@ -57,8 +57,25 @@ pub fn soldr_daemon_dir(paths: &SoldrPaths) -> PathBuf {
 
 /// Unix-domain-socket path used by soldr-daemon on Unix. On Windows the
 /// daemon listens on a named pipe instead — see `daemon_pipe_name`.
+///
+/// macOS caps `sockaddr_un.sun_path` at 104 bytes (Linux: 108). When the
+/// natural cache-derived path would exceed that, fall back to a short
+/// hash-derived path under `$TMPDIR` (default `/tmp`) keyed on the cache
+/// root so two `SOLDR_CACHE_DIR`s can't collide. The PID file + log
+/// paths stay under the cache root — only the socket needs a length cap.
 pub fn daemon_sock_path(paths: &SoldrPaths) -> PathBuf {
-    soldr_daemon_dir(paths).join("sock")
+    let preferred = soldr_daemon_dir(paths).join("sock");
+    if cfg!(unix) && preferred.as_os_str().len() > 100 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        paths.cache.hash(&mut hasher);
+        let suffix = format!("{:016x}", hasher.finish());
+        let tmp = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        return tmp.join(format!("sd-{}.sock", &suffix[..12]));
+    }
+    preferred
 }
 
 /// PID + active-binary file written by soldr-daemon. Readers verify the

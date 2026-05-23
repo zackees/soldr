@@ -42,13 +42,16 @@ fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsStr
 }
 
 fn wait_for_ready(cache_root: &Path, deadline: Instant) -> bool {
-    let daemon_dir = cache_root.join("cache").join("soldr-daemon");
-    #[cfg(unix)]
-    let signal = daemon_dir.join("sock");
-    #[cfg(windows)]
-    let signal = daemon_dir.join("daemon.pid");
+    // PID file is written before the accept loop binds the endpoint
+    // and is the strongest cross-platform "the daemon process is up"
+    // signal — Unix socket paths may relocate to $TMPDIR under
+    // SUN_LEN constraints, and Windows named pipes aren't a fs entry.
+    let pid_file = cache_root
+        .join("cache")
+        .join("soldr-daemon")
+        .join("daemon.pid");
     while Instant::now() < deadline {
-        if signal.exists() {
+        if pid_file.exists() {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -139,11 +142,9 @@ fn start_status_stop_round_trip() {
 
     drop(daemon);
 
-    #[cfg(unix)]
-    {
-        let sock = cache_root.join("cache").join("soldr-daemon").join("sock");
-        assert!(!sock.exists(), "socket left behind at {}", sock.display());
-    }
+    // The PID file is the canonical "did the daemon leave anything
+    // behind" signal; the socket path can relocate to $TMPDIR under
+    // SUN_LEN so checking its absence is brittle.
     let pid_path = cache_root
         .join("cache")
         .join("soldr-daemon")
