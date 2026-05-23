@@ -18,3 +18,4 @@ pub mod cache_lib;
 pub mod core;
 pub mod daemon;
 pub mod fetch;
+pub mod self_relocate;

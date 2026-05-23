@@ -96,18 +96,39 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
     }
 }
 
-/// Attempt to spawn a detached `soldr-daemon` next to the running
-/// `soldr` executable. Best-effort: returns Ok(()) on spawn success,
-/// Err otherwise. Caller MUST treat the daemon as eventually-consistent
-/// — the spawn returns before the socket is ready.
+/// Attempt to spawn a detached `soldr-daemon`. Resolves the daemon
+/// binary as a sibling of the current `soldr` executable, **relocates
+/// it into `~/.soldr/runtime/soldr-daemon/<hash>/`** so the long-lived
+/// daemon doesn't hold a file lock on the original (worktree target/,
+/// site-packages, package upgrade, etc.) — and only then spawns.
+/// Mirrors the pattern `self_relocate.rs` already uses for `soldr`
+/// itself, sharing the same hash / lock / periodic-GC machinery via a
+/// sibling `runtime/soldr-daemon/` sub-tree.
+///
+/// Best-effort: returns Ok(()) on spawn success, Err otherwise. Caller
+/// MUST treat the daemon as eventually-consistent — the spawn returns
+/// before the socket is ready.
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
-    let daemon_path = sibling_daemon_binary(&current);
-    if !daemon_path.exists() {
+    let daemon_src = sibling_daemon_binary(&current);
+    if !daemon_src.exists() {
         return Err(LifecycleError::NoExe);
     }
 
-    spawn_detached_inner(&daemon_path).map_err(LifecycleError::Spawn)
+    let relocated = match SoldrPaths::new() {
+        Ok(paths) => {
+            let r = crate::self_relocate::ensure_daemon_relocated(&paths, &daemon_src)
+                .unwrap_or_else(|_| daemon_src.clone());
+            crate::self_relocate::run_periodic_daemon_runtime_gc(&paths, Some(&r));
+            r
+        }
+        // No cache root resolved → run in place. The daemon itself
+        // tries SoldrPaths::new() at startup and will surface the
+        // same error there.
+        Err(_) => daemon_src,
+    };
+
+    spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
 }
 
 fn sibling_daemon_binary(current: &Path) -> PathBuf {
