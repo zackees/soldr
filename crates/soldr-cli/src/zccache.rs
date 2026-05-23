@@ -223,6 +223,18 @@ async fn prepare_zccache_build(
     );
     cargo.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
 
+    // Phase 3: tell the soldr-daemon (if running) that this session is
+    // linked to a zccache daemon. The PID field is informational —
+    // shutdown invokes the global `zccache stop` rather than targeting
+    // a specific PID — so we record the session-id hash modulo u32 as a
+    // distinct, non-zero token. Fire-and-forget; nothing about the
+    // cargo build depends on it.
+    let zccache_token = session_id
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
+        .max(1);
+    crate::daemon::client::link_zccache(paths, zccache_token);
+
     // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto so
     // multiple worktrees of the same repo share zccache hits. Honor any
     // user-supplied ZCCACHE_PATH_REMAP, and the SOLDR_PATH_REMAP=off

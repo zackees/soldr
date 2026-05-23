@@ -1425,6 +1425,9 @@ fn run_soldr_target_purge_for_sweep(
 const AUTO_GC_THROTTLE_SECONDS: u64 = 5 * 60;
 const AUTO_GC_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
 const AUTO_GC_DISABLE_ENV_VAR: &str = "SOLDR_AUTO_GC_DISABLED";
+/// Phase 2: retain `daemon_events` rows for 30 days. Older rows are
+/// dropped by the Tier-0 step of `run_auto_gc_background`.
+const DAEMON_EVENT_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
 pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
     if auto_gc_env_disabled() {
@@ -1485,6 +1488,28 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     use crate::cache_lib::auto_gc::DiskFreeProbe as _;
     let start = std::time::Instant::now();
     let paths = SoldrPaths::with_root(paths_root);
+
+    // Tier-0 (Phase 2): prune `daemon_events` rows older than 30 days
+    // before any disk-pressure tiers run. Bounded, cheap, runs even when
+    // the volume isn't below trigger so the event log can't grow
+    // unbounded between auto-GC firings.
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    if db_path.exists() {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let cutoff_ms = now_ms - DAEMON_EVENT_TTL_MS;
+        if let Ok(removed) = crate::daemon::db::prune_events_older_than(&db_path, cutoff_ms) {
+            if removed > 0 {
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!("auto-gc tier=0 daemon_events_pruned={removed}"),
+                );
+            }
+        }
+    }
+
     let config = paths.load_config().auto_gc;
     let (validated, warnings) = crate::cache_lib::auto_gc::validate_config(&config);
     for warning in &warnings {

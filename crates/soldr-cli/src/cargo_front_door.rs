@@ -19,6 +19,27 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::io::Write;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// 64-bit build session id: high 32 bits = unix-ms truncated, low 32
+/// bits = pid-XOR-nanos so two concurrent builds in the same ms never
+/// collide. Cheap and good enough for in-process correlation.
+fn generate_build_session_id() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let high = ((nanos / 1_000_000) as u64) & 0xFFFF_FFFF;
+    let low = ((nanos as u64) ^ (std::process::id() as u64)) & 0xFFFF_FFFF;
+    (high << 32) | low
+}
+
+fn current_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
@@ -124,6 +145,25 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache_lib::CACHE_ENABLED_ENV_VAR,
         crate::cache_lib::cache_enabled_env_value(cache_enabled_for_cargo),
     );
+
+    // Phase 2: per-build session correlation. Stamp every wrapper
+    // invocation with a u64 session id and fire BuildSessionStart to
+    // the daemon (fire-and-forget). On exit we fire BuildSessionEnd
+    // so the daemon can finalize the per-crate timing aggregate.
+    let session_id = generate_build_session_id();
+    command.env(
+        crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR,
+        session_id.to_string(),
+    );
+    let session_started_at_ms = current_unix_ms();
+    let session_repo_root =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    crate::daemon::client::build_session_start(
+        &paths,
+        session_id,
+        &session_repo_root,
+        session_started_at_ms,
+    );
     if build_like_cargo {
         // Cargo front door only: keep startup/low-disk warnings off unrelated
         // commands and out of the rustc-wrapper hot path.
@@ -212,6 +252,16 @@ pub(crate) async fn run_cargo_front_door(
         } else {
             diagnostic_capture
         };
+
+    // Phase 2: fire BuildSessionEnd before the success/failure
+    // branches do any further work. Best-effort — never affects the
+    // build's own outcome.
+    crate::daemon::client::build_session_end(
+        &paths,
+        session_id,
+        status.code().unwrap_or(-1),
+        current_unix_ms(),
+    );
 
     if status.success() {
         if let Some(plan) = plan_ctx.as_ref() {

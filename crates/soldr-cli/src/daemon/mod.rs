@@ -20,7 +20,9 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod client;
+pub mod db;
 pub mod ipc;
 pub mod lifecycle;
 pub mod protocol;
 pub mod server;
+pub mod zccache_link;

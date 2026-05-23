@@ -26,14 +26,54 @@ pub enum Request {
     /// state. Used by `soldr daemon status`.
     Status,
     /// Request-response: ask the daemon to drain and exit. Used by
-    /// `soldr daemon stop` and (Phase 3) by linked-zccache shutdown.
+    /// `soldr daemon stop` and (Phase 3) linked-zccache shutdown.
     Shutdown,
+    /// Fire-and-forget: open a build session. Issued by the cargo
+    /// front door immediately before spawning cargo.
+    BuildSessionStart {
+        session_id: u64,
+        repo_root: String,
+        started_at_ms: i64,
+    },
+    /// Fire-and-forget: finalize a build session. Issued by the cargo
+    /// front door after cargo exits.
+    BuildSessionEnd {
+        session_id: u64,
+        exit_code: i32,
+        ended_at_ms: i64,
+    },
+    /// Fire-and-forget: record one rustc invocation inside a build
+    /// session. `duration_us` is `None` on Unix where the wrapper
+    /// `exec()`s into zccache and never returns (only the start event
+    /// is observable from soldr's side); on Windows the wrapper waits
+    /// for the spawned process and fills the duration.
+    RecordCompile {
+        session_id: u64,
+        crate_name: String,
+        target_dir: String,
+        started_at_ms: i64,
+        duration_us: Option<u64>,
+    },
+    /// Request-response: return the most recent build records, newest
+    /// first, up to `limit`. Optional `since_ms` filters to records
+    /// whose `started_at_ms >= since_ms`.
+    ListBuilds { limit: u32, since_ms: Option<i64> },
+    /// Request-response: return finished build records whose
+    /// `total_wall_ms >= threshold_ms`, sorted desc by `total_wall_ms`,
+    /// capped at `limit`.
+    ListSlowBuilds { threshold_ms: u64, limit: u32 },
+    /// Fire-and-forget: tell the daemon which zccache daemon PID is
+    /// linked to this soldr-daemon's session. On daemon shutdown
+    /// (explicit RPC, signal, or idle timeout), the daemon spawns
+    /// `zccache stop` against this PID before exiting.
+    LinkZccache { zccache_pid: u32 },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
     Status(StatusInfo),
     ShuttingDown,
+    Builds(Vec<BuildRecord>),
     Error(String),
 }
 
@@ -43,6 +83,19 @@ pub struct StatusInfo {
     pub pid: u32,
     pub uptime_secs: u64,
     pub request_count: u64,
-    /// Phase 3 will populate this with the linked zccache daemon's PID.
+    /// Set by `LinkZccache`; cleared on daemon shutdown.
     pub linked_zccache_pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuildRecord {
+    pub session_id: u64,
+    pub repo_root: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    pub exit_code: Option<i32>,
+    pub total_wall_ms: Option<u64>,
+    pub crate_count: u32,
+    pub slowest_crate_us: Option<u64>,
+    pub slowest_crate_name: Option<String>,
 }
