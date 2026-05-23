@@ -1206,7 +1206,15 @@ min_age_secs = 7200
     fn defaults_to_msvc_without_explicit_override() {
         let dir = tempdir().unwrap();
         let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
-        assert_eq!(target.triple(), "x86_64-pc-windows-msvc");
+        // Runtime arch: Windows runners come in x86_64 AND aarch64 on
+        // GitHub Actions. Both are valid host triples — the test must
+        // expect the runner's actual arch, not a hardcoded x86_64.
+        let expected_arch = if cfg!(target_arch = "x86_64") {
+            "x86_64"
+        } else {
+            "aarch64"
+        };
+        assert_eq!(target.triple(), format!("{expected_arch}-pc-windows-msvc"));
     }
 
     #[test]
@@ -1273,8 +1281,16 @@ min_age_secs = 7200
         .unwrap();
 
         let _target = TargetTriple::detect_in_dir(dir.path()).unwrap();
+        // Ambiguous list → fall back to the host arch on Windows.
         #[cfg(target_os = "windows")]
-        assert_eq!(_target.triple(), "x86_64-pc-windows-msvc");
+        {
+            let expected_arch = if cfg!(target_arch = "x86_64") {
+                "x86_64"
+            } else {
+                "aarch64"
+            };
+            assert_eq!(_target.triple(), format!("{expected_arch}-pc-windows-msvc"));
+        }
     }
 
     #[test]
