@@ -64,7 +64,16 @@ impl From<crate::core::SoldrError> for ServerError {
 }
 
 struct State {
-    registry: TargetRegistry,
+    /// Path to the shared `state.redb`. The daemon opens this on
+    /// demand for each write rather than holding the redb handle for
+    /// its lifetime — redb refuses concurrent multi-process opens
+    /// ("Database already open. Cannot acquire lock."), and the
+    /// pre-existing CLI surface (`soldr gc list`, `soldr cache ...`)
+    /// also opens the same file directly. Per-request opens are
+    /// microseconds in steady state; the daemon's value is single-
+    /// writer ordering and (Phase 2) build-session correlation, not
+    /// avoiding the per-write fs::open cost.
+    db_path: PathBuf,
     start_instant: Instant,
     request_count: AtomicU64,
     last_activity_ms: AtomicU64,
@@ -112,10 +121,14 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         return Err(ServerError::AlreadyRunning(existing));
     }
 
-    let registry = TargetRegistry::open(&data_db_path(&paths))?;
+    let db_path = data_db_path(&paths);
+    // Touch the file at startup so a path error (no parent dir, no
+    // permissions) surfaces immediately rather than on the first
+    // RecordTargetTouch. Drop the handle right away — see State::db_path.
+    let _ = TargetRegistry::open(&db_path)?;
     let start_instant = Instant::now();
     let state = Arc::new(State {
-        registry,
+        db_path,
         start_instant,
         request_count: AtomicU64::new(0),
         last_activity_ms: AtomicU64::new(0),
@@ -224,10 +237,13 @@ where
     state.touch_activity();
     match req {
         Request::RecordTargetTouch { path, unix_seconds } => {
-            // Fire-and-forget: best-effort write, no reply.
-            let _ = state
-                .registry
-                .upsert_with_time(Path::new(&path), unix_seconds);
+            // Fire-and-forget: open redb just for this write, drop
+            // the handle immediately so a concurrent CLI process
+            // (`soldr gc list`, `soldr cache report`) can still open
+            // the same file. Errors are silent by design.
+            if let Ok(registry) = TargetRegistry::open(&state.db_path) {
+                let _ = registry.upsert_with_time(Path::new(&path), unix_seconds);
+            }
         }
         Request::Status => {
             let info = state.status();
