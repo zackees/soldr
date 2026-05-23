@@ -465,6 +465,331 @@ struct CachePruneTargetEntryOutput {
     action: &'static str,
 }
 
+/// Profile preset for `soldr cache trim-target`. The CLI maps this
+/// onto the actual rule selection inside [`run_cache_trim_target_command`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrimProfile {
+    /// Lightweight: orphan hash-sibling prune only.
+    Local,
+    /// Aggressive: prune + strip recreatable noise + drop
+    /// `incremental/`. The intended profile for CI cache transport.
+    Ci,
+}
+
+impl TrimProfile {
+    fn as_str(self) -> &'static str {
+        match self {
+            TrimProfile::Local => "local",
+            TrimProfile::Ci => "ci",
+        }
+    }
+}
+
+/// Trim a cargo `target/` directory in preparation for archival.
+///
+/// Composition order matters:
+/// 1. Refuse if a `.cargo-lock` is present (active build sentinel,
+///    reused from `prune_target`'s guard).
+/// 2. CI-only: remove `target/<profile>/incremental/` wholesale.
+///    rustc resets the incremental session on each fresh runner and
+///    the per-process cache contributes ~0% hit rate against the next
+///    job's invocation. Cargo recreates an empty `incremental/` on
+///    first build.
+/// 3. CI-only: run [`strip_target`] with every rule on. Removes large
+///    build-script stderr, `build-script-build*` binaries,
+///    `examples/`/`doc/`/`tests/`, and `.dwo`/`.pdb`/`.dSYM` debug
+///    sidecars under `deps/`.
+/// 4. Always: run [`prune_target`] to drop orphan hash-siblings in
+///    `deps/`, `.fingerprint/`, `incremental/` (if it still exists),
+///    and `build/`.
+///
+/// Steps 2–3 are gated on the CI profile because a developer running
+/// `soldr cache trim-target` locally generally wants to KEEP the
+/// incremental cache and the examples/doc artifacts. Step 4 is always
+/// safe (cargo never reads orphan hashes again).
+pub(crate) fn run_cache_trim_target_command(
+    target_dir: std::path::PathBuf,
+    profile: TrimProfile,
+    dry_run: bool,
+    json: bool,
+) -> Result<(), SoldrError> {
+    let canonical = std::path::absolute(&target_dir).unwrap_or_else(|_| target_dir.clone());
+
+    // Reuse the same refusal the prune-target subcommand applies. We
+    // call into prune_target below anyway, but checking up-front means
+    // CI-profile incremental/ removal also bails when a build is live.
+    if let Some(lock) = trim_find_cargo_lock(&canonical) {
+        return Err(SoldrError::Other(format!(
+            "cargo lock present at {} (active build?); refusing to trim",
+            lock.display()
+        )));
+    }
+
+    let mut incremental_removed: Vec<TrimIncrementalEntry> = Vec::new();
+    if matches!(profile, TrimProfile::Ci) {
+        incremental_removed = remove_incremental_dirs(&canonical, dry_run)?;
+    }
+
+    let strip_report = if matches!(profile, TrimProfile::Ci) {
+        let opts = crate::cache_lib::strip_target::StripTargetOptions {
+            dry_run,
+            ..crate::cache_lib::strip_target::StripTargetOptions::all(canonical.clone())
+        };
+        Some(
+            crate::cache_lib::strip_target::strip_target(&opts)
+                .map_err(|e| SoldrError::Other(format!("cache trim-target: strip failed: {e}")))?,
+        )
+    } else {
+        None
+    };
+
+    let prune_opts = crate::cache_lib::prune_target::PruneTargetOptions {
+        target_dir: canonical.clone(),
+        dry_run,
+    };
+    let prune_report = crate::cache_lib::prune_target::prune_target(&prune_opts)
+        .map_err(|e| SoldrError::Other(format!("cache trim-target: prune failed: {e}")))?;
+
+    let summary = TrimSummary {
+        target_dir: canonical.clone(),
+        profile,
+        dry_run,
+        incremental_removed,
+        strip_report,
+        prune_report,
+    };
+
+    if json {
+        let output = build_cache_trim_target_output(&summary);
+        print_json(&output)?;
+    } else {
+        print_cache_trim_target_text(&summary);
+    }
+    Ok(())
+}
+
+/// Walk `target/{,<profile>}/.cargo-lock` and return the first match.
+/// Copy of the algorithm in `prune_target::find_active_cargo_lock`,
+/// hoisted here so the CI-profile incremental-removal step short-
+/// circuits before any disk write.
+fn trim_find_cargo_lock(target_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let top = target_dir.join(".cargo-lock");
+    if top.exists() {
+        return Some(top);
+    }
+    let read = std::fs::read_dir(target_dir).ok()?;
+    for entry in read.flatten() {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let candidate = entry.path().join(".cargo-lock");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Walk every `target/<profile>/incremental/` and remove the whole
+/// directory. Returns the per-profile sizes that were reclaimed (or
+/// would be reclaimed under dry-run) so the report can surface them.
+fn remove_incremental_dirs(
+    target_dir: &std::path::Path,
+    dry_run: bool,
+) -> Result<Vec<TrimIncrementalEntry>, SoldrError> {
+    let mut out = Vec::new();
+    let read = match std::fs::read_dir(target_dir) {
+        Ok(it) => it,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(err) => return Err(SoldrError::Other(format!("read_dir failed: {err}"))),
+    };
+    let incremental_name = crate::cache_lib::prune_target::INCREMENTAL_SUBDIR;
+    for entry in read.flatten() {
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if !ft.is_dir() {
+            continue;
+        }
+        let profile_path = entry.path();
+        // Skip dotted entries (.fingerprint et al. are not profiles).
+        if let Some(name) = profile_path.file_name().and_then(|n| n.to_str()) {
+            if name.starts_with('.') {
+                continue;
+            }
+        }
+        let incremental_path = profile_path.join(incremental_name);
+        if !incremental_path.is_dir() {
+            continue;
+        }
+        let size = trim_dir_size(&incremental_path);
+        if !dry_run {
+            if let Err(err) = std::fs::remove_dir_all(&incremental_path) {
+                return Err(SoldrError::Other(format!(
+                    "failed to remove {}: {}",
+                    incremental_path.display(),
+                    err
+                )));
+            }
+        }
+        out.push(TrimIncrementalEntry {
+            path: incremental_path,
+            size_bytes: size,
+        });
+    }
+    Ok(out)
+}
+
+fn trim_dir_size(path: &std::path::Path) -> u64 {
+    let mut total: u64 = 0;
+    let mut stack: Vec<std::path::PathBuf> = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let read = match std::fs::read_dir(&dir) {
+            Ok(it) => it,
+            Err(_) => continue,
+        };
+        for entry in read.flatten() {
+            let Ok(metadata) = entry.metadata() else {
+                continue;
+            };
+            if metadata.is_dir() {
+                stack.push(entry.path());
+            } else if metadata.is_file() {
+                total = total.saturating_add(metadata.len());
+            }
+        }
+    }
+    total
+}
+
+struct TrimIncrementalEntry {
+    path: std::path::PathBuf,
+    size_bytes: u64,
+}
+
+struct TrimSummary {
+    target_dir: std::path::PathBuf,
+    profile: TrimProfile,
+    dry_run: bool,
+    incremental_removed: Vec<TrimIncrementalEntry>,
+    strip_report: Option<crate::cache_lib::strip_target::StripReport>,
+    prune_report: crate::cache_lib::prune_target::PruneTargetReport,
+}
+
+fn build_cache_trim_target_output(summary: &TrimSummary) -> CacheTrimTargetOutput {
+    let incremental_bytes: u64 = summary
+        .incremental_removed
+        .iter()
+        .map(|e| e.size_bytes)
+        .sum();
+    let strip_bytes = summary
+        .strip_report
+        .as_ref()
+        .map(|r| r.reclaimed_bytes)
+        .unwrap_or(0);
+    let prune_bytes = summary.prune_report.reclaimed_bytes;
+    let total = incremental_bytes
+        .saturating_add(strip_bytes)
+        .saturating_add(prune_bytes);
+    CacheTrimTargetOutput {
+        schema_version: JSON_SCHEMA_VERSION,
+        command: "cache trim-target",
+        target_dir: summary.target_dir.display().to_string(),
+        profile: summary.profile.as_str(),
+        dry_run: summary.dry_run,
+        incremental_removed_count: summary.incremental_removed.len(),
+        incremental_reclaimed_bytes: incremental_bytes,
+        strip_deleted: summary
+            .strip_report
+            .as_ref()
+            .map(|r| r.deleted)
+            .unwrap_or(0),
+        strip_reclaimed_bytes: strip_bytes,
+        prune_scanned: summary.prune_report.scanned,
+        prune_kept: summary.prune_report.kept,
+        prune_deleted: summary.prune_report.deleted,
+        prune_reclaimed_bytes: prune_bytes,
+        total_reclaimed_bytes: total,
+        total_reclaimed_human: crate::cache_lib::target_registry::human_size(total),
+    }
+}
+
+fn print_cache_trim_target_text(summary: &TrimSummary) {
+    println!("soldr cache trim-target: {}", summary.target_dir.display());
+    println!(
+        "  profile: {}  mode: {}",
+        summary.profile.as_str(),
+        if summary.dry_run {
+            "dry-run (use --force to actually delete)"
+        } else {
+            "force"
+        }
+    );
+    let incremental_bytes: u64 = summary
+        .incremental_removed
+        .iter()
+        .map(|e| e.size_bytes)
+        .sum();
+    if !summary.incremental_removed.is_empty() {
+        println!(
+            "  incremental/: {} dirs, {}",
+            summary.incremental_removed.len(),
+            crate::cache_lib::target_registry::human_size(incremental_bytes),
+        );
+    }
+    if let Some(strip) = &summary.strip_report {
+        println!(
+            "  strip: deleted={} reclaimed={}",
+            strip.deleted,
+            crate::cache_lib::target_registry::human_size(strip.reclaimed_bytes),
+        );
+    }
+    println!(
+        "  prune: scanned={} kept={} deleted={} reclaimed={}",
+        summary.prune_report.scanned,
+        summary.prune_report.kept,
+        summary.prune_report.deleted,
+        crate::cache_lib::target_registry::human_size(summary.prune_report.reclaimed_bytes),
+    );
+    let total = incremental_bytes
+        .saturating_add(
+            summary
+                .strip_report
+                .as_ref()
+                .map(|r| r.reclaimed_bytes)
+                .unwrap_or(0),
+        )
+        .saturating_add(summary.prune_report.reclaimed_bytes);
+    println!(
+        "  total reclaimed: {}",
+        crate::cache_lib::target_registry::human_size(total),
+    );
+}
+
+#[derive(Serialize)]
+struct CacheTrimTargetOutput {
+    schema_version: u32,
+    command: &'static str,
+    target_dir: String,
+    profile: &'static str,
+    dry_run: bool,
+    incremental_removed_count: usize,
+    incremental_reclaimed_bytes: u64,
+    strip_deleted: usize,
+    strip_reclaimed_bytes: u64,
+    prune_scanned: usize,
+    prune_kept: usize,
+    prune_deleted: usize,
+    prune_reclaimed_bytes: u64,
+    total_reclaimed_bytes: u64,
+    total_reclaimed_human: String,
+}
+
 pub(crate) fn run_cache_report_command(json: bool) -> Result<(), SoldrError> {
     let output = collect_cache_report_output()?;
     if json {
