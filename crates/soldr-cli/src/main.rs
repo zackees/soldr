@@ -8,6 +8,7 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cook;
 mod core;
+mod daemon;
 mod doctor;
 mod fetch;
 mod fuzzy_match;
@@ -169,6 +170,7 @@ const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "update-zccache", // alias of `install-zccache`
     "save",
     "load",
+    "daemon",
 ];
 
 #[derive(Subcommand)]
@@ -412,9 +414,36 @@ enum Commands {
     /// still match the snapshot (so we cannot underbuild after a
     /// real source change).
     Load(save_load::LoadArgs),
+    /// Manage the long-lived `soldr-daemon` companion process that owns
+    /// target/ tracking. Phase 1 — `start`, `stop`, `status` only.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonSubcommand,
+    },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
     External(Vec<String>),
+}
+
+#[derive(Subcommand)]
+enum DaemonSubcommand {
+    /// Start the soldr-daemon. With `--foreground`, runs in the current
+    /// process (blocks until the daemon exits); without it, spawns the
+    /// daemon detached and returns immediately.
+    Start {
+        #[arg(long)]
+        foreground: bool,
+        /// Seconds of inactivity after which the daemon auto-exits.
+        #[arg(long, value_name = "SECS", default_value_t = 1800)]
+        idle_timeout: u64,
+    },
+    /// Ask the running daemon to shut down gracefully.
+    Stop,
+    /// Print the daemon's status (uptime, pid, request count).
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1044,6 +1073,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::SessionEnd { id, clear, json } => {
             cache::run_session_end_command(id, clear, json)?;
         }
+        Commands::Daemon { command } => {
+            run_daemon_command(command)?;
+        }
         Commands::External(args) => {
             if args.is_empty() {
                 eprintln!("usage: soldr <tool>[@version] [args...]");
@@ -1249,6 +1281,88 @@ async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrErro
         })?;
 
         Ok(status.code().unwrap_or(1))
+    }
+}
+
+fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
+    use crate::daemon::client;
+    use crate::daemon::lifecycle::{is_live, try_spawn_detached};
+    use crate::daemon::server::{run as run_server, server_sock_path, ServerOptions};
+    use core::SoldrPaths;
+    use std::time::Duration;
+
+    let paths = SoldrPaths::new()?;
+    let sock = server_sock_path(&paths);
+
+    match command {
+        DaemonSubcommand::Start {
+            foreground,
+            idle_timeout,
+        } => {
+            if foreground {
+                let opts = ServerOptions {
+                    idle_timeout: if idle_timeout == 0 {
+                        Duration::from_secs(u64::MAX / 2)
+                    } else {
+                        Duration::from_secs(idle_timeout)
+                    },
+                };
+                run_server(opts)
+                    .map_err(|e| SoldrError::Other(format!("soldr-daemon failed: {e:?}")))?;
+                Ok(())
+            } else {
+                if is_live(&paths).is_some() {
+                    println!("soldr-daemon already running");
+                    return Ok(());
+                }
+                try_spawn_detached().map_err(|e| {
+                    SoldrError::Other(format!("failed to spawn soldr-daemon: {e:?}"))
+                })?;
+                println!("soldr-daemon: spawn requested");
+                Ok(())
+            }
+        }
+        DaemonSubcommand::Stop => match client::shutdown(&sock) {
+            Ok(()) => {
+                println!("soldr-daemon: shutdown requested");
+                Ok(())
+            }
+            Err(client::ClientError::NotRunning) => {
+                println!("soldr-daemon: not running");
+                Ok(())
+            }
+            Err(e) => Err(SoldrError::Other(format!("daemon stop failed: {e:?}"))),
+        },
+        DaemonSubcommand::Status { json } => match client::status(&sock) {
+            Ok(info) => {
+                if json {
+                    let payload = serde_json::json!({
+                        "running": true,
+                        "version": info.version,
+                        "pid": info.pid,
+                        "uptime_secs": info.uptime_secs,
+                        "request_count": info.request_count,
+                        "linked_zccache_pid": info.linked_zccache_pid,
+                    });
+                    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+                } else {
+                    println!(
+                        "soldr-daemon: pid={} uptime={}s requests={} version={}",
+                        info.pid, info.uptime_secs, info.request_count, info.version
+                    );
+                }
+                Ok(())
+            }
+            Err(client::ClientError::NotRunning) => {
+                if json {
+                    println!("{}", serde_json::json!({"running": false}));
+                } else {
+                    println!("soldr-daemon: not running");
+                }
+                Ok(())
+            }
+            Err(e) => Err(SoldrError::Other(format!("daemon status failed: {e:?}"))),
+        },
     }
 }
 

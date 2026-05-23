@@ -316,17 +316,27 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
 ///
 /// `rustc_args` is the slice of args that follows the rustc binary
 /// path in the wrapper invocation (i.e. `raw_args[2..]`).
+///
+/// Routing: prefers a fire-and-forget IPC send to `soldr-daemon`
+/// (50 ms timeout) so the redb write happens in the long-lived daemon
+/// rather than the short-lived wrapper. On any error — daemon absent,
+/// hung, version mismatch — the wrapper falls back to opening the
+/// redb file directly. Auto-spawns the daemon when missing.
 fn record_target_dir_in_registry(rustc_args: &[String]) {
     let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
     else {
         return;
     };
     let Ok(paths) = SoldrPaths::new() else { return };
-    let db_path = crate::cache_lib::data_db_path(&paths);
-    let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
-        return;
-    };
-    let _ = registry.upsert(&target);
+
+    crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
+
+    if crate::daemon::lifecycle::is_live(&paths).is_none() {
+        // Best-effort detached spawn so the *next* wrapper invocation
+        // can hit the daemon. Errors are swallowed: if the daemon never
+        // comes up, the fallback path above keeps the registry correct.
+        let _ = crate::daemon::lifecycle::try_spawn_detached();
+    }
 }
 
 #[cfg(test)]

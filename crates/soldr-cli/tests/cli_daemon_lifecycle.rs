@@ -1,0 +1,170 @@
+//! Integration coverage for `soldr daemon start --foreground` /
+//! `soldr daemon status` / `soldr daemon stop`. Verifies the daemon
+//! comes up, answers status, shuts down cleanly, and leaves no PID
+//! or socket file behind.
+
+#![allow(clippy::print_stdout)]
+
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
+
+fn unique_temp_dir(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    std::fs::create_dir_all(&dir).expect("failed to create temp dir");
+    dir
+}
+
+fn soldr_daemon_bin() -> PathBuf {
+    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
+    let stem = if cfg!(windows) {
+        "soldr-daemon.exe"
+    } else {
+        "soldr-daemon"
+    };
+    parent.join(stem)
+}
+
+fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsString)> {
+    vec![
+        ("SOLDR_CACHE_DIR", cache_root.as_os_str().to_os_string()),
+        ("HOME", home_root.as_os_str().to_os_string()),
+        ("USERPROFILE", home_root.as_os_str().to_os_string()),
+    ]
+}
+
+fn wait_for_ready(cache_root: &Path, deadline: Instant) -> bool {
+    let daemon_dir = cache_root.join("cache").join("soldr-daemon");
+    #[cfg(unix)]
+    let signal = daemon_dir.join("sock");
+    #[cfg(windows)]
+    let signal = daemon_dir.join("daemon.pid");
+    while Instant::now() < deadline {
+        if signal.exists() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    cmd.args(args);
+    for (k, v) in isolated_env(cache_root, home_root) {
+        cmd.env(k, v);
+    }
+    cmd.env_remove("RUSTC_WRAPPER");
+    cmd.output().expect("failed to run soldr")
+}
+
+struct Daemon {
+    child: Option<Child>,
+    cache_root: PathBuf,
+    home_root: PathBuf,
+}
+
+impl Daemon {
+    fn spawn() -> Self {
+        let cache_root = unique_temp_dir("daemon-lifecycle-cache");
+        let home_root = unique_temp_dir("daemon-lifecycle-home");
+        let mut cmd = Command::new(soldr_daemon_bin());
+        cmd.args(["--foreground", "--idle-timeout-secs", "60"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        for (k, v) in isolated_env(&cache_root, &home_root) {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("spawn soldr-daemon");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert!(
+            wait_for_ready(&cache_root, deadline),
+            "daemon never opened its endpoint under {}",
+            cache_root.display()
+        );
+        Self {
+            child: Some(child),
+            cache_root,
+            home_root,
+        }
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline {
+                if let Ok(Some(_)) = child.try_wait() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[test]
+fn start_status_stop_round_trip() {
+    let daemon = Daemon::spawn();
+    let cache_root = daemon.cache_root.clone();
+    let home_root = daemon.home_root.clone();
+
+    let status = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
+    assert!(
+        status.status.success(),
+        "soldr daemon status failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let body: Value = serde_json::from_slice(&status.stdout).expect("status json");
+    assert_eq!(body["running"].as_bool(), Some(true));
+    let pid = body["pid"].as_u64().expect("status carries pid");
+    assert!(pid > 0);
+
+    let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
+    assert!(stop.status.success(), "stop failed: {stop:?}");
+
+    drop(daemon);
+
+    #[cfg(unix)]
+    {
+        let sock = cache_root.join("cache").join("soldr-daemon").join("sock");
+        assert!(!sock.exists(), "socket left behind at {}", sock.display());
+    }
+    let pid_path = cache_root
+        .join("cache")
+        .join("soldr-daemon")
+        .join("daemon.pid");
+    assert!(
+        !pid_path.exists(),
+        "pid file left behind at {}",
+        pid_path.display()
+    );
+}
+
+#[test]
+fn status_when_daemon_absent_reports_not_running() {
+    let cache_root = unique_temp_dir("daemon-absent-cache");
+    let home_root = unique_temp_dir("daemon-absent-home");
+    let out = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
+    assert!(
+        out.status.success(),
+        "status against absent daemon should succeed (exit=0). stderr={:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body: Value = serde_json::from_slice(&out.stdout).expect("status json");
+    assert_eq!(body["running"].as_bool(), Some(false));
+}

@@ -50,6 +50,55 @@ pub fn gc_log_dir(paths: &SoldrPaths) -> PathBuf {
     paths.root.join("logs").join("gc")
 }
 
+/// Directory that holds soldr-daemon's IPC endpoint, PID file, and logs.
+pub fn soldr_daemon_dir(paths: &SoldrPaths) -> PathBuf {
+    paths.cache.join("soldr-daemon")
+}
+
+/// Unix-domain-socket path used by soldr-daemon on Unix. On Windows the
+/// daemon listens on a named pipe instead — see `daemon_pipe_name`.
+pub fn daemon_sock_path(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join("sock")
+}
+
+/// PID + active-binary file written by soldr-daemon. Readers verify the
+/// PID is still alive AND that the exe stem matches `soldr-daemon` so a
+/// recycled PID can't be mistaken for a live daemon.
+pub fn daemon_pid_path(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join("daemon.pid")
+}
+
+/// Append-only JSONL lifecycle log: spawn, died-idle, died-shutdown.
+pub fn daemon_lifecycle_log_path(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join("lifecycle.jsonl")
+}
+
+/// Catch-all stderr log for the detached daemon (tracing + panics).
+/// Reserved for Phase 2 when the soldr-daemon bin redirects its stderr
+/// here on detached spawn; for now the helper exists so callers can
+/// settle on a stable path without changing call sites later.
+#[allow(dead_code)]
+pub fn daemon_stderr_log_path(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join("daemon.log")
+}
+
+/// Stable Windows named-pipe name. Composed from the user name and a
+/// short hash of the cache root so two SOLDR_CACHE_DIR roots can't
+/// collide. The full pipe path is `\\.\pipe\<this>`.
+#[cfg(windows)]
+pub fn daemon_pipe_name(paths: &SoldrPaths) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    paths.cache.hash(&mut hasher);
+    let suffix = format!("{:016x}", hasher.finish());
+    let user = std::env::var("USERNAME").unwrap_or_else(|_| "soldr".to_string());
+    let user = user
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+    format!("soldr-daemon-{user}-{}", &suffix[..12])
+}
+
 /// Environment variable used to carry cache enable/disable state from the
 /// front-door cargo command into child processes.
 pub const CACHE_ENABLED_ENV_VAR: &str = "SOLDR_CACHE_ENABLED";
