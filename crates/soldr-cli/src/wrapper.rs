@@ -41,10 +41,25 @@ pub(crate) fn run_rustc_wrapper(
     // Per-build target/ tracking for `soldr gc`. Best-effort: if we
     // can't resolve a workspace target dir cheaply, or the redb
     // upsert fails for any reason, skip silently — never fail a build.
+    //
+    // The phase emitted afterwards tells SOLDR_PROFILE_STARTUP=1
+    // consumers which routing path fired — explicitly distinguishing
+    // the daemon path from the fast direct-redb path proves the
+    // Option-A invariant from #474: outside a soldr-cargo session,
+    // no `daemon`/`is_live`/`socket`/`record_target_touch_or_fallback`
+    // phase appears in the profile.
     if tool_stem == "rustc" {
-        record_target_dir_in_registry(&raw_args[2..]);
+        let path = record_target_dir_in_registry(&raw_args[2..]);
+        let mark = match path {
+            TargetTouchPath::NoTarget => "target_dir_recorded_no_target",
+            TargetTouchPath::NoPaths => "target_dir_recorded_no_paths",
+            TargetTouchPath::FastDirect => "target_dir_recorded_fast",
+            TargetTouchPath::DaemonFirst => "target_dir_recorded_daemon",
+        };
+        profile.mark(mark);
+    } else {
+        profile.mark("target_dir_recorded");
     }
-    profile.mark("target_dir_recorded");
 
     // When the source argument is "-" (stdin), rustc reads the source from
     // the process's stdin. If we pass this invocation to zccache as-is,
@@ -311,83 +326,12 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
     })
 }
 
-/// Best-effort upsert of the workspace `target/` dir into the soldr
-/// state registry on every wrapper invocation, plus (Phase 2) a
-/// `RecordCompile` event for per-build session correlation. Silent on
-/// failure.
-///
-/// `rustc_args` is the slice of args that follows the rustc binary
-/// path in the wrapper invocation (i.e. `raw_args[2..]`).
-///
-/// Routing: prefers a fire-and-forget IPC send to `soldr-daemon`
-/// (50 ms timeout) so the redb write happens in the long-lived daemon
-/// rather than the short-lived wrapper. On any error — daemon absent,
-/// hung, version mismatch — the wrapper falls back to opening the
-/// redb file directly. Auto-spawns the daemon when missing.
-fn record_target_dir_in_registry(rustc_args: &[String]) {
-    let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
-    else {
-        return;
-    };
-    let Ok(paths) = SoldrPaths::new() else { return };
-
-    crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
-
-    // Phase 2: per-crate compile event when this wrapper invocation is
-    // part of a soldr-front-door build session. The wrapper `exec()`s
-    // into zccache on Unix and never returns, so only the start-side
-    // timestamp is observable on Unix; `duration_us = None` documents
-    // that.
-    if let Some(session_id) = read_build_session_id_env() {
-        let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
-        let started_at_ms = current_unix_ms();
-        crate::daemon::client::record_compile(
-            &paths,
-            session_id,
-            crate_name,
-            &target,
-            started_at_ms,
-            None,
-        );
-    }
-
-    if crate::daemon::lifecycle::is_live(&paths).is_none() {
-        // Best-effort detached spawn so the *next* wrapper invocation
-        // can hit the daemon. Errors are swallowed: if the daemon never
-        // comes up, the fallback path above keeps the registry correct.
-        let _ = crate::daemon::lifecycle::try_spawn_detached();
-    }
-}
-
-fn read_build_session_id_env() -> Option<u64> {
-    std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-}
-
-fn current_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Pull `--crate-name X` (or `--crate-name=X`) from a rustc arg list.
-/// Cargo always passes this flag — but the wrapper must tolerate
-/// unusual invocations that don't.
-fn parse_crate_name(args: &[String]) -> Option<&str> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--crate-name" {
-            return iter.next().map(String::as_str);
-        }
-        if let Some(value) = arg.strip_prefix("--crate-name=") {
-            return Some(value);
-        }
-    }
-    None
-}
+// Routing logic + `TargetTouchPath` live in `wrapper_target.rs` so the
+// integration tests in `tests/cli_wrapper_perf.rs` can drive
+// `record_target_dir_in_registry` in-process via the lib's
+// `pub mod wrapper_target;` declaration. Re-exported here so existing
+// bin-side call sites in this file keep working unchanged.
+pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouchPath};
 
 #[cfg(test)]
 mod tests {

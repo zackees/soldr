@@ -32,6 +32,7 @@ mod toolchain;
 mod trampoline;
 mod trampoline_workspace;
 mod wrapper;
+mod wrapper_target;
 mod zccache;
 
 use crate::core::{suppress_windows_console_window, SoldrError};

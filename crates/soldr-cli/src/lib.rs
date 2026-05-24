@@ -19,3 +19,8 @@ pub mod core;
 pub mod daemon;
 pub mod fetch;
 pub mod self_relocate;
+/// `wrapper_target` holds the wrapper hot-path target-registry routing
+/// extracted out of `wrapper.rs` so integration tests under
+/// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
+/// The bin tree declares the same module via `main.rs`.
+pub mod wrapper_target;

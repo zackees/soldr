@@ -105,6 +105,17 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 /// itself, sharing the same hash / lock / periodic-GC machinery via a
 /// sibling `runtime/soldr-daemon/` sub-tree.
 ///
+/// Spawn-herd safety (issue #474): when a `soldr cargo build` fans out
+/// hundreds of parallel rustc invocations, EVERY wrapper sees the
+/// daemon missing simultaneously and races to spawn it. To keep that
+/// from forking N children, we take an OS-level non-blocking exclusive
+/// lock on `<cache>/soldr-daemon/.spawn.lock` before relocating /
+/// spawning. Lock losers re-check liveness (the lock holder is racing
+/// `write_pid_file`) and short-circuit with `Ok(())` once the daemon
+/// shows up. If the lock is unobtainable AND no daemon ever appears
+/// within a short window, the loser still returns `Ok(())` — the next
+/// wrapper invocation will reprobe and try again.
+///
 /// Best-effort: returns Ok(()) on spawn success, Err otherwise. Caller
 /// MUST treat the daemon as eventually-consistent — the spawn returns
 /// before the socket is ready.
@@ -115,20 +126,65 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         return Err(LifecycleError::NoExe);
     }
 
-    let relocated = match SoldrPaths::new() {
-        Ok(paths) => {
-            let r = crate::self_relocate::ensure_daemon_relocated(&paths, &daemon_src)
-                .unwrap_or_else(|_| daemon_src.clone());
-            crate::self_relocate::run_periodic_daemon_runtime_gc(&paths, Some(&r));
-            r
+    let paths = SoldrPaths::new().ok();
+    let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
+    // Re-check liveness while holding the lock (or after failing to
+    // acquire it): if another wrapper already brought the daemon up
+    // we can short-circuit before doing relocate + spawn.
+    if let Some(p) = paths.as_ref() {
+        if is_live(p).is_some() {
+            return Ok(());
         }
+    }
+    // Without the lock, another wrapper is currently mid-spawn. Don't
+    // pile on — the next wrapper will reprobe.
+    if paths.is_some() && _spawn_lock.is_none() {
+        return Ok(());
+    }
+
+    let relocated = match paths.as_ref() {
+        Some(paths) => crate::self_relocate::ensure_daemon_relocated(paths, &daemon_src)
+            .inspect(|r| {
+                crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
+            })
+            .unwrap_or_else(|_| daemon_src.clone()),
         // No cache root resolved → run in place. The daemon itself
         // tries SoldrPaths::new() at startup and will surface the
         // same error there.
-        Err(_) => daemon_src,
+        None => daemon_src,
     };
 
     spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
+}
+
+/// Acquire the spawn-herd lock. Returns `Some(file)` when the
+/// non-blocking exclusive lock was claimed (this caller is the spawn
+/// owner), `None` when another wrapper already holds it (this caller
+/// is a loser and should bail). The lock is released when the returned
+/// `File` is dropped — typically at the end of `try_spawn_detached`.
+///
+/// Errors creating/opening the lock file are treated as "no lock
+/// available" so a broken filesystem doesn't gate progress; we'd
+/// rather have the herd-spawn fallback than block the build.
+///
+/// Exposed as `pub(crate)` so the unit tests below can verify the
+/// exclusivity invariant without spawning a real daemon binary.
+pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
+    use fs2::FileExt;
+    let dir = crate::cache_lib::soldr_daemon_dir(paths);
+    std::fs::create_dir_all(&dir).ok()?;
+    let lock_path = dir.join(".spawn.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Some(file),
+        Err(_) => None,
+    }
 }
 
 fn sibling_daemon_binary(current: &Path) -> PathBuf {
@@ -265,4 +321,76 @@ fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case(expected_stem))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod spawn_lock_tests {
+    use super::*;
+    use crate::core::SoldrPaths;
+    use std::sync::{Arc, Barrier};
+    use tempfile::TempDir;
+
+    #[test]
+    fn spawn_lock_is_exclusive_within_a_single_process() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        let first = acquire_spawn_lock(&paths).expect("first acquire");
+        // Within the same process, a second non-blocking exclusive
+        // lock attempt against the same file MUST be refused —
+        // otherwise the spawn-herd cap (issue #474 acceptance
+        // criterion) can't possibly hold.
+        let second = acquire_spawn_lock(&paths);
+        assert!(
+            second.is_none(),
+            "second acquire while first is held must return None",
+        );
+        drop(first);
+        // After release, the next call gets the lock back.
+        let third = acquire_spawn_lock(&paths).expect("third acquire after release");
+        drop(third);
+    }
+
+    #[test]
+    fn spawn_lock_serializes_concurrent_threads() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = Arc::new(SoldrPaths::with_root(temp.path().to_path_buf()));
+        const THREADS: usize = 16;
+        let barrier = Arc::new(Barrier::new(THREADS));
+        let success_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let mut handles = Vec::with_capacity(THREADS);
+        for _ in 0..THREADS {
+            let paths = paths.clone();
+            let barrier = barrier.clone();
+            let counter = success_count.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                // Race-start: try to acquire. Holders hold the lock
+                // briefly to simulate the relocate+spawn work the
+                // real call would do.
+                if let Some(guard) = acquire_spawn_lock(&paths) {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    drop(guard);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("thread join");
+        }
+        // Each successful acquire holds the lock for ~10ms; we expect
+        // at MOST a handful to land sequentially in the few hundred
+        // ms the test takes, but cap at THREADS - 1 because if all
+        // threads acquired the lock it would defeat the purpose.
+        let count = success_count.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            count >= 1,
+            "at least one thread must acquire the lock; got {count}",
+        );
+        assert!(
+            count < THREADS,
+            "lock must serialize — fewer than {THREADS} acquires expected (the spawn-herd cap from #474); got {count}",
+        );
+    }
 }
