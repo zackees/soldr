@@ -417,18 +417,27 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     json,
                     kind,
                     registry_src,
+                    git_checkouts,
                 }) => {
                     // #323 slice 2: --registry-src is a shorthand for
                     // --kind cargo_registry_src; clap already enforces
                     // mutual exclusion.
+                    // #323 slice 3: --git-checkouts is a shorthand for
+                    // --kind cargo_git_checkouts.
                     let effective_kind = if registry_src {
                         Some(GcListKind::CargoRegistrySrc)
+                    } else if git_checkouts {
+                        Some(GcListKind::CargoGitCheckouts)
                     } else {
                         kind
                     };
                     match effective_kind {
                         Some(GcListKind::CargoRegistrySrc) => {
                             gc::run_gc_purge_registry_src_command(all, json)?;
+                            return Ok(());
+                        }
+                        Some(GcListKind::CargoGitCheckouts) => {
+                            gc::run_gc_purge_git_checkouts_command(all, json)?;
                             return Ok(());
                         }
                         Some(GcListKind::CargoTarget) | None => gc::GcInvocation {

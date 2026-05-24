@@ -457,15 +457,21 @@ pub(crate) enum GcSubcommand {
         #[arg(long)]
         json: bool,
         /// Narrow the purge to a single taxonomy kind. Mutually exclusive
-        /// with `--registry-src`. Accepted values: `cargo_target`,
-        /// `cargo_registry_src` (#323 slice 2).
-        #[arg(long, value_enum, conflicts_with = "registry_src")]
+        /// with `--registry-src` / `--git-checkouts`. Accepted values:
+        /// `cargo_target`, `cargo_registry_src` (#323 slice 2),
+        /// `cargo_git_checkouts` (#323 slice 3).
+        #[arg(long, value_enum, conflicts_with_all = ["registry_src", "git_checkouts"])]
         kind: Option<GcListKind>,
         /// Shorthand for `--kind cargo_registry_src`. Walks
         /// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` and deletes
         /// the listed directories (#323 slice 2).
-        #[arg(long, conflicts_with = "kind")]
+        #[arg(long, conflicts_with_all = ["kind", "git_checkouts"])]
         registry_src: bool,
+        /// Shorthand for `--kind cargo_git_checkouts`. Walks
+        /// `$CARGO_HOME/git/checkouts/<repo>/<commit>/` and deletes
+        /// the listed directories (#323 slice 3).
+        #[arg(long, conflicts_with_all = ["kind", "registry_src"])]
+        git_checkouts: bool,
     },
     /// List every `target/` directory currently tracked in the soldr
     /// registry, without applying any age or size thresholds.
@@ -506,6 +512,10 @@ pub(crate) enum GcListKind {
     /// crate sources.
     #[value(name = "cargo_registry_src")]
     CargoRegistrySrc,
+    /// `$CARGO_HOME/git/checkouts/<repo>/<commit>/` git-source crate
+    /// checkouts (#323 slice 3).
+    #[value(name = "cargo_git_checkouts")]
+    CargoGitCheckouts,
 }
 
 #[derive(clap::Args)]
