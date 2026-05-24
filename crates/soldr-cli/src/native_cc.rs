@@ -245,9 +245,25 @@ fn value_starts_with_known_wrapper(value: &str) -> bool {
         Some(t) => t,
         None => return false,
     };
-    let path = Path::new(first);
-    let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or(first);
+    let stem = portable_basename_stem(first);
     KNOWN_WRAPPERS.iter().any(|w| stem.eq_ignore_ascii_case(w))
+}
+
+/// Drop the directory prefix and trailing extension from a string,
+/// recognising both `/` and `\` as separators regardless of host OS.
+///
+/// `std::path::Path` only honours the host OS's separator, so on Linux
+/// `Path::new("C:\\Tools\\sccache.exe").file_stem()` returns the full
+/// string — wrong when the input may originate from a Windows
+/// environment value (or vice versa). Use this helper any time you
+/// parse a path-shaped string whose origin is "anywhere a user types a
+/// CC value", not "what `std::env::current_dir()` returned".
+pub(crate) fn portable_basename_stem(s: &str) -> &str {
+    let basename = s.rsplit(|c| c == '/' || c == '\\').next().unwrap_or(s);
+    Path::new(basename)
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .unwrap_or(basename)
 }
 
 #[cfg(test)]

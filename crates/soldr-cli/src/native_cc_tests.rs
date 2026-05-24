@@ -101,6 +101,36 @@ fn handles_empty_and_whitespace_values() {
 }
 
 // -------------------------------------------------------------------------
+// portable_basename_stem — cross-platform separator handling
+// -------------------------------------------------------------------------
+
+#[test]
+fn portable_basename_stem_strips_unix_prefix_on_every_host() {
+    assert_eq!(portable_basename_stem("/usr/local/bin/sccache"), "sccache");
+    assert_eq!(portable_basename_stem("./sccache"), "sccache");
+    assert_eq!(portable_basename_stem("sccache"), "sccache");
+}
+
+#[test]
+fn portable_basename_stem_strips_windows_prefix_on_every_host() {
+    // The regression that motivated this helper: `Path::new(...)` alone
+    // doesn't recognise `\` as a separator on Linux/macOS, so the
+    // sccache binary that lived behind a Windows-style path was
+    // mis-identified and the no-double-wrap invariant broke.
+    assert_eq!(
+        portable_basename_stem("C:\\Tools\\sccache.exe"),
+        "sccache"
+    );
+    assert_eq!(portable_basename_stem(r"C:\Tools\sccache"), "sccache");
+    assert_eq!(portable_basename_stem("sccache.exe"), "sccache");
+}
+
+#[test]
+fn portable_basename_stem_handles_empty_input() {
+    assert_eq!(portable_basename_stem(""), "");
+}
+
+// -------------------------------------------------------------------------
 // wrap_compiler_env — the core decision
 // -------------------------------------------------------------------------
 
