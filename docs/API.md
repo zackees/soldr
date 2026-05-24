@@ -634,6 +634,18 @@ The summary includes the registry path, eligible candidate count, total
 reclaimable size, skipped/dropped counts, and the largest eligible
 target directories with size and last-used age.
 
+**`cargo_registry_src` last-used provenance (issue #349).** When
+`soldr gc list --kind cargo_registry_src` (or unfiltered `gc list`)
+walks `$CARGO_HOME/registry/src/...`, each entry's `last_used_unix`
+field is preferentially derived from cargo's own
+`$CARGO_HOME/.global-cache` SQLite tracker — the same data cargo's
+unstable `-Zgc` uses to evict least-recently-used crate sources. When
+the tracker is missing, locked, schema-drifted, or has no row for a
+particular crate, soldr falls back to the directory's filesystem
+mtime. The provenance is exposed as `last_used_source` on each entry:
+`"global_cache"` or `"fs_mtime"`. The field is omitted from
+`cargo_target` entries (no comparable tracker exists).
+
 Configure additional allowlist roots via `~/.soldr/config.toml`:
 
 ```toml
