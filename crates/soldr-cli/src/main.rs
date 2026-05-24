@@ -30,6 +30,7 @@ mod optimize_windows;
 mod rust_plan;
 mod save_load;
 mod self_relocate;
+mod shim_dir;
 mod startup_profile;
 mod toolchain;
 mod trampoline;
@@ -519,6 +520,31 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
             let mut command = std::process::Command::new(&result.binary_path);
             command.args(tool_args);
+
+            // Issue #493: when the user runs `soldr <external-tool>`,
+            // install a transient PATH shim so any nested `cargo` /
+            // `rustc` / `rustdoc` / `rustfmt` / `clippy-driver` spawned
+            // by the tool routes back through soldr (and therefore
+            // zccache and the managed toolchain home). The guard's
+            // Drop removes the shim dir after the child exits.
+            let _shim_guard = if shim_dir::should_install_shims() {
+                match shim_dir::build_shim_dir() {
+                    Ok(guard) => {
+                        shim_dir::apply_to_command(&mut command, &guard.path);
+                        Some(guard)
+                    }
+                    Err(err) => {
+                        eprintln!(
+                            "soldr warning: failed to build child shim dir; \
+                             nested cargo/rustc calls will bypass soldr: {err}"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
 
