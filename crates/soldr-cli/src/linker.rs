@@ -156,7 +156,13 @@ pub fn resolve_for_target_with_probe(
         },
         LinkerChoice::RustLld => match kind {
             TargetKind::WindowsMsvc => Ok(LinkerInjection::rust_lld_msvc()),
-            TargetKind::Linux | TargetKind::Apple | TargetKind::WindowsGnu | TargetKind::Other => {
+            // Apple clang only accepts `-fuse-ld=lld` when the toolchain has
+            // wired up a `ld64.lld` shim, and stock macOS toolchains do not.
+            // Injecting `-fuse-ld=lld` breaks even `cc-rs` build-script
+            // compilations (issue #509). Fall back to the platform default
+            // linker silently on Apple targets.
+            TargetKind::Apple => Ok(LinkerInjection::none()),
+            TargetKind::Linux | TargetKind::WindowsGnu | TargetKind::Other => {
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
@@ -169,7 +175,11 @@ pub fn resolve_for_target_with_probe(
                 }
             }
             TargetKind::WindowsMsvc => Ok(LinkerInjection::rust_lld_msvc()),
-            TargetKind::Apple | TargetKind::WindowsGnu | TargetKind::Other => {
+            // See the `RustLld` arm above — `-fuse-ld=lld` is not valid on
+            // Apple clang and silently dropping to the platform default
+            // keeps `SOLDR_LINKER=fast` portable across hosts (issue #509).
+            TargetKind::Apple => Ok(LinkerInjection::none()),
+            TargetKind::WindowsGnu | TargetKind::Other => {
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
         },
@@ -335,8 +345,8 @@ mod tests {
     }
 
     #[test]
-    fn rust_lld_on_non_msvc_uses_clang_with_fuse_lld() {
-        for triple in [LINUX, LINUX_MUSL, MAC_X64, MAC_ARM, WIN_GNU] {
+    fn rust_lld_on_non_msvc_non_apple_uses_clang_with_fuse_lld() {
+        for triple in [LINUX, LINUX_MUSL, WIN_GNU] {
             let i = resolve_for_target_with_probe(LinkerChoice::RustLld, triple, &always_false)
                 .unwrap();
             assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
@@ -344,6 +354,24 @@ mod tests {
                 i.rustflags.as_deref(),
                 Some("-C link-arg=-fuse-ld=lld"),
                 "{triple}"
+            );
+        }
+    }
+
+    /// Issue #509: Apple clang rejects `-fuse-ld=lld` (it expects
+    /// `ld64.lld`, which stock macOS toolchains do not ship). `RustLld`
+    /// on Apple targets must therefore inject nothing and fall back to
+    /// the platform default linker. This test is host-agnostic because
+    /// `target_kind` is driven purely by the triple string.
+    #[test]
+    fn rust_lld_on_macos_falls_back_to_platform_default() {
+        for triple in [MAC_X64, MAC_ARM] {
+            let i = resolve_for_target_with_probe(LinkerChoice::RustLld, triple, &always_false)
+                .unwrap();
+            assert_eq!(
+                i,
+                LinkerInjection::default(),
+                "rust-lld on `{triple}` must not inject -fuse-ld=lld (issue #509)"
             );
         }
     }
@@ -362,11 +390,33 @@ mod tests {
         assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=lld"));
     }
 
+    /// Issue #509: `SOLDR_LINKER=fast` on macOS used to inject
+    /// `-fuse-ld=lld`, which breaks Apple-clang-driven `cc-rs` build
+    /// scripts ("invalid linker name in argument '-fuse-ld=lld'"). The
+    /// fast mode must now silently fall back to the platform default
+    /// linker on every Apple target, regardless of the host that ran the
+    /// resolver — so this test covers the bug whether it executes on
+    /// Linux, macOS, or Windows.
     #[test]
-    fn fast_on_macos_uses_rust_lld_via_clang() {
-        let i = resolve_for_target_with_probe(LinkerChoice::Fast, MAC_ARM, &always_false).unwrap();
-        assert_eq!(i.linker.as_deref(), Some("clang"));
-        assert_eq!(i.rustflags.as_deref(), Some("-C link-arg=-fuse-ld=lld"));
+    fn fast_on_macos_falls_back_to_platform_default() {
+        for triple in [MAC_X64, MAC_ARM] {
+            let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_false)
+                .unwrap();
+            assert_eq!(
+                i,
+                LinkerInjection::default(),
+                "fast on `{triple}` must not inject -fuse-ld=lld (issue #509)"
+            );
+            // Also exercise the mold-present branch — mold is irrelevant
+            // on Apple targets and must not change the outcome.
+            let i =
+                resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_true).unwrap();
+            assert_eq!(
+                i,
+                LinkerInjection::default(),
+                "fast on `{triple}` must not inject -fuse-ld=lld even when mold is on PATH (issue #509)"
+            );
+        }
     }
 
     #[test]
