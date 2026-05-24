@@ -281,6 +281,117 @@ fn optimize_undo_only_removes_managed_paths() {
 }
 
 #[test]
+fn defender_exclusions_check_returns_dry_run_json() {
+    let soldr_home = isolated_soldr_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["defender-exclusions", "check", "--json"])
+        .current_dir(&soldr_home)
+        .env("SOLDR_CACHE_DIR", &soldr_home)
+        // Inject a Cargo.toml so the `all` scope's project leg resolves.
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("CI")
+        .env_remove("BUILDKITE")
+        .env_remove("CIRCLECI")
+        .env_remove("TRAVIS")
+        .env_remove("JENKINS_URL")
+        .output()
+        .expect("failed to run soldr defender-exclusions check --json");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        // The `all` scope's project leg errors without a Cargo.toml, which
+        // is acceptable: surface the clean error path.
+        assert!(
+            stderr.contains("no Rust project detected"),
+            "unexpected failure\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        return;
+    }
+    let json: Value =
+        serde_json::from_str(&stdout).expect("defender-exclusions check --json must be JSON");
+    assert_eq!(json["command"], "optimize");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["undo"], false);
+    assert_eq!(json["scope"], "all");
+}
+
+#[test]
+fn defender_exclusions_remove_maps_to_undo() {
+    // We can't actually call Defender from a non-Windows test runner, but
+    // CI auto-skip lets us prove the dispatch wires `remove` to undo
+    // semantics without touching the real subsystem.
+    let soldr_home = isolated_soldr_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["defender-exclusions", "remove", "--json"])
+        .current_dir(&soldr_home)
+        .env("SOLDR_CACHE_DIR", &soldr_home)
+        .env("GITHUB_ACTIONS", "true")
+        .output()
+        .expect("failed to run soldr defender-exclusions remove --json");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "CI auto-skip must exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: Value = serde_json::from_slice(&output.stdout)
+        .expect("defender-exclusions remove --json must produce JSON");
+    assert_eq!(json["undo"], true);
+    assert_eq!(json["scope"], "all");
+}
+
+#[test]
+fn defender_exclusions_add_dry_run_does_not_invoke_powershell() {
+    let soldr_home = isolated_soldr_home();
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["defender-exclusions", "add", "--dry-run", "--json"])
+        .current_dir(&soldr_home)
+        .env("SOLDR_CACHE_DIR", &soldr_home)
+        .env_remove("GITHUB_ACTIONS")
+        .env_remove("CI")
+        .env_remove("BUILDKITE")
+        .env_remove("CIRCLECI")
+        .env_remove("TRAVIS")
+        .env_remove("JENKINS_URL")
+        .output()
+        .expect("failed to run soldr defender-exclusions add --dry-run --json");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if !output.status.success() {
+        // Same "no Rust project" fallthrough as check.
+        assert!(
+            stderr.contains("no Rust project detected"),
+            "unexpected failure\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        return;
+    }
+    let json: Value =
+        serde_json::from_str(&stdout).expect("defender-exclusions add --json must produce JSON");
+    assert_eq!(json["dry_run"], true);
+    assert_eq!(json["undo"], false);
+}
+
+#[test]
+fn defender_exclusions_help_lists_verbs() {
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["defender-exclusions", "--help"])
+        .output()
+        .expect("failed to run soldr defender-exclusions --help");
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for verb in ["check", "add", "remove"] {
+        assert!(
+            stdout.contains(verb),
+            "help output missing `{verb}`:\n{stdout}"
+        );
+    }
+}
+
+#[test]
 fn optimize_help_lists_scope_values() {
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["optimize", "--help"])

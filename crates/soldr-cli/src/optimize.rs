@@ -706,6 +706,50 @@ fn rebuild_argv_for_helper(output: &OptimizeOutput, undo: bool) -> Vec<String> {
     argv
 }
 
+/// Entry point for `soldr defender-exclusions ...` (issue #355).
+///
+/// Thin re-skin of `run_optimize` with self-documenting verbs. Each
+/// verb maps onto the existing optimize machinery:
+///
+/// * `check`  → `--scope all --dry-run` (no admin required)
+/// * `add`    → `--scope all` (requires admin; UAC self-relaunches)
+/// * `remove` → `--scope all --undo` (requires admin)
+///
+/// Sharing the implementation keeps a single source of truth for the
+/// Defender path taxonomy, CI auto-skip, and UAC handshake.
+pub(crate) fn run_defender_exclusions(
+    sub: crate::DefenderExclusionsSubcommand,
+) -> Result<i32, SoldrError> {
+    use crate::DefenderExclusionsSubcommand;
+    let args = match sub {
+        DefenderExclusionsSubcommand::Check { json } => OptimizeArgs {
+            scope: OptimizeScope::All,
+            undo: false,
+            dry_run: true,
+            json,
+            manifest_path: None,
+            as_elevated_helper: false,
+        },
+        DefenderExclusionsSubcommand::Add { json, dry_run } => OptimizeArgs {
+            scope: OptimizeScope::All,
+            undo: false,
+            dry_run,
+            json,
+            manifest_path: None,
+            as_elevated_helper: false,
+        },
+        DefenderExclusionsSubcommand::Remove { json, dry_run } => OptimizeArgs {
+            scope: OptimizeScope::All,
+            undo: true,
+            dry_run,
+            json,
+            manifest_path: None,
+            as_elevated_helper: false,
+        },
+    };
+    run_optimize(args)
+}
+
 #[cfg(test)]
 #[path = "optimize_tests.rs"]
 mod tests;
