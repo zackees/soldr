@@ -70,10 +70,17 @@ pub struct FetchResult {
 }
 
 pub const MANAGED_ZCCACHE_VERSION: &str = "1.9.1";
+// After the Wave 7 monocrate rename in zccache (`zccache-monocrate` -> `zccache`),
+// all three native binaries (`zccache`, `zccache-daemon`, `zccache-fp`) are
+// `[[bin]]` targets inside the umbrella `zccache` crate on crates.io. The
+// sibling crates `zccache-cli`, `zccache-watcher`, and `zccache-fingerprint`
+// are pyo3 cdylibs only; `cargo install` rejects them with
+// "no bin target named X in <pkg>" when soldr asks for an executable.
+// Each tuple is `(crates.io package, --bin name)`.
 const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
-    ("zccache-cli", "zccache"),
-    ("zccache-daemon", "zccache-daemon"),
-    ("zccache-fingerprint", "zccache-fp"),
+    ("zccache", "zccache"),
+    ("zccache", "zccache-daemon"),
+    ("zccache", "zccache-fp"),
 ];
 
 /// Override the managed-zccache resolution entirely: instead of
