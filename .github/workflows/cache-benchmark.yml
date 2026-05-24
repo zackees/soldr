@@ -27,6 +27,15 @@ permissions:
   contents: read
 
 jobs:
+  # Cross-platform native C/C++ compiler cache validation (issue #312).
+  # The fixture (`benchmarks/sqlite-native/`) compiles bundled SQLite C
+  # sources via cc-rs — the same workload that drives the sqlite-link
+  # perf regression in #491. Each cell measures cold vs warm wall-time
+  # with the zccache CC/CXX wrapper enabled and a disabled control row.
+  # `mode = "report-only"` in benchmark.toml: no enforced speedup gate;
+  # the hard gate lives in .github/workflows/perf-matrix.yml's
+  # `sqlite-link/cold-tar-untar-warm` cell. See
+  # docs/NATIVE_SQLITE_BENCHMARK.md for how to read the results.
   native-sqlite:
     name: Native SQLite (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
