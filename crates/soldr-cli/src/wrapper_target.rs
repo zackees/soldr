@@ -11,13 +11,27 @@
 //!   the daemon (target-touch IPC + per-crate `RecordCompile` event)
 //!   and opportunistically auto-spawns the daemon when missing.
 //!
+//! Issue #440 added a third return path: when the cargo front door
+//! has already recorded the same `target/` dir for the current build
+//! session (signalled via `SOLDR_TARGET_REGISTRY_RECORDED=<dir>`),
+//! the wrapper skips redb and the daemon target-touch IPC entirely.
+//! The `record_compile` IPC still fires when in-session because it
+//! carries per-crate timing data the registry doesn't store.
+//!
 //! Lives in its own module so the lib tree exposes it for the
 //! integration tests under `tests/cli_wrapper_perf.rs` without
 //! dragging the full `wrapper.rs` (which depends on bin-only modules)
 //! into the lib's compile.
 
 use crate::core::SoldrPaths;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// Env var the cargo front door sets after recording the workspace
+/// `target/` dir for the build session. When present and matching
+/// the resolved target dir on a wrapper invocation, the registry
+/// write is short-circuited (issue #440 — eliminates ~14 ms of redb
+/// open + upsert per rustc invocation on Windows).
+pub const TARGET_REGISTRY_RECORDED_ENV_VAR: &str = "SOLDR_TARGET_REGISTRY_RECORDED";
 
 /// Outcome of a single `record_target_dir_in_registry` call. Used by
 /// `wrapper::run_rustc_wrapper` to emit a phase marker matching the
@@ -35,12 +49,17 @@ pub enum TargetTouchPath {
     FastDirect,
     /// Slow path: session id present, daemon routing engaged.
     DaemonFirst,
+    /// `SOLDR_TARGET_REGISTRY_RECORDED` matches the resolved target
+    /// dir — the cargo front door already upserted for this build
+    /// session. Issue #440. No redb open, no target-touch IPC; the
+    /// daemon `record_compile` event still fires when in-session.
+    MemoSkipped,
 }
 
 /// Best-effort upsert of the workspace `target/` dir into the soldr
 /// state registry on every wrapper invocation. Silent on failure.
 ///
-/// See module docs for the two-path routing.
+/// See module docs for the three-path routing.
 pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
     else {
@@ -50,8 +69,36 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
         return TargetTouchPath::NoPaths;
     };
 
+    let session_id_opt = read_build_session_id_env();
+
+    // Memoization (issue #440): if the cargo front door already
+    // upserted this target dir for this build session, the redb open
+    // + write is pure repetition. Skip both the direct redb write
+    // and the daemon target-touch IPC. The per-crate `record_compile`
+    // event still fires below when in-session because it carries
+    // timing data the registry doesn't store.
+    let memo_hit = target_registry_memo_matches(&target);
+
+    if memo_hit {
+        if let Some(session_id) = session_id_opt {
+            let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
+            let started_at_ms = current_unix_ms();
+            crate::daemon::client::record_compile(
+                &paths,
+                session_id,
+                crate_name,
+                &target,
+                started_at_ms,
+                None,
+            );
+        }
+        // No daemon spawn probe here — the cargo front door already
+        // owns spawn for the session.
+        return TargetTouchPath::MemoSkipped;
+    }
+
     // Fast path: skip the daemon entirely outside a soldr-cargo build.
-    let Some(session_id) = read_build_session_id_env() else {
+    let Some(session_id) = session_id_opt else {
         write_target_direct(&paths, &target);
         return TargetTouchPath::FastDirect;
     };
@@ -78,6 +125,28 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     }
 
     TargetTouchPath::DaemonFirst
+}
+
+/// True when `SOLDR_TARGET_REGISTRY_RECORDED` is set AND its value
+/// path-equals the workspace `target/` the wrapper resolved. Uses
+/// canonical-on-best-effort comparison so different casings or
+/// absolute-vs-canonical forms of the same path still match.
+pub(crate) fn target_registry_memo_matches(resolved: &Path) -> bool {
+    let raw = match std::env::var_os(TARGET_REGISTRY_RECORDED_ENV_VAR) {
+        Some(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    let recorded = PathBuf::from(raw);
+    if recorded == resolved {
+        return true;
+    }
+    // Path equality fall-back: canonicalize both, ignore errors.
+    let recorded_canon = std::fs::canonicalize(&recorded).ok();
+    let resolved_canon = std::fs::canonicalize(resolved).ok();
+    matches!(
+        (recorded_canon.as_deref(), resolved_canon.as_deref()),
+        (Some(a), Some(b)) if a == b
+    )
 }
 
 fn write_target_direct(paths: &SoldrPaths, target: &Path) {
@@ -113,4 +182,87 @@ fn parse_crate_name(args: &[String]) -> Option<&str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod memo_tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            if let Some(v) = &self.previous {
+                std::env::set_var(self.key, v);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    #[test]
+    fn memo_returns_false_when_env_unset() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::remove(TARGET_REGISTRY_RECORDED_ENV_VAR);
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!target_registry_memo_matches(temp.path()));
+    }
+
+    #[test]
+    fn memo_returns_false_when_env_empty() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _g = EnvGuard::set(TARGET_REGISTRY_RECORDED_ENV_VAR, "");
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!target_registry_memo_matches(temp.path()));
+    }
+
+    #[test]
+    fn memo_matches_exact_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(TARGET_REGISTRY_RECORDED_ENV_VAR, temp.path().as_os_str());
+        assert!(target_registry_memo_matches(temp.path()));
+    }
+
+    #[test]
+    fn memo_rejects_unrelated_path() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let a = tempfile::tempdir().unwrap();
+        let b = tempfile::tempdir().unwrap();
+        let _g = EnvGuard::set(TARGET_REGISTRY_RECORDED_ENV_VAR, a.path().as_os_str());
+        assert!(!target_registry_memo_matches(b.path()));
+    }
+
+    #[test]
+    fn memo_matches_via_canonicalization() {
+        // Build a path with redundant components (e.g. trailing dot-slash)
+        // that canonicalizes to the same dir as the env-var value.
+        let _lock = ENV_LOCK.lock().unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let canonical = std::fs::canonicalize(temp.path()).unwrap();
+        let _g = EnvGuard::set(TARGET_REGISTRY_RECORDED_ENV_VAR, canonical.as_os_str());
+        // The wrapper's `resolved` may come in as the non-canonical
+        // tempfile path; both routes should compare equal.
+        assert!(target_registry_memo_matches(temp.path()));
+    }
 }

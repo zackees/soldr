@@ -18,7 +18,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR;
-use soldr_cli::wrapper_target::{record_target_dir_in_registry, TargetTouchPath};
+use soldr_cli::wrapper_target::{
+    record_target_dir_in_registry, TargetTouchPath, TARGET_REGISTRY_RECORDED_ENV_VAR,
+};
 
 /// Cross-test env lock: every test in this file mutates the same
 /// per-process env vars (`SOLDR_CACHE_DIR`, `HOME`, `USERPROFILE`,
@@ -216,6 +218,91 @@ fn fast_path_writes_target_registry_row_directly() {
     assert!(
         row.last_used > 0,
         "fast path must stamp `last_used` with a current unix timestamp",
+    );
+}
+
+#[test]
+fn memo_path_skips_redb_when_env_matches_resolved_target() {
+    // Issue #440: when the cargo front door has already recorded the
+    // target dir for the build session (signalled via
+    // SOLDR_TARGET_REGISTRY_RECORDED), the wrapper must return
+    // MemoSkipped and NOT touch redb. Verifies the registry stays
+    // empty after a memo hit so we know the redb write was actually
+    // skipped, not just no-op'd.
+    use soldr_cli::cache_lib::target_registry::TargetRegistry;
+
+    let cache_root = unique_temp_dir("perf-memo-cache");
+    let home_root = unique_temp_dir("perf-memo-home");
+    let workspace = unique_temp_dir("perf-memo-workspace");
+    // Seed the target dir so the resolver's canonicalization
+    // succeeds, but DO NOT prepopulate the registry — we want to
+    // prove the memo path stays out of redb.
+    let target = workspace.join("target");
+    std::fs::create_dir_all(&target).expect("seed target");
+    let canon = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
+
+    let _scope = EnvScope::set(&[
+        ("SOLDR_CACHE_DIR", cache_root.as_path()),
+        ("HOME", home_root.as_path()),
+        ("USERPROFILE", home_root.as_path()),
+    ])
+    .remove(SOLDR_BUILD_SESSION_ID_ENV_VAR)
+    .add(
+        TARGET_REGISTRY_RECORDED_ENV_VAR,
+        canon.to_string_lossy().as_ref(),
+    );
+
+    let args = rustc_args_for(&workspace, "demo_crate");
+    let path = record_target_dir_in_registry(&args);
+    assert_eq!(
+        path,
+        TargetTouchPath::MemoSkipped,
+        "matching memo env var must short-circuit the redb write",
+    );
+
+    // Critical: the registry must be empty because the memo path
+    // skipped both the direct redb write and the daemon target-touch
+    // IPC. The cargo front door is responsible for the one-time
+    // upsert in production; the test simulates that by not touching
+    // the registry itself.
+    let registry_path = cache_root.join("state.redb");
+    if registry_path.exists() {
+        let registry = TargetRegistry::open(&registry_path).expect("open registry");
+        let rows = registry.list().expect("list rows");
+        assert!(
+            rows.is_empty(),
+            "memo path must NOT write to redb; got rows: {rows:?}",
+        );
+    }
+}
+
+#[test]
+fn memo_path_falls_through_when_env_path_does_not_match() {
+    // Defensive: if SOLDR_TARGET_REGISTRY_RECORDED points at a
+    // different dir than the wrapper-resolved target, the memo must
+    // NOT short-circuit. Falling through preserves correctness when
+    // the env var was leaked across worktrees (e.g. nested cargo).
+    let cache_root = unique_temp_dir("perf-memo-mismatch-cache");
+    let home_root = unique_temp_dir("perf-memo-mismatch-home");
+    let workspace = unique_temp_dir("perf-memo-mismatch-workspace");
+    let unrelated = unique_temp_dir("perf-memo-mismatch-other");
+    let _scope = EnvScope::set(&[
+        ("SOLDR_CACHE_DIR", cache_root.as_path()),
+        ("HOME", home_root.as_path()),
+        ("USERPROFILE", home_root.as_path()),
+    ])
+    .remove(SOLDR_BUILD_SESSION_ID_ENV_VAR)
+    .add(
+        TARGET_REGISTRY_RECORDED_ENV_VAR,
+        unrelated.to_string_lossy().as_ref(),
+    );
+
+    let args = rustc_args_for(&workspace, "demo_crate");
+    let path = record_target_dir_in_registry(&args);
+    assert_eq!(
+        path,
+        TargetTouchPath::FastDirect,
+        "memo env pointing at an unrelated dir must NOT short-circuit",
     );
 }
 

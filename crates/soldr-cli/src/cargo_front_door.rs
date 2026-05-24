@@ -323,6 +323,35 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
+    // Target-registry memoization for the wrapper hot path (#440).
+    // Without this, every rustc invocation re-opens redb and writes
+    // the same target row (~14 ms p50 on Windows in the issue #440
+    // profile). The cargo front door runs once per build session and
+    // already knows the target dir, so do the upsert here and
+    // propagate a recorded-marker env var that lets the wrapper skip
+    // its own redb work + daemon target-touch IPC.
+    if build_like_cargo {
+        let target_dir_for_memo: Option<std::path::PathBuf> = plan_ctx
+            .as_ref()
+            .map(|p| std::path::PathBuf::from(&p.target_dir))
+            .or_else(|| resolve_target_dir_for_gc(args));
+        if let Some(dir) = target_dir_for_memo.as_deref() {
+            if dir.is_dir() {
+                let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+                let db_path = crate::cache_lib::data_db_path(&paths);
+                if let Ok(registry) =
+                    crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+                {
+                    let _ = registry.upsert(&canon);
+                }
+                command.env(
+                    crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
+                    canon.as_os_str(),
+                );
+            }
+        }
+    }
+
     // Pre-compile target-GC (#485). Only on build-like cargo invocations
     // (build/check/test/run/...) and only when the user hasn't opted out
     // via --no-gc-target / --no-gc-target-before / SOLDR_NO_GC_TARGET.
