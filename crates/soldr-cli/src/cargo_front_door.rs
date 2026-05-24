@@ -4,6 +4,7 @@
 
 use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::native_cc;
 use crate::fetch::VersionSpec;
 use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
 use crate::trampoline_workspace::{
@@ -296,6 +297,27 @@ pub(crate) async fn run_cargo_front_door(
     } else {
         None
     };
+
+    // Native C/C++ compiler caching (#310). Default-on when:
+    //   1. zccache wrapper mode is engaged for this cargo invocation
+    //      (i.e. `prepare_rustc_wrapper` returned a session), AND
+    //   2. the user hasn't set `SOLDR_NATIVE_CACHE` to a falsy value,
+    //      AND
+    //   3. the host platform is supported (Linux / macOS in v1; Windows
+    //      falls through silently — tracked as follow-up in #310).
+    //
+    // The injection prepends the same zccache binary path soldr just
+    // wired into RUSTC_WRAPPER to whatever cc-rs would discover for
+    // `CC` / `CXX` / `CC_<triple>` / `CXX_<triple>`. cc-rs honors
+    // `CC_KNOWN_WRAPPER_CUSTOM=zccache` to recognize the wrapper and
+    // dispatch to the real compiler underneath.
+    if let Some(session) = session.as_ref() {
+        native_cc::inject_native_cache_env(
+            &mut command,
+            &session.binary_path,
+            explicit_target.as_deref(),
+        )?;
+    }
 
     let plan_ctx = if let Some(session) = session.as_ref() {
         rust_plan::maybe_prepare_rust_artifact_plan(
