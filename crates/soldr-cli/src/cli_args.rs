@@ -67,6 +67,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "bootstrap",
     "doctor",
     "optimize",
+    "defender-exclusions",
     "session-start",
     "session-end",
     "install-zccache",
@@ -240,6 +241,17 @@ pub(crate) enum Commands {
     /// Defender exclusions today; future platforms TBD). Auto-skips on
     /// CI. See `docs/API.md` for the full matrix.
     Optimize(optimize::OptimizeArgs),
+    /// First-class surface for managing Windows Defender real-time-scan
+    /// exclusions on soldr's hot cache directories (issue #355).
+    ///
+    /// Self-documenting verbs (`check` / `add` / `remove`) over the same
+    /// Defender machinery `soldr optimize` already exposes. Windows-only;
+    /// no-op with a clear message on macOS / Linux.
+    #[command(name = "defender-exclusions")]
+    DefenderExclusions {
+        #[command(subcommand)]
+        subcommand: DefenderExclusionsSubcommand,
+    },
     /// Start a zccache session and return its identifier.
     ///
     /// Idempotent: when `ZCCACHE_SESSION_ID` is already set in the
@@ -379,6 +391,39 @@ pub(crate) enum DaemonBuildsSubcommand {
         limit: u32,
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub(crate) enum DefenderExclusionsSubcommand {
+    /// Report the soldr-owned paths that should be excluded, and which
+    /// of them soldr believes it has already added (from the local
+    /// managed-exclusions tracking file). Does not require admin.
+    Check {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add soldr's hot cache directories to Defender's exclusion list.
+    /// Requires admin elevation; UAC self-relaunches on Windows when
+    /// the parent shell is non-admin.
+    Add {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+        /// Print what would change without invoking PowerShell.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove soldr-managed exclusions from Defender. Never touches
+    /// user-added entries. Requires admin elevation.
+    Remove {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+        /// Print what would change without invoking PowerShell.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

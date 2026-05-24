@@ -39,9 +39,9 @@ mod wrapper_target;
 mod zccache;
 
 use cli_args::{
-    CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand, DaemonSubcommand, GcCargoArgs,
-    GcListKind, GcSubcommand, GcSweepArgs, ToolchainSubcommand, TrimProfileArg, ZccacheSourceArg,
-    SOLDR_BUILTIN_VERBS,
+    CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand, DaemonSubcommand,
+    DefenderExclusionsSubcommand, GcCargoArgs, GcListKind, GcSubcommand, GcSweepArgs,
+    ToolchainSubcommand, TrimProfileArg, ZccacheSourceArg, SOLDR_BUILTIN_VERBS,
 };
 
 use crate::core::{suppress_windows_console_window, SoldrError};
@@ -275,6 +275,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
+        }
+        Commands::DefenderExclusions { subcommand } => {
+            std::process::exit(optimize::run_defender_exclusions(subcommand)?);
         }
         Commands::InstallZccache {
             source,
