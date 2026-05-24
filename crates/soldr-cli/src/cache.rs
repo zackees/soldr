@@ -343,21 +343,23 @@ fn zccache_output_snippet(output: &[u8]) -> Option<String> {
 pub(crate) fn run_cache_prune_target_command(
     target_dir: std::path::PathBuf,
     dry_run: bool,
+    keep_latest: bool,
     json: bool,
 ) -> Result<(), SoldrError> {
     let canonical = std::path::absolute(&target_dir).unwrap_or_else(|_| target_dir.clone());
     let opts = crate::cache_lib::prune_target::PruneTargetOptions {
         target_dir: canonical.clone(),
         dry_run,
+        keep_latest,
     };
     let report = crate::cache_lib::prune_target::prune_target(&opts)
         .map_err(|e| SoldrError::Other(format!("cache prune-target failed: {e}")))?;
 
     if json {
-        let output = build_cache_prune_target_output(&canonical, dry_run, &report);
+        let output = build_cache_prune_target_output(&canonical, dry_run, keep_latest, &report);
         print_json(&output)?;
     } else {
-        print_cache_prune_target_text(&canonical, dry_run, &report);
+        print_cache_prune_target_text(&canonical, dry_run, keep_latest, &report);
     }
     Ok(())
 }
@@ -365,6 +367,7 @@ pub(crate) fn run_cache_prune_target_command(
 fn build_cache_prune_target_output(
     target_dir: &std::path::Path,
     dry_run: bool,
+    keep_latest: bool,
     report: &crate::cache_lib::prune_target::PruneTargetReport,
 ) -> CachePruneTargetOutput {
     CachePruneTargetOutput {
@@ -372,11 +375,14 @@ fn build_cache_prune_target_output(
         command: "cache prune-target",
         target_dir: target_dir.display().to_string(),
         dry_run,
+        keep_latest,
         scanned: report.scanned,
         kept: report.kept,
         deleted: report.deleted,
         reclaimed_bytes: report.reclaimed_bytes,
         reclaimed_human: crate::cache_lib::target_registry::human_size(report.reclaimed_bytes),
+        keep_decisions_from_fingerprint: report.keep_decisions_from_fingerprint,
+        keep_decisions_from_mtime: report.keep_decisions_from_mtime,
         entries: report
             .entries
             .iter()
@@ -399,6 +405,7 @@ fn build_cache_prune_target_output(
 fn print_cache_prune_target_text(
     target_dir: &std::path::Path,
     dry_run: bool,
+    keep_latest: bool,
     report: &crate::cache_lib::prune_target::PruneTargetReport,
 ) {
     println!("soldr cache prune-target: {}", target_dir.display());
@@ -411,12 +418,26 @@ fn print_cache_prune_target_text(
         }
     );
     println!(
+        "  strategy: {}",
+        if keep_latest {
+            "keep-latest (one hash family per prefix; aggressive — issue #316)"
+        } else {
+            "orphan-siblings (newest entry per (parent_dir, prefix) — issue #336)"
+        }
+    );
+    println!(
         "  scanned={} kept={} deleted={} reclaimed={}",
         report.scanned,
         report.kept,
         report.deleted,
         crate::cache_lib::target_registry::human_size(report.reclaimed_bytes),
     );
+    if report.keep_decisions_from_fingerprint + report.keep_decisions_from_mtime > 0 {
+        println!(
+            "  rank source: {} fingerprint, {} fs-mtime",
+            report.keep_decisions_from_fingerprint, report.keep_decisions_from_mtime
+        );
+    }
     let mut shown = 0usize;
     for entry in &report.entries {
         if entry.action != crate::cache_lib::prune_target::PruneAction::Delete {
@@ -446,11 +467,21 @@ struct CachePruneTargetOutput {
     command: &'static str,
     target_dir: String,
     dry_run: bool,
+    /// True when invoked with `--keep-latest` (issue #316 aggressive
+    /// per-prefix bucketing); false for the legacy
+    /// `(parent_dir, prefix)` orphan-sibling prune (issue #336).
+    keep_latest: bool,
     scanned: usize,
     kept: usize,
     deleted: usize,
     reclaimed_bytes: u64,
     reclaimed_human: String,
+    /// Number of keep decisions whose rank came from cargo's
+    /// authoritative `.fingerprint/<prefix>-<hash>/invoked.timestamp`.
+    keep_decisions_from_fingerprint: usize,
+    /// Number of keep decisions that fell back to the entry's own
+    /// filesystem mtime (no matching fingerprint file existed).
+    keep_decisions_from_mtime: usize,
     entries: Vec<CachePruneTargetEntryOutput>,
 }
 
@@ -546,6 +577,7 @@ pub(crate) fn run_cache_trim_target_command(
     let prune_opts = crate::cache_lib::prune_target::PruneTargetOptions {
         target_dir: canonical.clone(),
         dry_run,
+        keep_latest: false,
     };
     let prune_report = crate::cache_lib::prune_target::prune_target(&prune_opts)
         .map_err(|e| SoldrError::Other(format!("cache trim-target: prune failed: {e}")))?;

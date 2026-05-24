@@ -257,15 +257,37 @@ soldr cache --json
 
 #### `soldr cache prune-target <path>`
 
-First slice of issue #316. Prune stale per-prefix cargo build artifacts
-inside a given `target/` directory, keeping only the newest entry per
-`(parent_dir, prefix)` bucket. Scanned subdirectories under each
-profile (`debug/`, `release/`, …) are `deps/`, `.fingerprint/`,
-`incremental/`, and `build/`.
+Prune stale per-prefix cargo build artifacts inside a given `target/`
+directory. Scanned subdirectories under each profile (`debug/`,
+`release/`, …) are `deps/`, `.fingerprint/`, `incremental/`, and
+`build/`.
+
+Two strategies are available:
+
+- **Default — orphan siblings (issue #336).** Keep the newest entry per
+  `(parent_dir, prefix)` bucket. Each subdirectory's set of
+  hash-siblings is pruned independently. Conservative: cargo tolerates
+  orphans across the four subdirs as long as the live entry inside
+  each is current.
+- **`--keep-latest` — aggressive (issue #316).** Bucket by `prefix`
+  alone; keep only the **newest hash family** per logical artifact
+  name, deleting every other hash's files across the four subdirs.
+  Shrinks a heavily-rebuilt target/ from 16+ GB to ~2 GB on real
+  workloads. Use when you don't need the per-subdir orphan retention.
+
+**Recency ranking.** Both strategies prefer cargo's authoritative
+`target/<profile>/.fingerprint/<prefix>-<hash>/invoked.timestamp`
+mtime — the same signal cargo's unstable `-Zgc` uses — and fall back
+to the entry's own filesystem mtime when the fingerprint file is
+missing or unreadable. The JSON output reports per-decision
+provenance via `keep_decisions_from_fingerprint` and
+`keep_decisions_from_mtime`.
 
 ```bash
-soldr cache prune-target ./target                  # dry-run report
-soldr cache prune-target ./target --force          # actually delete
+soldr cache prune-target ./target                  # dry-run, orphan-siblings
+soldr cache prune-target ./target --keep-latest    # dry-run, aggressive
+soldr cache prune-target ./target --force          # actually delete (orphan-siblings)
+soldr cache prune-target ./target --keep-latest --force  # actually delete (aggressive)
 soldr cache prune-target ./target --dry-run --json # machine-readable plan
 ```
 
@@ -282,11 +304,14 @@ JSON schema (`--json`):
   "command": "cache prune-target",
   "target_dir": "<absolute path>",
   "dry_run": true,
+  "keep_latest": false,
   "scanned": 3,
   "kept": 1,
   "deleted": 2,
   "reclaimed_bytes": 0,
   "reclaimed_human": "0 B",
+  "keep_decisions_from_fingerprint": 1,
+  "keep_decisions_from_mtime": 0,
   "entries": [
     {
       "path": "<absolute path>",
@@ -301,7 +326,7 @@ JSON schema (`--json`):
 }
 ```
 
-Automatic pruning via `RUSTC_WRAPPER` pre/post-compile hooks is
+Automatic pre/post-compile pruning via `RUSTC_WRAPPER` hooks is
 deferred to a follow-up — the manual subcommand is intentionally
 opt-in until the behaviour is trusted on real `target/` directories.
 

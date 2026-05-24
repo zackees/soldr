@@ -723,6 +723,17 @@ enum CacheSubcommand {
         /// Actually delete entries. Equivalent to `--no-dry-run`.
         #[arg(long, conflicts_with = "dry_run")]
         force: bool,
+        /// Switch from the legacy per-`(parent_dir, prefix)` orphan
+        /// prune (issue #336) to the aggressive per-`prefix` strategy
+        /// (issue #316): keep only the **newest hash family** per
+        /// logical artifact name, deleting every other hash's files
+        /// across `deps/`, `.fingerprint/`, `incremental/`, and
+        /// `build/`. Recency is ranked by cargo's authoritative
+        /// `.fingerprint/<prefix>-<hash>/invoked.timestamp` mtime when
+        /// available, falling back to the entry's own filesystem
+        /// mtime.
+        #[arg(long = "keep-latest")]
+        keep_latest: bool,
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
@@ -989,13 +1000,19 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 dry_run,
                 no_dry_run,
                 force,
+                keep_latest,
                 json: prune_json,
             }) => {
                 let effective_dry_run = !(force || no_dry_run);
                 // Either flag pair maps onto the same boolean; `dry_run`
                 // is the documented default so we accept it explicitly.
                 let _ = dry_run;
-                cache::run_cache_prune_target_command(path, effective_dry_run, prune_json || json)?;
+                cache::run_cache_prune_target_command(
+                    path,
+                    effective_dry_run,
+                    keep_latest,
+                    prune_json || json,
+                )?;
             }
             Some(CacheSubcommand::TrimTarget {
                 path,

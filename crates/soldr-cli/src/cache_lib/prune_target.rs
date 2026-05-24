@@ -55,6 +55,30 @@ pub struct PruneTargetEntry {
     pub action: PruneAction,
 }
 
+/// Provenance of the recency timestamp used to rank a hash family.
+/// Recorded on each [`PruneTargetReport`] so consumers can tell when
+/// the keep decision used cargo's authoritative
+/// `.fingerprint/<prefix>-<hash>/invoked.timestamp` vs. a fallback to
+/// the entry's own mtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecencySource {
+    /// Recency came from `.fingerprint/<prefix>-<hash>/invoked.timestamp`,
+    /// cargo's authoritative per-artifact "last invoked" record.
+    FingerprintInvokedTimestamp,
+    /// Recency came from the entry's own filesystem mtime — used when
+    /// the matching `invoked.timestamp` file is missing or unreadable.
+    EntryMtime,
+}
+
+impl RecencySource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RecencySource::FingerprintInvokedTimestamp => "fingerprint_invoked_timestamp",
+            RecencySource::EntryMtime => "entry_mtime",
+        }
+    }
+}
+
 /// Options that drive [`prune_target`].
 #[derive(Debug, Clone)]
 pub struct PruneTargetOptions {
@@ -63,6 +87,19 @@ pub struct PruneTargetOptions {
     /// When `true`, no entries are deleted. The returned report still
     /// describes the plan.
     pub dry_run: bool,
+    /// When `true`, switch from the per-`(parent_dir, prefix)` bucket
+    /// strategy (issue #336 — drop orphan siblings inside each subdir)
+    /// to the aggressive per-`prefix` strategy (issue #316 — keep only
+    /// the **newest hash family** per logical artifact name, deleting
+    /// every other hash's files across `deps/`, `.fingerprint/`,
+    /// `incremental/`, and `build/`).
+    ///
+    /// The aggressive mode is what shrinks a heavily-rebuilt target/
+    /// from 16+ GB to ~2 GB on real workloads (issue #316). It is
+    /// destructive but bounded: the winning hash is the one with the
+    /// freshest mtime, and the active-`.cargo-lock` guard still
+    /// applies.
+    pub keep_latest: bool,
 }
 
 impl PruneTargetOptions {
@@ -70,6 +107,7 @@ impl PruneTargetOptions {
         Self {
             target_dir,
             dry_run: true,
+            keep_latest: false,
         }
     }
 }
@@ -88,6 +126,12 @@ pub struct PruneTargetReport {
     pub reclaimed_bytes: u64,
     /// Every classified entry, in the order they were scanned.
     pub entries: Vec<PruneTargetEntry>,
+    /// How many of the keep decisions used cargo's authoritative
+    /// `.fingerprint/<prefix>-<hash>/invoked.timestamp` mtime (the
+    /// same signal cargo's own `-Zgc` consults). The remainder fell
+    /// back to the entry's own filesystem mtime.
+    pub keep_decisions_from_fingerprint: usize,
+    pub keep_decisions_from_mtime: usize,
 }
 
 /// Scan a cargo `target/` directory and prune stale per-prefix
@@ -118,7 +162,6 @@ pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, Regi
 
     let scan_dirs = collect_scan_dirs(target_dir);
     let mut entries: Vec<PruneTargetEntry> = Vec::new();
-    let mut buckets: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
 
     for parent in &scan_dirs {
         let read_dir = match fs::read_dir(parent) {
@@ -158,37 +201,33 @@ pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, Regi
                 mtime_unix,
                 action: PruneAction::Keep,
             };
-            let idx = entries.len();
-            buckets
-                .entry((parent.clone(), prefix.to_string()))
-                .or_default()
-                .push(idx);
             entries.push(entry);
         }
     }
 
-    // Classify within each bucket: newest mtime wins; if mtime ties,
-    // fall back to the lexicographically largest hash so the ordering
-    // is deterministic.
-    for indices in buckets.values_mut() {
-        indices.sort_by(|a, b| {
-            let ea = &entries[*a];
-            let eb = &entries[*b];
-            eb.mtime_unix
-                .cmp(&ea.mtime_unix)
-                .then_with(|| eb.hash.cmp(&ea.hash))
-        });
-        let mut iter = indices.iter().copied();
-        if let Some(keep) = iter.next() {
-            entries[keep].action = PruneAction::Keep;
-        }
-        for idx in iter {
-            entries[idx].action = PruneAction::Delete;
-        }
+    let mut fingerprint_decisions = 0usize;
+    let mut mtime_decisions = 0usize;
+
+    if opts.keep_latest {
+        classify_per_prefix(
+            &mut entries,
+            target_dir,
+            &mut fingerprint_decisions,
+            &mut mtime_decisions,
+        );
+    } else {
+        classify_per_parent_prefix(
+            &mut entries,
+            target_dir,
+            &mut fingerprint_decisions,
+            &mut mtime_decisions,
+        );
     }
 
     let mut report = PruneTargetReport {
         scanned: entries.len(),
+        keep_decisions_from_fingerprint: fingerprint_decisions,
+        keep_decisions_from_mtime: mtime_decisions,
         ..PruneTargetReport::default()
     };
 
@@ -212,6 +251,163 @@ pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, Regi
     }
     report.entries = entries;
     Ok(report)
+}
+
+/// Classic per-`(parent_dir, prefix)` bucketing (issue #336). Each
+/// subdirectory's set of hash-siblings is pruned independently, so
+/// the same prefix in `deps/`, `.fingerprint/`, etc. keeps its own
+/// newest entry. Conservative: cargo tolerates orphans across the
+/// four subdirs as long as the live entry inside each is current.
+fn classify_per_parent_prefix(
+    entries: &mut [PruneTargetEntry],
+    target_dir: &Path,
+    fingerprint_decisions: &mut usize,
+    mtime_decisions: &mut usize,
+) {
+    let mut buckets: HashMap<(PathBuf, String), Vec<usize>> = HashMap::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        let parent = entry
+            .path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_default();
+        buckets
+            .entry((parent, entry.prefix.clone()))
+            .or_default()
+            .push(idx);
+    }
+    for indices in buckets.values_mut() {
+        rank_indices(entries, indices, target_dir, fingerprint_decisions, mtime_decisions);
+        let mut iter = indices.iter().copied();
+        if let Some(keep) = iter.next() {
+            entries[keep].action = PruneAction::Keep;
+        }
+        for idx in iter {
+            entries[idx].action = PruneAction::Delete;
+        }
+    }
+}
+
+/// Aggressive per-`prefix` bucketing (issue #316 — `--keep-latest`).
+/// All entries sharing a prefix across `deps/`, `.fingerprint/`,
+/// `incremental/`, and `build/` form a single bucket. The newest
+/// **hash family** wins — every entry whose hash matches the winning
+/// hash is kept; entries with any other hash are deleted.
+///
+/// Cargo expects the four subdirs to stay consistent (a `deps/` entry
+/// for hash X must have a matching `.fingerprint/<prefix>-X/`), so
+/// keeping the whole family avoids partially-orphaned state.
+fn classify_per_prefix(
+    entries: &mut [PruneTargetEntry],
+    target_dir: &Path,
+    fingerprint_decisions: &mut usize,
+    mtime_decisions: &mut usize,
+) {
+    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    for (idx, entry) in entries.iter().enumerate() {
+        buckets
+            .entry(entry.prefix.clone())
+            .or_default()
+            .push(idx);
+    }
+    for indices in buckets.values_mut() {
+        rank_indices(entries, indices, target_dir, fingerprint_decisions, mtime_decisions);
+        let winning_hash = match indices.first() {
+            Some(&idx) => entries[idx].hash.clone(),
+            None => continue,
+        };
+        for &idx in indices.iter() {
+            if entries[idx].hash == winning_hash {
+                entries[idx].action = PruneAction::Keep;
+            } else {
+                entries[idx].action = PruneAction::Delete;
+            }
+        }
+    }
+}
+
+/// Sort `indices` (offsets into `entries`) descending by the
+/// authoritative recency timestamp, falling back to the entry's own
+/// mtime. Within an equal timestamp the lexicographically larger hash
+/// wins, so the ordering is deterministic across filesystems with
+/// coarse mtime resolution.
+///
+/// Increments the appropriate counter for each NEWEST-entry decision
+/// based on which timestamp source supplied its rank.
+fn rank_indices(
+    entries: &[PruneTargetEntry],
+    indices: &mut Vec<usize>,
+    target_dir: &Path,
+    fingerprint_decisions: &mut usize,
+    mtime_decisions: &mut usize,
+) {
+    let ranked: Vec<(usize, i64, RecencySource)> = indices
+        .iter()
+        .map(|&idx| {
+            let entry = &entries[idx];
+            let (ts, source) = entry_recency(entry, target_dir);
+            (idx, ts, source)
+        })
+        .collect();
+    let mut sorted = ranked;
+    sorted.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| entries[b.0].hash.cmp(&entries[a.0].hash))
+    });
+    if let Some(&(_, _, source)) = sorted.first() {
+        match source {
+            RecencySource::FingerprintInvokedTimestamp => *fingerprint_decisions += 1,
+            RecencySource::EntryMtime => *mtime_decisions += 1,
+        }
+    }
+    *indices = sorted.into_iter().map(|(idx, _, _)| idx).collect();
+}
+
+/// Resolve the recency timestamp for one entry. Prefers cargo's
+/// authoritative `.fingerprint/<crate>-<hash>/invoked.timestamp`
+/// mtime, since cargo touches it on every invocation that consults
+/// the artifact; falls back to the entry's own mtime when the
+/// fingerprint file is missing or unreadable.
+///
+/// Cargo names `.fingerprint/` dirs after the unadorned crate name
+/// (e.g. `foo-<hash>`), but the corresponding `deps/` entries carry
+/// a `lib` prefix for `rlib`/`dylib` targets (e.g.
+/// `libfoo-<hash>.rlib`). We look up `<prefix>-<hash>` first; if
+/// `<prefix>` starts with `lib` and that misses, we retry against
+/// `<prefix without lib>-<hash>`.
+pub(crate) fn entry_recency(
+    entry: &PruneTargetEntry,
+    target_dir: &Path,
+) -> (i64, RecencySource) {
+    let lib_stripped = entry.prefix.strip_prefix("lib");
+    let candidates: &[&str] = match lib_stripped {
+        Some(stripped) => &[entry.prefix.as_str(), stripped],
+        None => &[entry.prefix.as_str()],
+    };
+    let profiles = match fs::read_dir(target_dir) {
+        Ok(it) => it,
+        Err(_) => return (entry.mtime_unix, RecencySource::EntryMtime),
+    };
+    let profile_paths: Vec<PathBuf> = profiles.flatten().map(|e| e.path()).collect();
+    for candidate_prefix in candidates {
+        let stem = format!("{candidate_prefix}-{}", entry.hash);
+        for profile_path in &profile_paths {
+            let invoked = profile_path
+                .join(".fingerprint")
+                .join(&stem)
+                .join("invoked.timestamp");
+            if let Ok(meta) = fs::metadata(&invoked) {
+                let ts = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                return (ts, RecencySource::FingerprintInvokedTimestamp);
+            }
+        }
+    }
+    (entry.mtime_unix, RecencySource::EntryMtime)
 }
 
 /// Standard cargo-managed subdirectories of `target/<profile>/` where
@@ -463,6 +659,7 @@ mod tests {
         let report = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
 
@@ -493,6 +690,7 @@ mod tests {
         let report = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
 
@@ -519,6 +717,7 @@ mod tests {
         let report = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
         assert_eq!(report.scanned, 0, "no entries should match the scan dirs");
@@ -549,6 +748,7 @@ mod tests {
         let report = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
         assert_eq!(report.scanned, 3);
@@ -574,6 +774,7 @@ mod tests {
         let report = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: true,
+            keep_latest: false,
         })
         .unwrap();
         assert_eq!(report.scanned, 2);
@@ -596,6 +797,7 @@ mod tests {
         let err = prune_target(&PruneTargetOptions {
             target_dir: target.clone(),
             dry_run: false,
+            keep_latest: false,
         })
         .expect_err("must refuse when top-level lock exists");
         assert!(format!("{err}").contains(".cargo-lock"));
@@ -615,6 +817,7 @@ mod tests {
         let err = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .expect_err("must refuse when profile lock exists");
         assert!(format!("{err}").contains(".cargo-lock"));
@@ -636,15 +839,197 @@ mod tests {
         let _ = prune_target(&PruneTargetOptions {
             target_dir: target.clone(),
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
         let second = prune_target(&PruneTargetOptions {
             target_dir: target,
             dry_run: false,
+            keep_latest: false,
         })
         .unwrap();
         assert_eq!(second.scanned, 1);
         assert_eq!(second.kept, 1);
         assert_eq!(second.deleted, 0);
+    }
+
+    // -----------------------------------------------------------------
+    // Aggressive --keep-latest mode (issue #316). The bucket key drops
+    // from `(parent, prefix)` to `prefix`; the winning hash family is
+    // preserved across all subdirs. Recency rank prefers cargo's own
+    // `.fingerprint/<prefix>-<hash>/invoked.timestamp` mtime over the
+    // entry's own mtime — see entry_recency.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn keep_latest_drops_old_hash_family_across_subdirs() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        // Hash A is the older family; hash B is newer. Each lives in
+        // deps/, .fingerprint/, build/.
+        let deps_a = target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib");
+        let fp_a = target.join("debug/.fingerprint/foo-aaaaaaaaaaaaa/invoked.timestamp");
+        let build_a = target.join("debug/build/foo-aaaaaaaaaaaaa");
+        let deps_b = target.join("debug/deps/libfoo-bbbbbbbbbbbbb.rlib");
+        let fp_b = target.join("debug/.fingerprint/foo-bbbbbbbbbbbbb/invoked.timestamp");
+        let build_b = target.join("debug/build/foo-bbbbbbbbbbbbb");
+        touch(&deps_a);
+        touch(&fp_a);
+        touch_dir(&build_a);
+        touch(&deps_b);
+        touch(&fp_b);
+        touch_dir(&build_b);
+
+        // Pin the fingerprint timestamps so the ranker prefers B over A
+        // (B is newer).
+        set_mtime(&fp_a, 1_700_000_000);
+        set_mtime(&fp_b, 1_700_000_500);
+        // Set entry mtimes to the OPPOSITE order so we can prove the
+        // ranker honored the fingerprint timestamps, not the entry
+        // mtimes.
+        set_mtime(&deps_a, 1_700_001_000);
+        set_mtime(&deps_b, 1_700_000_001);
+
+        let report = prune_target(&PruneTargetOptions {
+            target_dir: target,
+            dry_run: false,
+            keep_latest: true,
+        })
+        .unwrap();
+
+        // All six entries scanned. Family B (deps_b + fp_b + build_b)
+        // survives; family A is gone.
+        assert_eq!(report.scanned, 6);
+        assert_eq!(report.kept, 3);
+        assert_eq!(report.deleted, 3);
+        assert!(deps_b.exists());
+        assert!(fp_b.exists());
+        assert!(build_b.exists());
+        assert!(!deps_a.exists());
+        assert!(!fp_a.exists());
+        assert!(!build_a.exists());
+        // Authoritative-source counter ticked up.
+        assert!(
+            report.keep_decisions_from_fingerprint > 0,
+            "fingerprint mtime should drive the rank"
+        );
+    }
+
+    #[test]
+    fn keep_latest_falls_back_to_entry_mtime_when_fingerprint_missing() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let deps_a = target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib");
+        let deps_b = target.join("debug/deps/libfoo-bbbbbbbbbbbbb.rlib");
+        touch(&deps_a);
+        touch(&deps_b);
+        // No .fingerprint/ dir at all → forced fallback to entry mtime.
+        set_mtime(&deps_a, 1_700_000_000);
+        set_mtime(&deps_b, 1_700_000_500);
+
+        let report = prune_target(&PruneTargetOptions {
+            target_dir: target,
+            dry_run: false,
+            keep_latest: true,
+        })
+        .unwrap();
+
+        assert!(deps_b.exists(), "newer entry wins");
+        assert!(!deps_a.exists());
+        assert!(
+            report.keep_decisions_from_mtime > 0,
+            "fallback path should be reflected in the counter"
+        );
+        assert_eq!(report.keep_decisions_from_fingerprint, 0);
+    }
+
+    #[test]
+    fn keep_latest_keeps_one_family_when_only_one_hash_exists() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let deps = target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib");
+        let fp = target.join("debug/.fingerprint/foo-aaaaaaaaaaaaa/invoked.timestamp");
+        touch(&deps);
+        touch(&fp);
+
+        let report = prune_target(&PruneTargetOptions {
+            target_dir: target,
+            dry_run: false,
+            keep_latest: true,
+        })
+        .unwrap();
+        assert_eq!(report.scanned, 2);
+        assert_eq!(report.kept, 2);
+        assert_eq!(report.deleted, 0);
+        assert!(deps.exists());
+        assert!(fp.exists());
+    }
+
+    #[test]
+    fn keep_latest_respects_cargo_lock_guard() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let deps_a = target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib");
+        let deps_b = target.join("debug/deps/libfoo-bbbbbbbbbbbbb.rlib");
+        touch(&deps_a);
+        touch(&deps_b);
+        touch(&target.join(".cargo-lock"));
+
+        let err = prune_target(&PruneTargetOptions {
+            target_dir: target.clone(),
+            dry_run: false,
+            keep_latest: true,
+        })
+        .expect_err("--keep-latest must still refuse under an active lock");
+        assert!(format!("{err}").contains(".cargo-lock"));
+        // Neither hash family was touched.
+        assert!(deps_a.exists());
+        assert!(deps_b.exists());
+    }
+
+    #[test]
+    fn entry_recency_prefers_fingerprint_timestamp() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let deps_path = target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib");
+        let fp_path = target.join("debug/.fingerprint/foo-aaaaaaaaaaaaa/invoked.timestamp");
+        touch(&deps_path);
+        touch(&fp_path);
+        // Entry mtime is OLDER than fingerprint mtime — we expect the
+        // ranker to pick the (newer) fingerprint.
+        set_mtime(&deps_path, 1_700_000_000);
+        set_mtime(&fp_path, 1_700_005_000);
+
+        let entry = PruneTargetEntry {
+            path: deps_path,
+            prefix: "libfoo".to_string(),
+            hash: "aaaaaaaaaaaaa".to_string(),
+            size_bytes: 0,
+            mtime_unix: 1_700_000_000,
+            action: PruneAction::Keep,
+        };
+        let (ts, source) = entry_recency(&entry, &target);
+        assert_eq!(ts, 1_700_005_000);
+        assert_eq!(source, RecencySource::FingerprintInvokedTimestamp);
+    }
+
+    #[test]
+    fn entry_recency_falls_back_to_entry_mtime() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let entry = PruneTargetEntry {
+            path: target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib"),
+            prefix: "libfoo".to_string(),
+            hash: "aaaaaaaaaaaaa".to_string(),
+            size_bytes: 0,
+            // Note: the entry's own mtime field is the rank when no
+            // fingerprint file exists on disk.
+            mtime_unix: 1_700_000_000,
+            action: PruneAction::Keep,
+        };
+        // No .fingerprint/ dir created.
+        let (ts, source) = entry_recency(&entry, &target);
+        assert_eq!(ts, 1_700_000_000);
+        assert_eq!(source, RecencySource::EntryMtime);
     }
 }
