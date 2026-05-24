@@ -98,13 +98,13 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
-        panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
-    });
-    let rustflags_value = extract_rustflags_env_value(&log);
 
     #[cfg(target_os = "windows")]
     {
+        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+        });
+        let rustflags_value = extract_rustflags_env_value(&log);
         assert_eq!(
             linker_value, "rust-lld",
             "windows-msvc rust-lld should inject rust-lld directly: {log}"
@@ -114,16 +114,29 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
             "windows-msvc rust-lld should not inject rustflags: {log}"
         );
     }
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     {
+        // Issue #509: `SOLDR_LINKER=rust-lld` must not inject anything on
+        // macOS — Apple clang rejects `-fuse-ld=lld`.
+        assert!(
+            !log_has_any_cargo_target_env(&log),
+            "macOS rust-lld should not inject any CARGO_TARGET_* env (issue #509): {log}"
+        );
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+        });
+        let rustflags_value = extract_rustflags_env_value(&log);
         assert_eq!(
             linker_value, "clang",
-            "non-windows rust-lld should drive linking through clang: {log}"
+            "non-windows non-macos rust-lld should drive linking through clang: {log}"
         );
         assert_eq!(
             rustflags_value.as_deref(),
             Some("-C link-arg=-fuse-ld=lld"),
-            "non-windows rust-lld should add -fuse-ld=lld rustflag: {log}"
+            "non-windows non-macos rust-lld should add -fuse-ld=lld rustflag: {log}"
         );
     }
 }
@@ -159,8 +172,14 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
     );
 }
 
-/// `SOLDR_LINKER=fast` picks `rust-lld` on every non-Linux host. The
-/// Linux variant of this matrix is exercised by the unit tests in
+/// `SOLDR_LINKER=fast` resolution on non-Linux hosts:
+///
+/// - Windows MSVC injects `rust-lld` directly.
+/// - macOS injects nothing (issue #509: Apple clang rejects
+///   `-fuse-ld=lld`, so `fast` silently falls back to the platform
+///   default linker).
+///
+/// The Linux variant of this matrix is exercised by the unit tests in
 /// `crates/soldr-cli/src/linker.rs` (the `mold_present` probe is split
 /// out for testability there). Gating to non-Linux here keeps the
 /// integration test from depending on whether mold happens to be on
@@ -190,12 +209,12 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
         String::from_utf8_lossy(&output.stderr)
     );
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
-        panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
-    });
 
     #[cfg(target_os = "windows")]
     {
+        let linker_value = extract_linker_env_value(&log).unwrap_or_else(|| {
+            panic!("expected CARGO_TARGET_<triple>_LINKER in fake cargo log: {log}")
+        });
         assert_eq!(
             linker_value, "rust-lld",
             "windows-msvc fast should inject rust-lld directly: {log}"
@@ -203,14 +222,11 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
     }
     #[cfg(target_os = "macos")]
     {
-        assert_eq!(
-            linker_value, "clang",
-            "macOS fast should drive linking through clang: {log}"
-        );
-        assert_eq!(
-            extract_rustflags_env_value(&log).as_deref(),
-            Some("-C link-arg=-fuse-ld=lld"),
-            "macOS fast should add -fuse-ld=lld rustflag: {log}"
+        // Issue #509: `SOLDR_LINKER=fast` must be a no-op on macOS so
+        // Apple-clang-driven build scripts keep working.
+        assert!(
+            !log_has_any_cargo_target_env(&log),
+            "macOS fast should not inject any CARGO_TARGET_* env (issue #509): {log}"
         );
     }
 }
