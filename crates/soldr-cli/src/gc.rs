@@ -24,6 +24,10 @@ const KIND_CARGO_TARGET: &str = "cargo_target";
 // crate sources. `purge_safety: derived` — cargo regenerates from the
 // matching `.crate` tarball in `registry/cache/` on demand.
 const KIND_CARGO_REGISTRY_SRC: &str = "cargo_registry_src";
+// Slice 3 of #323: `$CARGO_HOME/git/checkouts/<repo>/<commit>/` git-source
+// crate checkouts. `purge_safety: derived` — cargo regenerates by re-checking
+// out the bare repo in `$CARGO_HOME/git/db/<repo>/` on demand.
+const KIND_CARGO_GIT_CHECKOUTS: &str = "cargo_git_checkouts";
 const PURGE_SAFETY_DERIVED: &str = "derived";
 
 /// Taxonomy kinds accepted by `gc list --kind` / `gc purge --kind`
@@ -33,6 +37,7 @@ const PURGE_SAFETY_DERIVED: &str = "derived";
 pub(crate) enum GcListKindFilter {
     CargoTarget,
     CargoRegistrySrc,
+    CargoGitCheckouts,
 }
 
 impl From<crate::GcListKind> for GcListKindFilter {
@@ -40,6 +45,7 @@ impl From<crate::GcListKind> for GcListKindFilter {
         match value {
             crate::GcListKind::CargoTarget => GcListKindFilter::CargoTarget,
             crate::GcListKind::CargoRegistrySrc => GcListKindFilter::CargoRegistrySrc,
+            crate::GcListKind::CargoGitCheckouts => GcListKindFilter::CargoGitCheckouts,
         }
     }
 }
@@ -338,6 +344,8 @@ pub(crate) fn run_gc_list_command(
         kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoTarget));
     let include_registry_src =
         kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoRegistrySrc));
+    let include_git_checkouts =
+        kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoGitCheckouts));
 
     let mut entries: Vec<GcListEntryOutput> = if include_targets {
         live_rows
@@ -367,6 +375,12 @@ pub(crate) fn run_gc_list_command(
     if include_registry_src {
         if let Some(cargo_home) = crate::core::resolve_cargo_home() {
             entries.extend(walk_cargo_registry_src(&cargo_home, now));
+        }
+    }
+
+    if include_git_checkouts {
+        if let Some(cargo_home) = crate::core::resolve_cargo_home() {
+            entries.extend(walk_cargo_git_checkouts(&cargo_home, now));
         }
     }
 
@@ -571,6 +585,87 @@ fn parse_crate_owner(dir_name: &str) -> Option<String> {
     None
 }
 
+// ---------------------------------------------------------------------------
+// cargo_git_checkouts walker (#323 slice 3).
+// ---------------------------------------------------------------------------
+
+/// Walk `$CARGO_HOME/git/checkouts/<repo>/<commit>/` and produce a
+/// `GcListEntryOutput` per checkout directory.
+///
+/// Layout reminder: cargo stores git-source crates as a bare clone at
+/// `~/.cargo/git/db/<repo>/` (the **primary** copy — never pruned by
+/// soldr because cargo owns it) and a per-commit worktree at
+/// `~/.cargo/git/checkouts/<repo>/<commit>/` (this is what we surface).
+/// The worktree is fully regeneratable from the bare clone, so safety
+/// class is `derived`.
+///
+/// `last_used_unix` is the directory's filesystem mtime today. Cargo's
+/// `$CARGO_HOME/.global-cache` SQLite tracker also records git-checkout
+/// touch events; integrating that lookup is straightforward but lives in
+/// a follow-up (mirrors the registry-src precedence introduced in #349).
+/// Until then the mtime fallback gives a usable approximation.
+fn walk_cargo_git_checkouts(cargo_home: &std::path::Path, now: i64) -> Vec<GcListEntryOutput> {
+    let checkouts_root = cargo_home.join("git").join("checkouts");
+    let repo_dirs = match std::fs::read_dir(&checkouts_root) {
+        Ok(iter) => iter,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out: Vec<GcListEntryOutput> = Vec::new();
+    for repo_entry in repo_dirs.flatten() {
+        let repo_path = repo_entry.path();
+        let Ok(repo_meta) = repo_entry.metadata() else {
+            continue;
+        };
+        if !repo_meta.is_dir() {
+            continue;
+        }
+        let repo_dir_name = match repo_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let commit_dirs = match std::fs::read_dir(&repo_path) {
+            Ok(iter) => iter,
+            Err(_) => continue,
+        };
+        for commit_entry in commit_dirs.flatten() {
+            let commit_path = commit_entry.path();
+            let Ok(commit_meta) = commit_entry.metadata() else {
+                continue;
+            };
+            if !commit_meta.is_dir() {
+                continue;
+            }
+            let commit_dir_name = match commit_path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let (size_bytes, file_count) = fast_directory_size_and_files(&commit_path);
+            let last_used_unix = commit_meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let age_seconds = now.saturating_sub(last_used_unix);
+            out.push(GcListEntryOutput {
+                path: absolute_path_string(&commit_path),
+                last_used_unix,
+                age_seconds,
+                age_human: crate::cache_lib::target_registry::human_age(age_seconds),
+                size_bytes,
+                size_human: crate::cache_lib::target_registry::human_size(size_bytes),
+                file_count,
+                kind: KIND_CARGO_GIT_CHECKOUTS,
+                purge_safety: PURGE_SAFETY_DERIVED,
+                owner_crate: Some(format!("{repo_dir_name}@{commit_dir_name}")),
+                last_used_source: Some(LAST_USED_FROM_FS_MTIME),
+            });
+        }
+    }
+    out
+}
+
 #[derive(Serialize)]
 struct GcPurgeRegistrySrcOutput {
     schema_version: u32,
@@ -672,6 +767,119 @@ pub(crate) fn run_gc_purge_registry_src_command(
             command: "gc",
             mode: "purge",
             kind: KIND_CARGO_REGISTRY_SRC,
+            selected_count: selected.len(),
+            succeeded_count: deleted_paths.len(),
+            failed_count: failures.len(),
+            reclaimed_bytes,
+            reclaimed_human: crate::cache_lib::target_registry::human_size(reclaimed_bytes),
+            deleted_paths,
+            failures,
+        };
+        print_json(&output)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GcPurgeGitCheckoutsOutput {
+    schema_version: u32,
+    command: &'static str,
+    mode: &'static str,
+    kind: &'static str,
+    selected_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
+    reclaimed_bytes: u64,
+    reclaimed_human: String,
+    deleted_paths: Vec<String>,
+    failures: Vec<GcPurgeGitCheckoutsFailure>,
+}
+
+#[derive(Serialize)]
+struct GcPurgeGitCheckoutsFailure {
+    path: String,
+    error: String,
+}
+
+/// `soldr gc purge --git-checkouts --all` — walk
+/// `$CARGO_HOME/git/checkouts/<repo>/<commit>/` and `remove_dir_all` each
+/// entry. Matches the registry-src purge contract: per-dir failures are
+/// reported in the summary and the command exits 0 even if some
+/// deletions failed, so scripts can scrape the structured output.
+pub(crate) fn run_gc_purge_git_checkouts_command(
+    purge_all: bool,
+    json: bool,
+) -> Result<(), SoldrError> {
+    let cargo_home = crate::core::resolve_cargo_home().ok_or_else(|| {
+        SoldrError::Other(
+            "could not resolve $CARGO_HOME (no env var, no home directory)".to_string(),
+        )
+    })?;
+    let now = crate::cache_lib::target_registry::current_unix_seconds()
+        .map_err(|e| SoldrError::Other(format!("gc purge --git-checkouts clock error: {e}")))?;
+    let entries = walk_cargo_git_checkouts(&cargo_home, now);
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --git-checkouts: cargo_home={}",
+            cargo_home.display()
+        );
+        eprintln!(
+            "soldr gc purge --git-checkouts: {} git checkout director{} on disk",
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        );
+    }
+
+    let mut selected: Vec<&GcListEntryOutput> = Vec::new();
+    for entry in &entries {
+        let should_delete = purge_all
+            || prompt_yes_no_default_yes(&format!(
+                "soldr gc: delete {} ({}, age {}) ? [Y/n] ",
+                entry.path, entry.size_human, entry.age_human,
+            ));
+        if should_delete {
+            selected.push(entry);
+        }
+    }
+
+    let mut deleted_paths: Vec<String> = Vec::new();
+    let mut failures: Vec<GcPurgeGitCheckoutsFailure> = Vec::new();
+    let mut reclaimed_bytes: u64 = 0;
+    for entry in &selected {
+        let path = std::path::PathBuf::from(&entry.path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                reclaimed_bytes = reclaimed_bytes.saturating_add(entry.size_bytes);
+                deleted_paths.push(entry.path.clone());
+            }
+            Err(e) => failures.push(GcPurgeGitCheckoutsFailure {
+                path: entry.path.clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --git-checkouts: selected {}; succeeded {}; failed {}; reclaimed {}",
+            selected.len(),
+            deleted_paths.len(),
+            failures.len(),
+            crate::cache_lib::target_registry::human_size(reclaimed_bytes),
+        );
+        for failure in &failures {
+            eprintln!(
+                "soldr gc purge --git-checkouts: failed to delete {}: {}",
+                failure.path, failure.error
+            );
+        }
+    } else {
+        let output = GcPurgeGitCheckoutsOutput {
+            schema_version: GC_JSON_SCHEMA_VERSION,
+            command: "gc",
+            mode: "purge",
+            kind: KIND_CARGO_GIT_CHECKOUTS,
             selected_count: selected.len(),
             succeeded_count: deleted_paths.len(),
             failed_count: failures.len(),
