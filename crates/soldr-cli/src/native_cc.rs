@@ -240,13 +240,21 @@ fn wrap_compiler_env(
 /// compiler-cache wrapper we recognize. Strips a `.exe` extension and
 /// drops the directory component so `/usr/local/bin/sccache` and
 /// `C:\Tools\sccache.exe` both match.
+///
+/// Path splitting is done manually on both `/` and `\` separators
+/// regardless of host OS — soldr may see Windows-style paths in `CC`
+/// from cross-builds even on Linux runners, and the Rust standard
+/// library's `Path` only recognizes the host's native separator.
 fn value_starts_with_known_wrapper(value: &str) -> bool {
     let first = match value.split_whitespace().next() {
         Some(t) => t,
         None => return false,
     };
-    let path = Path::new(first);
-    let stem = path.file_stem().and_then(OsStr::to_str).unwrap_or(first);
+    let basename = first.rsplit(['/', '\\']).next().unwrap_or(first);
+    let stem = match basename.rsplit_once('.') {
+        Some((stem, _ext)) if !stem.is_empty() => stem,
+        _ => basename,
+    };
     KNOWN_WRAPPERS.iter().any(|w| stem.eq_ignore_ascii_case(w))
 }
 

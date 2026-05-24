@@ -73,6 +73,19 @@ inputs:
       them. Default "false" leaves PATH unchanged.
     required: false
     default: "false"
+  native-cache:
+    description: >
+      Default-on native C/C++ compiler caching for build-script work
+      (e.g. bundled SQLite from `libsqlite3-sys`). When "true", soldr
+      injects zccache as the `CC` / `CXX` wrapper so cc-rs invocations
+      hit the same managed cache that rustc invocations do. Default
+      "true"; set to "false" to write `SOLDR_NATIVE_CACHE=0` to the job
+      env so later `soldr cargo ...` steps skip native compiler
+      wrapping while keeping Rust caching intact. `soldr --no-cache
+      cargo ...` is still the global kill-switch and overrides this
+      input at command time.
+    required: false
+    default: "true"
 outputs:
   soldr-path:
     description: Installed Soldr binary path added to PATH for later steps.
@@ -108,6 +121,16 @@ outputs:
   tool-shims-dir:
     description: Directory containing generated tool shims when tool-shims is enabled.
     value: ${{ steps.resolve.outputs.shim_dir }}
+  native-cache-enabled:
+    description: >
+      Effective native C/C++ compiler cache policy resolved by the
+      action. "true" when soldr will inject zccache as the `CC` / `CXX`
+      wrapper for later `soldr cargo ...` steps; "false" when the
+      action wrote `SOLDR_NATIVE_CACHE=0` to the job env. The
+      command-time kill-switch `soldr --no-cache cargo ...` is not
+      reflected here because it overrides the action's policy at run
+      time.
+    value: ${{ steps.resolve.outputs.native_cache_enabled }}
 runs:
   using: composite
   steps:
@@ -124,10 +147,40 @@ runs:
         INPUT_TARGET_CACHE_MODE: ${{ inputs.target-cache-mode }}
         INPUT_TARGET_DIR: ${{ inputs.target-dir }}
         INPUT_TOOL_SHIMS: ${{ inputs.tool-shims }}
+        INPUT_NATIVE_CACHE: ${{ inputs.native-cache }}
         ACTION_WORKSPACE: ${{ github.workspace }}
         ACTION_OS: ${{ runner.os }}
         ACTION_ARCH: ${{ runner.arch }}
       run: python "${{ github.action_path }}/.github/actions/setup-soldr/resolve_setup.py"
+
+    # actions/cache@v4 picks its tar codec by probing `zstd --quiet --version`
+    # on PATH (see @actions/toolkit/packages/cache/src/internal/cacheUtils.ts).
+    # The windows-11-arm image omits zstd from its preinstalled software
+    # (https://github.com/actions/partner-runner-images), so cache save/restore
+    # silently falls back to single-threaded `tar -z` (gzip). On 2 GB payloads
+    # that turns a ~30s post-step into ~4m on ARM Windows runners. Installing
+    # zstd before any cache step lets actions/cache pick the multi-threaded
+    # `zstd -T0` path that x64 Windows already uses. Tracked upstream as
+    # actions/cache#1622 (unresolved as of v5.0.5). No-op on other platforms
+    # and when a future image starts shipping zstd, thanks to the PATH probe.
+    - id: ensure-zstd-windows-arm64
+      if: ${{ runner.os == 'Windows' && runner.arch == 'ARM64' }}
+      shell: pwsh
+      run: |
+        if (Get-Command zstd -ErrorAction SilentlyContinue) {
+          Write-Host "zstd already on PATH; skipping install."
+          zstd --version
+          exit 0
+        }
+        Write-Host "zstd not on PATH; installing via Chocolatey so actions/cache picks the multi-threaded zstd codec."
+        choco install zstandard -y --no-progress
+        if ($LASTEXITCODE -ne 0) {
+          throw "choco install zstandard exited with code $LASTEXITCODE"
+        }
+        if (-not (Get-Command zstd -ErrorAction SilentlyContinue)) {
+          throw "zstd installation completed but the binary is not on PATH"
+        }
+        zstd --version
 
     - id: cache
       if: ${{ inputs.cache == 'true' }}
