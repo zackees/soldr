@@ -176,6 +176,13 @@ Recognised flags:
   the Docker recipe-layer pattern below.
 - `--cook-only` — skip `prepare`; requires `--recipe-path`. Used for the
   Docker cook-layer pattern below.
+- `--no-trim` — skip the post-cook `target/` trim. By default (issue
+  #459) cook removes cargo-recreatable noise — incremental state, the
+  synthetic stub binary, build-script binaries, large stderr blobs,
+  debug sidecars, and `examples/`/`doc/`/`tests/` — so the downstream
+  tarball ships dramatically fewer bytes (~30–40% drop on a typical
+  cook output). Use `--no-trim` only if you genuinely need the full
+  raw `target/` tree.
 - Anything after `--` is forwarded verbatim to `cargo chef cook` (e.g.
   `--features`, `--no-default-features`, `--all-features`, `--tests`,
   `--benches`).

@@ -16,6 +16,7 @@
 //! resulting `target/` tarball.
 
 use crate::cargo_front_door;
+use crate::cache_lib::strip_target::{strip_target, StripTargetOptions};
 use crate::core::SoldrError;
 use crate::ZccacheSourceArg;
 use std::path::{Path, PathBuf};
@@ -51,6 +52,10 @@ pub(crate) struct CookArgs {
     /// Catch-all for tokens past `--`. Forwarded verbatim to
     /// `cargo chef cook` so users can pass `--features foo` etc.
     pub passthrough: Vec<String>,
+    /// Skip the post-cook target/ trim (issue #459). Default `false`:
+    /// cook always trims cargo-recreatable noise so the downstream
+    /// tarball ships dramatically fewer bytes.
+    pub no_trim: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +89,7 @@ pub(crate) fn parse_cook_args(args: &[String]) -> Result<CookArgs, SoldrError> {
             "--keep-recipe" => out.keep_recipe = true,
             "--prepare-only" => out.prepare_only = true,
             "--cook-only" => out.cook_only = true,
+            "--no-trim" => out.no_trim = true,
             "--target" => {
                 let value = iter
                     .next()
@@ -261,6 +267,15 @@ pub(crate) async fn run_cook(
         return Ok(code);
     }
 
+    // Phase 3: post-cook target/ trim (issue #459). Cargo-chef cook
+    // leaves cargo-recreatable noise (incremental state, the synthetic
+    // stub binary, build-script binaries, large stderr blobs) under
+    // target/ that the downstream consumer never reads. Trimming here
+    // shrinks the tarball setup-soldr et al ship across CI runners.
+    if !parsed.no_trim {
+        run_cook_target_trim(&ctx.manifest_dir);
+    }
+
     if parsed.keep_recipe {
         eprintln!(
             "soldr cook: recipe retained at {}",
@@ -275,6 +290,39 @@ pub(crate) async fn run_cook(
         );
     }
     Ok(0)
+}
+
+/// Run the `cook` strip preset against the workspace's `target/` directory.
+///
+/// Best-effort: a missing or partially-populated `target/` (the heavy
+/// case is when cargo wrote into `target/<triple>/...` and the
+/// stripper just finds nothing) is not an error — the trim only ever
+/// reduces output. Failures are surfaced on stderr but never abort
+/// the cook command (the artifacts are already built and valid).
+fn run_cook_target_trim(manifest_dir: &Path) {
+    let target_dir = manifest_dir.join("target");
+    if !target_dir.is_dir() {
+        return;
+    }
+    let opts = StripTargetOptions::cook(target_dir.clone());
+    match strip_target(&opts) {
+        Ok(report) => {
+            if report.deleted == 0 {
+                return;
+            }
+            let mib = report.reclaimed_bytes as f64 / 1024.0 / 1024.0;
+            eprintln!(
+                "soldr cook: trimmed {} cargo-recreatable entries from target/ ({mib:.1} MiB reclaimed)",
+                report.deleted,
+            );
+        }
+        Err(err) => {
+            eprintln!(
+                "soldr cook: target/ trim failed at {}: {err} (cook output is still valid)",
+                target_dir.display()
+            );
+        }
+    }
 }
 
 /// Argv for `cargo chef prepare --recipe-path <path>`, ready to feed

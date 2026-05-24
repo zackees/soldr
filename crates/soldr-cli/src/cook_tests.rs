@@ -93,6 +93,15 @@ fn parse_cook_args_keep_recipe_flag() {
 }
 
 #[test]
+fn parse_cook_args_no_trim_flag() {
+    // Default is trim-on (issue #459).
+    let default = parse_cook_args(&argv(&["--release"])).unwrap();
+    assert!(!default.no_trim);
+    let opt_out = parse_cook_args(&argv(&["--no-trim"])).unwrap();
+    assert!(opt_out.no_trim);
+}
+
+#[test]
 fn parse_cook_args_recipe_path_in_both_forms() {
     let space = parse_cook_args(&argv(&["--recipe-path", "/tmp/r.json"])).unwrap();
     assert_eq!(
