@@ -2,6 +2,7 @@
 //! injection, low-disk warning, and the cargo arg-parsing helpers shared
 //! with `rust_plan`. Extracted from `main.rs` as part of issue #339.
 
+use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
 use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
@@ -41,6 +42,106 @@ fn current_unix_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// Soldr-private opt-out flags for the auto target-GC hooks (#485).
+/// Stripped from the arg vector before forwarding to cargo, since
+/// cargo doesn't understand them.
+pub(crate) const NO_GC_TARGET_FLAG: &str = "--no-gc-target";
+pub(crate) const NO_GC_TARGET_BEFORE_FLAG: &str = "--no-gc-target-before";
+pub(crate) const NO_GC_TARGET_AFTER_FLAG: &str = "--no-gc-target-after";
+/// Env-var fallback for the wrapper-side path where cargo can't
+/// forward flags to soldr. Treated as equivalent to `--no-gc-target`
+/// when set to a non-empty value.
+pub(crate) const NO_GC_TARGET_ENV_VAR: &str = "SOLDR_NO_GC_TARGET";
+
+/// Outcome of stripping the `--no-gc-target*` flags from a cargo arg
+/// vector. Mirrors the env-var fallback so callers can union all
+/// inputs into a single before/after decision.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct GcTargetOptOut {
+    pub before: bool,
+    pub after: bool,
+}
+
+impl GcTargetOptOut {
+    fn merged_with_env(mut self) -> Self {
+        if env_disables_target_gc() {
+            self.before = true;
+            self.after = true;
+        }
+        self
+    }
+}
+
+fn env_disables_target_gc() -> bool {
+    std::env::var_os(NO_GC_TARGET_ENV_VAR)
+        .map(|v| {
+            let s = v.to_string_lossy();
+            let t = s.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("0") && !t.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+/// Remove soldr-private `--no-gc-target*` flags from the arg vector and
+/// return the cleaned slice plus which passes the caller asked to skip.
+/// Flags after the `--` separator are passed through untouched.
+pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> (Vec<String>, GcTargetOptOut) {
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut opt_out = GcTargetOptOut::default();
+    let mut past_separator = false;
+    for arg in args {
+        if past_separator {
+            cleaned.push(arg.clone());
+            continue;
+        }
+        if arg == "--" {
+            past_separator = true;
+            cleaned.push(arg.clone());
+            continue;
+        }
+        match arg.as_str() {
+            NO_GC_TARGET_FLAG => {
+                opt_out.before = true;
+                opt_out.after = true;
+            }
+            NO_GC_TARGET_BEFORE_FLAG => opt_out.before = true,
+            NO_GC_TARGET_AFTER_FLAG => opt_out.after = true,
+            _ => cleaned.push(arg.clone()),
+        }
+    }
+    (cleaned, opt_out)
+}
+
+/// Resolve the cargo `target/` directory that an auto-prune pass should
+/// operate on. Mirrors cargo's resolution order:
+/// 1. `--target-dir <DIR>` inside the arg list.
+/// 2. `CARGO_TARGET_DIR` env var (if non-empty).
+/// 3. `<workspace_root>/target` derived from the nearest enclosing
+///    `Cargo.toml` to cwd.
+///
+/// Returns `None` when no manifest can be found cheaply — the auto-hook
+/// silently skips in that case rather than guessing.
+fn resolve_target_dir_for_gc(args: &[String]) -> Option<std::path::PathBuf> {
+    if let Some(value) = cargo_arg_value(args, "--target-dir") {
+        return Some(absolutize_path(std::path::PathBuf::from(value)));
+    }
+    if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        let s = env_dir.to_string_lossy().trim().to_string();
+        if !s.is_empty() {
+            return Some(absolutize_path(std::path::PathBuf::from(s)));
+        }
+    }
+    let manifest = crate::trampoline::find_nearest_manifest()?;
+    let manifest_dir = manifest.parent()?.to_path_buf();
+    Some(manifest_dir.join("target"))
+}
+
+fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPruneOutcome) {
+    if let Some(line) = render_summary(outcome) {
+        eprintln!("{line}");
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
@@ -51,6 +152,13 @@ pub(crate) async fn run_cargo_front_door(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
         ));
     }
+
+    // Strip soldr-private auto target-GC opt-out flags before any other
+    // arg-vector handling so downstream code (trampolines, cargo spawn)
+    // never sees them. The env-var fallback is unioned in below.
+    let (args_owned, gc_opt_out) = strip_no_gc_target_flags(args);
+    let gc_opt_out = gc_opt_out.merged_with_env();
+    let args: &[String] = &args_owned;
 
     // `cargo run` trampoline (issue #344). When the binary is already
     // up-to-date with the recorded sources, this exec's the binary
@@ -215,6 +323,23 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
+    // Pre-compile target-GC (#485). Only on build-like cargo invocations
+    // (build/check/test/run/...) and only when the user hasn't opted out
+    // via --no-gc-target / --no-gc-target-before / SOLDR_NO_GC_TARGET.
+    // Uses the rust_plan target_dir when available so the hook respects
+    // any CARGO_TARGET_DIR / --target-dir override the same way cargo
+    // and rust_plan do.
+    if build_like_cargo && !gc_opt_out.before {
+        let target_dir = plan_ctx
+            .as_ref()
+            .map(|p| std::path::PathBuf::from(&p.target_dir))
+            .or_else(|| resolve_target_dir_for_gc(args));
+        if let Some(dir) = target_dir.as_deref() {
+            let outcome = auto_prune_target(dir, AutoPrunePhase::Before);
+            emit_auto_prune_summary(&outcome);
+        }
+    }
+
     // For clippy fall-through we need to TEE cargo's stdout/stderr so the
     // user sees diagnostics live AND we have a copy to store in the
     // sidecar for the next run. For build/check we don't need the output;
@@ -267,6 +392,22 @@ pub(crate) async fn run_cargo_front_door(
         if let Some(plan) = plan_ctx.as_ref() {
             rust_plan::run_zccache_rust_plan(plan, "save", true)?;
             rust_plan::write_warm_restore_sentinel(plan);
+        }
+        // Post-compile target-GC (#485). Same gating as the pre-pass —
+        // build-like cargo, no opt-out, resolve dir consistently with the
+        // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
+        // is what keeps a parallel `cargo` in the same `target/` from
+        // racing this pass; we never emit a stderr line when that guard
+        // engages.
+        if build_like_cargo && !gc_opt_out.after {
+            let target_dir = plan_ctx
+                .as_ref()
+                .map(|p| std::path::PathBuf::from(&p.target_dir))
+                .or_else(|| resolve_target_dir_for_gc(args));
+            if let Some(dir) = target_dir.as_deref() {
+                let outcome = auto_prune_target(dir, AutoPrunePhase::After);
+                emit_auto_prune_summary(&outcome);
+            }
         }
         if let Some(plan) = trampoline_plan.as_ref() {
             refresh_sidecar_after_cargo(plan);
