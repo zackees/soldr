@@ -370,6 +370,112 @@ fn walk_for_deps_dirs(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pre-populated target/ restore guard (issue #480).
+// ---------------------------------------------------------------------------
+//
+// When `cargo chef cook` (or any prior `soldr cargo build`) has populated
+// `target/`, running `zccache rust-plan restore` on top of the existing tree
+// can produce the failure mode described in #480: `restored_file_count: 0 /
+// artifact_absent_from_restored_plan: 1`, followed by cargo failing because
+// the expected `.rmeta` files aren't where it left them.
+//
+// This guard detects that case (cargo `.fingerprint/` dirs already on disk)
+// and skips restore, letting cargo work with the existing target tree. The
+// warm-restore short-circuit (#229) covers the in-job repeat case where the
+// plan inputs hash matches; this guard covers the cross-context case where
+// cook saved one plan and the consumer build computes a different inputs
+// hash but reuses the same target/.
+
+/// Env var to override the prepopulated-target restore guard. When set to a
+/// truthy value (anything other than "", "0", "false", "no", "off") the
+/// guard is bypassed and `rust-plan restore` runs even when the target tree
+/// already contains cargo fingerprints. Provided as an escape hatch for users
+/// who specifically want the old behavior.
+pub(crate) const SOLDR_FORCE_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_FORCE_RESTORE";
+
+/// Returns `Some(reason)` when the prepopulated-target guard wants to skip
+/// `rust-plan restore` for this plan; `None` when restore should proceed.
+///
+/// "Prepopulated" is detected by walking `<target>/` shallowly for any
+/// `.fingerprint/` directory with at least one entry. Cargo writes
+/// `.fingerprint/<crate>-<hash>/` for every unit it compiles, and cook's
+/// `cargo chef cook` step produces a populated `.fingerprint/` as a
+/// side-effect of building the dep stub.
+pub(crate) fn should_skip_restore_due_to_prepopulated_target(
+    plan: &RustArtifactPlanContext,
+) -> Option<String> {
+    if force_restore_enabled() {
+        return None;
+    }
+    let target_root = std::path::PathBuf::from(&plan.target_dir);
+    if !target_root.exists() {
+        return None;
+    }
+    let populated = count_populated_fingerprint_dirs(&target_root, 3);
+    if populated == 0 {
+        return None;
+    }
+    Some(format!(
+        "soldr: skipping rust-plan restore; target dir {} is prepopulated \
+         with {} cargo .fingerprint dir{} (likely cook output or prior build, #480). \
+         Restoring on top of an existing tree can poison the build with \
+         `artifact_absent_from_restored_plan`; cargo will work with the \
+         existing artifacts instead. Set {}=1 to override.",
+        plan.target_dir,
+        populated,
+        if populated == 1 { "" } else { "s" },
+        SOLDR_FORCE_RESTORE_ENV_VAR,
+    ))
+}
+
+fn force_restore_enabled() -> bool {
+    let Some(raw) = std::env::var_os(SOLDR_FORCE_RESTORE_ENV_VAR) else {
+        return false;
+    };
+    let lowered = raw.to_string_lossy().trim().to_ascii_lowercase();
+    !matches!(lowered.as_str(), "" | "0" | "false" | "no" | "off")
+}
+
+/// Count `.fingerprint/` directories under `root` (up to `max_depth` levels)
+/// that contain at least one entry. The walk stops descending once a
+/// `.fingerprint/` is encountered — cargo never nests another inside.
+pub(crate) fn count_populated_fingerprint_dirs(
+    root: &std::path::Path,
+    max_depth: usize,
+) -> usize {
+    let mut count = 0usize;
+    walk_for_fingerprint_dirs(root, max_depth, &mut count);
+    count
+}
+
+fn walk_for_fingerprint_dirs(dir: &std::path::Path, remaining_depth: usize, count: &mut usize) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else { continue };
+        if !ft.is_dir() {
+            continue;
+        }
+        let path = entry.path();
+        if path.file_name().is_some_and(|n| n == ".fingerprint") {
+            // Only count as "populated" if at least one entry exists.
+            let populated = std::fs::read_dir(&path)
+                .map(|mut iter| iter.next().is_some())
+                .unwrap_or(false);
+            if populated {
+                *count += 1;
+            }
+            continue;
+        }
+        if remaining_depth > 0 {
+            walk_for_fingerprint_dirs(&path, remaining_depth - 1, count);
+        }
+    }
+}
+
 
 #[path = "rust_plan_env.rs"]
 mod env_resolvers;
