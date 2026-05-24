@@ -326,9 +326,41 @@ JSON schema (`--json`):
 }
 ```
 
-Automatic pre/post-compile pruning via `RUSTC_WRAPPER` hooks is
-deferred to a follow-up — the manual subcommand is intentionally
-opt-in until the behaviour is trusted on real `target/` directories.
+**Automatic pre/post-compile pruning (issue #485).** The cargo front
+door (`soldr cargo <build-like-subcommand>`) runs the
+`--keep-latest` strategy against the resolved `target/` directory
+both BEFORE spawning cargo and AFTER cargo succeeds. Hooks engage
+for the same set of build-like subcommands that participate in
+soldr's compilation cache (build, check, test, clippy, run, doc,
+…). Non-build commands (e.g. `cargo metadata`) skip the hooks.
+
+When a pass actually frees bytes a single stderr summary is
+emitted, e.g.:
+
+```
+soldr: target-gc (before): pruned 4 stale hash families, reclaimed 218 MB
+```
+
+Passes that delete nothing stay silent. Passes that refuse because
+an active `.cargo-lock` is present (parallel cargo invocations
+sharing the same `target/`) also stay silent — the same guard the
+manual subcommand uses.
+
+Opt-out surface (all default-off; multiple may combine):
+
+- `--no-gc-target` — skip both pre- and post-compile passes for this
+  invocation. Stripped from the arg list before forwarding to cargo.
+- `--no-gc-target-before` — skip only the pre-compile pass.
+- `--no-gc-target-after` — skip only the post-compile pass.
+- `SOLDR_NO_GC_TARGET=1` — env-var equivalent of `--no-gc-target`,
+  for invocations the cargo arg list can't reach (e.g. a parent
+  process that spawns cargo without going through `soldr cargo`).
+  Truthy values (`1`, `true`, `yes`, any non-empty non-zero string)
+  enable the opt-out; `0`, `false`, and unset disable it.
+
+The hooks reuse the same `find_active_cargo_lock` guard as the
+manual subcommand, so a parallel cargo build in the same `target/`
+will never be raced.
 
 ### `soldr install-zccache`
 
