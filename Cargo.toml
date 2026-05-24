@@ -43,6 +43,10 @@ walkdir = "2"
 jwalk = "0.8"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
 filetime = "0.2"
+# Read-only access to cargo's `$CARGO_HOME/.global-cache` SQLite database
+# (issue #349). `bundled` compiles SQLite ourselves so neither the
+# managed wheel nor the cargo-install path needs a system libsqlite3.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [workspace.lints.rust]
 unused_mut = "deny"

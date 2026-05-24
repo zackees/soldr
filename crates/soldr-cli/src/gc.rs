@@ -229,6 +229,16 @@ struct GcListEntryOutput {
     /// on `cargo_target` entries that lack the concept (#323 slice 2).
     #[serde(skip_serializing_if = "Option::is_none")]
     owner_crate: Option<String>,
+    /// Provenance of `last_used_unix` (#349). Present on
+    /// `cargo_registry_src` entries; omitted for `cargo_target` where
+    /// only mtime is available today. Values:
+    ///
+    /// - `"global_cache"` — cargo's own `$CARGO_HOME/.global-cache`
+    ///   SQLite tracker produced the timestamp.
+    /// - `"fs_mtime"` — the directory mtime, used when the tracker is
+    ///   missing / locked / schema-drift / has no row for this crate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_used_source: Option<&'static str>,
 }
 
 #[derive(Serialize)]
@@ -346,6 +356,7 @@ pub(crate) fn run_gc_list_command(
                     kind: KIND_CARGO_TARGET,
                     purge_safety: PURGE_SAFETY_DERIVED,
                     owner_crate: None,
+                    last_used_source: None,
                 }
             })
             .collect()
@@ -401,19 +412,34 @@ pub(crate) fn run_gc_list_command(
 // cargo_registry_src walker (#323 slice 2).
 // ---------------------------------------------------------------------------
 
+/// Provenance tag for `last_used_unix` (#349).
+const LAST_USED_FROM_GLOBAL_CACHE: &str = "global_cache";
+const LAST_USED_FROM_FS_MTIME: &str = "fs_mtime";
+
 /// Walk `$CARGO_HOME/registry/src/<registry-hash-dir>/<crate>-<vers>/`
 /// and produce a `GcListEntryOutput` per crate directory.
 ///
-/// `last_used` is derived from the directory's own filesystem mtime.
-/// Cargo's `~/.cargo/.global-cache` SQLite database has more accurate
-/// last-access data; reading it is tracked as a follow-up (see issue
-/// linked in the slice 2 PR body).
+/// `last_used_unix` is preferentially derived from cargo's own
+/// `$CARGO_HOME/.global-cache` SQLite tracker (#349). When the
+/// tracker is missing, locked, schema-drifted, or has no row for a
+/// particular crate, we fall back to the directory's filesystem
+/// mtime. The `last_used_source` field on each entry records which
+/// provenance produced the timestamp so JSON consumers can gate
+/// metrics on it.
 fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcListEntryOutput> {
     let registry_src = cargo_home.join("registry").join("src");
     let registry_dirs = match std::fs::read_dir(&registry_src) {
         Ok(iter) => iter,
         Err(_) => return Vec::new(),
     };
+
+    // Try the global-cache tracker once up-front. None covers the
+    // "missing / locked / schema-drift" cases; every crate then falls
+    // back to mtime. An empty Some(..) means the tracker exists but
+    // has no rows; each crate that misses the lookup still falls
+    // back individually.
+    let global_cache =
+        crate::cache_lib::cargo_global_cache::read_registry_src_last_used(cargo_home);
 
     let mut out: Vec<GcListEntryOutput> = Vec::new();
     for reg_entry in registry_dirs.flatten() {
@@ -424,6 +450,10 @@ fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcList
         if !reg_meta.is_dir() {
             continue;
         }
+        let registry_hash = match reg_path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
         let crate_dirs = match std::fs::read_dir(&reg_path) {
             Ok(iter) => iter,
             Err(_) => continue,
@@ -442,12 +472,12 @@ fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcList
             };
             let owner_crate = parse_crate_owner(&dir_name);
             let (size_bytes, file_count) = fast_directory_size_and_files(&crate_path);
-            let last_used_unix = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let (last_used_unix, last_used_source) = resolve_registry_src_last_used(
+                global_cache.as_ref(),
+                &registry_hash,
+                &dir_name,
+                &meta,
+            );
             let age_seconds = now.saturating_sub(last_used_unix);
             out.push(GcListEntryOutput {
                 path: absolute_path_string(&crate_path),
@@ -460,10 +490,63 @@ fn walk_cargo_registry_src(cargo_home: &std::path::Path, now: i64) -> Vec<GcList
                 kind: KIND_CARGO_REGISTRY_SRC,
                 purge_safety: PURGE_SAFETY_DERIVED,
                 owner_crate,
+                last_used_source: Some(last_used_source),
             });
         }
     }
     out
+}
+
+/// Pick the `last_used_unix` value (and its provenance tag) for one
+/// crate source directory. Pulled out so the precedence rule can be
+/// unit-tested without a real cargo install on disk.
+///
+/// Returns `(unix_seconds, "global_cache" | "fs_mtime")`.
+fn resolve_registry_src_last_used(
+    global_cache: Option<&std::collections::HashMap<
+        crate::cache_lib::cargo_global_cache::RegistrySrcKey,
+        i64,
+    >>,
+    registry_hash: &str,
+    dir_name: &str,
+    meta: &std::fs::Metadata,
+) -> (i64, &'static str) {
+    if let (Some(map), Some((crate_name, version))) = (global_cache, split_dir_name(dir_name)) {
+        let key = (
+            registry_hash.to_string(),
+            crate_name.to_string(),
+            version.to_string(),
+        );
+        if let Some(&ts) = map.get(&key) {
+            return (ts, LAST_USED_FROM_GLOBAL_CACHE);
+        }
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (mtime, LAST_USED_FROM_FS_MTIME)
+}
+
+/// Split `<crate>-<version>` directory names into `(crate, version)`
+/// using the same rule as [`parse_crate_owner`]: the last hyphen
+/// followed by an ASCII digit is the boundary. Returns `None` for
+/// names that don't match the shape (e.g. a bare `serde/` dir).
+fn split_dir_name(dir_name: &str) -> Option<(&str, &str)> {
+    let bytes = dir_name.as_bytes();
+    for (idx, &b) in bytes.iter().enumerate().rev() {
+        if b == b'-' && idx + 1 < bytes.len() && bytes[idx + 1].is_ascii_digit() {
+            let (name, rest) = dir_name.split_at(idx);
+            let version = &rest[1..];
+            if name.is_empty() {
+                return None;
+            }
+            return Some((name, version));
+        }
+    }
+    None
 }
 
 /// Parse `<crate>-<vers>` directory names into `Some("<crate>@<vers>")`.
