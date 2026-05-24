@@ -592,14 +592,35 @@ mod tests {
 
     #[test]
     fn gc_log_cleanup_removes_entries_past_retention() {
+        // Use explicit mtime manipulation rather than wall-clock sleeps:
+        // APFS / NTFS / ext4 all have different mtime resolutions, and a
+        // sleep-based version of this test was flaking on macOS CI when
+        // the cleanup wall-clock crossed the retention boundary for both
+        // files. `FileTimes::set_modified` is millisecond-precise on every
+        // supported platform.
         let dir = tempdir().unwrap();
         let stale = dir.path().join("stale.log");
         let fresh = dir.path().join("fresh.log");
         std::fs::write(&stale, b"old").unwrap();
-        std::thread::sleep(Duration::from_millis(30));
         std::fs::write(&fresh, b"new").unwrap();
 
-        let removed = cleanup_old_gc_logs_with_retention(dir.path(), Duration::from_millis(15))
+        let now = SystemTime::now();
+        let stale_mtime = now.checked_sub(Duration::from_secs(60)).unwrap();
+        let fresh_mtime = now;
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(stale_mtime)
+            .unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&fresh)
+            .unwrap()
+            .set_modified(fresh_mtime)
+            .unwrap();
+
+        let removed = cleanup_old_gc_logs_with_retention(dir.path(), Duration::from_secs(30))
             .expect("cleanup old logs");
 
         assert_eq!(removed, 1);
