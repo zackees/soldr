@@ -3,9 +3,13 @@
 
 use crate::cache::print_json;
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::defender_probe::{
+    self, DefenderProbeState, DefenderVerdict, SCANNED_THRESHOLD_MS,
+};
 use crate::fetch::{ZccacheBinarySummary, ZccacheSource};
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
 use serde::Serialize;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
 struct DoctorComponent {
@@ -55,6 +59,24 @@ struct DoctorOutput {
     /// `true` when the active resolution is the pinned install (i.e.
     /// the managed path is superseded for the next `soldr cargo ...`).
     pinned_zccache_active: bool,
+    /// Defender real-time-scan probe state for the cache directory
+    /// (issue #357). `None` on non-Windows platforms.
+    defender_probe: Option<DoctorDefenderProbe>,
+}
+
+#[derive(Serialize)]
+struct DoctorDefenderProbe {
+    /// `scanned`, `excluded`, or `not_applicable`.
+    verdict: &'static str,
+    /// Path the probe targeted (the resolved soldr cache dir).
+    probed_path: String,
+    /// Median write time across the probe's repeat samples, in ms.
+    median_write_ms: u64,
+    /// Unix timestamp the probe was run.
+    probed_at_unix: u64,
+    /// True when the result was just produced (and persisted) this
+    /// invocation; false when the cached state was served.
+    refreshed_this_run: bool,
 }
 
 #[derive(Serialize)]
@@ -121,12 +143,13 @@ struct DoctorPinnedZccache {
 
 /// Implementation of `soldr doctor`. Read-only — never invokes
 /// `rustup component add` / `target add` / `toolchain install`.
-pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
+pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32, SoldrError> {
     let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
     let manifest_path = workspace_root.join("rust-toolchain.toml");
     let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let manifest_present = manifest_path.exists();
     let bundle = collect_zccache_bundle()?;
+    let defender = collect_defender_probe(refresh_defender_probe);
 
     let Some(channel) = manifest.channel.as_deref() else {
         if json {
@@ -144,6 +167,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
                 pinned_zccache: bundle.pinned_doctor.clone(),
                 pinned_zccache_active: bundle.pinned_active,
+                defender_probe: defender_for_json(defender.as_ref()),
             };
             print_json(&output)?;
         } else if manifest_present {
@@ -152,6 +176,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 manifest_path.display()
             );
             print_zccache_sections(&bundle);
+            print_defender_probe_human(defender.as_ref());
             println!("result: no manifest fields to compare; nothing to do");
         } else {
             println!(
@@ -159,6 +184,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
                 workspace_root.display()
             );
             print_zccache_sections(&bundle);
+            print_defender_probe_human(defender.as_ref());
             println!("result: no manifest found; nothing to compare");
         }
         return Ok(0);
@@ -227,6 +253,7 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
             managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
             pinned_zccache: bundle.pinned_doctor.clone(),
             pinned_zccache_active: bundle.pinned_active,
+            defender_probe: defender_for_json(defender.as_ref()),
         };
         print_json(&output)?;
     } else {
@@ -240,10 +267,138 @@ pub(crate) fn run_doctor(json: bool) -> Result<i32, SoldrError> {
             &missing_targets,
             drift,
             &bundle,
+            defender.as_ref(),
         );
     }
 
     Ok(if drift { 1 } else { 0 })
+}
+
+/// In-memory record of the defender probe result the doctor command
+/// will surface. Wraps the persisted state plus a flag that tracks
+/// whether this invocation produced a fresh probe (true) or reused
+/// the cached one (false).
+struct DefenderProbeOutcome {
+    state: DefenderProbeState,
+    refreshed_this_run: bool,
+}
+
+/// Read the cached probe state (or run a fresh probe if forced /
+/// stale / missing) and return the outcome. Errors are swallowed:
+/// doctor is a diagnostic command and the probe is best-effort. On
+/// non-Windows the probe always classifies as `NotApplicable`.
+fn collect_defender_probe(refresh: bool) -> Option<DefenderProbeOutcome> {
+    let paths = SoldrPaths::new().ok()?;
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let target_dir = paths.cache.clone();
+    let cached = defender_probe::read_probe_state(&paths);
+    let soldr_version = env!("CARGO_PKG_VERSION");
+
+    let reason = defender_probe::reprobe_reason(
+        cached.as_ref(),
+        &target_dir,
+        soldr_version,
+        now_unix,
+        refresh,
+    );
+
+    match reason {
+        None => cached.map(|state| DefenderProbeOutcome {
+            state,
+            refreshed_this_run: false,
+        }),
+        Some(_) => {
+            // Skip the probe entirely outside Windows: there's no
+            // Defender to measure, and writing a sample state file
+            // on every Linux/macOS doctor invocation would just be
+            // noise. Returning None makes the human/JSON printer
+            // omit the section.
+            if !cfg!(target_os = "windows") {
+                return None;
+            }
+            let fresh = defender_probe::run_probe(&target_dir, soldr_version).ok()?;
+            let _ = defender_probe::write_probe_state(&paths, &fresh);
+            Some(DefenderProbeOutcome {
+                state: fresh,
+                refreshed_this_run: true,
+            })
+        }
+    }
+}
+
+fn defender_for_json(outcome: Option<&DefenderProbeOutcome>) -> Option<DoctorDefenderProbe> {
+    let outcome = outcome?;
+    Some(DoctorDefenderProbe {
+        verdict: outcome.state.verdict.as_str(),
+        probed_path: outcome.state.probed_path.display().to_string(),
+        median_write_ms: outcome.state.median_write_ms,
+        probed_at_unix: outcome.state.probed_at_unix,
+        refreshed_this_run: outcome.refreshed_this_run,
+    })
+}
+
+fn print_defender_probe_human(outcome: Option<&DefenderProbeOutcome>) {
+    let Some(outcome) = outcome else {
+        return;
+    };
+    println!();
+    println!("defender probe (cache directory):");
+    println!("  path:          {}", outcome.state.probed_path.display());
+    let age_label = if outcome.refreshed_this_run {
+        "just now".to_string()
+    } else {
+        format_age(outcome.state.probed_at_unix)
+    };
+    match outcome.state.verdict {
+        DefenderVerdict::NotApplicable => {
+            println!("  verdict:       not applicable (non-Windows platform)");
+        }
+        DefenderVerdict::Excluded => {
+            println!(
+                "  verdict:       {} ms median write — path appears excluded from real-time scanning",
+                outcome.state.median_write_ms,
+            );
+            println!("  probed:        {age_label}");
+        }
+        DefenderVerdict::Scanned => {
+            println!(
+                "  verdict:       {} ms median write — likely being scanned by Defender",
+                outcome.state.median_write_ms,
+            );
+            println!("  probed:        {age_label}");
+            println!(
+                "  recommendation: run bench/add_defender_exclusions.ps1 as admin, or move \
+                 SOLDR_CACHE_DIR onto a trusted Dev Drive (Windows 11 22H2+)"
+            );
+            println!(
+                "  threshold:     median > {SCANNED_THRESHOLD_MS} ms classifies as scanned"
+            );
+        }
+    }
+}
+
+fn format_age(probed_at_unix: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let delta = now.saturating_sub(probed_at_unix);
+    if delta < 60 {
+        return "just now".to_string();
+    }
+    if delta < 3600 {
+        let mins = delta / 60;
+        return format!("{mins} min ago");
+    }
+    if delta < 24 * 3600 {
+        let hours = delta / 3600;
+        return format!("{hours} h ago");
+    }
+    let days = delta / (24 * 3600);
+    format!("{days} d ago")
 }
 
 /// Collect zccache binary resolution info for doctor output. Read-only:
@@ -463,6 +618,7 @@ fn print_doctor_human(
     missing_targets: &[String],
     drift: bool,
     bundle: &ZccacheDoctorBundle,
+    defender: Option<&DefenderProbeOutcome>,
 ) {
     println!("manifest: {}", manifest_path.display());
     println!("toolchain: {channel}");
@@ -520,6 +676,7 @@ fn print_doctor_human(
     }
 
     print_zccache_sections(bundle);
+    print_defender_probe_human(defender);
 
     println!();
     if drift {

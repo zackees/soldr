@@ -407,7 +407,15 @@ the command exits `0` and reports that no manifest was found.
 ```bash
 soldr doctor
 soldr doctor --json
+soldr doctor --refresh-defender-probe       # Windows: force fresh probe of the cache dir
 ```
+
+Flags:
+
+- `--json` — emit the stable machine-facing JSON form.
+- `--refresh-defender-probe` — ignore the cached Defender real-time-scan
+  probe result and run a fresh probe of the soldr cache directory.
+  No-op outside Windows. Issue #357.
 
 Example human output (drift detected):
 
@@ -444,9 +452,28 @@ Example JSON output (`schema_version: 1`):
   ],
   "drift": true,
   "missing_components": ["clippy"],
-  "missing_targets": []
+  "missing_targets": [],
+  "defender_probe": {
+    "verdict": "scanned",
+    "probed_path": "C:\\Users\\user\\.soldr\\cache",
+    "median_write_ms": 412,
+    "probed_at_unix": 1715000000,
+    "refreshed_this_run": false
+  }
 }
 ```
+
+**Defender probe** (issue #357, Windows-only). `soldr doctor` runs a
+throttled empirical scan probe to detect whether the soldr cache
+directory is being inspected by Windows Defender's real-time
+protection. The probe writes a 1 MiB `.dll` file into the cache
+directory, times the syscall, and classifies the median across 3
+repeats: ≥80 ms means scanned, below means excluded (or running on a
+trusted Dev Drive). State persists at `~/.soldr/defender-probe.json`
+and refreshes only when the cache path changes, the soldr version
+changes, the cached state is older than 7 days, or
+`--refresh-defender-probe` is passed. The field is omitted from
+output on non-Windows platforms.
 
 Component installed-state matching is target-qualified: rustup's
 `component list --installed` returns names like

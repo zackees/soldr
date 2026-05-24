@@ -16,6 +16,7 @@ mod cargo_front_door;
 mod cook;
 mod core;
 mod daemon;
+mod defender_probe;
 mod doctor;
 mod fetch;
 mod fuzzy_match;
@@ -337,6 +338,11 @@ enum Commands {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
+        /// Force a fresh Defender real-time-scan probe of the soldr
+        /// cache directory, ignoring the cached result. No-op outside
+        /// Windows. Issue #357.
+        #[arg(long)]
+        refresh_defender_probe: bool,
     },
     /// Apply platform-specific hot-cache optimizations (Windows
     /// Defender exclusions today; future platforms TBD). Auto-skips on
@@ -915,8 +921,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Bootstrap { json } => {
             std::process::exit(bootstrap::run_bootstrap(json).await?);
         }
-        Commands::Doctor { json } => {
-            std::process::exit(doctor::run_doctor(json)?);
+        Commands::Doctor {
+            json,
+            refresh_defender_probe,
+        } => {
+            std::process::exit(doctor::run_doctor(json, refresh_defender_probe)?);
         }
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
