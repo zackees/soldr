@@ -335,6 +335,129 @@ fn toolchain_prepare_installs_plugin_with_locked_flag() {
 }
 
 #[test]
+fn rustup_passthrough_injects_toolchain_for_component_add() {
+    let workspace = unique_temp_dir("rustup-passthrough-component-add");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustup", "component", "add", "clippy"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup component add");
+
+    assert!(
+        output.status.success(),
+        "soldr rustup component add failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+    assert_eq!(
+        invocations[0],
+        vec![
+            "component".to_string(),
+            "add".to_string(),
+            "--toolchain".to_string(),
+            "1.94.1".to_string(),
+            "clippy".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn rustup_passthrough_does_not_inject_for_toolchain_list() {
+    // `rustup toolchain list` is a top-level mgmt verb, not a per-toolchain
+    // mutation. Scoping injection rules out injecting `--toolchain` here.
+    let workspace = unique_temp_dir("rustup-passthrough-toolchain-list");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustup", "toolchain", "list"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup toolchain list");
+
+    assert!(output.status.success());
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(
+        invocations[0],
+        vec!["toolchain".to_string(), "list".to_string()],
+        "verbatim passthrough (no --toolchain injection)",
+    );
+}
+
+#[test]
+fn rustup_passthrough_forwards_version_flag_verbatim() {
+    let workspace = unique_temp_dir("rustup-passthrough-version-flag");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["rustup", "--version"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup --version");
+
+    assert!(output.status.success());
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1);
+    assert_eq!(invocations[0], vec!["--version".to_string()]);
+}
+
+#[test]
+fn rustup_passthrough_handles_target_add_equals_form_for_explicit_toolchain() {
+    // `--toolchain=<value>` (= form) must suppress injection just like
+    // the space-separated form (`--toolchain <value>`).
+    let workspace = unique_temp_dir("rustup-passthrough-target-add-equals");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let log_path = workspace.join("rustup.log");
+    let rustup = install_logging_fake_rustup(&log_path);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "rustup",
+            "target",
+            "add",
+            "--toolchain=nightly",
+            "aarch64-apple-darwin",
+        ])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .output()
+        .expect("failed to run soldr rustup target add --toolchain=...");
+
+    assert!(output.status.success());
+    let invocations = read_logged_rustup_invocations(&log_path);
+    assert_eq!(invocations.len(), 1);
+    let invocation = &invocations[0];
+    let bare_count = invocation.iter().filter(|a| *a == "--toolchain").count();
+    let equals_count = invocation
+        .iter()
+        .filter(|a| a.starts_with("--toolchain="))
+        .count();
+    assert_eq!(
+        bare_count + equals_count,
+        1,
+        "--toolchain should appear exactly once (any form): {invocation:?}"
+    );
+    assert!(
+        invocation.iter().any(|a| a == "--toolchain=nightly"),
+        "user-supplied --toolchain=nightly should be preserved: {invocation:?}"
+    );
+}
+
+#[test]
 fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
     let workspace = unique_temp_dir("toolchain-prepare-plugin-no-version");
     seed_rust_toolchain_toml(
