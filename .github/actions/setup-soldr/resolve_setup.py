@@ -376,8 +376,13 @@ def main() -> None:
     else:
         target_cache_paths = str(target_cache_bundle_path)
         target_cache_effective_mode = "thin"
+        # Cache-key version was bumped from thin-v1 to thin-v2 alongside
+        # soldr's default profile flip (issue #461). Old thin-v1 caches —
+        # which ship the heavy .rlib/.rmeta/proc-macro bytes — are
+        # implicitly invalidated by the prefix change so warm runs do not
+        # restore stale slices that the new profile would have skipped.
         target_cache_prefix = (
-            f"setup-soldr-targetcache-thin-v1-{runner_os}-{runner_arch}"
+            f"setup-soldr-targetcache-thin-v2-{runner_os}-{runner_arch}"
         )
         target_cache_suffix_fragment = (
             f"{sanitized_suffix}-" if sanitized_suffix else ""

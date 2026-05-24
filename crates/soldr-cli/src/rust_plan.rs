@@ -593,14 +593,17 @@ fn rust_artifact_cache_mode_from_env() -> Result<Option<String>, SoldrError> {
     }
 }
 
-fn rust_artifact_cache_profile_from_env() -> Result<&'static str, SoldrError> {
+pub(crate) fn rust_artifact_cache_profile_from_env() -> Result<&'static str, SoldrError> {
     let raw = std::env::var(TARGET_CACHE_PROFILE_ENV_VAR).unwrap_or_default();
     let profile = raw.trim().to_ascii_lowercase();
     match profile.as_str() {
-        // Default preserves the legacy slice contents until the verification
-        // job in `docs/THIN_TARGET_CACHE_PRUNING.md` Section 5 is green.
-        "" | "thin-v1" => Ok("thin-v1"),
-        "thin-v2" => Ok("thin-v2"),
+        // Default is the fingerprint-aware prune (issue #461). Requires
+        // managed zccache >= 1.9.1 to honor `dropped_artifact_classes`
+        // and the `cargo_fingerprint_meta` / `cargo_fingerprint_outputs`
+        // split. `thin-v1` is preserved as an explicit opt-out for users
+        // pinned to older zccache.
+        "" | "thin-v2" => Ok("thin-v2"),
+        "thin-v1" => Ok("thin-v1"),
         _ => Err(SoldrError::Other(format!(
             "invalid {TARGET_CACHE_PROFILE_ENV_VAR} value {raw:?}; expected thin-v1 or thin-v2"
         ))),
