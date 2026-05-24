@@ -55,6 +55,7 @@ pub(crate) fn run_rustc_wrapper(
             TargetTouchPath::NoPaths => "target_dir_recorded_no_paths",
             TargetTouchPath::FastDirect => "target_dir_recorded_fast",
             TargetTouchPath::DaemonFirst => "target_dir_recorded_daemon",
+            TargetTouchPath::MemoSkipped => "target_dir_recorded_memo",
         };
         profile.mark(mark);
     } else {
