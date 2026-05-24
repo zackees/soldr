@@ -390,6 +390,84 @@ def test_pinned_version_input_skips_latest_resolution(
     assert outputs["soldr_version_requested"] == "0.7.10"
 
 
+def test_native_cache_default_on_writes_no_env(tmp_path: Path, monkeypatch) -> None:
+    """Default-on native-cache: the action MUST NOT write SOLDR_NATIVE_CACHE
+    to GITHUB_ENV. The soldr runtime's unset-is-truthy policy keeps native
+    wrapping enabled. Writing the env var unconditionally would mask user
+    overrides that pre-populate it (e.g. `env: SOLDR_NATIVE_CACHE=0` on a
+    later step)."""
+    module = _load_module()
+    github_env, github_output, _ = _setup_main_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+    module.main()
+
+    env_text = github_env.read_text(encoding="utf-8")
+    assert "SOLDR_NATIVE_CACHE" not in env_text
+
+    outputs = _collect_outputs(github_output)
+    assert outputs["native_cache_enabled"] == "true"
+
+
+def test_native_cache_explicit_false_writes_opt_out(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """`native-cache: false` must write `SOLDR_NATIVE_CACHE=0` to GITHUB_ENV
+    so every later `soldr cargo ...` step in the job sees the opt-out and
+    skips native compiler wrapping. The corresponding output flips to
+    `false` so workflows can echo the effective policy."""
+    module = _load_module()
+    github_env, github_output, _ = _setup_main_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("INPUT_NATIVE_CACHE", "false")
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+    module.main()
+
+    env_text = github_env.read_text(encoding="utf-8")
+    assert "SOLDR_NATIVE_CACHE=0\n" in env_text
+
+    outputs = _collect_outputs(github_output)
+    assert outputs["native_cache_enabled"] == "false"
+
+
+def test_native_cache_explicit_true_does_not_write_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    module = _load_module()
+    github_env, github_output, _ = _setup_main_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("INPUT_NATIVE_CACHE", "true")
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+    module.main()
+
+    env_text = github_env.read_text(encoding="utf-8")
+    assert "SOLDR_NATIVE_CACHE" not in env_text
+    outputs = _collect_outputs(github_output)
+    assert outputs["native_cache_enabled"] == "true"
+
+
+def test_native_cache_invalid_value_rejected(tmp_path: Path, monkeypatch) -> None:
+    """A typo like `native-cache: maybe` must fail loudly. Silently
+    falling back to `true` here would hide the misconfiguration on
+    cached/warm runs."""
+    import pytest
+
+    module = _load_module()
+    _setup_main_env(tmp_path, monkeypatch)
+    monkeypatch.setenv("INPUT_NATIVE_CACHE", "maybe")
+    monkeypatch.setattr(module, "resolve_latest_soldr_release", lambda _repo: "")
+
+    with pytest.raises(RuntimeError, match="invalid native-cache value"):
+        module.main()
+
+
+def test_normalize_bool_input_accepts_canonical_spellings() -> None:
+    module = _load_module()
+    for v in ("1", "true", "TRUE", "Yes", " on "):
+        assert module.normalize_bool_input(v, name="x", default=False) is True
+    for v in ("0", "false", "FALSE", "No", " off "):
+        assert module.normalize_bool_input(v, name="x", default=True) is False
+    assert module.normalize_bool_input("", name="x", default=True) is True
+    assert module.normalize_bool_input("   ", name="x", default=False) is False
+
+
 def test_normalize_release_tag_strips_v_prefix() -> None:
     module = _load_module()
     assert module._normalize_release_tag("v0.7.11") == "0.7.11"
