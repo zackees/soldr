@@ -385,10 +385,20 @@ fn build_and_write_workspace_sidecar(
         let Some(size) = size_as_i64(&meta) else {
             continue;
         };
+        // The workspace trampoline (#354) still uses mtime+size as its
+        // freshness oracle. Issue #342 introduced `content_hash` as the
+        // authoritative oracle for the `cargo run` trampoline but the
+        // workspace path stays mtime+size for now — its outputs are
+        // multi-artifact and the cost of hashing every source on every
+        // workspace build would be measurable. Leave the field empty;
+        // any caller that re-uses the `cargo run` verifier on these
+        // entries (cross-sidecar reads) will see the empty hash and
+        // fall through to a real build, which is the safe answer.
         source_entries.push(SidecarSource {
             path: src.to_string_lossy().to_string(),
             mtime_nanos: mtime,
             size_bytes: size,
+            content_hash: String::new(),
         });
     }
 

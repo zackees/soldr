@@ -1,22 +1,49 @@
-//! `soldr cargo run` trampoline (issue #344, slice 1 of #342).
+//! `soldr cargo run` trampoline (issue #342).
 //!
 //! Intercepts `soldr cargo run` before the normal cargo front door spawns
 //! cargo. If a sidecar at
 //! `<target-dir>/<target?>/<profile>/.soldr-trampoline/<bin>.toml` proves
-//! that the recorded source files + the binary haven't changed (mtime+size
-//! oracle, same model cargo itself uses), the trampoline `exec`s the binary
-//! directly. Any uncertainty falls through to real cargo. After a successful
-//! cargo run on the fall-through path, the sidecar is refreshed by walking
-//! the `.d` dep-info file cargo wrote.
+//! that the binary + every recorded source file is content-identical to
+//! the recorded build, the trampoline `exec`s the binary directly. Any
+//! uncertainty falls through to real cargo. After a successful cargo run
+//! on the fall-through path, the sidecar is refreshed by walking the
+//! `.d` dep-info file cargo wrote.
 //!
-//! No content hashing — the bar is cargo's own correctness model.
+//! **Oracle: content hash, with mtime+size as a fast skip-hint.**
+//!
+//! The earlier slice (#344) used mtime+size as the authoritative
+//! freshness signal — same model cargo uses. Several real-world
+//! scenarios produce mtime orderings that lie about whether the binary
+//! is up-to-date: tarballs that normalize all mtimes to a fixed epoch
+//! (Docker, reproducible builds, distro packagers); clock skew across
+//! machines; filesystem granularity (NTFS 2-second, FAT, network
+//! filesystems); build systems that `touch` outputs post-build;
+//! restored older sources with mtime preserved; cache restore that
+//! rewrites binary mtime but leaves source mtimes fresh. All of these
+//! produce **false hits** if mtime is authoritative.
+//!
+//! New algorithm (issue #342):
+//!
+//! 1. **Binary fast-skip**: if on-disk `mtime` AND `size` both match
+//!    the sidecar, trust the cached `binary_hash` without re-reading.
+//! 2. **Binary slow-check**: if either diverges, compute the binary's
+//!    content hash; compare to `sidecar.binary_hash`. Match → record
+//!    the new mtime+size into the sidecar so the next invocation hits
+//!    the fast-skip path. Mismatch → fall through.
+//! 3. **Source fast-skip**: same pattern per recorded source file.
+//! 4. **Source slow-check**: same pattern — content hash is the
+//!    authority, mtime is only a skip-hint.
+//!
+//! Mtime spoofing (`touch -d 'old date'`), tar-with-`--mtime=epoch`
+//! restores, and same-second edits all stay correct because content
+//! hash is never load-bearing-on-mtime.
 
 use crate::core::SoldrError;
 use crate::resolve_toolchain_binary;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -141,14 +168,10 @@ fn try_fast_path(
     };
     let bin_mtime = mtime_nanos(&bin_meta);
     let bin_size = size_as_i64(&bin_meta);
-    if bin_mtime != Some(sidecar_data.binary_mtime_nanos)
-        || bin_size != Some(sidecar_data.binary_size_bytes)
-    {
-        return FastPathOutcome::FallThrough(format!(
-            "binary {} mtime/size changed (sidecar mtime={}, size={}; on-disk mtime={:?}, size={:?})",
-            binary.display(), sidecar_data.binary_mtime_nanos, sidecar_data.binary_size_bytes, bin_mtime, bin_size
-        ));
-    }
+
+    // Args fingerprint comes first so a feature/profile flip on a
+    // restored binary falls through before we pay any content-hash
+    // I/O.
     let fingerprint = match compute_fingerprint(&parsed) {
         Ok(fp) => fp,
         Err(err) => {
@@ -161,27 +184,133 @@ fn try_fast_path(
             sidecar_data.cargo_args_fingerprint, fingerprint
         ));
     }
-    for entry in &sidecar_data.source_files {
-        match fs::metadata(&entry.path) {
-            Ok(meta) => {
-                let mtime = mtime_nanos(&meta);
-                let size = size_as_i64(&meta);
-                if mtime != Some(entry.mtime_nanos) || size != Some(entry.size_bytes) {
-                    return FastPathOutcome::FallThrough(format!(
-                        "source {} mtime/size changed (recorded mtime={}, size={}; actual mtime={:?}, size={:?})",
-                        entry.path, entry.mtime_nanos, entry.size_bytes, mtime, size
-                    ));
-                }
+
+    // Binary oracle: content hash, with mtime+size as fast skip-hint.
+    // An empty `binary_hash` (sidecar predates issue #342) forces the
+    // slow check so the next build upgrades the schema.
+    let mut refreshed_binary_mtime_size: Option<(i64, i64)> = None;
+    let bin_fast_skip = !sidecar_data.binary_hash.is_empty()
+        && bin_mtime == Some(sidecar_data.binary_mtime_nanos)
+        && bin_size == Some(sidecar_data.binary_size_bytes);
+    if !bin_fast_skip {
+        let actual_hash = match compute_file_hash(&binary) {
+            Ok(h) => h,
+            Err(err) => {
+                return FastPathOutcome::FallThrough(format!(
+                    "binary hash failed: {} ({err})",
+                    binary.display()
+                ));
             }
+        };
+        if sidecar_data.binary_hash.is_empty() || actual_hash != sidecar_data.binary_hash {
+            return FastPathOutcome::FallThrough(format!(
+                "binary {} content hash mismatch (sidecar={}, on-disk={})",
+                binary.display(),
+                sidecar_data.binary_hash,
+                actual_hash,
+            ));
+        }
+        if let (Some(m), Some(s)) = (bin_mtime, bin_size) {
+            refreshed_binary_mtime_size = Some((m, s));
+        }
+    }
+
+    // Source oracle: same fast-skip-then-slow-check pattern. Self-heal
+    // entries with content match but diverged mtime/size so the next
+    // invocation hits the fast path. Empty hash (legacy sidecar) is
+    // treated like a divergence — forces hash, then upgrade-on-success.
+    let mut refreshed_sources: Vec<RefreshedSource> = Vec::new();
+    for (idx, entry) in sidecar_data.source_files.iter().enumerate() {
+        let meta = match fs::metadata(&entry.path) {
+            Ok(m) => m,
             Err(err) => {
                 return FastPathOutcome::FallThrough(format!(
                     "source missing: {} ({err})",
                     entry.path
                 ));
             }
+        };
+        let mtime = mtime_nanos(&meta);
+        let size = size_as_i64(&meta);
+        let fast_skip = !entry.content_hash.is_empty()
+            && mtime == Some(entry.mtime_nanos)
+            && size == Some(entry.size_bytes);
+        if fast_skip {
+            continue;
+        }
+        let path = Path::new(&entry.path);
+        let actual_hash = match compute_file_hash(path) {
+            Ok(h) => h,
+            Err(err) => {
+                return FastPathOutcome::FallThrough(format!(
+                    "source hash failed: {} ({err})",
+                    entry.path
+                ));
+            }
+        };
+        if entry.content_hash.is_empty() || actual_hash != entry.content_hash {
+            return FastPathOutcome::FallThrough(format!(
+                "source {} content mismatch (sidecar={}, on-disk={})",
+                entry.path, entry.content_hash, actual_hash,
+            ));
+        }
+        if let (Some(m), Some(s)) = (mtime, size) {
+            refreshed_sources.push(RefreshedSource {
+                idx,
+                mtime_nanos: m,
+                size_bytes: s,
+            });
         }
     }
+
+    // Self-heal: rewrite the sidecar in place when the content oracle
+    // accepted entries whose mtime/size drifted (tar restore, clock
+    // skew, touch). Best-effort — a failure here is a perf regression
+    // for the *next* invocation, never a correctness issue.
+    if refreshed_binary_mtime_size.is_some() || !refreshed_sources.is_empty() {
+        let _ = self_heal_sidecar(
+            &sidecar,
+            &sidecar_data,
+            refreshed_binary_mtime_size,
+            &refreshed_sources,
+        );
+    }
+
     FastPathOutcome::Hit(binary, trailing_user_args(cleaned_args))
+}
+
+/// One source-entry whose mtime+size needs to be refreshed in the
+/// sidecar after a successful content-hash match. Indexed into the
+/// existing `Sidecar.source_files` so we don't rewalk the file list.
+struct RefreshedSource {
+    idx: usize,
+    mtime_nanos: i64,
+    size_bytes: i64,
+}
+
+/// Write `sidecar_path` with the refreshed mtime/size values applied
+/// to the in-memory sidecar copy. Content hashes are unchanged — we
+/// already verified content equality. Best-effort; any I/O error is
+/// logged and ignored so the trampoline still hits the fast path
+/// (the next invocation will simply re-hash before exec).
+fn self_heal_sidecar(
+    sidecar_path: &Path,
+    data: &Sidecar,
+    bin_refresh: Option<(i64, i64)>,
+    src_refresh: &[RefreshedSource],
+) -> std::io::Result<()> {
+    let mut updated = data.clone();
+    if let Some((m, s)) = bin_refresh {
+        updated.binary_mtime_nanos = m;
+        updated.binary_size_bytes = s;
+    }
+    for refresh in src_refresh {
+        if let Some(entry) = updated.source_files.get_mut(refresh.idx) {
+            entry.mtime_nanos = refresh.mtime_nanos;
+            entry.size_bytes = refresh.size_bytes;
+        }
+    }
+    write_sidecar_atomic(sidecar_path, &updated)
 }
 
 /// After a successful `cargo run`, walk the dep-info file cargo wrote and
@@ -203,6 +332,8 @@ fn build_and_write_sidecar(plan: &FellThroughPlan) -> Result<PathBuf, String> {
         .map_err(|err| format!("binary stat failed: {} ({err})", binary.display()))?;
     let bin_mtime = mtime_nanos(&bin_meta).ok_or_else(|| "binary mtime unavailable".to_string())?;
     let bin_size = size_as_i64(&bin_meta).ok_or_else(|| "binary size unavailable".to_string())?;
+    let bin_hash = compute_file_hash(binary)
+        .map_err(|err| format!("binary hash failed: {} ({err})", binary.display()))?;
 
     let dep_text = fs::read_to_string(dep_info)
         .map_err(|err| format!("dep-info missing: {} ({err})", dep_info.display()))?;
@@ -219,10 +350,13 @@ fn build_and_write_sidecar(plan: &FellThroughPlan) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("source mtime unavailable for {}", src.display()))?;
         let size = size_as_i64(&meta)
             .ok_or_else(|| format!("source size unavailable for {}", src.display()))?;
+        let content_hash = compute_file_hash(&src)
+            .map_err(|err| format!("source hash failed: {} ({err})", src.display()))?;
         entries.push(SidecarSource {
             path: src.to_string_lossy().to_string(),
             mtime_nanos: mtime,
             size_bytes: size,
+            content_hash,
         });
     }
 
@@ -230,6 +364,7 @@ fn build_and_write_sidecar(plan: &FellThroughPlan) -> Result<PathBuf, String> {
         binary_path: binary.to_string_lossy().to_string(),
         binary_mtime_nanos: bin_mtime,
         binary_size_bytes: bin_size,
+        binary_hash: bin_hash,
         cargo_args_fingerprint: fingerprint,
         source_files: entries,
     };
@@ -681,6 +816,13 @@ pub(crate) struct Sidecar {
     pub(crate) binary_path: String,
     pub(crate) binary_mtime_nanos: i64,
     pub(crate) binary_size_bytes: i64,
+    /// Content hash of the binary at sidecar-write time. Empty string
+    /// (`#[serde(default)]`) when the sidecar was written before
+    /// issue #342 added the field; the verifier treats an empty hash
+    /// as "fall through and rewrite this sidecar" so the next build
+    /// upgrades the entry.
+    #[serde(default)]
+    pub(crate) binary_hash: String,
     pub(crate) cargo_args_fingerprint: String,
     #[serde(default, rename = "source_files")]
     pub(crate) source_files: Vec<SidecarSource>,
@@ -691,6 +833,11 @@ pub(crate) struct SidecarSource {
     pub(crate) path: String,
     pub(crate) mtime_nanos: i64,
     pub(crate) size_bytes: i64,
+    /// Content hash of the source file at sidecar-write time. Empty
+    /// when the sidecar was written before issue #342; same upgrade
+    /// strategy as [`Sidecar::binary_hash`].
+    #[serde(default)]
+    pub(crate) content_hash: String,
 }
 
 pub(crate) fn write_sidecar_atomic(path: &Path, data: &Sidecar) -> std::io::Result<()> {
@@ -855,6 +1002,27 @@ pub(crate) fn mtime_nanos(meta: &fs::Metadata) -> Option<i64> {
 
 pub(crate) fn size_as_i64(meta: &fs::Metadata) -> Option<i64> {
     i64::try_from(meta.len()).ok()
+}
+
+/// Tag prefix for hashes stored in the sidecar. Lets us swap the
+/// hash algorithm later without misinterpreting old digests.
+const HASH_PREFIX: &str = "blake3:";
+
+/// Streaming blake3 hash of `path`. Returns `"blake3:<hex>"` on
+/// success. Buffer size matches blake3's preferred 64 KiB chunk so
+/// hashing a 10 MB binary takes ~5–10 ms on a warm filesystem.
+pub(crate) fn compute_file_hash(path: &Path) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = blake3::Hasher::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format!("{HASH_PREFIX}{}", hasher.finalize().to_hex()))
 }
 
 pub(crate) fn trampoline_env_disabled() -> bool {

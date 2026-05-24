@@ -70,6 +70,7 @@ fn workspace_sidecar_roundtrips_through_toml() {
             path: "src/main.rs".to_string(),
             mtime_nanos: 3,
             size_bytes: 4,
+            content_hash: String::new(),
         }],
         clippy_capture: None,
     };
@@ -89,6 +90,7 @@ fn workspace_sidecar_with_clippy_capture_roundtrips() {
             path: "src/lib.rs".to_string(),
             mtime_nanos: 10,
             size_bytes: 20,
+            content_hash: String::new(),
         }],
         clippy_capture: Some(ClippyCaptureEntry {
             exit_code: 0,
