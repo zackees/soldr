@@ -263,8 +263,8 @@ fn inject_wraps_target_specific_when_user_set_them() {
     let _gcxx = EnvGuard::set(cxx_var, "clang++");
     // Make sure the function reads them as set.
     let wrapper = OsString::from("/tmp/zccache");
-    let cc_wrapped = wrap_compiler_env(cc_var, "cc", &wrapper).unwrap();
-    let cxx_wrapped = wrap_compiler_env(cxx_var, "c++", &wrapper).unwrap();
+    let cc_wrapped = wrap_compiler_env(cc_var, "cc", &wrapper, true).unwrap();
+    let cxx_wrapped = wrap_compiler_env(cxx_var, "c++", &wrapper, true).unwrap();
     assert_eq!(cc_wrapped, OsString::from("/tmp/zccache clang"));
     assert_eq!(cxx_wrapped, OsString::from("/tmp/zccache clang++"));
 }
