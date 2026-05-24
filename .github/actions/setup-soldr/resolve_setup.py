@@ -173,6 +173,28 @@ def resolve_latest_soldr_release(repo: str) -> str:
     return _normalize_release_tag(tag)
 
 
+def normalize_bool_input(value: str, *, name: str, default: bool) -> bool:
+    """Normalize a YAML-style boolean input. Empty means default; otherwise
+    accept the canonical truthy/falsy strings GitHub Actions uses. Raises
+    on invalid input so a typo doesn't silently flip policy.
+
+    The accepted truthy/falsy spellings mirror those honored by
+    `SOLDR_NATIVE_CACHE` on the runtime side (`crates/soldr-cli/src/
+    native_cc.rs::env_is_falsy`) so the action input and the env-var
+    opt-out agree.
+    """
+    if not value or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(
+        f"invalid {name} value {value!r}; expected true/false (yes/no, 1/0, on/off)"
+    )
+
+
 def normalize_target_cache_mode(value: str) -> str:
     mode = value.strip().lower() or "thin"
     if mode == "hot":
@@ -395,6 +417,20 @@ def main() -> None:
     if suffix:
         build_cache_key = f"{build_cache_key}-{sanitized_suffix}"
 
+    # Native compiler cache policy (issue #311). Default-on at the action
+    # level mirrors the runtime default-on in `soldr-cli/src/native_cc.rs`.
+    # When the input is explicitly false, write SOLDR_NATIVE_CACHE=0 to
+    # GITHUB_ENV so every later `soldr cargo ...` step in the job skips
+    # CC / CXX wrapping. When true, we don't write the env var: the
+    # runtime's unset-is-truthy policy keeps native caching on.
+    native_cache_enabled = normalize_bool_input(
+        os.environ.get("INPUT_NATIVE_CACHE", "true"),
+        name="native-cache",
+        default=True,
+    )
+    if not native_cache_enabled:
+        _write_env("SOLDR_NATIVE_CACHE", "0")
+
     _write_env("SOLDR_CACHE_DIR", str(soldr_root))
     _write_env("CARGO_HOME", str(cargo_home))
     _write_env("RUSTUP_HOME", str(rustup_home))
@@ -432,6 +468,7 @@ def main() -> None:
             "target_cache_mode": target_cache_effective_mode,
             "target_cache_key": target_cache_key,
             "target_cache_restore_key_lock": target_cache_restore_key,
+            "native_cache_enabled": str(native_cache_enabled).lower(),
             "soldr_root": str(soldr_root),
             "cargo_home": str(cargo_home),
             "rustup_home": str(rustup_home),
