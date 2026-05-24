@@ -69,9 +69,11 @@ pub(crate) const TARGET_CACHE_BUNDLE_DIR_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BUN
 pub(crate) const TARGET_CACHE_BACKEND_ENV_VAR: &str = "SOLDR_TARGET_CACHE_BACKEND";
 /// Selects which thin-slice pruning policy `soldr cargo` ships to zccache. See
 /// `docs/THIN_TARGET_CACHE_PRUNING.md` for the rationale and rollout plan.
-/// Values: `thin-v1` (legacy, default — keeps `.rlib`/`.rmeta`/proc-macro
-/// outputs as a safety net) and `thin-v2` (fingerprint-aware aggressive prune;
-/// drops library bytes and lets zccache's compilation cache repopulate them).
+/// Values: `thin-v1` (legacy opt-out — keeps `.rlib`/`.rmeta`/proc-macro
+/// outputs; useful when pinned to managed zccache < 1.9.1) and `thin-v2`
+/// (default since soldr v0.7.31 / issue #461; fingerprint-aware aggressive
+/// prune that drops library bytes and lets zccache's compilation cache
+/// repopulate them).
 pub(crate) const TARGET_CACHE_PROFILE_ENV_VAR: &str = "SOLDR_TARGET_CACHE_PROFILE";
 /// Reader-thread count for the target-cache tar walk in zccache (issue #272).
 /// Forwarded to the `zccache rust-plan save/restore` subprocess via inherited

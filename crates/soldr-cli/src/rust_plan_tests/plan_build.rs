@@ -4,9 +4,17 @@
 use crate::cargo_front_door::{cargo_profile, cargo_target_triple, selected_cargo_args};
 use crate::rust_plan::{
     allowed_artifact_classes, build_rust_artifact_plan, cargo_metadata_passthrough_args,
-    dropped_artifact_classes, CargoMetadata, CargoMetadataPackage, RustToolchainIdentity,
+    dropped_artifact_classes, rust_artifact_cache_profile_from_env, CargoMetadata,
+    CargoMetadataPackage, RustToolchainIdentity,
 };
 use crate::zccache::ZccacheBuildSession;
+use crate::TARGET_CACHE_PROFILE_ENV_VAR;
+use std::sync::Mutex;
+
+/// Serialises tests that mutate `SOLDR_TARGET_CACHE_PROFILE` so they
+/// don't race under parallel `cargo test`. Matches the pattern used in
+/// `warm_restore` for `SKIP_WARM_RESTORE_ENV_VAR`.
+static PROFILE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
 fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
@@ -274,4 +282,37 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
     assert!(!plan.allowed_artifact_classes.contains(&"rlib"));
 
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Default flip for issue #461: when `SOLDR_TARGET_CACHE_PROFILE` is
+/// unset, soldr must pick `thin-v2` so warm CI restores no longer ship
+/// the heavy `.rlib`/`.rmeta`/proc-macro bytes through the GHA cache.
+/// Requires managed zccache >= 1.9.1 (which understands `cache_profile`
+/// and `dropped_artifact_classes`).
+#[test]
+fn rust_artifact_cache_profile_default_is_thin_v2() {
+    let _lock = PROFILE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os(TARGET_CACHE_PROFILE_ENV_VAR);
+    std::env::remove_var(TARGET_CACHE_PROFILE_ENV_VAR);
+    let result = rust_artifact_cache_profile_from_env();
+    if let Some(value) = previous {
+        std::env::set_var(TARGET_CACHE_PROFILE_ENV_VAR, value);
+    }
+    assert_eq!(result.expect("default profile resolves"), "thin-v2");
+}
+
+/// Operators pinned to zccache < 1.9.1 (or recovering from a thin-v2
+/// regression) must still be able to opt back into the legacy slice via
+/// an explicit `SOLDR_TARGET_CACHE_PROFILE=thin-v1`.
+#[test]
+fn rust_artifact_cache_profile_thin_v1_remains_explicit_opt_out() {
+    let _lock = PROFILE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os(TARGET_CACHE_PROFILE_ENV_VAR);
+    std::env::set_var(TARGET_CACHE_PROFILE_ENV_VAR, "thin-v1");
+    let result = rust_artifact_cache_profile_from_env();
+    match previous {
+        Some(value) => std::env::set_var(TARGET_CACHE_PROFILE_ENV_VAR, value),
+        None => std::env::remove_var(TARGET_CACHE_PROFILE_ENV_VAR),
+    }
+    assert_eq!(result.expect("thin-v1 still parses"), "thin-v1");
 }

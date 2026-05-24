@@ -57,6 +57,10 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
         .env("SOLDR_TARGET_CACHE_MODE", "thin")
         .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
+        // setup-soldr exports SOLDR_TARGET_CACHE_PROFILE=thin-v1 today; this
+        // test is asserting soldr's *own* default for the field, so clear
+        // the env var so the runner-side override doesn't leak in.
+        .env_remove("SOLDR_TARGET_CACHE_PROFILE")
         .output()
         .expect("failed to run soldr cargo build with rust-plan target cache");
 
@@ -101,7 +105,10 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
             .expect("parse generated rust plan");
     assert_eq!(plan["schema_version"], 1);
     assert_eq!(plan["mode"], "thin");
-    assert_eq!(plan["cache_schema_version"], 1);
+    // Default profile flipped to thin-v2 in issue #461; cache_schema_version
+    // bumps to 2 to signal the fingerprint-aware prune contract to zccache.
+    assert_eq!(plan["cache_schema_version"], 2);
+    assert_eq!(plan["cache_profile"], "thin-v2");
     assert_eq!(
         plan["packages"]["workspace_package_ids"][0],
         "path+file:///repo/app#app@0.1.0"

@@ -195,7 +195,7 @@ def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> N
     bundle_path = runner_temp / "setup-soldr-target-thin"
     assert f"target_cache_bundle_path={bundle_path}" in outputs
     assert f"shim_dir={cache_root / 'shims'}" in outputs
-    assert "target_cache_key=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+    assert "target_cache_key=setup-soldr-targetcache-thin-v2-linux-x64-" in outputs
     assert "target_cache_enabled=false" in outputs
     assert "target_cache_mode=thin" in outputs
     assert f"target_cache_paths={bundle_path}" in outputs
@@ -250,10 +250,10 @@ def test_main_treats_hot_as_thin_alias_with_lockfile(
     outputs = github_output.read_text(encoding="utf-8")
     assert "target_cache_enabled=true" in outputs
     assert "target_cache_mode=thin" in outputs
-    assert "target_cache_key=setup-soldr-targetcache-thin-v1-linux-x64-" in outputs
+    assert "target_cache_key=setup-soldr-targetcache-thin-v2-linux-x64-" in outputs
     assert f"target_cache_paths={bundle_path}" in outputs
     assert (
-        "target_cache_restore_key_lock=setup-soldr-targetcache-thin-v1-linux-x64-"
+        "target_cache_restore_key_lock=setup-soldr-targetcache-thin-v2-linux-x64-"
         in outputs
     )
 

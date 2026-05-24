@@ -281,9 +281,12 @@ reads the manifest and:
   warning.
 - Bump `RustArtifactPlan.schema_version` independently if the cargo-side
   shape changes; the two version numbers are intentionally separable.
-- New env var `SOLDR_TARGET_CACHE_PROFILE` with values `thin-v1` (current) and
-  `thin-v2` (this proposal). Default flips to `thin-v2` only after the
-  verification job (Section 5) is green on `main` for a week.
+- New env var `SOLDR_TARGET_CACHE_PROFILE` with values `thin-v1` (legacy
+  opt-out) and `thin-v2` (current default). The default flipped in soldr
+  v0.7.31 alongside the bump to managed zccache 1.9.1, which honors the
+  `cache_profile` / `dropped_artifact_classes` wire fields. Operators
+  pinned to older zccache (< 1.9.1) must set
+  `SOLDR_TARGET_CACHE_PROFILE=thin-v1` until they upgrade.
 
 ## 5. Verification: build twice in one CI job
 
@@ -423,27 +426,27 @@ The change spans soldr-cli, zccache (out-of-repo), and the setup-soldr action.
 Sequencing matters because the GitHub Action and the soldr binary are
 versioned independently.
 
-1. **PR 1 (this PR)**: design doc only. No behavior change.
-2. **PR 2 — soldr-cli**: add the `thin-v2` plan generator behind
-   `SOLDR_TARGET_CACHE_PROFILE=thin-v2` (off by default). Land manifest
-   schema bump and the additional `allowed_artifact_classes` split. Ship in
-   the next soldr patch release. Ground truth lives in
-   `crates/soldr-cli/src/main.rs::allowed_artifact_classes` and the new
-   `build_thin_save_manifest` function.
-3. **PR 3 — zccache** (separate repo, `zackees/zccache`): teach
-   `zccache rust-plan save/restore` to honor the new artifact-class names and
-   a path-list manifest. Until this lands, soldr's `thin-v2` mode silently
-   downgrades to `thin-v1` with a one-line warning.
-4. **PR 4 — verification workflow**: add `cache-thin-verify.yml` and the
-   `assert_thin_noop.py` script. Enable it as a required check for `main` so
-   the rollout cannot regress.
-5. **PR 5 — setup-soldr action**: bump `target-cache-bundle` cache-key
-   version (`thin-v1` -> `thin-v2`) inside `resolve_setup.py` so old caches
-   are invalidated. Flip the default of `SOLDR_TARGET_CACHE_PROFILE` to
-   `thin-v2`. Document the size and verification claims in
-   [`docs/CI_CACHE.md`](CI_CACHE.md).
-6. **PR 6 — exporter / public action**: re-export the action with the new
-   defaults under `setup-soldr@v4`. `@v0` keeps `thin-v1` until a major bump.
+1. **PR 1 — landed**: design doc only. No behavior change.
+2. **PR 2 — landed**: soldr-cli `thin-v2` plan generator behind
+   `SOLDR_TARGET_CACHE_PROFILE=thin-v2` (off by default at the time).
+   Manifest schema bump and the `allowed_artifact_classes` split shipped.
+   Ground truth lives in `crates/soldr-cli/src/rust_plan.rs`.
+3. **PR 3 — landed (zccache)**: zccache 1.9.1 accepts `cache_profile`,
+   `dropped_artifact_classes`, and `cache_schema_version: 2` in
+   `RustArtifactPlanV1`; the save walker consults the drop list and the
+   new `CargoFingerprintMeta` / `CargoFingerprintOutputs` split.
+4. **PR 4 — landed**: `thin-v2-verify.yml` plus the `assert_thin_noop.py`
+   and `assert_thin_manifest.py` scripts. Currently
+   `continue-on-error: true` while we wire the workflow through
+   `soldr cargo build` end-to-end.
+5. **PR 5 — landed (this PR, soldr#461)**: bump
+   `MANAGED_ZCCACHE_VERSION` to 1.9.1, flip the default of
+   `SOLDR_TARGET_CACHE_PROFILE` to `thin-v2`, and bump the setup-soldr
+   `target-cache-bundle` cache-key version from `thin-v1` to `thin-v2`
+   inside `resolve_setup.py` so stale heavy bundles are invalidated.
+6. **PR 6 — followup**: re-export the action with the new defaults under
+   `setup-soldr@v4`. `@v0` inherits the bump transparently because the
+   exporter copies `resolve_setup.py` verbatim.
 
 Rollback: revert PR 5. Old caches are gone but `thin-v1` regenerates them on
 the next push. No rust-plan or zccache schema is destabilized because the

@@ -127,7 +127,7 @@ After two pushes to the same branch, you should be able to confirm the cache lin
 
    For the build-artifact layer, inspect the `build-cache-restore` step. Its exact keys are `setup-soldr-buildcache-v1-{os}-{arch}-{toolchain-digest}-{github.sha}` and its restore-keys fall back first to the same toolchain lineage, then to any cache for the same OS and architecture.
 
-   For the Rust artifact plan layer, inspect the `target-cache` step. Its default thin-cache keys are `setup-soldr-targetcache-thin-v1-{os}-{arch}-{target-inputs-hash}` and use exact restore only. The target-inputs hash includes the toolchain digest, `Cargo.lock`, workspace manifest hashes, Cargo config, target-dir shape, and relevant Rust flags.
+   For the Rust artifact plan layer, inspect the `target-cache` step. Its default thin-cache keys are `setup-soldr-targetcache-thin-v2-{os}-{arch}-{target-inputs-hash}` and use exact restore only. The target-inputs hash includes the toolchain digest, `Cargo.lock`, workspace manifest hashes, Cargo config, target-dir shape, and relevant Rust flags.
 
 3. **Compare wall-clock.** A warm feature-branch run should not rebuild the toolchain or re-download soldr. A warm build-artifact restore should also reduce downstream compile time once zccache has artifacts to reuse. If you see `rustup` installing, soldr downloading from GitHub Releases, or full recompiles on every run, one of the restore layers is not hitting and something below is wrong.
 
