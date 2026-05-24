@@ -524,11 +524,56 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed(
     Ok(())
 }
 
+/// Soldr-side escape hatch for the RUST_LOG value that gets injected into
+/// `zccache start`. Power users can set this to something like
+/// `info,zccache_artifact=debug` when they need a specific level on the
+/// daemon without the daemon inheriting (and being narrowed by) the
+/// parent's RUST_LOG.
+pub(crate) const SOLDR_DAEMON_RUST_LOG_ENV_VAR: &str = "SOLDR_DAEMON_RUST_LOG";
+
+/// Compute the `RUST_LOG` value soldr should set when invoking
+/// `zccache start`. The daemon spawned by `zccache start` inherits the
+/// invocation's env; if `RUST_LOG` narrows the filter to a subset of
+/// `zccache_*` modules (e.g. `zccache_daemon=info`), INFO logs from
+/// sibling crates (`zccache_artifact`, `zccache_fscache`, etc.) silently
+/// vanish from the daemon spawn log. To keep cross-crate observability
+/// soldr forces a bare `info` directive at daemon spawn unless the user
+/// asks for something specific via `SOLDR_DAEMON_RUST_LOG`.
+///
+/// Returns the value soldr should pass through as `RUST_LOG` on the
+/// `zccache start` invocation. See issue #416.
+pub(crate) fn effective_daemon_rust_log(soldr_override: Option<&str>) -> String {
+    match soldr_override {
+        Some(v) if !v.trim().is_empty() => v.to_string(),
+        _ => "info".to_string(),
+    }
+}
+
+fn run_zccache_start_command(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> Result<std::process::Output, SoldrError> {
+    let rust_log = effective_daemon_rust_log(
+        std::env::var(SOLDR_DAEMON_RUST_LOG_ENV_VAR).ok().as_deref(),
+    );
+    run_zccache_command_raw_with_env(
+        binary,
+        &["start"],
+        &[
+            (
+                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
+                cache_dir.as_os_str(),
+            ),
+            ("RUST_LOG", std::ffi::OsStr::new(rust_log.as_str())),
+        ],
+    )
+}
+
 pub(crate) fn start_zccache_with_recovery(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<(), SoldrError> {
-    let start = run_zccache_command_raw_in_cache_dir(binary, &["start"], cache_dir)?;
+    let start = run_zccache_start_command(binary, cache_dir)?;
     if start.status.success() {
         return Ok(());
     }
@@ -550,7 +595,7 @@ pub(crate) fn start_zccache_with_recovery(
         Err(err) => Some(format!("failed to invoke zccache stop: {err}")),
     };
 
-    match run_zccache_command_raw_in_cache_dir(binary, &["start"], cache_dir) {
+    match run_zccache_start_command(binary, cache_dir) {
         Ok(retry) if retry.status.success() => Ok(()),
         Ok(retry) => {
             let mut message = format!(
@@ -813,5 +858,49 @@ mod tests {
         let previous = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
         let current = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
         assert!(should_evict_zccache_daemon(current, Some(previous)));
+    }
+
+    // ---------------------------------------------------------------
+    // RUST_LOG injection on daemon spawn (issue #416). The daemon
+    // inherits the env of the `zccache start` invocation; without a
+    // soldr-side override, narrow RUST_LOG values in the parent (CI
+    // configs, shell exports) silently filter out sibling-crate INFO
+    // logs from the daemon spawn log. Soldr forces a non-narrowing
+    // directive unless the user explicitly opts in via
+    // SOLDR_DAEMON_RUST_LOG.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn daemon_rust_log_defaults_to_info_when_override_unset() {
+        assert_eq!(effective_daemon_rust_log(None), "info");
+    }
+
+    #[test]
+    fn daemon_rust_log_defaults_to_info_when_override_is_blank() {
+        // Empty / whitespace-only override is treated as unset so accidental
+        // `export SOLDR_DAEMON_RUST_LOG=` doesn't re-introduce the narrow
+        // filter the env var exists to defeat.
+        assert_eq!(effective_daemon_rust_log(Some("")), "info");
+        assert_eq!(effective_daemon_rust_log(Some("   ")), "info");
+    }
+
+    #[test]
+    fn daemon_rust_log_honors_explicit_override() {
+        assert_eq!(effective_daemon_rust_log(Some("debug")), "debug");
+        assert_eq!(
+            effective_daemon_rust_log(Some("info,zccache_artifact=debug")),
+            "info,zccache_artifact=debug"
+        );
+    }
+
+    #[test]
+    fn daemon_rust_log_override_passes_through_narrow_directive() {
+        // If the user explicitly asks for a single-target directive via
+        // SOLDR_DAEMON_RUST_LOG, that's a conscious choice and soldr respects
+        // it — the override exists specifically to give power users this knob.
+        assert_eq!(
+            effective_daemon_rust_log(Some("zccache_daemon=trace")),
+            "zccache_daemon=trace"
+        );
     }
 }
