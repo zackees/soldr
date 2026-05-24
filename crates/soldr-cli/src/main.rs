@@ -22,6 +22,7 @@ mod fetch;
 mod fuzzy_match;
 mod gc;
 mod linker;
+mod native_cc;
 mod optimize;
 mod optimize_detect;
 mod optimize_windows;
