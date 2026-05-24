@@ -57,6 +57,10 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
         .env("SOLDR_TARGET_CACHE_MODE", "thin")
         .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
+        // setup-soldr exports SOLDR_TARGET_CACHE_PROFILE=thin-v1 today; this
+        // test is asserting soldr's *own* default for the field, so clear
+        // the env var so the runner-side override doesn't leak in.
+        .env_remove("SOLDR_TARGET_CACHE_PROFILE")
         .output()
         .expect("failed to run soldr cargo build with rust-plan target cache");
 
