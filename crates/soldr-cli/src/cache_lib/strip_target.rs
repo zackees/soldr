@@ -26,6 +26,16 @@
 //! - **Debug sidecars** (`.dwo`, `.pdb`, `.dSYM/` under
 //!   `target/<profile>/deps/`). Cargo regenerates these on the next
 //!   build that asks for debuginfo.
+//! - **Incremental dirs** (`target/<profile>/incremental/`). Cargo's
+//!   incremental compilation state. Tied to specific source files;
+//!   downstream builds against different sources discard it anyway.
+//!   Safe to drop from snapshot tarballs (cook output, CI caches).
+//! - **Stub binaries** (top-level executables at `target/<profile>/`).
+//!   Cargo-chef builds a synthetic stub project whose executable lands
+//!   here; the downstream user's real binary has a different name and
+//!   this artifact is dead weight in a cook tarball. Use sparingly:
+//!   only enable in contexts where you know the only top-level
+//!   binary is the stub (e.g. cook output).
 //!
 //! The caller is responsible for the `.cargo-lock` active-build guard;
 //! reuse [`super::prune_target::find_active_cargo_lock`] before calling
@@ -75,6 +85,17 @@ pub struct StripTargetOptions {
     /// Strip `.dwo`, `.pdb`, `.dSYM/` debug sidecars under
     /// `target/<profile>/deps/`.
     pub strip_debug_sidecars: bool,
+    /// Strip `target/<profile>/incremental/` entirely. Cargo's
+    /// incremental cache is invalidated by downstream source changes,
+    /// so it has no value in a snapshot tarball.
+    pub strip_incremental: bool,
+    /// Strip top-level executable files at `target/<profile>/<name>`
+    /// (and their `.pdb`/`.dSYM/` siblings). Only safe in contexts
+    /// where the only top-level binary is a synthetic stub — e.g.
+    /// `soldr cook` output, where cargo-chef builds an `app`-style
+    /// stub project but the downstream consumer's real binary has a
+    /// different name.
+    pub strip_stub_binaries: bool,
 }
 
 impl StripTargetOptions {
@@ -88,11 +109,20 @@ impl StripTargetOptions {
             strip_build_script_binaries: false,
             strip_examples_doc_tests: false,
             strip_debug_sidecars: false,
+            strip_incremental: false,
+            strip_stub_binaries: false,
         }
     }
 
-    /// Every rule on; dry-run by default. The CI-profile preset for
-    /// `cache trim-target`.
+    /// Every legacy rule on; dry-run by default. The CI-profile preset
+    /// for `cache trim-target`.
+    ///
+    /// `strip_incremental` and `strip_stub_binaries` are intentionally
+    /// left off here. The incremental rule is functionally covered by
+    /// the inline `remove_incremental_dirs` call inside the
+    /// `cache trim-target` pipeline, and stub-binary stripping is only
+    /// safe in cook-output contexts; callers that know either
+    /// invariant enable them explicitly.
     pub fn all(target_dir: PathBuf) -> Self {
         Self {
             target_dir,
@@ -101,6 +131,31 @@ impl StripTargetOptions {
             strip_build_script_binaries: true,
             strip_examples_doc_tests: true,
             strip_debug_sidecars: true,
+            strip_incremental: false,
+            strip_stub_binaries: false,
+        }
+    }
+
+    /// Preset for `soldr cook` post-build trim (issue #459). Strips
+    /// the cargo-recreatable noise that a downstream `cargo build`
+    /// against a different project never reads — incremental state
+    /// (invalidated by source changes), the synthetic stub binary
+    /// (different name than the user's real binary), build-script
+    /// binaries and large stderr blobs, debug sidecars, and the
+    /// per-profile `examples/`, `doc/`, `tests/` subdirs.
+    ///
+    /// Dry-run defaults to `false` because the caller is `cook` —
+    /// the trim is part of the cook contract, not a manual audit.
+    pub fn cook(target_dir: PathBuf) -> Self {
+        Self {
+            target_dir,
+            dry_run: false,
+            strip_large_stderr: true,
+            strip_build_script_binaries: true,
+            strip_examples_doc_tests: true,
+            strip_debug_sidecars: true,
+            strip_incremental: true,
+            strip_stub_binaries: true,
         }
     }
 }
@@ -111,6 +166,8 @@ pub enum StripCategory {
     BuildScriptBinary,
     ExamplesDocTests,
     DebugSidecar,
+    IncrementalDir,
+    StubBinary,
 }
 
 impl StripCategory {
@@ -120,6 +177,8 @@ impl StripCategory {
             StripCategory::BuildScriptBinary => "build_script_binary",
             StripCategory::ExamplesDocTests => "examples_doc_tests",
             StripCategory::DebugSidecar => "debug_sidecar",
+            StripCategory::IncrementalDir => "incremental_dir",
+            StripCategory::StubBinary => "stub_binary",
         }
     }
 }
@@ -182,6 +241,12 @@ pub fn strip_target(opts: &StripTargetOptions) -> Result<StripReport, StripError
         }
         if opts.strip_debug_sidecars {
             collect_debug_sidecars_under_deps(profile, &mut entries)?;
+        }
+        if opts.strip_incremental {
+            collect_incremental_dir(profile, &mut entries)?;
+        }
+        if opts.strip_stub_binaries {
+            collect_stub_binaries(profile, &mut entries)?;
         }
     }
 
@@ -362,6 +427,84 @@ fn collect_debug_sidecars_under_deps(
                 size_bytes: size,
             });
         }
+    }
+    Ok(())
+}
+
+fn collect_incremental_dir(
+    profile: &Path,
+    entries: &mut Vec<StripEntry>,
+) -> Result<(), StripError> {
+    let path = profile.join("incremental");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(m) => m,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(StripError::Io { path, source }),
+    };
+    if !metadata.is_dir() {
+        return Ok(());
+    }
+    let size = directory_size(&path);
+    entries.push(StripEntry {
+        path,
+        category: StripCategory::IncrementalDir,
+        size_bytes: size,
+    });
+    Ok(())
+}
+
+fn collect_stub_binaries(
+    profile: &Path,
+    entries: &mut Vec<StripEntry>,
+) -> Result<(), StripError> {
+    // The synthetic stub binary cargo-chef produces lives at the
+    // top of `target/<profile>/<name>(.exe)`, alongside `.pdb` and
+    // `.dSYM/` debug siblings. Cargo's own state files start with
+    // `.` (e.g. `.fingerprint`, `.cargo-lock`) and the deps/build
+    // siblings are directories — so we only delete *files* at the
+    // profile root, plus `.dSYM/` dirs (Apple debuginfo bundles).
+    let read = match fs::read_dir(profile) {
+        Ok(it) => it,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => {
+            return Err(StripError::Io {
+                path: profile.to_path_buf(),
+                source,
+            })
+        }
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let ft = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            if name.ends_with(".dSYM") {
+                let size = directory_size(&path);
+                entries.push(StripEntry {
+                    path,
+                    category: StripCategory::StubBinary,
+                    size_bytes: size,
+                });
+            }
+            continue;
+        }
+        if !ft.is_file() {
+            continue;
+        }
+        let size = file_len(&path).unwrap_or(0);
+        entries.push(StripEntry {
+            path,
+            category: StripCategory::StubBinary,
+            size_bytes: size,
+        });
     }
     Ok(())
 }
@@ -640,5 +783,157 @@ mod tests {
         assert!(is_build_script_binary("build-script-build-suffix.exe"));
         assert!(!is_build_script_binary("build-script-other"));
         assert!(!is_build_script_binary("invoked.timestamp"));
+    }
+
+    // -------------------------------------------------------------
+    // Incremental dir + stub binary strip rules (issue #459).
+    //
+    // Both rules are intentionally NOT enabled by `all()` outside the
+    // cook context: the incremental rule is safe in tarball-snapshot
+    // contexts but actively harmful in interactive dev (cargo will
+    // refuse to incremental-recompile), and the stub-binary rule is
+    // only safe when the caller knows no real user binary exists at
+    // the profile root.
+    // -------------------------------------------------------------
+
+    #[test]
+    fn incremental_dir_dropped() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let inc = target.join("release/incremental");
+        let deps = target.join("release/deps");
+        touch_dir(&inc);
+        write_bytes(&inc.join("s-abc/work-product.bin"), b"\0".repeat(1024).as_slice());
+        write_bytes(&inc.join("s-abc/dep-graph.bin"), &[0u8; 256]);
+        touch_dir(&deps);
+        let rlib = deps.join("libfoo-aaaaaaaaaaaaa.rlib");
+        write_bytes(&rlib, b"keep");
+
+        let opts = StripTargetOptions {
+            dry_run: false,
+            strip_incremental: true,
+            ..StripTargetOptions::none(target)
+        };
+        let report = strip_target(&opts).unwrap();
+        assert_eq!(report.deleted, 1, "the incremental/ dir is one entry");
+        assert_eq!(report.entries[0].category, StripCategory::IncrementalDir);
+        assert!(report.entries[0].size_bytes > 0, "size should account for contents");
+        assert!(!inc.exists(), "incremental/ must be removed");
+        assert!(rlib.exists(), "deps/ must survive incremental strip");
+    }
+
+    #[test]
+    fn incremental_strip_no_op_when_dir_missing() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let deps = target.join("release/deps");
+        touch_dir(&deps);
+        write_bytes(&deps.join("libfoo.rlib"), b"keep");
+
+        let opts = StripTargetOptions {
+            dry_run: false,
+            strip_incremental: true,
+            ..StripTargetOptions::none(target)
+        };
+        let report = strip_target(&opts).unwrap();
+        assert_eq!(report.deleted, 0);
+        assert!(deps.exists());
+    }
+
+    #[test]
+    fn stub_binary_dropped_at_profile_root() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        // Profile root: the cargo-chef stub lives directly here.
+        let stub_unix = target.join("release/app");
+        let stub_win = target.join("release/app.exe");
+        let stub_pdb = target.join("release/app.pdb");
+        let stub_dsym = target.join("release/app.dSYM");
+        let deps = target.join("release/deps");
+        let fingerprint = target.join("release/.fingerprint");
+        let cargo_lock = target.join("release/.cargo-lock");
+        write_bytes(&stub_unix, b"unix stub");
+        write_bytes(&stub_win, b"win stub");
+        write_bytes(&stub_pdb, b"pdb");
+        touch_dir(&stub_dsym);
+        write_bytes(&stub_dsym.join("Contents/Info.plist"), b"...");
+        touch_dir(&deps);
+        write_bytes(&deps.join("libfoo.rlib"), b"keep");
+        touch_dir(&fingerprint);
+        write_bytes(&fingerprint.join("foo-aaaa/invoked.timestamp"), b"");
+        write_bytes(&cargo_lock, b"");
+
+        let opts = StripTargetOptions {
+            dry_run: false,
+            strip_stub_binaries: true,
+            ..StripTargetOptions::none(target)
+        };
+        let report = strip_target(&opts).unwrap();
+        // Three files + one .dSYM directory.
+        assert_eq!(report.deleted, 4);
+        for e in &report.entries {
+            assert_eq!(e.category, StripCategory::StubBinary);
+        }
+        assert!(!stub_unix.exists());
+        assert!(!stub_win.exists());
+        assert!(!stub_pdb.exists());
+        assert!(!stub_dsym.exists());
+        // Cargo state and the deps/ artifacts must be untouched.
+        assert!(deps.exists());
+        assert!(fingerprint.exists());
+        assert!(cargo_lock.exists(), ".cargo-lock survives stub strip");
+    }
+
+    #[test]
+    fn stub_binary_strip_ignores_subdirs_other_than_dsym() {
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        // Cargo creates plenty of subdirs at the profile root that
+        // are NOT stub artifacts: deps/, build/, examples/, etc.
+        // The stub-binary rule must never touch them.
+        touch_dir(&target.join("release/deps"));
+        touch_dir(&target.join("release/build"));
+        touch_dir(&target.join("release/examples"));
+        let stub = target.join("release/app.exe");
+        write_bytes(&stub, b"stub");
+
+        let opts = StripTargetOptions {
+            dry_run: false,
+            strip_stub_binaries: true,
+            ..StripTargetOptions::none(target.clone())
+        };
+        let report = strip_target(&opts).unwrap();
+        assert_eq!(report.deleted, 1);
+        assert!(!stub.exists());
+        assert!(target.join("release/deps").exists());
+        assert!(target.join("release/build").exists());
+        assert!(target.join("release/examples").exists());
+    }
+
+    #[test]
+    fn cook_preset_enables_incremental_and_stub_strip() {
+        // Smoke-test the `cook()` constructor — the rules it enables
+        // are the contract surface for `soldr cook` post-build trim.
+        let temp = tempdir().unwrap();
+        let target = temp.path().to_path_buf();
+        let inc = target.join("release/incremental");
+        touch_dir(&inc);
+        write_bytes(&inc.join("foo"), &[0u8; 64]);
+        let stub = target.join("release/app.exe");
+        write_bytes(&stub, b"stub");
+        let deps = target.join("release/deps");
+        touch_dir(&deps);
+        write_bytes(&deps.join("libfoo.rlib"), b"keep");
+
+        let opts = StripTargetOptions::cook(target.clone());
+        let report = strip_target(&opts).unwrap();
+        assert!(report.deleted >= 2);
+        assert!(!inc.exists());
+        assert!(!stub.exists());
+        assert!(deps.exists(), "deps/ survives cook trim");
+        assert!(
+            !opts.dry_run,
+            "cook preset commits — caller controls dry-run separately"
+        );
     }
 }
