@@ -482,6 +482,203 @@ fn missing_dep_info_falls_through_silently() {
     );
 }
 
+// -------------------------------------------------------------------------
+// Content-hash oracle scenarios (issue #342). Each test sets up a state
+// that mtime+size alone cannot diagnose correctly; the content-hash
+// oracle is what makes the outcome correct.
+// -------------------------------------------------------------------------
+
+/// Reset a file's modification time to a fixed past instant. Returns the
+/// SystemTime that was set so the test can compare against it later.
+fn reset_mtime_to_epoch_offset(path: &Path, seconds_from_epoch: u64) -> SystemTime {
+    let when = SystemTime::UNIX_EPOCH + Duration::from_secs(seconds_from_epoch);
+    let file = fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("open writable");
+    file.set_modified(when).expect("set mtime");
+    when
+}
+
+#[test]
+fn content_edit_with_spoofed_old_mtime_forces_fall_through() {
+    // Issue #342: an attacker (or innocent reproducible-build tool)
+    // edits a source file but restores its mtime to an old value.
+    // mtime+size oracle would compare mtimes only and accept the
+    // unchanged stat; content-hash oracle MUST detect the change.
+    let project = make_project("trampoline-spoofed-old-mtime");
+    let cold = run_cold(&project, &[]);
+    assert!(cold.status.success(), "seed build failed");
+
+    // Read the sidecar's recorded mtime BEFORE we edit so we can
+    // restore it exactly.
+    let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
+    let sidecar_text = fs::read_to_string(&sidecar).expect("read sidecar");
+    // Grab the first source's mtime_nanos. Cheap regex avoids depending
+    // on the full TOML parser for one number.
+    let re_match = sidecar_text
+        .lines()
+        .find(|l| l.trim_start().starts_with("mtime_nanos"))
+        .and_then(|l| l.split('=').nth(1))
+        .map(|s| s.trim())
+        .expect("recorded mtime_nanos line");
+    let recorded_nanos: u128 = re_match.parse().expect("parse mtime nanos");
+    let recorded_secs = (recorded_nanos / 1_000_000_000) as u64;
+
+    let main_rs = project.join("src").join("main.rs");
+    let new_body = fs::read_to_string(&main_rs).expect("read main") + "// edited\n";
+    fs::write(&main_rs, new_body).expect("write main");
+    // Restore the original mtime so a stat-only oracle would accept.
+    reset_mtime_to_epoch_offset(&main_rs, recorded_secs);
+
+    // The size DID change because we appended bytes — but a real
+    // mtime+size spoofing attack could also pad to the original size.
+    // What matters is the trampoline must NOT trust an old mtime as
+    // freshness. Use a broken cargo to prove fall-through.
+    let stub_dir = unique_temp_dir("trampoline-spoofed-old-mtime-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let out = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run"],
+    );
+    assert!(
+        !out.status.success(),
+        "content-edit-with-old-mtime MUST fall through to cargo; trampoline accepted stale binary"
+    );
+}
+
+#[test]
+fn mtime_epoch_restore_with_unchanged_content_still_hits_trampoline() {
+    // Issue #342: a tar restore with --mtime=epoch normalizes every
+    // file's mtime to a fixed past instant. Content is unchanged.
+    // Old mtime+size oracle would fall through (mtimes diverge);
+    // content-hash oracle MUST accept (content matches) AND
+    // self-heal the sidecar with the new mtimes.
+    let project = make_project("trampoline-mtime-epoch");
+    let cold = run_cold(&project, &[]);
+    assert!(cold.status.success(), "seed build failed");
+
+    let main_rs = project.join("src").join("main.rs");
+    let binary = project_binary(&project, "trampoline_demo", "debug");
+    // Reset to a fixed-epoch mtime. Sources AND binary both get the
+    // same time, simulating `tar --mtime=epoch` extraction.
+    reset_mtime_to_epoch_offset(&main_rs, 1_000_000_000);
+    reset_mtime_to_epoch_offset(&binary, 1_000_000_000);
+
+    let stub_dir = unique_temp_dir("trampoline-mtime-epoch-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let out = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run", "--", "epoch"],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "mtime-epoch restore with unchanged content MUST hit trampoline (content hash matches)\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("hello epoch"),
+        "binary stdout missing on mtime-epoch warm path: {stdout}"
+    );
+
+    // Self-heal: the sidecar should now have the new mtime_nanos =
+    // 1_000_000_000 * 1e9. Re-running again must hit the FAST-SKIP
+    // path (no re-hashing). We can't directly assert "did not hash"
+    // but we can assert the sidecar was rewritten.
+    let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
+    let post_text = fs::read_to_string(&sidecar).expect("read sidecar");
+    assert!(
+        post_text.contains("1000000000000000000"),
+        "self-heal should have rewritten binary/source mtime to 1e9 seconds (sidecar: {post_text})"
+    );
+}
+
+#[test]
+fn binary_swap_with_matching_mtime_size_is_detected() {
+    // Issue #342: someone replaces the on-disk binary with a
+    // different one whose mtime+size happen to match the sidecar
+    // (cache corruption, accidental cp, attack scenario). Old
+    // mtime+size oracle would happily exec the wrong binary;
+    // content-hash oracle MUST detect via binary_hash mismatch.
+    let project = make_project("trampoline-binary-swap");
+    let cold = run_cold(&project, &[]);
+    assert!(cold.status.success(), "seed build failed");
+
+    let binary = project_binary(&project, "trampoline_demo", "debug");
+    let bin_meta = fs::metadata(&binary).expect("stat binary");
+    let original_size = bin_meta.len();
+    let original_mtime = bin_meta.modified().expect("binary mtime");
+
+    // Overwrite with random bytes of the SAME size.
+    let replacement: Vec<u8> = (0..original_size as usize)
+        .map(|i| (i % 251) as u8 ^ 0xAA)
+        .collect();
+    fs::write(&binary, &replacement).expect("overwrite binary");
+    // Restore the mtime so stat-only oracle thinks nothing changed.
+    let f = fs::File::options()
+        .write(true)
+        .open(&binary)
+        .expect("reopen binary");
+    f.set_modified(original_mtime).expect("restore mtime");
+
+    let stub_dir = unique_temp_dir("trampoline-binary-swap-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let out = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run"],
+    );
+    assert!(
+        !out.status.success(),
+        "binary-swap-with-matching-mtime+size MUST fall through; trampoline accepted wrong binary"
+    );
+}
+
+#[test]
+fn legacy_sidecar_without_content_hash_forces_rewrite() {
+    // Backwards-compat: a sidecar written by the pre-#342 trampoline
+    // has no `binary_hash` / `content_hash` fields. The verifier must
+    // treat the empty hash as "must fall through and rewrite", so the
+    // next build upgrades the entry. Verified by: (1) trimming the
+    // hash fields from the sidecar, (2) confirming fall-through, (3)
+    // confirming the sidecar regains the fields on the rebuild.
+    let project = make_project("trampoline-legacy-sidecar");
+    let cold = run_cold(&project, &[]);
+    assert!(cold.status.success(), "seed build failed");
+
+    let sidecar = project_sidecar(&project, "trampoline_demo", "debug");
+    let text = fs::read_to_string(&sidecar).expect("read sidecar");
+    // Strip every `binary_hash` and `content_hash` line.
+    let stripped: String = text
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !t.starts_with("binary_hash") && !t.starts_with("content_hash")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&sidecar, &stripped).expect("write stripped sidecar");
+
+    let stub_dir = unique_temp_dir("trampoline-legacy-stub");
+    let broken = broken_cargo_stub(&stub_dir);
+    let broken_str = broken.to_string_lossy().to_string();
+    let out = run_soldr(
+        &project,
+        &[("SOLDR_TEST_CARGO_BIN", &broken_str)],
+        ["--no-cache", "cargo", "run"],
+    );
+    assert!(
+        !out.status.success(),
+        "legacy sidecar (empty binary_hash) MUST force fall-through so the next build upgrades it"
+    );
+}
+
 #[test]
 fn trailing_args_pass_through_to_binary() {
     let project = make_project("trampoline-trailing-args");

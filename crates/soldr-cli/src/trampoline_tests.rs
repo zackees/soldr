@@ -166,11 +166,13 @@ fn sidecar_roundtrips_through_toml() {
         binary_path: "target/debug/foo".to_string(),
         binary_mtime_nanos: 12345,
         binary_size_bytes: 9999,
+        binary_hash: "blake3:cafef00d".to_string(),
         cargo_args_fingerprint: "blake3:deadbeef".to_string(),
         source_files: vec![SidecarSource {
             path: "src/main.rs".to_string(),
             mtime_nanos: 678,
             size_bytes: 4096,
+            content_hash: "blake3:facefeed".to_string(),
         }],
     };
     let text = toml::to_string(&original).expect("serialize");
@@ -186,6 +188,7 @@ fn write_sidecar_writes_atomically() {
         binary_path: "x".into(),
         binary_mtime_nanos: 1,
         binary_size_bytes: 2,
+        binary_hash: "blake3:0".into(),
         cargo_args_fingerprint: "blake3:0".into(),
         source_files: vec![],
     };
@@ -268,4 +271,102 @@ fn trailing_user_args_extracts_after_separator() {
         vec!["foo".to_string(), "bar".to_string()]
     );
     assert!(trailing_user_args(&argv(&["run", "--bin", "demo"])).is_empty());
+}
+
+// -------------------------------------------------------------------------
+// Content-hash oracle (issue #342). The fast-skip path uses mtime+size, the
+// slow check uses blake3 content hashes for binary AND every source file.
+// Mtime spoofing, tar-with-mtime-epoch restore, and same-second edits all
+// stay correct because content hash is never load-bearing-on-mtime.
+// -------------------------------------------------------------------------
+
+#[test]
+fn compute_file_hash_stable_for_same_content() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let a = tmp.path().join("a.txt");
+    let b = tmp.path().join("b.txt");
+    fs::write(&a, b"identical content").unwrap();
+    fs::write(&b, b"identical content").unwrap();
+    let ha = compute_file_hash(&a).unwrap();
+    let hb = compute_file_hash(&b).unwrap();
+    assert_eq!(ha, hb);
+    assert!(ha.starts_with("blake3:"));
+}
+
+#[test]
+fn compute_file_hash_changes_when_content_changes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let f = tmp.path().join("f.txt");
+    fs::write(&f, b"before").unwrap();
+    let h1 = compute_file_hash(&f).unwrap();
+    fs::write(&f, b"after").unwrap();
+    let h2 = compute_file_hash(&f).unwrap();
+    assert_ne!(h1, h2);
+}
+
+#[test]
+fn sidecar_legacy_empty_hash_round_trip_deserialises() {
+    // A pre-#342 sidecar (no binary_hash / content_hash fields) must
+    // deserialize cleanly via `#[serde(default)]`.
+    let legacy = r#"binary_path = "target/debug/foo"
+binary_mtime_nanos = 12345
+binary_size_bytes = 9999
+cargo_args_fingerprint = "blake3:abc"
+
+[[source_files]]
+path = "src/main.rs"
+mtime_nanos = 678
+size_bytes = 4096
+"#;
+    let parsed: Sidecar = toml::from_str(legacy).expect("legacy sidecar must parse");
+    assert!(
+        parsed.binary_hash.is_empty(),
+        "missing field defaults to empty string"
+    );
+    assert_eq!(parsed.source_files.len(), 1);
+    assert!(parsed.source_files[0].content_hash.is_empty());
+}
+
+#[test]
+fn self_heal_updates_only_drifted_mtime_size_not_hashes() {
+    // Construct a sidecar with a known hash and drifted mtime+size.
+    // self_heal_sidecar should rewrite mtime+size but leave hash
+    // unchanged so the next invocation's fast-skip path matches.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let sidecar_path = tmp.path().join("foo.toml");
+    let original = Sidecar {
+        binary_path: "target/debug/foo".into(),
+        binary_mtime_nanos: 100,
+        binary_size_bytes: 200,
+        binary_hash: "blake3:aaaaaaaa".into(),
+        cargo_args_fingerprint: "blake3:bb".into(),
+        source_files: vec![SidecarSource {
+            path: "src/main.rs".into(),
+            mtime_nanos: 300,
+            size_bytes: 400,
+            content_hash: "blake3:cccccccc".into(),
+        }],
+    };
+    write_sidecar_atomic(&sidecar_path, &original).unwrap();
+
+    let refresh = &[RefreshedSource {
+        idx: 0,
+        mtime_nanos: 999,
+        size_bytes: 888,
+    }];
+    self_heal_sidecar(&sidecar_path, &original, Some((777, 666)), refresh).unwrap();
+
+    let reread: Sidecar = toml::from_str(&fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+    assert_eq!(reread.binary_mtime_nanos, 777);
+    assert_eq!(reread.binary_size_bytes, 666);
+    assert_eq!(
+        reread.binary_hash, "blake3:aaaaaaaa",
+        "binary_hash must NOT change during self-heal"
+    );
+    assert_eq!(reread.source_files[0].mtime_nanos, 999);
+    assert_eq!(reread.source_files[0].size_bytes, 888);
+    assert_eq!(
+        reread.source_files[0].content_hash, "blake3:cccccccc",
+        "content_hash must NOT change during self-heal"
+    );
 }
