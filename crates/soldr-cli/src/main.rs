@@ -34,6 +34,7 @@ mod shim_dir;
 mod startup_profile;
 mod toolchain;
 mod toolchain_ensure;
+mod toolchain_link;
 mod trampoline;
 mod trampoline_workspace;
 mod wrapper;
@@ -266,6 +267,19 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
             ToolchainSubcommand::Ensure { json } => {
                 std::process::exit(toolchain_ensure::run_toolchain_ensure(json).await?);
+            }
+            ToolchainSubcommand::Link {
+                shim_dir,
+                json,
+                force,
+            } => {
+                std::process::exit(toolchain_link::run_toolchain_link(
+                    toolchain_link::LinkArgs {
+                        shim_dir,
+                        json,
+                        force,
+                    },
+                )?);
             }
         },
         Commands::Bootstrap { json } => {

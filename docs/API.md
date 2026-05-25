@@ -416,6 +416,7 @@ soldr toolchain install   # rustup toolchain install <channel> --profile minimal
 soldr toolchain prepare   # install + component add + target add + cargo install for [soldr.plugins]
 soldr toolchain ensure    # bootstrap rustup if missing, run `prepare`, smoke-verify (cargo/rustc --version)
 soldr toolchain ensure --json  # same, but emit a stable JSON payload (schema_version: 1)
+soldr toolchain link --shim-dir <path> [--json] [--force]  # write PATH shim files (issue #407 Phase 3)
 ```
 
 `prepare` runs, in order:
@@ -479,6 +480,61 @@ Notes on the schema:
 - `smoke_verify.ok` is `false` when either spawn fails or returns
   non-zero. The JSON payload is emitted in both success and failure
   cases; only the process exit code differs.
+
+#### `soldr toolchain link`
+
+Write PATH shim files into `--shim-dir` so a child process that
+resolves `cargo` / `rustfmt` / `clippy-driver` / `rustc` / `rustdoc`
+through PATH gets routed back through `soldr <tool>` (issue #407 Phase
+3, ports setup-soldr's `ensure-shims.ts`).
+
+Each shim is platform-aware:
+
+- **Unix**: a `#!/bin/sh` script that `exec`s `<soldr-path> <tool>
+  "$@"`. File mode `0o755`.
+- **Windows**: a `.cmd` script with CRLF line endings that calls
+  `"<soldr-path>" <tool> %*`.
+
+The absolute path to the running soldr binary (resolved via
+`std::env::current_exe()`) is baked into each shim at write time, so
+the shim does not depend on PATH to find soldr itself.
+
+Idempotency:
+
+- Existing shim file whose contents equal the expected body → left
+  alone, reported as `skip_reason: "existing-matches"`. Mtime is
+  preserved.
+- Existing shim file whose contents differ AND `--force` not passed →
+  left alone, reported as `skip_reason: "existing-differs"`. The
+  caller can detect this and decide whether to re-run with `--force`.
+- Existing shim file whose contents differ AND `--force` passed →
+  overwritten, reported as `created: true`.
+
+The `--json` payload (`schema_version: 1`):
+
+```json
+{
+  "schema_version": 1,
+  "shim_dir": "/runner/.setup-soldr/shims",
+  "tools": [
+    {"name": "cargo", "shim_path": "/runner/.setup-soldr/shims/cargo", "created": true},
+    {"name": "rustfmt", "shim_path": "/runner/.setup-soldr/shims/rustfmt", "created": false, "skip_reason": "existing-matches"},
+    {"name": "clippy-driver", "shim_path": "/runner/.setup-soldr/shims/clippy-driver", "created": true},
+    {"name": "rustc", "shim_path": "/runner/.setup-soldr/shims/rustc", "created": true},
+    {"name": "rustdoc", "shim_path": "/runner/.setup-soldr/shims/rustdoc", "created": true}
+  ],
+  "elapsed_ms": 12
+}
+```
+
+Notes on the schema:
+
+- `tools[].skip_reason` is omitted (not `null`) when `created: true`.
+- The `tools` array order is stable: `cargo`, `rustfmt`,
+  `clippy-driver`, `rustc`, `rustdoc`.
+- `link` never adds the shim directory to the caller's `PATH` — that
+  is the caller's responsibility (e.g. setup-soldr emits a GitHub
+  Actions `addPath` call after consuming the JSON).
 
 #### `[soldr.plugins]`
 

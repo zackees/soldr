@@ -754,3 +754,291 @@ fn toolchain_ensure_no_channel_emits_empty_schema_v1_payload() {
         "channel must be null when no manifest: {parsed}"
     );
 }
+
+// ===========================================================================
+// Tests for `soldr toolchain link --shim-dir <path>` — issue #407 Phase 3.
+//
+// `link` writes platform-specific shim files (cargo, rustfmt,
+// clippy-driver, rustc, rustdoc) into <shim-dir> so PATH-resolved
+// invocations of those tools route back through `soldr <tool>`. The
+// `--json` payload follows the same `schema_version: 1` style as
+// `ensure` so setup-soldr#133 can consume both with one parser.
+// ===========================================================================
+
+/// Platform-aware shim filename. Mirrors `toolchain_link::shim_path` so
+/// the integration tests don't have to depend on the bin-tree module.
+fn expected_shim_path(dir: &Path, tool: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("{tool}.cmd"))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(tool)
+    }
+}
+
+#[test]
+fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
+    let workspace = unique_temp_dir("toolchain-link-fresh");
+    let shim_dir = workspace.join("shims");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run soldr toolchain link");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain link failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
+        let shim = expected_shim_path(&shim_dir, tool);
+        assert!(
+            shim.is_file(),
+            "expected shim at {} after link, but it's missing",
+            shim.display()
+        );
+        let body = fs::read_to_string(&shim).expect("read shim");
+        assert!(
+            body.contains(tool),
+            "shim body for {tool} should mention the tool name: {body}"
+        );
+        // The shim must reference the running soldr binary so subprocess
+        // exec lands back on this build.
+        let soldr_bin = env!("CARGO_BIN_EXE_soldr");
+        assert!(
+            body.contains(soldr_bin),
+            "shim body for {tool} should reference soldr binary {soldr_bin}: {body}"
+        );
+    }
+}
+
+#[test]
+fn toolchain_link_emits_schema_v1_json_payload() {
+    let workspace = unique_temp_dir("toolchain-link-json");
+    let shim_dir = workspace.join("shims");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+            "--json",
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("failed to run soldr toolchain link --json");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain link --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("link --json stdout not JSON: {stdout}"));
+
+    assert_eq!(parsed["schema_version"], Value::from(1));
+    assert!(parsed["shim_dir"].is_string(), "shim_dir must be a string");
+    assert!(
+        parsed["elapsed_ms"].is_number(),
+        "elapsed_ms must be a number"
+    );
+
+    let tools = parsed["tools"].as_array().expect("tools must be an array");
+    assert_eq!(
+        tools.len(),
+        5,
+        "expected entries for the 5 routed tools, got: {tools:?}"
+    );
+
+    // Order is part of the contract — setup-soldr#133 consumers index
+    // by name but `cargo` should be first for human-readable output.
+    let names: Vec<&str> = tools
+        .iter()
+        .map(|t| t["name"].as_str().expect("name string"))
+        .collect();
+    assert_eq!(
+        names,
+        vec!["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"]
+    );
+
+    for entry in tools {
+        assert_eq!(entry["created"], Value::from(true));
+        assert!(
+            entry.get("skip_reason").is_none(),
+            "fresh entry must not carry skip_reason: {entry}"
+        );
+    }
+}
+
+#[test]
+fn toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary() {
+    let workspace = unique_temp_dir("toolchain-link-idempotent");
+    let shim_dir = workspace.join("shims");
+
+    let first = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+            "--json",
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("first link");
+    assert!(first.status.success(), "first link must succeed");
+
+    // Capture mtimes after the first run so we can verify the second
+    // run does NOT touch the files.
+    let mtimes_before: Vec<SystemTime> = ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"]
+        .iter()
+        .map(|tool| {
+            let path = expected_shim_path(&shim_dir, tool);
+            fs::metadata(&path)
+                .expect("stat first run")
+                .modified()
+                .expect("mtime")
+        })
+        .collect();
+
+    // Tiny delay so a re-write would show up as a strictly newer mtime
+    // on filesystems with low-res mtimes.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let second = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+            "--json",
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("second link");
+    assert!(second.status.success(), "second link must succeed");
+
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("second link --json stdout not JSON: {stdout}"));
+    let tools = parsed["tools"].as_array().expect("tools array");
+    for entry in tools {
+        assert_eq!(
+            entry["created"],
+            Value::from(false),
+            "second run must not re-create: {entry}"
+        );
+        assert_eq!(
+            entry["skip_reason"].as_str().unwrap_or(""),
+            "existing-matches",
+            "second run must report existing-matches: {entry}"
+        );
+    }
+
+    for (tool, before) in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"]
+        .iter()
+        .zip(mtimes_before)
+    {
+        let path = expected_shim_path(&shim_dir, tool);
+        let after = fs::metadata(&path)
+            .expect("stat second run")
+            .modified()
+            .expect("mtime");
+        assert_eq!(
+            after,
+            before,
+            "shim file for {tool} was rewritten despite matching content: {}",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn toolchain_link_force_overwrites_user_modified_shim() {
+    let workspace = unique_temp_dir("toolchain-link-force");
+    let shim_dir = workspace.join("shims");
+    fs::create_dir_all(&shim_dir).expect("mkdir shim dir");
+
+    // Seed every shim with foreign content (e.g. a user-customized shim
+    // we are about to clobber).
+    for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
+        let path = expected_shim_path(&shim_dir, tool);
+        fs::write(&path, "USER CUSTOM").expect("seed user shim");
+    }
+
+    // Without --force the run must NOT overwrite differing content.
+    let no_force = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+            "--json",
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("no-force link");
+    assert!(no_force.status.success());
+    for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
+        let path = expected_shim_path(&shim_dir, tool);
+        let body = fs::read_to_string(&path).expect("read shim");
+        assert_eq!(
+            body, "USER CUSTOM",
+            "no-force link must leave user-customized {tool} alone (body={body:?})"
+        );
+    }
+
+    // With --force the run MUST overwrite.
+    let with_force = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+            "--force",
+            "--json",
+        ])
+        .current_dir(&workspace)
+        .output()
+        .expect("force link");
+    assert!(with_force.status.success());
+
+    let stdout = String::from_utf8_lossy(&with_force.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("force link --json stdout not JSON: {stdout}"));
+    let tools = parsed["tools"].as_array().expect("tools array");
+    for entry in tools {
+        assert_eq!(
+            entry["created"],
+            Value::from(true),
+            "--force must overwrite differing shim: {entry}"
+        );
+    }
+    for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
+        let path = expected_shim_path(&shim_dir, tool);
+        let body = fs::read_to_string(&path).expect("read shim");
+        assert_ne!(
+            body, "USER CUSTOM",
+            "--force must overwrite {tool} shim (still USER CUSTOM: {body:?})"
+        );
+        assert!(
+            body.contains(tool),
+            "rewritten shim body for {tool} should mention the tool name: {body}"
+        );
+    }
+}
