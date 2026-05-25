@@ -57,6 +57,12 @@ tempfile = { workspace = true }
 # `cargo build --bin <stub> --features test-stubs` at test setup time.
 test-stubs = []
 
+# Opt-in feature that exposes `crate::test_util` outside of `cfg(test)`
+# so integration tests can spawn a child `cargo test` binary that
+# deliberately hangs and observe the watchdog firing. Never enabled
+# in production builds. See `tests/test_watchdog_self_test.rs`.
+test-watchdog-self-test = []
+
 [lints]
 workspace = true
 

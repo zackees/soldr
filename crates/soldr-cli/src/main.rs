@@ -41,6 +41,14 @@ mod wrapper;
 mod wrapper_target;
 mod zccache;
 
+// Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).
+// Declared (without a cfg gate) so unit tests under `src/` that use
+// `crate::timed_test!` see the matching `test_util` module — `$crate`
+// in the macro resolves to the bin crate for unit tests. The module
+// is tiny and never invoked outside `#[test]` paths, so the
+// production-binary cost is negligible. Mirrors `lib.rs`.
+mod test_util;
+
 use cli_args::{
     CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand, DaemonSubcommand,
     DefenderExclusionsSubcommand, GcCargoArgs, GcListKind, GcSubcommand, GcSweepArgs,
