@@ -133,6 +133,7 @@ Anything not registered falls through the generic External subcommand, which res
 - **`PERF.md` — Performance testing. Read this BEFORE running any perf work. See callout at the top of this file.**
 - `DESIGN.md` — Authoritative implementation guide, architecture decisions, phase roadmap
 - `docs/API.md` — Full CLI specification, environment variables, cache layout
+- `docs/CROSS_COMPILE.md` — Linux ↔ Windows cross-compile recipes (`cargo-zigbuild`, `cargo-xwin`)
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
 - `README.md` — User-facing motivation and prior art comparison
 

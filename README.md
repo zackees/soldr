@@ -128,6 +128,8 @@ soldr cargo build --target aarch64-pc-windows-msvc
 
 The canonical multi-platform GitHub Actions tutorial lives in [`zackees/setup-soldr#90`](https://github.com/zackees/setup-soldr/issues/90).
 
+For Linux → Windows cross-compilation (GNU via `cargo-zigbuild`, MSVC via `cargo-xwin`), see [docs/CROSS_COMPILE.md](./docs/CROSS_COMPILE.md).
+
 ### CI cache lineage
 
 GitHub Actions caches are not shared across arbitrary sibling feature branches. A workflow run can restore caches from its own branch, the default branch, and for pull requests the PR base branch. It cannot directly restore caches created on another feature branch.
