@@ -450,6 +450,30 @@ pub(crate) enum ToolchainSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write PATH shim files into `--shim-dir` so a child process that
+    /// resolves `cargo` / `rustfmt` / `clippy-driver` / `rustc` /
+    /// `rustdoc` from PATH gets routed back through `soldr <tool>`
+    /// (issue #407 Phase 3, ports setup-soldr's `ensure-shims.ts`).
+    ///
+    /// Idempotent by default: a shim file whose contents already match
+    /// the expected body is left alone. `--force` overwrites regardless.
+    /// `--json` emits the same `schema_version: 1` style payload
+    /// `setup-soldr#133` consumes from `ensure`.
+    Link {
+        /// Destination directory for the shim files. Created if missing.
+        #[arg(long, value_name = "PATH")]
+        shim_dir: std::path::PathBuf,
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`) for consumption by setup-soldr and
+        /// other tooling.
+        #[arg(long)]
+        json: bool,
+        /// Overwrite existing shim files regardless of their current
+        /// contents. Without `--force`, files whose contents differ are
+        /// left untouched.
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]
