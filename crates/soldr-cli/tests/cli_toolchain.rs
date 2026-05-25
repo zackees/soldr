@@ -505,3 +505,252 @@ fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
         "--version should be omitted when spec is \"*\": {invocation:?}"
     );
 }
+
+// ===========================================================================
+// Tests for `soldr toolchain ensure` — issue #407 Phase 2.
+//
+// `ensure` is `prepare` + a smoke verify (`cargo --version` / `rustc
+// --version`), with an optional `--json` output that setup-soldr will
+// consume. The schema is locked at version 1; bumping it requires a
+// version bump in `ToolchainEnsureOutput` AND in the consumers.
+// ===========================================================================
+
+#[test]
+fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
+    let workspace = unique_temp_dir("toolchain-ensure-json");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         components = [\"clippy\", \"rustfmt\"]\n\
+         targets = [\"x86_64-unknown-linux-musl\"]\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-nextest = \"0.9\"\n",
+    );
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo =
+        install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
+    let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "ensure", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .output()
+        .expect("failed to run soldr toolchain ensure --json");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain ensure --json failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("ensure --json stdout not JSON: {stdout}"));
+
+    // Schema version is part of the contract setup-soldr#133 consumes.
+    assert_eq!(parsed["schema_version"], Value::from(1));
+    assert_eq!(parsed["channel"], Value::from("1.94.1"));
+    assert_eq!(parsed["rustup_bootstrapped"], Value::from(false));
+
+    // Components / targets / plugins MUST be present as arrays even when
+    // empty so consumers can index unconditionally.
+    let components = parsed["components_added"]
+        .as_array()
+        .expect("components_added missing or not array");
+    let component_strs: Vec<&str> = components
+        .iter()
+        .map(|v| v.as_str().expect("component not string"))
+        .collect();
+    assert!(component_strs.contains(&"clippy"));
+    assert!(component_strs.contains(&"rustfmt"));
+
+    let targets = parsed["targets_added"]
+        .as_array()
+        .expect("targets_added missing or not array");
+    let target_strs: Vec<&str> = targets
+        .iter()
+        .map(|v| v.as_str().expect("target not string"))
+        .collect();
+    assert_eq!(target_strs, vec!["x86_64-unknown-linux-musl"]);
+
+    let plugins = parsed["plugins_installed"]
+        .as_array()
+        .expect("plugins_installed missing or not array");
+    let plugin_strs: Vec<&str> = plugins
+        .iter()
+        .map(|v| v.as_str().expect("plugin not string"))
+        .collect();
+    assert_eq!(plugin_strs, vec!["cargo-nextest@0.9"]);
+
+    let smoke = &parsed["smoke_verify"];
+    assert_eq!(smoke["ok"], Value::from(true));
+    assert_eq!(
+        smoke["cargo_version"].as_str().unwrap_or(""),
+        "cargo 1.94.1 (abc1234 2026-04-15)"
+    );
+    assert_eq!(
+        smoke["rustc_version"].as_str().unwrap_or(""),
+        "rustc 1.94.1 (def5678 2026-04-15)"
+    );
+
+    // elapsed_ms is non-deterministic, but must exist and be a number.
+    assert!(
+        parsed["elapsed_ms"].is_number(),
+        "elapsed_ms must be numeric"
+    );
+
+    // Verify the rustup invocations are the same set `prepare` would run:
+    // install + 2 components + 1 target.
+    let rustup_invocations = read_logged_rustup_invocations(&rustup_log);
+    assert_eq!(
+        rustup_invocations.len(),
+        4,
+        "expected install + 2 components + 1 target rustup invocations: {rustup_invocations:?}"
+    );
+    assert_eq!(rustup_invocations[0][0], "toolchain");
+    assert_eq!(rustup_invocations[0][1], "install");
+
+    // Verify cargo was called once for the plugin AND once for --version
+    // (smoke verify). Both land in the same log.
+    let cargo_invocations = read_logged_cargo_invocations(&cargo_log);
+    let install_invocations: Vec<_> = cargo_invocations
+        .iter()
+        .filter(|inv| inv.first().map(String::as_str) == Some("install"))
+        .collect();
+    assert_eq!(
+        install_invocations.len(),
+        1,
+        "expected exactly one `cargo install` invocation for the plugin: {cargo_invocations:?}"
+    );
+    assert_eq!(
+        install_invocations[0].get(1).map(String::as_str),
+        Some("cargo-nextest")
+    );
+}
+
+#[test]
+fn toolchain_ensure_human_mode_succeeds_without_json() {
+    let workspace = unique_temp_dir("toolchain-ensure-human");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo =
+        install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
+    let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "ensure"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .output()
+        .expect("failed to run soldr toolchain ensure");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain ensure (human mode) failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Human mode MUST NOT emit raw JSON on stdout.
+    assert!(
+        !stdout.trim_start().starts_with('{'),
+        "human-mode output must not be JSON: {stdout}"
+    );
+
+    // Sanity: the user-facing line mentions the resolved channel.
+    assert!(
+        stdout.contains("1.94.1"),
+        "expected channel in human output: {stdout}"
+    );
+}
+
+#[test]
+fn toolchain_ensure_json_reports_smoke_failure_when_rustc_returns_nonzero() {
+    let workspace = unique_temp_dir("toolchain-ensure-smoke-fail");
+    seed_rust_toolchain_toml(&workspace, "[toolchain]\nchannel = \"1.94.1\"\n");
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo =
+        install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
+    let rustc = install_failing_fake_rustc();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "ensure", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .output()
+        .expect("failed to run soldr toolchain ensure --json (failing smoke)");
+
+    // Smoke failure is a soldr-level failure: the JSON must still be
+    // emitted (so callers can inspect it) but the exit code must be
+    // non-zero so shell scripts notice. setup-soldr#133 relies on this.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("ensure --json stdout not JSON: {stdout}"));
+    assert_eq!(parsed["schema_version"], Value::from(1));
+    let smoke = &parsed["smoke_verify"];
+    assert_eq!(
+        smoke["ok"],
+        Value::from(false),
+        "smoke_verify.ok must be false when rustc --version fails: {smoke}"
+    );
+    assert!(
+        !output.status.success(),
+        "ensure must exit non-zero when smoke verify fails (status={:?})",
+        output.status
+    );
+}
+
+#[test]
+fn toolchain_ensure_no_channel_emits_empty_schema_v1_payload() {
+    let workspace = unique_temp_dir("toolchain-ensure-no-channel");
+    // No rust-toolchain.toml at all: ensure must still emit valid JSON
+    // (schema_version=1, channel=null, no smoke verify) and exit 0.
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let cargo =
+        install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
+    let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["toolchain", "ensure", "--json"])
+        .current_dir(&workspace)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .output()
+        .expect("failed to run soldr toolchain ensure --json (no channel)");
+
+    assert!(
+        output.status.success(),
+        "ensure with no manifest must exit 0\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|_| panic!("ensure --json stdout not JSON: {stdout}"));
+    assert_eq!(parsed["schema_version"], Value::from(1));
+    assert!(
+        parsed["channel"].is_null(),
+        "channel must be null when no manifest: {parsed}"
+    );
+}
