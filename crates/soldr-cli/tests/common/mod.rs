@@ -827,6 +827,160 @@ pub(crate) fn install_logging_fake_cargo(log_path: &Path) -> PathBuf {
     cargo
 }
 
+/// Fake `cargo` that responds to `--version` with a deterministic string
+/// (matching the real cargo `cargo X.Y.Z (sha date)` format used by
+/// `toolchain ensure --json`'s smoke verify) AND otherwise logs argv to
+/// `log_path`. Useful for the `ensure` test which needs both a valid
+/// `--version` capture AND to assert `cargo install` argv for plugins.
+///
+/// `version` must not contain literal `(` / `)` on Windows because cmd.exe
+/// `echo` treats those as block delimiters — we substitute them through the
+/// caret-escape `^(` / `^)` form on Windows automatically.
+pub(crate) fn fake_logging_versioned_cargo_script(log_path: &Path, version: &str) -> String {
+    #[cfg(windows)]
+    {
+        let escaped = escape_for_cmd_echo(version);
+        format!(
+            "@echo off\n\
+             if \"%~1\"==\"--version\" (\n\
+               echo {1}\n\
+               exit /b 0\n\
+             )\n\
+             setlocal enabledelayedexpansion\n\
+             set \"line=\"\n\
+             :loop\n\
+             if \"%~1\"==\"\" goto done\n\
+             if defined line (set \"line=!line!\u{1f}%~1\") else (set \"line=%~1\")\n\
+             shift\n\
+             goto loop\n\
+             :done\n\
+             echo !line!>>\"{0}\"\n\
+             exit /b 0\n",
+            log_path.display(),
+            escaped
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then\n\
+               echo '{1}'\n\
+               exit 0\n\
+             fi\n\
+             sep=$(printf '\\037')\n\
+             out=\"\"\n\
+             first=1\n\
+             for arg in \"$@\"; do\n\
+               if [ $first -eq 1 ]; then\n\
+                 out=\"$arg\"\n\
+                 first=0\n\
+               else\n\
+                 out=\"$out${{sep}}$arg\"\n\
+               fi\n\
+             done\n\
+             printf '%s\\n' \"$out\" >> \"{0}\"\n\
+             exit 0\n",
+            log_path.display(),
+            version
+        )
+    }
+}
+
+/// Escape `(` and `)` for inclusion in a cmd.exe `echo` line inside an
+/// `if (...) ( ... )` block (where the un-escaped parens close the block
+/// prematurely). The standard escape is `^(` / `^)`.
+#[cfg(windows)]
+fn escape_for_cmd_echo(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for ch in s.chars() {
+        match ch {
+            '(' => out.push_str("^("),
+            ')' => out.push_str("^)"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Install a fake `cargo` that responds to `--version` AND logs argv on
+/// every other invocation. Returns the path to the fake binary.
+pub(crate) fn install_logging_versioned_fake_cargo(log_path: &Path, version: &str) -> PathBuf {
+    let dir = unique_temp_dir("fake-cargo-versioned");
+    let cargo = fake_script_path(&dir, "cargo");
+    write_fake_script(
+        &cargo,
+        &fake_logging_versioned_cargo_script(log_path, version),
+    );
+    cargo
+}
+
+/// Fake `rustc` that responds to `--version` (deterministic) and
+/// otherwise exits 0. Used by the ensure JSON smoke-verify test.
+pub(crate) fn fake_versioned_rustc_script(version: &str) -> String {
+    #[cfg(windows)]
+    {
+        let escaped = escape_for_cmd_echo(version);
+        format!(
+            "@echo off\n\
+             if \"%~1\"==\"--version\" (\n\
+               echo {0}\n\
+               exit /b 0\n\
+             )\n\
+             exit /b 0\n",
+            escaped
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--version\" ]; then\n\
+               echo '{0}'\n\
+               exit 0\n\
+             fi\n\
+             exit 0\n",
+            version
+        )
+    }
+}
+
+/// Install a fake `rustc` that responds to `--version` deterministically.
+/// Suitable for `SOLDR_TEST_RUSTC_BIN`.
+pub(crate) fn install_versioned_fake_rustc(version: &str) -> PathBuf {
+    let dir = unique_temp_dir("fake-rustc-versioned");
+    let rustc = fake_script_path(&dir, "rustc");
+    write_fake_script(&rustc, &fake_versioned_rustc_script(version));
+    rustc
+}
+
+/// Fake `rustc` that always exits non-zero on `--version`. Used to
+/// exercise the `smoke_verify.ok == false` branch.
+pub(crate) fn fake_failing_rustc_script() -> String {
+    #[cfg(windows)]
+    {
+        "@echo off\n\
+         echo simulated rustc failure 1>&2\n\
+         exit /b 1\n"
+            .to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "#!/bin/sh\n\
+         echo 'simulated rustc failure' >&2\n\
+         exit 1\n"
+            .to_string()
+    }
+}
+
+/// Install a fake `rustc` that fails any `--version` call.
+pub(crate) fn install_failing_fake_rustc() -> PathBuf {
+    let dir = unique_temp_dir("fake-rustc-failing");
+    let rustc = fake_script_path(&dir, "rustc");
+    write_fake_script(&rustc, &fake_failing_rustc_script());
+    rustc
+}
+
 /// Read every argv invocation logged by `fake_logging_cargo_script`.
 /// Each returned `Vec<String>` is one invocation, with argv split on
 /// the ASCII unit separator.

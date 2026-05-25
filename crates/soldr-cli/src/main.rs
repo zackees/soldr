@@ -33,6 +33,7 @@ mod self_relocate;
 mod shim_dir;
 mod startup_profile;
 mod toolchain;
+mod toolchain_ensure;
 mod trampoline;
 mod trampoline_workspace;
 mod wrapper;
@@ -123,7 +124,6 @@ const SOLDR_AS_ENV_VAR: &str = "SOLDR_AS";
 /// Sentinel that the currently-running soldr was itself invoked by another
 /// soldr through `--as`. Prevents infinite hand-offs.
 const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
-
 
 #[tokio::main]
 async fn main() {
@@ -263,6 +263,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
             ToolchainSubcommand::Prepare => {
                 std::process::exit(toolchain::run_toolchain_prepare()?);
+            }
+            ToolchainSubcommand::Ensure { json } => {
+                std::process::exit(toolchain_ensure::run_toolchain_ensure(json).await?);
             }
         },
         Commands::Bootstrap { json } => {

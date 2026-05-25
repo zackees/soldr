@@ -436,6 +436,20 @@ pub(crate) enum ToolchainSubcommand {
     /// Install the channel and every declared component / target from
     /// `rust-toolchain.toml`. Stops at the first nonzero rustup exit.
     Prepare,
+    /// One-shot "make sure this host can build" verb (issue #407
+    /// Phase 2): auto-bootstraps `rustup` if missing, runs the same
+    /// install + component + target + plugin steps as `prepare`, then
+    /// smoke-verifies the resolved toolchain by spawning
+    /// `cargo --version` and `rustc --version`. Used by `setup-soldr`
+    /// (`setup-soldr#133`) to delegate its TS toolchain logic to the
+    /// soldr binary.
+    Ensure {
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`) for consumption by setup-soldr and
+        /// other tooling. See `docs/API.md` for the full schema.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]

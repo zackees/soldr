@@ -118,17 +118,43 @@ pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
         return Ok(0);
     };
 
+    let (code, _summary) = run_prepare_inner(channel, &manifest)?;
+    Ok(code)
+}
+
+/// Summary of what `prepare` actually did, used by
+/// [`crate::toolchain_ensure`] to populate the JSON payload.
+#[derive(Debug, Default)]
+pub(crate) struct PrepareSummary {
+    pub components_added: Vec<String>,
+    pub targets_added: Vec<String>,
+    pub plugins_installed: Vec<String>,
+}
+
+/// Shared inner driver for `prepare` / `ensure`. Returns the rustup /
+/// cargo exit code (0 on success) plus a [`PrepareSummary`] of what was
+/// actually attempted (we report every declared component/target/plugin
+/// rustup didn't error on; for now we cannot cheaply diff "already
+/// installed" from "newly installed" without parsing rustup output,
+/// which is fragile across versions).
+pub(crate) fn run_prepare_inner(
+    channel: &str,
+    manifest: &crate::core::RustToolchainManifest,
+) -> Result<(i32, PrepareSummary), SoldrError> {
+    let mut summary = PrepareSummary::default();
+
     let install_code = rustup_toolchain_install(channel)?;
     if install_code != 0 {
-        return Ok(install_code);
+        return Ok((install_code, summary));
     }
 
     if let Some(components) = manifest.components.as_deref() {
         for component in components {
             let code = rustup_component_add(channel, component)?;
             if code != 0 {
-                return Ok(code);
+                return Ok((code, summary));
             }
+            summary.components_added.push(component.clone());
         }
     }
 
@@ -136,42 +162,53 @@ pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
         for target in targets {
             let code = rustup_target_add(channel, target)?;
             if code != 0 {
-                return Ok(code);
+                return Ok((code, summary));
             }
+            summary.targets_added.push(target.clone());
         }
     }
 
     if let Some(soldr_section) = manifest.soldr.as_ref() {
         if !soldr_section.plugins.is_empty() {
-            let code = install_plugins(&soldr_section.plugins)?;
-            if code != 0 {
-                return Ok(code);
+            for (name, spec) in &soldr_section.plugins {
+                let code = cargo_install_plugin(name, spec)?;
+                if code != 0 {
+                    return Ok((code, summary));
+                }
+                summary
+                    .plugins_installed
+                    .push(format_plugin_label(name, spec));
             }
         }
     }
 
-    Ok(0)
+    Ok((0, summary))
 }
 
-/// Install every plugin declared under `[soldr.plugins]` via the
+/// Format a plugin entry as `name` or `name@version` for the JSON
+/// payload. Detailed specs with no version collapse to `name`; bare
+/// `*` specs also collapse to `name`.
+fn format_plugin_label(name: &str, spec: &crate::core::PluginSpec) -> String {
+    let version = match spec {
+        crate::core::PluginSpec::Version(v) => Some(v.as_str()),
+        crate::core::PluginSpec::Detailed { version, .. } => version.as_deref(),
+    };
+    let trimmed = version
+        .map(str::trim)
+        .filter(|v| !v.is_empty() && *v != "*");
+    match trimmed {
+        Some(v) => format!("{name}@{v}"),
+        None => name.to_string(),
+    }
+}
+
+/// Install one plugin declared under `[soldr.plugins]` via the
 /// resolved cargo binary (so installs respect soldr-managed
 /// `$CARGO_HOME`). We deliberately do NOT route through the rustc
 /// wrapper machinery — that path is meant for compile units, not
 /// dev-tool installation. The active cargo already honors
 /// `rust-toolchain.toml` at exec time, so no explicit channel is
 /// passed.
-fn install_plugins(
-    plugins: &std::collections::BTreeMap<String, crate::core::PluginSpec>,
-) -> Result<i32, SoldrError> {
-    for (name, spec) in plugins {
-        let code = cargo_install_plugin(name, spec)?;
-        if code != 0 {
-            return Ok(code);
-        }
-    }
-    Ok(0)
-}
-
 fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i32, SoldrError> {
     let cargo = resolve_toolchain_binary("cargo")?;
     let mut command = std::process::Command::new(&cargo);

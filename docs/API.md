@@ -414,6 +414,8 @@ pinned channel through every command.
 ```bash
 soldr toolchain install   # rustup toolchain install <channel> --profile minimal --no-self-update
 soldr toolchain prepare   # install + component add + target add + cargo install for [soldr.plugins]
+soldr toolchain ensure    # bootstrap rustup if missing, run `prepare`, smoke-verify (cargo/rustc --version)
+soldr toolchain ensure --json  # same, but emit a stable JSON payload (schema_version: 1)
 ```
 
 `prepare` runs, in order:
@@ -424,6 +426,59 @@ soldr toolchain prepare   # install + component add + target add + cargo install
 4. `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
 
 The first non-zero exit short-circuits the chain.
+
+#### `soldr toolchain ensure`
+
+One-shot "make sure this host can build" verb (issue #407 Phase 2):
+
+1. Auto-bootstraps `rustup` into the soldr-managed bin dir if missing
+   (reuses the same logic as `soldr bootstrap`). Respects
+   `SOLDR_NO_BOOTSTRAP=1`.
+2. Runs the same `install` + `component add` + `target add` + plugin-
+   install pipeline as `prepare`.
+3. Smoke-verifies the resolved toolchain by spawning `cargo --version`
+   and `rustc --version`. Either failure marks the verify as failed and
+   exits non-zero.
+
+`ensure` is intended for one-stop bootstrap callers like
+[setup-soldr#133](https://github.com/zackees/setup-soldr/issues/133)
+that want to delegate every TS toolchain step to the soldr binary.
+Existing `install` and `prepare` output formats are unchanged.
+
+The `--json` payload (`schema_version: 1`) is the stable contract for
+those callers — fields may be added in future schema versions but
+existing field names and types will not change without a schema bump:
+
+```json
+{
+  "schema_version": 1,
+  "channel": "1.94.1",
+  "rustup_bootstrapped": false,
+  "components_added": ["rustfmt", "clippy"],
+  "targets_added": ["x86_64-pc-windows-gnu"],
+  "plugins_installed": ["cargo-zigbuild@0.18"],
+  "smoke_verify": {
+    "cargo_version": "cargo 1.94.1 (abc1234 2026-04-15)",
+    "rustc_version": "rustc 1.94.1 (def5678 2026-04-15)",
+    "ok": true
+  },
+  "elapsed_ms": 12345
+}
+```
+
+Notes on the schema:
+
+- `channel` is `null` when no `rust-toolchain.toml` is present; the rest
+  of the payload still serializes so consumers can parse unconditionally.
+- `rustup_bootstrapped` is `true` only when `ensure` actually fetched
+  rustup-init for this invocation. A pre-existing rustup or
+  `SOLDR_NO_BOOTSTRAP=1` keeps it `false`.
+- `components_added` / `targets_added` / `plugins_installed` mirror the
+  manifest entries that the `prepare` pipeline attempted. Plugin labels
+  are `name` for bare or `*` versions, otherwise `name@version`.
+- `smoke_verify.ok` is `false` when either spawn fails or returns
+  non-zero. The JSON payload is emitted in both success and failure
+  cases; only the process exit code differs.
 
 #### `[soldr.plugins]`
 
