@@ -4,6 +4,7 @@ mod common;
 
 use common::*;
 use serde_json::Value;
+use soldr_cli::timed_test;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -12,30 +13,36 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-#[test]
-fn rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands() {
-    let workspace = unique_temp_dir("rustup-passthrough-show");
-    let log_path = workspace.join("rustup.log");
-    let rustup = install_logging_fake_rustup(&log_path);
+// Retrofitted to use `timed_test!` (180s budget) as a smoke proof that
+// the watchdog macro composes cleanly with an existing integration
+// test that spawns the soldr binary as a subprocess.
+timed_test!(
+    rustup_passthrough_forwards_args_unchanged_for_unscoped_subcommands,
+    Duration::from_secs(180),
+    {
+        let workspace = unique_temp_dir("rustup-passthrough-show");
+        let log_path = workspace.join("rustup.log");
+        let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
-        .args(["rustup", "show"])
-        .current_dir(&workspace)
-        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
-        .output()
-        .expect("failed to run soldr rustup show");
+        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+            .args(["rustup", "show"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .output()
+            .expect("failed to run soldr rustup show");
 
-    assert!(
-        output.status.success(),
-        "soldr rustup show failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+        assert!(
+            output.status.success(),
+            "soldr rustup show failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
 
-    let invocations = read_logged_rustup_invocations(&log_path);
-    assert_eq!(invocations.len(), 1, "expected one rustup invocation");
-    assert_eq!(invocations[0], vec!["show".to_string()]);
-}
+        let invocations = read_logged_rustup_invocations(&log_path);
+        assert_eq!(invocations.len(), 1, "expected one rustup invocation");
+        assert_eq!(invocations[0], vec!["show".to_string()]);
+    }
+);
 
 #[test]
 fn rustup_passthrough_injects_toolchain_for_target_add() {

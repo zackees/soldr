@@ -24,3 +24,14 @@ pub mod self_relocate;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 /// The bin tree declares the same module via `main.rs`.
 pub mod wrapper_target;
+
+/// Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).
+/// Exposed from the lib tree so both unit tests in `src/` and
+/// integration tests under `tests/` can reach it as
+/// `soldr_cli::test_util::*`. Not cfg-gated because cargo compiles the
+/// library *without* `cfg(test)` when linking it into integration
+/// tests, so a `cfg(test)` gate would silently hide the module from
+/// `tests/`. The module is tiny (one function + one constant) and is
+/// never invoked outside `#[test]` paths, so the production-binary
+/// cost is negligible.
+pub mod test_util;
