@@ -107,10 +107,7 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(project);
     // Hermetic caches per test run.
-    cmd.env(
-        "SOLDR_CACHE_DIR",
-        project.parent().unwrap().join(".soldr-cache"),
-    );
+    cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
     cmd.env_remove("SOLDR_TARGET_CACHE_MODE");
     for (k, v) in env_overrides {
@@ -272,10 +269,7 @@ fn no_cache_global_disables_native_too() {
     let project = make_env_capture_project("native-cc-no-cache");
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(&project);
-    cmd.env(
-        "SOLDR_CACHE_DIR",
-        project.parent().unwrap().join(".soldr-cache"),
-    );
+    cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
     cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
     let output = cmd.output().expect("spawn soldr --no-cache cargo build");
     assert!(
