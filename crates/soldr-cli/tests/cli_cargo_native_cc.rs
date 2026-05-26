@@ -42,6 +42,23 @@ fn unique_temp_dir(label: &str) -> PathBuf {
     dir
 }
 
+fn unique_cache_dir() -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time went backwards")
+        .as_nanos();
+    // Keep this path short: zccache's Unix daemon socket lives below
+    // SOLDR_CACHE_DIR, and macOS has a small sockaddr_un path limit.
+    let base = if cfg!(unix) {
+        PathBuf::from("/tmp")
+    } else {
+        std::env::temp_dir()
+    };
+    let dir = base.join(format!("sdrc-{}-{nanos}", std::process::id()));
+    fs::create_dir_all(&dir).expect("failed to create cache dir");
+    dir
+}
+
 fn toml_string(path: &Path) -> String {
     path.display()
         .to_string()
@@ -143,7 +160,7 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     remove_inherited_native_cache_env(&mut cmd);
     // Hermetic caches per test run, with command-lifetime shutdown so
     // parallel test execution cannot leave multiple zccache daemons alive.
-    cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
+    cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
     cmd.env("SOLDR_CACHE_LIFECYCLE", "command");
     cmd.env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "30");
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
@@ -310,7 +327,7 @@ fn no_cache_global_disables_native_too() {
         let mut cmd = Command::new(soldr_bin());
         cmd.current_dir(&project);
         remove_inherited_native_cache_env(&mut cmd);
-        cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
+        cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
         cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
         cmd.output().expect("spawn soldr --no-cache cargo build")
     };
