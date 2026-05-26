@@ -7,8 +7,30 @@
 //! parallel directory sizer that several gc surfaces share.
 
 use super::{
-    GcListEntryOutput, KIND_CARGO_GIT_CHECKOUTS, KIND_CARGO_REGISTRY_SRC, PURGE_SAFETY_DERIVED,
+    GcListEntryOutput, GcListKindFilter, KIND_CARGO_GIT_CHECKOUTS, KIND_CARGO_GIT_DB,
+    KIND_CARGO_INSTALLED_BINARIES, KIND_CARGO_REGISTRY_CACHE, KIND_CARGO_REGISTRY_SRC,
+    KIND_CARGO_TARGET_BUILD_SCRIPT_BINARIES, KIND_CARGO_TARGET_DOC, KIND_CARGO_TARGET_INCREMENTAL,
+    KIND_CARGO_TARGET_SUBCOMMAND_CACHES, KIND_RUSTUP_TOOLCHAIN, PURGE_SAFETY_DERIVED,
+    PURGE_SAFETY_PRIMARY,
 };
+
+const SUBCOMMAND_CACHE_DIRS: &[&str] = &[
+    "criterion",
+    "llvm-cov",
+    "coverage",
+    "nextest",
+    "tarpaulin",
+    "wasm-bindgen",
+];
+
+#[derive(Default)]
+struct EntryOwners {
+    owner_workspace: Option<String>,
+    owner_crate: Option<String>,
+    owner_repo: Option<String>,
+    owner_binary: Option<String>,
+    owner_toolchain: Option<String>,
+}
 
 /// Provenance tag for `last_used_unix` (#349).
 pub(super) const LAST_USED_FROM_GLOBAL_CACHE: &str = "global_cache";
@@ -149,6 +171,10 @@ pub(super) fn walk_cargo_registry_src(
                 kind: KIND_CARGO_REGISTRY_SRC,
                 purge_safety: PURGE_SAFETY_DERIVED,
                 owner_crate,
+                owner_workspace: None,
+                owner_repo: None,
+                owner_binary: None,
+                owner_toolchain: None,
                 last_used_source: Some(last_used_source),
             });
         }
@@ -306,9 +332,358 @@ pub(super) fn walk_cargo_git_checkouts(
                 kind: KIND_CARGO_GIT_CHECKOUTS,
                 purge_safety: PURGE_SAFETY_DERIVED,
                 owner_crate: Some(format!("{repo_dir_name}@{commit_dir_name}")),
+                owner_workspace: None,
+                owner_repo: Some(repo_dir_name.clone()),
+                owner_binary: None,
+                owner_toolchain: None,
                 last_used_source: Some(LAST_USED_FROM_FS_MTIME),
             });
         }
     }
     out
+}
+
+// ---------------------------------------------------------------------------
+// Tracked target subtree walkers (#323 slice 4).
+// ---------------------------------------------------------------------------
+
+pub(super) fn walk_cargo_target_subtrees(
+    rows: &[crate::cache_lib::target_registry::TargetRow],
+    now: i64,
+    kind_filter: Option<GcListKindFilter>,
+) -> Vec<GcListEntryOutput> {
+    if matches!(kind_filter, Some(kind) if !kind.is_target_subtree()) {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for row in rows {
+        let owner_workspace =
+            crate::cache_lib::target_registry::workspace_root_for_target(&row.path)
+                .display()
+                .to_string();
+
+        if kind_filter.is_none()
+            || matches!(kind_filter, Some(GcListKindFilter::CargoTargetIncremental))
+        {
+            for profile in profile_dirs(&row.path) {
+                let path = profile.join("incremental");
+                if let Some(entry) = entry_output_for_path(
+                    &path,
+                    KIND_CARGO_TARGET_INCREMENTAL,
+                    PURGE_SAFETY_DERIVED,
+                    now,
+                    EntryOwners {
+                        owner_workspace: Some(owner_workspace.clone()),
+                        ..EntryOwners::default()
+                    },
+                ) {
+                    out.push(entry);
+                }
+            }
+        }
+
+        if kind_filter.is_none()
+            || matches!(
+                kind_filter,
+                Some(GcListKindFilter::CargoTargetBuildScriptBinaries)
+            )
+        {
+            for profile in profile_dirs(&row.path) {
+                let build_dir = profile.join("build");
+                let read = match std::fs::read_dir(&build_dir) {
+                    Ok(it) => it,
+                    Err(_) => continue,
+                };
+                for unit in read.flatten() {
+                    if !unit.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                        continue;
+                    }
+                    let unit_read = match std::fs::read_dir(unit.path()) {
+                        Ok(it) => it,
+                        Err(_) => continue,
+                    };
+                    for child in unit_read.flatten() {
+                        let path = child.path();
+                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                            continue;
+                        };
+                        if !is_build_script_binary(name) {
+                            continue;
+                        }
+                        if let Some(entry) = entry_output_for_path(
+                            &path,
+                            KIND_CARGO_TARGET_BUILD_SCRIPT_BINARIES,
+                            PURGE_SAFETY_DERIVED,
+                            now,
+                            EntryOwners {
+                                owner_workspace: Some(owner_workspace.clone()),
+                                ..EntryOwners::default()
+                            },
+                        ) {
+                            out.push(entry);
+                        }
+                    }
+                }
+            }
+        }
+
+        if kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoTargetDoc)) {
+            let path = row.path.join("doc");
+            if let Some(entry) = entry_output_for_path(
+                &path,
+                KIND_CARGO_TARGET_DOC,
+                PURGE_SAFETY_DERIVED,
+                now,
+                EntryOwners {
+                    owner_workspace: Some(owner_workspace.clone()),
+                    ..EntryOwners::default()
+                },
+            ) {
+                out.push(entry);
+            }
+        }
+
+        if kind_filter.is_none()
+            || matches!(
+                kind_filter,
+                Some(GcListKindFilter::CargoTargetSubcommandCaches)
+            )
+        {
+            for name in SUBCOMMAND_CACHE_DIRS {
+                let path = row.path.join(name);
+                if let Some(entry) = entry_output_for_path(
+                    &path,
+                    KIND_CARGO_TARGET_SUBCOMMAND_CACHES,
+                    PURGE_SAFETY_DERIVED,
+                    now,
+                    EntryOwners {
+                        owner_workspace: Some(owner_workspace.clone()),
+                        ..EntryOwners::default()
+                    },
+                ) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn profile_dirs(target_dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let read = match std::fs::read_dir(target_dir) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in read.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        out.push(entry.path());
+    }
+    out
+}
+
+fn is_build_script_binary(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    stem == "build-script-build" || stem.starts_with("build-script-build-")
+}
+
+// ---------------------------------------------------------------------------
+// Report-only global walkers (#323 slice 5).
+// ---------------------------------------------------------------------------
+
+pub(super) fn walk_cargo_report_only(
+    cargo_home: &std::path::Path,
+    now: i64,
+    kind_filter: Option<GcListKindFilter>,
+) -> Vec<GcListEntryOutput> {
+    let mut out = Vec::new();
+
+    if kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoRegistryCache)) {
+        let cache_root = cargo_home.join("registry").join("cache");
+        if let Ok(registries) = std::fs::read_dir(cache_root) {
+            for registry in registries.flatten() {
+                if !registry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let crates = match std::fs::read_dir(registry.path()) {
+                    Ok(it) => it,
+                    Err(_) => continue,
+                };
+                for crate_file in crates.flatten() {
+                    let path = crate_file.path();
+                    if path.extension().and_then(|e| e.to_str()) != Some("crate") {
+                        continue;
+                    }
+                    let owner = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .and_then(parse_crate_owner);
+                    if let Some(entry) = entry_output_for_path(
+                        &path,
+                        KIND_CARGO_REGISTRY_CACHE,
+                        PURGE_SAFETY_PRIMARY,
+                        now,
+                        EntryOwners {
+                            owner_crate: owner,
+                            ..EntryOwners::default()
+                        },
+                    ) {
+                        out.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    if kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::CargoGitDb)) {
+        let db_root = cargo_home.join("git").join("db");
+        if let Ok(repos) = std::fs::read_dir(db_root) {
+            for repo in repos.flatten() {
+                let path = repo.path();
+                let owner_repo = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string);
+                if let Some(entry) = entry_output_for_path(
+                    &path,
+                    KIND_CARGO_GIT_DB,
+                    PURGE_SAFETY_PRIMARY,
+                    now,
+                    EntryOwners {
+                        owner_repo,
+                        ..EntryOwners::default()
+                    },
+                ) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+
+    if kind_filter.is_none()
+        || matches!(kind_filter, Some(GcListKindFilter::CargoInstalledBinaries))
+    {
+        let bin_root = cargo_home.join("bin");
+        if let Ok(bins) = std::fs::read_dir(bin_root) {
+            for bin in bins.flatten() {
+                let path = bin.path();
+                let owner_binary = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(str::to_string);
+                if let Some(entry) = entry_output_for_path(
+                    &path,
+                    KIND_CARGO_INSTALLED_BINARIES,
+                    PURGE_SAFETY_PRIMARY,
+                    now,
+                    EntryOwners {
+                        owner_binary,
+                        ..EntryOwners::default()
+                    },
+                ) {
+                    out.push(entry);
+                }
+            }
+        }
+    }
+
+    out
+}
+
+pub(super) fn walk_rustup_toolchains(
+    rustup_home: &std::path::Path,
+    now: i64,
+    kind_filter: Option<GcListKindFilter>,
+) -> Vec<GcListEntryOutput> {
+    if !(kind_filter.is_none() || matches!(kind_filter, Some(GcListKindFilter::RustupToolchain))) {
+        return Vec::new();
+    }
+
+    let toolchains_root = rustup_home.join("toolchains");
+    let toolchains = match std::fs::read_dir(toolchains_root) {
+        Ok(it) => it,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut out = Vec::new();
+    for toolchain in toolchains.flatten() {
+        let path = toolchain.path();
+        let owner_toolchain = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(str::to_string);
+        if let Some(entry) = entry_output_for_path(
+            &path,
+            KIND_RUSTUP_TOOLCHAIN,
+            PURGE_SAFETY_PRIMARY,
+            now,
+            EntryOwners {
+                owner_toolchain,
+                ..EntryOwners::default()
+            },
+        ) {
+            out.push(entry);
+        }
+    }
+    out
+}
+
+fn entry_output_for_path(
+    path: &std::path::Path,
+    kind: &'static str,
+    purge_safety: &'static str,
+    now: i64,
+    owners: EntryOwners,
+) -> Option<GcListEntryOutput> {
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if metadata.file_type().is_symlink() {
+        return None;
+    }
+    let (size_bytes, file_count) = if metadata.is_file() {
+        (metadata.len(), 1)
+    } else if metadata.is_dir() {
+        fast_directory_size_and_files(path)
+    } else {
+        return None;
+    };
+    let last_used_unix = mtime_unix(&metadata);
+    let age_seconds = now.saturating_sub(last_used_unix);
+    Some(GcListEntryOutput {
+        path: absolute_path_string(path),
+        last_used_unix,
+        age_seconds,
+        age_human: crate::cache_lib::target_registry::human_age(age_seconds),
+        size_bytes,
+        size_human: crate::cache_lib::target_registry::human_size(size_bytes),
+        file_count,
+        kind,
+        purge_safety,
+        owner_crate: owners.owner_crate,
+        owner_workspace: owners.owner_workspace,
+        owner_repo: owners.owner_repo,
+        owner_binary: owners.owner_binary,
+        owner_toolchain: owners.owner_toolchain,
+        last_used_source: Some(LAST_USED_FROM_FS_MTIME),
+    })
+}
+
+fn mtime_unix(metadata: &std::fs::Metadata) -> i64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

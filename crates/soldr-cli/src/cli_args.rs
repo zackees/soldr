@@ -512,21 +512,103 @@ pub(crate) enum GcSubcommand {
         #[arg(long)]
         json: bool,
         /// Narrow the purge to a single taxonomy kind. Mutually exclusive
-        /// with `--registry-src` / `--git-checkouts`. Accepted values:
-        /// `cargo_target`, `cargo_registry_src` (#323 slice 2),
-        /// `cargo_git_checkouts` (#323 slice 3).
-        #[arg(long, value_enum, conflicts_with_all = ["registry_src", "git_checkouts"])]
+        /// with shorthand flags. Report-only primary kinds are accepted
+        /// for parse consistency but rejected before deletion.
+        #[arg(
+            long,
+            value_enum,
+            conflicts_with_all = [
+                "registry_src",
+                "git_checkouts",
+                "target_incremental",
+                "build_scripts",
+                "doc",
+                "subcommand_caches",
+            ]
+        )]
         kind: Option<GcListKind>,
         /// Shorthand for `--kind cargo_registry_src`. Walks
         /// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` and deletes
         /// the listed directories (#323 slice 2).
-        #[arg(long, conflicts_with_all = ["kind", "git_checkouts"])]
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "git_checkouts",
+                "target_incremental",
+                "build_scripts",
+                "doc",
+                "subcommand_caches",
+            ]
+        )]
         registry_src: bool,
         /// Shorthand for `--kind cargo_git_checkouts`. Walks
         /// `$CARGO_HOME/git/checkouts/<repo>/<commit>/` and deletes
         /// the listed directories (#323 slice 3).
-        #[arg(long, conflicts_with_all = ["kind", "registry_src"])]
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "registry_src",
+                "target_incremental",
+                "build_scripts",
+                "doc",
+                "subcommand_caches",
+            ]
+        )]
         git_checkouts: bool,
+        /// Shorthand for `--kind cargo_target_incremental`.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "registry_src",
+                "git_checkouts",
+                "build_scripts",
+                "doc",
+                "subcommand_caches",
+            ]
+        )]
+        target_incremental: bool,
+        /// Shorthand for `--kind cargo_target_build_script_binaries`.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "registry_src",
+                "git_checkouts",
+                "target_incremental",
+                "doc",
+                "subcommand_caches",
+            ]
+        )]
+        build_scripts: bool,
+        /// Shorthand for `--kind cargo_target_doc`.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "registry_src",
+                "git_checkouts",
+                "target_incremental",
+                "build_scripts",
+                "subcommand_caches",
+            ]
+        )]
+        doc: bool,
+        /// Shorthand for `--kind cargo_target_subcommand_caches`.
+        #[arg(
+            long,
+            conflicts_with_all = [
+                "kind",
+                "registry_src",
+                "git_checkouts",
+                "target_incremental",
+                "build_scripts",
+                "doc",
+            ]
+        )]
+        subcommand_caches: bool,
     },
     /// List every `target/` directory currently tracked in the soldr
     /// registry, without applying any age or size thresholds.
@@ -534,8 +616,7 @@ pub(crate) enum GcSubcommand {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
-        /// Narrow the listing to a single taxonomy kind (#323 slice 2).
-        /// Accepted values: `cargo_target`, `cargo_registry_src`.
+        /// Narrow the listing to a single taxonomy kind.
         #[arg(long, value_enum)]
         kind: Option<GcListKind>,
     },
@@ -563,14 +644,38 @@ pub(crate) enum GcListKind {
     /// Workspace `target/` dirs tracked by the soldr registry.
     #[value(name = "cargo_target")]
     CargoTarget,
+    /// `target/<profile>/incremental/` directories under tracked targets.
+    #[value(name = "cargo_target_incremental")]
+    CargoTargetIncremental,
+    /// `target/<profile>/build/*/build-script-build*` binaries.
+    #[value(name = "cargo_target_build_script_binaries")]
+    CargoTargetBuildScriptBinaries,
+    /// `target/doc/` directories under tracked targets.
+    #[value(name = "cargo_target_doc")]
+    CargoTargetDoc,
+    /// Tool-owned cache directories under tracked targets.
+    #[value(name = "cargo_target_subcommand_caches")]
+    CargoTargetSubcommandCaches,
     /// `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` extracted
     /// crate sources.
     #[value(name = "cargo_registry_src")]
     CargoRegistrySrc,
+    /// `$CARGO_HOME/registry/cache/<reg>/*.crate` package archives.
+    #[value(name = "cargo_registry_cache")]
+    CargoRegistryCache,
     /// `$CARGO_HOME/git/checkouts/<repo>/<commit>/` git-source crate
     /// checkouts (#323 slice 3).
     #[value(name = "cargo_git_checkouts")]
     CargoGitCheckouts,
+    /// `$CARGO_HOME/git/db/<repo>/` primary bare git clones.
+    #[value(name = "cargo_git_db")]
+    CargoGitDb,
+    /// `$CARGO_HOME/bin/<bin>` binaries installed by cargo.
+    #[value(name = "cargo_installed_binaries")]
+    CargoInstalledBinaries,
+    /// `$RUSTUP_HOME/toolchains/<channel>` installed Rust toolchains.
+    #[value(name = "rustup_toolchain")]
+    RustupToolchain,
 }
 
 #[derive(clap::Args)]

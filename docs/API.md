@@ -852,6 +852,13 @@ soldr gc purge                                # interactive deletion flow
 soldr gc purge --all                          # delete every eligible candidate
 soldr gc purge --older-than 30d --larger-than 1GB
 soldr gc purge --json                         # machine-readable purge report
+soldr gc list --kind cargo_target_incremental # list one taxonomy kind
+soldr gc purge --target-incremental --all      # delete target/<profile>/incremental/
+soldr gc purge --build-scripts --all           # delete build-script-build binaries
+soldr gc purge --doc --all                     # delete target/doc/
+soldr gc purge --subcommand-caches --all       # delete target/{criterion,nextest,...}/
+soldr gc purge --registry-src --all            # delete extracted registry sources
+soldr gc purge --git-checkouts --all           # delete git checkout worktrees
 ```
 
 Defaults:
@@ -874,6 +881,27 @@ Safety guards (from `docs/TARGET_GC_PROPOSAL.md`):
 The summary includes the registry path, eligible candidate count, total
 reclaimable size, skipped/dropped counts, and the largest eligible
 target directories with size and last-used age.
+
+`gc list --json` uses the issue #323 taxonomy. Derived kinds can be
+purged through explicit opt-in flags or `--kind`; primary kinds are
+report-only and `gc purge --kind <primary>` is rejected before deletion.
+
+Derived purge kinds:
+
+- `cargo_target` (default `gc purge` behavior)
+- `cargo_target_incremental`
+- `cargo_target_build_script_binaries`
+- `cargo_target_doc`
+- `cargo_target_subcommand_caches`
+- `cargo_registry_src`
+- `cargo_git_checkouts`
+
+Report-only primary kinds:
+
+- `cargo_registry_cache`
+- `cargo_git_db`
+- `cargo_installed_binaries`
+- `rustup_toolchain`
 
 **`cargo_registry_src` last-used provenance (issue #349).** When
 `soldr gc list --kind cargo_registry_src` (or unfiltered `gc list`)

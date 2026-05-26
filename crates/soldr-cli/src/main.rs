@@ -448,16 +448,30 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     kind,
                     registry_src,
                     git_checkouts,
+                    target_incremental,
+                    build_scripts,
+                    doc,
+                    subcommand_caches,
                 }) => {
                     // #323 slice 2: --registry-src is a shorthand for
                     // --kind cargo_registry_src; clap already enforces
                     // mutual exclusion.
                     // #323 slice 3: --git-checkouts is a shorthand for
                     // --kind cargo_git_checkouts.
+                    // #323 slice 4: in-target subtree shorthands map to
+                    // their explicit taxonomy kinds.
                     let effective_kind = if registry_src {
                         Some(GcListKind::CargoRegistrySrc)
                     } else if git_checkouts {
                         Some(GcListKind::CargoGitCheckouts)
+                    } else if target_incremental {
+                        Some(GcListKind::CargoTargetIncremental)
+                    } else if build_scripts {
+                        Some(GcListKind::CargoTargetBuildScriptBinaries)
+                    } else if doc {
+                        Some(GcListKind::CargoTargetDoc)
+                    } else if subcommand_caches {
+                        Some(GcListKind::CargoTargetSubcommandCaches)
                     } else {
                         kind
                     };
@@ -469,6 +483,36 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         Some(GcListKind::CargoGitCheckouts) => {
                             gc::run_gc_purge_git_checkouts_command(all, json)?;
                             return Ok(());
+                        }
+                        Some(
+                            GcListKind::CargoTargetIncremental
+                            | GcListKind::CargoTargetBuildScriptBinaries
+                            | GcListKind::CargoTargetDoc
+                            | GcListKind::CargoTargetSubcommandCaches,
+                        ) => {
+                            gc::run_gc_purge_target_subtree_command(
+                                effective_kind.expect("matched Some").into(),
+                                all,
+                                json,
+                            )?;
+                            return Ok(());
+                        }
+                        Some(
+                            GcListKind::CargoRegistryCache
+                            | GcListKind::CargoGitDb
+                            | GcListKind::CargoInstalledBinaries
+                            | GcListKind::RustupToolchain,
+                        ) => {
+                            let kind_name = match effective_kind.expect("matched Some") {
+                                GcListKind::CargoRegistryCache => "cargo_registry_cache",
+                                GcListKind::CargoGitDb => "cargo_git_db",
+                                GcListKind::CargoInstalledBinaries => "cargo_installed_binaries",
+                                GcListKind::RustupToolchain => "rustup_toolchain",
+                                _ => "selected kind",
+                            };
+                            return Err(SoldrError::Other(format!(
+                                "gc purge --kind {kind_name} is report-only; cargo/rustup own deletion for this primary cache"
+                            )));
                         }
                         Some(GcListKind::CargoTarget) | None => gc::GcInvocation {
                             mode: gc::GcMode::Purge { all },

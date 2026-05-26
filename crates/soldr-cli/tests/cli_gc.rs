@@ -221,8 +221,10 @@ fn gc_list_json_reports_built_project_target_dir() {
     let project_dir = unique_temp_dir("gc-list-project");
     // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
     // doesn't see the developer's real `~/.cargo` and inject
-    // cargo_registry_src entries into this test's assertions.
+    // cargo_registry_src entries into this test's assertions. Also
+    // sandbox RUSTUP_HOME now that `gc list` reports rustup toolchains.
     let sandbox_cargo_home = unique_temp_dir("gc-list-build-cargo-home");
+    let sandbox_rustup_home = unique_temp_dir("gc-list-build-rustup-home");
 
     fs::write(
         project_dir.join("Cargo.toml"),
@@ -240,6 +242,11 @@ fn gc_list_json_reports_built_project_target_dir() {
         .current_dir(&project_dir)
         .env("RUSTC_WRAPPER", soldr_bin)
         .env("SOLDR_CACHE_DIR", &cache_root)
+        // This fixture intentionally exercises soldr as a plain
+        // RUSTC_WRAPPER, not as a child of the outer `soldr cargo test`
+        // session that may be running this integration test.
+        .env_remove(soldr_cli::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+        .env_remove(soldr_cli::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR)
         // No zccache binary override → soldr wrapper records the target
         // dir, then falls through to invoking rustc directly.
         .env_remove("SOLDR_TEST_ZCCACHE_BIN")
@@ -263,6 +270,7 @@ fn gc_list_json_reports_built_project_target_dir() {
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &sandbox_cargo_home)
+        .env("RUSTUP_HOME", &sandbox_rustup_home)
         .output()
         .expect("failed to run soldr gc list --json");
 
@@ -303,6 +311,8 @@ fn gc_list_json_reports_built_project_target_dir() {
     });
 
     let path_str = entry["path"].as_str().expect("entry path");
+    assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
+    assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
     assert!(
         PathBuf::from(path_str).is_absolute(),
         "gc list entries must use absolute paths: {path_str}"
@@ -329,7 +339,18 @@ fn gc_list_json_reports_built_project_target_dir() {
             entry.get("exists").is_none(),
             "missing rows are pruned, so `exists` should not appear on listed entries"
         );
-        assert_eq!(entry["kind"].as_str(), Some("cargo_target"));
+        let kind = entry["kind"].as_str().expect("every entry must have kind");
+        assert!(
+            matches!(
+                kind,
+                "cargo_target"
+                    | "cargo_target_incremental"
+                    | "cargo_target_build_script_binaries"
+                    | "cargo_target_doc"
+                    | "cargo_target_subcommand_caches"
+            ),
+            "unexpected gc list kind: {kind}"
+        );
         assert_eq!(entry["purge_safety"].as_str(), Some("derived"));
     }
 }
@@ -363,8 +384,10 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
     let cache_root = unique_temp_dir("gc-list-prune");
     let dev_root = cache_root.join("dev-root");
     // #323 slice 2: sandbox CARGO_HOME so the registry_src walker
-    // doesn't contribute extra entries to entry_count assertions.
+    // doesn't contribute extra entries to entry_count assertions. Also
+    // sandbox RUSTUP_HOME now that `gc list` reports rustup toolchains.
     let sandbox_cargo_home = unique_temp_dir("gc-list-prune-cargo-home");
+    let sandbox_rustup_home = unique_temp_dir("gc-list-prune-rustup-home");
 
     let live_workspace = dev_root.join("live-project");
     let live_target = live_workspace.join("target");
@@ -396,6 +419,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &sandbox_cargo_home)
+        .env("RUSTUP_HOME", &sandbox_rustup_home)
         .output()
         .expect("failed to run soldr gc list --json");
     assert!(
