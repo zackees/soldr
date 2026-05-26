@@ -1,6 +1,4 @@
-//! Unit tests for [`crate::gc`]. Lives in a sibling file referenced via
-//! `#[path]` so `gc.rs` stays as close as possible to the original
-//! production-only line count.
+//! Unit tests for [`crate::gc`].
 
 use super::*;
 
@@ -115,10 +113,7 @@ fn last_used_falls_back_when_dir_name_is_not_versioned() {
 #[test]
 fn split_dir_name_recovers_crate_and_version() {
     assert_eq!(split_dir_name("serde-1.0.0"), Some(("serde", "1.0.0")));
-    assert_eq!(
-        split_dir_name("syn-2.0.16"),
-        Some(("syn", "2.0.16"))
-    );
+    assert_eq!(split_dir_name("syn-2.0.16"), Some(("syn", "2.0.16")));
     // Hyphenated crate names with a numeric-suffix version still pick
     // the last digit-prefixed hyphen.
     assert_eq!(

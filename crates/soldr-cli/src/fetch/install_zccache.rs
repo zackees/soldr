@@ -19,11 +19,12 @@
 //! Debug-info sidecars (`.pdb`, `.dwp`, `.dSYM`) are copied next to
 //! every binary, mirroring the `SOLDR_ZCCACHE_LOCAL_DIR` behaviour.
 
-use super::{
-    canonical_zccache_paths, copy_debug_info_sidecars, copy_if_changed, desired_binary_names,
-    find_in_dirs, http_client, suppress_windows_console_window, MANAGED_ZCCACHE_VERSION,
-};
-use crate::core::{SoldrError, SoldrPaths, TargetTriple};
+use super::archive::desired_binary_names;
+use super::github::http_client;
+use super::zccache::{canonical_zccache_paths, copy_debug_info_sidecars, copy_if_changed};
+use super::zccache_install::find_in_dirs;
+use super::MANAGED_ZCCACHE_VERSION;
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};

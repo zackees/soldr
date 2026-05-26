@@ -1,9 +1,10 @@
 //! Unit tests for [`crate::cargo_front_door`]: the cargo argv parser, the
 //! low-disk warning helper, and the cargo-subcommand sniffer.
-//! Lives in a sibling file referenced via `#[path]` so `cargo_front_door.rs`
+//! Lives inside the `cargo_front_door/` module directory so `mod.rs`
 //! stays comfortably under the 1000-LOC ceiling.
 
 use super::*;
+use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::sync::Mutex;
 
