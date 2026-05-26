@@ -114,6 +114,7 @@ jobs:
         with:
           toolchain-file: rust-toolchain.ci.toml
           cache: true
+          linker: platform-default
           cache-key-suffix: bootstrap-${{ inputs.target }}
           lockfile: Cargo.lock
           target-dir: target
