@@ -77,10 +77,11 @@ jobs:
           components: ${{ inputs.install_components }}
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@0425f54e37b65c5c36be1fb73628019b3e1aabed
+        uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
         with:
           toolchain: 1.94.1
           cache: true
+          zccache-seed-strict: true
           cache-key-suffix: build-${{ inputs.shared_key }}-${{ inputs.cache_key }}
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--target ${{ inputs.target }}"
@@ -125,7 +126,7 @@ jobs:
           "LOCAL_SOLDR=$soldrPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@0425f54e37b65c5c36be1fb73628019b3e1aabed
+        uses: zackees/setup-soldr/cleanup@be9cd32c413a696e85c13eaeef25400666dd5317
 
       - name: Run library tests
         shell: pwsh
