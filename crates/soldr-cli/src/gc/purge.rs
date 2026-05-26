@@ -14,10 +14,10 @@ use std::io::Write;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
-use super::walks::{walk_cargo_git_checkouts, walk_cargo_registry_src};
+use super::walks::{walk_cargo_git_checkouts, walk_cargo_registry_src, walk_cargo_target_subtrees};
 use super::{
-    GcCandidateOutput, GcListEntryOutput, GC_JSON_SCHEMA_VERSION, KIND_CARGO_GIT_CHECKOUTS,
-    KIND_CARGO_REGISTRY_SRC, KIND_CARGO_TARGET, PURGE_SAFETY_DERIVED,
+    GcCandidateOutput, GcListEntryOutput, GcListKindFilter, GC_JSON_SCHEMA_VERSION,
+    KIND_CARGO_GIT_CHECKOUTS, KIND_CARGO_REGISTRY_SRC, KIND_CARGO_TARGET, PURGE_SAFETY_DERIVED,
 };
 
 #[derive(Serialize)]
@@ -237,6 +237,153 @@ pub(crate) fn run_gc_purge_git_checkouts_command(
             selected_count: selected.len(),
             succeeded_count: deleted_paths.len(),
             failed_count: failures.len(),
+            reclaimed_bytes,
+            reclaimed_human: crate::cache_lib::target_registry::human_size(reclaimed_bytes),
+            deleted_paths,
+            failures,
+        };
+        print_json(&output)?;
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct GcPurgeTargetSubtreeOutput {
+    schema_version: u32,
+    command: &'static str,
+    mode: &'static str,
+    kind: &'static str,
+    selected_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
+    skipped_locked_targets: usize,
+    reclaimed_bytes: u64,
+    reclaimed_human: String,
+    deleted_paths: Vec<String>,
+    failures: Vec<GcPurgeTargetSubtreeFailure>,
+}
+
+#[derive(Serialize)]
+struct GcPurgeTargetSubtreeFailure {
+    path: String,
+    error: String,
+}
+
+/// `soldr gc purge --target-incremental|--build-scripts|--doc|--subcommand-caches`.
+/// Walks target subtree entries from the tracked target registry and deletes
+/// only the selected derived kind. If any Cargo build lock is present under a
+/// target, that whole target is skipped as an active-build guard.
+pub(crate) fn run_gc_purge_target_subtree_command(
+    kind: GcListKindFilter,
+    purge_all: bool,
+    json: bool,
+) -> Result<(), SoldrError> {
+    if !kind.is_target_subtree() {
+        return Err(SoldrError::Other(format!(
+            "gc purge --kind {} is not an in-target subtree kind",
+            kind.kind_name()
+        )));
+    }
+
+    let paths = SoldrPaths::new()?;
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
+        .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
+    let rows = registry
+        .list()
+        .map_err(|e| SoldrError::Other(format!("gc purge {} failed: {e}", kind.kind_name())))?;
+    let now = crate::cache_lib::target_registry::current_unix_seconds().map_err(|e| {
+        SoldrError::Other(format!("gc purge {} clock error: {e}", kind.kind_name()))
+    })?;
+
+    let mut live_rows = Vec::new();
+    let mut skipped_locked_targets = 0usize;
+    for row in rows {
+        if !row.path.exists() {
+            continue;
+        }
+        if find_active_cargo_lock(&row.path).is_some() {
+            skipped_locked_targets += 1;
+            continue;
+        }
+        live_rows.push(row);
+    }
+
+    let entries = walk_cargo_target_subtrees(&live_rows, now, Some(kind));
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --kind {}: scanned {} tracked target dir{} ({} locked target{} skipped)",
+            kind.kind_name(),
+            live_rows.len(),
+            if live_rows.len() == 1 { "" } else { "s" },
+            skipped_locked_targets,
+            if skipped_locked_targets == 1 { "" } else { "s" },
+        );
+        eprintln!(
+            "soldr gc purge --kind {}: {} entr{} on disk",
+            kind.kind_name(),
+            entries.len(),
+            if entries.len() == 1 { "y" } else { "ies" }
+        );
+    }
+
+    let mut selected: Vec<&GcListEntryOutput> = Vec::new();
+    for entry in &entries {
+        let should_delete = purge_all
+            || prompt_yes_no_default_yes(&format!(
+                "soldr gc: delete {} ({}, age {}) ? [Y/n] ",
+                entry.path, entry.size_human, entry.age_human,
+            ));
+        if should_delete {
+            selected.push(entry);
+        }
+    }
+
+    let mut deleted_paths: Vec<String> = Vec::new();
+    let mut failures: Vec<GcPurgeTargetSubtreeFailure> = Vec::new();
+    let mut reclaimed_bytes: u64 = 0;
+    for entry in &selected {
+        let path = std::path::PathBuf::from(&entry.path);
+        match delete_path(&path) {
+            Ok(()) => {
+                reclaimed_bytes = reclaimed_bytes.saturating_add(entry.size_bytes);
+                deleted_paths.push(entry.path.clone());
+            }
+            Err(e) => failures.push(GcPurgeTargetSubtreeFailure {
+                path: entry.path.clone(),
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    if !json {
+        eprintln!(
+            "soldr gc purge --kind {}: selected {}; succeeded {}; failed {}; reclaimed {}",
+            kind.kind_name(),
+            selected.len(),
+            deleted_paths.len(),
+            failures.len(),
+            crate::cache_lib::target_registry::human_size(reclaimed_bytes),
+        );
+        for failure in &failures {
+            eprintln!(
+                "soldr gc purge --kind {}: failed to delete {}: {}",
+                kind.kind_name(),
+                failure.path,
+                failure.error
+            );
+        }
+    } else {
+        let output = GcPurgeTargetSubtreeOutput {
+            schema_version: GC_JSON_SCHEMA_VERSION,
+            command: "gc",
+            mode: "purge",
+            kind: kind.kind_name(),
+            selected_count: selected.len(),
+            succeeded_count: deleted_paths.len(),
+            failed_count: failures.len(),
+            skipped_locked_targets,
             reclaimed_bytes,
             reclaimed_human: crate::cache_lib::target_registry::human_size(reclaimed_bytes),
             deleted_paths,
@@ -489,6 +636,37 @@ pub(super) fn prompt_yes_no_default_yes(prompt: &str) -> bool {
 
 pub(crate) fn parse_gc_purge_answer(input: &str) -> bool {
     matches!(input.trim().to_ascii_lowercase().as_str(), "" | "y" | "yes")
+}
+
+fn find_active_cargo_lock(target_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let top_lock = target_dir.join(".cargo-lock");
+    if top_lock.exists() {
+        return Some(top_lock);
+    }
+    let profiles = std::fs::read_dir(target_dir).ok()?;
+    for entry in profiles.flatten() {
+        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let candidate = entry.path().join(".cargo-lock");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
 }
 
 /// Resolve the configured `gc.allowlist_roots`, falling back to

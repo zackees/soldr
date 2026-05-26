@@ -27,8 +27,13 @@ mod walks;
 // Re-export the public CLI surface so `crate::gc::*` keeps matching
 // the call sites in `main.rs` and `cargo_front_door.rs`.
 pub(crate) use auto::maybe_kick_auto_gc;
-pub(crate) use cargo_native::{run_gc_cargo_command, run_gc_locations_command, run_gc_sweep_command};
-pub(crate) use purge::{run_gc_purge_git_checkouts_command, run_gc_purge_registry_src_command};
+pub(crate) use cargo_native::{
+    run_gc_cargo_command, run_gc_locations_command, run_gc_sweep_command,
+};
+pub(crate) use purge::{
+    run_gc_purge_git_checkouts_command, run_gc_purge_registry_src_command,
+    run_gc_purge_target_subtree_command,
+};
 
 // Items the tests file reaches through `super::*`. Keeping these
 // `use`d inside `mod.rs` makes the visibility explicit and survives
@@ -53,15 +58,25 @@ use purge::{
 // emit entries with other kinds (registry-src, git-checkouts, in-target
 // subtrees, …) without further schema churn.
 pub(super) const KIND_CARGO_TARGET: &str = "cargo_target";
+pub(super) const KIND_CARGO_TARGET_INCREMENTAL: &str = "cargo_target_incremental";
+pub(super) const KIND_CARGO_TARGET_BUILD_SCRIPT_BINARIES: &str =
+    "cargo_target_build_script_binaries";
+pub(super) const KIND_CARGO_TARGET_DOC: &str = "cargo_target_doc";
+pub(super) const KIND_CARGO_TARGET_SUBCOMMAND_CACHES: &str = "cargo_target_subcommand_caches";
 // Slice 2 of #323: `$CARGO_HOME/registry/src/<reg>/<crate>-<vers>/` extracted
 // crate sources. `purge_safety: derived` — cargo regenerates from the
 // matching `.crate` tarball in `registry/cache/` on demand.
 pub(super) const KIND_CARGO_REGISTRY_SRC: &str = "cargo_registry_src";
+pub(super) const KIND_CARGO_REGISTRY_CACHE: &str = "cargo_registry_cache";
 // Slice 3 of #323: `$CARGO_HOME/git/checkouts/<repo>/<commit>/` git-source
 // crate checkouts. `purge_safety: derived` — cargo regenerates by re-checking
 // out the bare repo in `$CARGO_HOME/git/db/<repo>/` on demand.
 pub(super) const KIND_CARGO_GIT_CHECKOUTS: &str = "cargo_git_checkouts";
+pub(super) const KIND_CARGO_GIT_DB: &str = "cargo_git_db";
+pub(super) const KIND_CARGO_INSTALLED_BINARIES: &str = "cargo_installed_binaries";
+pub(super) const KIND_RUSTUP_TOOLCHAIN: &str = "rustup_toolchain";
 pub(super) const PURGE_SAFETY_DERIVED: &str = "derived";
+pub(super) const PURGE_SAFETY_PRIMARY: &str = "primary";
 
 /// Taxonomy kinds accepted by `gc list --kind` / `gc purge --kind`
 /// (#323 slice 2). The CLI's clap `ValueEnum` converts into this so the
@@ -69,17 +84,67 @@ pub(super) const PURGE_SAFETY_DERIVED: &str = "derived";
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(crate) enum GcListKindFilter {
     CargoTarget,
+    CargoTargetIncremental,
+    CargoTargetBuildScriptBinaries,
+    CargoTargetDoc,
+    CargoTargetSubcommandCaches,
     CargoRegistrySrc,
+    CargoRegistryCache,
     CargoGitCheckouts,
+    CargoGitDb,
+    CargoInstalledBinaries,
+    RustupToolchain,
 }
 
 impl From<crate::GcListKind> for GcListKindFilter {
     fn from(value: crate::GcListKind) -> Self {
         match value {
             crate::GcListKind::CargoTarget => GcListKindFilter::CargoTarget,
+            crate::GcListKind::CargoTargetIncremental => GcListKindFilter::CargoTargetIncremental,
+            crate::GcListKind::CargoTargetBuildScriptBinaries => {
+                GcListKindFilter::CargoTargetBuildScriptBinaries
+            }
+            crate::GcListKind::CargoTargetDoc => GcListKindFilter::CargoTargetDoc,
+            crate::GcListKind::CargoTargetSubcommandCaches => {
+                GcListKindFilter::CargoTargetSubcommandCaches
+            }
             crate::GcListKind::CargoRegistrySrc => GcListKindFilter::CargoRegistrySrc,
+            crate::GcListKind::CargoRegistryCache => GcListKindFilter::CargoRegistryCache,
             crate::GcListKind::CargoGitCheckouts => GcListKindFilter::CargoGitCheckouts,
+            crate::GcListKind::CargoGitDb => GcListKindFilter::CargoGitDb,
+            crate::GcListKind::CargoInstalledBinaries => GcListKindFilter::CargoInstalledBinaries,
+            crate::GcListKind::RustupToolchain => GcListKindFilter::RustupToolchain,
         }
+    }
+}
+
+impl GcListKindFilter {
+    pub(crate) fn kind_name(self) -> &'static str {
+        match self {
+            GcListKindFilter::CargoTarget => KIND_CARGO_TARGET,
+            GcListKindFilter::CargoTargetIncremental => KIND_CARGO_TARGET_INCREMENTAL,
+            GcListKindFilter::CargoTargetBuildScriptBinaries => {
+                KIND_CARGO_TARGET_BUILD_SCRIPT_BINARIES
+            }
+            GcListKindFilter::CargoTargetDoc => KIND_CARGO_TARGET_DOC,
+            GcListKindFilter::CargoTargetSubcommandCaches => KIND_CARGO_TARGET_SUBCOMMAND_CACHES,
+            GcListKindFilter::CargoRegistrySrc => KIND_CARGO_REGISTRY_SRC,
+            GcListKindFilter::CargoRegistryCache => KIND_CARGO_REGISTRY_CACHE,
+            GcListKindFilter::CargoGitCheckouts => KIND_CARGO_GIT_CHECKOUTS,
+            GcListKindFilter::CargoGitDb => KIND_CARGO_GIT_DB,
+            GcListKindFilter::CargoInstalledBinaries => KIND_CARGO_INSTALLED_BINARIES,
+            GcListKindFilter::RustupToolchain => KIND_RUSTUP_TOOLCHAIN,
+        }
+    }
+
+    pub(crate) fn is_target_subtree(self) -> bool {
+        matches!(
+            self,
+            GcListKindFilter::CargoTargetIncremental
+                | GcListKindFilter::CargoTargetBuildScriptBinaries
+                | GcListKindFilter::CargoTargetDoc
+                | GcListKindFilter::CargoTargetSubcommandCaches
+        )
     }
 }
 
@@ -268,6 +333,18 @@ pub(super) struct GcListEntryOutput {
     /// on `cargo_target` entries that lack the concept (#323 slice 2).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) owner_crate: Option<String>,
+    /// Workspace owning a target-derived entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) owner_workspace: Option<String>,
+    /// Repository-ish owner for Cargo git database entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) owner_repo: Option<String>,
+    /// Binary name for Cargo-installed executable entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) owner_binary: Option<String>,
+    /// Toolchain name for rustup toolchain entries.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) owner_toolchain: Option<String>,
     /// Provenance of `last_used_unix` (#349). Present on
     /// `cargo_registry_src` entries; omitted for `cargo_target` where
     /// only mtime is available today. Values:
@@ -329,6 +406,7 @@ pub(crate) fn run_gc_list_command(
 
     let mut entries: Vec<GcListEntryOutput> = if include_targets {
         live_rows
+            .clone()
             .into_par_iter()
             .map(|row| {
                 let (size_bytes, file_count) = fast_directory_size_and_files(&row.path);
@@ -344,6 +422,14 @@ pub(crate) fn run_gc_list_command(
                     kind: KIND_CARGO_TARGET,
                     purge_safety: PURGE_SAFETY_DERIVED,
                     owner_crate: None,
+                    owner_workspace: Some(
+                        crate::cache_lib::target_registry::workspace_root_for_target(&row.path)
+                            .display()
+                            .to_string(),
+                    ),
+                    owner_repo: None,
+                    owner_binary: None,
+                    owner_toolchain: None,
                     last_used_source: None,
                 }
             })
@@ -362,6 +448,24 @@ pub(crate) fn run_gc_list_command(
         if let Some(cargo_home) = crate::core::resolve_cargo_home() {
             entries.extend(walks::walk_cargo_git_checkouts(&cargo_home, now));
         }
+    }
+
+    entries.extend(walks::walk_cargo_target_subtrees(
+        &live_rows,
+        now,
+        kind_filter,
+    ));
+
+    if let Some(cargo_home) = crate::core::resolve_cargo_home() {
+        entries.extend(walks::walk_cargo_report_only(&cargo_home, now, kind_filter));
+    }
+
+    if let Some(rustup_home) = crate::core::resolve_rustup_home() {
+        entries.extend(walks::walk_rustup_toolchains(
+            &rustup_home,
+            now,
+            kind_filter,
+        ));
     }
 
     let pruned_missing = registry
