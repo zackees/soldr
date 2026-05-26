@@ -130,6 +130,11 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--target ${{ inputs.target }}"
 
+      - name: Restore checkout after soldr-cook
+        shell: pwsh
+        working-directory: soldr
+        run: git restore --worktree -- .
+
       - name: Reset stale musl cache fallback artifacts
         if: >-
           ${{

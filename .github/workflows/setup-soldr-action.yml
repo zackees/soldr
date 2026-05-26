@@ -88,6 +88,10 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
 
+      - name: Restore checkout after soldr-cook
+        shell: pwsh
+        run: git restore --worktree -- .
+
       - name: Show action outputs
         shell: pwsh
         run: |

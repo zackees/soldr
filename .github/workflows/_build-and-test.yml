@@ -85,6 +85,10 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--target ${{ inputs.target }}"
 
+      - name: Restore checkout after soldr-cook
+        shell: pwsh
+        run: git restore --worktree -- .
+
       - name: Install requested Rust components
         if: inputs.install_components != ''
         shell: pwsh
