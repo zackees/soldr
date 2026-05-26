@@ -30,7 +30,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+        uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         with:
           toolchain: 1.94.1
           cache: true

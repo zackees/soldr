@@ -96,7 +96,7 @@ jobs:
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+        uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
@@ -162,7 +162,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+        uses: zackees/setup-soldr/cleanup@386201437808bbe52f97b05e531b0276f8e5cebf
 
       - name: Build third-party app through soldr
         shell: pwsh
