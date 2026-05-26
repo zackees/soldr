@@ -21,7 +21,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static SOLDR_CARGO_BUILD_LOCK: Mutex<()> = Mutex::new(());
+
+fn soldr_cargo_build_lock() -> MutexGuard<'static, ()> {
+    SOLDR_CARGO_BUILD_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -42,6 +51,30 @@ fn toml_string(path: &Path) -> String {
 
 fn soldr_bin() -> &'static str {
     env!("CARGO_BIN_EXE_soldr")
+}
+
+fn remove_inherited_native_cache_env(cmd: &mut Command) {
+    for key in [
+        "CC",
+        "CXX",
+        "CC_KNOWN_WRAPPER_CUSTOM",
+        "CC_x86_64_unknown_linux_gnu",
+        "CXX_x86_64_unknown_linux_gnu",
+        "CC_x86_64_apple_darwin",
+        "CXX_x86_64_apple_darwin",
+        "CC_aarch64_apple_darwin",
+        "CXX_aarch64_apple_darwin",
+        "CC_x86_64_pc_windows_msvc",
+        "CXX_x86_64_pc_windows_msvc",
+        "CC_aarch64_pc_windows_msvc",
+        "CXX_aarch64_pc_windows_msvc",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "SOLDR_NATIVE_CACHE",
+        "ZCCACHE_CACHE_DIR",
+    ] {
+        cmd.env_remove(key);
+    }
 }
 
 /// Build a project whose `build.rs` writes the env it sees to a single
@@ -104,10 +137,15 @@ fn main() {{
 }
 
 fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std::process::Output {
+    let _guard = soldr_cargo_build_lock();
     let mut cmd = Command::new(soldr_bin());
     cmd.current_dir(project);
-    // Hermetic caches per test run.
+    remove_inherited_native_cache_env(&mut cmd);
+    // Hermetic caches per test run, with command-lifetime shutdown so
+    // parallel test execution cannot leave multiple zccache daemons alive.
     cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
+    cmd.env("SOLDR_CACHE_LIFECYCLE", "command");
+    cmd.env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "30");
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
     cmd.env_remove("SOLDR_TARGET_CACHE_MODE");
     for (k, v) in env_overrides {
@@ -267,11 +305,15 @@ fn no_cache_global_disables_native_too() {
     // `soldr --no-cache cargo …` is the global kill-switch. Native
     // caching must turn off because the zccache session never starts.
     let project = make_env_capture_project("native-cc-no-cache");
-    let mut cmd = Command::new(soldr_bin());
-    cmd.current_dir(&project);
-    cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
-    cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
-    let output = cmd.output().expect("spawn soldr --no-cache cargo build");
+    let output = {
+        let _guard = soldr_cargo_build_lock();
+        let mut cmd = Command::new(soldr_bin());
+        cmd.current_dir(&project);
+        remove_inherited_native_cache_env(&mut cmd);
+        cmd.env("SOLDR_CACHE_DIR", project.join(".soldr-cache"));
+        cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
+        cmd.output().expect("spawn soldr --no-cache cargo build")
+    };
     assert!(
         output.status.success(),
         "soldr --no-cache cargo build failed"
