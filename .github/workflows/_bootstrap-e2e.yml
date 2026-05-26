@@ -116,6 +116,7 @@ jobs:
           cat rust-toolchain.ci.toml
 
       - name: Setup soldr build cache
+        id: setup_soldr
         uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
@@ -123,11 +124,35 @@ jobs:
           toolchain-file: rust-toolchain.ci.toml
           cache: true
           linker: platform-default
-          cache-key-suffix: bootstrap-${{ inputs.target }}
+          cache-key-suffix: bootstrap-${{ inputs.target }}-native-cc-v2
           lockfile: Cargo.lock
           target-dir: target
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--target ${{ inputs.target }}"
+
+      - name: Reset stale musl cache fallback artifacts
+        if: >-
+          ${{
+            contains(inputs.target, 'musl') &&
+            (
+              steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit' ||
+              steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'
+            )
+          }}
+        shell: pwsh
+        working-directory: soldr
+        run: |
+          $targetTripleDir = Join-Path "target" "${{ inputs.target }}"
+          if (Test-Path -LiteralPath $targetTripleDir) {
+            Write-Host "Removing restored musl target artifacts from $targetTripleDir"
+            Remove-Item -LiteralPath $targetTripleDir -Recurse -Force
+          }
+
+          $artifactDir = Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"
+          if (Test-Path -LiteralPath $artifactDir) {
+            Write-Host "Removing restored zccache artifacts from $artifactDir"
+            Remove-Item -LiteralPath $artifactDir -Recurse -Force
+          }
 
       - name: Build soldr-cli
         shell: pwsh
