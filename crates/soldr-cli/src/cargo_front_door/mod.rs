@@ -25,8 +25,13 @@ use crate::trampoline_workspace::{
     detect_workspace_verb, refresh_workspace_sidecar_after_cargo, try_workspace_trampoline,
     RawClippyCapture, WorkspaceDecision, WorkspaceVerb,
 };
-use crate::zccache::{finish_zccache_build, prepare_rustc_wrapper};
-use crate::{apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, rust_plan, ZccacheSourceArg};
+use crate::zccache::{
+    cache_lifecycle_from_env, command_lifetime_shutdown_timeout, finish_zccache_build,
+    prepare_rustc_wrapper, stop_zccache_after_command, CacheLifecycle,
+};
+use crate::{
+    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, rust_plan, ZccacheSourceArg,
+};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -189,6 +194,13 @@ pub(crate) async fn run_cargo_front_door(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
         ));
     }
+
+    let cache_lifecycle = cache_lifecycle_from_env()?;
+    let command_lifetime_shutdown_timeout = if cache_lifecycle == CacheLifecycle::Command {
+        Some(command_lifetime_shutdown_timeout()?)
+    } else {
+        None
+    };
 
     // Strip soldr-private auto target-GC opt-out flags before any other
     // arg-vector handling so downstream code (trampolines, cargo spawn)
@@ -542,8 +554,15 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    if let Some(session) = session {
-        finish_zccache_build(&session)?;
+    if let Some(session) = session.as_ref() {
+        let finish_result = finish_zccache_build(session);
+        let shutdown_result = if let Some(timeout) = command_lifetime_shutdown_timeout {
+            stop_zccache_after_command(session, timeout)
+        } else {
+            Ok(())
+        };
+        finish_result?;
+        shutdown_result?;
     }
     drop(trampoline_plan);
     drop(workspace_plan);
