@@ -417,6 +417,7 @@ soldr toolchain prepare   # install + component add + target add + cargo install
 soldr toolchain ensure    # bootstrap rustup if missing, run `prepare`, smoke-verify (cargo/rustc --version)
 soldr toolchain ensure --json  # same, but emit a stable JSON payload (schema_version: 1)
 soldr toolchain link --shim-dir <path> [--json] [--force]  # write PATH shim files (issue #407 Phase 3)
+soldr toolchain doctor [--json]   # run env-detection probes (musl-cc, shared target/) (issue #407 Phase 4)
 ```
 
 `prepare` runs, in order:
@@ -535,6 +536,78 @@ Notes on the schema:
 - `link` never adds the shim directory to the caller's `PATH` — that
   is the caller's responsibility (e.g. setup-soldr emits a GitHub
   Actions `addPath` call after consuming the JSON).
+
+#### `soldr toolchain doctor`
+
+Run env-detection probes that ship the diagnostic intel `setup-soldr`
+used to compute in TypeScript (issue #407 Phase 4, ports the
+env-detection halves of setup-soldr's `detect-musl-cc.ts`,
+`detect-shared-target-warning.ts`, and `diagnostics.ts`).
+
+Namespaced under `toolchain` to avoid colliding with the top-level
+`soldr doctor` system check.
+
+Probes (run in stable order):
+
+1. **`musl-cc`** — scans `PATH` for `musl-gcc` / `musl-clang` and, if
+   found, captures the first line of `--version` output. Auto-skipped on
+   non-Linux hosts (`details.skipped = "not-linux"`). When the host is
+   Linux but no musl C compiler is on `PATH`, the probe still reports
+   `ok: true` with `details.found = false` — not all Linux workflows
+   need musl tooling, so missing it is informational rather than fatal.
+2. **`shared-target-warning`** — walks the current workspace's
+   `target/` (up to 3 levels deep) looking for a populated
+   cargo `.fingerprint/` directory. Mirrors the prepopulated-target
+   detector landed in PR #508. Reports `would_warn: true` when at least
+   one fingerprint dir is found, signalling that a subsequent
+   `soldr cargo build` may collide with the rust-plan restore path.
+
+Exit code: `0` when every probe reports `ok: true`, `1` otherwise.
+
+The `--json` payload (`schema_version: 1`) is the stable contract for
+`setup-soldr#133` and similar consumers:
+
+```json
+{
+  "schema_version": 1,
+  "host": {"os": "linux", "arch": "x86_64", "libc": "gnu"},
+  "probes": [
+    {
+      "name": "musl-cc",
+      "ok": true,
+      "details": {
+        "musl_cc": "/usr/bin/musl-gcc",
+        "tool": "musl-gcc",
+        "version": "musl-tools 1.2.5-1"
+      }
+    },
+    {
+      "name": "shared-target-warning",
+      "ok": true,
+      "details": {
+        "target_dir": "/workspace/target",
+        "fingerprint_dirs_found": 0,
+        "would_warn": false
+      }
+    }
+  ],
+  "elapsed_ms": 12
+}
+```
+
+Notes on the schema:
+
+- `host.os` is `std::env::consts::OS` (`linux` / `windows` / `macos`).
+- `host.arch` is `std::env::consts::ARCH` (`x86_64` / `aarch64` / …).
+- `host.libc` is `gnu` on Linux, `msvc` on Windows, `darwin` on macOS
+  (CLAUDE.md mandates MSVC-default on Windows).
+- The `probes` array preserves declaration order: `musl-cc` first,
+  `shared-target-warning` second. Future probes will be appended.
+- Each probe's `details` object is probe-specific. Consumers must
+  switch on `probe.name` before reading nested keys.
+- `probe.ok = false` is reserved for future probes; today both probes
+  always set `ok: true` because a missing musl-cc or a clean target/
+  is informational rather than blocking.
 
 #### `[soldr.plugins]`
 

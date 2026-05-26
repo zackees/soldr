@@ -33,6 +33,7 @@ mod self_relocate;
 mod shim_dir;
 mod startup_profile;
 mod toolchain;
+mod toolchain_doctor;
 mod toolchain_ensure;
 mod toolchain_link;
 mod trampoline;
@@ -288,6 +289,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         force,
                     },
                 )?);
+            }
+            ToolchainSubcommand::Doctor { json } => {
+                std::process::exit(toolchain_doctor::run_toolchain_doctor(json)?);
             }
         },
         Commands::Bootstrap { json } => {

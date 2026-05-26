@@ -474,6 +474,23 @@ pub(crate) enum ToolchainSubcommand {
         #[arg(long)]
         force: bool,
     },
+    /// Run env-detection probes (musl-cc availability, pre-populated
+    /// `target/` warning, host triple summary) and emit either a
+    /// human-readable summary or the stable `schema_version: 1` JSON
+    /// payload consumed by `setup-soldr#133` (issue #407 Phase 4,
+    /// ports the env-detection halves of setup-soldr's
+    /// `detect-musl-cc.ts`, `detect-shared-target-warning.ts`, and
+    /// `diagnostics.ts`).
+    ///
+    /// Namespaced under `toolchain` to avoid colliding with the
+    /// top-level `soldr doctor` system check.
+    Doctor {
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`) for consumption by setup-soldr and
+        /// other tooling.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]
