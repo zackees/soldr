@@ -30,10 +30,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@0425f54e37b65c5c36be1fb73628019b3e1aabed
+        uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
         with:
           toolchain: 1.94.1
           cache: true
+          zccache-seed-strict: true
           cache-key-suffix: lint-ubuntu
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""

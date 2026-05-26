@@ -117,12 +117,13 @@ jobs:
 
       - name: Setup soldr build cache
         id: setup_soldr
-        uses: zackees/setup-soldr@0425f54e37b65c5c36be1fb73628019b3e1aabed
+        uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
           toolchain-file: rust-toolchain.ci.toml
           cache: true
+          zccache-seed-strict: true
           linker: platform-default
           cache-key-suffix: bootstrap-${{ inputs.target }}-native-cc-v2
           lockfile: Cargo.lock
@@ -213,7 +214,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@0425f54e37b65c5c36be1fb73628019b3e1aabed
+        uses: zackees/setup-soldr/cleanup@be9cd32c413a696e85c13eaeef25400666dd5317
 
       - name: Build third-party app through soldr
         shell: pwsh
