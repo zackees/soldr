@@ -29,25 +29,26 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         with:
           toolchain: 1.94.1
-          components: rustfmt, clippy
+          cache: true
+          cache-key-suffix: lint-ubuntu
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
 
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          shared-key: lint-ubuntu
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: soldr cargo fmt --all -- --check
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js
 
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # Per-platform `build workspace + run unit/smoke tests` jobs.
   # Each is a thin caller of the `_build-and-test.yml` template so

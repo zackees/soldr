@@ -20,8 +20,8 @@ on:
         required: true
         type: string
       shared_key:
-        # Swatinem/rust-cache shared-key; usually the platform-arch
-        # pair (e.g. "windows-x86_64-msvc").
+        # setup-soldr cache key suffix base; usually the platform-arch pair
+        # (e.g. "windows-x86_64-msvc").
         required: true
         type: string
       cache_key:
@@ -76,20 +76,82 @@ jobs:
           targets: ${{ inputs.target }}
           components: ${{ inputs.install_components }}
 
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         with:
-          key: ${{ inputs.cache_key }}
-          shared-key: ${{ inputs.shared_key }}
+          toolchain: 1.94.1
+          cache: true
+          cache-key-suffix: build-${{ inputs.shared_key }}-${{ inputs.cache_key }}
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: "--target ${{ inputs.target }}"
+
+      - name: Install requested Rust components
+        if: inputs.install_components != ''
+        shell: pwsh
+        run: |
+          $components = "${{ inputs.install_components }}" -split "," |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+          foreach ($component in $components) {
+            rustup component add $component
+          }
 
       - name: Build workspace
-        run: cargo build --workspace --locked --target ${{ inputs.target }}
+        shell: pwsh
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo build --workspace --locked --target ${{ inputs.target }}
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Build workspace**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
+
+      - name: Stop setup-soldr builder cache before tests
+        uses: zackees/setup-soldr/cleanup@386201437808bbe52f97b05e531b0276f8e5cebf
 
       - name: Run library tests
-        run: cargo test --workspace --lib --locked --target ${{ inputs.target }}
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
+        run: |
+          Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
+          Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo test --workspace --lib --locked --target ${{ inputs.target }}
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Library tests**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
 
       - name: Run CLI smoke tests
-        run: cargo test -p soldr-cli --tests --locked --target ${{ inputs.target }}
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo test -p soldr-cli --tests --locked --target ${{ inputs.target }}
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / CLI smoke tests**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
 
       - name: Verify Windows defaults to MSVC under Git Bash
         if: inputs.verify_windows_msys_default_msvc == true && runner.os == 'Windows'
@@ -104,4 +166,33 @@ jobs:
 
       - name: Run fetch integration test
         if: inputs.run_fetch_test == true
-        run: cargo test -p soldr-cli --test fetch_crgx --locked --target ${{ inputs.target }}
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo test -p soldr-cli --test fetch_crgx --locked --target ${{ inputs.target }}
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Fetch integration test**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
+
+      - name: Stop isolated test cache
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
+        run: |
+          soldr cache shutdown --shutdown-timeout-seconds 30
+          if ($LASTEXITCODE -ne 0) {
+            zccache stop
+          }

@@ -8,7 +8,11 @@ Run via uv (sibling-module resolution works because cwd is the hook dir):
 
 import unittest
 
-from tool_guard import check_command, extract_command  # type: ignore[import-not-found]
+from tool_guard import (  # type: ignore[import-not-found]
+    SHELL_TOOL_NAMES,
+    check_command,
+    extract_command,
+)
 
 
 class ToolGuardTests(unittest.TestCase):
@@ -111,6 +115,10 @@ class ToolGuardTests(unittest.TestCase):
             "tool_input": {"script": "cargo test"},
         })
         self.assertEqual(command, "cargo test")
+
+    def test_accepts_codex_shell_tool_names(self):
+        self.assertIn("shell_command", SHELL_TOOL_NAMES)
+        self.assertIn("functions.shell_command", SHELL_TOOL_NAMES)
 
     def test_allows_unrelated_command(self):
         self.assertIsNone(check_command("ls -la"))

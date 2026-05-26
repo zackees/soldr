@@ -1,0 +1,36 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && uv run --script .claude/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && uv run --script .claude/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "functions.shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$(git rev-parse --show-toplevel)\" && uv run --script .claude/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
