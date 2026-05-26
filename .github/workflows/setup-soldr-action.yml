@@ -74,7 +74,7 @@ jobs:
       - id: setup
         # This is zackees/setup-soldr@v0 pinned to a full SHA
         # because this repository's ruleset requires SHA-pinned actions.
-        uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
+        uses: zackees/setup-soldr@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
         with:
           cache: true
           linker: platform-default
@@ -85,6 +85,8 @@ jobs:
           cache-key-suffix: dogfood-action-state
           build-cache: false
           target-cache: true
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
 
       - name: Show action outputs
         shell: pwsh
@@ -136,10 +138,15 @@ jobs:
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
             setup-soldr-dogfood-zccache-v1-${{ runner.os }}-${{ runner.arch }}-
 
+      - name: Stop setup-soldr builder cache before dogfood build
+        uses: zackees/setup-soldr/cleanup@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+
       - name: Build through soldr
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
         run: |
           Write-Host "dogfood-build-cache-hit=${{ steps.dogfood-build-cache.outputs.cache-hit }}"

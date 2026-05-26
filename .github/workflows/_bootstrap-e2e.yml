@@ -62,12 +62,6 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ inputs.target }}
 
-      - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          workspaces: soldr -> target
-          shared-key: bootstrap-${{ inputs.target }}
-
       - name: Install musl tools
         if: contains(inputs.target, 'musl')
         shell: bash
@@ -101,11 +95,33 @@ jobs:
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+        env:
+          ACTION_WORKSPACE: ${{ github.workspace }}/soldr
+        with:
+          toolchain: 1.94.1
+          cache: true
+          cache-key-suffix: bootstrap-${{ inputs.target }}
+          lockfile: Cargo.lock
+          target-dir: target
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: "--target ${{ inputs.target }}"
+
       - name: Build soldr-cli
         shell: pwsh
         working-directory: soldr
         run: |
-          cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo build --package soldr-cli --locked --target "${{ inputs.target }}"
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Build soldr-cli**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
 
       - name: Resolve third-party toolchain
         id: third_party_toolchain
@@ -145,19 +161,40 @@ jobs:
         run: |
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
+      - name: Stop setup-soldr builder cache before bootstrap test
+        uses: zackees/setup-soldr/cleanup@8eb35c6b4b45bc96d33f8490edd97df654a15aa0
+
       - name: Build third-party app through soldr
         shell: pwsh
         working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}/target-${{ inputs.target }}
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
         run: |
+          Write-Host "Using isolated bootstrap SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
+          Write-Host "Using isolated bootstrap ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
+          $timer = [Diagnostics.Stopwatch]::StartNew()
           & "${{ steps.soldr_binary.outputs.path }}" cargo build --locked --target "${{ inputs.target }}"
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Bootstrap third-party build**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
 
       - name: Show shared soldr cache status
         if: ${{ always() }}
         continue-on-error: true
         shell: pwsh
         working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
         run: |
           $soldrPath = "${{ steps.soldr_binary.outputs.path }}"
           if ([string]::IsNullOrWhiteSpace($soldrPath) -or -not (Test-Path -LiteralPath $soldrPath)) {
@@ -165,6 +202,20 @@ jobs:
             exit 0
           }
           & $soldrPath cache
+
+      - name: Stop isolated bootstrap cache
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
+        run: |
+          $soldrPath = "${{ steps.soldr_binary.outputs.path }}"
+          if ([string]::IsNullOrWhiteSpace($soldrPath) -or -not (Test-Path -LiteralPath $soldrPath)) {
+            exit 0
+          }
+          & $soldrPath cache shutdown --shutdown-timeout-seconds 30
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
