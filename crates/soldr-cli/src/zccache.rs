@@ -7,6 +7,72 @@ use crate::{
     current_soldr_binary, fetch_active_zccache, non_empty_env_path, ZccacheSourceArg,
     RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
+use std::ffi::OsStr;
+
+pub(crate) const SOLDR_CACHE_LIFECYCLE_ENV_VAR: &str = "SOLDR_CACHE_LIFECYCLE";
+pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
+    "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheLifecycle {
+    Job,
+    Command,
+}
+
+pub(crate) fn cache_lifecycle_from_env() -> Result<CacheLifecycle, SoldrError> {
+    cache_lifecycle_from_env_value(std::env::var_os(SOLDR_CACHE_LIFECYCLE_ENV_VAR).as_deref())
+}
+
+pub(crate) fn cache_lifecycle_from_env_value(
+    value: Option<&OsStr>,
+) -> Result<CacheLifecycle, SoldrError> {
+    let Some(value) = value else {
+        return Ok(CacheLifecycle::Job);
+    };
+    let value = value.to_string_lossy();
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "job" | "job-long" | "job-long-cache" | "default" => Ok(CacheLifecycle::Job),
+        "command" | "command-lifetime" | "self-build" => Ok(CacheLifecycle::Command),
+        _ => Err(SoldrError::Other(format!(
+            "{SOLDR_CACHE_LIFECYCLE_ENV_VAR} must be 'job' or 'command' (got {value:?})"
+        ))),
+    }
+}
+
+pub(crate) fn command_lifetime_shutdown_timeout() -> Result<std::time::Duration, SoldrError> {
+    Ok(std::time::Duration::from_secs(
+        command_lifetime_shutdown_timeout_seconds()?,
+    ))
+}
+
+fn command_lifetime_shutdown_timeout_seconds() -> Result<u64, SoldrError> {
+    match std::env::var(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR) {
+        Ok(raw) => parse_shutdown_timeout_seconds(&raw),
+        Err(std::env::VarError::NotPresent) => Ok(30),
+        Err(err) => Err(SoldrError::Other(format!(
+            "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} is not valid Unicode: {err}"
+        ))),
+    }
+}
+
+pub(crate) fn parse_shutdown_timeout_seconds(raw: &str) -> Result<u64, SoldrError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(30);
+    }
+    let seconds = trimmed.parse::<u64>().map_err(|err| {
+        SoldrError::Other(format!(
+            "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} must be a positive integer number of seconds (got {raw:?}: {err})"
+        ))
+    })?;
+    if seconds == 0 {
+        return Err(SoldrError::Other(format!(
+            "{SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR} must be greater than zero"
+        )));
+    }
+    Ok(seconds)
+}
 
 pub(crate) struct ZccacheBuildSession {
     pub(crate) binary_path: std::path::PathBuf,
@@ -334,6 +400,82 @@ pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), 
         &["session-end", &session.session_id, "--json"],
         &output,
     )))
+}
+
+pub(crate) fn stop_zccache_after_command(
+    session: &ZccacheBuildSession,
+    timeout: std::time::Duration,
+) -> Result<(), SoldrError> {
+    let output =
+        run_zccache_command_raw_in_cache_dir(&session.binary_path, &["stop"], &session.cache_dir)?;
+    if output.status.success() {
+        eprintln!("soldr: command-lifetime cache: zccache stop requested");
+    } else if zccache_daemon_already_stopped_output(&output) {
+        eprintln!("soldr: command-lifetime cache: zccache daemon already stopped");
+        return Ok(());
+    } else {
+        return Err(SoldrError::Other(zccache_command_failure_message(
+            &["stop"],
+            &output,
+        )));
+    }
+
+    match poll_zccache_daemon_exit(&session.binary_path, &session.cache_dir, timeout) {
+        ZccacheDaemonExitPollResult::Exited => {
+            eprintln!("soldr: command-lifetime cache: zccache daemon exited");
+            Ok(())
+        }
+        ZccacheDaemonExitPollResult::TimedOut => Err(SoldrError::Other(format!(
+            "command-lifetime cache: zccache daemon did not exit within {}s",
+            timeout.as_secs()
+        ))),
+        ZccacheDaemonExitPollResult::PollFailed(err) => Err(SoldrError::Other(format!(
+            "command-lifetime cache: could not confirm zccache daemon exit: {err}"
+        ))),
+    }
+}
+
+enum ZccacheDaemonExitPollResult {
+    Exited,
+    TimedOut,
+    PollFailed(String),
+}
+
+fn poll_zccache_daemon_exit(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+    timeout: std::time::Duration,
+) -> ZccacheDaemonExitPollResult {
+    let deadline = std::time::Instant::now() + timeout;
+    let poll_interval = std::time::Duration::from_millis(100);
+    loop {
+        match run_zccache_command_raw_in_cache_dir(binary, &["status"], cache_dir) {
+            Ok(output) => {
+                if zccache_daemon_already_stopped_output(&output) {
+                    return ZccacheDaemonExitPollResult::Exited;
+                }
+            }
+            Err(err) => return ZccacheDaemonExitPollResult::PollFailed(err.to_string()),
+        }
+        if std::time::Instant::now() >= deadline {
+            return ZccacheDaemonExitPollResult::TimedOut;
+        }
+        std::thread::sleep(poll_interval);
+    }
+}
+
+fn zccache_daemon_already_stopped_output(output: &std::process::Output) -> bool {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    )
+    .to_ascii_lowercase();
+    combined.contains("daemon not running")
+        || combined.contains("no daemon to stop")
+        || combined.contains("no daemon")
+        || combined.contains("not running")
+        || combined.contains("connection refused")
 }
 
 fn finish_zccache_build_text_fallback(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
@@ -1000,5 +1142,49 @@ mod tests {
             effective_daemon_rust_log(Some("zccache_daemon=trace")),
             "zccache_daemon=trace"
         );
+    }
+
+    #[test]
+    fn cache_lifecycle_defaults_to_job_long_cache() {
+        assert_eq!(
+            cache_lifecycle_from_env_value(None).unwrap(),
+            CacheLifecycle::Job
+        );
+        assert_eq!(
+            cache_lifecycle_from_env_value(Some(OsStr::new(""))).unwrap(),
+            CacheLifecycle::Job
+        );
+        assert_eq!(
+            cache_lifecycle_from_env_value(Some(OsStr::new("job"))).unwrap(),
+            CacheLifecycle::Job
+        );
+    }
+
+    #[test]
+    fn cache_lifecycle_accepts_command_lifetime_aliases() {
+        for value in ["command", "COMMAND", "command-lifetime", "self-build"] {
+            assert_eq!(
+                cache_lifecycle_from_env_value(Some(OsStr::new(value))).unwrap(),
+                CacheLifecycle::Command,
+                "expected {value:?} to enable command-lifetime cache shutdown"
+            );
+        }
+    }
+
+    #[test]
+    fn cache_lifecycle_rejects_unknown_values() {
+        let err = cache_lifecycle_from_env_value(Some(OsStr::new("forever"))).unwrap_err();
+        assert!(
+            err.to_string().contains(SOLDR_CACHE_LIFECYCLE_ENV_VAR),
+            "expected env var name in error: {err}"
+        );
+    }
+
+    #[test]
+    fn command_lifetime_shutdown_timeout_parser_defaults_and_validates() {
+        assert_eq!(parse_shutdown_timeout_seconds("").unwrap(), 30);
+        assert_eq!(parse_shutdown_timeout_seconds(" 5 ").unwrap(), 5);
+        assert!(parse_shutdown_timeout_seconds("0").is_err());
+        assert!(parse_shutdown_timeout_seconds("abc").is_err());
     }
 }

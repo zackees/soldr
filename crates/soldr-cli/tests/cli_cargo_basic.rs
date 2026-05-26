@@ -258,6 +258,90 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
     assert_eq!(stats_json["misses"], 3);
 }
 
+#[test]
+fn command_lifetime_cache_stops_zccache_after_successful_cargo() {
+    let cache_root = unique_temp_dir("cargo-command-lifetime-success");
+    let log_path = cache_root.join("tool.log");
+    let down_marker = cache_root.join("zccache-down");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_CACHE_LIFECYCLE", "command")
+        .env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "1")
+        .env("SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER", &down_marker)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with command-lifetime cache");
+
+    assert!(
+        output.status.success(),
+        "command-lifetime build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert_command_lifetime_shutdown_order(&log);
+    let zccache_cache_dir = cache_root.join("cache").join("zccache");
+    assert!(
+        path_display_variants(&zccache_cache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("zccache stop cache_dir={path}"))),
+        "command-lifetime stop must use the soldr-managed cache root: {log}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("command-lifetime cache: zccache daemon exited"),
+        "expected command-lifetime shutdown diagnostic: {stderr}"
+    );
+}
+
+#[test]
+fn command_lifetime_cache_stops_zccache_after_failing_cargo() {
+    let cache_root = unique_temp_dir("cargo-command-lifetime-fail");
+    let log_path = cache_root.join("tool.log");
+    let down_marker = cache_root.join("zccache-down");
+    let tool_dir = unique_temp_dir("fake-failing-cargo-toolchain");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    let rustc = fake_script_path(&tool_dir, "rustc");
+    let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(&cargo, &fake_failing_cargo_script(&log_path));
+    write_fake_script(&rustc, &fake_rustc_script(&log_path));
+    write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_CACHE_LIFECYCLE", "command")
+        .env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "1")
+        .env("SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER", &down_marker)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run failing soldr cargo build with command-lifetime cache");
+
+    assert!(
+        !output.status.success(),
+        "failing cargo should propagate a non-zero exit status"
+    );
+    assert_eq!(output.status.code(), Some(17));
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo failing"),
+        "failing cargo should have run before shutdown: {log}"
+    );
+    assert_command_lifetime_shutdown_order(&log);
+}
+
 #[cfg(windows)]
 #[test]
 fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
@@ -445,4 +529,38 @@ fn cargo_front_door_respects_dev_debug_in_cargo_config_toml() {
         !stderr.contains("Cargo profile.dev.debug is unspecified"),
         "explicit .cargo/config.toml profile.dev.debug should suppress warning: {stderr}"
     );
+}
+
+fn assert_command_lifetime_shutdown_order(log: &str) {
+    let session_end = log
+        .find("zccache session-end test-session --json")
+        .unwrap_or_else(|| panic!("session-end missing from fake zccache log: {log}"));
+    let stop = log
+        .find("zccache stop")
+        .unwrap_or_else(|| panic!("zccache stop missing from fake zccache log: {log}"));
+    assert!(
+        session_end < stop,
+        "command-lifetime shutdown must finalize stats before stopping daemon: {log}"
+    );
+}
+
+fn fake_failing_cargo_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo failing wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{}\"\n\
+             exit /b 17\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo failing wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
+             exit 17\n",
+            log_path.display()
+        )
+    }
 }
