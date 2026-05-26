@@ -95,12 +95,24 @@ jobs:
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
+      - name: Write setup-soldr toolchain spec
+        shell: bash
+        working-directory: soldr
+        run: |
+          cat > rust-toolchain.ci.toml <<'EOF'
+          [toolchain]
+          channel = "1.94.1"
+          profile = "minimal"
+          targets = ["${{ inputs.target }}"]
+          EOF
+          cat rust-toolchain.ci.toml
+
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@386201437808bbe52f97b05e531b0276f8e5cebf
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
-          toolchain: 1.94.1
+          toolchain-file: rust-toolchain.ci.toml
           cache: true
           cache-key-suffix: bootstrap-${{ inputs.target }}
           lockfile: Cargo.lock
