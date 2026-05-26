@@ -155,7 +155,10 @@ pub(crate) fn inject_native_cache_env(
     // invariant tight.
     if let Some(triple) = target {
         let snake = triple.replace('-', "_");
-        for (prefix, default_compiler) in [("CC_", "cc"), ("CXX_", "c++")] {
+        for (prefix, default_compiler) in [
+            ("CC_", default_c_compiler_for_target(triple)),
+            ("CXX_", default_cxx_compiler_for_target(triple)),
+        ] {
             let var = format!("{prefix}{snake}");
             if let Some(wrapped) =
                 wrap_compiler_env(&var, default_compiler, &wrapper, synthesize_default)
@@ -176,6 +179,22 @@ pub(crate) fn inject_native_cache_env(
     }
 
     Ok(())
+}
+
+fn default_c_compiler_for_target(triple: &str) -> &'static str {
+    if triple.contains("-linux-musl") {
+        "musl-gcc"
+    } else {
+        "cc"
+    }
+}
+
+fn default_cxx_compiler_for_target(triple: &str) -> &'static str {
+    if triple.contains("-linux-musl") {
+        "musl-g++"
+    } else {
+        "c++"
+    }
 }
 
 /// Compute the wrapped value for one compiler env var. Returns `None`

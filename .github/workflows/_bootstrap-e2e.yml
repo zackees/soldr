@@ -43,6 +43,14 @@ jobs:
   bootstrap-e2e:
     name: Build soldr and bootstrap third-party app (${{ inputs.target }})
     runs-on: ${{ inputs.runner }}
+    env:
+      # setup-soldr currently builds this PR with a released soldr binary.
+      # Keep native cc-rs compiles on musl-gcc until the soldr-side default
+      # in this branch is released and picked up by setup-soldr.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CXX_x86_64_unknown_linux_musl: musl-g++
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CXX_aarch64_unknown_linux_musl: musl-g++
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

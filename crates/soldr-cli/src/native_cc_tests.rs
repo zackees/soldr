@@ -174,6 +174,41 @@ fn set_var_with_synthesize_disabled_still_wraps() {
     assert_eq!(wrapped, OsString::from("/tmp/zccache clang"));
 }
 
+#[test]
+fn musl_targets_default_to_musl_compilers() {
+    assert_eq!(
+        default_c_compiler_for_target("x86_64-unknown-linux-musl"),
+        "musl-gcc"
+    );
+    assert_eq!(
+        default_cxx_compiler_for_target("aarch64-unknown-linux-musl"),
+        "musl-g++"
+    );
+    assert_eq!(
+        default_c_compiler_for_target("x86_64-unknown-linux-gnu"),
+        "cc"
+    );
+    assert_eq!(
+        default_cxx_compiler_for_target("aarch64-apple-darwin"),
+        "c++"
+    );
+}
+
+#[test]
+fn wraps_musl_target_default_with_musl_gcc() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _g = EnvGuard::remove("CC_x86_64_unknown_linux_musl");
+    let wrapper = OsString::from("/tmp/zccache");
+    let wrapped = wrap_compiler_env(
+        "CC_x86_64_unknown_linux_musl",
+        default_c_compiler_for_target("x86_64-unknown-linux-musl"),
+        &wrapper,
+        true,
+    )
+    .unwrap();
+    assert_eq!(wrapped, OsString::from("/tmp/zccache musl-gcc"));
+}
+
 // -------------------------------------------------------------------------
 // native_cache_decision — platform + env interaction
 // -------------------------------------------------------------------------
