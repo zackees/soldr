@@ -28,6 +28,7 @@ use crate::trampoline_workspace::{
 use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, finish_zccache_build,
     prepare_rustc_wrapper, stop_zccache_after_command, CacheLifecycle,
+    SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
 use crate::{
     apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, rust_plan, ZccacheSourceArg,
@@ -184,6 +185,11 @@ fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPrune
     }
 }
 
+fn scrub_soldr_cache_lifecycle_env_for_child_cargo(command: &mut std::process::Command) {
+    command.env_remove(SOLDR_CACHE_LIFECYCLE_ENV_VAR);
+    command.env_remove(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR);
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
@@ -283,6 +289,10 @@ pub(crate) async fn run_cargo_front_door(
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
+    // These soldr control variables are consumed by this front-door
+    // process. Letting cargo inherit them leaks daemon lifecycle policy
+    // into build scripts and test binaries that may spawn nested soldr.
+    scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
     // soldr cargo is the top of the invocation tree, so any inherited
     // MAKEFLAGS/CARGO_MAKEFLAGS points at jobserver fds that aren't open in
     // our process. Stripping them lets cargo start a fresh jobserver instead

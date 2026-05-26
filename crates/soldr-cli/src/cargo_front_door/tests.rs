@@ -41,6 +41,34 @@ impl Drop for EnvVarGuard {
     }
 }
 
+fn command_env_override(
+    command: &std::process::Command,
+    key: &'static str,
+) -> Option<Option<OsString>> {
+    command
+        .get_envs()
+        .find(|(candidate, _)| *candidate == OsStr::new(key))
+        .map(|(_, value)| value.map(OsString::from))
+}
+
+#[test]
+fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
+    let mut command = std::process::Command::new("cargo");
+    command.env(SOLDR_CACHE_LIFECYCLE_ENV_VAR, "command");
+    command.env(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR, "1");
+
+    scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
+
+    assert_eq!(
+        command_env_override(&command, SOLDR_CACHE_LIFECYCLE_ENV_VAR),
+        Some(None)
+    );
+    assert_eq!(
+        command_env_override(&command, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR),
+        Some(None)
+    );
+}
+
 #[test]
 fn low_disk_warning_formats_yellow_below_threshold() {
     let message = low_disk_warning_for_free_bytes(1536 * 1024 * 1024, true)
