@@ -620,7 +620,10 @@ fn trailing_user_args(args: &[String]) -> Vec<String> {
 
 #[path = "trampoline_layout.rs"]
 mod layout;
-pub(crate) use layout::{compute_layout, effective_target_triple, find_nearest_manifest, resolve_bin_name, resolve_target_dir, Layout};
+pub(crate) use layout::{
+    compute_layout, effective_target_triple, find_nearest_manifest, resolve_bin_name,
+    resolve_target_dir, Layout,
+};
 
 // ---------------------------------------------------------------------------
 // Sidecar (de)serialization

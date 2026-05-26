@@ -56,9 +56,7 @@ pub fn read_registry_src_last_used(cargo_home: &Path) -> Option<HashMap<Registry
     read_registry_src_last_used_from_path(&path).ok()
 }
 
-fn read_registry_src_last_used_from_path(
-    path: &Path,
-) -> SqlResult<HashMap<RegistrySrcKey, i64>> {
+fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<RegistrySrcKey, i64>> {
     // Read-only open: never mutates cargo's database. `NO_MUTEX` lets
     // multiple soldr invocations open the DB concurrently — cargo's
     // own writes coordinate through its package-cache lock above the
@@ -165,7 +163,8 @@ mod tests {
         // No `registry_src` / `registry_index` — cargo schema drift
         // (or someone else's DB at the same path). Falling back to
         // mtime is correct here.
-        conn.execute("CREATE TABLE unrelated (id INTEGER)", []).unwrap();
+        conn.execute("CREATE TABLE unrelated (id INTEGER)", [])
+            .unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
     }
 

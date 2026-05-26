@@ -46,7 +46,9 @@ pub use zccache::{
     classify_zccache_source, managed_only_zccache_summary, pinned_zccache_summary,
     resolve_local_zccache, zccache_binary_summary, ZccacheBinarySummary, ZccacheSource,
 };
-pub use zccache_install::{cached_zccache_binary, fetch_zccache_with_paths, resolve_system_zccache};
+pub use zccache_install::{
+    cached_zccache_binary, fetch_zccache_with_paths, resolve_system_zccache,
+};
 
 pub(crate) use github::http_client;
 

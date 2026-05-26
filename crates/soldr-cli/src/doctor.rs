@@ -3,9 +3,7 @@
 
 use crate::cache::print_json;
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
-use crate::defender_probe::{
-    self, DefenderProbeState, DefenderVerdict, SCANNED_THRESHOLD_MS,
-};
+use crate::defender_probe::{self, DefenderProbeState, DefenderVerdict, SCANNED_THRESHOLD_MS};
 use crate::fetch::{ZccacheBinarySummary, ZccacheSource};
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
 use serde::Serialize;
@@ -373,9 +371,7 @@ fn print_defender_probe_human(outcome: Option<&DefenderProbeOutcome>) {
                 "  recommendation: run bench/add_defender_exclusions.ps1 as admin, or move \
                  SOLDR_CACHE_DIR onto a trusted Dev Drive (Windows 11 22H2+)"
             );
-            println!(
-                "  threshold:     median > {SCANNED_THRESHOLD_MS} ms classifies as scanned"
-            );
+            println!("  threshold:     median > {SCANNED_THRESHOLD_MS} ms classifies as scanned");
         }
     }
 }

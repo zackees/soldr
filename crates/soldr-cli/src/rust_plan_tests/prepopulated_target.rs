@@ -65,8 +65,7 @@ fn seed_fingerprint_dir(target: &std::path::Path, profile: &str) -> std::path::P
     std::fs::create_dir_all(&fp).expect("create .fingerprint");
     let entry = fp.join("serde-abc123");
     std::fs::create_dir_all(&entry).expect("create fingerprint entry");
-    std::fs::write(entry.join("invoked.timestamp"), b"")
-        .expect("seed invoked.timestamp");
+    std::fs::write(entry.join("invoked.timestamp"), b"").expect("seed invoked.timestamp");
     fp
 }
 

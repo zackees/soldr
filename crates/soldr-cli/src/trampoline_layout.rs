@@ -199,4 +199,3 @@ pub(crate) fn resolve_bin_name(parsed: &ParsedRunArgs) -> Result<Option<String>,
     }
     Ok(None)
 }
-

@@ -87,11 +87,7 @@ fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError
     // .cmd is the simplest cross-tool extension Windows resolves
     // automatically from PATH. Quoting the soldr path handles spaces.
     let path = dir.join(format!("{tool}.cmd"));
-    let body = format!(
-        "@echo off\r\n\"{}\" {} %*\r\n",
-        soldr_bin.display(),
-        tool
-    );
+    let body = format!("@echo off\r\n\"{}\" {} %*\r\n", soldr_bin.display(), tool);
     std::fs::write(&path, body).map_err(SoldrError::Io)
 }
 
@@ -105,7 +101,9 @@ fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError
         tool
     );
     std::fs::write(&path, body).map_err(SoldrError::Io)?;
-    let mut perms = std::fs::metadata(&path).map_err(SoldrError::Io)?.permissions();
+    let mut perms = std::fs::metadata(&path)
+        .map_err(SoldrError::Io)?
+        .permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&path, perms).map_err(SoldrError::Io)?;
     Ok(())
@@ -145,11 +143,7 @@ mod tests {
             let expected = guard.path.join(format!("{tool}.cmd"));
             #[cfg(not(windows))]
             let expected = guard.path.join(tool);
-            assert!(
-                expected.is_file(),
-                "missing shim at {}",
-                expected.display()
-            );
+            assert!(expected.is_file(), "missing shim at {}", expected.display());
         }
     }
 
@@ -158,8 +152,7 @@ mod tests {
         let guard = build_shim_dir().expect("build_shim_dir");
         let mut cmd = std::process::Command::new("does-not-matter");
         apply_to_command(&mut cmd, &guard.path);
-        let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> =
-            cmd.get_envs().collect();
+        let envs: std::collections::HashMap<&OsStr, Option<&OsStr>> = cmd.get_envs().collect();
         let sentinel_set = envs
             .get(OsStr::new(SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR))
             .copied()

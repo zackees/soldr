@@ -78,16 +78,10 @@ fn last_used_falls_back_to_mtime_when_key_missing() {
     let meta = fake_metadata_with_mtime(&f, 1_700_000_000);
     // Tracker exists (Some), but doesn't have a row for this crate.
     // The fallback must be per-crate, not per-tracker.
-    let map: std::collections::HashMap<
-        crate::cache_lib::cargo_global_cache::RegistrySrcKey,
-        i64,
-    > = std::collections::HashMap::new();
-    let (ts, source) = resolve_registry_src_last_used(
-        Some(&map),
-        "index.crates.io-abc123",
-        "serde-1.0.0",
-        &meta,
-    );
+    let map: std::collections::HashMap<crate::cache_lib::cargo_global_cache::RegistrySrcKey, i64> =
+        std::collections::HashMap::new();
+    let (ts, source) =
+        resolve_registry_src_last_used(Some(&map), "index.crates.io-abc123", "serde-1.0.0", &meta);
     assert_eq!(ts, 1_700_000_000);
     assert_eq!(source, "fs_mtime");
 }
@@ -100,10 +94,8 @@ fn last_used_falls_back_when_dir_name_is_not_versioned() {
     // `split_dir_name` returns None for names that don't match the
     // `<crate>-<digit-prefixed-version>` shape. The walker must then
     // fall back to mtime rather than crashing or returning 0.
-    let map: std::collections::HashMap<
-        crate::cache_lib::cargo_global_cache::RegistrySrcKey,
-        i64,
-    > = std::collections::HashMap::new();
+    let map: std::collections::HashMap<crate::cache_lib::cargo_global_cache::RegistrySrcKey, i64> =
+        std::collections::HashMap::new();
     let (ts, source) =
         resolve_registry_src_last_used(Some(&map), "index.crates.io-abc123", "bare-serde", &meta);
     assert_eq!(ts, 1_700_000_000);

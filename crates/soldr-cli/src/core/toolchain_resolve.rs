@@ -17,7 +17,9 @@ use serde::Deserialize;
 
 use super::target_triple::{compile_time_arch, compile_time_host_os, TargetTriple};
 use super::toolchain_manifest::read_rust_toolchain_manifest;
-use super::{non_empty_env_path, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR, RUSTUP_TOOLCHAIN_ENV_VAR};
+use super::{
+    non_empty_env_path, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR, RUSTUP_TOOLCHAIN_ENV_VAR,
+};
 
 #[derive(Debug, Deserialize)]
 struct CargoConfigFile {

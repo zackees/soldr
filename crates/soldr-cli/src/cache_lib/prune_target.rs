@@ -277,7 +277,13 @@ fn classify_per_parent_prefix(
             .push(idx);
     }
     for indices in buckets.values_mut() {
-        rank_indices(entries, indices, target_dir, fingerprint_decisions, mtime_decisions);
+        rank_indices(
+            entries,
+            indices,
+            target_dir,
+            fingerprint_decisions,
+            mtime_decisions,
+        );
         let mut iter = indices.iter().copied();
         if let Some(keep) = iter.next() {
             entries[keep].action = PruneAction::Keep;
@@ -305,13 +311,16 @@ fn classify_per_prefix(
 ) {
     let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
     for (idx, entry) in entries.iter().enumerate() {
-        buckets
-            .entry(entry.prefix.clone())
-            .or_default()
-            .push(idx);
+        buckets.entry(entry.prefix.clone()).or_default().push(idx);
     }
     for indices in buckets.values_mut() {
-        rank_indices(entries, indices, target_dir, fingerprint_decisions, mtime_decisions);
+        rank_indices(
+            entries,
+            indices,
+            target_dir,
+            fingerprint_decisions,
+            mtime_decisions,
+        );
         let winning_hash = match indices.first() {
             Some(&idx) => entries[idx].hash.clone(),
             None => continue,
@@ -375,10 +384,7 @@ fn rank_indices(
 /// `libfoo-<hash>.rlib`). We look up `<prefix>-<hash>` first; if
 /// `<prefix>` starts with `lib` and that misses, we retry against
 /// `<prefix without lib>-<hash>`.
-pub(crate) fn entry_recency(
-    entry: &PruneTargetEntry,
-    target_dir: &Path,
-) -> (i64, RecencySource) {
+pub(crate) fn entry_recency(entry: &PruneTargetEntry, target_dir: &Path) -> (i64, RecencySource) {
     let lib_stripped = entry.prefix.strip_prefix("lib");
     let candidates: &[&str] = match lib_stripped {
         Some(stripped) => &[entry.prefix.as_str(), stripped],
