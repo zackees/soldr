@@ -39,6 +39,13 @@ RUST_TOOLS = {
 }
 
 PYTHON_TOOLS = {"python", "python3", "pip", "pip3"}
+SHELL_TOOL_NAMES = {
+    "Bash",
+    "Shell",
+    "PowerShell",
+    "shell_command",
+    "functions.shell_command",
+}
 
 # Shell control operators that end one top-level command and start another.
 # `|` is intentionally absent — the hook has never split on pipes (a bare
@@ -248,7 +255,7 @@ def main():
         sys.exit(0)
 
     tool_name = data.get("tool_name", "")
-    if tool_name not in {"Bash", "Shell", "PowerShell"}:
+    if tool_name not in SHELL_TOOL_NAMES:
         sys.exit(0)
 
     command = extract_command(data)
