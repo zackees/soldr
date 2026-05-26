@@ -57,9 +57,11 @@ pub(crate) fn resolve_path_remap_env(
 ) -> Option<&'static str> {
     // Rule 1: if the user already exported ZCCACHE_PATH_REMAP, never
     // overwrite. zccache itself decides what to do with their value
-    // (including the empty string).
-    if user_zccache.is_some() {
-        return None;
+    // (except that an empty/whitespace-only value is treated as unset).
+    if let Some(value) = user_zccache {
+        if !value.trim().is_empty() {
+            return None;
+        }
     }
 
     // Rule 2: SOLDR_PATH_REMAP=off (case-insensitive) suppresses the
@@ -71,6 +73,40 @@ pub(crate) fn resolve_path_remap_env(
     }
 
     Some("auto")
+}
+
+pub(crate) fn path_remap_auto_active(
+    user_zccache: Option<&str>,
+    soldr_override: Option<&str>,
+) -> bool {
+    match user_zccache
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => value.eq_ignore_ascii_case("auto"),
+        None => resolve_path_remap_env(None, soldr_override).is_some(),
+    }
+}
+
+pub(crate) fn resolve_worktree_root_env(
+    user_worktree_root: Option<&std::ffi::OsStr>,
+    cwd: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if user_worktree_root.is_some_and(|value| !value.is_empty()) {
+        return None;
+    }
+
+    find_git_worktree_root(cwd).or_else(|| Some(cwd.to_path_buf()))
+}
+
+pub(crate) fn find_git_worktree_root(cwd: &std::path::Path) -> Option<std::path::PathBuf> {
+    for candidate in cwd.ancestors() {
+        let dot_git = candidate.join(".git");
+        if dot_git.is_dir() || dot_git.is_file() {
+            return Some(candidate.to_path_buf());
+        }
+    }
+    None
 }
 
 pub(crate) async fn prepare_rustc_wrapper(
@@ -235,15 +271,22 @@ async fn prepare_zccache_build(
         .max(1);
     crate::daemon::client::link_zccache(paths, zccache_token);
 
-    // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto so
-    // multiple worktrees of the same repo share zccache hits. Honor any
-    // user-supplied ZCCACHE_PATH_REMAP, and the SOLDR_PATH_REMAP=off
-    // escape hatch.
+    // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto
+    // and a logical worktree root so multiple worktrees of the same repo
+    // share zccache hits through normalized keys. Honor user-supplied
+    // ZCCACHE_* values, and the SOLDR_PATH_REMAP=off escape hatch.
     let user_zccache = std::env::var(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR).ok();
     let soldr_override = std::env::var(crate::cache_lib::SOLDR_PATH_REMAP_ENV_VAR).ok();
     if let Some(value) = resolve_path_remap_env(user_zccache.as_deref(), soldr_override.as_deref())
     {
         cargo.env(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR, value);
+    }
+    if path_remap_auto_active(user_zccache.as_deref(), soldr_override.as_deref()) {
+        let user_worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
+        let cwd = std::env::current_dir()?;
+        if let Some(root) = resolve_worktree_root_env(user_worktree_root.as_deref(), &cwd) {
+            cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
+        }
     }
 
     Ok(ZccacheBuildSession {
@@ -553,9 +596,8 @@ fn run_zccache_start_command(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<std::process::Output, SoldrError> {
-    let rust_log = effective_daemon_rust_log(
-        std::env::var(SOLDR_DAEMON_RUST_LOG_ENV_VAR).ok().as_deref(),
-    );
+    let rust_log =
+        effective_daemon_rust_log(std::env::var(SOLDR_DAEMON_RUST_LOG_ENV_VAR).ok().as_deref());
     run_zccache_command_raw_with_env(
         binary,
         &["start"],
@@ -800,7 +842,13 @@ mod tests {
     fn path_remap_preserves_user_value_when_zccache_already_set_to_non_auto() {
         assert_eq!(resolve_path_remap_env(Some("disabled"), None), None);
         assert_eq!(resolve_path_remap_env(Some("disabled"), Some("auto")), None);
-        assert_eq!(resolve_path_remap_env(Some(""), None), None);
+    }
+
+    #[test]
+    fn path_remap_treats_empty_user_value_as_unset() {
+        assert_eq!(resolve_path_remap_env(Some(""), None), Some("auto"));
+        assert_eq!(resolve_path_remap_env(Some("   "), None), Some("auto"));
+        assert_eq!(resolve_path_remap_env(Some(""), Some("off")), None);
     }
 
     #[test]
@@ -810,6 +858,56 @@ mod tests {
         // in the inherited environment.
         assert_eq!(resolve_path_remap_env(Some("auto"), None), None);
         assert_eq!(resolve_path_remap_env(Some("auto"), Some("off")), None);
+    }
+
+    #[test]
+    fn path_remap_auto_active_tracks_child_state() {
+        assert!(path_remap_auto_active(None, None));
+        assert!(path_remap_auto_active(Some(""), None));
+        assert!(path_remap_auto_active(Some("auto"), Some("off")));
+        assert!(!path_remap_auto_active(None, Some("off")));
+        assert!(!path_remap_auto_active(Some("disabled"), None));
+    }
+
+    #[test]
+    fn worktree_root_env_uses_git_root_by_default() {
+        let temp = unique_test_dir("worktree-root-git");
+        let root = temp.join("repo");
+        let nested = root.join("crates").join("demo");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+
+        assert_eq!(find_git_worktree_root(&nested), Some(root.clone()));
+        assert_eq!(resolve_worktree_root_env(None, &nested), Some(root));
+    }
+
+    #[test]
+    fn worktree_root_env_falls_back_to_cwd_without_git_root() {
+        let temp = unique_test_dir("worktree-root-cwd");
+        let cwd = temp.join("repo");
+        std::fs::create_dir_all(&cwd).unwrap();
+
+        assert_eq!(find_git_worktree_root(&cwd), None);
+        assert_eq!(resolve_worktree_root_env(None, &cwd), Some(cwd));
+    }
+
+    #[test]
+    fn worktree_root_env_preserves_user_value() {
+        let cwd = std::path::Path::new("/repo");
+        assert_eq!(
+            resolve_worktree_root_env(Some(OsStr::new("/custom/root")), cwd),
+            None
+        );
+    }
+
+    fn unique_test_dir(label: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
     }
 
     // ---------------------------------------------------------------

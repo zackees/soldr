@@ -69,12 +69,12 @@ pub(crate) fn run_rustc_wrapper(
     // nothing, and exits 0 — masking any real compile error (e.g. E0554 from
     // build-script feature probes like rustix 0.37's `can_compile()`).
     //
-    // Fix: spill stdin to a temp file so both zccache and rustc see a real
-    // path. The temp file is created in the system temp directory and removed
-    // after the child exits. This keeps zccache in the loop (it can hash the
-    // file normally) while preserving the correct exit code.
+    // Fix: spill stdin to a content-addressed temp file so both zccache and
+    // rustc see a stable real path. This keeps zccache in the loop (it can
+    // hash the file normally) while preserving the correct exit code, and it
+    // lets identical feature probes converge on the same cache key.
     let stdin_tempfile = if raw_args[2..].iter().any(|a| a == "-") {
-        Some(spill_stdin_to_tempfile()?)
+        Some(spill_stdin_to_content_addressed_file()?)
     } else {
         None
     };
@@ -124,25 +124,94 @@ pub(crate) fn run_rustc_wrapper(
     Ok(status.code().unwrap_or(1))
 }
 
-/// Read all of stdin into a named temporary file and return the file.
+struct StdinSourceFile {
+    path: std::path::PathBuf,
+}
+
+impl StdinSourceFile {
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+/// Read all of stdin into a content-addressed source file and return it.
 ///
 /// The file has a `.rs` extension so rustc accepts it without flags, and
-/// lives in the system temp directory. It is deleted when the returned
-/// `NamedTempFile` value is dropped (i.e. after the child process exits).
-fn spill_stdin_to_tempfile() -> Result<tempfile::NamedTempFile, SoldrError> {
-    use std::io::{Read, Write as _};
-    let mut tmp = tempfile::Builder::new()
-        .prefix("soldr-stdin-")
-        .suffix(".rs")
-        .tempfile()
-        .map_err(|e| SoldrError::Other(format!("failed to create stdin temp file: {e}")))?;
+/// lives in the system temp directory as `soldr-stdin-<short_blake3>.rs`.
+/// It is intentionally retained so concurrent identical probes can share the
+/// same stable path.
+fn spill_stdin_to_content_addressed_file() -> Result<StdinSourceFile, SoldrError> {
+    use std::io::Read;
     let mut buf = Vec::new();
     std::io::stdin()
         .read_to_end(&mut buf)
         .map_err(|e| SoldrError::Other(format!("failed to read stdin: {e}")))?;
-    tmp.write_all(&buf)
+    materialize_stdin_source(&buf)
+}
+
+fn materialize_stdin_source(bytes: &[u8]) -> Result<StdinSourceFile, SoldrError> {
+    let hash = blake3::hash(bytes);
+    let hex = hash.to_hex();
+    let temp_dir = std::env::temp_dir();
+    let short_path = temp_dir.join(format!("soldr-stdin-{}.rs", &hex[..16]));
+    if ensure_stdin_source_path(&short_path, bytes)? {
+        return Ok(StdinSourceFile { path: short_path });
+    }
+
+    let full_path = temp_dir.join(format!("soldr-stdin-{hex}.rs"));
+    if ensure_stdin_source_path(&full_path, bytes)? {
+        return Ok(StdinSourceFile { path: full_path });
+    }
+
+    Err(SoldrError::Other(format!(
+        "stdin temp path hash collision at {}",
+        full_path.display()
+    )))
+}
+
+fn ensure_stdin_source_path(path: &std::path::Path, bytes: &[u8]) -> Result<bool, SoldrError> {
+    use std::io::Write as _;
+
+    match std::fs::read(path) {
+        Ok(existing) => return Ok(existing == bytes),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            return Err(SoldrError::Other(format!(
+                "failed to read existing stdin temp file {}: {err}",
+                path.display()
+            )));
+        }
+    }
+
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to create stdin temp file in {}: {e}",
+            parent.display()
+        ))
+    })?;
+    tmp.write_all(bytes)
         .map_err(|e| SoldrError::Other(format!("failed to write stdin temp file: {e}")))?;
-    Ok(tmp)
+    let _ = tmp.as_file().sync_all();
+
+    match tmp.persist_noclobber(path) {
+        Ok(_) => Ok(true),
+        Err(err) if err.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = err.file.close();
+            let existing = std::fs::read(path).map_err(|e| {
+                SoldrError::Other(format!(
+                    "failed to read raced stdin temp file {}: {e}",
+                    path.display()
+                ))
+            })?;
+            Ok(existing == bytes)
+        }
+        Err(err) => Err(SoldrError::Other(format!(
+            "failed to publish stdin temp file {}: {}",
+            path.display(),
+            err.error
+        ))),
+    }
 }
 
 fn run_wrapper_through_zccache(
@@ -337,6 +406,37 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stdin_source_path_is_content_addressed() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let bytes = format!("fn main() {{ let _ = {nonce}; }}\n");
+        let file = materialize_stdin_source(bytes.as_bytes()).unwrap();
+        let hash = blake3::hash(bytes.as_bytes()).to_hex();
+        let name = file.path().file_name().unwrap().to_string_lossy();
+
+        assert_eq!(name.as_ref(), format!("soldr-stdin-{}.rs", &hash[..16]));
+        assert_eq!(std::fs::read(file.path()).unwrap(), bytes.as_bytes());
+
+        let same = materialize_stdin_source(bytes.as_bytes()).unwrap();
+        assert_eq!(same.path(), file.path());
+    }
+
+    #[test]
+    fn stdin_source_paths_do_not_collide_for_distinct_content() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let a = materialize_stdin_source(format!("const A: u128 = {nonce};\n").as_bytes()).unwrap();
+        let b = materialize_stdin_source(format!("const B: u128 = {};\n", nonce + 1).as_bytes())
+            .unwrap();
+
+        assert_ne!(a.path(), b.path());
+    }
 
     // -------- stderr_indicates_unknown_session (issue #265) --------
 

@@ -271,6 +271,51 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
 }
 
 #[test]
+fn managed_zccache_injects_normalized_path_remap_by_default() {
+    let cache_root = unique_temp_dir("cargo-normalized-remap");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let repo_root = unique_temp_dir("cargo-normalized-remap-repo");
+    let nested = repo_root.join("crates").join("demo");
+    fs::create_dir_all(repo_root.join(".git")).expect("failed to create fake git root");
+    fs::create_dir_all(&nested).expect("failed to create nested cwd");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .current_dir(&nested)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("ZCCACHE_PATH_REMAP")
+        .env_remove("ZCCACHE_WORKTREE_ROOT")
+        .env_remove("SOLDR_PATH_REMAP")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with normalized remap defaults");
+
+    assert!(
+        output.status.success(),
+        "normalized remap front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("path_remap=auto"),
+        "managed zccache should enable path remap by default: {log}"
+    );
+    assert!(
+        path_display_variants(&repo_root)
+            .iter()
+            .any(|path| log.contains(&format!("worktree_root={path}"))),
+        "managed zccache should pass the git root as ZCCACHE_WORKTREE_ROOT: {log}"
+    );
+}
+
+#[test]
 fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let cache_root = unique_temp_dir("cargo-custom-wrapper");
     let log_path = cache_root.join("tool.log");
