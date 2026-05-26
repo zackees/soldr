@@ -151,6 +151,11 @@ pub const MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR: &str = "SOLDR_MANAGED_ZCCACHE_CACHE
 /// can share cache hits. See issue #352.
 pub const ZCCACHE_PATH_REMAP_ENV_VAR: &str = "ZCCACHE_PATH_REMAP";
 
+/// zccache worktree-root override used as the logical root for path-remap
+/// normalization. soldr injects this with `ZCCACHE_PATH_REMAP=auto` so the
+/// default parent-cache path has a stable normalization anchor.
+pub const ZCCACHE_WORKTREE_ROOT_ENV_VAR: &str = "ZCCACHE_WORKTREE_ROOT";
+
 /// Soldr-side escape hatch for the default `ZCCACHE_PATH_REMAP=auto`
 /// injection. Accepts `auto` (default, equivalent to unset) and `off`.
 /// See issue #352.

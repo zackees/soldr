@@ -183,7 +183,7 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
                if defined SOLDR_TEST_CARGO_METADATA_PATH (\n\
                  type \"%SOLDR_TEST_CARGO_METADATA_PATH%\"\n\
                ) else (\n\
-                 echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+                 echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR% path_remap=%ZCCACHE_PATH_REMAP% worktree_root=%ZCCACHE_WORKTREE_ROOT%>>\"{0}\"\n\
                  for /f \"tokens=1,* delims==\" %%A in ('set CARGO_TARGET_ 2^>nul') do @echo cargo_target_env %%A=%%B>>\"{0}\"\n\
                  for /f \"tokens=1,* delims==\" %%A in ('set CARGO_PROFILE_ 2^>nul') do @echo cargo_profile_env %%A=%%B>>\"{0}\"\n\
                  echo {{}}\n\
@@ -195,7 +195,7 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
                echo cargo 1.0.0-test\n\
                exit /b 0\n\
              )\n\
-             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% sccache_dir=%SCCACHE_DIR% zccache_dir=%ZCCACHE_CACHE_DIR% path_remap=%ZCCACHE_PATH_REMAP% worktree_root=%ZCCACHE_WORKTREE_ROOT%>>\"{0}\"\n\
              for /f \"tokens=1,* delims==\" %%A in ('set CARGO_TARGET_ 2^>nul') do @echo cargo_target_env %%A=%%B>>\"{0}\"\n\
              for /f \"tokens=1,* delims==\" %%A in ('set CARGO_PROFILE_ 2^>nul') do @echo cargo_profile_env %%A=%%B>>\"{0}\"\n\
              if defined RUSTC_WRAPPER (\n\
@@ -225,7 +225,7 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
                if [ -n \"${{SOLDR_TEST_CARGO_METADATA_PATH:-}}\" ]; then\n\
                  cat \"$SOLDR_TEST_CARGO_METADATA_PATH\"\n\
                else\n\
-                 echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}} path_remap=${{ZCCACHE_PATH_REMAP:-}} worktree_root=${{ZCCACHE_WORKTREE_ROOT:-}}\" >> \"{0}\"\n\
                  log_cargo_target_envs\n\
                  log_cargo_profile_envs\n\
                  echo '{{}}'\n\
@@ -237,7 +237,7 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
                echo 'cargo 1.0.0-test'\n\
                exit 0\n\
              fi\n\
-             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} sccache_dir=${{SCCACHE_DIR:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}} path_remap=${{ZCCACHE_PATH_REMAP:-}} worktree_root=${{ZCCACHE_WORKTREE_ROOT:-}}\" >> \"{0}\"\n\
              log_cargo_target_envs\n\
              log_cargo_profile_envs\n\
              if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\

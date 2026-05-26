@@ -135,7 +135,7 @@ fn install_zccache_json_round_trip() {
         serde_json::from_slice(&status.stdout).expect("status --json should emit valid JSON");
     assert_eq!(status_json["command"], "install-zccache --status");
     assert_eq!(status_json["pinned"]["source_kind"], "path");
-    assert_eq!(status_json["managed_version"], "1.11.0");
+    assert_eq!(status_json["managed_version"], "1.11.2");
     assert!(
         status_json["drift_from_managed"].is_boolean(),
         "drift_from_managed must be a bool"
@@ -186,7 +186,7 @@ fn install_zccache_status_with_no_install_reports_managed_default() {
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).expect("status --json");
     assert!(json["pinned"].is_null(), "pinned should be null: {json}");
-    assert_eq!(json["managed_version"], "1.11.0");
+    assert_eq!(json["managed_version"], "1.11.2");
 }
 
 #[test]
