@@ -697,13 +697,11 @@ fn zccache_flag_unsupported(output: &std::process::Output, flag: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::report::zccache_analyze_failure_note;
     use super::super::{
         zccache_daemon_already_stopped, zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT,
     };
-    use super::super::report::zccache_analyze_failure_note;
-    use super::{
-        clear_session_artifacts, zccache_flag_unsupported, zccache_session_already_ended,
-    };
+    use super::{clear_session_artifacts, zccache_flag_unsupported, zccache_session_already_ended};
     use std::process::Output;
 
     fn synthetic_output(stderr: &str, exit: i32) -> Output {

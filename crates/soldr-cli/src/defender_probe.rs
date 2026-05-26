@@ -184,9 +184,8 @@ pub fn write_probe_state(paths: &SoldrPaths, state: &DefenderProbeState) -> Resu
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_vec_pretty(state).map_err(|e| {
-        SoldrError::Other(format!("failed to serialize defender-probe state: {e}"))
-    })?;
+    let json = serde_json::to_vec_pretty(state)
+        .map_err(|e| SoldrError::Other(format!("failed to serialize defender-probe state: {e}")))?;
     std::fs::write(&path, json)?;
     Ok(())
 }

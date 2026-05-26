@@ -229,7 +229,6 @@ pub(crate) fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
     stable_hash_json(&payload)
 }
 
-
 #[path = "rust_plan_warm_restore.rs"]
 mod warm_restore;
 pub(crate) use warm_restore::{
@@ -440,10 +439,7 @@ fn force_restore_enabled() -> bool {
 /// Count `.fingerprint/` directories under `root` (up to `max_depth` levels)
 /// that contain at least one entry. The walk stops descending once a
 /// `.fingerprint/` is encountered — cargo never nests another inside.
-pub(crate) fn count_populated_fingerprint_dirs(
-    root: &std::path::Path,
-    max_depth: usize,
-) -> usize {
+pub(crate) fn count_populated_fingerprint_dirs(root: &std::path::Path, max_depth: usize) -> usize {
     let mut count = 0usize;
     walk_for_fingerprint_dirs(root, max_depth, &mut count);
     count
@@ -475,7 +471,6 @@ fn walk_for_fingerprint_dirs(dir: &std::path::Path, remaining_depth: usize, coun
         }
     }
 }
-
 
 #[path = "rust_plan_env.rs"]
 mod env_resolvers;

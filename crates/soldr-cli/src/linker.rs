@@ -400,8 +400,8 @@ mod tests {
     #[test]
     fn fast_on_macos_falls_back_to_platform_default() {
         for triple in [MAC_X64, MAC_ARM] {
-            let i = resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_false)
-                .unwrap();
+            let i =
+                resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_false).unwrap();
             assert_eq!(
                 i,
                 LinkerInjection::default(),

@@ -15,8 +15,8 @@
 //! `zackees/setup-soldr#110` for the GitHub Action that consumes the
 //! resulting `target/` tarball.
 
-use crate::cargo_front_door;
 use crate::cache_lib::strip_target::{strip_target, StripTargetOptions};
+use crate::cargo_front_door;
 use crate::core::SoldrError;
 use crate::ZccacheSourceArg;
 use std::path::{Path, PathBuf};

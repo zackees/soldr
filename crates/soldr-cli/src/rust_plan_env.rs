@@ -78,4 +78,3 @@ pub(crate) fn parse_rust_artifact_cache_tar_threads(
         ))),
     }
 }
-

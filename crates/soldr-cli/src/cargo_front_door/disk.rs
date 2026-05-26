@@ -6,8 +6,8 @@
 //! `pub(super)`.
 
 use crate::core::SoldrError;
-use crate::TEST_FREE_DISK_BYTES_ENV_VAR;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
+use crate::TEST_FREE_DISK_BYTES_ENV_VAR;
 
 pub(super) fn maybe_emit_low_disk_warning(path: &std::path::Path) {
     if let Some(message) =

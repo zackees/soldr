@@ -453,10 +453,7 @@ fn collect_incremental_dir(
     Ok(())
 }
 
-fn collect_stub_binaries(
-    profile: &Path,
-    entries: &mut Vec<StripEntry>,
-) -> Result<(), StripError> {
+fn collect_stub_binaries(profile: &Path, entries: &mut Vec<StripEntry>) -> Result<(), StripError> {
     // The synthetic stub binary cargo-chef produces lives at the
     // top of `target/<profile>/<name>(.exe)`, alongside `.pdb` and
     // `.dSYM/` debug siblings. Cargo's own state files start with
@@ -803,7 +800,10 @@ mod tests {
         let inc = target.join("release/incremental");
         let deps = target.join("release/deps");
         touch_dir(&inc);
-        write_bytes(&inc.join("s-abc/work-product.bin"), b"\0".repeat(1024).as_slice());
+        write_bytes(
+            &inc.join("s-abc/work-product.bin"),
+            b"\0".repeat(1024).as_slice(),
+        );
         write_bytes(&inc.join("s-abc/dep-graph.bin"), &[0u8; 256]);
         touch_dir(&deps);
         let rlib = deps.join("libfoo-aaaaaaaaaaaaa.rlib");
@@ -817,7 +817,10 @@ mod tests {
         let report = strip_target(&opts).unwrap();
         assert_eq!(report.deleted, 1, "the incremental/ dir is one entry");
         assert_eq!(report.entries[0].category, StripCategory::IncrementalDir);
-        assert!(report.entries[0].size_bytes > 0, "size should account for contents");
+        assert!(
+            report.entries[0].size_bytes > 0,
+            "size should account for contents"
+        );
         assert!(!inc.exists(), "incremental/ must be removed");
         assert!(rlib.exists(), "deps/ must survive incremental strip");
     }
