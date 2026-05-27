@@ -43,6 +43,9 @@ pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
 
+#[cfg(test)]
+mod zccache_contract_tests;
+
 pub use zccache::{
     classify_zccache_source, managed_only_zccache_summary, pinned_zccache_summary,
     resolve_local_zccache, zccache_binary_summary, ZccacheBinarySummary, ZccacheSource,

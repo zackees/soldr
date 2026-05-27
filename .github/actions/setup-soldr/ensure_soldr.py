@@ -13,16 +13,17 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-# Soldr releases ship a single .tar.zst archive per target since the
-# combined-bundle refactor (#XXX). The archive contains soldr +
-# zccache + zccache-daemon + zccache-fp + crgx + manifest.json at its
-# root. The setup-soldr action extracts every binary into the install
-# dir and exports SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR so
-# soldr's runtime resolver wires up the bundled tools without a
-# managed-download round trip.
-ARCHIVE_EXT = "tar.zst"
-ZCCACHE_BUNDLED_BINARIES = ("zccache", "zccache-daemon", "zccache-fp")
-CRGX_BUNDLED_BINARY = "crgx"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from zccache_contract import (  # noqa: E402
+    ARCHIVE_EXT,
+    CRGX_LOCAL_DIR_ENV,
+    CRGX_BUNDLED_BINARY,
+    MANIFEST_NAME,
+    ZCCACHE_BUNDLED_BINARIES,
+    ZCCACHE_LOCAL_DIR_ENV,
+    locate_extracted_file,
+    validate_release_manifest,
+)
 
 
 def _normalize_version(value: str) -> str:
@@ -98,9 +99,7 @@ def _select_asset(release: dict[str, object], target: str) -> tuple[str, str]:
         name = str(asset.get("name", ""))
         if name.endswith(suffix):
             return name, str(asset["browser_download_url"])
-    raise RuntimeError(
-        f"no release asset found for target {target} (looking for *{suffix})"
-    )
+    raise RuntimeError(f"no release asset found for target {target} (looking for *{suffix})")
 
 
 def _extract_archive(archive_path: Path, out_dir: Path) -> None:
@@ -132,10 +131,29 @@ def _extract_archive(archive_path: Path, out_dir: Path) -> None:
 
 
 def _locate_binary(out_dir: Path, binary_name: str) -> Path:
-    for candidate in out_dir.rglob(binary_name):
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError(f"downloaded archive did not contain {binary_name}")
+    return locate_extracted_file(out_dir, binary_name)
+
+
+def _bundled_files_present(install_dir: Path, bases: tuple[str, ...]) -> bool:
+    binary_ext = ".exe" if os.name == "nt" else ""
+    return all((install_dir / f"{base}{binary_ext}").is_file() for base in bases)
+
+
+def _export_bundle_env(install_dir: Path) -> None:
+    github_env = os.environ.get("GITHUB_ENV")
+    if not github_env:
+        return
+    with open(github_env, "a", encoding="utf-8") as fh:
+        if not os.environ.get(ZCCACHE_LOCAL_DIR_ENV) and _bundled_files_present(
+            install_dir,
+            ZCCACHE_BUNDLED_BINARIES,
+        ):
+            fh.write(f"{ZCCACHE_LOCAL_DIR_ENV}={install_dir}\n")
+        if not os.environ.get(CRGX_LOCAL_DIR_ENV) and _bundled_files_present(
+            install_dir,
+            (CRGX_BUNDLED_BINARY,),
+        ):
+            fh.write(f"{CRGX_LOCAL_DIR_ENV}={install_dir}\n")
 
 
 def main() -> None:
@@ -147,7 +165,10 @@ def main() -> None:
 
     current = _installed_version(binary_path)
     if current is not None:
-        if not requested_version or _normalize_version(current) == _normalize_version(requested_version):
+        if not requested_version or _normalize_version(current) == _normalize_version(
+            requested_version
+        ):
+            _export_bundle_env(install_dir)
             output = os.environ.get("GITHUB_OUTPUT")
             if output:
                 with open(output, "a", encoding="utf-8") as fh:
@@ -159,7 +180,7 @@ def main() -> None:
     release = _fetch_release(repo, requested_version)
     asset_name, download_url = _select_asset(release, target)
     tag_name = str(release["tag_name"])
-    zccache_ext = ".exe" if os.name == "nt" else ""
+    binary_ext = ".exe" if os.name == "nt" else ""
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_dir = Path(tmp)
@@ -168,16 +189,27 @@ def main() -> None:
         urllib.request.urlretrieve(download_url, archive_path)
         _extract_archive(archive_path, extract_dir)
 
+        manifest_path = _locate_binary(extract_dir, MANIFEST_NAME)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        validate_release_manifest(
+            manifest,
+            soldr_target=target,
+            windows=os.name == "nt",
+            extract_dir=extract_dir,
+        )
+
         # Stage soldr.
         source = _locate_binary(extract_dir, binary_name)
         shutil.copy2(source, binary_path)
         if os.name != "nt":
-            binary_path.chmod(binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            binary_path.chmod(
+                binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+            )
 
         # Stage the bundled zccache trio next to soldr so the install
         # dir works as a self-contained SOLDR_ZCCACHE_LOCAL_DIR.
         for base in ZCCACHE_BUNDLED_BINARIES:
-            file_name = f"{base}{zccache_ext}"
+            file_name = f"{base}{binary_ext}"
             zccache_src = _locate_binary(extract_dir, file_name)
             zccache_dst = install_dir / file_name
             shutil.copy2(zccache_src, zccache_dst)
@@ -188,46 +220,18 @@ def main() -> None:
 
         # Stage the bundled crgx next to soldr so the install dir
         # also doubles as SOLDR_CRGX_LOCAL_DIR for `soldr crgx ...`.
-        # Archives shipped before the crgx-bundling landed won't
-        # include crgx — treat that as a best-effort skip rather than
-        # a hard failure (the runtime fetch path still works).
-        crgx_file_name = f"{CRGX_BUNDLED_BINARY}{zccache_ext}"
-        crgx_present = False
-        try:
-            crgx_src = _locate_binary(extract_dir, crgx_file_name)
-        except RuntimeError:
-            crgx_src = None
-        if crgx_src is not None:
-            crgx_dst = install_dir / crgx_file_name
-            shutil.copy2(crgx_src, crgx_dst)
-            if os.name != "nt":
-                crgx_dst.chmod(
-                    crgx_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
-                )
-            crgx_present = True
+        crgx_file_name = f"{CRGX_BUNDLED_BINARY}{binary_ext}"
+        crgx_src = _locate_binary(extract_dir, crgx_file_name)
+        crgx_dst = install_dir / crgx_file_name
+        shutil.copy2(crgx_src, crgx_dst)
+        if os.name != "nt":
+            crgx_dst.chmod(
+                crgx_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+            )
 
-        # Optional: surface manifest.json next to the binaries.
-        manifest_src = extract_dir.rglob("manifest.json")
-        for candidate in manifest_src:
-            if candidate.is_file():
-                shutil.copy2(candidate, install_dir / "manifest.json")
-                break
+        shutil.copy2(manifest_path, install_dir / MANIFEST_NAME)
 
-    # Export SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR to
-    # GITHUB_ENV so subsequent steps see the bundled tools without a
-    # managed-fetch round trip. Don't clobber an explicit caller
-    # setting if it's already in the env.
-    github_env = os.environ.get("GITHUB_ENV")
-    if github_env and not os.environ.get("SOLDR_ZCCACHE_LOCAL_DIR"):
-        with open(github_env, "a", encoding="utf-8") as fh:
-            fh.write(f"SOLDR_ZCCACHE_LOCAL_DIR={install_dir}\n")
-    if (
-        github_env
-        and crgx_present
-        and not os.environ.get("SOLDR_CRGX_LOCAL_DIR")
-    ):
-        with open(github_env, "a", encoding="utf-8") as fh:
-            fh.write(f"SOLDR_CRGX_LOCAL_DIR={install_dir}\n")
+    _export_bundle_env(install_dir)
 
     output = os.environ.get("GITHUB_OUTPUT")
     if output:

@@ -4,6 +4,7 @@
 const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const zccacheContract = require("../scripts/zccache-contract");
 
 const binaryName = process.platform === "win32" ? "soldr.exe" : "soldr";
 const nativeDir = path.join(__dirname, "native");
@@ -30,13 +31,14 @@ if (!fs.existsSync(binaryPath)) {
 // the env var themselves keep their override.
 const exeExt = process.platform === "win32" ? ".exe" : "";
 const childEnv = { ...process.env };
+const zccacheLocalDirEnv = zccacheContract.CONTRACT.zccache.local_dir_env;
 if (
-  !childEnv.SOLDR_ZCCACHE_LOCAL_DIR &&
-  fs.existsSync(path.join(nativeDir, `zccache${exeExt}`)) &&
-  fs.existsSync(path.join(nativeDir, `zccache-daemon${exeExt}`)) &&
-  fs.existsSync(path.join(nativeDir, `zccache-fp${exeExt}`))
+  !childEnv[zccacheLocalDirEnv] &&
+  zccacheContract.ZCCACHE_BUNDLED_BINARIES.every((baseName) =>
+    fs.existsSync(path.join(nativeDir, `${baseName}${exeExt}`)),
+  )
 ) {
-  childEnv.SOLDR_ZCCACHE_LOCAL_DIR = nativeDir;
+  childEnv[zccacheLocalDirEnv] = nativeDir;
 }
 
 // Same wiring for the bundled crgx binary (shipped alongside soldr
@@ -45,11 +47,12 @@ if (
 // SOLDR_CRGX_LOCAL_DIR ahead of the GitHub Releases / crates.io
 // fetch chain, so `soldr crgx ...` runs the bundled binary with no
 // network round trip. Caller-set overrides win.
+const crgxLocalDirEnv = zccacheContract.CONTRACT.crgx.local_dir_env;
 if (
-  !childEnv.SOLDR_CRGX_LOCAL_DIR &&
-  fs.existsSync(path.join(nativeDir, `crgx${exeExt}`))
+  !childEnv[crgxLocalDirEnv] &&
+  fs.existsSync(path.join(nativeDir, `${zccacheContract.CRGX_BUNDLED_BINARY}${exeExt}`))
 ) {
-  childEnv.SOLDR_CRGX_LOCAL_DIR = nativeDir;
+  childEnv[crgxLocalDirEnv] = nativeDir;
 }
 
 const child = childProcess.spawn(binaryPath, process.argv.slice(2), {
