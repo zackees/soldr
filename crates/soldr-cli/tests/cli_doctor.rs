@@ -354,9 +354,10 @@ fn doctor_surfaces_local_zccache_override_when_env_var_set() {
     let runtime_dir = json["managed_zccache"]["runtime_dir"]
         .as_str()
         .expect("runtime_dir present");
-    assert!(
-        runtime_dir.contains("zccache-local-"),
-        "runtime_dir should be hash-suffixed: {runtime_dir}"
+    assert_eq!(
+        Path::new(runtime_dir),
+        local_build.as_path(),
+        "doctor should inspect the local build directly without materializing a runtime copy"
     );
     // 2/3 PDBs were planted.
     assert_eq!(json["managed_zccache"]["debug_info_found"], 2);
@@ -374,12 +375,8 @@ fn doctor_surfaces_local_zccache_override_when_env_var_set() {
         Some("local-build")
     );
 
-    // Issue #365 — every binary soldr resolves (cli, daemon, fp) must
-    // live under the override dir. The previous coverage only asserted
-    // the runtime_dir hash; this confirms the per-binary paths the
-    // child process actually executes are all under it. This is the
-    // path soldr propagates to cargo via SOLDR_ZCCACHE_BIN and the
-    // path the zccache CLI uses for its sibling-daemon lookup.
+    // Doctor is an inspect-only path, so it reports the local source
+    // trio directly instead of copying into `zccache-local-*`.
     let cli_path = json["managed_zccache"]["cli_path"]
         .as_str()
         .expect("cli_path present");
@@ -395,10 +392,25 @@ fn doctor_surfaces_local_zccache_override_when_env_var_set() {
             "{label}_path must live under runtime_dir; runtime_dir={runtime_dir} {label}_path={value}"
         );
         assert!(
-            value.contains("zccache-local-"),
-            "{label}_path must resolve under the SOLDR_ZCCACHE_LOCAL_DIR-derived dir: {value}"
+            value.contains("local-build"),
+            "{label}_path must resolve under SOLDR_ZCCACHE_LOCAL_DIR without copying: {value}"
         );
     }
+    let soldr_bin = soldr_cache.join("bin");
+    let local_copy_present = fs::read_dir(&soldr_bin)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("zccache-local-"))
+        });
+    assert!(
+        !local_copy_present,
+        "doctor --json must not materialize SOLDR_ZCCACHE_LOCAL_DIR into the soldr bin cache"
+    );
 }
 
 #[test]

@@ -7,140 +7,25 @@ use std::path::PathBuf;
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
 
 use super::github::RepoInfo;
-use super::zccache::resolve_local_zccache_for_target;
 use super::{
-    check_cache, fetch_repo_binary_with_paths, install_zccache, non_empty_env_path, FetchResult,
-    VersionSpec, MANAGED_ZCCACHE_INSTALL_ATTEMPTS, MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF,
-    MANAGED_ZCCACHE_PACKAGES, MANAGED_ZCCACHE_VERSION, ZCCACHE_LOCAL_DIR_ENV_VAR,
+    FetchResult, MANAGED_ZCCACHE_INSTALL_ATTEMPTS, MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF,
+    MANAGED_ZCCACHE_PACKAGES,
 };
 
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
-    paths.ensure_dirs()?;
-    let target = TargetTriple::detect()?;
-
-    // Local-build override (issue: zccache #276 daemon-stdio hang).
-    // When set, skip the managed fetch entirely and copy the user's
-    // locally-built binaries (+ PDBs) into the soldr cache so cdb /
-    // WinDbg can resolve symbols when attaching to the daemon.
-    if let Some(local_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
-        return resolve_local_zccache_for_target(&local_dir, paths, &target);
-    }
-
-    // Pinned install (`soldr install-zccache <SOURCE>`). Sits
-    // between the env-var override and the managed download so users
-    // who pinned once never go back to the GitHub-Releases path.
-    //
-    // We deliberately do NOT print a "using pinned zccache from ..."
-    // line here: the cargo front door now emits a source-aware
-    // `soldr: zccache source: pinned|local|managed (...)` line via
-    // `classify_zccache_source` so users see exactly which binary won
-    // resolution. See issue #420 — the old per-branch eprintln paired
-    // with prepare_zccache_build's hard-coded "soldr: using managed
-    // zccache 1.8.1" was the smoking gun that fooled the perf-cluster
-    // debugging session.
-    if let Some(pinned) = resolve_usable_pinned_zccache(paths, &target)? {
-        return Ok(FetchResult {
-            binary_path: pinned.binary_path,
-            version: pinned.version,
-            cached: true,
-        });
-    }
-
-    let binary_names = ["zccache", "zccache-daemon", "zccache-fp"];
-
-    if let Some(result) = check_cache(
-        paths,
-        "zccache",
-        MANAGED_ZCCACHE_VERSION,
-        &binary_names,
-        &target,
-    )? {
-        return Ok(result);
-    }
-
-    let release_version = VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.to_string());
-    // `fetch_repo_binary_with_paths` retries transient fetch errors
-    // internally (issue: flaky GitHub-Releases lookups during propagation
-    // windows surfaced as macOS CI flake on PR #431). Anything that
-    // survives those retries is either a hard 404 or a non-transient
-    // network class — both of which the cargo install fallback below can
-    // handle.
-    let repo = managed_zccache_repo();
-    let release_outcome = fetch_repo_binary_with_paths(
-        "zccache",
-        &binary_names,
-        &repo,
-        &release_version,
-        None,
-        paths,
-    )
-    .await;
-
-    match release_outcome {
-        Ok(result) => return Ok(result),
-        Err(err) if should_fallback_to_managed_zccache_cargo_install(&err) => {
-            eprintln!(
-                "soldr: managed zccache prebuilt unavailable ({err}); falling back to cargo install"
-            );
-        }
-        Err(err) => return Err(err),
-    }
-
-    let binary_path = install_zccache_from_crates_io(paths, MANAGED_ZCCACHE_VERSION, &target)?;
-
-    Ok(FetchResult {
-        binary_path,
-        version: MANAGED_ZCCACHE_VERSION.to_string(),
-        cached: false,
-    })
+    super::zccache_runtime::ZccacheResolver::new(paths)?
+        .materialize_default()
+        .await?
+        .to_fetch_result()
 }
 
 pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, SoldrError> {
-    let target = TargetTriple::detect()?;
-
-    // When SOLDR_ZCCACHE_LOCAL_DIR is set, surface the local build as
-    // the cached result so doctor / cache status can find it without
-    // forcing a copy. resolve_local_zccache_for_target is idempotent:
-    // it short-circuits when the destination already matches the
-    // source bytes.
-    if let Some(local_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
-        return resolve_local_zccache_for_target(&local_dir, paths, &target).map(Some);
+    let runtime = super::zccache_runtime::ZccacheResolver::new(paths)?.inspect_default()?;
+    if runtime.is_missing() {
+        Ok(None)
+    } else {
+        Ok(Some(runtime.to_fetch_result()?))
     }
-
-    if let Some(pinned) = resolve_usable_pinned_zccache(paths, &target)? {
-        return Ok(Some(FetchResult {
-            binary_path: pinned.binary_path,
-            version: pinned.version,
-            cached: true,
-        }));
-    }
-
-    check_cache(
-        paths,
-        "zccache",
-        MANAGED_ZCCACHE_VERSION,
-        &["zccache", "zccache-daemon", "zccache-fp"],
-        &target,
-    )
-}
-
-fn resolve_usable_pinned_zccache(
-    paths: &SoldrPaths,
-    target: &TargetTriple,
-) -> Result<Option<install_zccache::PinnedResolution>, SoldrError> {
-    let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, target)? else {
-        return Ok(None);
-    };
-    if install_zccache::pinned_version_older_than_managed(&pinned.version) {
-        eprintln!(
-            "soldr: ignoring pinned zccache {} at {} because this soldr requires managed zccache {} or newer",
-            pinned.version,
-            pinned.runtime_dir.display(),
-            MANAGED_ZCCACHE_VERSION
-        );
-        return Ok(None);
-    }
-    Ok(Some(pinned))
 }
 
 /// Locate `zccache` on the system `PATH` and use it directly instead
@@ -150,8 +35,9 @@ fn resolve_usable_pinned_zccache(
 ///
 /// Driven by the top-level `--zccache=system` CLI flag.
 pub fn resolve_system_zccache(_paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
-    let target = TargetTriple::detect()?;
-    resolve_system_zccache_for_target(&target)
+    super::zccache_runtime::ZccacheResolver::new(_paths)?
+        .materialize_system()?
+        .to_fetch_result()
 }
 
 pub(crate) fn resolve_system_zccache_for_target(
@@ -222,7 +108,7 @@ pub(crate) fn should_fallback_to_managed_zccache_cargo_install(error: &SoldrErro
     matches!(error, SoldrError::ToolNotFound(_) | SoldrError::Network(_))
 }
 
-fn install_zccache_from_crates_io(
+pub(crate) fn install_zccache_from_crates_io(
     paths: &SoldrPaths,
     version: &str,
     target: &TargetTriple,

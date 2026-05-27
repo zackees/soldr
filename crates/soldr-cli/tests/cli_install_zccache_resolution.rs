@@ -41,12 +41,14 @@ use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
 use soldr_cli::fetch::{
     cached_zccache_binary, classify_zccache_source, fetch_zccache_with_paths,
-    install_zccache_from_source, FetchResult, InstallSource, ZccacheSource,
-    MANAGED_ZCCACHE_VERSION, PINNED_ZCCACHE_DIRNAME, ZCCACHE_LOCAL_DIR_ENV_VAR,
+    install_zccache_from_source, pinned_zccache_dir, FetchResult, InstallSource, ZccacheResolver,
+    ZccacheRuntime, ZccacheRuntimeSource, ZccacheSource, MANAGED_ZCCACHE_VERSION,
+    PINNED_ZCCACHE_DIRNAME, ZCCACHE_LOCAL_DIR_ENV_VAR,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 
 /// Tests in this file run blocking installs via `tokio::test`; pull in
 /// the runtime so `install_zccache_from_source` (which is `async`)
@@ -90,17 +92,34 @@ fn seed_managed_cache(paths: &SoldrPaths) -> PathBuf {
     managed_dir
 }
 
+fn has_zccache_local_copy(paths: &SoldrPaths) -> bool {
+    fs::read_dir(&paths.bin)
+        .ok()
+        .into_iter()
+        .flat_map(|entries| entries.filter_map(Result::ok))
+        .any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("zccache-local-"))
+        })
+}
+
 /// Reset env state that would otherwise leak across tests. Restored on
 /// drop. We unset the override vars so neither the local-dir override
 /// (`SOLDR_ZCCACHE_LOCAL_DIR`) nor the test override
 /// (`SOLDR_TEST_ZCCACHE_BIN`) shadows the pinned resolution path under
 /// test.
 struct EnvGuard {
+    _lock: MutexGuard<'static, ()>,
     saved: Vec<(String, Option<std::ffi::OsString>)>,
 }
 
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
 impl EnvGuard {
     fn isolate(keys: &[&str]) -> Self {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let mut saved = Vec::with_capacity(keys.len());
         for key in keys {
             saved.push((key.to_string(), std::env::var_os(key)));
@@ -108,7 +127,7 @@ impl EnvGuard {
                 std::env::remove_var(key);
             }
         }
-        Self { saved }
+        Self { _lock: lock, saved }
     }
 }
 
@@ -202,6 +221,140 @@ async fn cached_zccache_binary_returns_pinned_over_managed_cache() {
         paths.bin.join(PINNED_ZCCACHE_DIRNAME),
         "cached_zccache_binary must return the pinned binary, not the managed cache (issue #420)"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn zccache_runtime_inspects_local_without_copying_then_materializes_for_fetch() {
+    let _guard = EnvGuard::isolate(&[ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_TEST_ZCCACHE_BIN"]);
+    let tmp = unique_temp_dir("runtime-local-read-only");
+    let paths = SoldrPaths::with_root(tmp.join("soldr-root"));
+    let local = tmp.join("local-build");
+    write_fake(&local, &bin_name("zccache"), b"LOCAL_CLI_BYTES");
+    write_fake(&local, &bin_name("zccache-daemon"), b"LOCAL_DAEMON_BYTES");
+    write_fake(&local, &bin_name("zccache-fp"), b"LOCAL_FP_BYTES");
+
+    unsafe {
+        std::env::set_var(ZCCACHE_LOCAL_DIR_ENV_VAR, &local);
+    }
+
+    let inspected = ZccacheResolver::new(&paths)
+        .expect("resolver")
+        .inspect_default()
+        .expect("inspect local");
+    assert_eq!(inspected.source, ZccacheRuntimeSource::Local);
+    assert_eq!(inspected.runtime_dir, local);
+    assert_eq!(inspected.source_dir.as_deref(), Some(local.as_path()));
+    assert_eq!(
+        inspected.cli_path.as_deref(),
+        Some(local.join(bin_name("zccache")).as_path())
+    );
+    assert!(
+        !has_zccache_local_copy(&paths),
+        "inspect_default must not materialize SOLDR_ZCCACHE_LOCAL_DIR into the soldr bin cache"
+    );
+
+    let cached = cached_zccache_binary(&paths)
+        .expect("cached local")
+        .expect("local override should count as cached");
+    assert_eq!(cached.binary_path, local.join(bin_name("zccache")));
+    assert!(
+        !has_zccache_local_copy(&paths),
+        "cached_zccache_binary must remain read-only for local overrides"
+    );
+
+    let fetched = fetch_zccache_with_paths(&paths)
+        .await
+        .expect("materialize local");
+    let fetched_parent = fetched.binary_path.parent().expect("parent");
+    assert!(
+        fetched_parent.starts_with(&paths.bin),
+        "materialized local runtime should live under soldr bin cache: {}",
+        fetched_parent.display()
+    );
+    assert!(
+        fetched_parent
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with("zccache-local-")),
+        "materialized local runtime should use the content-addressed local key"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn zccache_runtime_exposes_managed_cached_and_custom_cache_root() {
+    let _guard = EnvGuard::isolate(&[ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_TEST_ZCCACHE_BIN"]);
+    let tmp = unique_temp_dir("runtime-managed-custom-root");
+    let custom_root = tmp.join("custom-soldr-cache");
+    let paths = SoldrPaths::with_root(custom_root.clone());
+    let managed_dir = seed_managed_cache(&paths);
+
+    let runtime = ZccacheResolver::new(&paths)
+        .expect("resolver")
+        .inspect_default()
+        .expect("inspect managed");
+    assert_eq!(runtime.source, ZccacheRuntimeSource::ManagedCached);
+    assert_eq!(runtime.runtime_dir, managed_dir);
+    assert!(
+        runtime.runtime_dir.starts_with(custom_root.join("bin")),
+        "runtime must honor the caller's SoldrPaths root"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn zccache_runtime_ignores_stale_pin_for_default_resolution() {
+    let _guard = EnvGuard::isolate(&[ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_TEST_ZCCACHE_BIN"]);
+    let tmp = unique_temp_dir("runtime-stale-pin");
+    let paths = SoldrPaths::with_root(tmp.join("soldr-root"));
+    let managed_dir = seed_managed_cache(&paths);
+    let pin_src = seed_pin_source(&tmp);
+    install_zccache_from_source(&InstallSource::Path(pin_src), &paths)
+        .await
+        .expect("install pin");
+
+    let sidecar_path = pinned_zccache_dir(&paths).join("source.json");
+    let mut sidecar: Value =
+        serde_json::from_slice(&fs::read(&sidecar_path).expect("read sidecar")).expect("sidecar");
+    sidecar["version"] = Value::String("0.1.0".to_string());
+    fs::write(
+        &sidecar_path,
+        serde_json::to_vec_pretty(&sidecar).expect("encode sidecar"),
+    )
+    .expect("write stale sidecar");
+
+    let runtime = ZccacheResolver::new(&paths)
+        .expect("resolver")
+        .inspect_default()
+        .expect("inspect default");
+    assert_eq!(runtime.source, ZccacheRuntimeSource::ManagedCached);
+    assert_eq!(runtime.runtime_dir, managed_dir);
+}
+
+#[test]
+fn zccache_runtime_exposes_system_and_test_override_sources() {
+    let _guard = EnvGuard::isolate(&[ZCCACHE_LOCAL_DIR_ENV_VAR, "SOLDR_TEST_ZCCACHE_BIN"]);
+    let tmp = unique_temp_dir("runtime-system-test-override");
+    let paths = SoldrPaths::with_root(tmp.join("soldr-root"));
+    let system_bin = tmp.join("system-bin");
+    write_fake(&system_bin, &bin_name("zccache"), b"SYSTEM_CLI_BYTES");
+    write_fake(
+        &system_bin,
+        &bin_name("zccache-daemon"),
+        b"SYSTEM_DAEMON_BYTES",
+    );
+    write_fake(&system_bin, &bin_name("zccache-fp"), b"SYSTEM_FP_BYTES");
+
+    let system = ZccacheResolver::new(&paths)
+        .expect("resolver")
+        .materialize_system_with_path_dirs(std::slice::from_ref(&system_bin))
+        .expect("system runtime");
+    assert_eq!(system.source, ZccacheRuntimeSource::System);
+    assert_eq!(system.runtime_dir, system_bin);
+
+    let test_bin = tmp.join(bin_name("zccache-test"));
+    fs::write(&test_bin, b"TEST_OVERRIDE_BYTES").expect("write test override");
+    let test = ZccacheRuntime::from_test_override(test_bin.clone()).expect("test override");
+    assert_eq!(test.source, ZccacheRuntimeSource::TestOverride);
+    assert_eq!(test.cli_path.as_deref(), Some(test_bin.as_path()));
 }
 
 // ---------------------------------------------------------------------

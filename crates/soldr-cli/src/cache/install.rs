@@ -146,9 +146,18 @@ fn run_install_zccache_remove(json: bool) -> Result<(), SoldrError> {
 fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let sidecar = crate::fetch::read_pinned_sidecar(&paths)?;
+    let pinned_runtime = crate::fetch::ZccacheResolver::new(&paths)?.inspect_pinned()?;
     match sidecar {
         Some(sidecar) => {
             let drift = crate::fetch::pinned_version_drift_from_managed(&sidecar);
+            let install_dir = pinned_runtime
+                .as_ref()
+                .map(|runtime| runtime.runtime_dir.display().to_string())
+                .unwrap_or_else(|| {
+                    crate::fetch::pinned_zccache_dir(&paths)
+                        .display()
+                        .to_string()
+                });
             if json {
                 let pinned_value = serde_json::to_value(&sidecar).map_err(|e| {
                     SoldrError::Other(format!("install-zccache status: serialize sidecar: {e}"))
@@ -163,10 +172,7 @@ fn run_install_zccache_status(json: bool) -> Result<(), SoldrError> {
                 print_json(&output)?;
             } else {
                 println!("soldr install-zccache --status");
-                println!(
-                    "  install dir:  {}",
-                    crate::fetch::pinned_zccache_dir(&paths).display()
-                );
+                println!("  install dir:  {install_dir}");
                 println!(
                     "  source:       {} ({})",
                     sidecar.source_kind, sidecar.source_value

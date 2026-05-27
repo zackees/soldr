@@ -18,7 +18,7 @@ from pathlib import Path
 # zccache + zccache-daemon + zccache-fp + crgx + manifest.json at its
 # root. The setup-soldr action extracts every binary into the install
 # dir and exports SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR so
-# soldr's runtime resolution wires up the bundled tools without a
+# soldr's runtime resolver wires up the bundled tools without a
 # managed-download round trip.
 ARCHIVE_EXT = "tar.zst"
 ZCCACHE_BUNDLED_BINARIES = ("zccache", "zccache-daemon", "zccache-fp")
