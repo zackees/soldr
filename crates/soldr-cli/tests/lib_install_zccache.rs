@@ -352,6 +352,40 @@ async fn resolution_chain_pinned_overrides_managed_default() {
     );
 }
 
+#[tokio::test]
+async fn known_stale_pinned_zccache_does_not_override_managed_cache() {
+    let _guard = isolate_local_dir_env();
+    let tmp = tempfile::tempdir().unwrap();
+    let soldr_root = tmp.path().join("soldr-root");
+    let paths = SoldrPaths::with_root(soldr_root);
+
+    let src = seed_dir_source(tmp.path());
+    install_zccache_from_source(&InstallSource::Path(src), &paths)
+        .await
+        .expect("install");
+
+    let mut sidecar = read_pinned_sidecar(&paths).unwrap().unwrap();
+    sidecar.version = "1.11.2".to_string();
+    let sidecar_path = pinned_zccache_dir(&paths).join("source.json");
+    fs::write(&sidecar_path, serde_json::to_vec_pretty(&sidecar).unwrap()).unwrap();
+
+    let managed_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+    write_fake(&managed_dir, &bin_name("zccache"), b"managed-cli");
+    write_fake(&managed_dir, &bin_name("zccache-daemon"), b"managed-daemon");
+    write_fake(&managed_dir, &bin_name("zccache-fp"), b"managed-fp");
+
+    let cached = soldr_cli::fetch::cached_zccache_binary(&paths)
+        .unwrap()
+        .expect("managed cache should be reported");
+    assert!(
+        cached.binary_path.starts_with(&managed_dir),
+        "expected managed path under {} but got {}",
+        managed_dir.display(),
+        cached.binary_path.display()
+    );
+    assert_eq!(cached.version, MANAGED_ZCCACHE_VERSION);
+}
+
 // ---------------------------------------------------------------------
 // PathGuard — RAII wrapper that sets PATH for the duration of a test
 // and restores it on drop. Tests that touch PATH MUST hold the global

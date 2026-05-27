@@ -16,8 +16,8 @@ prune that ships to zccache via the thin Rust artifact plan.
   helpers (`$CARGO_HOME` cleanup orchestration).
 - `gc.rs` — soldr-side GC pass orchestrator: locations, summary, purge.
 - `save.rs` — `soldr save` / `soldr load` archive plumbing (mtime-
-  preserving tar.zst bundle of the build cache + source-fingerprint
-  manifest).
+  preserving tar.zst bundle of the build cache + protobuf
+  source/cache-file manifest, including base+delta cache layers).
 - `prune_target.rs` — per-build `target/` prune (orphan hash-sibling
   removal + `--keep-latest` aggressive mode). Tests live in
   `prune_target_tests.rs`, included via `#[path]` so `prune_target.rs`

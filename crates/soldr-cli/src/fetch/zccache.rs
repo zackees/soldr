@@ -439,6 +439,33 @@ pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary
     }
 
     if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+        if install_zccache::pinned_version_older_than_managed(&pinned.version) {
+            let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+            let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
+            let any_present = cli.exists() || daemon.exists() || fp.exists();
+            let (debug_found, debug_expected) =
+                count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
+            return Ok(ZccacheBinarySummary {
+                source: if any_present {
+                    ZccacheSource::Managed
+                } else {
+                    ZccacheSource::None
+                },
+                version: if any_present {
+                    MANAGED_ZCCACHE_VERSION.to_string()
+                } else {
+                    String::new()
+                },
+                symbol_path: runtime_dir.clone(),
+                runtime_dir,
+                source_dir: None,
+                cli_path: cli.exists().then_some(cli),
+                daemon_path: daemon.exists().then_some(daemon),
+                fp_path: fp.exists().then_some(fp),
+                debug_info_found: debug_found,
+                debug_info_expected: debug_expected,
+            });
+        }
         // `soldr install-zccache` install. Reports `pinned` so
         // doctor can surface the override (and warn the managed path
         // is superseded).
