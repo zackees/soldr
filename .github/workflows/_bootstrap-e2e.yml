@@ -136,21 +136,18 @@ jobs:
         working-directory: soldr
         run: git restore --worktree -- .
 
-      - name: Reset stale musl cache fallback artifacts
+      - name: Reset stale cache fallback artifacts
         if: >-
           ${{
-            contains(inputs.target, 'musl') &&
-            (
-              steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit' ||
-              steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'
-            )
+            steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit' ||
+            steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'
           }}
         shell: pwsh
         working-directory: soldr
         run: |
           $targetTripleDir = Join-Path "target" "${{ inputs.target }}"
           if (Test-Path -LiteralPath $targetTripleDir) {
-            Write-Host "Removing restored musl target artifacts from $targetTripleDir"
+            Write-Host "Removing restored target artifacts from $targetTripleDir"
             Remove-Item -LiteralPath $targetTripleDir -Recurse -Force
           }
 
