@@ -35,7 +35,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read};
+use std::io::{BufReader, BufWriter, Read, Write};
 
 use prost::Message as _;
 use std::path::{Path, PathBuf};
@@ -541,18 +541,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
 
         // 1) manifest as a regular file at archive root
         {
-            let mut header = tar::Header::new_gnu();
-            header
-                .set_path(MANIFEST_NAME)
-                .map_err(SaveLoadError::BareIo)?;
-            header.set_size(manifest_bytes.len() as u64);
-            header.set_mode(0o644);
-            header.set_mtime(manifest.saved_at_ms.max(0) as u64 / 1000);
-            header.set_entry_type(tar::EntryType::Regular);
-            header.set_cksum();
-            tar_builder
-                .append(&header, &manifest_bytes[..])
-                .map_err(SaveLoadError::BareIo)?;
+            append_manifest_entry(&mut tar_builder, &manifest, &manifest_bytes)?;
         }
 
         // 2) cache dir contents under `cache/`.
@@ -571,23 +560,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                 .expect("cache_files_paths non-empty implies cache_dir was set");
             cache_files = cache_files_paths.len() as u64;
             for abs in &cache_files_paths {
-                let rel = abs
-                    .strip_prefix(cache_dir)
-                    .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-                let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
-                archive_path.push(rel);
-                let archive_path_str = rel_to_posix(&archive_path);
-                let mut file = File::open(abs).map_err(|e| io(abs, e))?;
-                let mut header = tar::Header::new_gnu();
-                let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
-                header.set_metadata(&meta);
-                header
-                    .set_path(&archive_path_str)
-                    .map_err(SaveLoadError::BareIo)?;
-                header.set_cksum();
-                tar_builder
-                    .append(&header, &mut file)
-                    .map_err(SaveLoadError::BareIo)?;
+                append_cache_file_entry(&mut tar_builder, cache_dir, abs)?;
             }
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
@@ -754,6 +727,43 @@ fn encode_manifest(manifest: &Manifest) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+fn append_manifest_entry<W: Write>(
+    tar_builder: &mut tar::Builder<W>,
+    manifest: &Manifest,
+    manifest_bytes: &[u8],
+) -> Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(manifest_bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_mtime(manifest.saved_at_ms.max(0) as u64 / 1000);
+    header.set_entry_type(tar::EntryType::Regular);
+    header.set_cksum();
+    tar_builder
+        .append_data(&mut header, MANIFEST_NAME, manifest_bytes)
+        .map_err(SaveLoadError::BareIo)
+}
+
+fn append_cache_file_entry<W: Write>(
+    tar_builder: &mut tar::Builder<W>,
+    cache_dir: &Path,
+    abs: &Path,
+) -> Result<()> {
+    let rel = abs
+        .strip_prefix(cache_dir)
+        .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
+    let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
+    archive_path.push(rel);
+    let archive_path_str = rel_to_posix(&archive_path);
+    let mut file = File::open(abs).map_err(|e| io(abs, e))?;
+    let mut header = tar::Header::new_gnu();
+    let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
+    header.set_metadata(&meta);
+    header.set_cksum();
+    tar_builder
+        .append_data(&mut header, archive_path_str, &mut file)
+        .map_err(SaveLoadError::BareIo)
+}
+
 fn manifest_digest(manifest: &Manifest) -> Result<Vec<u8>> {
     Ok(blake3::hash(&encode_manifest(manifest)?)
         .as_bytes()
@@ -786,37 +796,10 @@ fn write_delta_archive(
         let mut tar_builder = tar::Builder::new(&mut zstd_encoder);
         tar_builder.mode(tar::HeaderMode::Deterministic);
 
-        let mut header = tar::Header::new_gnu();
-        header
-            .set_path(MANIFEST_NAME)
-            .map_err(SaveLoadError::BareIo)?;
-        header.set_size(manifest_bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_mtime(manifest.saved_at_ms.max(0) as u64 / 1000);
-        header.set_entry_type(tar::EntryType::Regular);
-        header.set_cksum();
-        tar_builder
-            .append(&header, &manifest_bytes[..])
-            .map_err(SaveLoadError::BareIo)?;
+        append_manifest_entry(&mut tar_builder, manifest, &manifest_bytes)?;
 
         for abs in cache_files_paths {
-            let rel = abs
-                .strip_prefix(cache_dir)
-                .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-            let mut archive_path = PathBuf::from(CACHE_DIR_NAME);
-            archive_path.push(rel);
-            let archive_path_str = rel_to_posix(&archive_path);
-            let mut file = File::open(abs).map_err(|e| io(abs, e))?;
-            let mut header = tar::Header::new_gnu();
-            let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
-            header.set_metadata(&meta);
-            header
-                .set_path(&archive_path_str)
-                .map_err(SaveLoadError::BareIo)?;
-            header.set_cksum();
-            tar_builder
-                .append(&header, &mut file)
-                .map_err(SaveLoadError::BareIo)?;
+            append_cache_file_entry(&mut tar_builder, cache_dir, abs)?;
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
     }
