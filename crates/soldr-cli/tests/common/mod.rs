@@ -7,11 +7,14 @@
 use serde_json::Value;
 use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolated_soldr_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_soldr"));
@@ -52,7 +55,9 @@ pub(crate) fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{process_id}-{counter}-{nanos}"));
     fs::create_dir_all(&dir).expect("failed to create temp dir");
     dir
 }
