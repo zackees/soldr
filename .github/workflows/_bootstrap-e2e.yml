@@ -117,7 +117,7 @@ jobs:
 
       - name: Setup soldr build cache
         id: setup_soldr
-        uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
+        uses: zackees/setup-soldr@8074343a15b9a6eac2336993787b1b312c961cf4
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
@@ -214,7 +214,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@be9cd32c413a696e85c13eaeef25400666dd5317
+        uses: zackees/setup-soldr/cleanup@8074343a15b9a6eac2336993787b1b312c961cf4
 
       - name: Build third-party app through soldr
         shell: pwsh
