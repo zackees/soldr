@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "name": "soldr-zccache-runtime",
+  "release_archive": {
+    "extension": "tar.zst",
+    "compression_level": 19,
+    "manifest_name": "manifest.json",
+    "manifest_min_schema_version": 2,
+    "sha256_algorithm": "sha256",
+    "required_binaries": [
+      "soldr",
+      "zccache",
+      "zccache-daemon",
+      "zccache-fp",
+      "crgx"
+    ],
+    "linux_zccache_target_libc": "musl"
+  },
+  "zccache": {
+    "managed_version": "1.11.4",
+    "local_dir_env": "SOLDR_ZCCACHE_LOCAL_DIR",
+    "cache_dir_env": "ZCCACHE_CACHE_DIR",
+    "required_binaries": [
+      "zccache",
+      "zccache-daemon",
+      "zccache-fp"
+    ],
+    "manifest_block": "zccache"
+  },
+  "crgx": {
+    "managed_version": "0.1.0",
+    "local_dir_env": "SOLDR_CRGX_LOCAL_DIR",
+    "required_binaries": [
+      "crgx"
+    ],
+    "manifest_block": "crgx"
+  },
+  "setup_action": {
+    "cache_root_env": "SOLDR_CACHE_DIR",
+    "native_cache_env": "SOLDR_NATIVE_CACHE",
+    "contract_module": ".github/actions/setup-soldr/zccache_contract.py",
+    "exported_contract": "contracts/zccache-runtime.v1.json"
+  },
+  "npm": {
+    "native_dir": "bin/native",
+    "launcher": "bin/soldr.js",
+    "installer": "scripts/install.js",
+    "contract_loader": "scripts/zccache-contract.js"
+  }
+}

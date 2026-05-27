@@ -8,6 +8,7 @@ const assert = require("assert");
 const root = path.resolve(__dirname, "..");
 const pkg = require(path.join(root, "package.json"));
 const install = require(path.join(root, "scripts", "install.js"));
+const zccacheContract = require(path.join(root, "scripts", "zccache-contract.js"));
 
 function tomlSection(toml, sectionName) {
   const header = `[${sectionName}]`;
@@ -66,7 +67,9 @@ assert.strictEqual(pkg.bin.soldr, "bin/soldr.js");
 assert.strictEqual(pkg.repository.url, "git+https://github.com/zackees/soldr.git");
 assert.deepStrictEqual(pkg.files, [
   "bin/soldr.js",
+  "contracts/zccache-runtime.v1.json",
   "scripts/install.js",
+  "scripts/zccache-contract.js",
   "scripts/test-npm-package.js",
   "README.md",
   "LICENSE",
@@ -118,6 +121,17 @@ assert.strictEqual(
   ),
   "abc123",
 );
+
+assert.strictEqual(install.ARCHIVE_EXT, "tar.zst");
+assert.deepStrictEqual(
+  install.BUNDLED_BINARIES,
+  zccacheContract.RELEASE_BUNDLED_BINARIES,
+);
+assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, [
+  "zccache",
+  "zccache-daemon",
+  "zccache-fp",
+]);
 
 // Every TARGETS entry must drop the `archive` field — the combined
 // archive format is fixed (.tar.zst) so the per-target field is dead

@@ -36,9 +36,11 @@ def test_export_bundle_creates_expected_public_repo_layout(tmp_path: Path) -> No
         ".github/actions/setup-soldr/install_tool_shims.py",
         ".github/actions/setup-soldr/resolve_setup.py",
         ".github/actions/setup-soldr/verify_soldr.py",
+        ".github/actions/setup-soldr/zccache_contract.py",
         "LICENSE",
         "README.md",
         "action.yml",
+        "contracts/zccache-runtime.v1.json",
     ]
 
     assert destination.joinpath("action.yml").read_text(encoding="utf-8") == FIXTURE_DIR.joinpath(

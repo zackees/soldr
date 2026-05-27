@@ -122,7 +122,7 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
-    assert "soldr --no-cache cargo test -p soldr-cli --test cli --locked" in workflow
+    assert "soldr --no-cache cargo test -p soldr-cli --tests --locked" in workflow
     assert "id: dogfood-build-cache" in workflow
     assert "setup-soldr-dogfood-zccache-v1-" in workflow
     assert "dogfood-build-cache-hit=" in workflow

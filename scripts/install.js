@@ -8,6 +8,7 @@ const http = require("http");
 const https = require("https");
 const os = require("os");
 const path = require("path");
+const zccacheContract = require("./zccache-contract");
 
 const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
@@ -18,7 +19,7 @@ const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 // and `bin/soldr.js` wires SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR
 // to the install dir so soldr's runtime resolver finds the sibling binaries
 // without going through the managed-download path.
-const ARCHIVE_EXT = "tar.zst";
+const ARCHIVE_EXT = zccacheContract.ARCHIVE_EXT;
 
 const TARGETS = {
   "linux-x64-gnu": { triple: "x86_64-unknown-linux-gnu", binary: "soldr" },
@@ -37,13 +38,7 @@ const TARGETS = {
 // `Build crgx from pinned source` steps drop into `dist/package/`
 // before the tar.zst is built. `.exe` suffix is appended at install
 // time based on `target.binary`.
-const BUNDLED_BINARIES = [
-  "soldr",
-  "zccache",
-  "zccache-daemon",
-  "zccache-fp",
-  "crgx",
-];
+const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
 
 // Detect whether the running Linux uses musl or glibc. Three layered probes:
 //   1. process.report.header.glibcVersionRuntime is the documented Node
@@ -259,6 +254,22 @@ async function install() {
     // exec). The archive layout is flat — all five binaries live at
     // the archive root.
     const binaryExt = target.binary.endsWith(".exe") ? ".exe" : "";
+    const manifestSrc = findExtractedBinary(extractDir, zccacheContract.MANIFEST_NAME);
+    if (!manifestSrc) {
+      throw new Error(`release archive ${filename} did not contain ${zccacheContract.MANIFEST_NAME}`);
+    }
+    const manifest = JSON.parse(fs.readFileSync(manifestSrc, "utf8"));
+    zccacheContract.validateReleaseManifest(manifest, {
+      soldrTarget: target.triple,
+      platform: process.platform,
+      findFile: (name) => {
+        const filePath = findExtractedBinary(extractDir, name);
+        if (!filePath) {
+          throw new Error(`release archive ${filename} did not contain ${name}`);
+        }
+        return filePath;
+      },
+    });
     for (const baseName of BUNDLED_BINARIES) {
       const fileName = `${baseName}${binaryExt}`;
       const src = findExtractedBinary(extractDir, fileName);
@@ -275,12 +286,7 @@ async function install() {
     // Drop manifest.json alongside the binaries so downstream tooling
     // (and humans reading `bin/native/`) can introspect provenance —
     // soldr / zccache versions, target triples, build commit, sha256s.
-    // Best-effort: archives shipped before the manifest convention
-    // landed simply won't have one.
-    const manifestSrc = findExtractedBinary(extractDir, "manifest.json");
-    if (manifestSrc) {
-      fs.copyFileSync(manifestSrc, path.join(nativeDir, "manifest.json"));
-    }
+    fs.copyFileSync(manifestSrc, path.join(nativeDir, zccacheContract.MANIFEST_NAME));
 
     console.log(
       `soldr: installed ${target.triple} (soldr + zccache trio + crgx) into ${nativeDir}`,
