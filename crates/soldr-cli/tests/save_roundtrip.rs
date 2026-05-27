@@ -161,6 +161,51 @@ fn roundtrip_basic_mtime_restoration() {
 }
 
 #[test]
+fn save_and_delta_support_long_cache_paths() {
+    let (g, ws, cache, archive) = fixture();
+    let long_rel = PathBuf::from("debug/.fingerprint")
+        .join("icu_normalizer_data-2aeb5eb1026c3544")
+        .join("dep-lib-icu_normalizer_data-2aeb5eb1026c3544-with-extra-long-suffix.bin");
+    let archive_rel = format!("cache/{}", long_rel.to_string_lossy().replace('\\', "/"));
+    assert!(
+        archive_rel.len() > 100,
+        "test path must exceed the classic tar path field limit"
+    );
+    write(&cache.join(&long_rel), b"base-long-path-payload");
+
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+    })
+    .expect("save accepts long cache archive paths");
+    assert!(
+        archive_paths(&archive).contains(&archive_rel),
+        "complete archive should contain the long cache path"
+    );
+
+    let base_manifest = read_manifest_from_archive(&archive).unwrap();
+    let delta_archive = g.path().join("delta.tar.zst");
+    write(&cache.join(&long_rel), b"delta-long-path-payload");
+    save_delta(&SaveDeltaOptions {
+        workspace: Some(&ws),
+        cache_dir: &cache,
+        base_manifest: &base_manifest,
+        out: &delta_archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+    })
+    .expect("delta save accepts long cache archive paths");
+    assert!(
+        archive_paths(&delta_archive).contains(&archive_rel),
+        "delta archive should contain the changed long cache path"
+    );
+}
+
+#[test]
 fn load_skips_content_changed_files() {
     let (_g, ws, cache, archive) = fixture();
     save(&SaveOptions {
