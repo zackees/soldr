@@ -66,10 +66,13 @@ b_start_ms="$(measure::now_ms)"
 )
 b_elapsed_ms="$(measure::elapsed_ms "${b_start_ms}")"
 
-b_stats="$(SOLDR_CACHE_DIR="${CACHE}" measure::session_end_json)"
-b_hits="$(echo "${b_stats}" | jq -r '.stats.hits // 0')"
-b_misses="$(echo "${b_stats}" | jq -r '.stats.misses // 0')"
-b_hit_rate="$(echo "${b_stats}" | jq -r '.stats.hit_rate // 0')"
+measure::write_cache_report "${CACHE}" "${WORKDIR}/warm-cache-report.json"
+measure::copy_zccache_logs_from_report \
+    "${WORKDIR}/warm-cache-report.json" \
+    "${WORKDIR}/warm-zccache-logs"
+b_hits="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hits)"
+b_misses="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" misses)"
+b_hit_rate="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hit_rate)"
 
 SOLDR_CACHE_DIR="${CACHE}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/worktree-shutdown.json" || true

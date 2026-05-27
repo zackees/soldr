@@ -529,12 +529,24 @@ jobs:
               *) echo "warm_ms" ;;
             esac
           }
+          hits_key_for() {
+            case "$1" in
+              worktree-share) echo "b_hits" ;;
+              *) echo "warm_hits" ;;
+            esac
+          }
+          misses_key_for() {
+            case "$1" in
+              worktree-share) echo "b_misses" ;;
+              *) echo "warm_misses" ;;
+            esac
+          }
 
           {
             echo "## Evaluate ${M_PLATFORM}"
             echo
-            echo "| fixture | scenario | cold ms | warm ms | speedup | threshold | mode | result |"
-            echo "| --- | --- | --- | --- | --- | --- | --- | --- |"
+            echo "| fixture | scenario | cold ms | warm ms | speedup | hits/misses | threshold | mode | result |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
 
           status=0
@@ -561,10 +573,12 @@ jobs:
               mode="$(mode_for "${scenario}")"
               cold_key="$(cold_key_for "${scenario}")"
               warm_key="$(warm_key_for "${scenario}")"
+              hits_key="$(hits_key_for "${scenario}")"
+              misses_key="$(misses_key_for "${scenario}")"
 
               result_json="$(find "${fixture_root}" -type f -path "*/${scenario}/result.json" | head -n1)"
               if [[ -z "${result_json}" ]]; then
-                echo "| ${fixture} | ${scenario} | - | - | - | >= ${MIN_SPEEDUP}x | ${mode} | MISSING |" >> "$GITHUB_STEP_SUMMARY"
+                echo "| ${fixture} | ${scenario} | - | - | - | - | >= ${MIN_SPEEDUP}x | ${mode} | MISSING |" >> "$GITHUB_STEP_SUMMARY"
                 if [[ "${mode}" == "fail" ]]; then
                   echo "::error::${scenario}/result.json not found in ${fixture} artifact"
                   status=1
@@ -578,7 +592,7 @@ jobs:
               warm_ms="$(jq -r --arg k "${warm_key}" '.[$k] // empty' "${result_json}")"
 
               if [[ -z "${cold_ms}" || -z "${warm_ms}" ]]; then
-                echo "| ${fixture} | ${scenario} | ${cold_ms:--} | ${warm_ms:--} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-JSON |" >> "$GITHUB_STEP_SUMMARY"
+                echo "| ${fixture} | ${scenario} | ${cold_ms:--} | ${warm_ms:--} | - | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-JSON |" >> "$GITHUB_STEP_SUMMARY"
                 if [[ "${mode}" == "fail" ]]; then
                   echo "::error::${fixture}/${scenario} result.json missing ${cold_key}/${warm_key}"
                   status=1
@@ -590,7 +604,7 @@ jobs:
 
               # Treat a 0ms warm build as a measurement bug, not a win.
               if (( warm_ms <= 0 )); then
-                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-WARM |" >> "$GITHUB_STEP_SUMMARY"
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | - | >= ${MIN_SPEEDUP}x | ${mode} | BAD-WARM |" >> "$GITHUB_STEP_SUMMARY"
                 if [[ "${mode}" == "fail" ]]; then
                   echo "::error::${fixture}/${scenario} ${warm_key}=${warm_ms} is non-positive"
                   status=1
@@ -600,19 +614,34 @@ jobs:
                 continue
               fi
 
+              hits="$(jq -r --arg k "${hits_key}" '.[$k] // empty' "${result_json}")"
+              misses="$(jq -r --arg k "${misses_key}" '.[$k] // empty' "${result_json}")"
+              if [[ -z "${hits}" || -z "${misses}" ]]; then
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | ${hits:--}/${misses:--} | >= ${MIN_SPEEDUP}x | ${mode} | BAD-STATS |" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::${fixture}/${scenario} result.json missing ${hits_key}/${misses_key}"
+                status=1
+                continue
+              fi
+              if (( hits + misses <= 0 )); then
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | ${mode} | BAD-STATS |" >> "$GITHUB_STEP_SUMMARY"
+                echo "::error::${fixture}/${scenario} reported ${hits_key}+${misses_key}=0; zccache stats were not captured"
+                status=1
+                continue
+              fi
+
               speedup="$(awk -v c="${cold_ms}" -v w="${warm_ms}" 'BEGIN { printf "%.2f", c / w }')"
               pass="$(awk -v s="${speedup}" -v t="${MIN_SPEEDUP}" 'BEGIN { print (s >= t) ? "1" : "0" }')"
 
               if [[ "${pass}" == "1" ]]; then
-                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | ${mode} | PASS |" >> "$GITHUB_STEP_SUMMARY"
+                echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | ${mode} | PASS |" >> "$GITHUB_STEP_SUMMARY"
                 echo "${fixture}/${scenario}: ${speedup}x >= ${MIN_SPEEDUP}x — PASS"
               else
                 if [[ "${mode}" == "fail" ]]; then
-                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | fail | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | fail | FAIL |" >> "$GITHUB_STEP_SUMMARY"
                   echo "::error::${fixture}/${scenario} only ${speedup}x faster (need >= ${MIN_SPEEDUP}x)"
                   status=1
                 else
-                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | >= ${MIN_SPEEDUP}x | warn | WARN |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | warn | WARN |" >> "$GITHUB_STEP_SUMMARY"
                   echo "::warning::${fixture}/${scenario} only ${speedup}x faster (need >= ${MIN_SPEEDUP}x); soft gate — not failing today"
                 fi
               fi

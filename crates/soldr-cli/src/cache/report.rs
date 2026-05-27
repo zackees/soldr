@@ -45,7 +45,18 @@ pub(super) struct CacheReportOutput {
 
 fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     let paths = SoldrPaths::new()?;
-    let zccache_dir = managed_zccache_cache_dir(&paths)?;
+    collect_cache_report_output_for_paths(&paths)
+}
+
+fn collect_cache_report_output_for_paths(
+    paths: &SoldrPaths,
+) -> Result<CacheReportOutput, SoldrError> {
+    let default_zccache_dir = managed_zccache_cache_dir(paths)?;
+    let linked_private = super::session::linked_private_zccache_lifecycle(paths);
+    let zccache_dir = linked_private
+        .as_ref()
+        .map(|(_, cache_dir)| cache_dir.clone())
+        .unwrap_or_else(|| default_zccache_dir.clone());
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
@@ -75,14 +86,27 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     };
 
     let rollups = if journal_present {
-        match cached_active_zccache(&paths)? {
-            Some(fetch) => {
-                let journal_arg = journal_path.display().to_string();
-                let result = run_zccache_command_raw_in_cache_dir(
+        let journal_arg = journal_path.display().to_string();
+        let result = if let Some((lifecycle, _)) = linked_private.as_ref() {
+            Some(lifecycle.run_raw(&["analyze", &journal_arg, "--json"])?)
+        } else {
+            match cached_active_zccache(paths)? {
+                Some(fetch) => Some(run_zccache_command_raw_in_cache_dir(
                     &fetch.binary_path,
                     &["analyze", &journal_arg, "--json"],
                     &zccache_dir,
-                )?;
+                )?),
+                None => {
+                    notes.push(
+                        "rollups: managed zccache binary not yet fetched (no builds run yet)"
+                            .to_string(),
+                    );
+                    None
+                }
+            }
+        };
+        match result {
+            Some(result) => {
                 if result.status.success() {
                     let stdout = String::from_utf8_lossy(&result.stdout);
                     match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
@@ -108,13 +132,7 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
                     None
                 }
             }
-            None => {
-                notes.push(
-                    "rollups: managed zccache binary not yet fetched (no builds run yet)"
-                        .to_string(),
-                );
-                None
-            }
+            None => None,
         }
     } else {
         notes
@@ -214,5 +232,76 @@ fn print_cache_report_output(output: &CacheReportOutput) {
         for note in &output.notes {
             println!("    - {note}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_cache_report_output_for_paths;
+    use crate::core::SoldrPaths;
+    use crate::daemon::db;
+    use crate::daemon::protocol::ZccacheDaemonLink;
+
+    #[test]
+    fn cache_report_follows_linked_private_zccache_dir() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+        let private_dir = paths
+            .cache
+            .join("zccache")
+            .join("private")
+            .join("soldr-dev-test");
+        let stats_path = private_dir.join("logs").join("last-session-stats.json");
+        std::fs::create_dir_all(stats_path.parent().expect("stats parent"))
+            .expect("create private logs");
+        std::fs::write(
+            &stats_path,
+            r#"{"status":"ok","session_id":"private","hits":17,"misses":2,"hit_rate":0.89}"#,
+        )
+        .expect("write stats");
+
+        let fake_zccache = paths.bin.join(if cfg!(windows) {
+            "zccache.exe"
+        } else {
+            "zccache"
+        });
+        std::fs::create_dir_all(fake_zccache.parent().expect("fake parent"))
+            .expect("create fake parent");
+        std::fs::write(&fake_zccache, b"fake").expect("write fake binary");
+
+        db::set_linked_zccache(
+            &db::db_path(&paths),
+            Some(&ZccacheDaemonLink {
+                binary_path: fake_zccache.display().to_string(),
+                cache_dir: private_dir.display().to_string(),
+                session_id: Some("private".into()),
+                source: "managed".into(),
+                private_daemon: true,
+                daemon_name: Some("soldr-dev-test".into()),
+                owner_pid: Some(std::process::id()),
+                private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
+            }),
+        )
+        .expect("link private zccache");
+
+        let report = collect_cache_report_output_for_paths(&paths).expect("collect report");
+        assert_eq!(report.session_stats_path, stats_path.display().to_string());
+        assert!(report.session_stats_present);
+        assert_eq!(
+            report
+                .last_session
+                .as_ref()
+                .and_then(|v| v.get("hits"))
+                .and_then(serde_json::Value::as_u64),
+            Some(17)
+        );
+        assert_eq!(
+            report
+                .last_session
+                .as_ref()
+                .and_then(|v| v.get("misses"))
+                .and_then(serde_json::Value::as_u64),
+            Some(2)
+        );
     }
 }
