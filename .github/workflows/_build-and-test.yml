@@ -99,6 +99,9 @@ jobs:
           }}
         shell: pwsh
         run: |
+          Write-Host "Disabling target-cache for later steps after a fallback setup-soldr restore."
+          "SOLDR_TARGET_CACHE_MODE=off" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
           $targetTripleDir = Join-Path "target" "${{ inputs.target }}"
           if (Test-Path -LiteralPath $targetTripleDir) {
             Write-Host "Removing restored target artifacts from $targetTripleDir"

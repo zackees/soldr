@@ -46,6 +46,7 @@ def test_ci_resets_restore_key_target_artifacts_before_self_builds() -> None:
         assert "id: setup_soldr" in workflow
         assert "steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'" in workflow
         assert "steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit'" in workflow
+        assert "SOLDR_TARGET_CACHE_MODE=off" in workflow
         assert 'Join-Path "target" "${{ inputs.target }}"' in workflow
         assert 'Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"' in workflow
 
