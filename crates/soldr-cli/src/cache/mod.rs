@@ -7,7 +7,8 @@
 //! need to know about the submodule layout.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache::{managed_zccache_cache_dir, run_zccache_command_raw_in_cache_dir};
+use crate::zccache::managed_zccache_cache_dir;
+use crate::zccache_lifecycle::run_zccache_command_raw_in_cache_dir;
 use crate::{cached_active_zccache, cached_active_zccache_runtime, JSON_SCHEMA_VERSION};
 use serde::Serialize;
 
@@ -16,6 +17,10 @@ mod report;
 mod session;
 mod trim;
 
+pub(super) use crate::zccache_lifecycle::{
+    zccache_daemon_already_stopped, zccache_output_snippet, zccache_subcommand_unsupported,
+    ZCCACHE_ANALYZE_NOTE_LIMIT,
+};
 pub(crate) use install::run_install_zccache;
 pub(crate) use report::run_cache_report_command;
 pub(crate) use session::{
@@ -322,72 +327,4 @@ pub(crate) fn print_json<T: Serialize>(value: &T) -> Result<(), SoldrError> {
         .map_err(|e| SoldrError::Other(format!("failed to serialize JSON output: {e}")))?;
     println!();
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Cross-submodule helpers for parsing `zccache` exit / output phrases.
-// ---------------------------------------------------------------------------
-
-/// Heuristic: detect whether a `zccache <subcommand>` invocation failed
-/// because the subcommand does not exist in the running binary (clap
-/// emits "error: unrecognized subcommand"). Used to differentiate
-/// version-skew misses from real failures.
-pub(super) fn zccache_subcommand_unsupported(
-    output: &std::process::Output,
-    subcommand: &str,
-) -> bool {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let needles = [
-        "unrecognized subcommand",
-        "unrecognized command",
-        "error: subcommand",
-        "invalid value for",
-    ];
-    let combined = format!("{stderr}\n{stdout}");
-    needles.iter().any(|n| combined.contains(n)) && combined.contains(subcommand)
-}
-
-pub(super) const ZCCACHE_ANALYZE_NOTE_LIMIT: usize = 1000;
-
-pub(super) fn zccache_output_snippet(output: &[u8]) -> Option<String> {
-    let text = String::from_utf8_lossy(output);
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    let mut compact = String::new();
-    let mut previous_was_space = false;
-    for ch in trimmed.chars() {
-        if ch.is_whitespace() {
-            if !previous_was_space {
-                compact.push(' ');
-                previous_was_space = true;
-            }
-        } else {
-            compact.push(ch);
-            previous_was_space = false;
-        }
-    }
-
-    let mut chars = compact.chars();
-    let mut snippet: String = chars.by_ref().take(ZCCACHE_ANALYZE_NOTE_LIMIT).collect();
-    if chars.next().is_some() {
-        snippet.push_str("...");
-    }
-    Some(snippet)
-}
-
-pub(super) fn zccache_daemon_already_stopped(output: &std::process::Output) -> bool {
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    )
-    .to_ascii_lowercase();
-    combined.contains("daemon not running")
-        || combined.contains("no daemon to stop")
-        || combined.contains("not running")
-        || combined.contains("connection refused")
 }

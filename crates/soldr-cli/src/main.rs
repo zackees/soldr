@@ -41,6 +41,7 @@ mod trampoline_workspace;
 mod wrapper;
 mod wrapper_target;
 mod zccache;
+mod zccache_lifecycle;
 
 // Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).
 // Declared (without a cfg gate) so unit tests under `src/` that use
@@ -908,7 +909,7 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
                         "pid": info.pid,
                         "uptime_secs": info.uptime_secs,
                         "request_count": info.request_count,
-                        "linked_zccache_pid": info.linked_zccache_pid,
+                        "linked_zccache": info.linked_zccache,
                     });
                     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
                 } else {

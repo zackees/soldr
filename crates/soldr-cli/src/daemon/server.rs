@@ -12,7 +12,9 @@ use crate::core::SoldrPaths;
 use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
-use crate::daemon::protocol::{BuildRecord, Request, Response, StatusInfo, PROTOCOL_VERSION};
+use crate::daemon::protocol::{
+    BuildRecord, Request, Response, StatusInfo, ZccacheDaemonLink, PROTOCOL_VERSION,
+};
 use crate::daemon::zccache_link;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -76,9 +78,9 @@ struct State {
     /// writer ordering and build-session correlation, not avoiding
     /// the per-write fs::open cost.
     db_path: PathBuf,
-    /// Linked zccache PID kept in memory for fast `Status` replies;
+    /// Linked zccache runtime kept in memory for fast `Status` replies;
     /// also persisted to redb so a daemon restart can resume shutdown.
-    linked_zccache_pid: std::sync::Mutex<Option<u32>>,
+    linked_zccache: std::sync::Mutex<Option<ZccacheDaemonLink>>,
     start_instant: Instant,
     request_count: AtomicU64,
     last_activity_ms: AtomicU64,
@@ -107,10 +109,11 @@ impl State {
             pid: std::process::id(),
             uptime_secs: self.start_instant.elapsed().as_secs(),
             request_count: self.request_count.load(Ordering::Relaxed),
-            linked_zccache_pid: *self
-                .linked_zccache_pid
+            linked_zccache: self
+                .linked_zccache
                 .lock()
-                .unwrap_or_else(|p| p.into_inner()),
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
         }
     }
 }
@@ -141,12 +144,12 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // Initialize the Phase 2 daemon tables (idempotent). Errors here
     // are non-fatal — Phase 1 target tracking still works without them.
     let _ = db::ensure_initialized(&db_path);
-    // Resume any linked zccache PID persisted across daemon restarts.
-    let resumed_pid = db::get_linked_zccache_pid(&db_path).ok().flatten();
+    // Resume any linked zccache identity persisted across daemon restarts.
+    let resumed_link = db::get_linked_zccache(&db_path).ok().flatten();
     let start_instant = Instant::now();
     let state = Arc::new(State {
         db_path,
-        linked_zccache_pid: std::sync::Mutex::new(resumed_pid),
+        linked_zccache: std::sync::Mutex::new(resumed_link),
         start_instant,
         request_count: AtomicU64::new(0),
         last_activity_ms: AtomicU64::new(0),
@@ -383,12 +386,12 @@ where
                 db::list_slow_builds(&state.db_path, threshold_ms, limit).unwrap_or_default();
             let _ = write_frame_async(&mut stream, &Response::Builds(rows)).await;
         }
-        Request::LinkZccache { zccache_pid } => {
+        Request::LinkZccache { link } => {
             // Persist to redb so a restart can still stop the linked
             // daemon, AND cache in-process for fast Status replies.
-            let _ = db::set_linked_zccache_pid(&state.db_path, Some(zccache_pid));
-            if let Ok(mut guard) = state.linked_zccache_pid.lock() {
-                *guard = Some(zccache_pid);
+            let _ = db::set_linked_zccache(&state.db_path, Some(&link));
+            if let Ok(mut guard) = state.linked_zccache.lock() {
+                *guard = Some(link);
             }
         }
     }

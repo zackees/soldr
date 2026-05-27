@@ -509,43 +509,46 @@ pub(crate) async fn run_cargo_front_door(
         current_unix_ms(),
     );
 
-    if status.success() {
-        if let Some(plan) = plan_ctx.as_ref() {
-            rust_plan::run_zccache_rust_plan(plan, "save", true)?;
-            rust_plan::write_warm_restore_sentinel(plan);
-        }
-        // Post-compile target-GC (#485). Same gating as the pre-pass —
-        // build-like cargo, no opt-out, resolve dir consistently with the
-        // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
-        // is what keeps a parallel `cargo` in the same `target/` from
-        // racing this pass; we never emit a stderr line when that guard
-        // engages.
-        if build_like_cargo && !gc_opt_out.after {
-            let target_dir = plan_ctx
-                .as_ref()
-                .map(|p| std::path::PathBuf::from(&p.target_dir))
-                .or_else(|| resolve_target_dir_for_gc(args));
-            if let Some(dir) = target_dir.as_deref() {
-                let outcome = auto_prune_target(dir, AutoPrunePhase::After);
-                emit_auto_prune_summary(&outcome);
+    let post_cargo_result: Result<(), SoldrError> = (|| {
+        if status.success() {
+            if let Some(plan) = plan_ctx.as_ref() {
+                rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+                rust_plan::write_warm_restore_sentinel(plan);
             }
+            // Post-compile target-GC (#485). Same gating as the pre-pass —
+            // build-like cargo, no opt-out, resolve dir consistently with the
+            // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
+            // is what keeps a parallel `cargo` in the same `target/` from
+            // racing this pass; we never emit a stderr line when that guard
+            // engages.
+            if build_like_cargo && !gc_opt_out.after {
+                let target_dir = plan_ctx
+                    .as_ref()
+                    .map(|p| std::path::PathBuf::from(&p.target_dir))
+                    .or_else(|| resolve_target_dir_for_gc(args));
+                if let Some(dir) = target_dir.as_deref() {
+                    let outcome = auto_prune_target(dir, AutoPrunePhase::After);
+                    emit_auto_prune_summary(&outcome);
+                }
+            }
+            if let Some(plan) = trampoline_plan.as_ref() {
+                refresh_sidecar_after_cargo(plan);
+            }
+            if let Some(plan) = workspace_plan.as_ref() {
+                refresh_workspace_sidecar_after_cargo(plan, clippy_capture);
+            }
+        } else if let Some(plan) = plan_ctx.as_ref() {
+            // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
+            // emitted, then rustc aborted before the `.rlib` codegen pass)
+            // in `target/<triple>/<profile>/deps/`. Subsequent invocations
+            // then fail with `E0463: can't find crate` because cargo passes
+            // `--extern X=orphan.rmeta` to dependents and rustc cannot link
+            // an rmeta-only crate. Sweep them so the next build rebuilds
+            // cleanly. See soldr#410.
+            rust_plan::prune_orphan_rmetas_after_failed_build(plan);
         }
-        if let Some(plan) = trampoline_plan.as_ref() {
-            refresh_sidecar_after_cargo(plan);
-        }
-        if let Some(plan) = workspace_plan.as_ref() {
-            refresh_workspace_sidecar_after_cargo(plan, clippy_capture);
-        }
-    } else if let Some(plan) = plan_ctx.as_ref() {
-        // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
-        // emitted, then rustc aborted before the `.rlib` codegen pass)
-        // in `target/<triple>/<profile>/deps/`. Subsequent invocations
-        // then fail with `E0463: can't find crate` because cargo passes
-        // `--extern X=orphan.rmeta` to dependents and rustc cannot link
-        // an rmeta-only crate. Sweep them so the next build rebuilds
-        // cleanly. See soldr#410.
-        rust_plan::prune_orphan_rmetas_after_failed_build(plan);
-    }
+        Ok(())
+    })();
 
     // After cargo fails, look at whatever stderr we captured for a
     // recognizable build-script-spawn-ENOENT pattern (#422 — minimal
@@ -574,6 +577,7 @@ pub(crate) async fn run_cargo_front_door(
         finish_result?;
         shutdown_result?;
     }
+    post_cargo_result?;
     drop(trampoline_plan);
     drop(workspace_plan);
     Ok(status.code().unwrap_or(1))
