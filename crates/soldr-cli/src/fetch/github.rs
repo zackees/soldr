@@ -137,7 +137,7 @@ async fn fetch_latest_by_prefix(
         "https://api.github.com/repos/{}/{}/releases?per_page=60",
         repo.owner, repo.repo
     );
-    let resp = github_request(client, &url)
+    let resp = github_request(client, repo, &url)
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -185,7 +185,7 @@ async fn fetch_release_value(
     repo: &RepoInfo,
     url: &str,
 ) -> Result<serde_json::Value, SoldrError> {
-    let resp = github_request(client, url)
+    let resp = github_request(client, repo, url)
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -213,7 +213,7 @@ async fn fetch_release_by_listing(
         "https://api.github.com/repos/{}/{}/releases?per_page=30",
         repo.owner, repo.repo
     );
-    let resp = github_request(client, &url)
+    let resp = github_request(client, repo, &url)
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -305,19 +305,63 @@ fn parse_release_info(
     Ok(ReleaseInfo { version, assets })
 }
 
-fn github_request<'a>(client: &'a reqwest::Client, url: &'a str) -> reqwest::RequestBuilder {
+fn github_request<'a>(
+    client: &'a reqwest::Client,
+    repo: &RepoInfo,
+    url: &'a str,
+) -> reqwest::RequestBuilder {
     let mut request = client
         .get(url)
         .header("Accept", "application/vnd.github+json");
 
-    if let Some(token) = std::env::var("GITHUB_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("GH_TOKEN").ok())
-    {
+    if let Some(token) = github_auth_token_for_repo(repo) {
         request = request.bearer_auth(token);
     }
 
     request
+}
+
+fn github_auth_token_for_repo(repo: &RepoInfo) -> Option<String> {
+    github_auth_token_for_repo_env(
+        repo,
+        std::env::var("SOLDR_GITHUB_TOKEN").ok(),
+        std::env::var("GH_TOKEN").ok(),
+        std::env::var("GITHUB_TOKEN").ok(),
+        std::env::var("GITHUB_REPOSITORY").ok(),
+        std::env::var("GITHUB_ACTIONS").ok(),
+    )
+}
+
+fn github_auth_token_for_repo_env(
+    repo: &RepoInfo,
+    soldr_token: Option<String>,
+    gh_token: Option<String>,
+    github_token: Option<String>,
+    github_repository: Option<String>,
+    github_actions: Option<String>,
+) -> Option<String> {
+    if let Some(token) = soldr_token.filter(|token| !token.is_empty()) {
+        return Some(token);
+    }
+
+    let gh_token = gh_token.filter(|token| !token.is_empty());
+    let github_token = github_token.filter(|token| !token.is_empty());
+    let in_github_actions = github_actions
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+    if !in_github_actions {
+        return gh_token.or(github_token);
+    }
+
+    let requested = format!("{}/{}", repo.owner, repo.repo);
+    let is_actions_repo = github_repository
+        .as_deref()
+        .is_some_and(|current| current.eq_ignore_ascii_case(&requested));
+    if is_actions_repo {
+        gh_token.or(github_token)
+    } else {
+        None
+    }
 }
 
 /// Pick the best asset for our target triple.
@@ -406,6 +450,65 @@ mod tests {
             name: name.to_string(),
             download_url: format!("https://example.com/{name}"),
         }
+    }
+
+    fn repo(owner: &str, name: &str) -> RepoInfo {
+        RepoInfo {
+            owner: owner.to_string(),
+            repo: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn github_auth_prefers_explicit_soldr_github_token() {
+        let token = github_auth_token_for_repo_env(
+            &repo("zackees", "zccache"),
+            Some("soldr-explicit".to_string()),
+            Some("gh-actions".to_string()),
+            Some("actions".to_string()),
+            Some("zackees/soldr".to_string()),
+            Some("true".to_string()),
+        );
+        assert_eq!(token.as_deref(), Some("soldr-explicit"));
+    }
+
+    #[test]
+    fn github_auth_uses_actions_token_only_for_current_repo() {
+        let token = github_auth_token_for_repo_env(
+            &repo("zackees", "soldr"),
+            None,
+            Some("gh-actions".to_string()),
+            Some("actions".to_string()),
+            Some("zackees/soldr".to_string()),
+            Some("true".to_string()),
+        );
+        assert_eq!(token.as_deref(), Some("gh-actions"));
+    }
+
+    #[test]
+    fn github_auth_skips_actions_token_for_cross_repo_release_lookup() {
+        let token = github_auth_token_for_repo_env(
+            &repo("zackees", "zccache"),
+            None,
+            Some("gh-actions".to_string()),
+            Some("actions".to_string()),
+            Some("zackees/soldr".to_string()),
+            Some("true".to_string()),
+        );
+        assert!(token.is_none());
+    }
+
+    #[test]
+    fn github_auth_uses_shell_tokens_outside_actions() {
+        let token = github_auth_token_for_repo_env(
+            &repo("zackees", "zccache"),
+            None,
+            Some("shell-gh".to_string()),
+            Some("shell-github".to_string()),
+            None,
+            None,
+        );
+        assert_eq!(token.as_deref(), Some("shell-gh"));
     }
 
     #[test]
