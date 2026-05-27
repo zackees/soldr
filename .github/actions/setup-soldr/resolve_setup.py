@@ -152,7 +152,7 @@ def resolve_latest_soldr_release(repo: str) -> str:
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "setup-soldr-action",
     }
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    token = _github_token_for_repo(repo)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -171,6 +171,21 @@ def resolve_latest_soldr_release(repo: str) -> str:
     if not isinstance(tag, str):
         return ""
     return _normalize_release_tag(tag)
+
+
+def _github_token_for_repo(repo: str) -> str:
+    explicit = os.environ.get("SETUP_SOLDR_GITHUB_TOKEN", "").strip()
+    if explicit:
+        return explicit
+
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if not token:
+        return ""
+
+    current_repo = os.environ.get("GITHUB_REPOSITORY", "").strip().lower()
+    if current_repo == repo.strip().lower():
+        return token
+    return ""
 
 
 def normalize_bool_input(value: str, *, name: str, default: bool) -> bool:

@@ -72,6 +72,127 @@ fn soldr_bin() -> &'static str {
     env!("CARGO_BIN_EXE_soldr")
 }
 
+struct FakeZccache {
+    bin: PathBuf,
+    down_marker: PathBuf,
+}
+
+fn fake_script_path(dir: &Path, name: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("{name}.cmd"))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(name)
+    }
+}
+
+fn write_fake_script(path: &Path, body: &str) {
+    #[cfg(windows)]
+    {
+        fs::write(path, body.replace('\n', "\r\n")).expect("failed to write fake script");
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::write(path, body).expect("failed to write fake script");
+        let mut perms = fs::metadata(path)
+            .expect("failed to stat fake script")
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).expect("failed to chmod fake script");
+    }
+}
+
+fn fake_zccache_script() -> &'static str {
+    #[cfg(windows)]
+    {
+        r#"@echo off
+if "%~1"=="session-start" (
+  echo {"session_id":"test-session"}
+  exit /b 0
+)
+if "%~1"=="start" (
+  exit /b 0
+)
+if "%~1"=="session-end" (
+  echo {"status":"ok","session_id":"test-session","duration_ms":1,"compilations":0,"hits":0,"misses":0}
+  exit /b 0
+)
+if "%~1"=="stop" (
+  if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER type nul > "%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%"
+  exit /b 0
+)
+if "%~1"=="status" (
+  if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER if exist "%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%" (
+    echo daemon not running 1>&2
+    exit /b 1
+  )
+  echo hits=0
+  exit /b 0
+)
+set "rustc=%~1"
+shift /1
+set "args="
+:args_loop
+if "%~1"=="" goto run_rustc
+set args=%args% "%~1"
+shift /1
+goto args_loop
+:run_rustc
+call "%rustc%" %args%
+exit /b %ERRORLEVEL%
+"#
+    }
+    #[cfg(not(windows))]
+    {
+        r#"#!/bin/sh
+case "$1" in
+  start)
+    exit 0
+    ;;
+  session-start)
+    printf '{"session_id":"test-session"}\n'
+    exit 0
+    ;;
+  session-end)
+    printf '{"status":"ok","session_id":"test-session","duration_ms":1,"compilations":0,"hits":0,"misses":0}\n'
+    exit 0
+    ;;
+  stop)
+    if [ -n "${SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}" ]; then
+      : > "$SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER"
+    fi
+    exit 0
+    ;;
+  status)
+    if [ -n "${SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}" ] && [ -e "$SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER" ]; then
+      echo 'daemon not running' >&2
+      exit 1
+    fi
+    echo 'hits=0'
+    exit 0
+    ;;
+esac
+rustc="$1"
+shift
+exec "$rustc" "$@"
+"#
+    }
+}
+
+fn install_fake_zccache() -> FakeZccache {
+    let dir = unique_temp_dir("native-cc-fake-zccache");
+    let zccache = fake_script_path(&dir, "zccache");
+    write_fake_script(&zccache, fake_zccache_script());
+    FakeZccache {
+        bin: zccache,
+        down_marker: dir.join("daemon-down"),
+    }
+}
+
 fn remove_inherited_native_cache_env(cmd: &mut Command) {
     for key in [
         "CC",
@@ -87,9 +208,13 @@ fn remove_inherited_native_cache_env(cmd: &mut Command) {
         "CXX_x86_64_pc_windows_msvc",
         "CC_aarch64_pc_windows_msvc",
         "CXX_aarch64_pc_windows_msvc",
+        "CARGO_TARGET_DIR",
         "RUSTC_WRAPPER",
         "RUSTC_WORKSPACE_WRAPPER",
         "SOLDR_NATIVE_CACHE",
+        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
+        "SOLDR_TEST_ZCCACHE_BIN",
+        "SOLDR_ZCCACHE_LOCAL_DIR",
         "ZCCACHE_CACHE_DIR",
     ] {
         cmd.env_remove(key);
@@ -165,6 +290,12 @@ fn run_soldr_cargo_build(project: &Path, env_overrides: &[(&str, &str)]) -> std:
     cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
     cmd.env("SOLDR_CACHE_LIFECYCLE", "command");
     cmd.env("SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS", "30");
+    let fake_zccache = install_fake_zccache();
+    cmd.env("SOLDR_TEST_ZCCACHE_BIN", &fake_zccache.bin);
+    cmd.env(
+        "SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER",
+        &fake_zccache.down_marker,
+    );
     cmd.env_remove("SOLDR_BUILD_CACHE_MODE");
     cmd.env_remove("SOLDR_TARGET_CACHE_MODE");
     for (k, v) in env_overrides {
@@ -183,6 +314,15 @@ fn parse_captured_env(marker_path: &Path) -> std::collections::HashMap<String, S
             Some((k.to_string(), v.to_string()))
         })
         .collect()
+}
+
+fn assert_command_success(output: &std::process::Output, context: &str) {
+    assert!(
+        output.status.success(),
+        "{context} failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 timed_test!(
@@ -255,7 +395,7 @@ timed_test!(
     {
         let project = make_env_capture_project("native-cc-disabled");
         let output = run_soldr_cargo_build(&project, &[("SOLDR_NATIVE_CACHE", "0")]);
-        assert!(output.status.success(), "soldr cargo build failed");
+        assert_command_success(&output, "soldr cargo build");
         let env = parse_captured_env(&project.join("env-capture.txt"));
         // CC stays at whatever the build.rs's inherited env had (likely
         // <UNSET> in this test). The critical assertion is the marker:
@@ -293,7 +433,7 @@ timed_test!(
         // into native-cache by setting CC explicitly.
         let project = make_env_capture_project("native-cc-explicit");
         let output = run_soldr_cargo_build(&project, &[("CC", "fake-compiler-doesnt-exist")]);
-        assert!(output.status.success(), "soldr cargo build failed");
+        assert_command_success(&output, "soldr cargo build");
         let env = parse_captured_env(&project.join("env-capture.txt"));
 
         let cc = env.get("CC").cloned().unwrap_or_default();
@@ -320,7 +460,7 @@ timed_test!(
         // CC="sccache clang" → must remain as-is (no double-wrap).
         let project = make_env_capture_project("native-cc-no-double-wrap");
         let output = run_soldr_cargo_build(&project, &[("CC", "sccache clang")]);
-        assert!(output.status.success(), "soldr cargo build failed");
+        assert_command_success(&output, "soldr cargo build");
         let env = parse_captured_env(&project.join("env-capture.txt"));
 
         let cc = env.get("CC").cloned().unwrap_or_default();
@@ -347,10 +487,7 @@ timed_test!(
             cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
             cmd.output().expect("spawn soldr --no-cache cargo build")
         };
-        assert!(
-            output.status.success(),
-            "soldr --no-cache cargo build failed"
-        );
+        assert_command_success(&output, "soldr --no-cache cargo build");
 
         let env = parse_captured_env(&project.join("env-capture.txt"));
         assert_eq!(

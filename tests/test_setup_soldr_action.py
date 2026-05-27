@@ -20,6 +20,33 @@ def _load_module():
     return module
 
 
+def test_resolve_setup_uses_token_for_current_repo(monkeypatch) -> None:
+    module = _load_module()
+    monkeypatch.setenv("GITHUB_TOKEN", "repo-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "zackees/soldr")
+    monkeypatch.delenv("SETUP_SOLDR_GITHUB_TOKEN", raising=False)
+
+    assert module._github_token_for_repo("zackees/soldr") == "repo-token"
+
+
+def test_resolve_setup_skips_repo_token_for_cross_repo(monkeypatch) -> None:
+    module = _load_module()
+    monkeypatch.setenv("GITHUB_TOKEN", "repo-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "caller/app")
+    monkeypatch.delenv("SETUP_SOLDR_GITHUB_TOKEN", raising=False)
+
+    assert module._github_token_for_repo("zackees/soldr") == ""
+
+
+def test_resolve_setup_accepts_explicit_setup_token(monkeypatch) -> None:
+    module = _load_module()
+    monkeypatch.setenv("GITHUB_TOKEN", "repo-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "caller/app")
+    monkeypatch.setenv("SETUP_SOLDR_GITHUB_TOKEN", "explicit-token")
+
+    assert module._github_token_for_repo("zackees/soldr") == "explicit-token"
+
+
 def test_load_toolchain_spec_reads_rust_toolchain_toml() -> None:
     module = _load_module()
 
