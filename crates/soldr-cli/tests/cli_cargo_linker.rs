@@ -47,7 +47,7 @@ fn cargo_front_door_default_linker_does_not_inject_target_env() {
     let cache_root = unique_temp_dir("cargo-default-linker");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -78,7 +78,7 @@ fn cargo_front_door_rust_lld_injects_target_linker_env() {
     let cache_root = unique_temp_dir("cargo-rust-lld-linker");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -147,7 +147,7 @@ fn cargo_front_door_mold_on_non_linux_returns_clear_error() {
     let cache_root = unique_temp_dir("cargo-mold-non-linux");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -190,7 +190,7 @@ fn cargo_front_door_fast_picks_rust_lld_when_mold_absent() {
     let cache_root = unique_temp_dir("cargo-fast-linker");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)

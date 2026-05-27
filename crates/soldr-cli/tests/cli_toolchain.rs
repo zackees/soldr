@@ -24,7 +24,7 @@ timed_test!(
         let log_path = workspace.join("rustup.log");
         let rustup = install_logging_fake_rustup(&log_path);
 
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = isolated_soldr_command()
             .args(["rustup", "show"])
             .current_dir(&workspace)
             .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -51,7 +51,7 @@ fn rustup_passthrough_injects_toolchain_for_target_add() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["rustup", "target", "add", "x86_64-unknown-linux-musl"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -86,7 +86,7 @@ fn rustup_passthrough_does_not_double_inject_toolchain() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args([
             "rustup",
             "target",
@@ -136,7 +136,7 @@ fn toolchain_install_invokes_rustup_with_channel() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "install"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -178,7 +178,7 @@ fn toolchain_prepare_installs_channel_components_and_targets() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "prepare"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -250,7 +250,7 @@ fn toolchain_prepare_installs_plugins_with_version() {
     let rustup = install_logging_fake_rustup(&rustup_log);
     let cargo = install_logging_fake_cargo(&cargo_log);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "prepare"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -300,7 +300,7 @@ fn toolchain_prepare_installs_plugin_with_locked_flag() {
     let rustup = install_logging_fake_rustup(&rustup_log);
     let cargo = install_logging_fake_cargo(&cargo_log);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "prepare"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -348,7 +348,7 @@ fn rustup_passthrough_injects_toolchain_for_component_add() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["rustup", "component", "add", "clippy"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -385,7 +385,7 @@ fn rustup_passthrough_does_not_inject_for_toolchain_list() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["rustup", "toolchain", "list"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -409,7 +409,7 @@ fn rustup_passthrough_forwards_version_flag_verbatim() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["rustup", "--version"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -431,7 +431,7 @@ fn rustup_passthrough_handles_target_add_equals_form_for_explicit_toolchain() {
     let log_path = workspace.join("rustup.log");
     let rustup = install_logging_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args([
             "rustup",
             "target",
@@ -480,7 +480,7 @@ fn toolchain_prepare_plugin_without_version_uses_no_version_flag() {
     let rustup = install_logging_fake_rustup(&rustup_log);
     let cargo = install_logging_fake_cargo(&cargo_log);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "prepare"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -542,7 +542,7 @@ fn toolchain_ensure_runs_prepare_then_smoke_verify_in_json_mode() {
         install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
     let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "ensure", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -654,7 +654,7 @@ fn toolchain_ensure_human_mode_succeeds_without_json() {
         install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
     let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "ensure"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -695,7 +695,7 @@ fn toolchain_ensure_json_reports_smoke_failure_when_rustc_returns_nonzero() {
         install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
     let rustc = install_failing_fake_rustc();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "ensure", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -736,7 +736,7 @@ fn toolchain_ensure_no_channel_emits_empty_schema_v1_payload() {
         install_logging_versioned_fake_cargo(&cargo_log, "cargo 1.94.1 (abc1234 2026-04-15)");
     let rustc = install_versioned_fake_rustc("rustc 1.94.1 (def5678 2026-04-15)");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["toolchain", "ensure", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -790,7 +790,7 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
     let workspace = unique_temp_dir("toolchain-link-fresh");
     let shim_dir = workspace.join("shims");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
@@ -835,7 +835,7 @@ fn toolchain_link_emits_schema_v1_json_payload() {
     let workspace = unique_temp_dir("toolchain-link-json");
     let shim_dir = workspace.join("shims");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
@@ -897,7 +897,7 @@ fn toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary() {
     let workspace = unique_temp_dir("toolchain-link-idempotent");
     let shim_dir = workspace.join("shims");
 
-    let first = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let first = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
@@ -927,7 +927,7 @@ fn toolchain_link_is_idempotent_when_rerun_with_same_soldr_binary() {
     // on filesystems with low-res mtimes.
     std::thread::sleep(Duration::from_millis(50));
 
-    let second = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let second = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
@@ -989,7 +989,7 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
     }
 
     // Without --force the run must NOT overwrite differing content.
-    let no_force = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let no_force = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
@@ -1011,7 +1011,7 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
     }
 
     // With --force the run MUST overwrite.
-    let with_force = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let with_force = isolated_soldr_command()
         .args([
             "toolchain",
             "link",
