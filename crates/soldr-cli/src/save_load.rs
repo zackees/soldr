@@ -10,7 +10,10 @@
 
 use std::path::PathBuf;
 
-use crate::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
+use crate::cache_lib::save::{
+    load, read_manifest_file, read_manifest_from_archive, save, save_delta, write_manifest_file,
+    LoadOptions, SaveDeltaOptions, SaveOptions, DEFAULT_ZSTD_LEVEL,
+};
 use clap::Args;
 
 #[derive(Debug, Args)]
@@ -53,6 +56,11 @@ pub struct SaveArgs {
     /// so any wrapper can produce the same sidecar.
     #[arg(long = "mtimes-only")]
     pub mtimes_only: bool,
+
+    /// Produce a delta archive by comparing `--cache-dir` against this
+    /// protobuf manifest from a previously restored base archive.
+    #[arg(long, value_name = "FILE")]
+    pub delta_from_manifest: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -86,9 +94,68 @@ pub struct LoadArgs {
     /// `--workspace`; mutually exclusive with `--cache-dir`.
     #[arg(long = "mtimes-only")]
     pub mtimes_only: bool,
+
+    /// Write the archive's protobuf manifest to this path after a
+    /// successful load, for later `soldr save --delta-from-manifest`.
+    #[arg(long, value_name = "FILE")]
+    pub manifest_out: Option<PathBuf>,
 }
 
 pub fn run_save(args: SaveArgs) -> i32 {
+    if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
+        let Some(cache_dir) = args.cache_dir.as_deref() else {
+            eprintln!("soldr save: --delta-from-manifest requires --cache-dir");
+            return 1;
+        };
+        if args.mtimes_only {
+            eprintln!("soldr save: --delta-from-manifest cannot be combined with --mtimes-only");
+            return 1;
+        }
+        let base_manifest = match read_manifest_file(base_manifest_path) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("soldr save: failed to read base manifest: {err}");
+                return 1;
+            }
+        };
+        let opts = SaveDeltaOptions {
+            workspace: args.workspace.as_deref(),
+            cache_dir,
+            base_manifest: &base_manifest,
+            out: &args.out,
+            zstd_level: args.zstd_level,
+            threads: args.threads,
+        };
+        let report = match save_delta(&opts) {
+            Ok(r) => r,
+            Err(err) => {
+                eprintln!("soldr save: {err}");
+                return 1;
+            }
+        };
+        if args.json {
+            println!(
+                "{{\"source_files\":{},\"cache_files\":{},\"deleted_cache_files\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"delta\":true}}",
+                report.source_files,
+                report.cache_files,
+                report.deleted_cache_files,
+                report.archive_bytes,
+                report.elapsed_ms,
+            );
+        } else {
+            println!(
+                "soldr save: source_files={} cache_files={} deleted_cache_files={} archive_bytes={} elapsed_ms={} delta=true out={}",
+                report.source_files,
+                report.cache_files,
+                report.deleted_cache_files,
+                report.archive_bytes,
+                report.elapsed_ms,
+                args.out.display(),
+            );
+        }
+        return 0;
+    }
+
     let opts = SaveOptions {
         workspace: args.workspace.as_deref(),
         cache_dir: args.cache_dir.as_deref(),
@@ -142,6 +209,19 @@ pub fn run_load(args: LoadArgs) -> i32 {
             return 1;
         }
     };
+    if let Some(out) = args.manifest_out.as_deref() {
+        let manifest = match read_manifest_from_archive(&args.archive) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                eprintln!("soldr load: failed to read manifest for --manifest-out: {err}");
+                return 1;
+            }
+        };
+        if let Err(err) = write_manifest_file(out, &manifest) {
+            eprintln!("soldr load: failed to write --manifest-out: {err}");
+            return 1;
+        }
+    }
     if args.json {
         println!(
             "{{\"cache_files_restored\":{},\"source_files_in_manifest\":{},\"mtimes_applied\":{},\"mtimes_skipped_missing\":{},\"mtimes_skipped_size_mismatch\":{},\"mtimes_skipped_modified\":{},\"elapsed_ms\":{}}}",

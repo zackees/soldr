@@ -3,7 +3,7 @@
 mod common;
 
 use common::*;
-use serde_json::Value;
+use prost::Message as _;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -11,6 +11,30 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct RustArtifactPlanProto {
+    #[prost(uint32, tag = "1")]
+    schema_version: u32,
+    #[prost(uint32, tag = "2")]
+    mode: u32,
+    #[prost(message, optional, tag = "9")]
+    packages: Option<RustPlanPackagesProto>,
+    #[prost(uint32, tag = "11")]
+    cache_schema_version: u32,
+    #[prost(string, tag = "13")]
+    cache_profile: String,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct RustPlanPackagesProto {
+    #[prost(string, repeated, tag = "1")]
+    selected_package_ids: Vec<String>,
+    #[prost(string, repeated, tag = "2")]
+    workspace_package_ids: Vec<String>,
+    #[prost(string, repeated, tag = "3")]
+    excluded_path_package_ids: Vec<String>,
+}
 
 #[test]
 fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
@@ -99,26 +123,25 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         .join("cache")
         .join("zccache")
         .join("plans")
-        .join("last-rust-artifact-plan.json");
-    let plan: Value =
-        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read generated rust plan"))
-            .expect("parse generated rust plan");
-    assert_eq!(plan["schema_version"], 1);
-    assert_eq!(plan["mode"], "thin");
+        .join("last-rust-artifact-plan.pb");
+    let plan_bytes = fs::read(&plan_path).expect("read generated rust plan");
+    let plan = RustArtifactPlanProto::decode(plan_bytes.as_slice())
+        .expect("parse generated rust plan protobuf");
+    assert_eq!(plan.schema_version, 1);
+    assert_eq!(plan.mode, 1);
     // Default profile flipped to thin-v2 in issue #461; cache_schema_version
     // bumps to 2 to signal the fingerprint-aware prune contract to zccache.
-    assert_eq!(plan["cache_schema_version"], 2);
-    assert_eq!(plan["cache_profile"], "thin-v2");
+    assert_eq!(plan.cache_schema_version, 2);
+    assert_eq!(plan.cache_profile, "thin-v2");
+    let packages = plan.packages.expect("packages should be present");
     assert_eq!(
-        plan["packages"]["workspace_package_ids"][0],
+        packages.workspace_package_ids[0],
         "path+file:///repo/app#app@0.1.0"
     );
     assert!(
-        plan["packages"]["selected_package_ids"][0]
-            .as_str()
-            .unwrap()
-            .contains("serde"),
-        "external dependency should be selected in generated plan: {plan}"
+        packages.selected_package_ids[0].contains("serde"),
+        "external dependency should be selected in generated plan: {:?}",
+        packages.selected_package_ids
     );
 }
 

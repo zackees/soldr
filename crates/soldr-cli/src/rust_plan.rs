@@ -21,6 +21,9 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+#[path = "rust_plan_proto.rs"]
+mod rust_plan_proto;
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct CargoMetadata {
     pub(crate) packages: Vec<CargoMetadataPackage>,
@@ -167,10 +170,9 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
     )?;
     let plan_dir = session.cache_dir.join("plans");
     std::fs::create_dir_all(&plan_dir)?;
-    let plan_path = plan_dir.join("last-rust-artifact-plan.json");
-    let plan_json = serde_json::to_string_pretty(&plan)
-        .map_err(|e| SoldrError::Other(format!("failed to serialize Rust artifact plan: {e}")))?;
-    std::fs::write(&plan_path, plan_json)?;
+    let plan_path = plan_dir.join("last-rust-artifact-plan.pb");
+    let plan_bytes = rust_plan_proto::plan_to_proto_bytes(&plan)?;
+    std::fs::write(&plan_path, plan_bytes)?;
 
     let plan_inputs_hash = compute_plan_inputs_hash(&plan);
     let target_dir = plan.target_dir.clone();

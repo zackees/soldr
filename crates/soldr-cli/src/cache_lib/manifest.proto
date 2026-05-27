@@ -37,6 +37,27 @@ message Manifest {
   // recompute from `files.len()` if zero.
   uint64 source_file_count = 6;
   uint64 cache_file_count = 7;
+
+  // Cache archive layer kind. COMPLETE is the historical all-files
+  // archive. DELTA contains only changed/new cache files plus
+  // deleted_cache_paths tombstones against base_manifest_blake3.
+  CacheLayerKind cache_layer_kind = 8;
+
+  // Cache file metadata, sorted by path. COMPLETE archives include every
+  // cache file. DELTA archives include changed/new cache files plus
+  // metadata-only entries whose content matches the base but whose mtime
+  // should be replayed. Bytes are present under cache/ only for DELTA
+  // entries whose content is new or changed.
+  repeated CacheFile cache_files = 9;
+
+  // Base manifest digest for DELTA archives: BLAKE3 over the protobuf
+  // bytes of the base manifest file used to compute the delta.
+  bytes base_manifest_blake3 = 10;
+
+  // Cache paths present in the base layer but absent from the delta's
+  // source tree. Load applies these as tombstones before extracting the
+  // delta payload so restore is base + delta with delta winning.
+  repeated string deleted_cache_paths = 11;
 }
 
 message SourceFile {
@@ -56,4 +77,26 @@ message SourceFile {
   // for the replay decision. (Hash size adds <0.5 KB per 1000 files
   // after zstd — not worth truncating.)
   bytes blake3 = 4;
+}
+
+message CacheFile {
+  // Cache-dir-relative path, forward slashes on every platform.
+  string path = 1;
+
+  // mtime in nanoseconds since UNIX epoch. Cache artifacts can be more
+  // sensitive than source-file mtime replay, so this keeps the full
+  // Rust/filetime precision instead of the source mtime_ms field.
+  int64 mtime_ns = 2;
+
+  // File size in bytes. Cheap rejection signal for delta comparison.
+  uint64 size = 3;
+
+  // BLAKE3 hash of the cache file content.
+  bytes blake3 = 4;
+}
+
+enum CacheLayerKind {
+  COMPLETE = 0;
+  BASE = 1;
+  DELTA = 2;
 }

@@ -9,7 +9,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use soldr_cli::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
+use soldr_cli::cache_lib::save::{
+    load, read_manifest_from_archive, save, save_delta, CacheLayerKind, LoadOptions,
+    SaveDeltaOptions, SaveOptions, DEFAULT_ZSTD_LEVEL,
+};
 
 fn write(path: &Path, content: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -29,6 +32,21 @@ fn mtime_ms(path: &Path) -> i64 {
 fn touch(path: &Path, ms: i64) {
     let t = filetime::FileTime::from_system_time(UNIX_EPOCH + Duration::from_millis(ms as u64));
     filetime::set_file_times(path, t, t).unwrap();
+}
+
+fn archive_paths(archive: &Path) -> Vec<String> {
+    let file = fs::File::open(archive).unwrap();
+    let reader = std::io::BufReader::new(file);
+    let zstd = zstd::stream::read::Decoder::new(reader).unwrap();
+    let mut tar = tar::Archive::new(zstd);
+    let mut paths = Vec::new();
+    for entry in tar.entries().unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path().unwrap().to_string_lossy().replace('\\', "/");
+        paths.push(path);
+    }
+    paths.sort();
+    paths
 }
 
 /// Make a tiny realistic workspace + cache.
@@ -504,5 +522,140 @@ fn save_without_cache_or_mtimes_only_errors() {
     assert!(
         msg.contains("--cache-dir") || msg.contains("--mtimes-only"),
         "error message must mention required flag: {msg}"
+    );
+}
+
+#[test]
+fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let base_archive = dir.path().join("base.tar.zst");
+    let delta_archive = dir.path().join("delta.tar.zst");
+    let restore = dir.path().join("restore");
+
+    let large = vec![0xAB; 256 * 1024];
+    write(&cache.join("deps/large.rlib"), &large);
+    write(&cache.join("deps/changed.rmeta"), b"base-content\n");
+    write(&cache.join("deps/deleted.d"), b"delete-me\n");
+    write(&cache.join("deps/mtime-only.d"), b"same-content\n");
+
+    let large_mtime = 1_700_000_000_000i64;
+    let changed_base_mtime = 1_700_000_010_000i64;
+    let deleted_mtime = 1_700_000_020_000i64;
+    let mtime_only_base_mtime = 1_700_000_025_000i64;
+    touch(&cache.join("deps/large.rlib"), large_mtime);
+    touch(&cache.join("deps/changed.rmeta"), changed_base_mtime);
+    touch(&cache.join("deps/deleted.d"), deleted_mtime);
+    touch(&cache.join("deps/mtime-only.d"), mtime_only_base_mtime);
+
+    let base_report = save(&SaveOptions {
+        workspace: None,
+        cache_dir: Some(&cache),
+        out: &base_archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: Some(1),
+        mtimes_only: false,
+    })
+    .expect("base save ok");
+    assert_eq!(base_report.cache_files, 4);
+
+    let base_manifest = read_manifest_from_archive(&base_archive).expect("base manifest");
+    assert_eq!(
+        base_manifest.cache_layer_kind,
+        CacheLayerKind::Complete as i32
+    );
+    assert_eq!(base_manifest.cache_files.len(), 4);
+
+    write(&cache.join("deps/changed.rmeta"), b"delta-content\n");
+    fs::remove_file(cache.join("deps/deleted.d")).unwrap();
+    write(&cache.join("deps/new.rmeta"), b"new-content\n");
+    let changed_delta_mtime = 1_700_000_030_000i64;
+    let new_mtime = 1_700_000_040_000i64;
+    let mtime_only_delta_mtime = 1_700_000_050_000i64;
+    touch(&cache.join("deps/changed.rmeta"), changed_delta_mtime);
+    touch(&cache.join("deps/new.rmeta"), new_mtime);
+    touch(&cache.join("deps/mtime-only.d"), mtime_only_delta_mtime);
+
+    let delta_report = save_delta(&SaveDeltaOptions {
+        workspace: None,
+        cache_dir: &cache,
+        base_manifest: &base_manifest,
+        out: &delta_archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: Some(1),
+    })
+    .expect("delta save ok");
+    assert_eq!(
+        delta_report.cache_files, 3,
+        "changed/new files plus a metadata-only mtime update"
+    );
+    assert_eq!(delta_report.deleted_cache_files, 1);
+
+    let delta_manifest = read_manifest_from_archive(&delta_archive).expect("delta manifest");
+    assert_eq!(
+        delta_manifest.cache_layer_kind,
+        CacheLayerKind::Delta as i32
+    );
+    assert_eq!(delta_manifest.deleted_cache_paths, vec!["deps/deleted.d"]);
+    assert!(
+        delta_manifest
+            .cache_files
+            .iter()
+            .any(|entry| entry.path == "deps/mtime-only.d"),
+        "mtime-only change should be carried in protobuf metadata"
+    );
+    let paths = archive_paths(&delta_archive);
+    assert!(paths.contains(&"SOLDR_MANIFEST.pb".to_string()));
+    assert!(paths.contains(&"cache/deps/changed.rmeta".to_string()));
+    assert!(paths.contains(&"cache/deps/new.rmeta".to_string()));
+    assert!(
+        !paths.contains(&"cache/deps/large.rlib".to_string()),
+        "unchanged large files must stay out of the delta archive"
+    );
+    assert!(
+        !paths.contains(&"cache/deps/mtime-only.d".to_string()),
+        "mtime-only changes should not upload file bytes"
+    );
+
+    load(&LoadOptions {
+        archive: &base_archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: Some(1),
+        mtimes_only: false,
+    })
+    .expect("base load ok");
+    load(&LoadOptions {
+        archive: &delta_archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: Some(1),
+        mtimes_only: false,
+    })
+    .expect("delta load ok");
+
+    assert_eq!(fs::read(restore.join("deps/large.rlib")).unwrap(), large);
+    assert_eq!(
+        fs::read(restore.join("deps/changed.rmeta")).unwrap(),
+        b"delta-content\n"
+    );
+    assert_eq!(
+        fs::read(restore.join("deps/new.rmeta")).unwrap(),
+        b"new-content\n"
+    );
+    assert_eq!(
+        fs::read(restore.join("deps/mtime-only.d")).unwrap(),
+        b"same-content\n"
+    );
+    assert!(!restore.join("deps/deleted.d").exists());
+    assert_eq!(mtime_ms(&restore.join("deps/large.rlib")), large_mtime);
+    assert_eq!(
+        mtime_ms(&restore.join("deps/changed.rmeta")),
+        changed_delta_mtime
+    );
+    assert_eq!(mtime_ms(&restore.join("deps/new.rmeta")), new_mtime);
+    assert_eq!(
+        mtime_ms(&restore.join("deps/mtime-only.d")),
+        mtime_only_delta_mtime
     );
 }
