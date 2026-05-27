@@ -22,7 +22,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, MutexGuard};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use soldr_cli::timed_test;
 
 static SOLDR_CARGO_BUILD_LOCK: Mutex<()> = Mutex::new(());
 
@@ -183,173 +185,188 @@ fn parse_captured_env(marker_path: &Path) -> std::collections::HashMap<String, S
         .collect()
 }
 
-#[test]
-fn injects_zccache_wrapped_cc_and_cxx_by_default() {
-    let project = make_env_capture_project("native-cc-default");
-    let output = run_soldr_cargo_build(&project, &[]);
-    assert!(
-        output.status.success(),
-        "soldr cargo build failed:\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let env = parse_captured_env(&project.join("env-capture.txt"));
-    assert_eq!(
-        env.get("BUILD_RS_DID_RUN").map(String::as_str),
-        Some("1"),
-        "build.rs marker missing"
-    );
-
-    // CC_KNOWN_WRAPPER_CUSTOM must be set to "zccache" so cc-rs strips
-    // the wrapper when classifying the real compiler underneath.
-    assert_eq!(
-        env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
-        Some("zccache"),
-        "CC_KNOWN_WRAPPER_CUSTOM should be set to 'zccache'; got: {:?}",
-        env.get("CC_KNOWN_WRAPPER_CUSTOM")
-    );
-
-    // On Unix the default-synth path is on, so CC + CXX are always set.
-    // On Windows we only wrap when the user pre-sets them, so this test
-    // case expects the InjectExistingOnly behaviour (CC stays <UNSET>).
-    let cc = env.get("CC").cloned().unwrap_or_default();
-    if cfg!(target_os = "windows") {
+timed_test!(
+    injects_zccache_wrapped_cc_and_cxx_by_default,
+    Duration::from_secs(120),
+    {
+        let project = make_env_capture_project("native-cc-default");
+        let output = run_soldr_cargo_build(&project, &[]);
+        assert!(
+            output.status.success(),
+            "soldr cargo build failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let env = parse_captured_env(&project.join("env-capture.txt"));
         assert_eq!(
-            cc, "<UNSET>",
-            "Windows default keeps CC unset so cc-rs's vcvars autodetection still runs"
+            env.get("BUILD_RS_DID_RUN").map(String::as_str),
+            Some("1"),
+            "build.rs marker missing"
         );
-    } else {
-        // The injected value is "<zccache-path> cc". Just look for the
-        // word "zccache" at the start; the exact path is platform/
-        // user-cache dependent.
-        let first_token = cc.split_whitespace().next().unwrap_or("");
-        let stem = Path::new(first_token)
+
+        // CC_KNOWN_WRAPPER_CUSTOM must be set to "zccache" so cc-rs strips
+        // the wrapper when classifying the real compiler underneath.
+        assert_eq!(
+            env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
+            Some("zccache"),
+            "CC_KNOWN_WRAPPER_CUSTOM should be set to 'zccache'; got: {:?}",
+            env.get("CC_KNOWN_WRAPPER_CUSTOM")
+        );
+
+        // On Unix the default-synth path is on, so CC + CXX are always set.
+        // On Windows we only wrap when the user pre-sets them, so this test
+        // case expects the InjectExistingOnly behaviour (CC stays <UNSET>).
+        let cc = env.get("CC").cloned().unwrap_or_default();
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                cc, "<UNSET>",
+                "Windows default keeps CC unset so cc-rs's vcvars autodetection still runs"
+            );
+        } else {
+            // The injected value is "<zccache-path> cc". Just look for the
+            // word "zccache" at the start; the exact path is platform/
+            // user-cache dependent.
+            let first_token = cc.split_whitespace().next().unwrap_or("");
+            let stem = Path::new(first_token)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(first_token);
+            assert!(
+                stem.eq_ignore_ascii_case("zccache"),
+                "CC should be wrapped with zccache; got: {cc:?}"
+            );
+            let cxx = env.get("CXX").cloned().unwrap_or_default();
+            let cxx_first = cxx.split_whitespace().next().unwrap_or("");
+            let cxx_stem = Path::new(cxx_first)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(cxx_first);
+            assert!(
+                cxx_stem.eq_ignore_ascii_case("zccache"),
+                "CXX should be wrapped with zccache; got: {cxx:?}"
+            );
+        }
+    }
+);
+
+timed_test!(
+    soldr_native_cache_off_disables_injection,
+    Duration::from_secs(120),
+    {
+        let project = make_env_capture_project("native-cc-disabled");
+        let output = run_soldr_cargo_build(&project, &[("SOLDR_NATIVE_CACHE", "0")]);
+        assert!(output.status.success(), "soldr cargo build failed");
+        let env = parse_captured_env(&project.join("env-capture.txt"));
+        // CC stays at whatever the build.rs's inherited env had (likely
+        // <UNSET> in this test). The critical assertion is the marker:
+        // CC_KNOWN_WRAPPER_CUSTOM must NOT be set to "zccache" when the
+        // user opted out — meaning if the test runner didn't set it,
+        // the build.rs sees <UNSET>.
+        assert_eq!(
+            env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
+            Some("<UNSET>"),
+            "SOLDR_NATIVE_CACHE=0 must suppress CC_KNOWN_WRAPPER_CUSTOM injection"
+        );
+        // CC must NOT start with zccache.
+        let cc = env.get("CC").cloned().unwrap_or_default();
+        let first_stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or(first_token);
+            .unwrap_or("")
+            .to_string();
         assert!(
-            stem.eq_ignore_ascii_case("zccache"),
-            "CC should be wrapped with zccache; got: {cc:?}"
-        );
-        let cxx = env.get("CXX").cloned().unwrap_or_default();
-        let cxx_first = cxx.split_whitespace().next().unwrap_or("");
-        let cxx_stem = Path::new(cxx_first)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(cxx_first);
-        assert!(
-            cxx_stem.eq_ignore_ascii_case("zccache"),
-            "CXX should be wrapped with zccache; got: {cxx:?}"
+            !first_stem.eq_ignore_ascii_case("zccache"),
+            "opt-out should leave CC unwrapped; got: {cc:?}"
         );
     }
-}
+);
 
-#[test]
-fn soldr_native_cache_off_disables_injection() {
-    let project = make_env_capture_project("native-cc-disabled");
-    let output = run_soldr_cargo_build(&project, &[("SOLDR_NATIVE_CACHE", "0")]);
-    assert!(output.status.success(), "soldr cargo build failed");
-    let env = parse_captured_env(&project.join("env-capture.txt"));
-    // CC stays at whatever the build.rs's inherited env had (likely
-    // <UNSET> in this test). The critical assertion is the marker:
-    // CC_KNOWN_WRAPPER_CUSTOM must NOT be set to "zccache" when the
-    // user opted out — meaning if the test runner didn't set it,
-    // the build.rs sees <UNSET>.
-    assert_eq!(
-        env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
-        Some("<UNSET>"),
-        "SOLDR_NATIVE_CACHE=0 must suppress CC_KNOWN_WRAPPER_CUSTOM injection"
-    );
-    // CC must NOT start with zccache.
-    let cc = env.get("CC").cloned().unwrap_or_default();
-    let first_stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        !first_stem.eq_ignore_ascii_case("zccache"),
-        "opt-out should leave CC unwrapped; got: {cc:?}"
-    );
-}
+timed_test!(
+    explicit_user_cc_is_wrapped_on_every_platform,
+    Duration::from_secs(120),
+    {
+        // Issue #310 acceptance criterion: "Existing user compiler
+        // selections are preserved and wrapped, not replaced." We pass
+        // CC=fake-compiler-doesnt-exist (the build.rs doesn't actually
+        // invoke it — we only read the env) and assert soldr wrapped it
+        // with zccache. This is the path that lets Windows users opt
+        // into native-cache by setting CC explicitly.
+        let project = make_env_capture_project("native-cc-explicit");
+        let output = run_soldr_cargo_build(&project, &[("CC", "fake-compiler-doesnt-exist")]);
+        assert!(output.status.success(), "soldr cargo build failed");
+        let env = parse_captured_env(&project.join("env-capture.txt"));
 
-#[test]
-fn explicit_user_cc_is_wrapped_on_every_platform() {
-    // Issue #310 acceptance criterion: "Existing user compiler
-    // selections are preserved and wrapped, not replaced." We pass
-    // CC=fake-compiler-doesnt-exist (the build.rs doesn't actually
-    // invoke it — we only read the env) and assert soldr wrapped it
-    // with zccache. This is the path that lets Windows users opt
-    // into native-cache by setting CC explicitly.
-    let project = make_env_capture_project("native-cc-explicit");
-    let output = run_soldr_cargo_build(&project, &[("CC", "fake-compiler-doesnt-exist")]);
-    assert!(output.status.success(), "soldr cargo build failed");
-    let env = parse_captured_env(&project.join("env-capture.txt"));
+        let cc = env.get("CC").cloned().unwrap_or_default();
+        assert!(
+            cc.ends_with("fake-compiler-doesnt-exist"),
+            "user's compiler should survive at the end of the wrapped CC; got: {cc:?}"
+        );
+        let first_stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            first_stem.eq_ignore_ascii_case("zccache"),
+            "CC should be wrapped with zccache when user set it; got: {cc:?}"
+        );
+    }
+);
 
-    let cc = env.get("CC").cloned().unwrap_or_default();
-    assert!(
-        cc.ends_with("fake-compiler-doesnt-exist"),
-        "user's compiler should survive at the end of the wrapped CC; got: {cc:?}"
-    );
-    let first_stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        first_stem.eq_ignore_ascii_case("zccache"),
-        "CC should be wrapped with zccache when user set it; got: {cc:?}"
-    );
-}
+timed_test!(
+    pre_wrapped_user_cc_is_not_double_wrapped,
+    Duration::from_secs(120),
+    {
+        // CC="sccache clang" → must remain as-is (no double-wrap).
+        let project = make_env_capture_project("native-cc-no-double-wrap");
+        let output = run_soldr_cargo_build(&project, &[("CC", "sccache clang")]);
+        assert!(output.status.success(), "soldr cargo build failed");
+        let env = parse_captured_env(&project.join("env-capture.txt"));
 
-#[test]
-fn pre_wrapped_user_cc_is_not_double_wrapped() {
-    // CC="sccache clang" → must remain as-is (no double-wrap).
-    let project = make_env_capture_project("native-cc-no-double-wrap");
-    let output = run_soldr_cargo_build(&project, &[("CC", "sccache clang")]);
-    assert!(output.status.success(), "soldr cargo build failed");
-    let env = parse_captured_env(&project.join("env-capture.txt"));
+        let cc = env.get("CC").cloned().unwrap_or_default();
+        assert_eq!(
+            cc, "sccache clang",
+            "pre-wrapped sccache CC should be left alone; got: {cc:?}"
+        );
+    }
+);
 
-    let cc = env.get("CC").cloned().unwrap_or_default();
-    assert_eq!(
-        cc, "sccache clang",
-        "pre-wrapped sccache CC should be left alone; got: {cc:?}"
-    );
-}
+timed_test!(
+    no_cache_global_disables_native_too,
+    Duration::from_secs(120),
+    {
+        // `soldr --no-cache cargo …` is the global kill-switch. Native
+        // caching must turn off because the zccache session never starts.
+        let project = make_env_capture_project("native-cc-no-cache");
+        let output = {
+            let _guard = soldr_cargo_build_lock();
+            let mut cmd = Command::new(soldr_bin());
+            cmd.current_dir(&project);
+            remove_inherited_native_cache_env(&mut cmd);
+            cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
+            cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
+            cmd.output().expect("spawn soldr --no-cache cargo build")
+        };
+        assert!(
+            output.status.success(),
+            "soldr --no-cache cargo build failed"
+        );
 
-#[test]
-fn no_cache_global_disables_native_too() {
-    // `soldr --no-cache cargo …` is the global kill-switch. Native
-    // caching must turn off because the zccache session never starts.
-    let project = make_env_capture_project("native-cc-no-cache");
-    let output = {
-        let _guard = soldr_cargo_build_lock();
-        let mut cmd = Command::new(soldr_bin());
-        cmd.current_dir(&project);
-        remove_inherited_native_cache_env(&mut cmd);
-        cmd.env("SOLDR_CACHE_DIR", unique_cache_dir());
-        cmd.args(["--no-cache", "cargo", "build", "--no-trampoline"]);
-        cmd.output().expect("spawn soldr --no-cache cargo build")
-    };
-    assert!(
-        output.status.success(),
-        "soldr --no-cache cargo build failed"
-    );
-
-    let env = parse_captured_env(&project.join("env-capture.txt"));
-    assert_eq!(
-        env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
-        Some("<UNSET>"),
-        "--no-cache must suppress CC_KNOWN_WRAPPER_CUSTOM injection"
-    );
-    let cc = env.get("CC").cloned().unwrap_or_default();
-    let stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        !stem.eq_ignore_ascii_case("zccache"),
-        "--no-cache should leave CC unwrapped; got: {cc:?}"
-    );
-}
+        let env = parse_captured_env(&project.join("env-capture.txt"));
+        assert_eq!(
+            env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
+            Some("<UNSET>"),
+            "--no-cache must suppress CC_KNOWN_WRAPPER_CUSTOM injection"
+        );
+        let cc = env.get("CC").cloned().unwrap_or_default();
+        let stem = Path::new(cc.split_whitespace().next().unwrap_or(""))
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            !stem.eq_ignore_ascii_case("zccache"),
+            "--no-cache should leave CC unwrapped; got: {cc:?}"
+        );
+    }
+);

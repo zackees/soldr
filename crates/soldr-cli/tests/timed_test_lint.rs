@@ -108,7 +108,6 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "tests/cli_cache_trim.rs",
     "tests/cli_cargo_basic.rs",
     "tests/cli_cargo_linker.rs",
-    "tests/cli_cargo_native_cc.rs",
     "tests/cli_cargo_run_trampoline.rs",
     "tests/cli_cargo_trampoline_workspace.rs",
     "tests/cli_cargo_wrappers.rs",
