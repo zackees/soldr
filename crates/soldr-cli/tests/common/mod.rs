@@ -7,11 +7,14 @@
 use serde_json::Value;
 use std::io::Write;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn isolated_soldr_command() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_soldr"));
@@ -52,7 +55,9 @@ pub(crate) fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time went backwards")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soldr-{label}-{nanos}"));
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let process_id = std::process::id();
+    let dir = std::env::temp_dir().join(format!("soldr-{label}-{process_id}-{counter}-{nanos}"));
     fs::create_dir_all(&dir).expect("failed to create temp dir");
     dir
 }
@@ -119,6 +124,24 @@ pub(crate) fn path_display_variants(path: &Path) -> Vec<String> {
         }
     }
     variants
+}
+
+pub(crate) fn discovered_private_zccache_cache_dir(cache_root: &Path) -> PathBuf {
+    let private_root = cache_root.join("cache").join("zccache").join("private");
+    let mut dirs: Vec<PathBuf> = fs::read_dir(&private_root)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", private_root.display()))
+        .map(|entry| entry.expect("read private zccache dir").path())
+        .filter(|path| path.is_dir())
+        .collect();
+    dirs.sort();
+    assert_eq!(
+        dirs.len(),
+        1,
+        "expected one private zccache cache dir under {}, found {:?}",
+        private_root.display(),
+        dirs
+    );
+    dirs.remove(0)
 }
 
 pub(crate) fn logged_cargo_wrapper(log: &str) -> Option<String> {
@@ -433,20 +456,20 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
             "@echo off\n\
              if \"%~1\"==\"start\" goto soldr_zccache_start\n\
              if \"%~1\"==\"stop\" (\n\
-               echo zccache stop cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+               echo zccache stop cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE%>>\"{0}\"\n\
                if defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\"\n\
                if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER type nul > \"%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%\"\n\
                exit /b 0\n\
              )\n\
               if \"%~1\"==\"session-start\" (\n\
-                echo zccache session-start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+                echo zccache session-start cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE% args=%*>>\"{0}\"\n\
                 if not \"%~4\"==\"\" type nul > \"%~4\"\n\
                 if not \"%~6\"==\"\" type nul > \"%~6\"\n\
                 echo {{\"session_id\":\"test-session\"}}\n\
                 exit /b 0\n\
              )\n\
              if \"%~1\"==\"session-end\" (\n\
-               echo zccache session-end %~2 %~3 cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+               echo zccache session-end %~2 %~3 cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE%>>\"{0}\"\n\
                if \"%~3\"==\"--json\" (\n\
                  echo {{\"status\":\"ok\",\"session_id\":\"test-session\",\"duration_ms\":1200,\"compilations\":10,\"hits\":7,\"misses\":3,\"non_cacheable\":2,\"errors\":1,\"time_saved_ms\":900,\"unique_sources\":4,\"bytes_read\":111,\"bytes_written\":222,\"hit_rate\":0.7}}\n\
                ) else (\n\
@@ -480,11 +503,11 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              )\n\
              set \"rustc=%~1\"\n\
              shift\n\
-             echo zccache wrapper cache_dir=%ZCCACHE_CACHE_DIR% %rustc% %*>>\"{0}\"\n\
+             echo zccache wrapper cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE% %rustc% %*>>\"{0}\"\n\
              call \"%rustc%\" %*\n\
              exit /b %ERRORLEVEL%\n\
              :soldr_zccache_start\n\
-             echo zccache start cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             echo zccache start cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE%>>\"{0}\"\n\
              if not defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE exit /b 0\n\
              if exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\" exit /b 0\n\
              if not exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.failed\" (\n\
@@ -519,7 +542,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
             "#!/bin/sh\n\
              case \"$1\" in\n\
                start)\n\
-                 echo \"zccache start cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 echo \"zccache start cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}}\" >> \"{0}\"\n\
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
                    if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\" ]; then\n\
                      if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.failed\" ]; then\n\
@@ -534,7 +557,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                  exit 0\n\
                  ;;\n\
                stop)\n\
-                 echo \"zccache stop cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 echo \"zccache stop cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}}\" >> \"{0}\"\n\
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
                    : > \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\"\n\
                  fi\n\
@@ -544,14 +567,14 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                  exit 0\n\
                  ;;\n\
                 session-start)\n\
-                  echo \"zccache session-start cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                  echo \"zccache session-start cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}} args=$*\" >> \"{0}\"\n\
                   : > \"$4\"\n\
                   : > \"$6\"\n\
                   echo '{{\"session_id\":\"test-session\"}}'\n\
                   exit 0\n\
                ;;\n\
                session-end)\n\
-                 echo \"zccache session-end $2 $3 cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+                 echo \"zccache session-end $2 $3 cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}}\" >> \"{0}\"\n\
                  if [ \"${{3:-}}\" = \"--json\" ]; then\n\
                    printf '{{\"status\":\"ok\",\"session_id\":\"test-session\",\"duration_ms\":1200,\"compilations\":10,\"hits\":7,\"misses\":3,\"non_cacheable\":2,\"errors\":1,\"time_saved_ms\":900,\"unique_sources\":4,\"bytes_read\":111,\"bytes_written\":222,\"hit_rate\":0.7}}\\n'\n\
                  else\n\
@@ -611,7 +634,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                fi\n\
                echo \"zccache jobserver fds ok read=$SOLDR_TEST_JOBSERVER_READ_FD write=$SOLDR_TEST_JOBSERVER_WRITE_FD\" >> \"{0}\"\n\
              fi\n\
-             echo \"zccache wrapper cache_dir=${{ZCCACHE_CACHE_DIR:-}} $rustc $*\" >> \"{0}\"\n\
+             echo \"zccache wrapper cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}} $rustc $*\" >> \"{0}\"\n\
              \"$rustc\" \"$@\"\n",
             log_path.display()
         )

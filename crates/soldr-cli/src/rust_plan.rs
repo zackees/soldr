@@ -9,8 +9,8 @@ use crate::cargo_front_door::{
 };
 use crate::core::{suppress_windows_console_window, SoldrError};
 use crate::zccache::{
-    command_stderr, normalize_path_for_compare, run_zccache_command_strings_in_cache_dir,
-    ZccacheBuildSession,
+    command_stderr, normalize_path_for_compare,
+    run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
 };
 use crate::{
     apply_implicit_toolchain_homes, non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR,
@@ -111,6 +111,7 @@ pub(crate) struct RustArtifactPlanContext {
     pub(crate) zccache_binary: std::path::PathBuf,
     pub(crate) cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir: std::path::PathBuf,
+    pub(crate) zccache_daemon_name: Option<String>,
     pub(crate) session_id: String,
     pub(crate) journal_path: std::path::PathBuf,
     pub(crate) backend: String,
@@ -182,6 +183,10 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
         zccache_binary: session.binary_path.clone(),
         cache_dir: rust_artifact_plan_cache_dir(session)?,
         zccache_daemon_cache_dir: session.cache_dir.clone(),
+        zccache_daemon_name: session
+            .private_daemon
+            .as_ref()
+            .map(|private| private.daemon_name.clone()),
         session_id: session.session_id.clone(),
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,
@@ -783,10 +788,11 @@ pub(crate) fn run_zccache_rust_plan(
         args.push(plan.session_id.clone());
     }
 
-    let output = run_zccache_command_strings_in_cache_dir(
+    let output = run_zccache_command_strings_in_cache_dir_with_daemon_name(
         &plan.zccache_binary,
         &args,
         &plan.zccache_daemon_cache_dir,
+        plan.zccache_daemon_name.as_deref(),
     )?;
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {

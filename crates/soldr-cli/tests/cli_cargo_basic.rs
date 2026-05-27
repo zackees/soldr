@@ -194,13 +194,17 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
         log.contains("cache=1"),
         "cache-enabled front door should propagate cache flag: {log}"
     );
-    let zccache_cache_dir = cache_root.join("cache").join("zccache");
+    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
     assert!(
         path_display_variants(&zccache_cache_dir)
             .iter()
             .any(|path| log.contains(&format!("zccache_dir={path}"))
                 && log.contains(&format!("cache_dir={path}"))),
-        "managed zccache commands and cargo wrapper env should use the Soldr-owned cache dir: {log}"
+        "managed zccache commands and cargo wrapper env should use the private Soldr-owned cache dir: {log}"
+    );
+    assert!(
+        log.contains("daemon_namespace=soldr-dev-") && log.contains("--private-daemon"),
+        "managed zccache should use a private daemon namespace: {log}"
     );
     assert!(
         log.contains("zccache start"),
@@ -287,12 +291,12 @@ fn command_lifetime_cache_stops_zccache_after_successful_cargo() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert_command_lifetime_shutdown_order(&log);
-    let zccache_cache_dir = cache_root.join("cache").join("zccache");
+    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
     assert!(
         path_display_variants(&zccache_cache_dir)
             .iter()
             .any(|path| log.contains(&format!("zccache stop cache_dir={path}"))),
-        "command-lifetime stop must use the soldr-managed cache root: {log}"
+        "command-lifetime stop must use the private soldr-managed cache root: {log}"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

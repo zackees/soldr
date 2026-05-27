@@ -5,7 +5,7 @@
 
 use crate::core::SoldrPaths;
 use crate::daemon::db;
-use crate::zccache_lifecycle::ZccacheLifecycle;
+use crate::zccache_lifecycle::{ZccacheLifecycle, ZccachePrivateDaemonConfig};
 use std::time::Duration;
 
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,6 +27,15 @@ pub fn stop_linked_zccache(paths: &SoldrPaths) {
     }
 
     let mut lifecycle = ZccacheLifecycle::new(binary_path, cache_dir);
+    if link.private_daemon {
+        let Some(daemon_name) = link.daemon_name.as_deref() else {
+            let _ = db::set_linked_zccache(&db_path, None);
+            return;
+        };
+        let mut private_daemon = ZccachePrivateDaemonConfig::new(daemon_name.to_string());
+        private_daemon.owner_pid = link.owner_pid;
+        lifecycle = lifecycle.with_private_daemon(private_daemon);
+    }
     let _ = lifecycle.stop_best_effort_with_process_timeout(STOP_TIMEOUT);
     let _ = db::set_linked_zccache(&db_path, None);
 }

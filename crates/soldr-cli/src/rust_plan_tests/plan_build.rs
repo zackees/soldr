@@ -64,6 +64,7 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),
         session_stats_path: root.join("cache/logs/last-session-stats.json"),
+        private_daemon: None,
     };
     let args = vec![
         "build".to_string(),
@@ -259,6 +260,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),
         session_stats_path: root.join("cache/logs/last-session-stats.json"),
+        private_daemon: None,
     };
 
     let plan = build_rust_artifact_plan(

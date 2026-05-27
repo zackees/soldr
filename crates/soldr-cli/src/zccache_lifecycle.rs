@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
+pub(crate) const ZCCACHE_DAEMON_NAMESPACE_ENV_VAR: &str = "ZCCACHE_DAEMON_NAMESPACE";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZccacheLifecycleState {
     Ready,
@@ -17,6 +19,76 @@ pub(crate) enum ZccacheLifecycleState {
     SessionActive,
     SessionEnded,
     Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZccachePrivateEnv {
+    pub(crate) key: String,
+    pub(crate) value: String,
+}
+
+impl ZccachePrivateEnv {
+    pub(crate) fn new(key: impl Into<String>, value: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
+
+    fn as_assignment(&self) -> String {
+        format!("{}={}", self.key, self.value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZccachePrivateDaemonConfig {
+    pub(crate) daemon_name: String,
+    pub(crate) owner_pid: Option<u32>,
+    pub(crate) private_env: Vec<ZccachePrivateEnv>,
+}
+
+impl ZccachePrivateDaemonConfig {
+    pub(crate) fn new(daemon_name: impl Into<String>) -> Self {
+        Self {
+            daemon_name: daemon_name.into(),
+            owner_pid: None,
+            private_env: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_owner_pid(mut self, owner_pid: u32) -> Self {
+        self.owner_pid = Some(owner_pid);
+        self
+    }
+
+    pub(crate) fn with_private_env(mut self, private_env: Vec<ZccachePrivateEnv>) -> Self {
+        self.private_env = private_env;
+        self
+    }
+
+    pub(crate) fn private_env_keys(&self) -> Vec<String> {
+        self.private_env
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZccachePrivateDaemonSession {
+    pub(crate) daemon_name: String,
+    pub(crate) owner_pid: Option<u32>,
+    pub(crate) private_env_keys: Vec<String>,
+}
+
+impl From<&ZccachePrivateDaemonConfig> for ZccachePrivateDaemonSession {
+    fn from(config: &ZccachePrivateDaemonConfig) -> Self {
+        Self {
+            daemon_name: config.daemon_name.clone(),
+            owner_pid: config.owner_pid,
+            private_env_keys: config.private_env_keys(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +99,7 @@ pub(crate) struct ZccacheBuildSession {
     pub(crate) session_log_path: PathBuf,
     pub(crate) journal_path: PathBuf,
     pub(crate) session_stats_path: PathBuf,
+    pub(crate) private_daemon: Option<ZccachePrivateDaemonSession>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +190,7 @@ pub(crate) struct ZccacheLifecycle {
     binary_path: PathBuf,
     cache_dir: PathBuf,
     state: ZccacheLifecycleState,
+    private_daemon: Option<ZccachePrivateDaemonConfig>,
 }
 
 impl ZccacheLifecycle {
@@ -125,6 +199,7 @@ impl ZccacheLifecycle {
             binary_path: binary_path.into(),
             cache_dir: cache_dir.into(),
             state: ZccacheLifecycleState::Ready,
+            private_daemon: None,
         }
     }
 
@@ -133,7 +208,20 @@ impl ZccacheLifecycle {
             binary_path: session.binary_path.clone(),
             cache_dir: session.cache_dir.clone(),
             state: ZccacheLifecycleState::SessionActive,
+            private_daemon: session.private_daemon.as_ref().map(|private| {
+                let mut config = ZccachePrivateDaemonConfig::new(private.daemon_name.clone());
+                config.owner_pid = private.owner_pid;
+                config
+            }),
         }
+    }
+
+    pub(crate) fn with_private_daemon(
+        mut self,
+        private_daemon: ZccachePrivateDaemonConfig,
+    ) -> Self {
+        self.private_daemon = Some(private_daemon);
+        self
     }
 
     pub(crate) fn binary_path(&self) -> &Path {
@@ -148,8 +236,16 @@ impl ZccacheLifecycle {
         self.state
     }
 
+    pub(crate) fn private_daemon(&self) -> Option<&ZccachePrivateDaemonConfig> {
+        self.private_daemon.as_ref()
+    }
+
     pub(crate) fn start_with_recovery(&mut self) -> Result<(), SoldrError> {
-        start_zccache_with_recovery(&self.binary_path, &self.cache_dir)?;
+        start_zccache_with_recovery_for_daemon(
+            &self.binary_path,
+            &self.cache_dir,
+            self.private_daemon_name(),
+        )?;
         self.state = ZccacheLifecycleState::DaemonStarted;
         Ok(())
     }
@@ -160,22 +256,9 @@ impl ZccacheLifecycle {
     ) -> Result<ZccacheBuildSession, SoldrError> {
         self.start_with_recovery()?;
 
-        let log_arg = options.session_log_path.display().to_string();
-        let journal_arg = options.journal_path.display().to_string();
-        let mut args: Vec<&str> = vec![
-            "session-start",
-            "--stats",
-            "--log",
-            &log_arg,
-            "--journal",
-            &journal_arg,
-        ];
-        if let Some(id) = options.id.as_deref() {
-            args.push("--id");
-            args.push(id);
-        }
+        let args = session_start_args(&options, &self.cache_dir, self.private_daemon.as_ref());
 
-        let session_json = self.run(&args)?;
+        let session_json = self.run_strings(&args)?;
         let session_id = crate::cache_lib::parse_zccache_session_id(&session_json.stdout)
             .ok_or_else(|| {
                 SoldrError::Other(format!(
@@ -192,6 +275,10 @@ impl ZccacheLifecycle {
             session_log_path: options.session_log_path,
             journal_path: options.journal_path,
             session_stats_path: options.session_stats_path,
+            private_daemon: self
+                .private_daemon
+                .as_ref()
+                .map(ZccachePrivateDaemonSession::from),
         })
     }
 
@@ -265,7 +352,12 @@ impl ZccacheLifecycle {
         &mut self,
         timeout: Duration,
     ) -> Result<(), SoldrError> {
-        let mut child = command_with_cache_dir(&self.binary_path, &["stop"], &self.cache_dir);
+        let mut child = command_with_cache_dir_and_daemon_name(
+            &self.binary_path,
+            &["stop"],
+            &self.cache_dir,
+            self.private_daemon_name(),
+        );
         child
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -291,7 +383,12 @@ impl ZccacheLifecycle {
     }
 
     pub(crate) fn poll_daemon_exit(&self, timeout: Duration) -> ZccacheDaemonExitPollResult {
-        poll_zccache_daemon_exit(&self.binary_path, &self.cache_dir, timeout)
+        poll_zccache_daemon_exit_for_daemon(
+            &self.binary_path,
+            &self.cache_dir,
+            self.private_daemon_name(),
+            timeout,
+        )
     }
 
     pub(crate) fn flush(&mut self) -> Result<ZccacheFlushOutcome, SoldrError> {
@@ -364,11 +461,36 @@ impl ZccacheLifecycle {
     }
 
     pub(crate) fn run(&self, args: &[&str]) -> Result<CommandOutput, SoldrError> {
-        run_zccache_command_in_cache_dir(&self.binary_path, args, &self.cache_dir)
+        run_zccache_command_in_cache_dir_with_daemon_name(
+            &self.binary_path,
+            args,
+            &self.cache_dir,
+            self.private_daemon_name(),
+        )
     }
 
     pub(crate) fn run_raw(&self, args: &[&str]) -> Result<Output, SoldrError> {
-        run_zccache_command_raw_in_cache_dir(&self.binary_path, args, &self.cache_dir)
+        run_zccache_command_raw_in_cache_dir_with_daemon_name(
+            &self.binary_path,
+            args,
+            &self.cache_dir,
+            self.private_daemon_name(),
+        )
+    }
+
+    pub(crate) fn run_strings(&self, args: &[String]) -> Result<CommandOutput, SoldrError> {
+        run_zccache_command_strings_in_cache_dir_with_daemon_name(
+            &self.binary_path,
+            args,
+            &self.cache_dir,
+            self.private_daemon_name(),
+        )
+    }
+
+    fn private_daemon_name(&self) -> Option<&str> {
+        self.private_daemon
+            .as_ref()
+            .map(|private| private.daemon_name.as_str())
     }
 }
 
@@ -376,19 +498,57 @@ pub(crate) struct CommandOutput {
     pub(crate) stdout: String,
 }
 
+pub(crate) fn session_start_args(
+    options: &ZccacheSessionStartOptions,
+    cache_dir: &Path,
+    private_daemon: Option<&ZccachePrivateDaemonConfig>,
+) -> Vec<String> {
+    let mut args = vec![
+        "session-start".to_string(),
+        "--stats".to_string(),
+        "--log".to_string(),
+        options.session_log_path.display().to_string(),
+        "--journal".to_string(),
+        options.journal_path.display().to_string(),
+    ];
+    if let Some(id) = options.id.as_deref() {
+        args.push("--id".to_string());
+        args.push(id.to_string());
+    }
+    if let Some(private) = private_daemon {
+        args.push("--private-daemon".to_string());
+        args.push("--daemon-name".to_string());
+        args.push(private.daemon_name.clone());
+        args.push("--cache-dir".to_string());
+        args.push(cache_dir.display().to_string());
+        if let Some(owner_pid) = private.owner_pid {
+            args.push("--owner-pid".to_string());
+            args.push(owner_pid.to_string());
+        }
+        for entry in &private.private_env {
+            args.push("--private-env".to_string());
+            args.push(entry.as_assignment());
+        }
+    }
+    args
+}
+
 pub(crate) fn run_zccache_command_in_cache_dir(
     binary: &Path,
     args: &[&str],
     cache_dir: &Path,
 ) -> Result<CommandOutput, SoldrError> {
-    run_zccache_command_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )
+    run_zccache_command_in_cache_dir_with_daemon_name(binary, args, cache_dir, None)
+}
+
+pub(crate) fn run_zccache_command_in_cache_dir_with_daemon_name(
+    binary: &Path,
+    args: &[&str],
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Result<CommandOutput, SoldrError> {
+    let envs = cache_dir_envs(cache_dir, daemon_name);
+    run_zccache_command_with_env(binary, args, &envs)
 }
 
 pub(crate) fn run_zccache_command_strings_in_cache_dir(
@@ -396,14 +556,17 @@ pub(crate) fn run_zccache_command_strings_in_cache_dir(
     args: &[String],
     cache_dir: &Path,
 ) -> Result<CommandOutput, SoldrError> {
-    let output = run_zccache_command_raw_strings_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )?;
+    run_zccache_command_strings_in_cache_dir_with_daemon_name(binary, args, cache_dir, None)
+}
+
+pub(crate) fn run_zccache_command_strings_in_cache_dir_with_daemon_name(
+    binary: &Path,
+    args: &[String],
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Result<CommandOutput, SoldrError> {
+    let envs = cache_dir_envs(cache_dir, daemon_name);
+    let output = run_zccache_command_raw_strings_with_env(binary, args, &envs)?;
     if !output.status.success() {
         return Err(SoldrError::Other(zccache_command_failure_message_strings(
             args, &output,
@@ -420,14 +583,17 @@ pub(crate) fn run_zccache_command_raw_in_cache_dir(
     args: &[&str],
     cache_dir: &Path,
 ) -> Result<Output, SoldrError> {
-    run_zccache_command_raw_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )
+    run_zccache_command_raw_in_cache_dir_with_daemon_name(binary, args, cache_dir, None)
+}
+
+pub(crate) fn run_zccache_command_raw_in_cache_dir_with_daemon_name(
+    binary: &Path,
+    args: &[&str],
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Result<Output, SoldrError> {
+    let envs = cache_dir_envs(cache_dir, daemon_name);
+    run_zccache_command_raw_with_env(binary, args, &envs)
 }
 
 fn run_zccache_command_with_env(
@@ -470,15 +636,28 @@ fn run_zccache_command_raw_strings_with_env(
     Ok(command.output()?)
 }
 
-fn command_with_cache_dir(binary: &Path, args: &[&str], cache_dir: &Path) -> Command {
-    command_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )
+fn command_with_cache_dir_and_daemon_name(
+    binary: &Path,
+    args: &[&str],
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Command {
+    let envs = cache_dir_envs(cache_dir, daemon_name);
+    command_with_env(binary, args, &envs)
+}
+
+fn cache_dir_envs<'a>(
+    cache_dir: &'a Path,
+    daemon_name: Option<&'a str>,
+) -> Vec<(&'static str, &'a OsStr)> {
+    let mut envs = vec![(
+        crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
+        cache_dir.as_os_str(),
+    )];
+    if let Some(daemon_name) = daemon_name {
+        envs.push((ZCCACHE_DAEMON_NAMESPACE_ENV_VAR, OsStr::new(daemon_name)));
+    }
+    envs
 }
 
 fn command_with_env(binary: &Path, args: &[&str], envs: &[(&str, &OsStr)]) -> Command {
@@ -502,27 +681,32 @@ pub(crate) fn effective_daemon_rust_log(soldr_override: Option<&str>) -> String 
     }
 }
 
-fn run_zccache_start_command(binary: &Path, cache_dir: &Path) -> Result<Output, SoldrError> {
+fn run_zccache_start_command(
+    binary: &Path,
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Result<Output, SoldrError> {
     let rust_log =
         effective_daemon_rust_log(std::env::var(SOLDR_DAEMON_RUST_LOG_ENV_VAR).ok().as_deref());
-    run_zccache_command_raw_with_env(
-        binary,
-        &["start"],
-        &[
-            (
-                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-                cache_dir.as_os_str(),
-            ),
-            ("RUST_LOG", OsStr::new(rust_log.as_str())),
-        ],
-    )
+    let mut command =
+        command_with_cache_dir_and_daemon_name(binary, &["start"], cache_dir, daemon_name);
+    command.env("RUST_LOG", rust_log);
+    Ok(command.output()?)
 }
 
 pub(crate) fn start_zccache_with_recovery(
     binary: &Path,
     cache_dir: &Path,
 ) -> Result<(), SoldrError> {
-    let start = run_zccache_start_command(binary, cache_dir)?;
+    start_zccache_with_recovery_for_daemon(binary, cache_dir, None)
+}
+
+pub(crate) fn start_zccache_with_recovery_for_daemon(
+    binary: &Path,
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+) -> Result<(), SoldrError> {
+    let start = run_zccache_start_command(binary, cache_dir, daemon_name)?;
     if start.status.success() {
         return Ok(());
     }
@@ -538,13 +722,18 @@ pub(crate) fn start_zccache_with_recovery(
     eprintln!(
         "soldr: zccache start reported an unresponsive daemon; stopping stale state and retrying"
     );
-    let stop_diagnostic = match run_zccache_command_raw_in_cache_dir(binary, &["stop"], cache_dir) {
+    let stop_diagnostic = match run_zccache_command_raw_in_cache_dir_with_daemon_name(
+        binary,
+        &["stop"],
+        cache_dir,
+        daemon_name,
+    ) {
         Ok(stop) if stop.status.success() => None,
         Ok(stop) => Some(zccache_command_failure_message(&["stop"], &stop)),
         Err(err) => Some(format!("failed to invoke zccache stop: {err}")),
     };
 
-    match run_zccache_start_command(binary, cache_dir) {
+    match run_zccache_start_command(binary, cache_dir, daemon_name) {
         Ok(retry) if retry.status.success() => Ok(()),
         Ok(retry) => {
             let mut message = format!(
@@ -586,10 +775,24 @@ pub(crate) fn poll_zccache_daemon_exit(
     cache_dir: &Path,
     timeout: Duration,
 ) -> ZccacheDaemonExitPollResult {
+    poll_zccache_daemon_exit_for_daemon(binary, cache_dir, None, timeout)
+}
+
+pub(crate) fn poll_zccache_daemon_exit_for_daemon(
+    binary: &Path,
+    cache_dir: &Path,
+    daemon_name: Option<&str>,
+    timeout: Duration,
+) -> ZccacheDaemonExitPollResult {
     let deadline = Instant::now() + timeout;
     let poll_interval = Duration::from_millis(100);
     loop {
-        match run_zccache_command_raw_in_cache_dir(binary, &["status"], cache_dir) {
+        match run_zccache_command_raw_in_cache_dir_with_daemon_name(
+            binary,
+            &["status"],
+            cache_dir,
+            daemon_name,
+        ) {
             Ok(output) => {
                 if zccache_daemon_already_stopped(&output) {
                     return ZccacheDaemonExitPollResult::Exited;
@@ -752,6 +955,44 @@ mod tests {
         assert_eq!(lifecycle.binary_path(), Path::new("zccache"));
         assert_eq!(lifecycle.cache_dir(), Path::new("cache"));
     });
+
+    crate::timed_test!(
+        private_session_start_args_include_daemon_owner_cache_and_env,
+        {
+            let options = ZccacheSessionStartOptions {
+                id: Some("session-override".into()),
+                session_log_path: PathBuf::from("/tmp/zccache/log"),
+                journal_path: PathBuf::from("/tmp/zccache/journal"),
+                session_stats_path: PathBuf::from("/tmp/zccache/stats"),
+            };
+            let private = ZccachePrivateDaemonConfig::new("soldr-dev-test")
+                .with_owner_pid(4242)
+                .with_private_env(vec![
+                    ZccachePrivateEnv::new("ZCCACHE_PATH_REMAP", "auto"),
+                    ZccachePrivateEnv::new("ZCCACHE_WORKTREE_ROOT", "/repo"),
+                ]);
+            let args = session_start_args(&options, Path::new("/tmp/zccache"), Some(&private));
+            assert_eq!(args[0], "session-start");
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--id" && w[1] == "session-override"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--daemon-name" && w[1] == "soldr-dev-test"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--cache-dir" && w[1] == "/tmp/zccache"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--owner-pid" && w[1] == "4242"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--private-env" && w[1] == "ZCCACHE_PATH_REMAP=auto"));
+            assert!(args
+                .windows(2)
+                .any(|w| w[0] == "--private-env" && w[1] == "ZCCACHE_WORKTREE_ROOT=/repo"));
+        }
+    );
 
     crate::timed_test!(session_already_ended_detects_common_states, {
         for needle in [

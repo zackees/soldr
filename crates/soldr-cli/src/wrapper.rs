@@ -6,7 +6,11 @@
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::startup_profile::WrapperProfile;
 #[cfg(not(unix))]
-use crate::zccache_lifecycle::{stderr_indicates_unknown_session, ZccacheLifecycle};
+use crate::zccache_lifecycle::{
+    session_start_args, stderr_indicates_unknown_session, ZccacheLifecycle,
+    ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
+    ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
+};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
@@ -359,24 +363,57 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
         })?;
 
     let session_log_path = crate::cache_lib::session_log_path(&cache_dir);
-    let session_log_path_arg = session_log_path.display().to_string();
     let journal_path = crate::cache_lib::session_journal_path(&cache_dir);
-    let journal_path_arg = journal_path.display().to_string();
-    let lifecycle = ZccacheLifecycle::new(zccache, &cache_dir);
-    let session_json = lifecycle.run(&[
-        "session-start",
-        "--stats",
-        "--log",
-        &session_log_path_arg,
-        "--journal",
-        &journal_path_arg,
-    ])?;
+    let session_stats_path = crate::cache_lib::session_stats_path(&cache_dir);
+    let options = ZccacheSessionStartOptions {
+        id: None,
+        session_log_path,
+        journal_path,
+        session_stats_path,
+    };
+    let mut lifecycle = ZccacheLifecycle::new(zccache, &cache_dir);
+    if let Some(daemon_name) = inherited_private_daemon_name() {
+        let private = ZccachePrivateDaemonConfig::new(daemon_name)
+            .with_owner_pid(std::process::id())
+            .with_private_env(inherited_private_zccache_env());
+        lifecycle = lifecycle.with_private_daemon(private);
+    }
+    let args = session_start_args(&options, &cache_dir, lifecycle.private_daemon());
+    let session_json = lifecycle.run_strings(&args)?;
     crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
         SoldrError::Other(format!(
             "failed to parse zccache session id from output: {}",
             session_json.stdout.trim()
         ))
     })
+}
+
+#[cfg(not(unix))]
+fn inherited_private_daemon_name() -> Option<String> {
+    std::env::var(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+#[cfg(not(unix))]
+fn inherited_private_zccache_env() -> Vec<ZccachePrivateEnv> {
+    [
+        crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR,
+        crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR,
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        let value = std::env::var_os(key)?;
+        if value.is_empty() {
+            return None;
+        }
+        Some(ZccachePrivateEnv::new(
+            key,
+            value.to_string_lossy().to_string(),
+        ))
+    })
+    .collect()
 }
 
 // Routing logic + `TargetTouchPath` live in `wrapper_target.rs` so the

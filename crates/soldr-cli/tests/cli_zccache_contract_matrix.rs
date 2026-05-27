@@ -23,7 +23,6 @@ struct ContractFixture {
     cache_root: PathBuf,
     workspace: PathBuf,
     plan_cache: PathBuf,
-    zccache_cache_dir: PathBuf,
     log_path: PathBuf,
     metadata_path: PathBuf,
     cargo: PathBuf,
@@ -35,7 +34,6 @@ fn seed_contract_fixture(label: &str) -> ContractFixture {
     let cache_root = unique_temp_dir(&format!("{label}-cache"));
     let workspace = unique_temp_dir(&format!("{label}-workspace"));
     let plan_cache = cache_root.join("target-artifact-cache");
-    let zccache_cache_dir = cache_root.join("cache").join("zccache");
     let log_path = cache_root.join("tool.log");
     let metadata_path = cache_root.join("metadata.json");
     let target_dir = workspace.join("target");
@@ -84,7 +82,6 @@ fn seed_contract_fixture(label: &str) -> ContractFixture {
         cache_root,
         workspace,
         plan_cache,
-        zccache_cache_dir,
         log_path,
         metadata_path,
         cargo,
@@ -191,10 +188,22 @@ timed_test!(
             log.contains("cache=1") && log.contains("session=test-session"),
             "cargo child should receive cache/session env:\n{log}"
         );
+        let zccache_cache_dir = discovered_private_zccache_cache_dir(&fixture.cache_root);
         assert!(
-            log_contains_path(&log, "zccache_dir=", &fixture.zccache_cache_dir)
-                && log_contains_path(&log, "cache_dir=", &fixture.zccache_cache_dir),
-            "cargo and zccache should use the soldr-owned zccache cache dir:\n{log}"
+            log_contains_path(&log, "zccache_dir=", &zccache_cache_dir)
+                && log_contains_path(&log, "cache_dir=", &zccache_cache_dir),
+            "cargo and zccache should use the private soldr-owned zccache cache dir:\n{log}"
+        );
+        assert!(
+            log.contains("daemon_namespace=soldr-dev-")
+                && log.contains("--private-daemon")
+                && log.contains("--daemon-name soldr-dev-")
+                && log.contains("--owner-pid")
+                && (log.contains("--private-env ZCCACHE_PATH_REMAP=auto")
+                    || log.contains("--private-env \"ZCCACHE_PATH_REMAP=auto\""))
+                && (log.contains("--private-env ZCCACHE_WORKTREE_ROOT=")
+                    || log.contains("--private-env \"ZCCACHE_WORKTREE_ROOT=")),
+            "managed zccache should start a private daemon with session-scoped env:\n{log}"
         );
         assert!(
             log.contains("path_remap=auto"),
@@ -209,7 +218,7 @@ timed_test!(
             "rust-plan should receive the target artifact bundle dir:\n{log}"
         );
 
-        let logs_dir = fixture.zccache_cache_dir.join("logs");
+        let logs_dir = zccache_cache_dir.join("logs");
         let session_log = logs_dir.join("last-session.log");
         let journal = logs_dir.join("last-session.jsonl");
         let stats = logs_dir.join("last-session-stats.json");

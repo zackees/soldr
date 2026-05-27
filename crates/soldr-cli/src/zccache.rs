@@ -5,7 +5,7 @@ use crate::core::{SoldrError, SoldrPaths};
 use crate::fetch::{ZccacheRuntime, ZccacheRuntimeSource};
 use crate::zccache_lifecycle::{
     zccache_command_failure_message, zccache_json_flag_unsupported, ZccacheLifecycle,
-    ZccacheSessionStartOptions,
+    ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
 };
 use crate::{
     current_soldr_binary, fetch_active_zccache_runtime, non_empty_env_path, ZccacheSourceArg,
@@ -15,13 +15,17 @@ use std::ffi::OsStr;
 
 pub(crate) use crate::zccache_lifecycle::{
     command_stderr, effective_daemon_rust_log, run_zccache_command_in_cache_dir,
-    run_zccache_command_raw_in_cache_dir, run_zccache_command_strings_in_cache_dir,
-    start_zccache_with_recovery, ZccacheBuildSession, SOLDR_DAEMON_RUST_LOG_ENV_VAR,
+    run_zccache_command_raw_in_cache_dir, run_zccache_command_raw_in_cache_dir_with_daemon_name,
+    run_zccache_command_strings_in_cache_dir,
+    run_zccache_command_strings_in_cache_dir_with_daemon_name, start_zccache_with_recovery,
+    ZccacheBuildSession, SOLDR_DAEMON_RUST_LOG_ENV_VAR, ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
 };
 
 pub(crate) const SOLDR_CACHE_LIFECYCLE_ENV_VAR: &str = "SOLDR_CACHE_LIFECYCLE";
 pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
     "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS";
+pub(crate) const SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR: &str =
+    "SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheLifecycle {
@@ -222,6 +226,23 @@ impl ZccacheChildEnv {
             cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
         }
     }
+
+    pub(crate) fn private_env_assignments(&self) -> Vec<ZccachePrivateEnv> {
+        let mut entries = Vec::new();
+        if let Some(value) = self.path_remap {
+            entries.push(ZccachePrivateEnv::new(
+                crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR,
+                value,
+            ));
+        }
+        if let Some(root) = self.worktree_root.as_ref() {
+            entries.push(ZccachePrivateEnv::new(
+                crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR,
+                root.display().to_string(),
+            ));
+        }
+        entries
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -232,7 +253,7 @@ pub(crate) struct ManagedZccacheWrapperPlan {
 
 #[derive(Debug, Clone)]
 pub(crate) enum RustcWrapperPlan {
-    ManagedZccache(ManagedZccacheWrapperPlan),
+    ManagedZccache(Box<ManagedZccacheWrapperPlan>),
     Custom {
         wrapper: std::ffi::OsString,
         sccache_dir: Option<std::path::PathBuf>,
@@ -272,6 +293,9 @@ impl RustcWrapperPlan {
                     crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
                     &session.session_id,
                 );
+                if let Some(private) = session.private_daemon.as_ref() {
+                    cargo.env(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR, &private.daemon_name);
+                }
                 plan.child_env.apply_to_command(cargo);
             }
             Self::Custom {
@@ -317,7 +341,7 @@ pub(crate) async fn prepare_rustc_wrapper_plan(
     match rustc_wrapper_mode() {
         RustcWrapperMode::ManagedZccache => prepare_zccache_build(paths, zccache_source)
             .await
-            .map(RustcWrapperPlan::ManagedZccache),
+            .map(|plan| RustcWrapperPlan::ManagedZccache(Box::new(plan))),
         RustcWrapperMode::Custom(wrapper) => {
             let sccache_dir =
                 if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
@@ -347,9 +371,7 @@ async fn prepare_zccache_build(
     paths: &SoldrPaths,
     zccache_source: ZccacheSourceArg,
 ) -> Result<ManagedZccacheWrapperPlan, SoldrError> {
-    let zccache_dir = managed_zccache_cache_dir(paths)?;
-    std::fs::create_dir_all(&zccache_dir)?;
-    std::fs::create_dir_all(zccache_dir.join("logs"))?;
+    let zccache_base_dir = managed_zccache_cache_dir(paths)?;
     let runtime = match zccache_source {
         ZccacheSourceArg::Managed => fetch_active_zccache_runtime(paths).await?,
         ZccacheSourceArg::System => {
@@ -365,6 +387,22 @@ async fn prepare_zccache_build(
     // source, runtime dir, and version of the binary we just resolved.
     print_zccache_runtime_diagnostic(&runtime);
 
+    let child_env = ZccacheChildEnv::from_current_process()?;
+    let private_daemon_name = resolve_private_zccache_daemon_name(
+        std::env::var(SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR)
+            .ok()
+            .as_deref(),
+        &current_soldr_binary()?,
+        &fetch.binary_path,
+        &zccache_base_dir,
+    );
+    let zccache_dir = private_zccache_cache_dir(&zccache_base_dir, &private_daemon_name);
+    std::fs::create_dir_all(&zccache_dir)?;
+    std::fs::create_dir_all(zccache_dir.join("logs"))?;
+    let private_daemon = ZccachePrivateDaemonConfig::new(private_daemon_name.clone())
+        .with_owner_pid(std::process::id())
+        .with_private_env(child_env.private_env_assignments());
+
     // When the resolved zccache CLI binary differs from the one a
     // previous soldr invocation started the daemon with, the live
     // daemon is stale relative to what we just resolved. This matters
@@ -373,12 +411,17 @@ async fn prepare_zccache_build(
     // built daemon, but `zccache start` is a no-op when any daemon
     // is already alive, so a managed daemon from a previous build
     // would keep handling requests. Evict it explicitly here.
-    evict_zccache_daemon_if_binary_changed(&fetch.binary_path, &zccache_dir)?;
+    evict_zccache_daemon_if_binary_changed_scoped(
+        &fetch.binary_path,
+        &zccache_dir,
+        Some(&private_daemon_name),
+    )?;
 
     let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
-    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    let mut lifecycle =
+        ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir).with_private_daemon(private_daemon);
     let session = lifecycle.start_session(ZccacheSessionStartOptions {
         id: None,
         session_log_path,
@@ -395,6 +438,20 @@ async fn prepare_zccache_build(
             cache_dir: session.cache_dir.display().to_string(),
             session_id: Some(session.session_id.clone()),
             source: runtime.source.summary_source().as_str().to_string(),
+            private_daemon: session.private_daemon.is_some(),
+            daemon_name: session
+                .private_daemon
+                .as_ref()
+                .map(|private| private.daemon_name.clone()),
+            owner_pid: session
+                .private_daemon
+                .as_ref()
+                .and_then(|private| private.owner_pid),
+            private_env_keys: session
+                .private_daemon
+                .as_ref()
+                .map(|private| private.private_env_keys.clone())
+                .unwrap_or_default(),
         },
     );
 
@@ -404,7 +461,7 @@ async fn prepare_zccache_build(
         // and a logical worktree root so multiple worktrees of the same repo
         // share zccache hits through normalized keys. Honor user-supplied
         // ZCCACHE_* values, and the SOLDR_PATH_REMAP=off escape hatch.
-        child_env: ZccacheChildEnv::from_current_process()?,
+        child_env,
     })
 }
 
@@ -515,11 +572,8 @@ pub(crate) fn stop_zccache_after_command(
 }
 
 fn finish_zccache_build_text_fallback(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let output = run_zccache_command_in_cache_dir(
-        &session.binary_path,
-        &["session-end", &session.session_id],
-        &session.cache_dir,
-    )?;
+    let lifecycle = ZccacheLifecycle::from_session(session);
+    let output = lifecycle.run(&["session-end", &session.session_id])?;
     let stdout = output.stdout.trim();
     if !stdout.is_empty() {
         eprintln!("soldr: zccache session summary");
@@ -602,6 +656,67 @@ fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
     value.get(key).and_then(serde_json::Value::as_f64)
 }
 
+pub(crate) fn private_zccache_cache_dir(
+    base_dir: &std::path::Path,
+    daemon_name: &str,
+) -> std::path::PathBuf {
+    base_dir.join("private").join(daemon_name)
+}
+
+pub(crate) fn resolve_private_zccache_daemon_name(
+    override_name: Option<&str>,
+    soldr_binary: &std::path::Path,
+    zccache_binary: &std::path::Path,
+    base_cache_dir: &std::path::Path,
+) -> String {
+    if let Some(name) = override_name.and_then(sanitize_zccache_daemon_name) {
+        return name;
+    }
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"soldr-private-zccache-v1\0");
+    hash_path_component(&mut hasher, soldr_binary);
+    hash_path_component(&mut hasher, zccache_binary);
+    hash_path_component(&mut hasher, base_cache_dir);
+    let digest = hasher.finalize();
+    let hex = digest.to_hex();
+    format!("soldr-dev-{}", &hex[..16])
+}
+
+fn hash_path_component(hasher: &mut blake3::Hasher, path: &std::path::Path) {
+    let value = path.display().to_string();
+    let value = if cfg!(windows) {
+        value.to_ascii_lowercase()
+    } else {
+        value
+    };
+    hasher.update(value.as_bytes());
+    hasher.update(b"\0");
+}
+
+pub(crate) fn sanitize_zccache_daemon_name(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let sanitized: String = trimmed
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if sanitized.len() <= 32 {
+        return Some(sanitized);
+    }
+    let prefix: String = sanitized.chars().take(23).collect();
+    let short = blake3::hash(trimmed.as_bytes()).to_hex();
+    Some(format!("{prefix}-{}", &short[..8]))
+}
+
 pub(crate) fn managed_zccache_cache_dir(
     paths: &SoldrPaths,
 ) -> Result<std::path::PathBuf, SoldrError> {
@@ -667,6 +782,14 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<(), SoldrError> {
+    evict_zccache_daemon_if_binary_changed_scoped(binary, cache_dir, None)
+}
+
+pub(crate) fn evict_zccache_daemon_if_binary_changed_scoped(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+    daemon_name: Option<&str>,
+) -> Result<(), SoldrError> {
     let sentinel = cache_dir.join(ZCCACHE_LAST_CLI_BINARY_SENTINEL);
     let resolved = binary.display().to_string();
     let prev = std::fs::read_to_string(&sentinel)
@@ -677,7 +800,12 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed(
         eprintln!(
             "soldr: zccache CLI binary changed since last build; stopping stale daemon to force a fresh spawn (issue #365)",
         );
-        if let Err(err) = run_zccache_command_raw_in_cache_dir(binary, &["stop"], cache_dir) {
+        if let Err(err) = run_zccache_command_raw_in_cache_dir_with_daemon_name(
+            binary,
+            &["stop"],
+            cache_dir,
+            daemon_name,
+        ) {
             // Stop failures shouldn't block the build — the start
             // path below has its own stale-daemon recovery.
             eprintln!("soldr: zccache stop reported {err}; continuing");
@@ -830,6 +958,53 @@ mod tests {
         assert_eq!(
             resolve_worktree_root_env(Some(OsStr::new("/custom/root")), cwd),
             None
+        );
+    }
+
+    #[test]
+    fn child_env_private_assignments_match_generated_zccache_env() {
+        let env = ZccacheChildEnv {
+            path_remap: Some("auto"),
+            worktree_root: Some(std::path::PathBuf::from("/repo")),
+        };
+        let entries = env.private_env_assignments();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].key, crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR);
+        assert_eq!(entries[0].value, "auto");
+        assert_eq!(
+            entries[1].key,
+            crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR
+        );
+        assert_eq!(entries[1].value, "/repo");
+    }
+
+    #[test]
+    fn private_daemon_name_is_stable_sanitized_and_short() {
+        let generated = resolve_private_zccache_daemon_name(
+            None,
+            std::path::Path::new("/repo/target/debug/soldr"),
+            std::path::Path::new("/repo/target/debug/zccache"),
+            std::path::Path::new("/tmp/cache/zccache"),
+        );
+        assert!(generated.starts_with("soldr-dev-"));
+        assert!(generated.len() <= 32);
+        assert_eq!(
+            generated,
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/repo/target/debug/zccache"),
+                std::path::Path::new("/tmp/cache/zccache"),
+            )
+        );
+        assert_eq!(
+            resolve_private_zccache_daemon_name(
+                Some(" team/dev soldr "),
+                std::path::Path::new("/ignored/soldr"),
+                std::path::Path::new("/ignored/zccache"),
+                std::path::Path::new("/ignored/cache"),
+            ),
+            "team_dev_soldr"
         );
     }
 

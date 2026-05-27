@@ -41,7 +41,6 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
     let cache_root = unique_temp_dir("cargo-rust-plan-cache");
     let workspace = unique_temp_dir("cargo-rust-plan-workspace");
     let plan_cache = cache_root.join("target-artifact-cache");
-    let zccache_cache_dir = cache_root.join("cache").join("zccache");
     let log_path = cache_root.join("tool.log");
     let metadata_path = cache_root.join("metadata.json");
     let target_dir = workspace.join("target");
@@ -96,6 +95,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
     assert!(
         log.contains("zccache rust-plan restore") && log.contains("zccache rust-plan save"),
         "soldr should call zccache rust-plan restore/save when target cache is enabled: {log}"
@@ -119,9 +119,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         "rust-plan restore should run before Cargo and save should run after Cargo: {log}"
     );
 
-    let plan_path = cache_root
-        .join("cache")
-        .join("zccache")
+    let plan_path = zccache_cache_dir
         .join("plans")
         .join("last-rust-artifact-plan.pb");
     let plan_bytes = fs::read(&plan_path).expect("read generated rust plan");

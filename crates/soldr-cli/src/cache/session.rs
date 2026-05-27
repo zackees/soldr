@@ -2,9 +2,11 @@
 //! lifecycle commands for the zccache daemon and its per-session journal.
 
 use crate::core::{SoldrError, SoldrPaths};
+use crate::daemon::db;
 use crate::zccache::managed_zccache_cache_dir;
 use crate::zccache_lifecycle::{
-    ZccacheDaemonExitPollResult, ZccacheLifecycle, ZccacheSessionStartOptions,
+    ZccacheDaemonExitPollResult, ZccacheLifecycle, ZccachePrivateDaemonConfig,
+    ZccacheSessionStartOptions,
 };
 use crate::{cached_active_zccache, fetch_active_zccache, JSON_SCHEMA_VERSION};
 use serde::Serialize;
@@ -276,13 +278,18 @@ pub(crate) async fn run_cache_shutdown_command(
 ) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
+    let linked_private = linked_private_zccache_lifecycle(&paths);
+    let active_zccache_dir = linked_private
+        .as_ref()
+        .map(|(_, cache_dir)| cache_dir.clone())
+        .unwrap_or_else(|| zccache_dir.clone());
     let mut notes: Vec<String> = Vec::new();
 
     let fetch = cached_active_zccache(&paths)?;
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache shutdown",
-        cache_dir: zccache_dir.display().to_string(),
+        cache_dir: active_zccache_dir.display().to_string(),
         session_id: None,
         daemon_stopped: false,
         daemon_exited: false,
@@ -294,9 +301,11 @@ pub(crate) async fn run_cache_shutdown_command(
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let mut lifecycle = fetch
-        .as_ref()
-        .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir));
+    let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
+        fetch
+            .as_ref()
+            .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir))
+    });
 
     // Step 1: end the active session so zccache flushes the per-session
     // journal before the daemon stops.
@@ -319,9 +328,9 @@ pub(crate) async fn run_cache_shutdown_command(
         std::fs::create_dir_all(&target)?;
         let mut copied = 0u32;
         for path in [
-            crate::cache_lib::session_log_path(&zccache_dir),
-            crate::cache_lib::session_journal_path(&zccache_dir),
-            crate::cache_lib::session_stats_path(&zccache_dir),
+            crate::cache_lib::session_log_path(&active_zccache_dir),
+            crate::cache_lib::session_journal_path(&active_zccache_dir),
+            crate::cache_lib::session_stats_path(&active_zccache_dir),
         ] {
             if !path.exists() {
                 continue;
@@ -448,25 +457,35 @@ pub(crate) async fn run_cache_shutdown_command(
 pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
+    let linked_private = linked_private_zccache_lifecycle(&paths);
+    let active_zccache_dir = linked_private
+        .as_ref()
+        .map(|(_, cache_dir)| cache_dir.clone())
+        .unwrap_or_else(|| zccache_dir.clone());
     let fetch = cached_active_zccache(&paths)?;
 
     let mut output = CacheFlushOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache flush",
-        cache_dir: zccache_dir.display().to_string(),
+        cache_dir: active_zccache_dir.display().to_string(),
         flushed: false,
         stats: None,
         notes: Vec::new(),
     };
 
-    if let Some(fetch) = fetch.as_ref() {
+    let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
+        fetch
+            .as_ref()
+            .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir))
+    });
+
+    if let Some(lifecycle) = lifecycle.as_mut() {
         // soldr#383 contract: ask zccache to fsync its in-memory
         // depgraph (and any other state) to disk and return only once
         // the bytes are durable. Prefer the JSON form so we can
         // re-emit the upstream stats verbatim; fall back to plain
         // `zccache flush` when the build does not yet support
         // `--json`.
-        let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
         let result = lifecycle.flush()?;
         output.flushed = result.flushed;
         output.stats = result.stats;
@@ -528,6 +547,26 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         }
     }
     Ok(())
+}
+
+fn linked_private_zccache_lifecycle(
+    paths: &SoldrPaths,
+) -> Option<(ZccacheLifecycle, std::path::PathBuf)> {
+    let link = db::get_linked_zccache(&db::db_path(paths)).ok().flatten()?;
+    if !link.private_daemon {
+        return None;
+    }
+    let daemon_name = link.daemon_name?;
+    let binary_path = std::path::PathBuf::from(link.binary_path);
+    if !binary_path.exists() {
+        return None;
+    }
+    let cache_dir = std::path::PathBuf::from(link.cache_dir);
+    let mut private_daemon = ZccachePrivateDaemonConfig::new(daemon_name);
+    private_daemon.owner_pid = link.owner_pid;
+    let lifecycle =
+        ZccacheLifecycle::new(binary_path, &cache_dir).with_private_daemon(private_daemon);
+    Some((lifecycle, cache_dir))
 }
 
 #[cfg(test)]

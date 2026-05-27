@@ -24,6 +24,29 @@ const META_NEXT_EVENT_ID: &str = "next_event_id";
 const LINKED_ZCCACHE_KEY: &str = "active";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct LegacyZccacheDaemonLink {
+    binary_path: String,
+    cache_dir: String,
+    session_id: Option<String>,
+    source: String,
+}
+
+impl From<LegacyZccacheDaemonLink> for ZccacheDaemonLink {
+    fn from(value: LegacyZccacheDaemonLink) -> Self {
+        Self {
+            binary_path: value.binary_path,
+            cache_dir: value.cache_dir,
+            session_id: value.session_id,
+            source: value.source,
+            private_daemon: false,
+            daemon_name: None,
+            owner_pid: None,
+            private_env_keys: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EventKind {
     SessionStart,
     SessionEnd,
@@ -241,8 +264,18 @@ pub fn get_linked_zccache(db_path: &Path) -> Result<Option<ZccacheDaemonLink>, R
     let Some(row) = table.get(LINKED_ZCCACHE_KEY)? else {
         return Ok(None);
     };
-    let link: ZccacheDaemonLink = bincode::deserialize(row.value()).map_err(bincode_err)?;
+    let link = deserialize_zccache_daemon_link(row.value())?;
     Ok(Some(link))
+}
+
+fn deserialize_zccache_daemon_link(bytes: &[u8]) -> Result<ZccacheDaemonLink, RegistryError> {
+    match bincode::deserialize::<ZccacheDaemonLink>(bytes) {
+        Ok(link) => Ok(link),
+        Err(new_err) => match bincode::deserialize::<LegacyZccacheDaemonLink>(bytes) {
+            Ok(legacy) => Ok(legacy.into()),
+            Err(_) => Err(bincode_err(new_err)),
+        },
+    }
 }
 
 /// Delete `daemon_events` rows older than `cutoff_ms`. Returns the
@@ -423,12 +456,36 @@ mod tests {
             cache_dir: "/tmp/cache".into(),
             session_id: Some("session-1".into()),
             source: "managed".into(),
+            private_daemon: true,
+            daemon_name: Some("soldr-dev-test".into()),
+            owner_pid: Some(1234),
+            private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
         };
         assert_eq!(get_linked_zccache(&path).expect("get"), None);
         set_linked_zccache(&path, Some(&link)).expect("set");
         assert_eq!(get_linked_zccache(&path).expect("get"), Some(link));
         set_linked_zccache(&path, None).expect("clear");
         assert_eq!(get_linked_zccache(&path).expect("get"), None);
+    }
+
+    #[test]
+    fn linked_zccache_legacy_identity_decodes_as_shared_daemon() {
+        let legacy = LegacyZccacheDaemonLink {
+            binary_path: "/tmp/zccache".into(),
+            cache_dir: "/tmp/cache".into(),
+            session_id: Some("session-1".into()),
+            source: "managed".into(),
+        };
+        let bytes = bincode::serialize(&legacy).expect("serialize legacy");
+        let decoded = deserialize_zccache_daemon_link(&bytes).expect("decode legacy");
+        assert_eq!(decoded.binary_path, legacy.binary_path);
+        assert_eq!(decoded.cache_dir, legacy.cache_dir);
+        assert_eq!(decoded.session_id, legacy.session_id);
+        assert_eq!(decoded.source, legacy.source);
+        assert!(!decoded.private_daemon);
+        assert_eq!(decoded.daemon_name, None);
+        assert_eq!(decoded.owner_pid, None);
+        assert!(decoded.private_env_keys.is_empty());
     }
 
     #[test]
