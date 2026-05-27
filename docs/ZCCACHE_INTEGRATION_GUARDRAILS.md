@@ -26,6 +26,7 @@ soldr --no-cache cargo test -p soldr-cli --test cli_zccache_contract_matrix --lo
 soldr --no-cache cargo test -p soldr-cli --test cli_install_zccache_resolution --locked
 soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers --locked
 soldr --no-cache cargo test -p soldr-cli --bin soldr --locked native_cc::tests
+soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
 soldr --no-cache cargo test -p soldr-cli --test cli_unknown_session_retry --locked
 soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf --locked
 soldr --no-cache cargo test -p soldr-cli --test timed_test_lint --locked
@@ -39,7 +40,6 @@ behavior:
 ```powershell
 gh workflow run perf-cold-warm.yml -f run_mode='Purge cache and run cold build before warm build' -f fixture=medium
 gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenarios=all
-soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
 ```
 
 ## Guardrail Axes
@@ -72,9 +72,10 @@ soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
   discoverable outside monolithic source modules and use the `timed_test`
   watchdog.
 
-## Native Cache Follow-Up
+## Native Cache Guardrail
 
-Issue #551 tracks the Windows managed-wrapper build-script hang discovered
-during this refactor. Until that lands, native env shaping is a hard unit/env
-contract, while the real `cli_cargo_native_cc` managed-wrapper integration test
-is a report-only canary and a known follow-up for Windows reliability.
+Issue #551 promoted the real `cli_cargo_native_cc` managed-wrapper integration
+test from report-only to a hard gate after the Windows build-script hang repro
+passed on current main. Those tests now run under `timed_test!` so a future
+build-script wrapper hang fails with a bounded watchdog instead of leaving the
+suite stuck until external cleanup.

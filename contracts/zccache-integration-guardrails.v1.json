@@ -36,7 +36,7 @@
     },
     {
       "id": "rust-native-cache-integration",
-      "gate": "report-only",
+      "gate": "hard",
       "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked"
     },
     {
@@ -309,9 +309,6 @@
       "validation_command_ids": [
         "rust-native-cache-unit",
         "rust-native-cache-integration"
-      ],
-      "follow_up_issues": [
-        "https://github.com/zackees/soldr/issues/551"
       ]
     },
     {
