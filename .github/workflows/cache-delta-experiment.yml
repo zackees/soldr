@@ -66,10 +66,11 @@ jobs:
         # before the release-auto workflow has built and published
         # the matching tarball; setup-soldr fetches by tag, so an
         # unpublished version 404s here.
-        uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
+        uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
         with:
           version: "0.7.28"
           cache: false
+          zccache-seed-strict: true
           linker: platform-default
           cache-dir: ${{ runner.temp }}/cache-delta-exp-setup
           build-cache: false
@@ -156,11 +157,12 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
-      - uses: zackees/setup-soldr@d084d24f3f4b361a56fad52b3c37bcd0ead5a75e
+      - uses: zackees/setup-soldr@be9cd32c413a696e85c13eaeef25400666dd5317
         with:
           # 0.7.29 brings `soldr cook` — see delta job above for why.
           version: "0.7.28"
           cache: false
+          zccache-seed-strict: true
           linker: platform-default
           cache-dir: ${{ runner.temp }}/cache-delta-exp-baseline-setup
           build-cache: false

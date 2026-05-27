@@ -24,7 +24,7 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
         &fake_version_tool_script(&log_path, "shim-cargo"),
     );
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_REAL_CARGO", &cargo)
@@ -59,7 +59,7 @@ fn cargo_front_door_does_not_start_cache_for_non_build_subcommands() {
     let cache_root = unique_temp_dir("cargo-non-build-no-cache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "metadata"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -94,7 +94,7 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
     let cache_root = unique_temp_dir("cargo-global-options-cache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "--manifest-path", "demo/Cargo.toml", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -125,7 +125,7 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
     let cache_root = unique_temp_dir("cargo-jobserver-fds");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_jobserver_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "test", "--no-run"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -163,7 +163,7 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
 
     let started = Instant::now();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -201,7 +201,7 @@ fn managed_zccache_rejects_conflicting_cache_dir_override() {
     let cache_root = unique_temp_dir("cargo-conflicting-zccache-dir");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("ZCCACHE_CACHE_DIR", cache_root.join("user-zccache"))
@@ -234,7 +234,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     let child_zccache_dir = child_cache_root.join("cache").join("zccache");
     let log_path = child_cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &child_cache_root)
         .env("ZCCACHE_CACHE_DIR", &parent_zccache_dir)
@@ -280,7 +280,7 @@ fn managed_zccache_injects_normalized_path_remap_by_default() {
     fs::create_dir_all(repo_root.join(".git")).expect("failed to create fake git root");
     fs::create_dir_all(&nested).expect("failed to create nested cwd");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .current_dir(&nested)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -321,7 +321,7 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -386,7 +386,7 @@ fn custom_sccache_wrapper_preserves_caller_sccache_dir() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let wrapper = install_fake_wrapper(&log_path, "sccache");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -427,7 +427,7 @@ fn empty_rustc_wrapper_override_disables_wrapper_injection() {
     let cache_root = unique_temp_dir("cargo-wrapper-disabled");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -467,7 +467,7 @@ fn no_cache_bypasses_wrapper_and_zccache() {
     let cache_root = unique_temp_dir("cargo-no-cache-fake");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -505,7 +505,7 @@ fn no_cache_bypasses_wrapper_and_zccache() {
 #[test]
 fn rustc_wrapper_mode_passes_through_to_rustc() {
     let rustc = rustup_which("rustc");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .arg(rustc)
         .arg("--version")
         .output()
@@ -538,7 +538,7 @@ fn repo_local_toolchain_homes_are_used_when_env_vars_are_unset() {
         vec!["rustfmt", "--version"],
         vec!["--no-cache", "rustc", "--version"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = isolated_soldr_command()
             .args(&args)
             .current_dir(&nested)
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -623,7 +623,7 @@ fn repo_local_cargo_bin_tools_work_without_rustup() {
         vec!["rustfmt", "--version"],
         vec!["--no-cache", "rustc", "--version"],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = isolated_soldr_command()
             .args(&args)
             .current_dir(&nested)
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -678,7 +678,7 @@ fn explicit_toolchain_home_env_vars_win_over_repo_local_homes() {
     fs::create_dir_all(&repo_rustup_home).expect("failed to create repo-local .rustup");
     fs::create_dir_all(&nested).expect("failed to create nested working dir");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = isolated_soldr_command()
         .args(["--no-cache", "cargo", "--version"])
         .current_dir(&nested)
         .env("SOLDR_CACHE_DIR", &cache_root)

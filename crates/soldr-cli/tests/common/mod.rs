@@ -13,6 +13,31 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+pub(crate) fn isolated_soldr_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    scrub_outer_soldr_env(&mut command);
+    command
+}
+
+pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
+    command
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER")
+        .env_remove("SOLDR_LINKER")
+        .env_remove("CARGO_BUILD_TARGET")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .env_remove("RUSTFLAGS");
+    for (name, _) in std::env::vars_os() {
+        if name
+            .to_str()
+            .is_some_and(|name| name.starts_with("CARGO_TARGET_"))
+        {
+            command.env_remove(name);
+        }
+    }
+    command
+}
+
 pub(crate) fn rustup_which(tool: &str) -> String {
     let output = Command::new("rustup")
         .args(["which", tool])
