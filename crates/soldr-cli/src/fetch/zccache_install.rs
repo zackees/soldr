@@ -38,7 +38,7 @@ pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult,
     // with prepare_zccache_build's hard-coded "soldr: using managed
     // zccache 1.8.1" was the smoking gun that fooled the perf-cluster
     // debugging session.
-    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+    if let Some(pinned) = resolve_usable_pinned_zccache(paths, &target)? {
         return Ok(FetchResult {
             binary_path: pinned.binary_path,
             version: pinned.version,
@@ -107,7 +107,7 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         return resolve_local_zccache_for_target(&local_dir, paths, &target).map(Some);
     }
 
-    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
+    if let Some(pinned) = resolve_usable_pinned_zccache(paths, &target)? {
         return Ok(Some(FetchResult {
             binary_path: pinned.binary_path,
             version: pinned.version,
@@ -122,6 +122,25 @@ pub fn cached_zccache_binary(paths: &SoldrPaths) -> Result<Option<FetchResult>, 
         &["zccache", "zccache-daemon", "zccache-fp"],
         &target,
     )
+}
+
+fn resolve_usable_pinned_zccache(
+    paths: &SoldrPaths,
+    target: &TargetTriple,
+) -> Result<Option<install_zccache::PinnedResolution>, SoldrError> {
+    let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, target)? else {
+        return Ok(None);
+    };
+    if install_zccache::pinned_version_older_than_managed(&pinned.version) {
+        eprintln!(
+            "soldr: ignoring pinned zccache {} at {} because this soldr requires managed zccache {} or newer",
+            pinned.version,
+            pinned.runtime_dir.display(),
+            MANAGED_ZCCACHE_VERSION
+        );
+        return Ok(None);
+    }
+    Ok(Some(pinned))
 }
 
 /// Locate `zccache` on the system `PATH` and use it directly instead

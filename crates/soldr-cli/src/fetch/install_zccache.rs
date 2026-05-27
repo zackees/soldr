@@ -706,6 +706,41 @@ pub fn pinned_version_drift_from_managed(sidecar: &PinnedSidecar) -> bool {
     sidecar.version != "unknown" && sidecar.version != MANAGED_ZCCACHE_VERSION
 }
 
+/// True when a recorded pinned version is known to be older than the
+/// managed zccache version this soldr build was compiled against.
+/// Unknown or non-semver versions stay usable because we cannot prove
+/// they are stale.
+pub fn pinned_version_older_than_managed(version: &str) -> bool {
+    match (
+        parse_semver_triplet(version),
+        parse_semver_triplet(MANAGED_ZCCACHE_VERSION),
+    ) {
+        (Some(pinned), Some(managed)) => pinned < managed,
+        _ => false,
+    }
+}
+
+fn parse_semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
+    let version = version.trim().strip_prefix('v').unwrap_or(version.trim());
+    let mut parts = version.split('.');
+    let major = parse_semver_component(parts.next()?)?;
+    let minor = parse_semver_component(parts.next().unwrap_or("0"))?;
+    let patch = parse_semver_component(parts.next().unwrap_or("0"))?;
+    Some((major, minor, patch))
+}
+
+fn parse_semver_component(component: &str) -> Option<u64> {
+    let digits: String = component
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
 /// Compact ISO-8601 / RFC3339 timestamp (UTC, second precision). Rolls
 /// its own formatter so we don't have to take a chrono / time dep just
 /// for one timestamp.
@@ -806,6 +841,15 @@ mod tests {
         assert!(!pinned_version_drift_from_managed(&sidecar));
         sidecar.version = "0.0.1".to_string();
         assert!(pinned_version_drift_from_managed(&sidecar));
+    }
+
+    #[test]
+    fn stale_helper_only_rejects_known_older_versions() {
+        assert!(!pinned_version_older_than_managed("unknown"));
+        assert!(!pinned_version_older_than_managed(MANAGED_ZCCACHE_VERSION));
+        assert!(!pinned_version_older_than_managed("99.0.0"));
+        assert!(pinned_version_older_than_managed("0.0.1"));
+        assert!(pinned_version_older_than_managed("v0.0.1"));
     }
 
     fn sample_sidecar(version: &str) -> PinnedSidecar {
