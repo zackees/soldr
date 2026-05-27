@@ -194,17 +194,18 @@ mod tests {
             session_log_path: std::path::PathBuf::from("/tmp/soldr-zccache/log"),
             journal_path: std::path::PathBuf::from("/tmp/soldr-zccache/journal"),
             session_stats_path: std::path::PathBuf::from("/tmp/soldr-zccache/stats.json"),
+            private_daemon: None,
         }
     }
 
     fn managed_wrapper_plan() -> RustcWrapperPlan {
-        RustcWrapperPlan::ManagedZccache(ManagedZccacheWrapperPlan {
+        RustcWrapperPlan::ManagedZccache(Box::new(ManagedZccacheWrapperPlan {
             session: fake_session(),
             child_env: ZccacheChildEnv {
                 path_remap: Some("auto"),
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
             },
-        })
+        }))
     }
 
     crate::timed_test!(managed_plan_applies_session_and_path_remap_env, {

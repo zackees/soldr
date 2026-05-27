@@ -6,6 +6,7 @@
 use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
 use crate::cache_lib::{daemon_sock_path, data_db_path};
 use crate::core::SoldrPaths;
+use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
 use crate::daemon::protocol::{BuildRecord, Request, Response, StatusInfo};
 use std::path::{Path, PathBuf};
@@ -168,7 +169,10 @@ pub fn record_compile(
 
 pub fn link_zccache(paths: &SoldrPaths, link: crate::daemon::protocol::ZccacheDaemonLink) {
     let sock = default_sock_path(paths);
-    let _ = submit_fire_and_forget(&sock, &Request::LinkZccache { link });
+    if submit_fire_and_forget(&sock, &Request::LinkZccache { link: link.clone() }).is_ok() {
+        return;
+    }
+    let _ = db::set_linked_zccache(&data_db_path(paths), Some(&link));
 }
 
 /// Wrapper-side entry point. Tries the daemon first; on any failure,

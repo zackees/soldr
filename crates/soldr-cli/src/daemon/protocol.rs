@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Maximum bincode body size. 64 KiB is comfortably above the largest
 /// realistic record (path strings, a few timestamps). Frames larger than
@@ -93,6 +93,10 @@ pub struct ZccacheDaemonLink {
     pub cache_dir: String,
     pub session_id: Option<String>,
     pub source: String,
+    pub private_daemon: bool,
+    pub daemon_name: Option<String>,
+    pub owner_pid: Option<u32>,
+    pub private_env_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -231,7 +231,6 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     let parent_cache_root = unique_temp_dir("cargo-parent-managed-zccache-dir");
     let child_cache_root = unique_temp_dir("cargo-child-managed-zccache-dir");
     let parent_zccache_dir = parent_cache_root.join("cache").join("zccache");
-    let child_zccache_dir = child_cache_root.join("cache").join("zccache");
     let log_path = child_cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
@@ -255,6 +254,7 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let child_zccache_dir = discovered_private_zccache_cache_dir(&child_cache_root);
     assert!(
         path_display_variants(&child_zccache_dir)
             .iter()

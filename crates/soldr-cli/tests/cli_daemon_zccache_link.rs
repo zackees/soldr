@@ -72,7 +72,7 @@ fn install_fake_zccache(cache_root: &Path, log_path: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
             "#!/bin/sh\n\
-             echo \"zccache $* cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
+             echo \"zccache $* cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}}\" >> \"{}\"\n\
              exit 0\n",
             log_path.display()
         );
@@ -200,6 +200,10 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
                     cache_dir: linked_cache_dir.display().to_string(),
                     session_id: Some("linked-session".into()),
                     source: "test".into(),
+                    private_daemon: true,
+                    daemon_name: Some("soldr-dev-link-test".into()),
+                    owner_pid: Some(std::process::id()),
+                    private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
                 },
             },
         )
@@ -225,6 +229,12 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     assert_eq!(linked.cache_dir, linked_cache_dir.display().to_string());
     assert_eq!(linked.binary_path, bin.display().to_string());
     assert_eq!(linked.session_id.as_deref(), Some("linked-session"));
+    assert!(linked.private_daemon);
+    assert_eq!(linked.daemon_name.as_deref(), Some("soldr-dev-link-test"));
+    assert_eq!(
+        linked.private_env_keys,
+        vec!["ZCCACHE_PATH_REMAP".to_string()]
+    );
 
     // Trigger shutdown via the explicit RPC.
     client::shutdown(&sock).expect("shutdown");
@@ -235,7 +245,10 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
 
     // The fake zccache must have been invoked with `stop`.
     let calls = std::fs::read_to_string(&log_path).unwrap_or_default();
-    let linked_stop = format!("zccache stop cache_dir={}", linked_cache_dir.display());
+    let linked_stop = format!(
+        "zccache stop cache_dir={} daemon_namespace=soldr-dev-link-test",
+        linked_cache_dir.display()
+    );
     assert!(
         calls.lines().any(|l| l.trim() == linked_stop),
         "expected scoped `zccache stop` invocation {linked_stop:?}; log contents:\n{calls}"
