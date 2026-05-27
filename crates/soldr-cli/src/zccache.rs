@@ -176,34 +176,163 @@ pub(crate) fn find_git_worktree_root(cwd: &std::path::Path) -> Option<std::path:
     None
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZccacheChildEnv {
+    pub(crate) path_remap: Option<&'static str>,
+    pub(crate) worktree_root: Option<std::path::PathBuf>,
+}
+
+impl ZccacheChildEnv {
+    pub(crate) fn from_current_process() -> Result<Self, SoldrError> {
+        let user_zccache = std::env::var(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR).ok();
+        let soldr_override = std::env::var(crate::cache_lib::SOLDR_PATH_REMAP_ENV_VAR).ok();
+        let user_worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
+        let cwd = std::env::current_dir()?;
+        Ok(Self::from_inputs(
+            user_zccache.as_deref(),
+            soldr_override.as_deref(),
+            user_worktree_root.as_deref(),
+            &cwd,
+        ))
+    }
+
+    pub(crate) fn from_inputs(
+        user_zccache: Option<&str>,
+        soldr_override: Option<&str>,
+        user_worktree_root: Option<&std::ffi::OsStr>,
+        cwd: &std::path::Path,
+    ) -> Self {
+        let path_remap = resolve_path_remap_env(user_zccache, soldr_override);
+        let worktree_root = if path_remap_auto_active(user_zccache, soldr_override) {
+            resolve_worktree_root_env(user_worktree_root, cwd)
+        } else {
+            None
+        };
+        Self {
+            path_remap,
+            worktree_root,
+        }
+    }
+
+    pub(crate) fn apply_to_command(&self, cargo: &mut std::process::Command) {
+        if let Some(value) = self.path_remap {
+            cargo.env(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR, value);
+        }
+        if let Some(root) = self.worktree_root.as_ref() {
+            cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedZccacheWrapperPlan {
+    pub(crate) session: ZccacheBuildSession,
+    pub(crate) child_env: ZccacheChildEnv,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum RustcWrapperPlan {
+    ManagedZccache(ManagedZccacheWrapperPlan),
+    Custom {
+        wrapper: std::ffi::OsString,
+        sccache_dir: Option<std::path::PathBuf>,
+    },
+    Disabled,
+}
+
+impl RustcWrapperPlan {
+    pub(crate) fn session(&self) -> Option<&ZccacheBuildSession> {
+        match self {
+            Self::ManagedZccache(plan) => Some(&plan.session),
+            Self::Custom { .. } | Self::Disabled => None,
+        }
+    }
+
+    pub(crate) fn apply_to_command(
+        &self,
+        cargo: &mut std::process::Command,
+    ) -> Result<(), SoldrError> {
+        match self {
+            Self::ManagedZccache(plan) => {
+                let session = &plan.session;
+                cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
+                cargo.env(
+                    crate::cache_lib::ZCCACHE_BINARY_ENV_VAR,
+                    &session.binary_path,
+                );
+                cargo.env(
+                    crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
+                    &session.cache_dir,
+                );
+                cargo.env(
+                    crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+                    &session.cache_dir,
+                );
+                cargo.env(
+                    crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
+                    &session.session_id,
+                );
+                plan.child_env.apply_to_command(cargo);
+            }
+            Self::Custom {
+                wrapper,
+                sccache_dir,
+            } => {
+                if let Some(sccache_dir) = sccache_dir {
+                    cargo.env("SCCACHE_DIR", sccache_dir);
+                }
+                cargo.env("RUSTC_WRAPPER", wrapper);
+                remove_managed_zccache_env(cargo);
+            }
+            Self::Disabled => {
+                cargo.env_remove("RUSTC_WRAPPER");
+                remove_managed_zccache_env(cargo);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn remove_managed_zccache_env(cargo: &mut std::process::Command) {
+    cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
+    cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
+    cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
+}
+
 pub(crate) async fn prepare_rustc_wrapper(
     cargo: &mut std::process::Command,
     paths: &SoldrPaths,
     zccache_source: ZccacheSourceArg,
 ) -> Result<Option<ZccacheBuildSession>, SoldrError> {
+    let plan = prepare_rustc_wrapper_plan(paths, zccache_source).await?;
+    let session = plan.session().cloned();
+    plan.apply_to_command(cargo)?;
+    Ok(session)
+}
+
+pub(crate) async fn prepare_rustc_wrapper_plan(
+    paths: &SoldrPaths,
+    zccache_source: ZccacheSourceArg,
+) -> Result<RustcWrapperPlan, SoldrError> {
     match rustc_wrapper_mode() {
-        RustcWrapperMode::ManagedZccache => prepare_zccache_build(cargo, paths, zccache_source)
+        RustcWrapperMode::ManagedZccache => prepare_zccache_build(paths, zccache_source)
             .await
-            .map(Some),
+            .map(RustcWrapperPlan::ManagedZccache),
         RustcWrapperMode::Custom(wrapper) => {
-            if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
-                let sccache_dir = crate::cache_lib::sccache_dir(paths);
-                std::fs::create_dir_all(&sccache_dir)?;
-                cargo.env("SCCACHE_DIR", sccache_dir);
-            }
-            cargo.env("RUSTC_WRAPPER", wrapper);
-            cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
-            cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
-            cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
-            Ok(None)
+            let sccache_dir =
+                if is_sccache_wrapper(&wrapper) && std::env::var_os("SCCACHE_DIR").is_none() {
+                    let sccache_dir = crate::cache_lib::sccache_dir(paths);
+                    std::fs::create_dir_all(&sccache_dir)?;
+                    Some(sccache_dir)
+                } else {
+                    None
+                };
+            Ok(RustcWrapperPlan::Custom {
+                wrapper,
+                sccache_dir,
+            })
         }
-        RustcWrapperMode::Disabled => {
-            cargo.env_remove("RUSTC_WRAPPER");
-            cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
-            cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
-            cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
-            Ok(None)
-        }
+        RustcWrapperMode::Disabled => Ok(RustcWrapperPlan::Disabled),
     }
 }
 
@@ -215,10 +344,9 @@ pub(crate) fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
 }
 
 async fn prepare_zccache_build(
-    cargo: &mut std::process::Command,
     paths: &SoldrPaths,
     zccache_source: ZccacheSourceArg,
-) -> Result<ZccacheBuildSession, SoldrError> {
+) -> Result<ManagedZccacheWrapperPlan, SoldrError> {
     let zccache_dir = managed_zccache_cache_dir(paths)?;
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
@@ -258,21 +386,6 @@ async fn prepare_zccache_build(
         session_stats_path,
     })?;
 
-    cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
-    cargo.env(
-        crate::cache_lib::ZCCACHE_BINARY_ENV_VAR,
-        &session.binary_path,
-    );
-    cargo.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
-    cargo.env(
-        crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
-        &zccache_dir,
-    );
-    cargo.env(
-        crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
-        &session.session_id,
-    );
-
     // Tell the soldr-daemon which concrete zccache runtime/cache/session
     // this build owns so daemon shutdown can stop only that scoped daemon.
     crate::daemon::client::link_zccache(
@@ -285,25 +398,14 @@ async fn prepare_zccache_build(
         },
     );
 
-    // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto
-    // and a logical worktree root so multiple worktrees of the same repo
-    // share zccache hits through normalized keys. Honor user-supplied
-    // ZCCACHE_* values, and the SOLDR_PATH_REMAP=off escape hatch.
-    let user_zccache = std::env::var(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR).ok();
-    let soldr_override = std::env::var(crate::cache_lib::SOLDR_PATH_REMAP_ENV_VAR).ok();
-    if let Some(value) = resolve_path_remap_env(user_zccache.as_deref(), soldr_override.as_deref())
-    {
-        cargo.env(crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR, value);
-    }
-    if path_remap_auto_active(user_zccache.as_deref(), soldr_override.as_deref()) {
-        let user_worktree_root = std::env::var_os(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR);
-        let cwd = std::env::current_dir()?;
-        if let Some(root) = resolve_worktree_root_env(user_worktree_root.as_deref(), &cwd) {
-            cargo.env(crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR, root);
-        }
-    }
-
-    Ok(session)
+    Ok(ManagedZccacheWrapperPlan {
+        session,
+        // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto
+        // and a logical worktree root so multiple worktrees of the same repo
+        // share zccache hits through normalized keys. Honor user-supplied
+        // ZCCACHE_* values, and the SOLDR_PATH_REMAP=off escape hatch.
+        child_env: ZccacheChildEnv::from_current_process()?,
+    })
 }
 
 fn print_zccache_runtime_diagnostic(runtime: &ZccacheRuntime) {

@@ -19,28 +19,27 @@
 use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
-use crate::native_cc;
 use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
 use crate::trampoline_workspace::{
     detect_workspace_verb, refresh_workspace_sidecar_after_cargo, try_workspace_trampoline,
     RawClippyCapture, WorkspaceDecision, WorkspaceVerb,
 };
 use crate::zccache::{
-    cache_lifecycle_from_env, command_lifetime_shutdown_timeout, finish_zccache_build,
-    prepare_rustc_wrapper, stop_zccache_after_command, CacheLifecycle,
+    cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{
-    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, rust_plan, ZccacheSourceArg,
-};
+use crate::{apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, ZccacheSourceArg};
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod cache_plan;
 mod disk;
 mod inputs;
 mod profile_debug;
 mod subcommand;
 mod target;
+
+use cache_plan::CargoCachePlan;
 
 // -- Re-exports for cross-module callers --
 //
@@ -308,11 +307,6 @@ pub(crate) async fn run_cargo_front_door(
         None
     };
 
-    command.env(
-        crate::cache_lib::CACHE_ENABLED_ENV_VAR,
-        crate::cache_lib::cache_enabled_env_value(cache_enabled_for_cargo),
-    );
-
     // Phase 2: per-build session correlation. Stamp every wrapper
     // invocation with a u64 session id and fire BuildSessionStart to
     // the daemon (fire-and-forget). On exit we fire BuildSessionEnd
@@ -353,67 +347,23 @@ pub(crate) async fn run_cargo_front_door(
 
     target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
-    let session = if cache_enabled_for_cargo {
-        prepare_rustc_wrapper(&mut command, &paths, zccache_source).await?
-    } else {
-        None
-    };
+    let mut cache_plan =
+        CargoCachePlan::prepare(cache_enabled_for_cargo, &paths, zccache_source).await?;
+    cache_plan.apply_to_command(&mut command, explicit_target.as_deref())?;
 
-    // Native C/C++ compiler caching (#310). Default-on when:
-    //   1. zccache wrapper mode is engaged for this cargo invocation
-    //      (i.e. `prepare_rustc_wrapper` returned a session), AND
-    //   2. the user hasn't set `SOLDR_NATIVE_CACHE` to a falsy value,
-    //      AND
-    //   3. the host platform is supported (Linux / macOS in v1; Windows
-    //      falls through silently — tracked as follow-up in #310).
-    //
-    // The injection prepends the same zccache binary path soldr just
-    // wired into RUSTC_WRAPPER to whatever cc-rs would discover for
-    // `CC` / `CXX` / `CC_<triple>` / `CXX_<triple>`. cc-rs honors
-    // `CC_KNOWN_WRAPPER_CUSTOM=zccache` to recognize the wrapper and
-    // dispatch to the real compiler underneath.
-    if let Some(session) = session.as_ref() {
-        native_cc::inject_native_cache_env(
-            &mut command,
-            &session.binary_path,
-            explicit_target.as_deref(),
-        )?;
-    }
-
-    let plan_ctx = if let Some(session) = session.as_ref() {
-        rust_plan::maybe_prepare_rust_artifact_plan(
-            &cargo,
-            &rustc,
-            args,
-            session,
-            cargo_profile_debug_default.as_ref(),
-        )?
-    } else {
-        None
-    };
+    cache_plan.prepare_rust_artifact_plan(
+        &cargo,
+        &rustc,
+        args,
+        cargo_profile_debug_default.as_ref(),
+    )?;
     if build_like_cargo {
-        let probe_path = plan_ctx
-            .as_ref()
-            .map(|plan| std::path::PathBuf::from(&plan.target_dir))
+        let probe_path = cache_plan
+            .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         disk::maybe_emit_low_disk_warning(&probe_path);
     }
-    if let Some(plan) = plan_ctx.as_ref() {
-        if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
-            eprintln!("{reason}");
-        } else if let Some(reason) = rust_plan::should_skip_restore_due_to_prepopulated_target(plan)
-        {
-            // Issue #480: refuse to restore on top of a target/ that cook
-            // (or a prior build) has already populated. The current zccache
-            // restore path reports `restored_file_count: 0 /
-            // artifact_absent_from_restored_plan: 1` and the subsequent
-            // cargo build dies on missing rmetas. Skipping restore lets
-            // cargo work with what's there.
-            eprintln!("{reason}");
-        } else {
-            rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
-        }
-    }
+    cache_plan.restore_rust_artifacts()?;
 
     // Target-registry memoization for the wrapper hot path (#440).
     // Without this, every rustc invocation re-opens redb and writes
@@ -423,10 +373,7 @@ pub(crate) async fn run_cargo_front_door(
     // propagate a recorded-marker env var that lets the wrapper skip
     // its own redb work + daemon target-touch IPC.
     if build_like_cargo {
-        let target_dir_for_memo: Option<std::path::PathBuf> = plan_ctx
-            .as_ref()
-            .map(|p| std::path::PathBuf::from(&p.target_dir))
-            .or_else(|| resolve_target_dir_for_gc(args));
+        let target_dir_for_memo: Option<std::path::PathBuf> = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir_for_memo.as_deref() {
             if dir.is_dir() {
                 let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
@@ -451,10 +398,7 @@ pub(crate) async fn run_cargo_front_door(
     // any CARGO_TARGET_DIR / --target-dir override the same way cargo
     // and rust_plan do.
     if build_like_cargo && !gc_opt_out.before {
-        let target_dir = plan_ctx
-            .as_ref()
-            .map(|p| std::path::PathBuf::from(&p.target_dir))
-            .or_else(|| resolve_target_dir_for_gc(args));
+        let target_dir = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir.as_deref() {
             let outcome = auto_prune_target(dir, AutoPrunePhase::Before);
             emit_auto_prune_summary(&outcome);
@@ -511,10 +455,7 @@ pub(crate) async fn run_cargo_front_door(
 
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
-            if let Some(plan) = plan_ctx.as_ref() {
-                rust_plan::run_zccache_rust_plan(plan, "save", true)?;
-                rust_plan::write_warm_restore_sentinel(plan);
-            }
+            cache_plan.save_rust_artifacts()?;
             // Post-compile target-GC (#485). Same gating as the pre-pass —
             // build-like cargo, no opt-out, resolve dir consistently with the
             // pre-pass. The active-cargo-lock guard inside `auto_prune_target`
@@ -522,10 +463,7 @@ pub(crate) async fn run_cargo_front_door(
             // racing this pass; we never emit a stderr line when that guard
             // engages.
             if build_like_cargo && !gc_opt_out.after {
-                let target_dir = plan_ctx
-                    .as_ref()
-                    .map(|p| std::path::PathBuf::from(&p.target_dir))
-                    .or_else(|| resolve_target_dir_for_gc(args));
+                let target_dir = cache_plan.target_dir_for_hooks(args);
                 if let Some(dir) = target_dir.as_deref() {
                     let outcome = auto_prune_target(dir, AutoPrunePhase::After);
                     emit_auto_prune_summary(&outcome);
@@ -537,7 +475,7 @@ pub(crate) async fn run_cargo_front_door(
             if let Some(plan) = workspace_plan.as_ref() {
                 refresh_workspace_sidecar_after_cargo(plan, clippy_capture);
             }
-        } else if let Some(plan) = plan_ctx.as_ref() {
+        } else {
             // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
             // emitted, then rustc aborted before the `.rlib` codegen pass)
             // in `target/<triple>/<profile>/deps/`. Subsequent invocations
@@ -545,7 +483,7 @@ pub(crate) async fn run_cargo_front_door(
             // `--extern X=orphan.rmeta` to dependents and rustc cannot link
             // an rmeta-only crate. Sweep them so the next build rebuilds
             // cleanly. See soldr#410.
-            rust_plan::prune_orphan_rmetas_after_failed_build(plan);
+            cache_plan.prune_orphan_rmetas_after_failed_build();
         }
         Ok(())
     })();
@@ -567,16 +505,7 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    if let Some(session) = session.as_ref() {
-        let finish_result = finish_zccache_build(session);
-        let shutdown_result = if let Some(timeout) = command_lifetime_shutdown_timeout {
-            stop_zccache_after_command(session, timeout)
-        } else {
-            Ok(())
-        };
-        finish_result?;
-        shutdown_result?;
-    }
+    cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout)?;
     post_cargo_result?;
     drop(trampoline_plan);
     drop(workspace_plan);
