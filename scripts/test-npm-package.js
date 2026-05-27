@@ -67,6 +67,7 @@ assert.strictEqual(pkg.bin.soldr, "bin/soldr.js");
 assert.strictEqual(pkg.repository.url, "git+https://github.com/zackees/soldr.git");
 assert.deepStrictEqual(pkg.files, [
   "bin/soldr.js",
+  "contracts/zccache-integration-guardrails.v1.json",
   "contracts/zccache-runtime.v1.json",
   "scripts/install.js",
   "scripts/zccache-contract.js",
@@ -132,6 +133,10 @@ assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, [
   "zccache-daemon",
   "zccache-fp",
 ]);
+assert.ok(
+  fs.existsSync(path.join(root, "contracts", "zccache-integration-guardrails.v1.json")),
+  "npm package must include the zccache integration guardrail contract",
+);
 
 // Every TARGETS entry must drop the `archive` field — the combined
 // archive format is fixed (.tar.zst) so the per-target field is dead

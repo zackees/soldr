@@ -145,4 +145,5 @@ def test_npm_package_exports_contract_files() -> None:
     package = json.loads((REPO_ROOT / "package.json").read_text(encoding="utf-8"))
 
     assert "contracts/zccache-runtime.v1.json" in package["files"]
+    assert "contracts/zccache-integration-guardrails.v1.json" in package["files"]
     assert "scripts/zccache-contract.js" in package["files"]

@@ -16,6 +16,7 @@
   },
   "files": [
     "bin/soldr.js",
+    "contracts/zccache-integration-guardrails.v1.json",
     "contracts/zccache-runtime.v1.json",
     "scripts/install.js",
     "scripts/zccache-contract.js",
