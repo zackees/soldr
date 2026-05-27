@@ -2,16 +2,12 @@
 //! lifecycle commands for the zccache daemon and its per-session journal.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache::{
-    command_stderr, managed_zccache_cache_dir, run_zccache_command_in_cache_dir,
-    run_zccache_command_raw_in_cache_dir, start_zccache_with_recovery,
+use crate::zccache::managed_zccache_cache_dir;
+use crate::zccache_lifecycle::{
+    ZccacheDaemonExitPollResult, ZccacheLifecycle, ZccacheSessionStartOptions,
 };
 use crate::{cached_active_zccache, fetch_active_zccache, JSON_SCHEMA_VERSION};
 use serde::Serialize;
-
-use super::{
-    zccache_daemon_already_stopped, zccache_output_snippet, zccache_subcommand_unsupported,
-};
 
 #[derive(Serialize)]
 struct SessionStartOutput {
@@ -129,35 +125,18 @@ pub(crate) async fn run_session_start_command(
     }
 
     let fetch = fetch_active_zccache(&paths).await?;
-    start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
-
-    let log_arg = session_log_path.display().to_string();
-    let journal_arg = journal_path.display().to_string();
-    let mut args: Vec<&str> = vec![
-        "session-start",
-        "--stats",
-        "--log",
-        &log_arg,
-        "--journal",
-        &journal_arg,
-    ];
-    if let Some(id_value) = id.as_deref() {
-        args.push("--id");
-        args.push(id_value);
-    }
-    let session_json = run_zccache_command_in_cache_dir(&fetch.binary_path, &args, &zccache_dir)?;
-    let session_id =
-        crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to parse zccache session id from output: {}",
-                session_json.stdout.trim()
-            ))
-        })?;
+    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    let session = lifecycle.start_session(ZccacheSessionStartOptions {
+        id,
+        session_log_path: session_log_path.clone(),
+        journal_path: journal_path.clone(),
+        session_stats_path: session_stats_path.clone(),
+    })?;
 
     let output = SessionStartOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "session-start",
-        session_id,
+        session_id: session.session_id,
         log_path: session_log_path.display().to_string(),
         journal_path: journal_path.display().to_string(),
         stats_path: session_stats_path.display().to_string(),
@@ -215,27 +194,17 @@ pub(crate) fn run_session_end_command(
         )
     })?;
 
-    let result = run_zccache_command_raw_in_cache_dir(
-        &fetch.binary_path,
-        &["session-end", &session_id, "--json"],
-        &zccache_dir,
-    )?;
-    let (stats, already_ended) = if result.status.success() {
-        let stdout = String::from_utf8_lossy(&result.stdout);
-        let parsed = if stdout.trim().is_empty() {
-            None
-        } else {
-            serde_json::from_str::<serde_json::Value>(stdout.trim()).ok()
-        };
-        (parsed, false)
-    } else if zccache_session_already_ended(&result) {
+    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    let result = lifecycle.end_session_json(&session_id)?;
+    let (stats, already_ended) = if result.already_ended {
         (None, true)
     } else {
-        return Err(SoldrError::Other(format!(
-            "zccache session-end {} --json failed: {}",
-            session_id,
-            command_stderr(&result)
-        )));
+        let parsed = if result.stdout.trim().is_empty() {
+            None
+        } else {
+            serde_json::from_str::<serde_json::Value>(result.stdout.trim()).ok()
+        };
+        (parsed, false)
     };
 
     let cleared = if clear {
@@ -275,14 +244,6 @@ pub(crate) fn run_session_end_command(
         }
     }
     Ok(())
-}
-
-fn zccache_session_already_ended(output: &std::process::Output) -> bool {
-    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-    stderr.contains("session not found")
-        || stderr.contains("no such session")
-        || stderr.contains("already ended")
-        || stderr.contains("unknown session")
 }
 
 fn clear_session_artifacts(zccache_dir: &std::path::Path) -> Result<bool, SoldrError> {
@@ -333,22 +294,16 @@ pub(crate) async fn run_cache_shutdown_command(
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
+    let mut lifecycle = fetch
+        .as_ref()
+        .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir));
 
     // Step 1: end the active session so zccache flushes the per-session
     // journal before the daemon stops.
-    if let (Some(session_id), Some(fetch)) = (env_session_id.as_deref(), fetch.as_ref()) {
-        let end = run_zccache_command_raw_in_cache_dir(
-            &fetch.binary_path,
-            &["session-end", session_id, "--json"],
-            &zccache_dir,
-        )?;
-        if end.status.success() || zccache_session_already_ended(&end) {
-            output.session_id = Some(session_id.to_string());
-        } else {
-            notes.push(format!(
-                "session-end {session_id} failed: {}",
-                command_stderr(&end)
-            ));
+    if let (Some(session_id), Some(lifecycle)) = (env_session_id.as_deref(), lifecycle.as_mut()) {
+        match lifecycle.end_session_json(session_id) {
+            Ok(_) => output.session_id = Some(session_id.to_string()),
+            Err(err) => notes.push(format!("session-end {session_id} failed: {err}")),
         }
     }
 
@@ -387,38 +342,20 @@ pub(crate) async fn run_cache_shutdown_command(
     // Step 3: graceful daemon stop (triggers depgraph flush in zccache
     // 1.8.x). `zccache stop` is synchronous and returns once the daemon
     // process has exited.
-    if let Some(fetch) = fetch.as_ref() {
-        let mut args: Vec<&str> = vec!["stop"];
-        if no_depgraph_save {
-            // The flag exists upstream as `--no-depgraph-cache` on
-            // `zccache start`. Forward the equivalent suppressor on
-            // stop when zccache exposes it; if not, surface a note so
-            // operators know it was a no-op.
-            args.push("--no-depgraph-save");
-        }
-        let stop_result =
-            run_zccache_command_raw_in_cache_dir(&fetch.binary_path, &args, &zccache_dir)?;
-        if stop_result.status.success() {
-            output.daemon_stopped = true;
-        } else if no_depgraph_save && zccache_flag_unsupported(&stop_result, "--no-depgraph-save") {
+    if let Some(lifecycle) = lifecycle.as_mut() {
+        let stop_result = lifecycle.stop(no_depgraph_save)?;
+        if stop_result.unsupported_no_depgraph_save {
             notes.push(
                 "zccache stop does not support --no-depgraph-save; retrying with default flush"
                     .into(),
             );
-            let retry =
-                run_zccache_command_raw_in_cache_dir(&fetch.binary_path, &["stop"], &zccache_dir)?;
-            if retry.status.success() {
-                output.daemon_stopped = true;
-            } else if !zccache_daemon_already_stopped(&retry) {
-                notes.push(format!("zccache stop failed: {}", command_stderr(&retry)));
-            }
-        } else if zccache_daemon_already_stopped(&stop_result) {
+        }
+        if stop_result.stopped {
+            output.daemon_stopped = true;
+        } else if stop_result.already_stopped {
             notes.push("daemon was already stopped".into());
-        } else {
-            notes.push(format!(
-                "zccache stop failed: {}",
-                command_stderr(&stop_result)
-            ));
+        } else if let Some(failure) = stop_result.failure {
+            notes.push(format!("zccache stop failed: {failure}"));
         }
     } else {
         notes.push("managed zccache binary not yet fetched; nothing to stop".into());
@@ -440,22 +377,20 @@ pub(crate) async fn run_cache_shutdown_command(
     // to know zccache's IPC layout.
     let mut polled_for_exit = false;
     if wait && output.daemon_stopped {
-        if let Some(fetch) = fetch.as_ref() {
+        if let Some(lifecycle) = lifecycle.as_ref() {
             polled_for_exit = true;
-            match poll_zccache_daemon_exit(
-                &fetch.binary_path,
-                &zccache_dir,
-                std::time::Duration::from_secs(shutdown_timeout_seconds),
-            ) {
-                DaemonExitPollResult::Exited => {
+            match lifecycle
+                .poll_daemon_exit(std::time::Duration::from_secs(shutdown_timeout_seconds))
+            {
+                ZccacheDaemonExitPollResult::Exited => {
                     output.daemon_exited = true;
                 }
-                DaemonExitPollResult::TimedOut => {
+                ZccacheDaemonExitPollResult::TimedOut => {
                     notes.push(format!(
                         "daemon did not exit within {shutdown_timeout_seconds}s after `zccache stop`; depgraph state may not be durable on disk"
                     ));
                 }
-                DaemonExitPollResult::PollFailed(err) => {
+                ZccacheDaemonExitPollResult::PollFailed(err) => {
                     notes.push(format!(
                         "could not confirm daemon exit (polling `zccache status` failed): {err}"
                     ));
@@ -510,66 +445,6 @@ pub(crate) async fn run_cache_shutdown_command(
     Ok(())
 }
 
-/// Result of polling `zccache status` after a `zccache stop`. Used by
-/// `run_cache_shutdown_command` to determine whether the daemon's
-/// depgraph snapshot is durable on disk.
-enum DaemonExitPollResult {
-    /// `zccache status` reported the daemon is no longer running.
-    Exited,
-    /// Deadline elapsed before the daemon stopped responding.
-    TimedOut,
-    /// `zccache status` itself failed in an unexpected way (e.g. the
-    /// binary became unreadable). The shutdown is treated as
-    /// indeterminate.
-    PollFailed(String),
-}
-
-fn poll_zccache_daemon_exit(
-    binary: &std::path::Path,
-    zccache_dir: &std::path::Path,
-    timeout: std::time::Duration,
-) -> DaemonExitPollResult {
-    let deadline = std::time::Instant::now() + timeout;
-    let poll_interval = std::time::Duration::from_millis(100);
-    loop {
-        match run_zccache_command_raw_in_cache_dir(binary, &["status"], zccache_dir) {
-            Ok(output) => {
-                // If `zccache status` errored out with a
-                // daemon-not-running phrase, the daemon is gone and
-                // the on-disk state from `stop` is durable.
-                if !output.status.success() && zccache_daemon_already_stopped(&output) {
-                    return DaemonExitPollResult::Exited;
-                }
-                // Some zccache builds may print the daemon-stopped
-                // marker on stdout while still exiting 0 (e.g. a
-                // future "status --json" with state="stopped"). Cover
-                // that path too without committing to a JSON schema.
-                let combined = format!(
-                    "{}\n{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-                .to_ascii_lowercase();
-                if combined.contains("daemon not running")
-                    || combined.contains("no daemon")
-                    || combined.contains("connection refused")
-                {
-                    return DaemonExitPollResult::Exited;
-                }
-            }
-            Err(err) => {
-                // Spawning zccache itself failed — surface the cause,
-                // do not retry.
-                return DaemonExitPollResult::PollFailed(err.to_string());
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            return DaemonExitPollResult::TimedOut;
-        }
-        std::thread::sleep(poll_interval);
-    }
-}
-
 pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
@@ -591,67 +466,38 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         // re-emit the upstream stats verbatim; fall back to plain
         // `zccache flush` when the build does not yet support
         // `--json`.
-        let result = run_zccache_command_raw_in_cache_dir(
-            &fetch.binary_path,
-            &["flush", "--json"],
-            &zccache_dir,
-        )?;
-        if result.status.success() {
-            output.flushed = true;
-            let stdout = String::from_utf8_lossy(&result.stdout);
-            let trimmed = stdout.trim();
-            if !trimmed.is_empty() {
-                output.stats = serde_json::from_str(trimmed).ok();
-                if output.stats.is_none() {
-                    output.notes.push(format!(
-                        "zccache flush --json stdout was not valid JSON: {}",
-                        zccache_output_snippet(trimmed.as_bytes())
-                            .unwrap_or_else(|| "<empty>".into())
-                    ));
-                }
-            }
-        } else if zccache_flag_unsupported(&result, "--json") {
-            // zccache does not yet implement `flush --json`. Retry the
-            // bare form so we still get a durable on-disk snapshot.
-            let retry =
-                run_zccache_command_raw_in_cache_dir(&fetch.binary_path, &["flush"], &zccache_dir)?;
-            if retry.status.success() {
-                output.flushed = true;
-                output.notes.push(format!(
-                    "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
-                    crate::fetch::MANAGED_ZCCACHE_VERSION
-                ));
-            } else if zccache_subcommand_unsupported(&retry, "flush") {
-                output.notes.push(format!(
-                    "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
-                    crate::fetch::MANAGED_ZCCACHE_VERSION
-                ));
-            } else if zccache_daemon_already_stopped(&retry) {
-                output.notes.push(
-                    "daemon was not running; nothing to flush (state on disk is already durable)"
-                        .into(),
-                );
-            } else {
-                return Err(SoldrError::Other(format!(
-                    "zccache flush failed: {}",
-                    command_stderr(&retry)
-                )));
-            }
-        } else if zccache_subcommand_unsupported(&result, "flush") {
+        let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+        let result = lifecycle.flush()?;
+        output.flushed = result.flushed;
+        output.stats = result.stats;
+        if let Some(snippet) = result.invalid_json {
+            output.notes.push(format!(
+                "zccache flush --json stdout was not valid JSON: {snippet}"
+            ));
+        }
+        if result.json_unsupported && result.flushed {
+            output.notes.push(format!(
+                "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
+                crate::fetch::MANAGED_ZCCACHE_VERSION
+            ));
+        }
+        if result.subcommand_unsupported {
             output.notes.push(format!(
                 "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
                 crate::fetch::MANAGED_ZCCACHE_VERSION
             ));
-        } else if zccache_daemon_already_stopped(&result) {
+        } else if result.already_stopped {
             output.notes.push(
                 "daemon was not running; nothing to flush (state on disk is already durable)"
                     .into(),
             );
-        } else {
-            return Err(SoldrError::Other(format!(
-                "zccache flush --json failed: {}",
-                command_stderr(&result)
-            )));
+        } else if let Some(failure) = result.failure {
+            let command = if result.json_unsupported {
+                "zccache flush"
+            } else {
+                "zccache flush --json"
+            };
+            return Err(SoldrError::Other(format!("{command} failed: {failure}")));
         }
     } else {
         output
@@ -684,24 +530,14 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     Ok(())
 }
 
-fn zccache_flag_unsupported(output: &std::process::Output, flag: &str) -> bool {
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    );
-    combined.contains("unexpected argument") && combined.contains(flag.trim_start_matches('-'))
-        || combined.contains(&format!("unknown flag: {flag}"))
-        || combined.contains(&format!("unrecognized option {flag}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
     use super::super::{
         zccache_daemon_already_stopped, zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT,
     };
-    use super::{clear_session_artifacts, zccache_flag_unsupported, zccache_session_already_ended};
+    use super::clear_session_artifacts;
+    use crate::zccache_lifecycle::{zccache_flag_unsupported, zccache_session_already_ended};
     use std::process::Output;
 
     fn synthetic_output(stderr: &str, exit: i32) -> Output {
@@ -832,14 +668,15 @@ mod tests {
     /// the deadline expires (which would mask the underlying error).
     #[test]
     fn poll_zccache_daemon_exit_surfaces_spawn_failure() {
-        use super::{poll_zccache_daemon_exit, DaemonExitPollResult};
+        use crate::zccache_lifecycle::{ZccacheDaemonExitPollResult, ZccacheLifecycle};
         use std::time::Duration;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let bogus = tmp.path().join("definitely-not-zccache");
-        let result = poll_zccache_daemon_exit(&bogus, tmp.path(), Duration::from_millis(50));
+        let lifecycle = ZccacheLifecycle::new(&bogus, tmp.path());
+        let result = lifecycle.poll_daemon_exit(Duration::from_millis(50));
         assert!(
-            matches!(result, DaemonExitPollResult::PollFailed(_)),
+            matches!(result, ZccacheDaemonExitPollResult::PollFailed(_)),
             "expected PollFailed when zccache binary cannot be spawned"
         );
     }

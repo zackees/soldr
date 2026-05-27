@@ -24,6 +24,7 @@ pub mod self_relocate;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 /// The bin tree declares the same module via `main.rs`.
 pub mod wrapper_target;
+pub mod zccache_lifecycle;
 
 /// Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).
 /// Exposed from the lib tree so both unit tests in `src/` and

@@ -1,13 +1,23 @@
 //! Zccache build-session orchestration and zccache subprocess helpers.
 //! Extracted from `main.rs` as part of issue #339.
 
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{SoldrError, SoldrPaths};
 use crate::fetch::{ZccacheRuntime, ZccacheRuntimeSource};
+use crate::zccache_lifecycle::{
+    zccache_command_failure_message, zccache_json_flag_unsupported, ZccacheLifecycle,
+    ZccacheSessionStartOptions,
+};
 use crate::{
     current_soldr_binary, fetch_active_zccache_runtime, non_empty_env_path, ZccacheSourceArg,
     RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
 use std::ffi::OsStr;
+
+pub(crate) use crate::zccache_lifecycle::{
+    command_stderr, effective_daemon_rust_log, run_zccache_command_in_cache_dir,
+    run_zccache_command_raw_in_cache_dir, run_zccache_command_strings_in_cache_dir,
+    start_zccache_with_recovery, ZccacheBuildSession, SOLDR_DAEMON_RUST_LOG_ENV_VAR,
+};
 
 pub(crate) const SOLDR_CACHE_LIFECYCLE_ENV_VAR: &str = "SOLDR_CACHE_LIFECYCLE";
 pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
@@ -72,15 +82,6 @@ pub(crate) fn parse_shutdown_timeout_seconds(raw: &str) -> Result<u64, SoldrErro
         )));
     }
     Ok(seconds)
-}
-
-pub(crate) struct ZccacheBuildSession {
-    pub(crate) binary_path: std::path::PathBuf,
-    pub(crate) cache_dir: std::path::PathBuf,
-    pub(crate) session_id: String,
-    pub(crate) session_log_path: std::path::PathBuf,
-    pub(crate) journal_path: std::path::PathBuf,
-    pub(crate) session_stats_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,53 +247,43 @@ async fn prepare_zccache_build(
     // would keep handling requests. Evict it explicitly here.
     evict_zccache_daemon_if_binary_changed(&fetch.binary_path, &zccache_dir)?;
 
-    start_zccache_with_recovery(&fetch.binary_path, &zccache_dir)?;
-
     let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
-    let session_log_path_arg = session_log_path.display().to_string();
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
-    let journal_path_arg = journal_path.display().to_string();
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
-    let session_json = run_zccache_command_in_cache_dir(
-        &fetch.binary_path,
-        &[
-            "session-start",
-            "--stats",
-            "--log",
-            &session_log_path_arg,
-            "--journal",
-            &journal_path_arg,
-        ],
-        &zccache_dir,
-    )?;
-    let session_id =
-        crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to parse zccache session id from output: {}",
-                session_json.stdout.trim()
-            ))
-        })?;
+    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    let session = lifecycle.start_session(ZccacheSessionStartOptions {
+        id: None,
+        session_log_path,
+        journal_path,
+        session_stats_path,
+    })?;
 
     cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
-    cargo.env(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR, &fetch.binary_path);
+    cargo.env(
+        crate::cache_lib::ZCCACHE_BINARY_ENV_VAR,
+        &session.binary_path,
+    );
     cargo.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, &zccache_dir);
     cargo.env(
         crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
         &zccache_dir,
     );
-    cargo.env(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR, &session_id);
+    cargo.env(
+        crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
+        &session.session_id,
+    );
 
-    // Phase 3: tell the soldr-daemon (if running) that this session is
-    // linked to a zccache daemon. The PID field is informational —
-    // shutdown invokes the global `zccache stop` rather than targeting
-    // a specific PID — so we record the session-id hash modulo u32 as a
-    // distinct, non-zero token. Fire-and-forget; nothing about the
-    // cargo build depends on it.
-    let zccache_token = session_id
-        .bytes()
-        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32))
-        .max(1);
-    crate::daemon::client::link_zccache(paths, zccache_token);
+    // Tell the soldr-daemon which concrete zccache runtime/cache/session
+    // this build owns so daemon shutdown can stop only that scoped daemon.
+    crate::daemon::client::link_zccache(
+        paths,
+        crate::daemon::protocol::ZccacheDaemonLink {
+            binary_path: session.binary_path.display().to_string(),
+            cache_dir: session.cache_dir.display().to_string(),
+            session_id: Some(session.session_id.clone()),
+            source: runtime.source.summary_source().as_str().to_string(),
+        },
+    );
 
     // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto
     // and a logical worktree root so multiple worktrees of the same repo
@@ -312,14 +303,7 @@ async fn prepare_zccache_build(
         }
     }
 
-    Ok(ZccacheBuildSession {
-        binary_path: fetch.binary_path,
-        cache_dir: zccache_dir,
-        session_id,
-        session_log_path,
-        journal_path,
-        session_stats_path,
-    })
+    Ok(session)
 }
 
 fn print_zccache_runtime_diagnostic(runtime: &ZccacheRuntime) {
@@ -361,11 +345,8 @@ fn print_zccache_runtime_diagnostic(runtime: &ZccacheRuntime) {
 }
 
 pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let output = run_zccache_command_raw_in_cache_dir(
-        &session.binary_path,
-        &["session-end", &session.session_id, "--json"],
-        &session.cache_dir,
-    )?;
+    let lifecycle = ZccacheLifecycle::from_session(session);
+    let output = lifecycle.run_raw(&["session-end", &session.session_id, "--json"])?;
     if session.session_log_path.exists() {
         eprintln!(
             "soldr: zccache session log: {}",
@@ -401,76 +382,34 @@ pub(crate) fn stop_zccache_after_command(
     session: &ZccacheBuildSession,
     timeout: std::time::Duration,
 ) -> Result<(), SoldrError> {
-    let output =
-        run_zccache_command_raw_in_cache_dir(&session.binary_path, &["stop"], &session.cache_dir)?;
-    if output.status.success() {
+    let mut lifecycle = ZccacheLifecycle::from_session(session);
+    let output = lifecycle.stop(false)?;
+    if output.stopped {
         eprintln!("soldr: command-lifetime cache: zccache stop requested");
-    } else if zccache_daemon_already_stopped_output(&output) {
+    } else if output.already_stopped {
         eprintln!("soldr: command-lifetime cache: zccache daemon already stopped");
         return Ok(());
-    } else {
-        return Err(SoldrError::Other(zccache_command_failure_message(
-            &["stop"],
-            &output,
-        )));
+    } else if let Some(failure) = output.failure {
+        return Err(SoldrError::Other(format!("zccache stop failed: {failure}")));
     }
 
-    match poll_zccache_daemon_exit(&session.binary_path, &session.cache_dir, timeout) {
-        ZccacheDaemonExitPollResult::Exited => {
+    match lifecycle.poll_daemon_exit(timeout) {
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::Exited => {
             eprintln!("soldr: command-lifetime cache: zccache daemon exited");
             Ok(())
         }
-        ZccacheDaemonExitPollResult::TimedOut => Err(SoldrError::Other(format!(
-            "command-lifetime cache: zccache daemon did not exit within {}s",
-            timeout.as_secs()
-        ))),
-        ZccacheDaemonExitPollResult::PollFailed(err) => Err(SoldrError::Other(format!(
-            "command-lifetime cache: could not confirm zccache daemon exit: {err}"
-        ))),
-    }
-}
-
-enum ZccacheDaemonExitPollResult {
-    Exited,
-    TimedOut,
-    PollFailed(String),
-}
-
-fn poll_zccache_daemon_exit(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-    timeout: std::time::Duration,
-) -> ZccacheDaemonExitPollResult {
-    let deadline = std::time::Instant::now() + timeout;
-    let poll_interval = std::time::Duration::from_millis(100);
-    loop {
-        match run_zccache_command_raw_in_cache_dir(binary, &["status"], cache_dir) {
-            Ok(output) => {
-                if zccache_daemon_already_stopped_output(&output) {
-                    return ZccacheDaemonExitPollResult::Exited;
-                }
-            }
-            Err(err) => return ZccacheDaemonExitPollResult::PollFailed(err.to_string()),
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut => {
+            Err(SoldrError::Other(format!(
+                "command-lifetime cache: zccache daemon did not exit within {}s",
+                timeout.as_secs()
+            )))
         }
-        if std::time::Instant::now() >= deadline {
-            return ZccacheDaemonExitPollResult::TimedOut;
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed(err) => {
+            Err(SoldrError::Other(format!(
+                "command-lifetime cache: could not confirm zccache daemon exit: {err}"
+            )))
         }
-        std::thread::sleep(poll_interval);
     }
-}
-
-fn zccache_daemon_already_stopped_output(output: &std::process::Output) -> bool {
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stderr),
-        String::from_utf8_lossy(&output.stdout)
-    )
-    .to_ascii_lowercase();
-    combined.contains("daemon not running")
-        || combined.contains("no daemon to stop")
-        || combined.contains("no daemon")
-        || combined.contains("not running")
-        || combined.contains("connection refused")
 }
 
 fn finish_zccache_build_text_fallback(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
@@ -561,17 +500,6 @@ fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
     value.get(key).and_then(serde_json::Value::as_f64)
 }
 
-fn zccache_json_flag_unsupported(output: &std::process::Output) -> bool {
-    let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
-    stderr.contains("unexpected argument")
-        || stderr.contains("unrecognized option")
-        || stderr.contains("found argument")
-}
-
-pub(crate) struct CommandOutput {
-    pub(crate) stdout: String,
-}
-
 pub(crate) fn managed_zccache_cache_dir(
     paths: &SoldrPaths,
 ) -> Result<std::path::PathBuf, SoldrError> {
@@ -600,45 +528,6 @@ pub(crate) fn normalize_path_for_compare(
     } else {
         Ok(std::env::current_dir()?.join(path))
     }
-}
-
-pub(crate) fn run_zccache_command_in_cache_dir(
-    binary: &std::path::Path,
-    args: &[&str],
-    cache_dir: &std::path::Path,
-) -> Result<CommandOutput, SoldrError> {
-    run_zccache_command_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )
-}
-
-pub(crate) fn run_zccache_command_strings_in_cache_dir(
-    binary: &std::path::Path,
-    args: &[String],
-    cache_dir: &std::path::Path,
-) -> Result<CommandOutput, SoldrError> {
-    let output = run_zccache_command_raw_strings_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )?;
-    if !output.status.success() {
-        return Err(SoldrError::Other(zccache_command_failure_message_strings(
-            args, &output,
-        )));
-    }
-
-    Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-    })
 }
 
 /// Name of the marker file inside the zccache cache dir that records
@@ -702,201 +591,6 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed(
         );
     }
     Ok(())
-}
-
-/// Soldr-side escape hatch for the RUST_LOG value that gets injected into
-/// `zccache start`. Power users can set this to something like
-/// `info,zccache_artifact=debug` when they need a specific level on the
-/// daemon without the daemon inheriting (and being narrowed by) the
-/// parent's RUST_LOG.
-pub(crate) const SOLDR_DAEMON_RUST_LOG_ENV_VAR: &str = "SOLDR_DAEMON_RUST_LOG";
-
-/// Compute the `RUST_LOG` value soldr should set when invoking
-/// `zccache start`. The daemon spawned by `zccache start` inherits the
-/// invocation's env; if `RUST_LOG` narrows the filter to a subset of
-/// `zccache_*` modules (e.g. `zccache_daemon=info`), INFO logs from
-/// sibling crates (`zccache_artifact`, `zccache_fscache`, etc.) silently
-/// vanish from the daemon spawn log. To keep cross-crate observability
-/// soldr forces a bare `info` directive at daemon spawn unless the user
-/// asks for something specific via `SOLDR_DAEMON_RUST_LOG`.
-///
-/// Returns the value soldr should pass through as `RUST_LOG` on the
-/// `zccache start` invocation. See issue #416.
-pub(crate) fn effective_daemon_rust_log(soldr_override: Option<&str>) -> String {
-    match soldr_override {
-        Some(v) if !v.trim().is_empty() => v.to_string(),
-        _ => "info".to_string(),
-    }
-}
-
-fn run_zccache_start_command(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-) -> Result<std::process::Output, SoldrError> {
-    let rust_log =
-        effective_daemon_rust_log(std::env::var(SOLDR_DAEMON_RUST_LOG_ENV_VAR).ok().as_deref());
-    run_zccache_command_raw_with_env(
-        binary,
-        &["start"],
-        &[
-            (
-                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-                cache_dir.as_os_str(),
-            ),
-            ("RUST_LOG", std::ffi::OsStr::new(rust_log.as_str())),
-        ],
-    )
-}
-
-pub(crate) fn start_zccache_with_recovery(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-) -> Result<(), SoldrError> {
-    let start = run_zccache_start_command(binary, cache_dir)?;
-    if start.status.success() {
-        return Ok(());
-    }
-
-    let initial_stderr = command_stderr(&start);
-    if !is_stale_zccache_daemon_start_failure(&initial_stderr) {
-        return Err(SoldrError::Other(zccache_command_failure_message(
-            &["start"],
-            &start,
-        )));
-    }
-
-    eprintln!(
-        "soldr: zccache start reported an unresponsive daemon; stopping stale state and retrying"
-    );
-    let stop_diagnostic = match run_zccache_command_raw_in_cache_dir(binary, &["stop"], cache_dir) {
-        Ok(stop) if stop.status.success() => None,
-        Ok(stop) => Some(zccache_command_failure_message(&["stop"], &stop)),
-        Err(err) => Some(format!("failed to invoke zccache stop: {err}")),
-    };
-
-    match run_zccache_start_command(binary, cache_dir) {
-        Ok(retry) if retry.status.success() => Ok(()),
-        Ok(retry) => {
-            let mut message = format!(
-                "zccache start failed after stale daemon recovery retry: {}",
-                command_stderr(&retry)
-            );
-            message.push_str(&format!(
-                "\ninitial zccache start failure: {}",
-                initial_stderr
-            ));
-            if let Some(stop_diagnostic) = stop_diagnostic {
-                message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
-            }
-            Err(SoldrError::Other(message))
-        }
-        Err(err) => {
-            let mut message =
-                format!("failed to invoke zccache start during stale daemon recovery retry: {err}");
-            message.push_str(&format!(
-                "\ninitial zccache start failure: {}",
-                initial_stderr
-            ));
-            if let Some(stop_diagnostic) = stop_diagnostic {
-                message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
-}
-
-fn is_stale_zccache_daemon_start_failure(stderr: &str) -> bool {
-    let stderr = stderr.to_ascii_lowercase();
-    stderr.contains("not accepting connections")
-        || (stderr.contains("daemon process") && stderr.contains("exists"))
-}
-
-pub(crate) fn run_zccache_command_raw_in_cache_dir(
-    binary: &std::path::Path,
-    args: &[&str],
-    cache_dir: &std::path::Path,
-) -> Result<std::process::Output, SoldrError> {
-    run_zccache_command_raw_with_env(
-        binary,
-        args,
-        &[(
-            crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-            cache_dir.as_os_str(),
-        )],
-    )
-}
-
-fn run_zccache_command_with_env(
-    binary: &std::path::Path,
-    args: &[&str],
-    envs: &[(&str, &std::ffi::OsStr)],
-) -> Result<CommandOutput, SoldrError> {
-    let output = run_zccache_command_raw_with_env(binary, args, envs)?;
-    if !output.status.success() {
-        return Err(SoldrError::Other(zccache_command_failure_message(
-            args, &output,
-        )));
-    }
-
-    Ok(CommandOutput {
-        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-    })
-}
-
-fn run_zccache_command_raw_with_env(
-    binary: &std::path::Path,
-    args: &[&str],
-    envs: &[(&str, &std::ffi::OsStr)],
-) -> Result<std::process::Output, SoldrError> {
-    let mut command = std::process::Command::new(binary);
-    command.args(args);
-    for &(name, value) in envs {
-        command.env(name, value);
-    }
-    suppress_windows_console_window(&mut command);
-    Ok(command.output()?)
-}
-
-fn run_zccache_command_raw_strings_with_env(
-    binary: &std::path::Path,
-    args: &[String],
-    envs: &[(&str, &std::ffi::OsStr)],
-) -> Result<std::process::Output, SoldrError> {
-    let mut command = std::process::Command::new(binary);
-    command.args(args);
-    for &(name, value) in envs {
-        command.env(name, value);
-    }
-    suppress_windows_console_window(&mut command);
-    Ok(command.output()?)
-}
-
-fn zccache_command_failure_message(args: &[&str], output: &std::process::Output) -> String {
-    format!(
-        "zccache {} failed: {}",
-        args.join(" "),
-        command_stderr(output)
-    )
-}
-
-fn zccache_command_failure_message_strings(
-    args: &[String],
-    output: &std::process::Output,
-) -> String {
-    format!(
-        "zccache {} failed: {}",
-        args.join(" "),
-        command_stderr(output)
-    )
-}
-
-pub(crate) fn command_stderr(output: &std::process::Output) -> String {
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if stderr.is_empty() {
-        format!("exit status {}", output.status)
-    } else {
-        stderr
-    }
 }
 
 #[cfg(test)]

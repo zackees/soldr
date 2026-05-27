@@ -6,7 +6,7 @@
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::startup_profile::WrapperProfile;
 #[cfg(not(unix))]
-use crate::zccache::run_zccache_command_in_cache_dir;
+use crate::zccache_lifecycle::{stderr_indicates_unknown_session, ZccacheLifecycle};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
@@ -340,20 +340,6 @@ fn run_wrapper_through_zccache_windows(
     Ok(retry_status.code().unwrap_or(1))
 }
 
-/// Returns `true` iff `stderr` contains the literal substring
-/// `unknown session:` somewhere in its bytes. Tolerates non-UTF-8 input.
-///
-/// Extracted as a pure helper so the retry trigger can be unit-tested
-/// without spawning a real zccache.
-#[cfg_attr(unix, allow(dead_code))]
-pub(crate) fn stderr_indicates_unknown_session(stderr: &[u8]) -> bool {
-    const NEEDLE: &[u8] = b"unknown session:";
-    if stderr.len() < NEEDLE.len() {
-        return false;
-    }
-    stderr.windows(NEEDLE.len()).any(|w| w == NEEDLE)
-}
-
 /// Run `zccache session-start --stats --log <path> --journal <path>` against
 /// the cache dir the wrapper invocation inherits from cargo, and return the
 /// parsed session id. Mirrors the args used by `prepare_zccache_build`.
@@ -376,18 +362,15 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
     let session_log_path_arg = session_log_path.display().to_string();
     let journal_path = crate::cache_lib::session_journal_path(&cache_dir);
     let journal_path_arg = journal_path.display().to_string();
-    let session_json = run_zccache_command_in_cache_dir(
-        zccache,
-        &[
-            "session-start",
-            "--stats",
-            "--log",
-            &session_log_path_arg,
-            "--journal",
-            &journal_path_arg,
-        ],
-        &cache_dir,
-    )?;
+    let lifecycle = ZccacheLifecycle::new(zccache, &cache_dir);
+    let session_json = lifecycle.run(&[
+        "session-start",
+        "--stats",
+        "--log",
+        &session_log_path_arg,
+        "--journal",
+        &journal_path_arg,
+    ])?;
     crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
         SoldrError::Other(format!(
             "failed to parse zccache session id from output: {}",

@@ -10,7 +10,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// Maximum bincode body size. 64 KiB is comfortably above the largest
 /// realistic record (path strings, a few timestamps). Frames larger than
@@ -62,11 +62,11 @@ pub enum Request {
     /// `total_wall_ms >= threshold_ms`, sorted desc by `total_wall_ms`,
     /// capped at `limit`.
     ListSlowBuilds { threshold_ms: u64, limit: u32 },
-    /// Fire-and-forget: tell the daemon which zccache daemon PID is
+    /// Fire-and-forget: tell the daemon which zccache runtime/cache/session is
     /// linked to this soldr-daemon's session. On daemon shutdown
-    /// (explicit RPC, signal, or idle timeout), the daemon spawns
-    /// `zccache stop` against this PID before exiting.
-    LinkZccache { zccache_pid: u32 },
+    /// (explicit RPC, signal, or idle timeout), the daemon issues
+    /// `zccache stop` with the recorded cache dir before exiting.
+    LinkZccache { link: ZccacheDaemonLink },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,7 +84,15 @@ pub struct StatusInfo {
     pub uptime_secs: u64,
     pub request_count: u64,
     /// Set by `LinkZccache`; cleared on daemon shutdown.
-    pub linked_zccache_pid: Option<u32>,
+    pub linked_zccache: Option<ZccacheDaemonLink>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ZccacheDaemonLink {
+    pub binary_path: String,
+    pub cache_dir: String,
+    pub session_id: Option<String>,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

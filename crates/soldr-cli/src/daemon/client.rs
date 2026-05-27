@@ -166,9 +166,9 @@ pub fn record_compile(
     );
 }
 
-pub fn link_zccache(paths: &SoldrPaths, zccache_pid: u32) {
+pub fn link_zccache(paths: &SoldrPaths, link: crate::daemon::protocol::ZccacheDaemonLink) {
     let sock = default_sock_path(paths);
-    let _ = submit_fire_and_forget(&sock, &Request::LinkZccache { zccache_pid });
+    let _ = submit_fire_and_forget(&sock, &Request::LinkZccache { link });
 }
 
 /// Wrapper-side entry point. Tries the daemon first; on any failure,

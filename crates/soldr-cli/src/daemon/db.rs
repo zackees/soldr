@@ -1,16 +1,16 @@
 //! Daemon-side redb tables for build session correlation and the
-//! linked-zccache PID. Opens `~/.soldr/state.redb` per call and drops
+//! linked-zccache runtime identity. Opens `~/.soldr/state.redb` per call and drops
 //! the handle on return — redb refuses concurrent multi-process opens
 //! and the wrapper / GC tools open the same file directly.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
 //! - `daemon_builds`  : u64 session_id → bincoded BuildRecord
 //! - `daemon_events`  : u64 event_id   → bincoded Event
-//! - `daemon_meta`    : `&str` key     → u64 (next event id, linked
-//!   zccache PID, ...)
+//! - `daemon_meta`    : `&str` key     → u64 (next event id, ...)
+//! - `daemon_zccache_link` : `&str` key → bincoded ZccacheDaemonLink
 
 use crate::cache_lib::target_registry::RegistryError;
-use crate::daemon::protocol::BuildRecord;
+use crate::daemon::protocol::{BuildRecord, ZccacheDaemonLink};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -18,9 +18,10 @@ use std::path::{Path, PathBuf};
 const BUILDS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_builds");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_events");
 const META: TableDefinition<&str, u64> = TableDefinition::new("daemon_meta");
+const ZCCACHE_LINK: TableDefinition<&str, &[u8]> = TableDefinition::new("daemon_zccache_link");
 
 const META_NEXT_EVENT_ID: &str = "next_event_id";
-const META_LINKED_ZCCACHE_PID: &str = "linked_zccache_pid";
+const LINKED_ZCCACHE_KEY: &str = "active";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum EventKind {
@@ -59,6 +60,7 @@ fn init_tables(db: &Database) -> Result<(), RegistryError> {
         let _ = txn.open_table(BUILDS)?;
         let _ = txn.open_table(EVENTS)?;
         let _ = txn.open_table(META)?;
+        let _ = txn.open_table(ZCCACHE_LINK)?;
     }
     txn.commit()?;
     Ok(())
@@ -207,19 +209,23 @@ pub fn aggregate_session(
     Ok((count, slowest_us, slowest_name))
 }
 
-/// Set the linked zccache PID. None clears it.
-pub fn set_linked_zccache_pid(db_path: &Path, pid: Option<u32>) -> Result<(), RegistryError> {
+/// Set the linked zccache runtime/cache/session identity. None clears it.
+pub fn set_linked_zccache(
+    db_path: &Path,
+    link: Option<&ZccacheDaemonLink>,
+) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
     init_tables(&db)?;
     let txn = db.begin_write()?;
     {
-        let mut meta = txn.open_table(META)?;
-        match pid {
-            Some(p) => {
-                meta.insert(META_LINKED_ZCCACHE_PID, &(p as u64))?;
+        let mut table = txn.open_table(ZCCACHE_LINK)?;
+        match link {
+            Some(link) => {
+                let bytes = bincode::serialize(link).map_err(bincode_err)?;
+                table.insert(LINKED_ZCCACHE_KEY, bytes.as_slice())?;
             }
             None => {
-                meta.remove(META_LINKED_ZCCACHE_PID)?;
+                table.remove(LINKED_ZCCACHE_KEY)?;
             }
         }
     }
@@ -227,12 +233,16 @@ pub fn set_linked_zccache_pid(db_path: &Path, pid: Option<u32>) -> Result<(), Re
     Ok(())
 }
 
-pub fn get_linked_zccache_pid(db_path: &Path) -> Result<Option<u32>, RegistryError> {
+pub fn get_linked_zccache(db_path: &Path) -> Result<Option<ZccacheDaemonLink>, RegistryError> {
     let db = open_db(db_path)?;
     init_tables(&db)?;
     let txn = db.begin_read()?;
-    let meta = txn.open_table(META)?;
-    Ok(meta.get(META_LINKED_ZCCACHE_PID)?.map(|v| v.value() as u32))
+    let table = txn.open_table(ZCCACHE_LINK)?;
+    let Some(row) = table.get(LINKED_ZCCACHE_KEY)? else {
+        return Ok(None);
+    };
+    let link: ZccacheDaemonLink = bincode::deserialize(row.value()).map_err(bincode_err)?;
+    Ok(Some(link))
 }
 
 /// Delete `daemon_events` rows older than `cutoff_ms`. Returns the
@@ -405,14 +415,20 @@ mod tests {
     }
 
     #[test]
-    fn linked_zccache_pid_round_trips() {
+    fn linked_zccache_identity_round_trips() {
         let temp = TempDir::new().expect("tempdir");
         let path = temp.path().join("state.redb");
-        assert_eq!(get_linked_zccache_pid(&path).expect("get"), None);
-        set_linked_zccache_pid(&path, Some(12345)).expect("set");
-        assert_eq!(get_linked_zccache_pid(&path).expect("get"), Some(12345));
-        set_linked_zccache_pid(&path, None).expect("clear");
-        assert_eq!(get_linked_zccache_pid(&path).expect("get"), None);
+        let link = ZccacheDaemonLink {
+            binary_path: "/tmp/zccache".into(),
+            cache_dir: "/tmp/cache".into(),
+            session_id: Some("session-1".into()),
+            source: "managed".into(),
+        };
+        assert_eq!(get_linked_zccache(&path).expect("get"), None);
+        set_linked_zccache(&path, Some(&link)).expect("set");
+        assert_eq!(get_linked_zccache(&path).expect("get"), Some(link));
+        set_linked_zccache(&path, None).expect("clear");
+        assert_eq!(get_linked_zccache(&path).expect("get"), None);
     }
 
     #[test]

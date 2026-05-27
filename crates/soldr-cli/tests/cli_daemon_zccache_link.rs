@@ -1,6 +1,6 @@
-//! Phase 3: when the soldr-daemon's session linked a zccache daemon,
-//! shutting down the soldr-daemon must spawn `zccache stop` against the
-//! cache-pinned binary before the soldr-daemon exits.
+//! When the soldr-daemon's session links a zccache runtime/cache/session,
+//! shutting down the soldr-daemon must spawn `zccache stop` against that
+//! exact cache namespace before the soldr-daemon exits.
 //!
 //! The test installs a fake `zccache` binary under
 //! `<cache>/bin/zccache-pinned/zccache[.exe]` that logs every invocation
@@ -72,7 +72,7 @@ fn install_fake_zccache(cache_root: &Path, log_path: &Path) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let script = format!(
             "#!/bin/sh\n\
-             echo \"zccache $*\" >> \"{}\"\n\
+             echo \"zccache $* cache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{}\"\n\
              exit 0\n",
             log_path.display()
         );
@@ -172,7 +172,11 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     let log_path = unique_temp_dir("zccache-link-log").join("zccache-calls.log");
 
     // Install a fake zccache that logs every invocation.
-    let _bin = install_fake_zccache(&cache_root, &log_path);
+    let bin = install_fake_zccache(&cache_root, &log_path);
+    let linked_cache_dir = cache_root.join("cache").join("linked-zccache");
+    let unrelated_cache_dir = cache_root.join("cache").join("unrelated-zccache");
+    std::fs::create_dir_all(&linked_cache_dir).expect("linked cache dir");
+    std::fs::create_dir_all(&unrelated_cache_dir).expect("unrelated cache dir");
 
     let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
 
@@ -190,7 +194,14 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     while Instant::now() < deadline {
         if client::submit_fire_and_forget(
             &sock,
-            &soldr_cli::daemon::protocol::Request::LinkZccache { zccache_pid: 42 },
+            &soldr_cli::daemon::protocol::Request::LinkZccache {
+                link: soldr_cli::daemon::protocol::ZccacheDaemonLink {
+                    binary_path: bin.display().to_string(),
+                    cache_dir: linked_cache_dir.display().to_string(),
+                    session_id: Some("linked-session".into()),
+                    source: "test".into(),
+                },
+            },
         )
         .is_ok()
         {
@@ -206,11 +217,14 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     // up to 2 s before failing.
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut info = client::status(&sock).expect("status");
-    while info.linked_zccache_pid.is_none() && Instant::now() < deadline {
+    while info.linked_zccache.is_none() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
         info = client::status(&sock).expect("status");
     }
-    assert_eq!(info.linked_zccache_pid, Some(42));
+    let linked = info.linked_zccache.expect("linked zccache status");
+    assert_eq!(linked.cache_dir, linked_cache_dir.display().to_string());
+    assert_eq!(linked.binary_path, bin.display().to_string());
+    assert_eq!(linked.session_id.as_deref(), Some("linked-session"));
 
     // Trigger shutdown via the explicit RPC.
     client::shutdown(&sock).expect("shutdown");
@@ -221,12 +235,18 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
 
     // The fake zccache must have been invoked with `stop`.
     let calls = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let linked_stop = format!("zccache stop cache_dir={}", linked_cache_dir.display());
     assert!(
-        calls.lines().any(|l| l.trim() == "zccache stop"),
-        "expected `zccache stop` invocation; log contents:\n{calls}"
+        calls.lines().any(|l| l.trim() == linked_stop),
+        "expected scoped `zccache stop` invocation {linked_stop:?}; log contents:\n{calls}"
+    );
+    assert!(
+        !calls.contains(&unrelated_cache_dir.display().to_string()),
+        "shutdown touched unrelated zccache cache dir {}; log contents:\n{calls}",
+        unrelated_cache_dir.display()
     );
 
-    // And the linked PID must have been cleared on shutdown.
-    let pid = db::get_linked_zccache_pid(&cache_root.join("state.redb")).expect("get");
-    assert_eq!(pid, None, "linked zccache pid must be cleared on shutdown");
+    // And the linked identity must have been cleared on shutdown.
+    let link = db::get_linked_zccache(&cache_root.join("state.redb")).expect("get");
+    assert_eq!(link, None, "linked zccache must be cleared on shutdown");
 }
