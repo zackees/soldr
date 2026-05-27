@@ -8,7 +8,7 @@
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::zccache::{managed_zccache_cache_dir, run_zccache_command_raw_in_cache_dir};
-use crate::{cached_active_zccache, JSON_SCHEMA_VERSION};
+use crate::{cached_active_zccache, cached_active_zccache_runtime, JSON_SCHEMA_VERSION};
 use serde::Serialize;
 
 mod install;
@@ -179,8 +179,9 @@ pub(super) fn collect_zccache_status(
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
 
-    match cached_active_zccache(paths)? {
-        Some(fetch) => {
+    match cached_active_zccache_runtime(paths)? {
+        Some(runtime) => {
+            let fetch = runtime.to_fetch_result()?;
             // Use the raw helper so a non-zero exit with a "daemon not
             // running" stderr surfaces as success-with-empty-status rather
             // than a hard error — issue #426 made this case reachable in
@@ -209,7 +210,6 @@ pub(super) fn collect_zccache_status(
                     stderr.trim()
                 )));
             };
-            let source = crate::fetch::classify_zccache_source(paths, &fetch.binary_path);
             Ok(ZccacheStatusSnapshot {
                 cache_dir: zccache_dir.display().to_string(),
                 state_dir: zccache_dir.display().to_string(),
@@ -220,7 +220,7 @@ pub(super) fn collect_zccache_status(
                 session_stats_path: session_stats_path.display().to_string(),
                 session_stats_present,
                 binary_path: Some(fetch.binary_path.display().to_string()),
-                binary_source: source.as_str(),
+                binary_source: runtime.source.summary_source().as_str(),
                 binary_fetched: true,
                 status_lines,
                 status_empty,

@@ -12,8 +12,7 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 
 use super::install_zccache;
 use super::{
-    non_empty_env_path, FetchResult, MANAGED_ZCCACHE_PACKAGES, MANAGED_ZCCACHE_VERSION,
-    ZCCACHE_LOCAL_DIR_ENV_VAR,
+    FetchResult, MANAGED_ZCCACHE_PACKAGES, MANAGED_ZCCACHE_VERSION, ZCCACHE_LOCAL_DIR_ENV_VAR,
 };
 
 /// Summary of where soldr's managed zccache binaries live and what
@@ -59,6 +58,10 @@ pub enum ZccacheSource {
     /// Installed via `soldr install-zccache` into the
     /// `<SoldrPaths::bin>/zccache-pinned/` directory.
     Pinned,
+    /// Resolved from the user-requested `--zccache=system` path.
+    System,
+    /// Resolved from the test-only `SOLDR_TEST_ZCCACHE_BIN` override.
+    TestOverride,
     /// Nothing fetched yet — managed path, no binaries on disk.
     None,
 }
@@ -69,6 +72,8 @@ impl ZccacheSource {
             ZccacheSource::Managed => "managed",
             ZccacheSource::Local => "local",
             ZccacheSource::Pinned => "pinned",
+            ZccacheSource::System => "system",
+            ZccacheSource::TestOverride => "test-override",
             ZccacheSource::None => "none",
         }
     }
@@ -141,35 +146,15 @@ pub(crate) fn resolve_local_zccache_for_target(
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
 
-    if !local_dir.exists() {
-        return Err(SoldrError::Other(format!(
-            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} does not exist",
-            local_dir.display()
-        )));
-    }
-    if !local_dir.is_dir() {
-        return Err(SoldrError::Other(format!(
-            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} is not a directory",
-            local_dir.display()
-        )));
-    }
-
-    // Locate every required binary up front so a missing daemon / fp
-    // doesn't get reported only after we've started copying the cli.
-    let binary_ext = target.binary_ext();
-    let mut sources: Vec<(String, PathBuf)> = Vec::with_capacity(MANAGED_ZCCACHE_PACKAGES.len());
-    for (_, binary_name) in MANAGED_ZCCACHE_PACKAGES {
-        let file_name = format!("{binary_name}{binary_ext}");
-        let candidate = local_dir.join(&file_name);
-        if !candidate.exists() {
-            return Err(SoldrError::Other(format!(
-                "{ZCCACHE_LOCAL_DIR_ENV_VAR}: expected {} at {}",
-                file_name,
-                candidate.display()
-            )));
-        }
-        sources.push((file_name, candidate));
-    }
+    let source_paths = local_zccache_source_paths_for_target(local_dir, target)?;
+    let sources: Vec<(String, PathBuf)> = source_paths
+        .iter()
+        .filter_map(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| (name.to_string(), path.clone()))
+        })
+        .collect();
 
     // Derive a content-addressed version label so multiple local
     // builds coexist (and so the runtime copy invalidates whenever
@@ -209,7 +194,43 @@ pub(crate) fn resolve_local_zccache_for_target(
 /// don't change, so re-running soldr doesn't re-copy. When hashing
 /// fails (read error, etc.), fall back to the literal `"local"` so
 /// the user still gets a working override.
-fn local_zccache_version_label(binary: &Path) -> String {
+pub(crate) fn local_zccache_source_paths_for_target(
+    local_dir: &Path,
+    target: &TargetTriple,
+) -> Result<[PathBuf; 3], SoldrError> {
+    if !local_dir.exists() {
+        return Err(SoldrError::Other(format!(
+            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} does not exist",
+            local_dir.display()
+        )));
+    }
+    if !local_dir.is_dir() {
+        return Err(SoldrError::Other(format!(
+            "{ZCCACHE_LOCAL_DIR_ENV_VAR}={} is not a directory",
+            local_dir.display()
+        )));
+    }
+
+    let binary_ext = target.binary_ext();
+    let paths = MANAGED_ZCCACHE_PACKAGES
+        .map(|(_, binary_name)| local_dir.join(format!("{binary_name}{binary_ext}")));
+    for path in &paths {
+        if !path.exists() {
+            let file_name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("zccache binary");
+            return Err(SoldrError::Other(format!(
+                "{ZCCACHE_LOCAL_DIR_ENV_VAR}: expected {} at {}",
+                file_name,
+                path.display()
+            )));
+        }
+    }
+    Ok(paths)
+}
+
+pub(crate) fn local_zccache_version_label(binary: &Path) -> String {
     match std::fs::read(binary) {
         Ok(bytes) => format!("local-{}", sha256_short(&bytes)),
         Err(err) => {
@@ -351,32 +372,9 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), SoldrError> {
 pub fn managed_only_zccache_summary(
     paths: &SoldrPaths,
 ) -> Result<ZccacheBinarySummary, SoldrError> {
-    let target = TargetTriple::detect()?;
-    let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
-    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-    let any_present = cli.exists() || daemon.exists() || fp.exists();
-    let (debug_found, debug_expected) =
-        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-    Ok(ZccacheBinarySummary {
-        source: if any_present {
-            ZccacheSource::Managed
-        } else {
-            ZccacheSource::None
-        },
-        version: if any_present {
-            MANAGED_ZCCACHE_VERSION.to_string()
-        } else {
-            String::new()
-        },
-        symbol_path: runtime_dir.clone(),
-        runtime_dir,
-        source_dir: None,
-        cli_path: cli.exists().then_some(cli),
-        daemon_path: daemon.exists().then_some(daemon),
-        fp_path: fp.exists().then_some(fp),
-        debug_info_found: debug_found,
-        debug_info_expected: debug_expected,
-    })
+    Ok(super::zccache_runtime::ZccacheResolver::new(paths)?
+        .inspect_managed_only()?
+        .to_summary())
 }
 
 /// Snapshot of the pinned-install state independent of resolution
@@ -387,132 +385,15 @@ pub fn managed_only_zccache_summary(
 pub fn pinned_zccache_summary(
     paths: &SoldrPaths,
 ) -> Result<Option<ZccacheBinarySummary>, SoldrError> {
-    let target = TargetTriple::detect()?;
-    let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? else {
-        return Ok(None);
-    };
-    let runtime_dir = pinned.runtime_dir.clone();
-    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-    let (debug_found, debug_expected) =
-        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-    Ok(Some(ZccacheBinarySummary {
-        source: ZccacheSource::Pinned,
-        version: pinned.version,
-        symbol_path: runtime_dir.clone(),
-        runtime_dir,
-        source_dir: None,
-        cli_path: cli.exists().then_some(cli),
-        daemon_path: daemon.exists().then_some(daemon),
-        fp_path: fp.exists().then_some(fp),
-        debug_info_found: debug_found,
-        debug_info_expected: debug_expected,
-    }))
+    Ok(super::zccache_runtime::ZccacheResolver::new(paths)?
+        .inspect_pinned()?
+        .map(|runtime| runtime.to_summary()))
 }
 
 pub fn zccache_binary_summary(paths: &SoldrPaths) -> Result<ZccacheBinarySummary, SoldrError> {
-    let target = TargetTriple::detect()?;
-
-    if let Some(source_dir) = non_empty_env_path(ZCCACHE_LOCAL_DIR_ENV_VAR) {
-        // Idempotent: short-circuits when the destination already
-        // matches the source bytes.
-        let fetch = resolve_local_zccache_for_target(&source_dir, paths, &target)?;
-        let runtime_dir = fetch
-            .binary_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| paths.bin.clone());
-        let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-        let (debug_found, debug_expected) =
-            count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-        return Ok(ZccacheBinarySummary {
-            source: ZccacheSource::Local,
-            version: fetch.version,
-            symbol_path: runtime_dir.clone(),
-            runtime_dir,
-            source_dir: Some(source_dir),
-            cli_path: cli.exists().then_some(cli),
-            daemon_path: daemon.exists().then_some(daemon),
-            fp_path: fp.exists().then_some(fp),
-            debug_info_found: debug_found,
-            debug_info_expected: debug_expected,
-        });
-    }
-
-    if let Some(pinned) = install_zccache::resolve_pinned_zccache_for_target(paths, &target)? {
-        if install_zccache::pinned_version_older_than_managed(&pinned.version) {
-            let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
-            let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-            let any_present = cli.exists() || daemon.exists() || fp.exists();
-            let (debug_found, debug_expected) =
-                count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-            return Ok(ZccacheBinarySummary {
-                source: if any_present {
-                    ZccacheSource::Managed
-                } else {
-                    ZccacheSource::None
-                },
-                version: if any_present {
-                    MANAGED_ZCCACHE_VERSION.to_string()
-                } else {
-                    String::new()
-                },
-                symbol_path: runtime_dir.clone(),
-                runtime_dir,
-                source_dir: None,
-                cli_path: cli.exists().then_some(cli),
-                daemon_path: daemon.exists().then_some(daemon),
-                fp_path: fp.exists().then_some(fp),
-                debug_info_found: debug_found,
-                debug_info_expected: debug_expected,
-            });
-        }
-        // `soldr install-zccache` install. Reports `pinned` so
-        // doctor can surface the override (and warn the managed path
-        // is superseded).
-        let runtime_dir = pinned.runtime_dir.clone();
-        let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-        let (debug_found, debug_expected) =
-            count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-        return Ok(ZccacheBinarySummary {
-            source: ZccacheSource::Pinned,
-            version: pinned.version,
-            symbol_path: runtime_dir.clone(),
-            runtime_dir,
-            source_dir: None,
-            cli_path: cli.exists().then_some(cli),
-            daemon_path: daemon.exists().then_some(daemon),
-            fp_path: fp.exists().then_some(fp),
-            debug_info_found: debug_found,
-            debug_info_expected: debug_expected,
-        });
-    }
-
-    // Managed path: inspect the cached version directory if it exists.
-    let runtime_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
-    let (cli, daemon, fp) = canonical_zccache_paths(&runtime_dir, &target);
-    let any_present = cli.exists() || daemon.exists() || fp.exists();
-    let (debug_found, debug_expected) =
-        count_debug_info_sidecars(&[cli.as_path(), daemon.as_path(), fp.as_path()]);
-    Ok(ZccacheBinarySummary {
-        source: if any_present {
-            ZccacheSource::Managed
-        } else {
-            ZccacheSource::None
-        },
-        version: if any_present {
-            MANAGED_ZCCACHE_VERSION.to_string()
-        } else {
-            String::new()
-        },
-        symbol_path: runtime_dir.clone(),
-        runtime_dir,
-        source_dir: None,
-        cli_path: cli.exists().then_some(cli),
-        daemon_path: daemon.exists().then_some(daemon),
-        fp_path: fp.exists().then_some(fp),
-        debug_info_found: debug_found,
-        debug_info_expected: debug_expected,
-    })
+    Ok(super::zccache_runtime::ZccacheResolver::new(paths)?
+        .inspect_default()?
+        .to_summary())
 }
 
 pub(crate) fn canonical_zccache_paths(

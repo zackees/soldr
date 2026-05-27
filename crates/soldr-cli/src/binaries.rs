@@ -267,15 +267,19 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
 pub(crate) async fn fetch_active_zccache(
     paths: &SoldrPaths,
 ) -> Result<crate::fetch::FetchResult, SoldrError> {
+    fetch_active_zccache_runtime(paths).await?.to_fetch_result()
+}
+
+pub(crate) async fn fetch_active_zccache_runtime(
+    paths: &SoldrPaths,
+) -> Result<crate::fetch::ZccacheRuntime, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return Ok(crate::fetch::FetchResult {
-            binary_path,
-            version: crate::fetch::MANAGED_ZCCACHE_VERSION.to_string(),
-            cached: true,
-        });
+        return crate::fetch::ZccacheRuntime::from_test_override(binary_path);
     }
 
-    crate::fetch::fetch_zccache_with_paths(paths).await
+    crate::fetch::ZccacheResolver::new(paths)?
+        .materialize_default()
+        .await
 }
 
 /// Same precedence chain as [`fetch_active_zccache`] but only reports
@@ -285,15 +289,26 @@ pub(crate) async fn fetch_active_zccache(
 pub(crate) fn cached_active_zccache(
     paths: &SoldrPaths,
 ) -> Result<Option<crate::fetch::FetchResult>, SoldrError> {
+    cached_active_zccache_runtime(paths)?
+        .map(|runtime| runtime.to_fetch_result())
+        .transpose()
+}
+
+pub(crate) fn cached_active_zccache_runtime(
+    paths: &SoldrPaths,
+) -> Result<Option<crate::fetch::ZccacheRuntime>, SoldrError> {
     if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return Ok(Some(crate::fetch::FetchResult {
+        return Ok(Some(crate::fetch::ZccacheRuntime::from_test_override(
             binary_path,
-            version: crate::fetch::MANAGED_ZCCACHE_VERSION.to_string(),
-            cached: true,
-        }));
+        )?));
     }
 
-    crate::fetch::cached_zccache_binary(paths)
+    let runtime = crate::fetch::ZccacheResolver::new(paths)?.inspect_default()?;
+    if runtime.is_missing() {
+        Ok(None)
+    } else {
+        Ok(Some(runtime))
+    }
 }
 
 #[cfg(test)]

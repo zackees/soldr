@@ -41,6 +41,7 @@ pub mod archive;
 pub mod github;
 pub mod zccache;
 pub mod zccache_install;
+pub mod zccache_runtime;
 
 pub use zccache::{
     classify_zccache_source, managed_only_zccache_summary, pinned_zccache_summary,
@@ -49,6 +50,7 @@ pub use zccache::{
 pub use zccache_install::{
     cached_zccache_binary, fetch_zccache_with_paths, resolve_system_zccache,
 };
+pub use zccache_runtime::{ZccacheResolver, ZccacheRuntime, ZccacheRuntimeSource};
 
 pub(crate) use github::http_client;
 

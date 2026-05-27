@@ -16,8 +16,8 @@ const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 // alongside its matching-target zccache trio (zccache, zccache-daemon,
 // zccache-fp) and a same-target crgx. One fetch installs everything,
 // and `bin/soldr.js` wires SOLDR_ZCCACHE_LOCAL_DIR + SOLDR_CRGX_LOCAL_DIR
-// to the install dir so soldr finds the sibling binaries without going
-// through the managed-download path.
+// to the install dir so soldr's runtime resolver finds the sibling binaries
+// without going through the managed-download path.
 const ARCHIVE_EXT = "tar.zst";
 
 const TARGETS = {
@@ -253,8 +253,8 @@ async function install() {
     fs.rmSync(nativeDir, { recursive: true, force: true });
     fs.mkdirSync(nativeDir, { recursive: true });
 
-    // Copy every bundled binary so soldr can find its sibling zccache
-    // via SOLDR_ZCCACHE_LOCAL_DIR and its sibling crgx via
+    // Copy every bundled binary so soldr's runtime resolver can find
+    // its sibling zccache via SOLDR_ZCCACHE_LOCAL_DIR and crgx via
     // SOLDR_CRGX_LOCAL_DIR (both wired up by `bin/soldr.js` before
     // exec). The archive layout is flat — all five binaries live at
     // the archive root.

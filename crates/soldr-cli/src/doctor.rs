@@ -552,6 +552,18 @@ fn print_managed_zccache_human(summary: &ZccacheBinarySummary, superseded_by_pin
                 println!("  version:       {}", summary.version);
             }
         }
+        ZccacheSource::System => {
+            println!("  source:        system{suffix}");
+            if !summary.version.is_empty() {
+                println!("  version:       {}", summary.version);
+            }
+        }
+        ZccacheSource::TestOverride => {
+            println!("  source:        test-override{suffix}");
+            if !summary.version.is_empty() {
+                println!("  version:       {}", summary.version);
+            }
+        }
         ZccacheSource::Managed => {
             println!(
                 "  source:        managed ({}){suffix}",

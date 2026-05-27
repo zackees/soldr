@@ -61,9 +61,10 @@ use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
 pub(crate) use binaries::{
-    apply_implicit_toolchain_homes, cached_active_zccache, current_soldr_binary,
-    fetch_active_zccache, non_empty_env_path, parse_tool_spec, resolve_toolchain_binary,
-    rustup_binary, rustup_resolution_failure, zccache_binary_override,
+    apply_implicit_toolchain_homes, cached_active_zccache, cached_active_zccache_runtime,
+    current_soldr_binary, fetch_active_zccache, fetch_active_zccache_runtime, non_empty_env_path,
+    parse_tool_spec, resolve_toolchain_binary, rustup_binary, rustup_resolution_failure,
+    zccache_binary_override,
 };
 
 pub(crate) const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";

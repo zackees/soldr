@@ -23,8 +23,8 @@ if (!fs.existsSync(binaryPath)) {
 // Wire the bundled zccache trio (zccache, zccache-daemon, zccache-fp,
 // shipped alongside soldr in `bin/native/` since the combined-archive
 // release format landed) into soldr's local-zccache resolution path.
-// Soldr's `fetch_zccache_with_paths` checks SOLDR_ZCCACHE_LOCAL_DIR
-// ahead of the managed-download chain, so this turns the bundled
+// Soldr's ZccacheResolver checks SOLDR_ZCCACHE_LOCAL_DIR ahead of the
+// pinned and managed-download chain, so this turns the bundled
 // binaries into the active zccache automatically — no manual env
 // setup, no managed fetch over the network. Users who explicitly set
 // the env var themselves keep their override.
