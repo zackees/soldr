@@ -3,8 +3,7 @@ use super::{
     MANAGED_ZCCACHE_VERSION, ZCCACHE_LOCAL_DIR_ENV_VAR,
 };
 
-#[test]
-fn zccache_runtime_contract_matches_rust_constants() {
+crate::timed_test!(zccache_runtime_contract_matches_rust_constants, {
     let contract: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../contracts/zccache-runtime.v1.json"
     ))
@@ -49,4 +48,4 @@ fn zccache_runtime_contract_matches_rust_constants() {
         release_bins,
         vec!["soldr", "zccache", "zccache-daemon", "zccache-fp", "crgx"]
     );
-}
+});

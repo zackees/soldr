@@ -389,6 +389,7 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::zccache_lifecycle::stderr_indicates_unknown_session;
 
     #[test]
     fn stdin_source_path_is_content_addressed() {
