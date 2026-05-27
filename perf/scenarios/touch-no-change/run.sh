@@ -61,10 +61,13 @@ warm_start_ms="$(measure::now_ms)"
 )
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 
-warm_stats="$(SOLDR_CACHE_DIR="${CACHE}" measure::session_end_json)"
-warm_hits="$(echo "${warm_stats}" | jq -r '.stats.hits // 0')"
-warm_misses="$(echo "${warm_stats}" | jq -r '.stats.misses // 0')"
-warm_hit_rate="$(echo "${warm_stats}" | jq -r '.stats.hit_rate // 0')"
+measure::write_cache_report "${CACHE}" "${WORKDIR}/warm-cache-report.json"
+measure::copy_zccache_logs_from_report \
+    "${WORKDIR}/warm-cache-report.json" \
+    "${WORKDIR}/warm-zccache-logs"
+warm_hits="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hits)"
+warm_misses="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" misses)"
+warm_hit_rate="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hit_rate)"
 
 SOLDR_CACHE_DIR="${CACHE}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/touch-shutdown.json" || true

@@ -49,8 +49,7 @@ cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
 # Capture zccache's own cache report for cold side (symmetric with
 # warm) so round 2 can compare entry counts / sizes before flush.
-SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache report --json \
-    > "${WORKDIR}/cold-cache-report.json" 2>/dev/null || true
+measure::write_cache_report "${CACHE_COLD}" "${WORKDIR}/cold-cache-report.json"
 
 # Flush + shutdown so the depgraph snapshot is durable before tar.
 SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache flush --json >/dev/null 2>&1 || true
@@ -59,7 +58,9 @@ SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache shutdown \
 
 # Copy zccache's per-session logs out of the cache tree (daemon is
 # now gone) so the upload-artifact glob picks them up.
-cp -R "${CACHE_COLD}/cache/zccache/logs" "${WORKDIR}/cold-zccache-logs" 2>/dev/null || true
+measure::copy_zccache_logs_from_report \
+    "${WORKDIR}/cold-cache-report.json" \
+    "${WORKDIR}/cold-zccache-logs"
 
 cold_cache_bytes="$(measure::cache_bytes "${CACHE_COLD}")"
 
@@ -108,28 +109,17 @@ warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 # upload-artifact glob picks them up. We do this for both cold (after
 # cold flush+shutdown above) and warm (here) — round 1 wants ground-
 # truth fingerprint data to drive round 2's hypothesis.
-cp -R "${CACHE_WARM}/cache/zccache/logs" "${WORKDIR}/warm-zccache-logs" 2>/dev/null || true
+measure::write_cache_report "${CACHE_WARM}" "${WORKDIR}/warm-cache-report.json"
+measure::copy_zccache_logs_from_report \
+    "${WORKDIR}/warm-cache-report.json" \
+    "${WORKDIR}/warm-zccache-logs"
 
-# Prefer zccache's authoritative on-disk stats file over `soldr
-# session-end --json`. The latter requires an active session and
-# returns empty after daemon idle-shutdown, which masks real hits/misses
-# as 0/0.
-WARM_STATS_FILE="${CACHE_WARM}/cache/zccache/logs/last-session-stats.json"
-if [[ -s "${WARM_STATS_FILE}" ]]; then
-    warm_hits="$(jq -r '.stats.hits // .hits // 0' "${WARM_STATS_FILE}")"
-    warm_misses="$(jq -r '.stats.misses // .misses // 0' "${WARM_STATS_FILE}")"
-    warm_hit_rate="$(jq -r '.stats.hit_rate // .hit_rate // 0' "${WARM_STATS_FILE}")"
-    warm_stats_source="file"
-else
-    warm_stats="$(SOLDR_CACHE_DIR="${CACHE_WARM}" measure::session_end_json)"
-    warm_hits="$(echo "${warm_stats}" | jq -r '.stats.hits // 0')"
-    warm_misses="$(echo "${warm_stats}" | jq -r '.stats.misses // 0')"
-    warm_hit_rate="$(echo "${warm_stats}" | jq -r '.stats.hit_rate // 0')"
-    warm_stats_source="session-end"
-fi
-
-SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cache report --json \
-    > "${WORKDIR}/warm-cache-report.json" 2>/dev/null || true
+# Pull stats from the cache report instead of `session-end`: the parent shell
+# does not inherit the child build's ZCCACHE_SESSION_ID.
+warm_hits="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hits)"
+warm_misses="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" misses)"
+warm_hit_rate="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hit_rate)"
+warm_stats_source="cache-report"
 
 SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cache shutdown \
     --shutdown-timeout-seconds 30 --json >"${WORKDIR}/warm-shutdown.json" || true

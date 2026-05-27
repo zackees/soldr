@@ -125,6 +125,52 @@ measure::session_end_json() {
     fi
 }
 
+# measure::write_cache_report <cache-root> <json-path>
+#
+# Persist `soldr cache report --json` for <cache-root>. On failure, write
+# an empty object so callers still emit a result.json and the evaluator can
+# fail with BAD-STATS instead of losing the scenario output.
+measure::write_cache_report() {
+    local cache_root="$1"
+    local out="$2"
+    if ! SOLDR_CACHE_DIR="${cache_root}" soldr cache report --json > "${out}" 2>/dev/null; then
+        printf '{}\n' > "${out}"
+    fi
+}
+
+# measure::cache_report_stat <json-path> <stat-key>
+#
+# Read a hit/miss/rate field from `soldr cache report --json`. Supports both
+# direct zccache stats and older nested `{ "stats": ... }` shapes.
+measure::cache_report_stat() {
+    local report="$1"
+    local key="$2"
+    jq -r --arg k "${key}" \
+        '.last_session.stats[$k] // .last_session[$k] // 0' \
+        "${report}" 2>/dev/null || echo 0
+}
+
+# measure::copy_zccache_logs_from_report <json-path> <dest-dir>
+#
+# Copy the authoritative zccache logs directory referenced by a cache report.
+# This follows private-daemon paths such as
+# cache/zccache/private/<daemon>/logs instead of assuming cache/zccache/logs.
+measure::copy_zccache_logs_from_report() {
+    local report="$1"
+    local dest="$2"
+    local stats_path
+    stats_path="$(jq -r '.session_stats_path // empty' "${report}" 2>/dev/null || true)"
+    if [[ -z "${stats_path}" ]]; then
+        return 0
+    fi
+    local logs_dir
+    logs_dir="$(dirname -- "${stats_path}")"
+    if [[ -d "${logs_dir}" ]]; then
+        rm -rf "${dest}"
+        cp -R "${logs_dir}" "${dest}"
+    fi
+}
+
 # --- Wall-time --------------------------------------------------------
 
 # measure::now_ms

@@ -549,7 +549,7 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     Ok(())
 }
 
-fn linked_private_zccache_lifecycle(
+pub(super) fn linked_private_zccache_lifecycle(
     paths: &SoldrPaths,
 ) -> Option<(ZccacheLifecycle, std::path::PathBuf)> {
     let link = db::get_linked_zccache(&db::db_path(paths)).ok().flatten()?;

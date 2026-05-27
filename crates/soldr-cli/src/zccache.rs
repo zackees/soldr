@@ -676,11 +676,42 @@ pub(crate) fn resolve_private_zccache_daemon_name(
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"soldr-private-zccache-v1\0");
     hash_path_component(&mut hasher, soldr_binary);
-    hash_path_component(&mut hasher, zccache_binary);
-    hash_path_component(&mut hasher, base_cache_dir);
+    let zccache_identity = zccache_binary_identity_path(zccache_binary, base_cache_dir);
+    hash_path_component(&mut hasher, zccache_identity.as_ref());
     let digest = hasher.finalize();
     let hex = digest.to_hex();
     format!("soldr-dev-{}", &hex[..16])
+}
+
+fn zccache_binary_identity_path<'a>(
+    zccache_binary: &'a std::path::Path,
+    base_cache_dir: &'a std::path::Path,
+) -> std::borrow::Cow<'a, std::path::Path> {
+    if let Some(root) = soldr_root_from_zccache_base_dir(base_cache_dir) {
+        if let Ok(relative) = zccache_binary.strip_prefix(&root) {
+            return std::borrow::Cow::Owned(relative.to_path_buf());
+        }
+    }
+    std::borrow::Cow::Borrowed(zccache_binary)
+}
+
+fn soldr_root_from_zccache_base_dir(
+    base_cache_dir: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if !path_file_name_eq(base_cache_dir, "zccache") {
+        return None;
+    }
+    let cache_dir = base_cache_dir.parent()?;
+    if !path_file_name_eq(cache_dir, "cache") {
+        return None;
+    }
+    cache_dir.parent().map(std::path::Path::to_path_buf)
+}
+
+fn path_file_name_eq(path: &std::path::Path, expected: &str) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
 }
 
 fn hash_path_component(hasher: &mut blake3::Hasher, path: &std::path::Path) {
@@ -996,6 +1027,46 @@ mod tests {
                 std::path::Path::new("/repo/target/debug/zccache"),
                 std::path::Path::new("/tmp/cache/zccache"),
             )
+        );
+        assert_eq!(
+            generated,
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/repo/target/debug/zccache"),
+                std::path::Path::new("/tmp/restored-cache/zccache"),
+            ),
+            "save/load restores into a new SOLDR_CACHE_DIR must reuse the same private subtree",
+        );
+        assert_eq!(
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.11.6/zccache"),
+                std::path::Path::new("/tmp/cache-cold/cache/zccache"),
+            ),
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.11.6/zccache"),
+                std::path::Path::new("/tmp/cache-warm/cache/zccache"),
+            ),
+            "managed zccache binaries under different SOLDR_CACHE_DIR roots must hash by runtime identity, not absolute path",
+        );
+        assert_ne!(
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/tmp/cache/bin/zccache-local-abc/zccache"),
+                std::path::Path::new("/tmp/cache/cache/zccache"),
+            ),
+            resolve_private_zccache_daemon_name(
+                None,
+                std::path::Path::new("/repo/target/debug/soldr"),
+                std::path::Path::new("/tmp/cache/bin/zccache-local-def/zccache"),
+                std::path::Path::new("/tmp/cache/cache/zccache"),
+            ),
+            "different local zccache runtime labels should still get distinct private daemons",
         );
         assert_eq!(
             resolve_private_zccache_daemon_name(
