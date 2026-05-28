@@ -123,6 +123,14 @@ pub const MANAGED_CRGX_VERSION: &str = "0.1.0";
 /// network round trip. Mirrors `SOLDR_ZCCACHE_LOCAL_DIR`.
 pub const CRGX_LOCAL_DIR_ENV_VAR: &str = "SOLDR_CRGX_LOCAL_DIR";
 
+/// Override the runtime cargo-chef resolution: when set, soldr uses the
+/// `cargo-chef` (or `cargo-chef.exe`) binary in this directory ahead of
+/// any GitHub-Releases fetch. Soldr release archives and setup-soldr
+/// point this at the bundled cargo-chef binary so `soldr cook` is
+/// deterministic on targets upstream does not publish, notably
+/// `aarch64-apple-darwin`.
+pub const CARGO_CHEF_LOCAL_DIR_ENV_VAR: &str = "SOLDR_CARGO_CHEF_LOCAL_DIR";
+
 /// Retry budget for the GitHub-Releases + crates.io fetch chain inside
 /// `fetch_repo_binary_with_paths`. Transient errors
 /// (`SoldrError::Network`, `SoldrError::ToolNotFound`) retry up to
@@ -155,16 +163,30 @@ pub async fn fetch_tool_with_paths(
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
 
-    // Bundled-crgx escape hatch: when the npm shim or setup-soldr
-    // action ships a bundled crgx (see release-auto.yml's "Build crgx
-    // from pinned source" step) they export SOLDR_CRGX_LOCAL_DIR
-    // pointing at the directory holding the binary. Honor it ahead of
-    // every other resolution path so first-use carries no network
-    // round trip. Mirrors the SOLDR_ZCCACHE_LOCAL_DIR contract used by
-    // the bundled zccache trio (#434).
+    // Bundled single-binary escape hatches: when the npm shim or
+    // setup-soldr action ships a bundled tool, they export a local-dir
+    // env var pointing at the directory holding the binary. Honor it
+    // ahead of every other resolution path so first-use carries no
+    // network round trip. Mirrors the SOLDR_ZCCACHE_LOCAL_DIR contract
+    // used by the bundled zccache trio (#434).
+    if crate_name == "cargo-chef" {
+        if let Some(local_dir) = non_empty_env_path(CARGO_CHEF_LOCAL_DIR_ENV_VAR) {
+            return resolve_local_single_binary(
+                &local_dir,
+                CARGO_CHEF_LOCAL_DIR_ENV_VAR,
+                "cargo-chef",
+                CARGO_CHEF_PINNED_VERSION,
+            );
+        }
+    }
     if crate_name == "crgx" {
         if let Some(local_dir) = non_empty_env_path(CRGX_LOCAL_DIR_ENV_VAR) {
-            return resolve_local_crgx(&local_dir);
+            return resolve_local_single_binary(
+                &local_dir,
+                CRGX_LOCAL_DIR_ENV_VAR,
+                "crgx",
+                MANAGED_CRGX_VERSION,
+            );
         }
     }
 
@@ -201,32 +223,39 @@ pub async fn fetch_tool_with_paths(
     fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, None, paths).await
 }
 
-/// Resolve crgx to the binary in `local_dir` set via
-/// `SOLDR_CRGX_LOCAL_DIR`. Returns the path verbatim — no copy, no
-/// content hashing — because crgx is a single binary with no
-/// daemon/sidecar siblings (contrast with `resolve_local_zccache`
-/// which normalizes a trio plus debug-info sidecars).
-fn resolve_local_crgx(local_dir: &Path) -> Result<FetchResult, SoldrError> {
+/// Resolve a bundled single-binary tool from a local directory env var.
+/// Returns the path verbatim — no copy, no content hashing — because
+/// tools such as crgx and cargo-chef have no daemon/sidecar siblings
+/// (contrast with `resolve_local_zccache`, which normalizes a trio plus
+/// debug-info sidecars).
+fn resolve_local_single_binary(
+    local_dir: &Path,
+    env_var: &str,
+    binary_stem: &str,
+    version: &str,
+) -> Result<FetchResult, SoldrError> {
     if !local_dir.is_dir() {
         return Err(SoldrError::Other(format!(
-            "{}={} is not a directory",
-            CRGX_LOCAL_DIR_ENV_VAR,
+            "{env_var}={} is not a directory",
             local_dir.display(),
         )));
     }
-    let binary_name = if cfg!(windows) { "crgx.exe" } else { "crgx" };
+    let binary_name = if cfg!(windows) {
+        format!("{binary_stem}.exe")
+    } else {
+        binary_stem.to_string()
+    };
     let binary = local_dir.join(binary_name);
     if !binary.is_file() {
         return Err(SoldrError::Other(format!(
-            "{}={} but {} is missing",
-            CRGX_LOCAL_DIR_ENV_VAR,
+            "{env_var}={} but {} is missing",
             local_dir.display(),
             binary.display(),
         )));
     }
     Ok(FetchResult {
         binary_path: binary,
-        version: format!("local-{MANAGED_CRGX_VERSION}"),
+        version: format!("local-{version}"),
         cached: true,
     })
 }
@@ -309,13 +338,24 @@ async fn fetch_repo_binary_once(
         }
     }
 
-    let release = github::fetch_release(repo, version, tag_prefix).await?;
+    let release = github::fetch_release(repo, version, tag_prefix)
+        .await
+        .map_err(|err| annotate_release_fetch_error(err, repo, version, &target))?;
 
     if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, &target)? {
         return Ok(r);
     }
 
-    let asset = github::match_asset(&release.assets, &target)?;
+    let asset = github::match_asset(&release.assets, &target).map_err(|err| match err {
+        SoldrError::UnsupportedPlatform(message) => SoldrError::UnsupportedPlatform(format!(
+            "asset matching failed for {}/{} version {} target {}: {message}",
+            repo.owner,
+            repo.repo,
+            release.version,
+            target.triple()
+        )),
+        other => other,
+    })?;
 
     let binary_path = archive::download_and_extract(
         paths,
@@ -332,6 +372,36 @@ async fn fetch_repo_binary_once(
         version: release.version,
         cached: false,
     })
+}
+
+fn annotate_release_fetch_error(
+    err: SoldrError,
+    repo: &github::RepoInfo,
+    version: &VersionSpec,
+    target: &TargetTriple,
+) -> SoldrError {
+    let version_desc = match version {
+        VersionSpec::Latest => "latest".to_string(),
+        VersionSpec::Exact(value) => value.clone(),
+    };
+    let prefix = format!(
+        "release lookup failed for {}/{} requested version {} target {}",
+        repo.owner,
+        repo.repo,
+        version_desc,
+        target.triple()
+    );
+    match err {
+        SoldrError::ToolNotFound(message) => {
+            SoldrError::ToolNotFound(format!("{prefix}: {message}"))
+        }
+        SoldrError::Network(message) => SoldrError::Network(format!("{prefix}: {message}")),
+        SoldrError::UnsupportedPlatform(message) => {
+            SoldrError::UnsupportedPlatform(format!("{prefix}: {message}"))
+        }
+        SoldrError::Other(message) => SoldrError::Other(format!("{prefix}: {message}")),
+        other => SoldrError::Other(format!("{prefix}: {other}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -400,27 +470,34 @@ mod tests {
         )));
     }
 
-    // ── Bundled crgx (SOLDR_CRGX_LOCAL_DIR) ─────────────────────────
+    // ── Bundled single-binary tools ─────────────────────────────────
     // Locks the contract used by the npm shim and setup-soldr action:
-    // when the env var points at a directory containing `crgx`
-    // (`crgx.exe` on Windows), `resolve_local_crgx` returns that path
-    // verbatim with `cached: true` and a `local-<version>` label.
+    // when the env var points at a directory containing the requested
+    // binary (`tool.exe` on Windows), `resolve_local_single_binary`
+    // returns that path verbatim with `cached: true` and a
+    // `local-<version>` label.
 
-    fn crgx_binary_name() -> &'static str {
+    fn platform_binary_name(binary_stem: &str) -> String {
         if cfg!(windows) {
-            "crgx.exe"
+            format!("{binary_stem}.exe")
         } else {
-            "crgx"
+            binary_stem.to_string()
         }
     }
 
     #[test]
     fn resolve_local_crgx_returns_binary_path() {
         let tmp = tempfile::tempdir().unwrap();
-        let stub = tmp.path().join(crgx_binary_name());
+        let stub = tmp.path().join(platform_binary_name("crgx"));
         std::fs::write(&stub, b"stub").unwrap();
 
-        let result = resolve_local_crgx(tmp.path()).expect("should resolve");
+        let result = resolve_local_single_binary(
+            tmp.path(),
+            CRGX_LOCAL_DIR_ENV_VAR,
+            "crgx",
+            MANAGED_CRGX_VERSION,
+        )
+        .expect("should resolve");
         assert_eq!(result.binary_path, stub);
         assert!(result.cached, "bundled path must report cached=true");
         assert!(
@@ -436,11 +513,35 @@ mod tests {
     }
 
     #[test]
+    fn resolve_local_cargo_chef_returns_binary_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let stub = tmp.path().join(platform_binary_name("cargo-chef"));
+        std::fs::write(&stub, b"stub").unwrap();
+
+        let result = resolve_local_single_binary(
+            tmp.path(),
+            CARGO_CHEF_LOCAL_DIR_ENV_VAR,
+            "cargo-chef",
+            CARGO_CHEF_PINNED_VERSION,
+        )
+        .expect("should resolve");
+        assert_eq!(result.binary_path, stub);
+        assert!(result.cached, "bundled path must report cached=true");
+        assert_eq!(result.version, format!("local-{CARGO_CHEF_PINNED_VERSION}"));
+    }
+
+    #[test]
     fn resolve_local_crgx_errors_when_dir_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("not-a-dir");
 
-        let err = resolve_local_crgx(&nonexistent).expect_err("missing dir should error");
+        let err = resolve_local_single_binary(
+            &nonexistent,
+            CRGX_LOCAL_DIR_ENV_VAR,
+            "crgx",
+            MANAGED_CRGX_VERSION,
+        )
+        .expect_err("missing dir should error");
         let msg = err.to_string();
         assert!(
             msg.contains("not a directory"),
@@ -453,15 +554,49 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // Empty directory — no crgx binary inside.
 
-        let err = resolve_local_crgx(tmp.path()).expect_err("missing binary should error");
+        let err = resolve_local_single_binary(
+            tmp.path(),
+            CRGX_LOCAL_DIR_ENV_VAR,
+            "crgx",
+            MANAGED_CRGX_VERSION,
+        )
+        .expect_err("missing binary should error");
         let msg = err.to_string();
         assert!(
             msg.contains("is missing"),
             "error must explain the binary is missing, got: {msg}"
         );
         assert!(
-            msg.contains(crgx_binary_name()),
+            msg.contains(&platform_binary_name("crgx")),
             "error should name the expected binary, got: {msg}"
         );
+    }
+
+    #[test]
+    fn annotate_release_fetch_error_includes_version_and_target() {
+        let repo = github::RepoInfo {
+            owner: "LukeMathWalker".to_string(),
+            repo: "cargo-chef".to_string(),
+        };
+        let target = TargetTriple {
+            arch: crate::core::Arch::Aarch64,
+            os: crate::core::Os::MacOs,
+            env: crate::core::Env::None,
+        };
+
+        let err = annotate_release_fetch_error(
+            SoldrError::ToolNotFound(
+                "GitHub release lookup failed: HTTP 404 Not Found".to_string(),
+            ),
+            &repo,
+            &VersionSpec::Exact("0.1.73".to_string()),
+            &target,
+        );
+        let msg = err.to_string();
+
+        assert!(msg.contains("LukeMathWalker/cargo-chef"));
+        assert!(msg.contains("0.1.73"));
+        assert!(msg.contains("aarch64-apple-darwin"));
+        assert!(msg.contains("release lookup"));
     }
 }

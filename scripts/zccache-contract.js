@@ -15,6 +15,7 @@ const MANIFEST_MIN_SCHEMA_VERSION = CONTRACT.release_archive.manifest_min_schema
 const RELEASE_BUNDLED_BINARIES = Object.freeze([...CONTRACT.release_archive.required_binaries]);
 const ZCCACHE_BUNDLED_BINARIES = Object.freeze([...CONTRACT.zccache.required_binaries]);
 const CRGX_BUNDLED_BINARY = CONTRACT.crgx.required_binaries[0];
+const CARGO_CHEF_BUNDLED_BINARY = CONTRACT.cargo_chef.required_binaries[0];
 
 function binaryName(baseName, platform = process.platform) {
   return `${baseName}${platform === "win32" ? ".exe" : ""}`;
@@ -50,6 +51,9 @@ function collectManifestBinaries(manifest) {
   if (manifest.crgx && manifest.crgx.binary && manifest.crgx.sha256) {
     binaries.set(manifest.crgx.binary, manifest.crgx.sha256);
   }
+  if (manifest.cargo_chef && manifest.cargo_chef.binary && manifest.cargo_chef.sha256) {
+    binaries.set(manifest.cargo_chef.binary, manifest.cargo_chef.sha256);
+  }
   return binaries;
 }
 
@@ -70,6 +74,9 @@ function validateReleaseManifest(manifest, options) {
   }
   if (!manifest.crgx || manifest.crgx.target !== soldrTarget) {
     throw new Error(`release manifest crgx.target must be ${soldrTarget}`);
+  }
+  if (!manifest.cargo_chef || manifest.cargo_chef.target !== soldrTarget) {
+    throw new Error(`release manifest cargo_chef.target must be ${soldrTarget}`);
   }
 
   const expectedNames = releaseBinaryNames(platform);
@@ -94,6 +101,7 @@ module.exports = {
   ARCHIVE_EXT,
   CONTRACT,
   CONTRACT_PATH,
+  CARGO_CHEF_BUNDLED_BINARY,
   CRGX_BUNDLED_BINARY,
   MANIFEST_NAME,
   RELEASE_BUNDLED_BINARIES,

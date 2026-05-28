@@ -133,6 +133,8 @@ assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, [
   "zccache-daemon",
   "zccache-fp",
 ]);
+assert.strictEqual(zccacheContract.CRGX_BUNDLED_BINARY, "crgx");
+assert.strictEqual(zccacheContract.CARGO_CHEF_BUNDLED_BINARY, "cargo-chef");
 assert.ok(
   fs.existsSync(path.join(root, "contracts", "zccache-integration-guardrails.v1.json")),
   "npm package must include the zccache integration guardrail contract",
@@ -157,7 +159,7 @@ for (const [key, target] of Object.entries(install.TARGETS || {})) {
   );
 }
 
-// BUNDLED_BINARIES must include soldr, the zccache trio, and crgx.
+// BUNDLED_BINARIES must include soldr, the zccache trio, crgx, and cargo-chef.
 // Locks the per-archive layout contract so a future bundling
 // refactor can't quietly drop a binary.
 assert.ok(
@@ -170,6 +172,7 @@ for (const required of [
   "zccache-daemon",
   "zccache-fp",
   "crgx",
+  "cargo-chef",
 ]) {
   assert.ok(
     install.BUNDLED_BINARIES.includes(required),

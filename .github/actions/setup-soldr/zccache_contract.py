@@ -21,9 +21,11 @@ MANIFEST_NAME = str(CONTRACT["release_archive"]["manifest_name"])
 MANIFEST_MIN_SCHEMA_VERSION = int(CONTRACT["release_archive"]["manifest_min_schema_version"])
 ZCCACHE_BUNDLED_BINARIES = tuple(CONTRACT["zccache"]["required_binaries"])
 CRGX_BUNDLED_BINARY = str(CONTRACT["crgx"]["required_binaries"][0])
+CARGO_CHEF_BUNDLED_BINARY = str(CONTRACT["cargo_chef"]["required_binaries"][0])
 RELEASE_BUNDLED_BINARIES = tuple(CONTRACT["release_archive"]["required_binaries"])
 ZCCACHE_LOCAL_DIR_ENV = str(CONTRACT["zccache"]["local_dir_env"])
 CRGX_LOCAL_DIR_ENV = str(CONTRACT["crgx"]["local_dir_env"])
+CARGO_CHEF_LOCAL_DIR_ENV = str(CONTRACT["cargo_chef"]["local_dir_env"])
 
 
 def binary_name(base: str, *, windows: bool) -> str:
@@ -73,6 +75,12 @@ def _manifest_binaries(manifest: dict[str, Any]) -> dict[str, str]:
         sha = crgx.get("sha256")
         if isinstance(binary, str) and isinstance(sha, str):
             binaries[binary] = sha
+    cargo_chef = manifest.get("cargo_chef", {})
+    if isinstance(cargo_chef, dict):
+        binary = cargo_chef.get("binary")
+        sha = cargo_chef.get("sha256")
+        if isinstance(binary, str) and isinstance(sha, str):
+            binaries[binary] = sha
     return binaries
 
 
@@ -101,6 +109,9 @@ def validate_release_manifest(
     crgx = manifest.get("crgx")
     if not isinstance(crgx, dict) or crgx.get("target") != soldr_target:
         raise RuntimeError(f"release manifest crgx.target must be {soldr_target}")
+    cargo_chef = manifest.get("cargo_chef")
+    if not isinstance(cargo_chef, dict) or cargo_chef.get("target") != soldr_target:
+        raise RuntimeError(f"release manifest cargo_chef.target must be {soldr_target}")
 
     expected_names = set(release_binary_names(windows=windows))
     manifest_binaries = _manifest_binaries(manifest)

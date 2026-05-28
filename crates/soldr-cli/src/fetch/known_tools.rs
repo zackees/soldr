@@ -96,10 +96,9 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         pinned_version: None,
     },
     // `cargo-chef` powers the `soldr cook` content-addressable dep-prebuild
-    // (issue #359). Pinned to v0.1.73 — the most recent release that still
-    // ships pre-built archives for Windows MSVC and macOS in addition to the
-    // Linux assets the newer releases publish. Bumping the pin past v0.1.73
-    // costs Windows/macOS coverage until upstream restores those targets.
+    // (issue #359). Pinned to v0.1.73, then source-built into soldr release
+    // archives so setup-soldr does not depend on upstream's incomplete
+    // prebuilt matrix (notably no aarch64-apple-darwin asset).
     ToolSpec {
         crate_name: "cargo-chef",
         cargo_subcommand: Some("chef"),
@@ -188,8 +187,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
 ];
 
 /// Pinned `cargo-chef` release that `soldr cook` resolves by default. See the
-/// `cargo-chef` entry in [`KNOWN_TOOLS`] for the rationale (last release with
-/// Windows MSVC + macOS prebuilds).
+/// `cargo-chef` entry in [`KNOWN_TOOLS`] for the rationale.
 pub const CARGO_CHEF_PINNED_VERSION: &str = "0.1.73";
 
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {

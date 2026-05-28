@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from zccache_contract import (  # noqa: E402
     ARCHIVE_EXT,
+    CARGO_CHEF_BUNDLED_BINARY,
+    CARGO_CHEF_LOCAL_DIR_ENV,
     CRGX_LOCAL_DIR_ENV,
     CRGX_BUNDLED_BINARY,
     MANIFEST_NAME,
@@ -169,6 +171,11 @@ def _export_bundle_env(install_dir: Path) -> None:
             (CRGX_BUNDLED_BINARY,),
         ):
             fh.write(f"{CRGX_LOCAL_DIR_ENV}={install_dir}\n")
+        if not os.environ.get(CARGO_CHEF_LOCAL_DIR_ENV) and _bundled_files_present(
+            install_dir,
+            (CARGO_CHEF_BUNDLED_BINARY,),
+        ):
+            fh.write(f"{CARGO_CHEF_LOCAL_DIR_ENV}={install_dir}\n")
 
 
 def main() -> None:
@@ -242,6 +249,17 @@ def main() -> None:
         if os.name != "nt":
             crgx_dst.chmod(
                 crgx_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+            )
+
+        # Stage bundled cargo-chef next to soldr so the install dir also
+        # doubles as SOLDR_CARGO_CHEF_LOCAL_DIR for `soldr cook`.
+        cargo_chef_file_name = f"{CARGO_CHEF_BUNDLED_BINARY}{binary_ext}"
+        cargo_chef_src = _locate_binary(extract_dir, cargo_chef_file_name)
+        cargo_chef_dst = install_dir / cargo_chef_file_name
+        shutil.copy2(cargo_chef_src, cargo_chef_dst)
+        if os.name != "nt":
+            cargo_chef_dst.chmod(
+                cargo_chef_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
             )
 
         shutil.copy2(manifest_path, install_dir / MANIFEST_NAME)

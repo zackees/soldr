@@ -37,7 +37,7 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
 
     suffix = ".exe" if windows else ""
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "soldr": {
             "version": "0.7.39",
             "target": "x86_64-unknown-linux-gnu",
@@ -63,6 +63,13 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
             "sha256": _sha256(payloads[f"crgx{suffix}"]),
             "source_commit": "def456",
         },
+        "cargo_chef": {
+            "version": module.CONTRACT["cargo_chef"]["managed_version"],
+            "target": "x86_64-unknown-linux-gnu",
+            "binary": f"cargo-chef{suffix}",
+            "sha256": _sha256(payloads[f"cargo-chef{suffix}"]),
+            "source_commit": "789abc",
+        },
         "archive": {
             "format": module.ARCHIVE_EXT,
             "compression_level": module.CONTRACT["release_archive"]["compression_level"],
@@ -76,7 +83,7 @@ def test_contract_json_has_expected_shape() -> None:
 
     assert contract["schema_version"] == 1
     assert contract["release_archive"]["extension"] == "tar.zst"
-    assert contract["release_archive"]["manifest_min_schema_version"] == 2
+    assert contract["release_archive"]["manifest_min_schema_version"] == 3
     assert contract["zccache"]["local_dir_env"] == "SOLDR_ZCCACHE_LOCAL_DIR"
     assert contract["zccache"]["required_binaries"] == [
         "zccache",
@@ -85,6 +92,8 @@ def test_contract_json_has_expected_shape() -> None:
     ]
     assert contract["crgx"]["local_dir_env"] == "SOLDR_CRGX_LOCAL_DIR"
     assert contract["crgx"]["required_binaries"] == ["crgx"]
+    assert contract["cargo_chef"]["local_dir_env"] == "SOLDR_CARGO_CHEF_LOCAL_DIR"
+    assert contract["cargo_chef"]["required_binaries"] == ["cargo-chef"]
 
 
 def test_python_contract_validates_release_manifest_sha256s(tmp_path: Path) -> None:
@@ -122,6 +131,7 @@ def test_python_action_helpers_import_contract_constants() -> None:
     assert ensure_soldr.ARCHIVE_EXT == module.ARCHIVE_EXT
     assert ensure_soldr.ZCCACHE_BUNDLED_BINARIES == module.ZCCACHE_BUNDLED_BINARIES
     assert ensure_soldr.CRGX_BUNDLED_BINARY == module.CRGX_BUNDLED_BINARY
+    assert ensure_soldr.CARGO_CHEF_BUNDLED_BINARY == module.CARGO_CHEF_BUNDLED_BINARY
 
 
 def test_release_workflow_and_docs_reference_contract_layout() -> None:
@@ -132,7 +142,7 @@ def test_release_workflow_and_docs_reference_contract_layout() -> None:
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
     runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(encoding="utf-8")
 
-    assert '"schema_version": 2' in release_workflow
+    assert '"schema_version": 3' in release_workflow
     assert '"format": "tar.zst"' in release_workflow
     for base in contract["release_archive"]["required_binaries"]:
         assert base in release_workflow
