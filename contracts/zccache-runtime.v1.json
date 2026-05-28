@@ -5,14 +5,15 @@
     "extension": "tar.zst",
     "compression_level": 19,
     "manifest_name": "manifest.json",
-    "manifest_min_schema_version": 2,
+    "manifest_min_schema_version": 3,
     "sha256_algorithm": "sha256",
     "required_binaries": [
       "soldr",
       "zccache",
       "zccache-daemon",
       "zccache-fp",
-      "crgx"
+      "crgx",
+      "cargo-chef"
     ],
     "linux_zccache_target_libc": "musl"
   },
@@ -34,6 +35,14 @@
       "crgx"
     ],
     "manifest_block": "crgx"
+  },
+  "cargo_chef": {
+    "managed_version": "0.1.73",
+    "local_dir_env": "SOLDR_CARGO_CHEF_LOCAL_DIR",
+    "required_binaries": [
+      "cargo-chef"
+    ],
+    "manifest_block": "cargo_chef"
   },
   "setup_action": {
     "cache_root_env": "SOLDR_CACHE_DIR",

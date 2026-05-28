@@ -78,7 +78,7 @@ jobs:
 
       - name: Setup soldr build cache
         id: setup_soldr
-        uses: zackees/setup-soldr@8074343a15b9a6eac2336993787b1b312c961cf4
+        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           toolchain: 1.94.1
           cache: true
@@ -150,7 +150,7 @@ jobs:
           "LOCAL_SOLDR=$soldrPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@8074343a15b9a6eac2336993787b1b312c961cf4
+        uses: zackees/setup-soldr/cleanup@cca74625e75e70b56f1805fa6eeee9069f945d48
 
       - name: Run library tests
         shell: pwsh

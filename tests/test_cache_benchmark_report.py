@@ -281,8 +281,8 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
 
     summary = summary_path.read_text(encoding="utf-8")
     assert "cache-benchmark-results.json" in summary
-    assert "| `Release build` | `Top-crate edit` | `1.40s` | `6.60s` | `78.79%` |" in summary
-    assert "| `Lint` | `Lower-crate edit` | `1.90s` | `8.10s` | `76.54%` |" in summary
+    assert "| `Release build` | `Top-of-tree edit` | `1.40s` | `6.60s` | `78.79%` |" in summary
+    assert "| `Lint` | `Lower-module edit` | `1.90s` | `8.10s` | `76.54%` |" in summary
 
     www_json = json.loads((www_dir / "latest.json").read_text(encoding="utf-8"))
     assert www_json["headline"].startswith("Across 6 configured comparisons")
@@ -377,7 +377,7 @@ def test_phase1_summary_writes_issue_comment_markdown_artifact(tmp_path: Path) -
     assert "- workflow: `cache-benchmark.yml`" in issue_comment
     assert "- cache backend under test: `zccache`" in issue_comment
     assert "- threshold used: `10.00x`" in issue_comment
-    assert "- Top-crate edit (`crates/soldr-cli/src/main.rs`): cold `76.20s`, warm `1.40s`, saved `74.80s`, speedup `54.43x`, cache hit `true`" in issue_comment
+    assert "- Top-of-tree edit (`crates/soldr-cli/src/main.rs`): cold `76.20s`, warm `1.40s`, saved `74.80s`, speedup `54.43x`, cache hit `true`" in issue_comment
     assert "Lower-crate edit" not in issue_comment
     assert "Copy this block into issue #122." not in issue_comment
     assert "```" not in issue_comment

@@ -433,6 +433,53 @@ jobs:
           chmod +x "dist/package/crgx${suffix}" 2>/dev/null || true
           ls -la dist/package/
 
+      - name: Build cargo-chef from pinned source
+        # Source-build cargo-chef instead of fetching upstream release
+        # assets. Upstream v0.1.73 has no aarch64-apple-darwin archive,
+        # which made `soldr cook` retry a live GitHub lookup for ~36s on
+        # macOS arm64 before giving up. Bundling the pinned binary makes
+        # setup-soldr cook deterministic on every soldr release target.
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+          if [ -z "$cargo_chef_version" ]; then
+            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-cli/src/fetch/known_tools.rs" >&2
+            exit 1
+          fi
+          echo "cargo_chef_version=$cargo_chef_version"
+
+          work_dir="${RUNNER_TEMP}/cargo-chef-build"
+          rm -rf "$work_dir"
+          git clone --depth 1 --branch "v${cargo_chef_version}" \
+            https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
+          cargo_chef_commit=$(git -C "$work_dir" rev-parse HEAD)
+          echo "cargo_chef_commit=$cargo_chef_commit"
+          echo "CARGO_CHEF_SOURCE_COMMIT=$cargo_chef_commit" >> "$GITHUB_ENV"
+
+          cargo build \
+            --release \
+            --manifest-path "$work_dir/Cargo.toml" \
+            --target "${{ matrix.target }}" \
+            --locked \
+            --bin cargo-chef
+
+          suffix=""
+          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+
+          built="$work_dir/target/${{ matrix.target }}/release/cargo-chef${suffix}"
+          if [ ! -f "$built" ]; then
+            echo "cargo-chef not built at expected path: $built" >&2
+            ls -la "$work_dir/target/${{ matrix.target }}/release/" >&2 || true
+            exit 1
+          fi
+          file "$built" || true
+
+          cp "$built" "dist/package/cargo-chef${suffix}"
+          chmod +x "dist/package/cargo-chef${suffix}" 2>/dev/null || true
+          ls -la dist/package/
+
       - name: Write manifest.json
         # Drop a small JSON descriptor into the archive root so downstream
         # consumers (setup-soldr, npm install wrapper, ad-hoc tooling)
@@ -450,7 +497,14 @@ jobs:
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+          if [ -z "$cargo_chef_version" ]; then
+            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-cli/src/fetch/known_tools.rs" >&2
+            exit 1
+          fi
           crgx_commit="${CRGX_SOURCE_COMMIT:-unknown}"
+          cargo_chef_commit="${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
           case "$soldr_target" in
             x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
             aarch64-unknown-linux-*) zccache_target=aarch64-unknown-linux-musl ;;
@@ -474,15 +528,15 @@ jobs:
           zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")
           zccache_fp_sha=$(sha256_of "dist/package/zccache-fp${suffix}")
           crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
+          cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # schema_version 2 adds the `crgx` block. Consumers that
-          # only understand v1 still get a usable v2 manifest because
-          # the existing fields are unchanged; the new block is
-          # additive. Bump again on any field rename or removal.
+          # schema_version 3 adds the `cargo_chef` block. Consumers that
+          # only understand v2 still get the old soldr/zccache/crgx fields,
+          # but installers now require v3 so the bundled cook path is present.
           cat > dist/package/manifest.json <<EOF
           {
-            "schema_version": 2,
+            "schema_version": 3,
             "soldr": {
               "version": "${version}",
               "target": "${soldr_target}",
@@ -505,6 +559,13 @@ jobs:
               "binary": "crgx${suffix}",
               "sha256": "${crgx_sha}",
               "source_commit": "${crgx_commit}"
+            },
+            "cargo_chef": {
+              "version": "${cargo_chef_version}",
+              "target": "${soldr_target}",
+              "binary": "cargo-chef${suffix}",
+              "sha256": "${cargo_chef_sha}",
+              "source_commit": "${cargo_chef_commit}"
             },
             "archive": {
               "format": "tar.zst",
@@ -666,8 +727,8 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship the 5 expected binaries (soldr,
-          # zccache, zccache-daemon, zccache-fp, crgx) with their
+          # Every archive must ship the 6 expected binaries (soldr,
+          # zccache, zccache-daemon, zccache-fp, crgx, cargo-chef) with their
           # platform extension, plus a manifest.json describing the
           # bundle.
           suffix=""
@@ -678,6 +739,7 @@ jobs:
             "zccache-daemon${suffix}" \
             "zccache-fp${suffix}" \
             "crgx${suffix}" \
+            "cargo-chef${suffix}" \
             "manifest.json"; do
             test -f "$extract/$required" \
               || { echo "missing $required in $archive" >&2; exit 1; }
@@ -698,6 +760,7 @@ jobs:
               # is enough to prove the binary loads and the static
               # linkage works on the host.
               "$extract/crgx${suffix}" --version
+              "$extract/cargo-chef${suffix}" --version
               ;;
             *)
               echo "skipping --version (runner $runner_arch vs target ${{ matrix.target }})"

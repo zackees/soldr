@@ -301,3 +301,49 @@ fn cargo_chef_pin_constant_matches_known_tools_registry() {
             .expect("cargo-chef must carry a pinned_version")
     );
 }
+
+#[test]
+fn strip_generated_plugin_lines_only_removes_boolean_plugin_fields() {
+    let input = "[[bin]]\nname = \"tool\"\nplugin = false\nproc-macro = false\n[package.metadata]\nplugin = \"keep\"\n[lib]\nplugin = true\n";
+
+    let (sanitized, removed) = strip_generated_plugin_lines(input);
+
+    assert_eq!(removed, 2);
+    assert!(!sanitized.contains("plugin = false"));
+    assert!(!sanitized.contains("plugin = true"));
+    assert!(sanitized.contains("plugin = \"keep\""));
+    assert!(sanitized.contains("proc-macro = false"));
+}
+
+#[test]
+fn sanitize_cargo_chef_recipe_removes_generated_plugin_lines_from_manifests() {
+    let tmp = tempfile::tempdir().unwrap();
+    let recipe_path = tmp.path().join("recipe.json");
+    let recipe = serde_json::json!({
+        "skeleton": {
+            "manifests": [
+                {
+                    "relative_path": "crates/a/Cargo.toml",
+                    "contents": "[[bin]]\nname = \"a\"\nplugin = false\nproc-macro = false\n[[bench]]\nname = \"a_bench\"\nplugin = false\n[[test]]\nname = \"a_test\"\nplugin = false\n[lib]\nname = \"a\"\nplugin = false\n"
+                },
+                {
+                    "relative_path": "crates/b/Cargo.toml",
+                    "contents": "[package]\nname = \"b\"\n[package.metadata]\nplugin = \"user-data\"\n"
+                }
+            ]
+        }
+    });
+    std::fs::write(&recipe_path, serde_json::to_vec(&recipe).unwrap()).unwrap();
+
+    let removed = sanitize_cargo_chef_recipe(&recipe_path).unwrap();
+    let updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&recipe_path).unwrap()).unwrap();
+    let manifests = updated["skeleton"]["manifests"].as_array().unwrap();
+    let first = manifests[0]["contents"].as_str().unwrap();
+    let second = manifests[1]["contents"].as_str().unwrap();
+
+    assert_eq!(removed, 4);
+    assert!(!first.contains("plugin = false"));
+    assert!(first.contains("proc-macro = false"));
+    assert!(second.contains("plugin = \"user-data\""));
+}

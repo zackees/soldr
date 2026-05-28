@@ -18,6 +18,7 @@ pub(super) struct ReleaseInfo {
     pub(super) assets: Vec<AssetInfo>,
 }
 
+#[derive(Debug)]
 pub(super) struct AssetInfo {
     pub(super) name: String,
     pub(super) download_url: String,
@@ -143,9 +144,17 @@ async fn fetch_latest_by_prefix(
         .map_err(|e| SoldrError::Network(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Err(SoldrError::ToolNotFound(format!(
-            "no release found for {}/{}",
-            repo.owner, repo.repo
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+        return Err(SoldrError::ToolNotFound(github_status_message(
+            repo,
+            "release listing",
+            &url,
+            status,
+            &body,
         )));
     }
 
@@ -191,9 +200,17 @@ async fn fetch_release_value(
         .map_err(|e| SoldrError::Network(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Err(SoldrError::ToolNotFound(format!(
-            "no release found for {}/{}",
-            repo.owner, repo.repo
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+        return Err(SoldrError::ToolNotFound(github_status_message(
+            repo,
+            "release lookup",
+            url,
+            status,
+            &body,
         )));
     }
 
@@ -219,9 +236,17 @@ async fn fetch_release_by_listing(
         .map_err(|e| SoldrError::Network(e.to_string()))?;
 
     if !resp.status().is_success() {
-        return Err(SoldrError::ToolNotFound(format!(
-            "no release found for {}/{}",
-            repo.owner, repo.repo
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read body: {e}>"));
+        return Err(SoldrError::ToolNotFound(github_status_message(
+            repo,
+            "release listing",
+            &url,
+            status,
+            &body,
         )));
     }
 
@@ -275,6 +300,27 @@ fn release_tag_candidates(version: &str, tag_prefix: Option<&str>) -> Vec<String
     tags.sort();
     tags.dedup();
     tags
+}
+
+fn github_status_message(
+    repo: &RepoInfo,
+    stage: &str,
+    url: &str,
+    status: reqwest::StatusCode,
+    body: &str,
+) -> String {
+    let snippet = body.trim();
+    let snippet = if snippet.is_empty() {
+        "<empty body>".to_string()
+    } else if snippet.len() > 240 {
+        format!("{}...", snippet.chars().take(240).collect::<String>())
+    } else {
+        snippet.to_string()
+    };
+    format!(
+        "GitHub {stage} failed for {}/{}: HTTP {} at {url}; response: {snippet}",
+        repo.owner, repo.repo, status
+    )
 }
 
 fn parse_release_info(
@@ -437,7 +483,19 @@ pub(super) fn match_asset<'a>(
     }
 
     best.map(|(a, _)| a).ok_or_else(|| {
-        SoldrError::ToolNotFound(format!("no asset matches target {}", target.triple()))
+        let available = if assets.is_empty() {
+            "<none>".to_string()
+        } else {
+            assets
+                .iter()
+                .map(|asset| asset.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        SoldrError::UnsupportedPlatform(format!(
+            "asset matching failed: no asset matches target {}; available assets: {available}",
+            target.triple()
+        ))
     })
 }
 
@@ -643,5 +701,41 @@ mod tests {
         });
         let info = parse_release_info(body, Some("cargo-nextest-")).unwrap();
         assert_eq!(info.version, "0.9.100");
+    }
+
+    #[test]
+    fn match_asset_missing_target_lists_available_assets() {
+        let assets = vec![
+            asset("cargo-chef-x86_64-apple-darwin.tar.gz"),
+            asset("cargo-chef-x86_64-pc-windows-msvc.zip"),
+        ];
+        let target = TargetTriple {
+            arch: Arch::Aarch64,
+            os: Os::MacOs,
+            env: Env::None,
+        };
+
+        let err = match_asset(&assets, &target).expect_err("aarch64 macOS asset is absent");
+        let msg = err.to_string();
+        assert!(msg.contains("asset matching failed"));
+        assert!(msg.contains("aarch64-apple-darwin"));
+        assert!(msg.contains("cargo-chef-x86_64-apple-darwin.tar.gz"));
+        assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
+    }
+
+    #[test]
+    fn github_status_message_includes_stage_repo_status_and_body() {
+        let msg = github_status_message(
+            &repo("LukeMathWalker", "cargo-chef"),
+            "release lookup",
+            "https://api.github.com/repos/LukeMathWalker/cargo-chef/releases/tags/v0.1.73",
+            reqwest::StatusCode::FORBIDDEN,
+            "{\"message\":\"rate limited\"}",
+        );
+
+        assert!(msg.contains("release lookup"));
+        assert!(msg.contains("LukeMathWalker/cargo-chef"));
+        assert!(msg.contains("HTTP 403 Forbidden"));
+        assert!(msg.contains("rate limited"));
     }
 }

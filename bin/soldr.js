@@ -55,6 +55,19 @@ if (
   childEnv[crgxLocalDirEnv] = nativeDir;
 }
 
+// Same wiring for bundled cargo-chef. `soldr cook` invokes
+// `soldr cargo chef ...`, whose resolver checks
+// SOLDR_CARGO_CHEF_LOCAL_DIR before GitHub Releases. This avoids a
+// live upstream lookup on targets cargo-chef does not publish, such as
+// macOS arm64.
+const cargoChefLocalDirEnv = zccacheContract.CONTRACT.cargo_chef.local_dir_env;
+if (
+  !childEnv[cargoChefLocalDirEnv] &&
+  fs.existsSync(path.join(nativeDir, `${zccacheContract.CARGO_CHEF_BUNDLED_BINARY}${exeExt}`))
+) {
+  childEnv[cargoChefLocalDirEnv] = nativeDir;
+}
+
 const child = childProcess.spawn(binaryPath, process.argv.slice(2), {
   stdio: "inherit",
   env: childEnv,

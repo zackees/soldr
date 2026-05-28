@@ -1,6 +1,7 @@
 use super::{
-    CRGX_LOCAL_DIR_ENV_VAR, MANAGED_CRGX_VERSION, MANAGED_ZCCACHE_PACKAGES,
-    MANAGED_ZCCACHE_VERSION, ZCCACHE_LOCAL_DIR_ENV_VAR,
+    CARGO_CHEF_LOCAL_DIR_ENV_VAR, CARGO_CHEF_PINNED_VERSION, CRGX_LOCAL_DIR_ENV_VAR,
+    MANAGED_CRGX_VERSION, MANAGED_ZCCACHE_PACKAGES, MANAGED_ZCCACHE_VERSION,
+    ZCCACHE_LOCAL_DIR_ENV_VAR,
 };
 
 crate::timed_test!(zccache_runtime_contract_matches_rust_constants, {
@@ -25,6 +26,14 @@ crate::timed_test!(zccache_runtime_contract_matches_rust_constants, {
         contract["crgx"]["local_dir_env"].as_str(),
         Some(CRGX_LOCAL_DIR_ENV_VAR)
     );
+    assert_eq!(
+        contract["cargo_chef"]["managed_version"].as_str(),
+        Some(CARGO_CHEF_PINNED_VERSION)
+    );
+    assert_eq!(
+        contract["cargo_chef"]["local_dir_env"].as_str(),
+        Some(CARGO_CHEF_LOCAL_DIR_ENV_VAR)
+    );
 
     let contract_zccache_bins: Vec<&str> = contract["zccache"]["required_binaries"]
         .as_array()
@@ -46,6 +55,13 @@ crate::timed_test!(zccache_runtime_contract_matches_rust_constants, {
         .collect();
     assert_eq!(
         release_bins,
-        vec!["soldr", "zccache", "zccache-daemon", "zccache-fp", "crgx"]
+        vec![
+            "soldr",
+            "zccache",
+            "zccache-daemon",
+            "zccache-fp",
+            "crgx",
+            "cargo-chef"
+        ]
     );
 });
