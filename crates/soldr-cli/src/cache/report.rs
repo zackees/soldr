@@ -242,8 +242,7 @@ mod tests {
     use crate::daemon::db;
     use crate::daemon::protocol::ZccacheDaemonLink;
 
-    #[test]
-    fn cache_report_follows_linked_private_zccache_dir() {
+    crate::timed_test!(cache_report_follows_linked_private_zccache_dir, {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
         let private_dir = paths
@@ -303,5 +302,5 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(2)
         );
-    }
+    });
 }
