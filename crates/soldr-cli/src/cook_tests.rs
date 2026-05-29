@@ -347,3 +347,79 @@ fn sanitize_cargo_chef_recipe_removes_generated_plugin_lines_from_manifests() {
     assert!(first.contains("proc-macro = false"));
     assert!(second.contains("plugin = \"user-data\""));
 }
+
+// --- soldr#566: snapshot/restore the project around `cargo chef cook` ---
+
+#[test]
+fn snapshot_restore_undoes_cargo_chef_in_place_skeleton() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // A small workspace-ish project: root manifest + a member, with real
+    // sources, plus target/ (cooked deps) and .git/ that must be preserved.
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("crates/inner/src")).unwrap();
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    let root_manifest = "[workspace.package]\nversion = \"1.2.3\"\n";
+    let inner_manifest = "[package]\nname = \"inner\"\nversion.workspace = true\n";
+    let main_rs = "fn main() {\n    println!(\"real binary\");\n}\n";
+    let inner_lib = "pub fn answer() -> i32 {\n    42\n}\n";
+    std::fs::write(root.join("Cargo.toml"), root_manifest).unwrap();
+    std::fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+    std::fs::write(root.join("src/main.rs"), main_rs).unwrap();
+    std::fs::write(root.join("crates/inner/Cargo.toml"), inner_manifest).unwrap();
+    std::fs::write(root.join("crates/inner/src/lib.rs"), inner_lib).unwrap();
+    // A cooked-dep artifact + a generated .rs under target/ — must survive.
+    std::fs::write(root.join("target/debug/libdep.rlib"), b"artifact").unwrap();
+    std::fs::write(root.join("target/debug/out.rs"), b"// generated").unwrap();
+    std::fs::write(root.join(".git/HEAD"), b"ref: refs/heads/main\n").unwrap();
+
+    let snapshot = snapshot_project_source(root).unwrap();
+    // 4 source files captured (2 Cargo.toml + Cargo.lock + main.rs + lib.rs).
+    assert_eq!(snapshot.len(), 5);
+
+    // Simulate cargo-chef's in-place skeleton reconstruction.
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[workspace.package]\nversion = \"0.0.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("crates/inner/Cargo.toml"),
+        "[package]\nname = \"inner\"\nversion = \"0.0.1\"\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+    std::fs::write(root.join("crates/inner/src/lib.rs"), "").unwrap();
+    // chef can add a spurious stub crate root that wasn't there originally.
+    std::fs::write(root.join("crates/inner/src/main.rs"), "fn main() {}").unwrap();
+
+    restore_project_source(root, &snapshot).unwrap();
+
+    // Originals restored byte-for-byte.
+    assert_eq!(
+        std::fs::read_to_string(root.join("Cargo.toml")).unwrap(),
+        root_manifest
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("crates/inner/Cargo.toml")).unwrap(),
+        inner_manifest
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("src/main.rs")).unwrap(),
+        main_rs
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("crates/inner/src/lib.rs")).unwrap(),
+        inner_lib
+    );
+    // Spurious chef-added crate root removed.
+    assert!(!root.join("crates/inner/src/main.rs").exists());
+    // target/ (cooked deps, incl. a generated .rs) and .git/ untouched.
+    assert_eq!(
+        std::fs::read(root.join("target/debug/libdep.rlib")).unwrap(),
+        b"artifact"
+    );
+    assert!(root.join("target/debug/out.rs").exists());
+    assert!(root.join(".git/HEAD").exists());
+}

@@ -177,6 +177,119 @@ pub(crate) fn resolve_manifest_dir(start: &Path) -> Result<PathBuf, SoldrError> 
     }
 }
 
+/// In-memory snapshot of a project's source-defining files (every
+/// `Cargo.toml` / `Cargo.lock` / `*.rs` outside `target/` and `.git/`), used
+/// to undo cargo-chef's in-place skeleton reconstruction after the cook
+/// compile so `soldr cook` leaves the project pristine (zackees/soldr#566).
+pub(crate) struct ProjectSourceSnapshot {
+    files: Vec<(PathBuf, Vec<u8>)>,
+}
+
+impl ProjectSourceSnapshot {
+    /// File count captured (exposed for tests/diagnostics).
+    #[allow(clippy::len_without_is_empty)]
+    pub(crate) fn len(&self) -> usize {
+        self.files.len()
+    }
+}
+
+/// True for the files cargo-chef rewrites in place: crate manifests, the
+/// lockfile, and Rust sources (crate roots get stubbed). Restricting the
+/// snapshot to these keeps it small (source, not build output).
+fn is_project_source_file(name: &str) -> bool {
+    name == "Cargo.toml" || name == "Cargo.lock" || name.ends_with(".rs")
+}
+
+/// Recurse `dir`, skipping `target/` and `.git/` at any depth, invoking `f`
+/// on every regular project-source file with its path relative to `base`.
+fn walk_project_source(
+    dir: &Path,
+    base: &Path,
+    f: &mut dyn FnMut(&Path, PathBuf),
+) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let path = entry.path();
+        if file_type.is_dir() {
+            if name.as_ref() == "target" || name.as_ref() == ".git" {
+                continue;
+            }
+            walk_project_source(&path, base, f)?;
+        } else if file_type.is_file() && is_project_source_file(name.as_ref()) {
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(path.as_path())
+                .to_path_buf();
+            f(path.as_path(), rel);
+        }
+    }
+    Ok(())
+}
+
+/// Capture the project's source-defining files under `manifest_dir`.
+pub(crate) fn snapshot_project_source(
+    manifest_dir: &Path,
+) -> Result<ProjectSourceSnapshot, SoldrError> {
+    let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    {
+        let mut collect = |abs: &Path, rel: PathBuf| {
+            if let Ok(bytes) = std::fs::read(abs) {
+                files.push((rel, bytes));
+            }
+        };
+        walk_project_source(manifest_dir, manifest_dir, &mut collect).map_err(|e| {
+            SoldrError::Other(format!(
+                "soldr cook: failed to snapshot project source under {}: {e}",
+                manifest_dir.display()
+            ))
+        })?;
+    }
+    Ok(ProjectSourceSnapshot { files })
+}
+
+/// Restore the project to its snapshotted state: delete every current
+/// project-source file (removing cargo-chef's stubs / any added crate roots),
+/// then rewrite the captured originals. `target/`/`.git/` are never touched,
+/// so the cooked dependency artifacts survive.
+pub(crate) fn restore_project_source(
+    manifest_dir: &Path,
+    snapshot: &ProjectSourceSnapshot,
+) -> Result<(), SoldrError> {
+    // 1. Remove chef's in-place rewrites (manifests + .rs outside target/.git).
+    let mut to_delete: Vec<PathBuf> = Vec::new();
+    {
+        let mut mark = |abs: &Path, _rel: PathBuf| to_delete.push(abs.to_path_buf());
+        // Best-effort: a read error here just means fewer deletions; the
+        // rewrite below still restores originals.
+        let _ = walk_project_source(manifest_dir, manifest_dir, &mut mark);
+    }
+    for path in to_delete {
+        let _ = std::fs::remove_file(&path);
+    }
+    // 2. Rewrite the captured originals.
+    for (rel, bytes) in &snapshot.files {
+        let dest = manifest_dir.join(rel);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                SoldrError::Other(format!(
+                    "soldr cook: failed to restore directory {}: {e}",
+                    parent.display()
+                ))
+            })?;
+        }
+        std::fs::write(&dest, bytes).map_err(|e| {
+            SoldrError::Other(format!(
+                "soldr cook: failed to restore {}: {e}",
+                dest.display()
+            ))
+        })?;
+    }
+    Ok(())
+}
+
 /// Build the [`CookContext`] used by [`run_cook`]. Pure enough to unit-test:
 /// takes the resolved cwd, parsed args, and (for tests) a hook that creates
 /// the tempdir backing an ephemeral recipe.
@@ -263,12 +376,34 @@ pub(crate) async fn run_cook(
         }
     }
 
+    // Snapshot the project's source-defining files (manifests + Rust sources)
+    // before the cook compile. `cargo chef cook` reconstructs the cargo-chef
+    // skeleton IN PLACE — it stubs every crate root (`fn main() {}` / empty
+    // lib) and normalizes every crate version to `0.0.1` — and does NOT
+    // restore the real project. Left unrestored, any build run after
+    // `soldr cook` in the same job compiles the stub source under the wrong
+    // (`0.0.1`) version, which silently breaks correctness AND churns the
+    // compile-cache key for first-party crates (different `-C metadata` than a
+    // warm run where cook's cache hits and the tree is pristine) — see
+    // zackees/soldr#566, zackees/zccache#448.
+    let source_snapshot = snapshot_project_source(&ctx.manifest_dir)?;
+
     // Phase 2: cook. Heavy — compiles every transitive dep against a stub
-    // project. Output lands in `target/` next to the (untouched) project
-    // source code.
+    // project. Output lands in `target/`.
     let cook_args = build_chef_cook_args(&ctx, &parsed);
-    let code =
-        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, zccache_source).await?;
+    let cook_result =
+        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, zccache_source).await;
+
+    // Restore the project to its pre-cook state regardless of how cook exited,
+    // so the tree is pristine for every subsequent build step (#566).
+    if let Err(e) = restore_project_source(&ctx.manifest_dir, &source_snapshot) {
+        eprintln!(
+            "soldr cook: warning: failed to restore project source after cook \
+             (project may be left in cargo-chef's stub state): {e}"
+        );
+    }
+
+    let code = cook_result?;
     if code != 0 {
         return Ok(code);
     }
