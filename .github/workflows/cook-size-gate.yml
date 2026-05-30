@@ -1,0 +1,141 @@
+name: Cook Size Gate
+
+# Catches regressions in `soldr cook`'s post-trim output size. Builds soldr,
+# runs `soldr cook` against a stable representative fixture (zccache), and
+# fails when the resulting `target/` is heavier than the documented baseline
+# + a small buffer.
+#
+# Baseline as of 2026-05-30 (measured against zccache main, soldr 0.7.45,
+# compressed via tar + zstd level 3 to match setup-soldr's cook-cache save):
+#
+#   - compressed tarball ≈ 408 MB
+#   - file count         = 7633
+#
+# Defaults trip at +30 % of compressed size (530 MB) and +25 % of file count
+# (9500). Both are tunable via workflow_dispatch inputs so a single PR can
+# raise them in lockstep with a deliberate baseline change (e.g., adopting
+# a heavier bundled tool). For background see issue #571.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/soldr-cli/src/cook.rs'
+      - 'crates/soldr-cli/src/cache_lib/strip_target.rs'
+      - 'crates/soldr-cli/src/cache_lib/**'
+      - '.github/workflows/cook-size-gate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'crates/soldr-cli/src/cook.rs'
+      - 'crates/soldr-cli/src/cache_lib/strip_target.rs'
+      - 'crates/soldr-cli/src/cache_lib/**'
+      - '.github/workflows/cook-size-gate.yml'
+  workflow_dispatch:
+    inputs:
+      max_compressed_mb:
+        description: Maximum allowed compressed tarball size in MiB (baseline ~408)
+        required: false
+        default: '530'
+      max_file_count:
+        description: Maximum allowed file count in target/ post-trim (baseline 7633)
+        required: false
+        default: '9500'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cook-size-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cook-size-gate:
+    name: Measure soldr cook size against zccache fixture
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout soldr
+        uses: actions/checkout@v4
+        with:
+          path: soldr
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build soldr CLI (release)
+        working-directory: soldr
+        run: cargo build -p soldr-cli --release
+
+      - name: Checkout zccache fixture
+        uses: actions/checkout@v4
+        with:
+          repository: zackees/zccache
+          ref: main
+          path: zccache-fixture
+
+      - name: Install zstd
+        run: |
+          if ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq zstd
+          fi
+          zstd --version
+
+      - name: Run soldr cook against zccache (release profile)
+        working-directory: zccache-fixture
+        run: |
+          set -euo pipefail
+          # cargo-chef happens in-process via soldr's bundled chef; using
+          # --release matches the historical default that the size baseline
+          # was measured against.
+          "${GITHUB_WORKSPACE}/soldr/target/release/soldr" cook --release
+
+      - name: Measure cook output + assert thresholds
+        working-directory: zccache-fixture
+        env:
+          MAX_COMPRESSED_MB: ${{ github.event.inputs.max_compressed_mb || '530' }}
+          MAX_FILE_COUNT: ${{ github.event.inputs.max_file_count || '9500' }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -d target ]; then
+            echo "::error::expected target/ to exist after soldr cook; nothing to measure"
+            exit 2
+          fi
+
+          FILE_COUNT=$(find target -type f | wc -l | tr -d ' ')
+          INFLATED_BYTES=$(du -sb target | cut -f1)
+          INFLATED_MB=$((INFLATED_BYTES / 1024 / 1024))
+
+          # Compress with tar+zstd at level 3 — matches setup-soldr's
+          # cook-cache save configuration so the threshold tracks the
+          # archive size consumers actually pay to upload/restore.
+          tar -cf - target | zstd -3 -q -o cook.tar.zst
+          COMPRESSED_BYTES=$(stat -c '%s' cook.tar.zst)
+          COMPRESSED_MB=$((COMPRESSED_BYTES / 1024 / 1024))
+
+          {
+            echo "## soldr cook size gate"
+            echo
+            echo "Measured against \`zackees/zccache@main\` (release profile)."
+            echo
+            echo "| Metric | Measured | Threshold |"
+            echo "| --- | ---: | ---: |"
+            echo "| File count                  | ${FILE_COUNT} | ${MAX_FILE_COUNT} |"
+            echo "| Inflated \`target/\` size   | ${INFLATED_MB} MiB | (info only) |"
+            echo "| Compressed (tar + zstd -3)  | ${COMPRESSED_MB} MiB | ${MAX_COMPRESSED_MB} MiB |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "file_count=${FILE_COUNT}"
+          echo "inflated_mb=${INFLATED_MB}"
+          echo "compressed_mb=${COMPRESSED_MB}"
+
+          FAIL=0
+          if [ "${COMPRESSED_MB}" -gt "${MAX_COMPRESSED_MB}" ]; then
+            echo "::error::Compressed cook tarball ${COMPRESSED_MB} MiB exceeds threshold ${MAX_COMPRESSED_MB} MiB (regression suspected; if intentional, raise the threshold via workflow input or bump the default in cook-size-gate.yml)"
+            FAIL=1
+          fi
+          if [ "${FILE_COUNT}" -gt "${MAX_FILE_COUNT}" ]; then
+            echo "::error::Cook target/ file count ${FILE_COUNT} exceeds threshold ${MAX_FILE_COUNT} (regression suspected; same tuning path)"
+            FAIL=1
+          fi
+          exit ${FAIL}
