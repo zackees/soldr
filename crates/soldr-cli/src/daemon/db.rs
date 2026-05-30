@@ -4,16 +4,43 @@
 //! and the wrapper / GC tools open the same file directly.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
-//! - `daemon_builds`  : u64 session_id → bincoded BuildRecord
-//! - `daemon_events`  : u64 event_id   → bincoded Event
+//! - `daemon_builds`  : u64 session_id → tagged-byte BuildRecord
+//! - `daemon_events`  : u64 event_id   → tagged-byte Event
 //! - `daemon_meta`    : `&str` key     → u64 (next event id, ...)
-//! - `daemon_zccache_link` : `&str` key → bincoded ZccacheDaemonLink
+//! - `daemon_zccache_link` : `&str` key → tagged-byte ZccacheDaemonLink
+//!
+//! ## Serialization migration (issue #580)
+//!
+//! Every value written by this module is now `[0x01 tag][prost body]`
+//! (see [`crate::daemon::wire::REDB_TAG_PROST`] +
+//! [`crate::daemon::wire::prost_tagged_bytes`]). Reads classify the
+//! first byte:
+//!
+//! * `0x01` → strip the tag and prost-decode (the new format).
+//! * Anything else → bincode-deserialize the full slice (the legacy
+//!   format that pre-#580 daemons wrote into the same tables).
+//!
+//! The `LegacyZccacheDaemonLink` shim from #265 remains in place as a
+//! second-stage fallback under the bincode branch — it covers the
+//! even-older "before-private-daemon" shape that lacks fields the
+//! current `ZccacheDaemonLink` adds. So a redb row from ANY soldr
+//! version this codebase has ever shipped still decodes.
 
 use crate::cache_lib::target_registry::RegistryError;
-use crate::daemon::protocol::{BuildRecord, ZccacheDaemonLink};
+use crate::daemon::protocol::{BuildRecord, WireDecodeError, ZccacheDaemonLink};
+use crate::daemon::wire::{self, classify_redb_row, prost_tagged_bytes, RedbDecode};
+use prost::Message;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+fn wire_err(e: WireDecodeError) -> RegistryError {
+    RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn prost_decode_err(e: prost::DecodeError) -> RegistryError {
+    RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
 
 const BUILDS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_builds");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_events");
@@ -115,7 +142,7 @@ pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> 
     let db = open_db(db_path)?;
     init_tables(&db)?;
     let id = next_event_id(&db)?;
-    let bytes = bincode::serialize(event).map_err(bincode_err)?;
+    let bytes = prost_tagged_bytes(&wire::event_to_wire(event));
     let txn = db.begin_write()?;
     {
         let mut events = txn.open_table(EVENTS)?;
@@ -128,7 +155,7 @@ pub fn append_event(db_path: &Path, event: &Event) -> Result<(), RegistryError> 
 pub fn upsert_build(db_path: &Path, record: &BuildRecord) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
     init_tables(&db)?;
-    let bytes = bincode::serialize(record).map_err(bincode_err)?;
+    let bytes = prost_tagged_bytes(&wire::build_record_to_wire(record));
     let txn = db.begin_write()?;
     {
         let mut builds = txn.open_table(BUILDS)?;
@@ -146,8 +173,35 @@ pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>,
     let Some(row) = builds.get(session_id)? else {
         return Ok(None);
     };
-    let record: BuildRecord = bincode::deserialize(row.value()).map_err(bincode_err)?;
-    Ok(Some(record))
+    Ok(Some(deserialize_build_record(row.value())?))
+}
+
+/// Read a `BuildRecord` from a redb row, dispatching on the leading
+/// tag byte. New rows (0x01) decode via prost; legacy bytes fall
+/// through to bincode.
+fn deserialize_build_record(bytes: &[u8]) -> Result<BuildRecord, RegistryError> {
+    match classify_redb_row(bytes) {
+        RedbDecode::Prost(rest) => {
+            let wire = wire::proto::WireBuildRecord::decode(rest).map_err(prost_decode_err)?;
+            Ok(wire::build_record_from_wire(wire))
+        }
+        RedbDecode::LegacyBincode(bytes) => {
+            bincode::deserialize::<BuildRecord>(bytes).map_err(bincode_err)
+        }
+    }
+}
+
+/// Read an `Event` from a redb row, with the same tag-byte dispatch.
+fn deserialize_event(bytes: &[u8]) -> Result<Event, RegistryError> {
+    match classify_redb_row(bytes) {
+        RedbDecode::Prost(rest) => {
+            let wire = wire::proto::WireEvent::decode(rest).map_err(prost_decode_err)?;
+            wire::event_from_wire(wire).map_err(wire_err)
+        }
+        RedbDecode::LegacyBincode(bytes) => {
+            bincode::deserialize::<Event>(bytes).map_err(bincode_err)
+        }
+    }
 }
 
 pub fn list_builds(
@@ -162,7 +216,7 @@ pub fn list_builds(
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
-        let record: BuildRecord = bincode::deserialize(v.value()).map_err(bincode_err)?;
+        let record: BuildRecord = deserialize_build_record(v.value())?;
         if let Some(cutoff) = since_ms {
             if record.started_at_ms < cutoff {
                 continue;
@@ -187,7 +241,7 @@ pub fn list_slow_builds(
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
-        let record: BuildRecord = bincode::deserialize(v.value()).map_err(bincode_err)?;
+        let record: BuildRecord = deserialize_build_record(v.value())?;
         if record.total_wall_ms.unwrap_or(0) >= threshold_ms {
             rows.push(record);
         }
@@ -215,7 +269,7 @@ pub fn aggregate_session(
     let mut slowest_name: Option<String> = None;
     for entry in events.iter()? {
         let (_, v) = entry?;
-        let event: Event = bincode::deserialize(v.value()).map_err(bincode_err)?;
+        let event: Event = deserialize_event(v.value())?;
         if event.session_id != Some(session_id) {
             continue;
         }
@@ -244,7 +298,7 @@ pub fn set_linked_zccache(
         let mut table = txn.open_table(ZCCACHE_LINK)?;
         match link {
             Some(link) => {
-                let bytes = bincode::serialize(link).map_err(bincode_err)?;
+                let bytes = prost_tagged_bytes(&wire::zccache_link_to_wire(link));
                 table.insert(LINKED_ZCCACHE_KEY, bytes.as_slice())?;
             }
             None => {
@@ -268,13 +322,28 @@ pub fn get_linked_zccache(db_path: &Path) -> Result<Option<ZccacheDaemonLink>, R
     Ok(Some(link))
 }
 
+/// Three-stage fallback decoder:
+///
+/// 1. `0x01` tag prefix → prost-decode (the #580 format new daemons write).
+/// 2. Bincode current `ZccacheDaemonLink` shape (pre-#580 daemons).
+/// 3. Bincode legacy [`LegacyZccacheDaemonLink`] shape lifted via `From`
+///    (pre-#265 even-older daemons that lacked private-daemon fields).
 fn deserialize_zccache_daemon_link(bytes: &[u8]) -> Result<ZccacheDaemonLink, RegistryError> {
-    match bincode::deserialize::<ZccacheDaemonLink>(bytes) {
-        Ok(link) => Ok(link),
-        Err(new_err) => match bincode::deserialize::<LegacyZccacheDaemonLink>(bytes) {
-            Ok(legacy) => Ok(legacy.into()),
-            Err(_) => Err(bincode_err(new_err)),
-        },
+    match classify_redb_row(bytes) {
+        RedbDecode::Prost(rest) => {
+            let wire =
+                wire::proto::WireZccacheDaemonLink::decode(rest).map_err(prost_decode_err)?;
+            Ok(wire::zccache_link_from_wire(wire))
+        }
+        RedbDecode::LegacyBincode(bytes) => {
+            match bincode::deserialize::<ZccacheDaemonLink>(bytes) {
+                Ok(link) => Ok(link),
+                Err(new_err) => match bincode::deserialize::<LegacyZccacheDaemonLink>(bytes) {
+                    Ok(legacy) => Ok(legacy.into()),
+                    Err(_) => Err(bincode_err(new_err)),
+                },
+            }
+        }
     }
 }
 
@@ -289,7 +358,7 @@ pub fn prune_events_older_than(db_path: &Path, cutoff_ms: i64) -> Result<u64, Re
         let events = txn.open_table(EVENTS)?;
         for entry in events.iter()? {
             let (k, v) = entry?;
-            let event: Event = bincode::deserialize(v.value()).map_err(bincode_err)?;
+            let event = deserialize_event(v.value())?;
             if event.ts_ms < cutoff_ms {
                 to_delete.push(k.value());
             }

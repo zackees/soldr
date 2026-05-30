@@ -1,26 +1,56 @@
-//! Wire protocol for soldr-daemon — bincode-encoded, length-prefixed
-//! frames. Each frame on the wire is:
+//! Wire protocol for soldr-daemon — prost-encoded (Protocol Buffers),
+//! length-prefixed frames. Each frame on the wire is:
 //!
 //! ```text
-//! [u32 LE body_len][u32 LE protocol_version][bincode body]
+//! [u32 LE body_len][u32 LE protocol_version][prost body]
 //! ```
 //!
 //! `body_len` does NOT include the 4-byte version field. The body is a
-//! bincoded `Request` (client → server) or `Response` (server → client).
+//! prost-encoded `WireRequest` (client → server) or `WireResponse`
+//! (server → client) as defined in [`crate::daemon::wire`].
+//!
+//! The Rust public types in this module ([`Request`], [`Response`],
+//! [`StatusInfo`], ...) keep their existing shape and `serde` derives
+//! so the redb tagged-byte legacy decoder
+//! (`0x00` = bincode, `0x01` = prost — see [`crate::daemon::wire`])
+//! can still read rows written by pre-#580 daemons. The wire path
+//! ALWAYS uses prost; bincode survives only as the persistent-state
+//! fallback.
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 /// Protocol version bump rationale:
 ///
 /// * v1–v2: pre-PID-file lifecycle.
 /// * v3: target-touch + build-session correlation + linked-zccache.
-/// * v4 (this PR): adds cook-index IPC (CookLookup, CookRecord,
-///   CookTouch) + `cook_stats` on `StatusInfo`. Old clients/daemons
-///   on v3 cannot decode v4 frames and vice versa; the IPC layer
-///   rejects mismatched versions cleanly and the wrapper hot path's
-///   direct-redb fallback keeps builds from breaking during the
-///   short cross-version window after a `soldr` upgrade.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// * v4: cook-index IPC (CookLookup, CookRecord, CookTouch) +
+///   `cook_stats` on `StatusInfo`. Bincode-bodied wire frames.
+/// * v5 (#580): wire body switches from bincode to prost (Protocol
+///   Buffers). The header layout is unchanged so the IPC version
+///   check still triggers on cross-version traffic. Old (v4) clients
+///   trying to talk to a v5 daemon (and vice versa) get a clean
+///   "protocol version mismatch" error rather than silent garbage;
+///   the wrapper hot path's direct-redb fallback keeps builds going
+///   during the cross-version window after a `soldr` upgrade.
+pub const PROTOCOL_VERSION: u32 = 5;
+
+/// Errors surfaced when decoding wire bytes into the public Rust
+/// types. Wraps prost decode failures plus the shape-validation cases
+/// proto3 cannot express (fixed-length byte arrays, non-empty oneofs).
+#[derive(Debug, Error)]
+pub enum WireDecodeError {
+    #[error("prost decode error: {0}")]
+    Prost(#[from] prost::DecodeError),
+    #[error("invalid SHA-256 length on the wire: expected 32 bytes, got {0}")]
+    InvalidShaLength(usize),
+    #[error("empty {0} oneof — payload missing a discriminant")]
+    EmptyOneof(&'static str),
+    #[error("missing required field: {0}")]
+    MissingField(&'static str),
+    #[error("unknown event kind discriminant: {0}")]
+    UnknownEventKind(u32),
+}
 
 /// Maximum bincode body size. 64 KiB is comfortably above the largest
 /// realistic record (path strings, a few timestamps). Frames larger than
@@ -407,7 +437,7 @@ mod tests {
         assert!((bytes.len() as u32) <= MAX_BODY_BYTES);
     });
 
-    crate::timed_test!(protocol_version_is_v4_after_cook_index, {
-        assert_eq!(PROTOCOL_VERSION, 4);
+    crate::timed_test!(protocol_version_is_v5_after_prost_migration, {
+        assert_eq!(PROTOCOL_VERSION, 5);
     });
 }
