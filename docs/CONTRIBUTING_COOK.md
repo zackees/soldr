@@ -44,12 +44,83 @@ run), then runs your command inside a container with:
 - `~/.soldr/` provided by a fresh named volume `cook-soldr-home` at
   `/root/.soldr` inside the container. The host's actual `~/.soldr/`
   is NEVER bind-mounted.
+- `/work/target` provided by the **persistent** named volume
+  `soldr-perf-target` (issue #593). Cargo's build state lives on
+  Linux-native ext4 inside Docker's VFS, not on the host bind mount,
+  so cargo's mtime-based fingerprint check actually succeeds across
+  container restarts.
+- `/root/.cargo` (`CARGO_HOME`) provided by the persistent named
+  volume `soldr-perf-cargo-home`. Registry index + downloaded crates
+  stay warm.
 - `SOLDR_COOK_DOCKER_HARNESS=1` exported so the tests gated on the
   Docker marker run.
 
 The script `docker volume rm`s `cook-soldr-home` at the start of each
-run so the container always starts from an empty soldr state. Comment
-out that line locally if you want to debug across runs.
+run so the container always starts from an empty soldr state. The
+**warm** `soldr-perf-target` and `soldr-perf-cargo-home` volumes are
+NEVER wiped here — that's the entire point of issue #593's design.
+
+## Why named volumes for `target/` and `CARGO_HOME`
+
+Issue #593 fixes a Windows + Docker Desktop performance regression:
+the WSL2 9P translation layer rewrites file mtimes per container
+start. Cargo's mtime-based fingerprint check then decides every
+crate is stale and rebuilds the entire workspace.
+
+Measured on zccache's 21-crate workspace before the fix:
+
+| Scenario                                  | Bind mount | Named volume |
+|---|---|---|
+| `cargo build --release --bin X` (cold)    | ~6 min     | ~4 m 22 s    |
+| Same command, immediate rerun (no-op)     | **6 m 22 s** | **1.09 s**  |
+| `cargo test --lib X` rerun (no source)    | 30+ s      | **1.46 s**   |
+
+The headline win is **6 minutes → 1 second** for no-op rebuilds.
+Linux hosts already see native ext4 on the bind mount so the speedup
+is smaller, but named volumes still beat the bind mount slightly.
+
+### Wiping the warm volumes
+
+If the cargo fingerprint state ever gets corrupted, wipe explicitly:
+
+```bash
+docker volume rm soldr-perf-target soldr-perf-cargo-home
+```
+
+The next run is a full cold build (~5–8 min) into the fresh volume;
+subsequent runs are seconds again.
+
+### Migration from the old layout
+
+After upgrading to this script, the old host-side `target/` directory
+under the repo root becomes orphaned (cargo writes into the named
+volume instead). Reclaim disk with:
+
+```bash
+rm -rf target/
+```
+
+## Arbitrary cargo commands via `ci/perf_local.py`
+
+For day-to-day iteration (not just the cook test harness), use the
+convenience CLI that runs ANY cargo command against the same warm
+volumes:
+
+```bash
+uv run python ci/perf_local.py cargo build --release
+uv run python ci/perf_local.py cargo test --workspace
+uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
+
+# Volume admin
+uv run python ci/perf_local.py --status   # show volume mount points
+uv run python ci/perf_local.py --wipe     # remove all three perf volumes
+```
+
+`perf_local.py` uses its own `soldr-perf-soldr-home` volume for
+`~/.soldr/` (kept warm, never wiped) so the soldr daemon state and
+caches survive across runs. The cook-test harness uses the separate
+`cook-soldr-home` volume that gets wiped per run for test
+determinism.
 
 ## Acceptance gate (per PR in meta #579)
 
@@ -76,9 +147,14 @@ test` runs are no-ops for these tests, and only `bench/cook_in_docker.sh`
 ## What lives where
 
 - `docker/cook-shared-cache/Dockerfile` — Rust 1.94.1 base image with
-  `pkg-config`, `libssl-dev`, `git`. Marker env var `SOLDR_COOK_DOCKER_HARNESS=1`.
-- `bench/cook_in_docker.sh` — supported runner. Builds the image,
-  mounts the source tree, runs the requested command.
+  `pkg-config`, `libssl-dev`, `git`. Marker env var
+  `SOLDR_COOK_DOCKER_HARNESS=1`. `CARGO_HOME=/root/.cargo` pinned so
+  the named volume mount point is unambiguous.
+- `bench/cook_in_docker.sh` — supported runner for the cook test
+  harness. Builds the image, mounts the source tree + three named
+  volumes, runs the requested command.
+- `ci/perf_local.py` — general-purpose convenience CLI for arbitrary
+  cargo commands against the warm volumes (issue #593).
 - `docs/CONTRIBUTING_COOK.md` — this file.
 
 ## PR scope reminder
