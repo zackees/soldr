@@ -895,6 +895,43 @@ jobs:
         with:
           packages-dir: dist
 
+      - name: Verify all wheels visible on PyPI
+        # pypa/gh-action-pypi-publish uploads wheels sequentially via twine.
+        # For an N-wheel matrix there is an N x ~2-3s window during which
+        # `https://pypi.org/pypi/<project>/<version>/json` returns a partial
+        # set, and downstream resolvers (e.g. `uv sync`) can cache a
+        # "no compatible wheel" failure for the platforms not yet uploaded.
+        # Poll the JSON endpoint until the full set is visible before the
+        # workflow returns success. See issue #605 for the downstream
+        # breakage that motivated this.
+        shell: bash
+        env:
+          PYPI_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
+          pypi_version="${PYPI_VERSION#v}"
+          # Expected wheel count == number of non-musl matrix rows in the
+          # `build` job (the musl rows skip wheel build by design). Update
+          # this if the wheel-producing matrix changes.
+          expected=6
+          deadline=$(( $(date +%s) + 300 ))
+          while :; do
+            count="$(curl -fsSL "https://pypi.org/pypi/soldr/${pypi_version}/json" \
+              | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("urls",[])))' 2>/dev/null \
+              || echo 0)"
+            echo "PyPI reports ${count}/${expected} files for soldr==${pypi_version}"
+            if [ "$count" -ge "$expected" ]; then
+              echo "All ${expected} wheels visible on PyPI; verification complete."
+              exit 0
+            fi
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "Timed out waiting for ${expected} wheels for soldr==${pypi_version}" >&2
+              exit 1
+            fi
+            sleep 15
+          done
+
   publish-npm:
     name: Publish npm package
     needs:
