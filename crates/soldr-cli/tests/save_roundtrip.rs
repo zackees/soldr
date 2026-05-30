@@ -704,3 +704,105 @@ fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
         mtime_only_delta_mtime
     );
 }
+
+/// #575 — exercise the parallel cache-file extraction path with a
+/// deliberately large fan-out of small files. Verifies (a) every file
+/// round-trips bit-identical, (b) parent directories are created
+/// idempotently across workers, (c) per-file mtimes are preserved by
+/// the worker-side filetime call, (d) the dispatch shuts down cleanly
+/// even when --threads is small enough to back up the bounded channel.
+#[test]
+fn parallel_extract_many_small_files() {
+    use std::collections::BTreeMap;
+
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("workspace");
+    let cache = dir.path().join("cache");
+    let archive = dir.path().join("snap.tar.zst");
+
+    // Workspace stub — the manifest needs something to be valid.
+    write(&ws.join("Cargo.toml"), b"[package]\nname=\"x\"\n");
+    write(&ws.join("Cargo.lock"), b"# lock\n");
+
+    // Synthesize a fan-out cache: 256 dirs × ~20 small files each = ~5120
+    // entries. Small enough to keep the test fast (~1-2s); large enough to
+    // exercise dispatch back-pressure on the bounded (cap=64) queue and
+    // observe per-worker concurrency.
+    let mut expected: BTreeMap<String, (Vec<u8>, i64)> = BTreeMap::new();
+    // Pick a fixed deterministic mtime so we can assert on it round-tripping.
+    // 2026-04-01 12:00:00 UTC = 1775390400. Use a number divisible into
+    // tar's second resolution so we don't fight rounding.
+    let pinned_mtime_ms: i64 = 1_775_390_400_000;
+    for bucket in 0..16u32 {
+        for sub in 0..16u32 {
+            for f in 0..20u32 {
+                let rel = format!("bucket{:02}/sub{:02}/file{:02}.bin", bucket, sub, f);
+                // Vary content per file so a bad worker (e.g. one that
+                // wrote the previous job's body to this dest) would corrupt
+                // the round-trip.
+                let body = format!(
+                    "bucket={}, sub={}, file={}, content-{}",
+                    bucket,
+                    sub,
+                    f,
+                    bucket * 1000 + sub * 100 + f,
+                )
+                .into_bytes();
+                let abs = cache.join(&rel);
+                write(&abs, &body);
+                touch(&abs, pinned_mtime_ms);
+                // `rel` already uses POSIX "/" separators by construction.
+                expected.insert(rel.clone(), (body, pinned_mtime_ms));
+            }
+        }
+    }
+
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+    })
+    .expect("save ok");
+
+    let restore = dir.path().join("restored");
+    let report = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        // Force a small worker count so the bounded (cap=64) channel is
+        // guaranteed to fill and apply back-pressure to the driver.
+        threads: Some(2),
+        mtimes_only: false,
+    })
+    .expect("load ok");
+
+    assert_eq!(report.cache_files_restored, expected.len() as u64);
+
+    // Bit-identical content + preserved mtime for every entry.
+    for (rel, (body, mtime_ms_expected)) in &expected {
+        let restored = restore.join(rel);
+        let actual = fs::read(&restored).unwrap_or_else(|e| {
+            panic!("missing or unreadable restored file {}: {}", restored.display(), e);
+        });
+        assert_eq!(
+            &actual,
+            body,
+            "content mismatch at {}",
+            restored.display()
+        );
+        // tar stores mtime at second resolution; allow ±1000 ms slack.
+        let restored_mtime = mtime_ms(&restored);
+        let diff = (restored_mtime - mtime_ms_expected).abs();
+        assert!(
+            diff <= 1000,
+            "mtime drift {} ms at {} (expected {}, got {})",
+            diff,
+            restored.display(),
+            mtime_ms_expected,
+            restored_mtime,
+        );
+    }
+}
