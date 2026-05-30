@@ -8,7 +8,7 @@
 //! this module never reads or writes the artifact bytes themselves —
 //! it only tracks where they are and how big they are.
 //!
-//! Key tuple (bincode-serialized blob, used as the redb key):
+//! Key tuple (prost-encoded blob, used as the redb key):
 //!
 //! ```text
 //! (recipe_hash: [u8; 32], target_triple, profile, channel, rustc_version)
@@ -18,26 +18,38 @@
 //! triple/profile/channel/rustc in the key — there is no code path
 //! that can relax this without changing the schema.
 //!
-//! ## Wire compatibility
+//! ## Table versioning
 //!
-//! Table name is `cook_index_v1`. A future schema change MUST land as
-//! `cook_index_v2` rather than mutating the v1 table, so old daemons
-//! and old soldr binaries that resume an upgraded state.redb fall
-//! back gracefully.
+//! * `cook_index_v1` — the bincode-formatted table shipped in #582
+//!   (cook-index intro). New writes never land here; reads still
+//!   succeed during the v2 lookup miss fallback so any user who
+//!   indexed a few artifacts pre-#580 still gets cache hits.
+//! * `cook_index_v2` — the prost-formatted table introduced by
+//!   #580. All new writes land here. Keys are bare prost encoding
+//!   (no tag byte — the entire table is one format), values are
+//!   tagged-byte prost (matches the daemon `state.redb` convention).
+//!
+//! A future schema change MUST land as `cook_index_v3` rather than
+//! mutating v2 in place.
 
 use crate::cache_lib::target_registry::RegistryError;
+use crate::daemon::protocol::WireDecodeError;
+use crate::daemon::wire::{classify_redb_row, prost_tagged_bytes, proto, RedbDecode};
+use prost::Message;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// redb table name. Bumping this for schema breaks (rare) — additive
-/// changes use the existing key/value bincode schema.
 const COOK_INDEX_V1: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cook_index_v1");
+const COOK_INDEX_V2: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cook_index_v2");
 
 /// Lookup key for the cook artifact index. Cross-target sharing is
 /// forbidden by including triple/profile/channel/rustc in the key —
 /// two builds that differ on any of these resolve to different rows
 /// regardless of recipe_hash.
+///
+/// Kept `Serialize + Deserialize` so the v1 (bincode) read-fallback
+/// path in [`lookup`] can still decode old keys.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct CookKey {
     pub recipe_hash: [u8; 32],
@@ -68,6 +80,14 @@ fn bincode_err(e: bincode::Error) -> RegistryError {
     RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
+fn prost_decode_err(e: prost::DecodeError) -> RegistryError {
+    RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn wire_err(e: WireDecodeError) -> RegistryError {
+    RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 fn open_db(path: &Path) -> Result<Database, RegistryError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -80,75 +100,168 @@ fn init_table(db: &Database) -> Result<(), RegistryError> {
     let txn = db.begin_write()?;
     {
         let _ = txn.open_table(COOK_INDEX_V1)?;
+        let _ = txn.open_table(COOK_INDEX_V2)?;
     }
     txn.commit()?;
     Ok(())
 }
 
-/// Idempotent: open the `state.redb` file and ensure `cook_index_v1`
-/// exists. Other helpers call this internally; callers (e.g. daemon
-/// startup) can use it to eager-create the table.
+/// Idempotent: open the `state.redb` file and ensure both `cook_index_v1`
+/// and `cook_index_v2` exist. Callers (e.g. daemon startup) can use it
+/// to eager-create the tables.
 pub fn ensure_initialized(db_path: &Path) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
     init_table(&db)
 }
 
-fn encode_key(key: &CookKey) -> Result<Vec<u8>, RegistryError> {
+// =========================================================================
+// Encoding helpers
+// =========================================================================
+
+fn cook_key_to_wire(key: &CookKey) -> proto::WireCookKey {
+    proto::WireCookKey {
+        recipe_hash: key.recipe_hash.to_vec(),
+        target_triple: key.target_triple.clone(),
+        profile: key.profile.clone(),
+        channel: key.channel.clone(),
+        rustc_version: key.rustc_version.clone(),
+    }
+}
+
+fn cook_key_from_wire(wire: proto::WireCookKey) -> Result<CookKey, WireDecodeError> {
+    if wire.recipe_hash.len() != 32 {
+        return Err(WireDecodeError::InvalidShaLength(wire.recipe_hash.len()));
+    }
+    let mut recipe_hash = [0u8; 32];
+    recipe_hash.copy_from_slice(&wire.recipe_hash);
+    Ok(CookKey {
+        recipe_hash,
+        target_triple: wire.target_triple,
+        profile: wire.profile,
+        channel: wire.channel,
+        rustc_version: wire.rustc_version,
+    })
+}
+
+fn cook_entry_to_wire(entry: &CookEntry) -> proto::WireCookEntry {
+    proto::WireCookEntry {
+        sha256: entry.sha256.to_vec(),
+        size_bytes: entry.size_bytes,
+        created_unix_ms: entry.created_unix_ms,
+        last_used_unix_ms: entry.last_used_unix_ms,
+        origin_url_normalized: entry.origin_url_normalized.clone(),
+        cook_cmd_summary: entry.cook_cmd_summary.clone(),
+    }
+}
+
+fn cook_entry_from_wire(wire: proto::WireCookEntry) -> Result<CookEntry, WireDecodeError> {
+    if wire.sha256.len() != 32 {
+        return Err(WireDecodeError::InvalidShaLength(wire.sha256.len()));
+    }
+    let mut sha256 = [0u8; 32];
+    sha256.copy_from_slice(&wire.sha256);
+    Ok(CookEntry {
+        sha256,
+        size_bytes: wire.size_bytes,
+        created_unix_ms: wire.created_unix_ms,
+        last_used_unix_ms: wire.last_used_unix_ms,
+        origin_url_normalized: wire.origin_url_normalized,
+        cook_cmd_summary: wire.cook_cmd_summary,
+    })
+}
+
+/// Encode a key as bare prost bytes — no tag prefix because the
+/// entire v2 table is one format.
+fn encode_key_v2(key: &CookKey) -> Vec<u8> {
+    let wire = cook_key_to_wire(key);
+    let mut out = Vec::with_capacity(wire.encoded_len());
+    wire.encode(&mut out).expect("Vec write is infallible");
+    out
+}
+
+fn decode_key_v2(bytes: &[u8]) -> Result<CookKey, RegistryError> {
+    let wire = proto::WireCookKey::decode(bytes).map_err(prost_decode_err)?;
+    cook_key_from_wire(wire).map_err(wire_err)
+}
+
+fn decode_entry_tagged(bytes: &[u8]) -> Result<CookEntry, RegistryError> {
+    match classify_redb_row(bytes) {
+        RedbDecode::Prost(rest) => {
+            let wire = proto::WireCookEntry::decode(rest).map_err(prost_decode_err)?;
+            cook_entry_from_wire(wire).map_err(wire_err)
+        }
+        RedbDecode::LegacyBincode(bytes) => {
+            // Shouldn't happen in v2 (we always tag), but if a row was
+            // hand-edited or migrated incorrectly, fall through to the
+            // v1-shape bincode decoder for self-healing.
+            bincode::deserialize::<CookEntry>(bytes).map_err(bincode_err)
+        }
+    }
+}
+
+/// v1 key/value decoders: pure bincode, no tag. Used only by the
+/// migration-fallback read path.
+fn encode_key_v1(key: &CookKey) -> Result<Vec<u8>, RegistryError> {
     bincode::serialize(key).map_err(bincode_err)
 }
 
-fn decode_entry(bytes: &[u8]) -> Result<CookEntry, RegistryError> {
-    bincode::deserialize(bytes).map_err(bincode_err)
+fn decode_key_v1(bytes: &[u8]) -> Result<CookKey, RegistryError> {
+    bincode::deserialize::<CookKey>(bytes).map_err(bincode_err)
 }
 
-fn encode_entry(entry: &CookEntry) -> Result<Vec<u8>, RegistryError> {
-    bincode::serialize(entry).map_err(bincode_err)
+fn decode_entry_v1(bytes: &[u8]) -> Result<CookEntry, RegistryError> {
+    bincode::deserialize::<CookEntry>(bytes).map_err(bincode_err)
 }
 
-fn decode_key(bytes: &[u8]) -> Result<CookKey, RegistryError> {
-    bincode::deserialize(bytes).map_err(bincode_err)
-}
+// =========================================================================
+// Public surface
+// =========================================================================
 
-/// Upsert a cook artifact entry. PR 2's `soldr cook` worker calls
-/// this via the daemon `CookRecord` IPC after the tarball has been
-/// written to `~/.soldr/cache/cook/<sha256>.tar.zst`.
+/// Upsert a cook artifact entry. Always writes to `cook_index_v2`
+/// (prost format).
 pub fn upsert(db_path: &Path, key: &CookKey, entry: &CookEntry) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
     init_table(&db)?;
-    let key_bytes = encode_key(key)?;
-    let value_bytes = encode_entry(entry)?;
+    let key_bytes = encode_key_v2(key);
+    let value_bytes = prost_tagged_bytes(&cook_entry_to_wire(entry));
     let txn = db.begin_write()?;
     {
-        let mut table = txn.open_table(COOK_INDEX_V1)?;
+        let mut table = txn.open_table(COOK_INDEX_V2)?;
         table.insert(key_bytes.as_slice(), value_bytes.as_slice())?;
     }
     txn.commit()?;
     Ok(())
 }
 
-/// Look up a single entry by the full key tuple. PR 3's cargo-
-/// front-door pre-flight calls this via the daemon `CookLookup` IPC.
+/// Look up a single entry by the full key tuple. Tries `cook_index_v2`
+/// first; on miss, falls back to `cook_index_v1` so rows written by
+/// pre-#580 daemons still resolve. A v1 hit is NOT auto-migrated into
+/// v2 (would require a write transaction on every read) — the next
+/// `upsert` for the key naturally migrates it.
 pub fn lookup(db_path: &Path, key: &CookKey) -> Result<Option<CookEntry>, RegistryError> {
     let db = open_db(db_path)?;
     init_table(&db)?;
-    let key_bytes = encode_key(key)?;
+    let key_v2 = encode_key_v2(key);
     let txn = db.begin_read()?;
+    {
+        let table = txn.open_table(COOK_INDEX_V2)?;
+        if let Some(row) = table.get(key_v2.as_slice())? {
+            return Ok(Some(decode_entry_tagged(row.value())?));
+        }
+    }
+    // v1 fallback.
+    let key_v1 = encode_key_v1(key)?;
     let table = txn.open_table(COOK_INDEX_V1)?;
-    let Some(row) = table.get(key_bytes.as_slice())? else {
+    let Some(row) = table.get(key_v1.as_slice())? else {
         return Ok(None);
     };
-    Ok(Some(decode_entry(row.value())?))
+    Ok(Some(decode_entry_v1(row.value())?))
 }
 
-/// Drift diagnostic: given a (missing) lookup key, scan the table for
-/// other rows whose `(origin_url_normalized, target_triple, profile,
-/// channel, rustc_version)` match — but whose `recipe_hash` differs.
-/// Returns up to `limit` previous recipe hashes, useful as the
-/// "previous_origin_recipe_hashes" diagnostic in `CookMiss`.
-///
-/// When `origin_url_normalized` is `None`, drift diagnostic is
-/// skipped (returns empty) — without an origin hint we have no way to
-/// know which other rows "belong to the same repo".
+/// Drift diagnostic: given a (missing) lookup key, scan v2 then v1
+/// for other rows whose `(origin_url_normalized, target_triple,
+/// profile, channel, rustc_version)` match — but whose `recipe_hash`
+/// differs. Returns up to `limit` previous recipe hashes, newest-first.
 pub fn drift_recipe_hashes(
     db_path: &Path,
     miss_key: &CookKey,
@@ -161,74 +274,115 @@ pub fn drift_recipe_hashes(
     let db = open_db(db_path)?;
     init_table(&db)?;
     let txn = db.begin_read()?;
-    let table = txn.open_table(COOK_INDEX_V1)?;
     let mut out: Vec<([u8; 32], u64)> = Vec::new();
-    for entry in table.iter()? {
-        let (k_bytes, v_bytes) = entry?;
-        let stored_key = match decode_key(k_bytes.value()) {
-            Ok(k) => k,
-            Err(_) => continue,
-        };
-        if stored_key.recipe_hash == miss_key.recipe_hash {
-            continue;
+
+    // v2 scan.
+    {
+        let table = txn.open_table(COOK_INDEX_V2)?;
+        for entry in table.iter()? {
+            let (k_bytes, v_bytes) = entry?;
+            let Ok(stored_key) = decode_key_v2(k_bytes.value()) else {
+                continue;
+            };
+            if !key_matches_origin_matrix(&stored_key, miss_key) {
+                continue;
+            }
+            let Ok(stored_entry) = decode_entry_tagged(v_bytes.value()) else {
+                continue;
+            };
+            if stored_entry.origin_url_normalized.as_deref() != Some(origin) {
+                continue;
+            }
+            out.push((stored_key.recipe_hash, stored_entry.last_used_unix_ms));
         }
-        if stored_key.target_triple != miss_key.target_triple
-            || stored_key.profile != miss_key.profile
-            || stored_key.channel != miss_key.channel
-            || stored_key.rustc_version != miss_key.rustc_version
-        {
-            continue;
-        }
-        let stored_entry = match decode_entry(v_bytes.value()) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if stored_entry.origin_url_normalized.as_deref() != Some(origin) {
-            continue;
-        }
-        out.push((stored_key.recipe_hash, stored_entry.last_used_unix_ms));
     }
+
+    // v1 scan (pre-#580 rows).
+    {
+        let table = txn.open_table(COOK_INDEX_V1)?;
+        for entry in table.iter()? {
+            let (k_bytes, v_bytes) = entry?;
+            let Ok(stored_key) = decode_key_v1(k_bytes.value()) else {
+                continue;
+            };
+            if !key_matches_origin_matrix(&stored_key, miss_key) {
+                continue;
+            }
+            let Ok(stored_entry) = decode_entry_v1(v_bytes.value()) else {
+                continue;
+            };
+            if stored_entry.origin_url_normalized.as_deref() != Some(origin) {
+                continue;
+            }
+            out.push((stored_key.recipe_hash, stored_entry.last_used_unix_ms));
+        }
+    }
+
     out.sort_by(|a, b| b.1.cmp(&a.1));
     out.truncate(limit);
     Ok(out.into_iter().map(|(h, _)| h).collect())
 }
 
-/// Bump the `last_used_unix_ms` field for the entry whose
-/// `sha256` matches. Fire-and-forget by PR 3: a touch failure must
-/// never affect callers. Returns `Ok(true)` when a row was bumped,
-/// `Ok(false)` when no matching row exists.
-///
-/// Implementation note: this is O(N) over the index because the
-/// primary key is `CookKey`, not `sha256`. PR 1 ships dormant and PR
-/// 3's pre-flight is the only `CookTouch` caller; a secondary index
-/// can be added later if measurements show it matters.
+fn key_matches_origin_matrix(stored: &CookKey, miss: &CookKey) -> bool {
+    if stored.recipe_hash == miss.recipe_hash {
+        return false;
+    }
+    stored.target_triple == miss.target_triple
+        && stored.profile == miss.profile
+        && stored.channel == miss.channel
+        && stored.rustc_version == miss.rustc_version
+}
+
+/// Bump the `last_used_unix_ms` field for the entry whose `sha256`
+/// matches. Scans v2 + v1 and updates whichever table holds the row
+/// (no cross-table migration — see [`lookup`] for the rationale).
 pub fn touch(db_path: &Path, sha256: &[u8; 32], now_unix_ms: u64) -> Result<bool, RegistryError> {
     let db = open_db(db_path)?;
     init_table(&db)?;
-    let mut updates: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut v2_updates: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut v1_updates: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     {
         let txn = db.begin_read()?;
-        let table = txn.open_table(COOK_INDEX_V1)?;
+        // v2 scan.
+        let table = txn.open_table(COOK_INDEX_V2)?;
         for entry in table.iter()? {
             let (k_bytes, v_bytes) = entry?;
-            let mut value = match decode_entry(v_bytes.value()) {
-                Ok(v) => v,
-                Err(_) => continue,
+            let Ok(mut value) = decode_entry_tagged(v_bytes.value()) else {
+                continue;
             };
             if &value.sha256 == sha256 {
                 value.last_used_unix_ms = now_unix_ms;
-                let new_v = encode_entry(&value)?;
-                updates.push((k_bytes.value().to_vec(), new_v));
+                let new_v = prost_tagged_bytes(&cook_entry_to_wire(&value));
+                v2_updates.push((k_bytes.value().to_vec(), new_v));
+            }
+        }
+        // v1 scan.
+        let table = txn.open_table(COOK_INDEX_V1)?;
+        for entry in table.iter()? {
+            let (k_bytes, v_bytes) = entry?;
+            let Ok(mut value) = decode_entry_v1(v_bytes.value()) else {
+                continue;
+            };
+            if &value.sha256 == sha256 {
+                value.last_used_unix_ms = now_unix_ms;
+                let new_v = bincode::serialize(&value).map_err(bincode_err)?;
+                v1_updates.push((k_bytes.value().to_vec(), new_v));
             }
         }
     }
-    if updates.is_empty() {
+    if v2_updates.is_empty() && v1_updates.is_empty() {
         return Ok(false);
     }
     let txn = db.begin_write()?;
     {
+        let mut table = txn.open_table(COOK_INDEX_V2)?;
+        for (k, v) in &v2_updates {
+            table.insert(k.as_slice(), v.as_slice())?;
+        }
+    }
+    {
         let mut table = txn.open_table(COOK_INDEX_V1)?;
-        for (k, v) in &updates {
+        for (k, v) in &v1_updates {
             table.insert(k.as_slice(), v.as_slice())?;
         }
     }
@@ -237,19 +391,32 @@ pub fn touch(db_path: &Path, sha256: &[u8; 32], now_unix_ms: u64) -> Result<bool
 }
 
 /// Aggregate statistics surfaced via `Status` and `soldr daemon
-/// status`: returns `(entry_count, total_size_bytes)`.
+/// status`: returns `(entry_count, total_size_bytes)`. Sums both v2
+/// and v1 tables.
 pub fn stats(db_path: &Path) -> Result<(u64, u64), RegistryError> {
     let db = open_db(db_path)?;
     init_table(&db)?;
     let txn = db.begin_read()?;
-    let table = txn.open_table(COOK_INDEX_V1)?;
     let mut count: u64 = 0;
     let mut total: u64 = 0;
-    for entry in table.iter()? {
-        let (_, v_bytes) = entry?;
-        if let Ok(decoded) = decode_entry(v_bytes.value()) {
-            count = count.saturating_add(1);
-            total = total.saturating_add(decoded.size_bytes);
+    {
+        let table = txn.open_table(COOK_INDEX_V2)?;
+        for entry in table.iter()? {
+            let (_, v_bytes) = entry?;
+            if let Ok(decoded) = decode_entry_tagged(v_bytes.value()) {
+                count = count.saturating_add(1);
+                total = total.saturating_add(decoded.size_bytes);
+            }
+        }
+    }
+    {
+        let table = txn.open_table(COOK_INDEX_V1)?;
+        for entry in table.iter()? {
+            let (_, v_bytes) = entry?;
+            if let Ok(decoded) = decode_entry_v1(v_bytes.value()) {
+                count = count.saturating_add(1);
+                total = total.saturating_add(decoded.size_bytes);
+            }
         }
     }
     Ok((count, total))
@@ -299,7 +466,6 @@ mod tests {
     });
 
     crate::timed_test!(per_target_safety_isolates_rows, {
-        // Same recipe hash, different target triple — must NOT collide.
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let mut a = sample_key(3);
@@ -337,9 +503,6 @@ mod tests {
             let dir = TempDir::new().expect("tempdir");
             let path = dir.path().join("state.redb");
             let origin = "https://github.com/zackees/soldr";
-
-            // Two prior entries, same origin/triple/profile/channel/rustc,
-            // but different recipe hashes.
             let key_a = sample_key(5);
             let key_b = sample_key(6);
             let mut entry_a = sample_entry(0xA1, 10, Some(origin));
@@ -348,13 +511,10 @@ mod tests {
             entry_b.last_used_unix_ms = 200;
             upsert(&path, &key_a, &entry_a).expect("upsert a");
             upsert(&path, &key_b, &entry_b).expect("upsert b");
-
-            // Lookup for a different recipe hash (miss). Drift should
-            // return both prior hashes, newest-first.
             let miss = sample_key(7);
             let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
             assert_eq!(drift.len(), 2);
-            assert_eq!(drift[0], [6u8; 32]); // b.last_used=200 → newest first
+            assert_eq!(drift[0], [6u8; 32]);
             assert_eq!(drift[1], [5u8; 32]);
         }
     );
@@ -363,15 +523,12 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let path = dir.path().join("state.redb");
         let origin = "https://github.com/zackees/soldr";
-
         let mut same_origin_diff_triple = sample_key(10);
         same_origin_diff_triple.target_triple = "aarch64-apple-darwin".into();
         let same_origin_diff_triple_entry = sample_entry(0x11, 1, Some(origin));
-
         let mut diff_origin = sample_key(11);
         diff_origin.target_triple = "x86_64-unknown-linux-gnu".into();
         let diff_origin_entry = sample_entry(0x22, 1, Some("https://github.com/other/repo"));
-
         upsert(
             &path,
             &same_origin_diff_triple,
@@ -379,7 +536,6 @@ mod tests {
         )
         .expect("upsert sodt");
         upsert(&path, &diff_origin, &diff_origin_entry).expect("upsert do");
-
         let mut miss = sample_key(12);
         miss.target_triple = "x86_64-unknown-linux-gnu".into();
         let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
@@ -437,5 +593,50 @@ mod tests {
         ensure_initialized(&path).expect("init 2");
         let (count, total) = stats(&path).expect("stats");
         assert_eq!((count, total), (0, 0));
+    });
+
+    /// Write a v1-shaped row directly. Drops the db handle on return
+    /// so the subsequent `lookup` call can open the same file.
+    fn insert_v1_row(path: &Path, key: &CookKey, entry: &CookEntry) {
+        let db = open_db(path).expect("open");
+        init_table(&db).expect("init");
+        let key_v1 = encode_key_v1(key).expect("encode v1 key");
+        let value_v1 = bincode::serialize(entry).expect("serialize v1");
+        let txn = db.begin_write().expect("begin write");
+        {
+            let mut table = txn.open_table(COOK_INDEX_V1).expect("open v1");
+            table
+                .insert(key_v1.as_slice(), value_v1.as_slice())
+                .expect("insert v1");
+        }
+        txn.commit().expect("commit");
+        drop(db);
+    }
+
+    // Reading a pre-#580 row written directly into `cook_index_v1`
+    // with bincode still resolves. Guards the v1 fallback path.
+    crate::timed_test!(v1_bincode_row_still_resolves_via_lookup, {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let key = sample_key(99);
+        let entry = sample_entry(0x99, 7777, Some("https://legacy.example/repo"));
+        insert_v1_row(&path, &key, &entry);
+        let got = lookup(&path, &key).expect("lookup").expect("hit");
+        assert_eq!(got, entry);
+    });
+
+    // Tag-byte hygiene: every v2 value blob starts with 0x01.
+    crate::timed_test!(v2_value_blobs_carry_the_prost_tag, {
+        use crate::daemon::wire::REDB_TAG_PROST;
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        upsert(&path, &sample_key(50), &sample_entry(0x50, 1, None)).expect("upsert");
+        let db = open_db(&path).expect("open");
+        let txn = db.begin_read().expect("read");
+        let table = txn.open_table(COOK_INDEX_V2).expect("v2");
+        for entry in table.iter().expect("iter") {
+            let (_, v) = entry.expect("entry");
+            assert_eq!(v.value()[0], REDB_TAG_PROST);
+        }
     });
 }

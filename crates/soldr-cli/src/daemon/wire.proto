@@ -1,0 +1,213 @@
+// Wire schema for soldr-daemon IPC + redb-backed persistent state
+// (issue #580). The Rust types in `crates/soldr-cli/src/daemon/wire.rs`
+// are hand-written `#[derive(prost::Message)]` structs that mirror
+// this schema. The .proto file is the documentation source of truth;
+// keep the two in sync.
+//
+// Wire format (issue #580 migration):
+// * IPC frames carry a prost-encoded `WireRequest` or `WireResponse`.
+//   Old bincode frames are rejected by the IPC layer's
+//   `PROTOCOL_VERSION` check (bumped from 4 to 5 when this lands).
+// * redb values are written as `[u8 tag][prost bytes]` where
+//   `tag == 0x01` means "prost-encoded". The read path first tries
+//   to interpret the row as tagged; on tag-byte mismatch it falls
+//   back to the legacy bincode decoder for backwards-compat with
+//   rows written before this migration.
+
+syntax = "proto3";
+
+package soldr.daemon.v1;
+
+// =========================================================================
+// Request (client -> daemon)
+// =========================================================================
+
+message WireRequest {
+  oneof kind {
+    WireRecordTargetTouch record_target_touch = 1;
+    WireUnit status = 2;
+    WireUnit shutdown = 3;
+    WireBuildSessionStart build_session_start = 4;
+    WireBuildSessionEnd build_session_end = 5;
+    WireRecordCompile record_compile = 6;
+    WireListBuilds list_builds = 7;
+    WireListSlowBuilds list_slow_builds = 8;
+    WireLinkZccache link_zccache = 9;
+    WireCookLookup cook_lookup = 10;
+    WireCookRecord cook_record = 11;
+    WireCookTouch cook_touch = 12;
+  }
+}
+
+message WireUnit {}
+
+message WireRecordTargetTouch {
+  string path = 1;
+  int64 unix_seconds = 2;
+}
+
+message WireBuildSessionStart {
+  uint64 session_id = 1;
+  string repo_root = 2;
+  int64 started_at_ms = 3;
+}
+
+message WireBuildSessionEnd {
+  uint64 session_id = 1;
+  int32 exit_code = 2;
+  int64 ended_at_ms = 3;
+}
+
+message WireRecordCompile {
+  uint64 session_id = 1;
+  string crate_name = 2;
+  string target_dir = 3;
+  int64 started_at_ms = 4;
+  // Optional via prost's `optional` keyword (proto3 syntax).
+  optional uint64 duration_us = 5;
+}
+
+message WireListBuilds {
+  uint32 limit = 1;
+  optional int64 since_ms = 2;
+}
+
+message WireListSlowBuilds {
+  uint64 threshold_ms = 1;
+  uint32 limit = 2;
+}
+
+message WireLinkZccache {
+  WireZccacheDaemonLink link = 1;
+}
+
+message WireCookLookup {
+  bytes recipe_hash = 1;  // exactly 32 bytes; validated on decode
+  string target_triple = 2;
+  string profile = 3;
+  string channel = 4;
+  string rustc_version = 5;
+  optional string origin_url_normalized = 6;
+}
+
+message WireCookRecord {
+  bytes recipe_hash = 1;  // exactly 32 bytes
+  string target_triple = 2;
+  string profile = 3;
+  string channel = 4;
+  string rustc_version = 5;
+  bytes sha256 = 6;       // exactly 32 bytes
+  uint64 size_bytes = 7;
+  optional string origin_url_normalized = 8;
+  string cook_cmd_summary = 9;
+}
+
+message WireCookTouch {
+  bytes sha256 = 1;       // exactly 32 bytes
+}
+
+// =========================================================================
+// Response (daemon -> client)
+// =========================================================================
+
+message WireResponse {
+  oneof kind {
+    WireStatusInfo status = 1;
+    WireUnit shutting_down = 2;
+    WireBuilds builds = 3;
+    string error = 4;
+    WireCookHit cook_hit = 5;
+    WireCookMiss cook_miss = 6;
+    WireUnit ack = 7;
+  }
+}
+
+message WireBuilds {
+  repeated WireBuildRecord items = 1;
+}
+
+message WireCookHit {
+  bytes sha256 = 1;
+  string path = 2;
+  uint64 size_bytes = 3;
+  optional string origin_url_normalized = 4;
+}
+
+message WireCookMiss {
+  // Each element is exactly 32 bytes.
+  repeated bytes previous_origin_recipe_hashes = 1;
+}
+
+// =========================================================================
+// Shared persistent + status structures
+// =========================================================================
+
+message WireStatusInfo {
+  uint32 version = 1;
+  uint32 pid = 2;
+  uint64 uptime_secs = 3;
+  uint64 request_count = 4;
+  optional WireZccacheDaemonLink linked_zccache = 5;
+  optional WireCookStats cook_stats = 6;
+}
+
+message WireCookStats {
+  uint64 entries = 1;
+  uint64 total_bytes = 2;
+  uint64 hits_this_session = 3;
+}
+
+message WireZccacheDaemonLink {
+  string binary_path = 1;
+  string cache_dir = 2;
+  optional string session_id = 3;
+  string source = 4;
+  bool private_daemon = 5;
+  optional string daemon_name = 6;
+  optional uint32 owner_pid = 7;
+  repeated string private_env_keys = 8;
+}
+
+message WireBuildRecord {
+  uint64 session_id = 1;
+  string repo_root = 2;
+  int64 started_at_ms = 3;
+  optional int64 ended_at_ms = 4;
+  optional int32 exit_code = 5;
+  optional uint64 total_wall_ms = 6;
+  uint32 crate_count = 7;
+  optional uint64 slowest_crate_us = 8;
+  optional string slowest_crate_name = 9;
+}
+
+// =========================================================================
+// Redb-only persistent rows (issue #580 tagged-byte migration target)
+// =========================================================================
+
+message WireEvent {
+  int64 ts_ms = 1;
+  optional uint64 session_id = 2;
+  // 0=SessionStart, 1=SessionEnd, 2=CompileStart, 3=CompileEnd.
+  uint32 kind = 3;
+  optional string crate_name = 4;
+  optional uint64 duration_us = 5;
+  optional string target_dir = 6;
+  optional int32 exit_code = 7;
+}
+
+message WireCookKey {
+  bytes recipe_hash = 1;  // exactly 32 bytes
+  string target_triple = 2;
+  string profile = 3;
+  string channel = 4;
+  string rustc_version = 5;
+}
+
+message WireCookEntry {
+  bytes sha256 = 1;       // exactly 32 bytes
+  uint64 size_bytes = 2;
+  uint64 created_unix_ms = 3;
+  uint64 last_used_unix_ms = 4;
+  optional string origin_url_normalized = 5;
+  string cook_cmd_summary = 6;
+}

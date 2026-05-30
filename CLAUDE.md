@@ -148,6 +148,17 @@ The repo builds itself through soldr so every contributor populates and hits the
 - `.claude/hooks/tool_guard.py` is a `PreToolUse` guard wired in `.claude/settings.json`. It denies bare `cargo`, `rustc`, `rustfmt`, `clippy-driver`, `cargo-clippy`, `cargo-fmt`, `python`, `python3`, `pip`, `pip3` in Claude Code shell tools. Route through `soldr cargo ...` / `uv run ...` / `uv pip ...` to satisfy it.
 - Unit tests for the hook live next to it: `uv run --no-project --directory .claude/hooks python -m unittest test_tool_guard`. The `--directory` flag puts `tool_guard.py` on `sys.path` so the sibling import resolves.
 
+## Serialization (issue #580)
+
+- **Binary transports and persisted-state metadata MUST use Protocol Buffers** (via `prost`), not `bincode` / `rmp-serde` / other schema-less formats. The wire schemas live as hand-written `#[derive(prost::Message)]` types beside a `.proto` file that documents them — see `crates/soldr-cli/src/daemon/wire.rs` + `wire.proto` and `crates/soldr-cli/src/rust_plan_proto.rs` + `rust_plan_manifest.proto` for the existing pattern. The schema file is the source of truth; round-trip unit tests catch drift.
+- **Daemon IPC** (`crates/soldr-cli/src/daemon/{protocol,ipc,wire}.rs`) carries prost-encoded `WireRequest` / `WireResponse` in the frame body. The header is unchanged from prior versions; `PROTOCOL_VERSION` is bumped on every body-format change so peers at different versions error cleanly rather than silently mis-decoding.
+- **Persistent redb rows** added on or after #580 are tagged-byte: `[0x01][prost body]`. Readers classify the leading byte — `0x01` strips and prost-decodes, anything else falls through to a `bincode::deserialize` legacy decoder so rows written by pre-#580 daemons still resolve. The classifier lives in `crate::daemon::wire::classify_redb_row`. The `cook_index` table uses dual versioning (`cook_index_v1` bincode-only, `cook_index_v2` prost-only) instead of tagged-byte; new writes always go to v2, reads consult v2 then v1.
+- **`bincode` is on the way out** but not gone yet. The only acceptable bincode call sites are:
+  1. The redb legacy-fallback decoders that exist solely to read pre-#580 rows (`crate::daemon::db` + `crate::cache_lib::cook_index` v1 fallback paths).
+  2. The `LegacyZccacheDaemonLink` shim in `crate::daemon::db` for the even-older pre-#265 row shape.
+- **Human-edited config (`config.toml`, `rust-toolchain.toml`) stays JSON/TOML.** Protobuf mandate applies only to binary transports + archived metadata.
+- **Lint enforcement** of "no new bincode usage outside the legacy modules" is a follow-up (see the issue tracker). Until that lands, treat the rule above as the convention; new modules that touch persistent storage or IPC must use prost.
+
 ## Test Infrastructure
 
 - **Per-test watchdog (`timed_test!`)**: Tests must be declared with the `timed_test!` macro from `soldr_cli::test_util`. The default deadline is **2 minutes**; pass a `Duration` as the second argument to override (e.g. `timed_test!(name, Duration::from_secs(300), { ... })`). If the body does not return in time the watchdog prints `TEST HUNG (>Ns): <name>` plus a backtrace to stderr and aborts the test binary, guaranteeing a single hung test cannot block the whole suite. Implementation: `crates/soldr-cli/src/test_util.rs`. The self-test feature `test-watchdog-self-test` plus the `#[ignore]`d `deliberate_hang` cases verify the abort path end-to-end.

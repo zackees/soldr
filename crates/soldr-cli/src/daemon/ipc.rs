@@ -1,19 +1,61 @@
 //! Frame encoding/decoding for the daemon protocol. The sync helpers
 //! are used by the wrapper-side client (no tokio runtime on the hot
 //! path); the async helpers are used by the server.
+//!
+//! ## Wire shape (issue #580)
+//!
+//! The header is unchanged from prior versions:
+//!
+//! ```text
+//! [u32 LE body_len][u32 LE protocol_version][body]
+//! ```
+//!
+//! What changed in v5 is the **body**: it is now a prost-encoded
+//! `WireRequest` / `WireResponse` (see [`crate::daemon::wire`])
+//! instead of a bincode blob. The header version-check rejects
+//! cross-version traffic cleanly, so a v4 client can never silently
+//! mis-decode a v5 daemon's reply (or vice versa).
 
-use crate::daemon::protocol::{MAX_BODY_BYTES, PROTOCOL_VERSION};
-use serde::{de::DeserializeOwned, Serialize};
+use crate::daemon::protocol::{
+    Request, Response, WireDecodeError, MAX_BODY_BYTES, PROTOCOL_VERSION,
+};
+use crate::daemon::wire;
 use std::io::{self, Read, Write};
 
 const HEADER_BYTES: usize = 8;
 
-fn encoding_error(e: bincode::Error) -> io::Error {
+fn decode_error(e: WireDecodeError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
 }
 
-pub fn encode_frame<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
-    let body = bincode::serialize(msg).map_err(encoding_error)?;
+/// Abstracts over Request/Response so encode/read helpers don't have
+/// to be split into four functions per direction. Each impl plugs in
+/// the appropriate prost encode/decode pair from [`crate::daemon::wire`].
+pub trait WireBody: Sized {
+    fn encode_wire(&self) -> Vec<u8>;
+    fn decode_wire(bytes: &[u8]) -> Result<Self, WireDecodeError>;
+}
+
+impl WireBody for Request {
+    fn encode_wire(&self) -> Vec<u8> {
+        wire::encode_request(self)
+    }
+    fn decode_wire(bytes: &[u8]) -> Result<Self, WireDecodeError> {
+        wire::decode_request(bytes)
+    }
+}
+
+impl WireBody for Response {
+    fn encode_wire(&self) -> Vec<u8> {
+        wire::encode_response(self)
+    }
+    fn decode_wire(bytes: &[u8]) -> Result<Self, WireDecodeError> {
+        wire::decode_response(bytes)
+    }
+}
+
+pub fn encode_frame<T: WireBody>(msg: &T) -> io::Result<Vec<u8>> {
+    let body = msg.encode_wire();
     if body.len() as u32 > MAX_BODY_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -27,14 +69,14 @@ pub fn encode_frame<T: Serialize>(msg: &T) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-pub fn write_frame_sync<W: Write, T: Serialize>(w: &mut W, msg: &T) -> io::Result<()> {
+pub fn write_frame_sync<W: Write, T: WireBody>(w: &mut W, msg: &T) -> io::Result<()> {
     let frame = encode_frame(msg)?;
     w.write_all(&frame)?;
     w.flush()?;
     Ok(())
 }
 
-pub fn read_frame_sync<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<T> {
+pub fn read_frame_sync<R: Read, T: WireBody>(r: &mut R) -> io::Result<T> {
     let mut header = [0u8; HEADER_BYTES];
     r.read_exact(&mut header)?;
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
@@ -53,13 +95,13 @@ pub fn read_frame_sync<R: Read, T: DeserializeOwned>(r: &mut R) -> io::Result<T>
     }
     let mut body = vec![0u8; body_len as usize];
     r.read_exact(&mut body)?;
-    bincode::deserialize(&body).map_err(encoding_error)
+    T::decode_wire(&body).map_err(decode_error)
 }
 
 pub async fn write_frame_async<W, T>(w: &mut W, msg: &T) -> io::Result<()>
 where
     W: tokio::io::AsyncWrite + Unpin,
-    T: Serialize,
+    T: WireBody,
 {
     use tokio::io::AsyncWriteExt;
     let frame = encode_frame(msg)?;
@@ -71,7 +113,7 @@ where
 pub async fn read_frame_async<R, T>(r: &mut R) -> io::Result<T>
 where
     R: tokio::io::AsyncRead + Unpin,
-    T: DeserializeOwned,
+    T: WireBody,
 {
     use tokio::io::AsyncReadExt;
     let mut header = [0u8; HEADER_BYTES];
@@ -92,7 +134,7 @@ where
     }
     let mut body = vec![0u8; body_len as usize];
     r.read_exact(&mut body).await?;
-    bincode::deserialize(&body).map_err(encoding_error)
+    T::decode_wire(&body).map_err(decode_error)
 }
 
 #[cfg(test)]
@@ -130,6 +172,8 @@ mod tests {
 
     #[test]
     fn oversize_body_is_rejected_on_encode() {
+        // A very long path string blows past the 64 KiB body cap once
+        // prost varint-length-prefixes the string field.
         let blob = "x".repeat((MAX_BODY_BYTES + 1) as usize);
         let msg = Request::RecordTargetTouch {
             path: blob,
