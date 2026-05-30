@@ -902,6 +902,10 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
         },
         DaemonSubcommand::Status { json } => match client::status(&sock) {
             Ok(info) => {
+                // Cook-index aggregate stats (issue #576). Older
+                // daemons would emit `cook_stats: None` — render as
+                // zero so the surface is stable.
+                let cook = info.cook_stats_or_zero();
                 if json {
                     let payload = serde_json::json!({
                         "running": true,
@@ -910,12 +914,21 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
                         "uptime_secs": info.uptime_secs,
                         "request_count": info.request_count,
                         "linked_zccache": info.linked_zccache,
+                        "cook": {
+                            "entries": cook.entries,
+                            "total_bytes": cook.total_bytes,
+                            "hits_this_session": cook.hits_this_session,
+                        },
                     });
                     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
                 } else {
                     println!(
                         "soldr-daemon: pid={} uptime={}s requests={} version={}",
                         info.pid, info.uptime_secs, info.request_count, info.version
+                    );
+                    println!(
+                        "  cook: entries={} total_bytes={} hits_this_session={}",
+                        cook.entries, cook.total_bytes, cook.hits_this_session
                     );
                 }
                 Ok(())
