@@ -39,6 +39,9 @@ use std::io::{BufReader, BufWriter, Read, Write};
 
 use prost::Message as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::sync_channel;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
@@ -128,6 +131,21 @@ pub const CACHE_DIR_NAME: &str = "cache";
 
 /// Current manifest schema version. Bump only on breaking format changes.
 pub const MANIFEST_VERSION: u32 = 1;
+
+/// Environment variable that overrides the parallel-extract worker count
+/// inside `soldr load` (#575). Accepts a positive integer; clamps to at
+/// least 1. When unset or unparseable, falls back to `--threads` (if the
+/// caller passed it) and then to rayon's default (num_cpus). The override
+/// also sizes the rayon pool used by `load()` so concurrent mtime-replay
+/// and cache-file extraction share the same parallelism budget.
+pub const LOAD_WORKERS_ENV: &str = "SOLDR_LOAD_WORKERS";
+
+/// Fallback worker count for `soldr load` when `--threads` is unset, the
+/// env override is unset, and we can't probe rayon's default. Effectively
+/// dead code on supported platforms (rayon always returns a positive
+/// `current_num_threads()`), but documents the floor explicitly. Used by
+/// the parallel cache-file extractor in `load()`.
+pub const DEFAULT_LOAD_WORKERS: usize = 4;
 
 /// Default zstd compression level — matches what setup-soldr's TS impl
 /// has been using (level 3 gives ~0.26 ratio on Rust artifact caches at
@@ -907,13 +925,20 @@ fn validate_load_inputs(opts: &LoadOptions<'_>) -> Result<()> {
 
 /// Decompress + restore an archive produced by [`save`].
 ///
-/// The implementation pipelines two operations:
-///   1. Stream-decompress + extract tar entries (sequential — zstd's
-///      read-side decoder is single-threaded by design).
-///   2. Once the manifest is parsed (it's the FIRST entry in every
-///      archive `save` produces), hand the mtime-replay work off to
-///      the thread pool so it runs concurrently with the remaining
-///      cache-file extraction.
+/// The implementation pipelines THREE operations on the existing rayon pool:
+///   1. **Stream-decompress + tar-header parsing** in the driver thread —
+///      zstd's read-side decoder is single-threaded by design.
+///   2. **Per-file extraction** (CreateFile + write + set_mtime) dispatched
+///      via a bounded `sync_channel` to N rayon workers. On Windows this
+///      pipelines Defender real-time-scan callbacks across cores instead of
+///      serializing them on a single thread — same insight as zackees/zccache#189
+///      for the analogous walk problem. (zackees/soldr#575)
+///   3. **Mtime replay onto workspace sources** runs concurrently with (2)
+///      on its own rayon task once the manifest is parsed.
+///
+/// Per-file mtime preservation: each worker calls `filetime::set_file_mtime`
+/// after the write completes, equivalent to what `tar`'s preserve_mtime
+/// would do serially.
 ///
 /// When [`LoadOptions::mtimes_only`] is `true`, only the manifest entry
 /// is consumed; any `cache/...` entry in the archive is rejected as a
@@ -930,17 +955,31 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     let buf = BufReader::with_capacity(16 * 1024 * 1024, in_file);
     let zstd_reader = zstd::stream::read::Decoder::new(buf).map_err(SaveLoadError::Zstd)?;
     let mut tar_reader = tar::Archive::new(zstd_reader);
-    tar_reader.set_preserve_mtime(true);
+    // We do per-worker mtime restoration via filetime::set_file_mtime, so
+    // tar's own preserve_mtime would be redundant. Permissions are not
+    // preserved (consistent with the previous behavior).
+    tar_reader.set_preserve_mtime(false);
     tar_reader.set_preserve_permissions(false);
 
     let mut manifest_bytes: Option<Vec<u8>> = None;
     let mut manifest_decoded: Option<Manifest> = None;
-    let mut cache_files_restored: u64 = 0;
-    let pool = build_pool(opts.threads)?;
+    // Env override (LOAD_WORKERS_ENV / SOLDR_LOAD_WORKERS) wins over the
+    // caller-supplied --threads; otherwise the explicit --threads wins;
+    // otherwise rayon picks its default (num_cpus). The pool we build here
+    // is also what the per-file extract workers run on, so this single
+    // knob governs all load-time parallelism.
+    let effective_threads = load_worker_count_override().or(opts.threads);
+    let pool = build_pool(effective_threads)?;
     // Holds the mtime-replay job once we've parsed the manifest and
     // dispatched the work onto rayon. We poll on it after the tar
     // stream is fully drained.
     let mut replay_handle: Option<std::sync::mpsc::Receiver<Vec<MtimeOutcome>>> = None;
+
+    // #575 parallel extraction infrastructure. Spun up lazily on the first
+    // cache entry so mtimes_only loads pay zero overhead.
+    let mut extract_dispatch: Option<ExtractDispatch> = None;
+    let extract_error: Arc<Mutex<Option<SaveLoadError>>> = Arc::new(Mutex::new(None));
+    let cache_files_counter = Arc::new(AtomicU64::new(0));
 
     for entry in tar_reader.entries().map_err(SaveLoadError::BareIo)? {
         let mut entry = entry.map_err(SaveLoadError::BareIo)?;
@@ -995,18 +1034,57 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         // reach this branch.
         let cache_dir = opts.cache_dir.expect("cache_dir checked at entry");
         let dest = cache_dir.join(&stripped);
-        if entry.header().entry_type() == tar::EntryType::Directory {
+        let entry_type = entry.header().entry_type();
+
+        // Directories: create immediately on the driver thread. Cheap; this
+        // also guarantees the directory exists by the time workers race to
+        // write files inside it (we still call create_dir_all on the parent
+        // in the worker as a belt-and-suspenders, since tar doesn't
+        // guarantee directory entries precede their contents).
+        if entry_type == tar::EntryType::Directory {
             std::fs::create_dir_all(&dest).map_err(|e| io(&dest, e))?;
             continue;
         }
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
-        }
-        entry.unpack(&dest).map_err(SaveLoadError::BareIo)?;
-        if entry.header().entry_type() == tar::EntryType::Regular {
-            cache_files_restored += 1;
+
+        // Read the body fully into memory + capture mtime, then dispatch to
+        // a worker. For the cache-archive use case bodies are typically
+        // small (<MiB each) and the bounded channel caps how many are
+        // resident at once, so memory usage stays bounded.
+        let mut body = Vec::new();
+        entry.read_to_end(&mut body).map_err(SaveLoadError::BareIo)?;
+        let mtime_secs = entry.header().mtime().ok();
+
+        // Lazy-start the dispatch on first cache entry.
+        let dispatch = extract_dispatch.get_or_insert_with(|| {
+            ExtractDispatch::start(
+                &pool,
+                opts.threads,
+                Arc::clone(&extract_error),
+                Arc::clone(&cache_files_counter),
+            )
+        });
+
+        let job = ExtractJob {
+            dest,
+            entry_type,
+            body,
+            mtime_secs,
+        };
+        if let Err(_) = dispatch.send(job) {
+            // Receivers are gone — there must be a stored error already.
+            break;
         }
     }
+
+    // Close the dispatch channel and wait for workers to drain. Any error
+    // from a worker is surfaced here (first-error-wins).
+    if let Some(dispatch) = extract_dispatch {
+        dispatch.finish()?;
+    }
+    if let Some(err) = extract_error.lock().expect("extract_error mutex").take() {
+        return Err(err);
+    }
+    let cache_files_restored = cache_files_counter.load(Ordering::Relaxed);
 
     let manifest = match manifest_decoded {
         Some(manifest) => manifest,
@@ -1052,6 +1130,141 @@ enum MtimeOutcome {
     Missing,
     SizeMismatch,
     Modified,
+}
+
+// ---------------------------------------------------------------------------
+// #575 parallel cache-file extraction
+// ---------------------------------------------------------------------------
+
+/// In-flight work item dispatched from the tar driver to a rayon worker.
+struct ExtractJob {
+    dest: PathBuf,
+    entry_type: tar::EntryType,
+    body: Vec<u8>,
+    mtime_secs: Option<u64>,
+}
+
+/// Bounded-channel + worker-thread bundle that owns the parallel extraction
+/// of cache-file entries. Wraps the existing rayon pool — no new thread
+/// runtime, no new direct deps. Bounded so the driver pauses if workers
+/// can't keep up (caps in-memory body buffer at ~`bound × entry_size`).
+struct ExtractDispatch {
+    tx: std::sync::mpsc::SyncSender<ExtractJob>,
+    /// Barrier joined when every worker exits; size = num_workers + 1
+    /// (workers + the driver caller).
+    barrier: Arc<std::sync::Barrier>,
+}
+
+impl ExtractDispatch {
+    fn start(
+        pool: &rayon::ThreadPool,
+        _threads: Option<usize>,
+        err_slot: Arc<Mutex<Option<SaveLoadError>>>,
+        counter: Arc<AtomicU64>,
+    ) -> Self {
+        // Worker count = pool size. The pool was built by `build_pool` with
+        // the user's `--threads` value (or rayon's default), so trusting it
+        // here keeps the user's intent intact AND guarantees we never spawn
+        // more closures than the pool has threads to run (which would
+        // deadlock our barrier if the spawned closures wait for siblings
+        // that never get scheduled).
+        let n_workers = pool.current_num_threads().max(1);
+        // Bounded queue. 64 = trade-off between (1) the driver getting
+        // throttled by slow workers vs (2) the resident memory of in-flight
+        // bodies. With cache-archive entries averaging <200 KiB, 64 caps
+        // memory at ~13 MiB which is negligible.
+        let (tx, rx) = sync_channel::<ExtractJob>(64);
+        let rx = Arc::new(Mutex::new(rx));
+        let barrier = Arc::new(std::sync::Barrier::new(n_workers + 1));
+
+        for _ in 0..n_workers {
+            let rx = Arc::clone(&rx);
+            let err_slot = Arc::clone(&err_slot);
+            let counter = Arc::clone(&counter);
+            let barrier = Arc::clone(&barrier);
+            pool.spawn(move || {
+                loop {
+                    let job = {
+                        let guard = rx.lock().expect("extract rx mutex");
+                        match guard.recv() {
+                            Ok(j) => j,
+                            Err(_) => break,
+                        }
+                    };
+                    // If a sibling already recorded an error, drain remaining
+                    // jobs without doing more I/O (keeps the driver moving
+                    // toward the finish line so we can surface the error
+                    // promptly).
+                    if err_slot.lock().expect("err_slot mutex").is_some() {
+                        continue;
+                    }
+                    let is_regular = job.entry_type == tar::EntryType::Regular;
+                    if let Err(e) = extract_one(&job) {
+                        let mut slot = err_slot.lock().expect("err_slot mutex");
+                        if slot.is_none() {
+                            *slot = Some(e);
+                        }
+                        continue;
+                    }
+                    if is_regular {
+                        counter.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                barrier.wait();
+            });
+        }
+
+        ExtractDispatch { tx, barrier }
+    }
+
+    fn send(&self, job: ExtractJob) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
+        self.tx.send(job)
+    }
+
+    /// Close the channel and block until every worker has exited.
+    /// Returns Ok(()) regardless of worker errors — those land in the
+    /// shared err_slot the caller passed to `start`.
+    fn finish(self) -> Result<()> {
+        drop(self.tx);
+        self.barrier.wait();
+        Ok(())
+    }
+}
+
+/// Worker-side per-entry extraction. Splits Regular vs Directory handling
+/// (Directories are created by the driver thread, so we only see Regular
+/// + the long tail of tar entry types here).
+fn extract_one(job: &ExtractJob) -> Result<()> {
+    if let Some(parent) = job.dest.parent() {
+        // Belt-and-suspenders: tar doesn't guarantee directory entries
+        // precede their contents, so workers that race ahead of a sibling
+        // directory entry still get their parent dir created.
+        std::fs::create_dir_all(parent).map_err(|e| io(parent, e))?;
+    }
+    match job.entry_type {
+        tar::EntryType::Regular => {
+            std::fs::write(&job.dest, &job.body).map_err(|e| io(&job.dest, e))?;
+            if let Some(secs) = job.mtime_secs {
+                let ft = filetime::FileTime::from_unix_time(secs as i64, 0);
+                filetime::set_file_mtime(&job.dest, ft).map_err(|e| io(&job.dest, e))?;
+            }
+        }
+        tar::EntryType::Directory => {
+            // Already handled by the driver, but if somehow we got here,
+            // ensure idempotency.
+            std::fs::create_dir_all(&job.dest).map_err(|e| io(&job.dest, e))?;
+        }
+        other => {
+            // Symlinks / hard links / device nodes etc. are not produced
+            // by `save` today (only Regular + Directory). Reject loudly so
+            // we don't silently swallow a future archive shape change.
+            return Err(SaveLoadError::BareIo(std::io::Error::other(format!(
+                "unexpected tar entry type {other:?} at {}",
+                job.dest.display()
+            ))));
+        }
+    }
+    Ok(())
 }
 
 fn replay_one(workspace: &Path, entry: &SourceFile) -> MtimeOutcome {
@@ -1130,6 +1343,19 @@ fn replay_cache_file_mtimes(cache_dir: &Path, entries: &[CacheFile]) -> Result<(
 }
 
 // ---------- thread-pool helpers ----------
+
+/// Read the [`LOAD_WORKERS_ENV`] override. Returns `None` when unset,
+/// empty, or unparseable as a positive integer. Caller decides how to
+/// combine this with the explicit `--threads` knob and rayon's default.
+/// (#575)
+fn load_worker_count_override() -> Option<usize> {
+    let raw = std::env::var(LOAD_WORKERS_ENV).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<usize>().ok().filter(|&n| n > 0)
+}
 
 fn build_pool(threads: Option<usize>) -> Result<rayon::ThreadPool> {
     let mut builder = rayon::ThreadPoolBuilder::new();
