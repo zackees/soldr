@@ -15,11 +15,20 @@
 //! `zackees/setup-soldr#110` for the GitHub Action that consumes the
 //! resulting `target/` tarball.
 
+use crate::cache_lib::cook_archive::{self, cook_cache_dir, sha_abbrev, PackedCookArchive};
 use crate::cache_lib::strip_target::{strip_target, StripTargetOptions};
 use crate::cargo_front_door;
-use crate::core::SoldrError;
+use crate::core::git::{
+    cargo_lock_is_gitignored, cargo_lock_is_tracked, find_git_worktree_root, origin_url,
+};
+use crate::core::{
+    probe_toolchain_binary, read_rust_toolchain_manifest, SoldrError, SoldrPaths, TargetTriple,
+};
+use crate::daemon::client::{self, CookLookupOutcome};
 use crate::ZccacheSourceArg;
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Parsed `soldr cook` invocation surface. Mirrors the relevant subset of
 /// `cargo build` knobs plus the cargo-chef-specific recipe controls.
@@ -417,6 +426,14 @@ pub(crate) async fn run_cook(
         run_cook_target_trim(&ctx.manifest_dir);
     }
 
+    // Phase 4: index the cooked target/ into the cross-repo shared
+    // `~/.soldr/cache/cook/` (issue #577, meta #579). Best-effort;
+    // any failure here surfaces as a warning but never fails the
+    // user's cook command — the local `target/` is still valid.
+    if let Err(err) = index_cooked_artifact(&ctx, &parsed) {
+        eprintln!("{} {err}", yellow_warning_prefix());
+    }
+
     if parsed.keep_recipe {
         eprintln!(
             "soldr cook: recipe retained at {}",
@@ -431,6 +448,286 @@ pub(crate) async fn run_cook(
         );
     }
     Ok(0)
+}
+
+/// ANSI-yellow `warning:` prefix gated on stderr being a terminal.
+/// Mirrors the existing pattern in `cargo_front_door::disk`.
+fn yellow_warning_prefix() -> &'static str {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        "\x1b[33msoldr cook: warning:\x1b[0m"
+    } else {
+        "soldr cook: warning:"
+    }
+}
+
+/// ANSI-green `indexed` prefix for the success line.
+fn green_indexed_prefix() -> &'static str {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        "\x1b[32msoldr cook: indexed\x1b[0m"
+    } else {
+        "soldr cook: indexed"
+    }
+}
+
+/// Resolve the `target/<triple?>/<profile>/` directory cargo-chef
+/// just populated. cargo's mapping: `--release` → `release`, no
+/// flag → `debug` (the "dev" profile), `--profile=<name>` → `<name>`.
+/// With `--target X` the artifacts land under `target/X/<profile>/`.
+fn resolve_cook_target_dir(manifest_dir: &Path, args: &CookArgs) -> PathBuf {
+    let profile = resolve_profile_dir_name(args);
+    let mut root = manifest_dir.join("target");
+    if let Some(triple) = args.target.as_deref() {
+        root = root.join(triple);
+    }
+    root.join(profile)
+}
+
+fn resolve_profile_dir_name(args: &CookArgs) -> &str {
+    if let Some(p) = args.profile.as_deref() {
+        // `dev` is special-cased by cargo → `debug` dir on disk.
+        return if p == "dev" { "debug" } else { p };
+    }
+    if args.release {
+        "release"
+    } else {
+        "debug"
+    }
+}
+
+fn resolve_profile_name(args: &CookArgs) -> &str {
+    if let Some(p) = args.profile.as_deref() {
+        return p;
+    }
+    if args.release {
+        "release"
+    } else {
+        "dev"
+    }
+}
+
+/// Run `rustc -V` and return the trimmed first line, e.g.
+/// `rustc 1.94.1 (abcdef0 2026-05-30)`. Returns `None` when rustc is
+/// unreachable — the caller treats this as "no rustc identity" and
+/// skips indexing (cross-repo sharing without rustc keying would be
+/// unsafe).
+fn rustc_version_string(manifest_dir: &Path) -> Option<String> {
+    let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let out = Command::new(rustc).arg("-V").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    Some(s.lines().next()?.trim().to_string())
+}
+
+fn resolve_channel(manifest_dir: &Path) -> Option<String> {
+    match read_rust_toolchain_manifest(manifest_dir) {
+        Ok(m) => m.channel,
+        Err(_) => None,
+    }
+}
+
+fn resolve_target_triple(manifest_dir: &Path, args: &CookArgs) -> Option<String> {
+    if let Some(triple) = args.target.as_deref() {
+        return Some(triple.to_string());
+    }
+    TargetTriple::detect_in_dir(manifest_dir)
+        .ok()
+        .map(|t| t.to_string())
+}
+
+fn sha256_of_path(path: &Path) -> Result<[u8; 32], SoldrError> {
+    let bytes = std::fs::read(path).map_err(|e| {
+        SoldrError::Other(format!(
+            "soldr cook: failed to read recipe {}: {e}",
+            path.display()
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = hasher.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
+}
+
+/// Index the cooked `target/<profile>/` tree into the cross-repo
+/// shared `~/.soldr/cache/cook/` (issue #577) and register the
+/// artifact with the daemon via `CookRecord`. Best-effort: a failure
+/// here surfaces as a warning but never fails the cook command.
+fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), SoldrError> {
+    // 1. Sharing-eligibility checks.
+    let lockfile = ctx.manifest_dir.join("Cargo.lock");
+    if !lockfile.is_file() {
+        // Already warned earlier in build_cook_context.
+        return Ok(());
+    }
+    let has_git = find_git_worktree_root(&ctx.manifest_dir).is_some();
+    let lock_tracked = cargo_lock_is_tracked(&ctx.manifest_dir);
+    let lock_gitignored = cargo_lock_is_gitignored(&ctx.manifest_dir);
+
+    if !lock_tracked {
+        // Includes both "no .git/" and "git but file untracked".
+        if has_git {
+            eprintln!(
+                "{} cross-repo cook sharing disabled — Cargo.lock is not tracked by git. \
+                 Commit it to enable.",
+                yellow_warning_prefix()
+            );
+        } else {
+            eprintln!(
+                "{} no .git/ — cook artifact will be local-only, not indexed for sharing.",
+                yellow_warning_prefix()
+            );
+        }
+        return Ok(());
+    }
+    if lock_gitignored {
+        eprintln!(
+            "{} Cargo.lock is gitignored — sharing may leak deps that diverge from upstream. \
+             Skipping cook-index registration.",
+            yellow_warning_prefix()
+        );
+        return Ok(());
+    }
+
+    // 2. Resolve key components.
+    let target_dir = resolve_cook_target_dir(&ctx.manifest_dir, args);
+    if !target_dir.is_dir() {
+        // cargo-chef cook didn't produce a target/<profile>/ tree —
+        // most likely because the build failed earlier (we already
+        // returned in that case). Defensive fallback: silently skip.
+        return Ok(());
+    }
+
+    let triple = resolve_target_triple(&ctx.manifest_dir, args).ok_or_else(|| {
+        SoldrError::Other("soldr cook: could not resolve target triple for cook-index key".into())
+    })?;
+    let channel = resolve_channel(&ctx.manifest_dir).unwrap_or_default();
+    let rustc_version = rustc_version_string(&ctx.manifest_dir).ok_or_else(|| {
+        SoldrError::Other("soldr cook: could not resolve rustc version for cook-index key".into())
+    })?;
+    let recipe_hash = sha256_of_path(&ctx.recipe_path)?;
+    let origin = origin_url(&ctx.manifest_dir);
+    let profile = resolve_profile_name(args).to_string();
+
+    // 3. Resolve paths under ~/.soldr/.
+    let paths = SoldrPaths::new()?;
+    let cook_dir = cook_cache_dir(&paths);
+    std::fs::create_dir_all(&cook_dir).map_err(|e| {
+        SoldrError::Other(format!(
+            "soldr cook: failed to create {}: {e}",
+            cook_dir.display()
+        ))
+    })?;
+
+    // 4. Pre-flight CookLookup so we can render a drift diagnostic
+    //    when a previous recipe hash exists for this (origin, triple,
+    //    profile, channel, rustc). Best-effort: a daemon hiccup
+    //    falls through silently.
+    let sock = client::default_sock_path(&paths);
+    let prior_drift = match client::cook_lookup(
+        &sock,
+        recipe_hash,
+        triple.clone(),
+        profile.clone(),
+        channel.clone(),
+        rustc_version.clone(),
+        origin.clone(),
+    ) {
+        Ok(CookLookupOutcome::Hit { sha256, .. }) => {
+            // Already-cached for this exact key. Re-pack + re-record
+            // anyway so the artifact bytes match the freshly built
+            // target/ — a previous run might have written from a
+            // sibling worktree with slightly different mtimes.
+            Some(DriftSignal::AlreadyIndexed(sha256))
+        }
+        Ok(CookLookupOutcome::Miss {
+            previous_origin_recipe_hashes,
+        }) => previous_origin_recipe_hashes
+            .first()
+            .copied()
+            .map(DriftSignal::Drifted),
+        Err(_) => None,
+    };
+
+    // 5. Pack the trimmed target/<profile>/ tree.
+    let packed = cook_archive::pack_cook_archive(&target_dir, &cook_dir)
+        .map_err(|e| SoldrError::Other(format!("soldr cook: failed to pack cook archive: {e}")))?;
+
+    // 6. Register with the daemon. If the daemon is unreachable we
+    //    still keep the on-disk artifact for the next PR-3 hydrate
+    //    attempt, but warn so the user knows sharing is one-sided.
+    let cook_cmd_summary = build_cook_cmd_summary(args);
+    let register = client::cook_record(
+        &sock,
+        recipe_hash,
+        triple.clone(),
+        profile.clone(),
+        channel.clone(),
+        rustc_version.clone(),
+        packed.sha256,
+        packed.size_bytes,
+        origin.clone(),
+        cook_cmd_summary,
+    );
+    if let Err(e) = register {
+        eprintln!(
+            "{} CookRecord to daemon failed: {e:?}. Artifact written at {} but not indexed.",
+            yellow_warning_prefix(),
+            packed.path.display()
+        );
+        return Ok(());
+    }
+
+    // 7. Recipe-drift diagnostic (printed before the success line so
+    //    the indexed line is the last word).
+    if let Some(DriftSignal::Drifted(prev)) = prior_drift {
+        eprintln!("soldr cook: recipe hash drift since {}", sha_abbrev(&prev));
+    }
+
+    // 8. Green success line.
+    emit_indexed_line(&packed, origin.as_deref());
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+enum DriftSignal {
+    Drifted([u8; 32]),
+    AlreadyIndexed(#[allow(dead_code)] [u8; 32]),
+}
+
+fn emit_indexed_line(packed: &PackedCookArchive, origin: Option<&str>) {
+    let mib = packed.size_bytes as f64 / 1024.0 / 1024.0;
+    let origin_field = origin.unwrap_or("none");
+    eprintln!(
+        "{}  sha256={}  size={mib:.1} MiB  origin={origin_field}",
+        green_indexed_prefix(),
+        sha_abbrev(&packed.sha256),
+    );
+}
+
+fn build_cook_cmd_summary(args: &CookArgs) -> String {
+    let mut parts = vec!["cook".to_string()];
+    if args.release {
+        parts.push("--release".to_string());
+    }
+    if let Some(p) = args.profile.as_deref() {
+        parts.push(format!("--profile={p}"));
+    }
+    if let Some(t) = args.target.as_deref() {
+        parts.push(format!("--target={t}"));
+    }
+    if args.workspace {
+        parts.push("--workspace".to_string());
+    }
+    for pkg in &args.packages {
+        parts.push(format!("-p {pkg}"));
+    }
+    parts.join(" ")
 }
 
 /// Remove cargo-chef-generated `plugin = false` / `plugin = true`

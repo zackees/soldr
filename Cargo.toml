@@ -43,6 +43,10 @@ walkdir = "2"
 jwalk = "0.8"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
 filetime = "0.2"
+# Used by `core::git::normalize_origin_url` for canonicalizing git
+# remote URLs into the prefetch hint stored alongside cook artifacts
+# (issue #577).
+url = "2"
 # Read-only access to cargo's `$CARGO_HOME/.global-cache` SQLite database
 # (issue #349). `bundled` compiles SQLite ourselves so neither the
 # managed wheel nor the cargo-install path needs a system libsqlite3.

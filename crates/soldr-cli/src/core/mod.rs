@@ -12,6 +12,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+pub mod git;
 mod paths;
 mod target_triple;
 mod toolchain_manifest;

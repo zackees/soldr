@@ -1051,7 +1051,9 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         // small (<MiB each) and the bounded channel caps how many are
         // resident at once, so memory usage stays bounded.
         let mut body = Vec::new();
-        entry.read_to_end(&mut body).map_err(SaveLoadError::BareIo)?;
+        entry
+            .read_to_end(&mut body)
+            .map_err(SaveLoadError::BareIo)?;
         let mtime_secs = entry.header().mtime().ok();
 
         // Lazy-start the dispatch on first cache entry.
@@ -1070,7 +1072,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             body,
             mtime_secs,
         };
-        if let Err(_) = dispatch.send(job) {
+        if dispatch.send(job).is_err() {
             // Receivers are gone — there must be a stored error already.
             break;
         }
@@ -1217,7 +1219,10 @@ impl ExtractDispatch {
         ExtractDispatch { tx, barrier }
     }
 
-    fn send(&self, job: ExtractJob) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
+    fn send(
+        &self,
+        job: ExtractJob,
+    ) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
         self.tx.send(job)
     }
 

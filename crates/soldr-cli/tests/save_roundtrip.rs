@@ -785,14 +785,13 @@ fn parallel_extract_many_small_files() {
     for (rel, (body, mtime_ms_expected)) in &expected {
         let restored = restore.join(rel);
         let actual = fs::read(&restored).unwrap_or_else(|e| {
-            panic!("missing or unreadable restored file {}: {}", restored.display(), e);
+            panic!(
+                "missing or unreadable restored file {}: {}",
+                restored.display(),
+                e
+            );
         });
-        assert_eq!(
-            &actual,
-            body,
-            "content mismatch at {}",
-            restored.display()
-        );
+        assert_eq!(&actual, body, "content mismatch at {}", restored.display());
         // tar stores mtime at second resolution; allow ±1000 ms slack.
         let restored_mtime = mtime_ms(&restored);
         let diff = (restored_mtime - mtime_ms_expected).abs();
