@@ -68,6 +68,7 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "src/daemon/ipc.rs",
     "src/daemon/lifecycle.rs",
     "src/defender_probe.rs",
+    "src/doctor.rs",
     "src/fetch/github.rs",
     "src/fetch/install_zccache.rs",
     "src/fetch/known_tools.rs",

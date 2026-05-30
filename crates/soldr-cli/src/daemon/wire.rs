@@ -396,22 +396,6 @@ pub fn prost_tagged_bytes<M: prost::Message>(message: &M) -> Vec<u8> {
     out
 }
 
-/// Inverse of [`prost_tagged_bytes`]: when the row starts with the
-/// prost tag, hand the caller the prost payload to decode. When the
-/// row starts with any other byte, hand back the full original slice
-/// so the caller can attempt the legacy bincode decoder.
-pub enum RedbDecode<'a> {
-    Prost(&'a [u8]),
-    LegacyBincode(&'a [u8]),
-}
-
-pub fn classify_redb_row(bytes: &[u8]) -> RedbDecode<'_> {
-    match bytes.split_first() {
-        Some((&REDB_TAG_PROST, rest)) => RedbDecode::Prost(rest),
-        _ => RedbDecode::LegacyBincode(bytes),
-    }
-}
-
 // =========================================================================
 // Encode / decode at the Request + Response boundary (wire framing)
 // =========================================================================
@@ -1068,24 +1052,9 @@ mod tests {
         ));
     });
 
-    crate::timed_test!(tagged_byte_classifier_routes_correctly, {
-        let prost_body = [0xDE, 0xAD, 0xBE, 0xEF];
-        let mut tagged = vec![REDB_TAG_PROST];
-        tagged.extend_from_slice(&prost_body);
-        match classify_redb_row(&tagged) {
-            RedbDecode::Prost(rest) => assert_eq!(rest, &prost_body),
-            RedbDecode::LegacyBincode(_) => panic!("expected prost classification"),
-        }
-        // Anything else falls through to legacy.
-        let bincode_like = [0x00u8, 0x01, 0x02];
-        match classify_redb_row(&bincode_like) {
-            RedbDecode::Prost(_) => panic!("expected legacy classification"),
-            RedbDecode::LegacyBincode(bytes) => assert_eq!(bytes, &bincode_like),
-        }
-        // Empty falls through to legacy too (bincode will error cleanly).
-        match classify_redb_row(&[]) {
-            RedbDecode::Prost(_) => panic!("expected legacy on empty"),
-            RedbDecode::LegacyBincode(b) => assert!(b.is_empty()),
-        }
+    crate::timed_test!(prost_tagged_bytes_prepends_the_tag, {
+        let payload = proto::WireUnit {};
+        let bytes = prost_tagged_bytes(&payload);
+        assert_eq!(bytes.first().copied(), Some(REDB_TAG_PROST));
     });
 }

@@ -10,7 +10,6 @@ description = "CLI for soldr — instant tools, instant builds"
 [dependencies]
 # Folded in from former soldr-core / soldr-fetch / soldr-cache crates
 # (see crates/soldr-cli/src/{core,fetch,cache_lib}/).
-bincode = { workspace = true }
 blake3 = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
