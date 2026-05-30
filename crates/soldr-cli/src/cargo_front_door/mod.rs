@@ -33,6 +33,7 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cache_plan;
+mod component_install;
 pub(crate) mod cook_hydrate;
 mod disk;
 mod inputs;
@@ -302,6 +303,12 @@ pub(crate) async fn run_cargo_front_door(
     command.env("RUSTC", &rustc);
     let build_like_cargo = cargo_args_are_cacheable(args);
     let cache_enabled_for_cargo = cache_enabled && build_like_cargo;
+
+    // Issue #597: auto-install rustup components for `soldr cargo {fmt,
+    // clippy,miri}` when they're missing. Best-effort and silent on
+    // failure — cargo's own error surfaces if the auto-install fails.
+    // Honors SOLDR_NO_AUTO_COMPONENT=1.
+    component_install::maybe_install_component_for_subcommand(args, &paths);
 
     // PR 3 (#578, meta #579): cross-repo cook-index pre-flight hydrate.
     // Best-effort — every failure path is silent so a missing daemon,
