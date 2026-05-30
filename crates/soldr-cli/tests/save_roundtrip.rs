@@ -870,3 +870,51 @@ fn profile_extract_flag_does_not_break_load() {
         b"hello-profile"
     );
 }
+
+/// soldr#587: an executable file (0o755) restored from cache must
+/// still be executable. Without the per-worker chmod that fix
+/// landed, cargo build-script-build files lose +x and fail execve
+/// with EACCES on the next warm build.
+#[cfg(unix)]
+#[test]
+fn load_restores_executable_bit_for_cache_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let exe = cache.join("build-script-build");
+    fs::write(&exe, b"#!/bin/sh\necho run\n").unwrap();
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let archive = tmp.path().join("a.tar.zst");
+    let _ = save(&SaveOptions {
+        workspace: None,
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: 1,
+        threads: None,
+        mtimes_only: false,
+    })
+    .unwrap();
+
+    let restore = tmp.path().join("restore");
+    let _ = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: None,
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .unwrap();
+
+    let restored = restore.join("build-script-build");
+    let perms = fs::metadata(&restored).unwrap().permissions();
+    let mode = perms.mode() & 0o777;
+    assert_eq!(
+        mode, 0o755,
+        "restored mode {:o} != 0o755 — +x bit not preserved (regression of #587)",
+        mode
+    );
+}

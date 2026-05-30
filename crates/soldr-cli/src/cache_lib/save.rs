@@ -1082,6 +1082,11 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             .read_to_end(&mut body)
             .map_err(SaveLoadError::BareIo)?;
         let mtime_secs = entry.header().mtime().ok();
+        // Capture the tar header's Unix mode so the worker can chmod
+        // the file after writing. Without this, executable scripts
+        // and binaries (e.g. cargo `build-script-build`) lose +x on
+        // restore and fail with EACCES — see #587.
+        let mode_bits = entry.header().mode().ok();
 
         // Lazy-start the dispatch on first cache entry.
         let dispatch = extract_dispatch.get_or_insert_with(|| {
@@ -1099,6 +1104,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             entry_type,
             body,
             mtime_secs,
+            mode_bits,
         };
         if dispatch.send(job).is_err() {
             // Receivers are gone — there must be a stored error already.
@@ -1178,6 +1184,11 @@ struct ExtractJob {
     entry_type: tar::EntryType,
     body: Vec<u8>,
     mtime_secs: Option<u64>,
+    /// Unix file mode from the tar header, used to restore the
+    /// executable bit on Unix. None when the header lacked a mode.
+    /// Ignored on Windows (NTFS uses ACLs, not Unix modes; tar
+    /// archives don't carry meaningful NTFS permissions). (#587)
+    mode_bits: Option<u32>,
 }
 
 /// Bounded-channel + worker-thread bundle that owns the parallel extraction
@@ -1290,6 +1301,17 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
     match job.entry_type {
         tar::EntryType::Regular => {
             std::fs::write(&job.dest, &job.body).map_err(|e| io(&job.dest, e))?;
+            // #587: restore +x (and other Unix permission bits) from
+            // the tar header. Without this, cargo build-script-build
+            // binaries restored from cache fail execve with EACCES.
+            // Windows ignores the mode — NTFS uses ACLs, and the tar
+            // header's Unix mode isn't meaningful there.
+            #[cfg(unix)]
+            if let Some(mode) = job.mode_bits {
+                use std::os::unix::fs::PermissionsExt;
+                let perms = std::fs::Permissions::from_mode(mode);
+                std::fs::set_permissions(&job.dest, perms).map_err(|e| io(&job.dest, e))?;
+            }
             if let Some(secs) = job.mtime_secs {
                 let ft = filetime::FileTime::from_unix_time(secs as i64, 0);
                 filetime::set_file_mtime(&job.dest, ft).map_err(|e| io(&job.dest, e))?;
