@@ -103,6 +103,8 @@ fn perf_roundtrip_realistic() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
     let load_elapsed = t0.elapsed();

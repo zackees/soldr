@@ -126,6 +126,8 @@ fn roundtrip_basic_mtime_restoration() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -236,6 +238,8 @@ fn load_skips_content_changed_files() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -272,6 +276,8 @@ fn load_skips_missing_files() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -303,6 +309,8 @@ fn load_skips_size_mismatch_without_hashing() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -331,6 +339,8 @@ fn cache_only_archive_skips_mtime_replay() {
         workspace: None,
         threads: None,
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
     assert_eq!(r.cache_files_restored, 4);
@@ -401,6 +411,8 @@ fn mtimes_only_save_and_load_roundtrip() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: true,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("mtimes-only load ok");
 
@@ -463,6 +475,8 @@ fn mtimes_only_load_refuses_modified_source() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: true,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -542,6 +556,8 @@ fn mtimes_only_load_rejects_cache_entries() {
         workspace: Some(&ws),
         threads: None,
         mtimes_only: true,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect_err("mtimes-only load of cache-bearing archive must error");
     let msg = err.to_string();
@@ -668,6 +684,8 @@ fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
         workspace: None,
         threads: Some(1),
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("base load ok");
     load(&LoadOptions {
@@ -676,6 +694,8 @@ fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
         workspace: None,
         threads: Some(1),
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("delta load ok");
 
@@ -776,6 +796,8 @@ fn parallel_extract_many_small_files() {
         // guaranteed to fill and apply back-pressure to the driver.
         threads: Some(2),
         mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
     })
     .expect("load ok");
 
@@ -785,14 +807,13 @@ fn parallel_extract_many_small_files() {
     for (rel, (body, mtime_ms_expected)) in &expected {
         let restored = restore.join(rel);
         let actual = fs::read(&restored).unwrap_or_else(|e| {
-            panic!("missing or unreadable restored file {}: {}", restored.display(), e);
+            panic!(
+                "missing or unreadable restored file {}: {}",
+                restored.display(),
+                e
+            );
         });
-        assert_eq!(
-            &actual,
-            body,
-            "content mismatch at {}",
-            restored.display()
-        );
+        assert_eq!(&actual, body, "content mismatch at {}", restored.display());
         // tar stores mtime at second resolution; allow ±1000 ms slack.
         let restored_mtime = mtime_ms(&restored);
         let diff = (restored_mtime - mtime_ms_expected).abs();
@@ -805,4 +826,47 @@ fn parallel_extract_many_small_files() {
             restored_mtime,
         );
     }
+}
+
+/// `profile_extract: true` is non-fatal and a no-op for correctness:
+/// the load report and file contents must match what a normal load
+/// would produce. We can't easily assert the exact stderr line in this
+/// test runner (cargo captures it), but we can assert load() doesn't
+/// panic / error / corrupt output when the flag is on. (#575 phase 2)
+#[test]
+fn profile_extract_flag_does_not_break_load() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cache = tmp.path().join("cache");
+    fs::create_dir_all(&cache).unwrap();
+    let f = cache.join("entry.bin");
+    fs::write(&f, b"hello-profile").unwrap();
+
+    let archive = tmp.path().join("a.tar.zst");
+    let _ = save(&SaveOptions {
+        workspace: None,
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: 1,
+        threads: None,
+        mtimes_only: false,
+    })
+    .unwrap();
+
+    let restore = tmp.path().join("restore");
+    let report = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: None,
+        mtimes_only: false,
+        profile_extract: true,
+        auto_defender_exclude: false,
+    })
+    .unwrap();
+
+    assert_eq!(report.cache_files_restored, 1);
+    assert_eq!(
+        fs::read(restore.join("entry.bin")).unwrap(),
+        b"hello-profile"
+    );
 }

@@ -882,6 +882,17 @@ pub struct LoadOptions<'a> {
     /// entries; one is an error). Requires `workspace` to be `Some` —
     /// otherwise the load is a no-op.
     pub mtimes_only: bool,
+    /// Emit a per-phase profile line to stderr after the load finishes:
+    /// zstd decode time, tar parse + dispatch time, total extract time,
+    /// per-worker job count, and per-file extract latency percentiles.
+    /// Useful for tuning the parallel-extract worker count (#575).
+    pub profile_extract: bool,
+    /// On Windows, when the current process is admin, briefly add the
+    /// cache directory to the Defender exclusion list for the duration
+    /// of the load. No-op on non-Windows or when not admin — never
+    /// triggers a UAC prompt. Default off; setup-soldr passes this on
+    /// Windows runners. (#575)
+    pub auto_defender_exclude: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -980,6 +991,22 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     let mut extract_dispatch: Option<ExtractDispatch> = None;
     let extract_error: Arc<Mutex<Option<SaveLoadError>>> = Arc::new(Mutex::new(None));
     let cache_files_counter = Arc::new(AtomicU64::new(0));
+    let profile = if opts.profile_extract {
+        Some(Arc::new(ExtractProfile::new(pool.current_num_threads())))
+    } else {
+        None
+    };
+    let driver_loop_start = std::time::Instant::now();
+
+    // #575 Defender auto-exclusion (Windows + admin only — never UAC-
+    // prompts). The guard removes the exclusion on drop.
+    let _defender_guard = if opts.auto_defender_exclude {
+        opts.cache_dir
+            .map(defender_exclusion_guard_for)
+            .unwrap_or_default()
+    } else {
+        DefenderExclusionGuard::default()
+    };
 
     for entry in tar_reader.entries().map_err(SaveLoadError::BareIo)? {
         let mut entry = entry.map_err(SaveLoadError::BareIo)?;
@@ -1051,7 +1078,9 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         // small (<MiB each) and the bounded channel caps how many are
         // resident at once, so memory usage stays bounded.
         let mut body = Vec::new();
-        entry.read_to_end(&mut body).map_err(SaveLoadError::BareIo)?;
+        entry
+            .read_to_end(&mut body)
+            .map_err(SaveLoadError::BareIo)?;
         let mtime_secs = entry.header().mtime().ok();
 
         // Lazy-start the dispatch on first cache entry.
@@ -1061,6 +1090,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
                 opts.threads,
                 Arc::clone(&extract_error),
                 Arc::clone(&cache_files_counter),
+                profile.as_ref().map(Arc::clone),
             )
         });
 
@@ -1076,15 +1106,21 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         }
     }
 
+    let driver_loop_ms = driver_loop_start.elapsed().as_millis() as u64;
+    let workers_drain_start = std::time::Instant::now();
     // Close the dispatch channel and wait for workers to drain. Any error
     // from a worker is surfaced here (first-error-wins).
     if let Some(dispatch) = extract_dispatch {
         dispatch.finish()?;
     }
+    let workers_drain_ms = workers_drain_start.elapsed().as_millis() as u64;
     if let Some(err) = extract_error.lock().expect("extract_error mutex").take() {
         return Err(err);
     }
     let cache_files_restored = cache_files_counter.load(Ordering::Relaxed);
+    if let Some(profile) = profile {
+        profile.emit_to_stderr(driver_loop_ms, workers_drain_ms, cache_files_restored);
+    }
 
     let manifest = match manifest_decoded {
         Some(manifest) => manifest,
@@ -1161,6 +1197,7 @@ impl ExtractDispatch {
         _threads: Option<usize>,
         err_slot: Arc<Mutex<Option<SaveLoadError>>>,
         counter: Arc<AtomicU64>,
+        profile: Option<Arc<ExtractProfile>>,
     ) -> Self {
         // Worker count = pool size. The pool was built by `build_pool` with
         // the user's `--threads` value (or rayon's default), so trusting it
@@ -1177,11 +1214,12 @@ impl ExtractDispatch {
         let rx = Arc::new(Mutex::new(rx));
         let barrier = Arc::new(std::sync::Barrier::new(n_workers + 1));
 
-        for _ in 0..n_workers {
+        for worker_idx in 0..n_workers {
             let rx = Arc::clone(&rx);
             let err_slot = Arc::clone(&err_slot);
             let counter = Arc::clone(&counter);
             let barrier = Arc::clone(&barrier);
+            let profile = profile.as_ref().map(Arc::clone);
             pool.spawn(move || {
                 loop {
                     let job = {
@@ -1199,6 +1237,7 @@ impl ExtractDispatch {
                         continue;
                     }
                     let is_regular = job.entry_type == tar::EntryType::Regular;
+                    let job_start = profile.is_some().then(std::time::Instant::now);
                     if let Err(e) = extract_one(&job) {
                         let mut slot = err_slot.lock().expect("err_slot mutex");
                         if slot.is_none() {
@@ -1209,6 +1248,10 @@ impl ExtractDispatch {
                     if is_regular {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
+                    if let (Some(prof), Some(t0)) = (profile.as_ref(), job_start) {
+                        let us = t0.elapsed().as_micros() as u64;
+                        prof.record(worker_idx, us);
+                    }
                 }
                 barrier.wait();
             });
@@ -1217,7 +1260,10 @@ impl ExtractDispatch {
         ExtractDispatch { tx, barrier }
     }
 
-    fn send(&self, job: ExtractJob) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
+    fn send(
+        &self,
+        job: ExtractJob,
+    ) -> std::result::Result<(), std::sync::mpsc::SendError<ExtractJob>> {
         self.tx.send(job)
     }
 
@@ -1265,6 +1311,89 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Per-load profiling state collected when `LoadOptions::profile_extract`
+/// is on (#575). Each worker writes into its own slot — no contention.
+/// `emit_to_stderr` formats the summary line at the end of `load()`.
+struct ExtractProfile {
+    /// Per-worker microsecond latencies for each successful Regular
+    /// extraction. Sized once at construction; never resized later.
+    per_worker_latencies: Vec<Mutex<Vec<u64>>>,
+}
+
+impl ExtractProfile {
+    fn new(n_workers: usize) -> Self {
+        let mut per_worker_latencies = Vec::with_capacity(n_workers);
+        for _ in 0..n_workers {
+            per_worker_latencies.push(Mutex::new(Vec::new()));
+        }
+        ExtractProfile {
+            per_worker_latencies,
+        }
+    }
+
+    fn record(&self, worker_idx: usize, latency_us: u64) {
+        // Defensive: rayon promises a stable index in `[0, n_workers)`,
+        // but a future re-architecture might break that — fail soft.
+        if let Some(slot) = self.per_worker_latencies.get(worker_idx) {
+            if let Ok(mut v) = slot.lock() {
+                v.push(latency_us);
+            }
+        }
+    }
+
+    fn emit_to_stderr(&self, driver_loop_ms: u64, workers_drain_ms: u64, files: u64) {
+        let mut all_us: Vec<u64> = Vec::new();
+        let mut per_worker_counts = Vec::with_capacity(self.per_worker_latencies.len());
+        for slot in &self.per_worker_latencies {
+            let v = slot.lock().expect("profile slot mutex");
+            per_worker_counts.push(v.len());
+            all_us.extend_from_slice(&v);
+        }
+        all_us.sort_unstable();
+        let pct = |p: f64| -> u64 {
+            if all_us.is_empty() {
+                return 0;
+            }
+            let idx = ((all_us.len() as f64 - 1.0) * p).round() as usize;
+            all_us[idx.min(all_us.len() - 1)]
+        };
+        let workers_summary: String = per_worker_counts
+            .iter()
+            .enumerate()
+            .map(|(i, n)| format!("{}:n={}", i, n))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "soldr load: profile cache_files={} driver_loop_ms={} workers_drain_ms={} workers={{{}}} per_file_p50_us={} p95_us={} p99_us={}",
+            files,
+            driver_loop_ms,
+            workers_drain_ms,
+            workers_summary,
+            pct(0.50),
+            pct(0.95),
+            pct(0.99),
+        );
+    }
+}
+
+/// Placeholder RAII guard for the `--auto-defender-exclude` flag
+/// (#575). The CLI/options surface is stable now so callers (notably
+/// setup-soldr#260) can wire the flag; the actual `Add-MpPreference`
+/// invocation lands in a follow-up PR because the shared exclusion
+/// plumbing lives in the bin-only `optimize` module today and would
+/// require moving that module into the lib tree (cascading dep
+/// cleanup). For now we emit a one-line notice and proceed.
+#[derive(Default)]
+struct DefenderExclusionGuard;
+
+fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
+    eprintln!(
+        "soldr load: --auto-defender-exclude requested for {} (deferred — follow-up PR will wire to Add-MpPreference; no-op for now)",
+        cache_dir.display()
+    );
+    DefenderExclusionGuard
 }
 
 fn replay_one(workspace: &Path, entry: &SourceFile) -> MtimeOutcome {

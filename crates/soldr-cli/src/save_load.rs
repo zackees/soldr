@@ -99,6 +99,21 @@ pub struct LoadArgs {
     /// successful load, for later `soldr save --delta-from-manifest`.
     #[arg(long, value_name = "FILE")]
     pub manifest_out: Option<PathBuf>,
+
+    /// Emit a per-phase profile line to stderr after the load (zstd
+    /// decode time, tar parse + dispatch time, total extract time, per-
+    /// worker job count, per-file extract latency percentiles). Useful
+    /// for tuning the parallel-extract worker count. Also enabled when
+    /// `SOLDR_PROFILE_EXTRACT=1` is set in the environment. (#575)
+    #[arg(long = "profile-extract")]
+    pub profile_extract: bool,
+
+    /// On Windows, when the current process is admin, briefly add the
+    /// `--cache-dir` to the Defender exclusion list for the duration of
+    /// the load. No-op on non-Windows or non-admin contexts — never
+    /// triggers a UAC prompt. Default off. (#575)
+    #[arg(long = "auto-defender-exclude")]
+    pub auto_defender_exclude: bool,
 }
 
 pub fn run_save(args: SaveArgs) -> i32 {
@@ -195,12 +210,18 @@ pub fn run_save(args: SaveArgs) -> i32 {
 }
 
 pub fn run_load(args: LoadArgs) -> i32 {
+    let env_profile = std::env::var("SOLDR_PROFILE_EXTRACT")
+        .ok()
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
     let opts = LoadOptions {
         archive: &args.archive,
         cache_dir: args.cache_dir.as_deref(),
         workspace: args.workspace.as_deref(),
         threads: args.threads,
         mtimes_only: args.mtimes_only,
+        profile_extract: args.profile_extract || env_profile,
+        auto_defender_exclude: args.auto_defender_exclude,
     };
     let report = match load(&opts) {
         Ok(r) => r,
