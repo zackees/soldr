@@ -26,7 +26,6 @@ use crate::core::{
 };
 use crate::daemon::client::{self, CookLookupOutcome};
 use crate::ZccacheSourceArg;
-use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -539,21 +538,6 @@ fn resolve_target_triple(manifest_dir: &Path, args: &CookArgs) -> Option<String>
         .map(|t| t.to_string())
 }
 
-fn sha256_of_path(path: &Path) -> Result<[u8; 32], SoldrError> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        SoldrError::Other(format!(
-            "soldr cook: failed to read recipe {}: {e}",
-            path.display()
-        ))
-    })?;
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let digest = hasher.finalize();
-    let mut out = [0u8; 32];
-    out.copy_from_slice(&digest);
-    Ok(out)
-}
-
 /// Index the cooked `target/<profile>/` tree into the cross-repo
 /// shared `~/.soldr/cache/cook/` (issue #577) and register the
 /// artifact with the daemon via `CookRecord`. Best-effort: a failure
@@ -610,7 +594,17 @@ fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), Soldr
     let rustc_version = rustc_version_string(&ctx.manifest_dir).ok_or_else(|| {
         SoldrError::Other("soldr cook: could not resolve rustc version for cook-index key".into())
     })?;
-    let recipe_hash = sha256_of_path(&ctx.recipe_path)?;
+    // PR 3 (#578): the cook-index recipe hash is the workspace
+    // content-fingerprint computed by
+    // `cook_archive::compute_recipe_hash_proxy` so PR 3's cargo-front-
+    // door pre-flight can compute the same key cheaply (no
+    // cargo-chef invocation in the hot path).
+    let recipe_hash =
+        cook_archive::compute_recipe_hash_proxy(&ctx.manifest_dir).ok_or_else(|| {
+            SoldrError::Other(
+                "soldr cook: could not compute recipe hash proxy (Cargo.lock unreadable?)".into(),
+            )
+        })?;
     let origin = origin_url(&ctx.manifest_dir);
     let profile = resolve_profile_name(args).to_string();
 

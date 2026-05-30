@@ -19,12 +19,13 @@ mod toolchain_manifest;
 mod toolchain_resolve;
 
 pub use paths::{
-    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, GcConfig, SoldrConfig, SoldrPaths,
-    SOLDR_CACHE_DIR_ENV_VAR,
+    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, SoldrConfig,
+    SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR,
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};
 pub use toolchain_manifest::{
-    read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrManifestSection,
+    read_rust_toolchain_manifest, PluginSpec, RustToolchainManifest, SoldrCookManifest,
+    SoldrManifestSection,
 };
 pub use toolchain_resolve::{
     apply_implicit_toolchain_homes, probe_toolchain_binary, suppress_windows_console_window,

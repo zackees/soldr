@@ -33,13 +33,35 @@ struct RustToolchainSection {
 
 /// Top-level `[soldr]` section of `rust-toolchain.toml`. Carries
 /// soldr-specific developer-tooling declarations that aren't part of
-/// rustup's own schema. Currently surfaces the `[soldr.plugins]` table
-/// (see [`PluginSpec`]) which `soldr toolchain prepare` translates into
-/// `cargo install` invocations.
+/// rustup's own schema. Surfaces:
+/// * `[soldr.plugins]` — translated into `cargo install` invocations
+///   by `soldr toolchain prepare`.
+/// * `[soldr.cook]` — project-scoped overrides for `~/.soldr/config.toml`
+///   `[cook]` (issue #578). Today only `auto_hydrate` is honored; the
+///   rest of the cook config (size cap, age bound, ...) lives in the
+///   user-global config.
 #[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
 pub struct SoldrManifestSection {
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginSpec>,
+    #[serde(default)]
+    pub cook: Option<SoldrCookManifest>,
+}
+
+/// `[soldr.cook]` section of `rust-toolchain.toml` (issue #578).
+///
+/// ```toml
+/// [soldr.cook]
+/// auto_hydrate = false   # opt out for this repo
+/// ```
+#[derive(Debug, Deserialize, Default, Clone, PartialEq, Eq)]
+pub struct SoldrCookManifest {
+    /// Project-scoped override for `~/.soldr/config.toml`
+    /// `[cook] auto_hydrate`. `None` means "fall through to the
+    /// global config". The env var `SOLDR_COOK_AUTO_HYDRATE` overrides
+    /// both.
+    #[serde(default)]
+    pub auto_hydrate: Option<bool>,
 }
 
 /// One entry in `[soldr.plugins]`. The key is the cargo crate name

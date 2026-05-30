@@ -1005,7 +1005,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             .map(defender_exclusion_guard_for)
             .unwrap_or_default()
     } else {
-        DefenderExclusionGuard::default()
+        DefenderExclusionGuard {}
     };
 
     for entry in tar_reader.entries().map_err(SaveLoadError::BareIo)? {
