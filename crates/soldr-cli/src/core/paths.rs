@@ -120,6 +120,87 @@ pub struct SoldrConfig {
     /// Accepted values: `default`, `ld`, `mold`, `rust-lld`, `fast`.
     #[serde(default)]
     pub linker: Option<String>,
+    /// Cross-repo shared `soldr cook` artifact cache (issue #578, meta
+    /// #579).
+    #[serde(default)]
+    pub cook: CookConfig,
+}
+
+/// `cook` section of `config.toml` (issue #578).
+///
+/// ```toml
+/// [cook]
+/// auto_hydrate     = true   # default ON
+/// max_total_gb     = 10
+/// max_age_days     = 30
+/// keep_per_origin  = 3
+/// zstd_level       = 19
+/// zstd_long_window = 27
+/// ```
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct CookConfig {
+    /// Whether `soldr cargo ...` should pre-flight `CookLookup` against
+    /// the daemon and hydrate `target/` on hit. The env var
+    /// `SOLDR_COOK_AUTO_HYDRATE` and `rust-toolchain.toml`'s
+    /// `[soldr.cook] auto_hydrate` setting override this. Default
+    /// `true` (opt-out).
+    #[serde(default = "CookConfig::default_auto_hydrate")]
+    pub auto_hydrate: bool,
+    /// Auto-GC size cap for `~/.soldr/cache/cook/`, in gibibytes.
+    #[serde(default = "CookConfig::default_max_total_gb")]
+    pub max_total_gb: u64,
+    /// Auto-GC time bound; entries older than this are evicted unless
+    /// protected by `keep_per_origin`.
+    #[serde(default = "CookConfig::default_max_age_days")]
+    pub max_age_days: u64,
+    /// Auto-GC per-origin protection: the N newest entries for each
+    /// normalized `origin_url` are always retained, even under size
+    /// pressure.
+    #[serde(default = "CookConfig::default_keep_per_origin")]
+    pub keep_per_origin: u32,
+    /// zstd compression level for cook artifacts. The default matches
+    /// `cache_lib::cook_archive::COOK_ZSTD_LEVEL`. Surface here lets
+    /// power users tune the trade-off; PR 3 reads the constant.
+    #[serde(default = "CookConfig::default_zstd_level")]
+    pub zstd_level: i32,
+    /// zstd `--long=N` window log. The default matches
+    /// `cache_lib::cook_archive::COOK_ZSTD_LONG_WINDOW`.
+    #[serde(default = "CookConfig::default_zstd_long_window")]
+    pub zstd_long_window: u32,
+}
+
+impl CookConfig {
+    pub const fn default_auto_hydrate() -> bool {
+        true
+    }
+    pub const fn default_max_total_gb() -> u64 {
+        10
+    }
+    pub const fn default_max_age_days() -> u64 {
+        30
+    }
+    pub const fn default_keep_per_origin() -> u32 {
+        3
+    }
+    pub const fn default_zstd_level() -> i32 {
+        19
+    }
+    pub const fn default_zstd_long_window() -> u32 {
+        27
+    }
+}
+
+impl Default for CookConfig {
+    fn default() -> Self {
+        Self {
+            auto_hydrate: Self::default_auto_hydrate(),
+            max_total_gb: Self::default_max_total_gb(),
+            max_age_days: Self::default_max_age_days(),
+            keep_per_origin: Self::default_keep_per_origin(),
+            zstd_level: Self::default_zstd_level(),
+            zstd_long_window: Self::default_zstd_long_window(),
+        }
+    }
 }
 
 /// `gc` section of `config.toml`.

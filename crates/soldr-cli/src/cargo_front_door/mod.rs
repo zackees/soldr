@@ -33,6 +33,7 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cache_plan;
+pub(crate) mod cook_hydrate;
 mod disk;
 mod inputs;
 mod profile_debug;
@@ -301,6 +302,17 @@ pub(crate) async fn run_cargo_front_door(
     command.env("RUSTC", &rustc);
     let build_like_cargo = cargo_args_are_cacheable(args);
     let cache_enabled_for_cargo = cache_enabled && build_like_cargo;
+
+    // PR 3 (#578, meta #579): cross-repo cook-index pre-flight hydrate.
+    // Best-effort — every failure path is silent so a missing daemon,
+    // missing Cargo.lock, mismatched sha, or extract error never
+    // breaks the cargo build. Only fires for build-like cargo
+    // commands; `cargo metadata` / `cargo search` / etc. don't need
+    // target/ to be populated.
+    if build_like_cargo {
+        cook_hydrate::maybe_hydrate(args, &paths);
+    }
+
     let cargo_profile_debug_default = if build_like_cargo {
         profile_debug::maybe_apply_cargo_profile_debug_default(&mut command, args, &paths)?
     } else {

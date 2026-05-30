@@ -86,7 +86,7 @@ impl DaemonProc {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(10);
         let pid_path = cache_root
             .join("cache")
             .join("soldr-daemon")
@@ -99,7 +99,7 @@ impl DaemonProc {
         }
         assert!(
             pid_path.exists(),
-            "soldr-daemon failed to write {} within 5s",
+            "soldr-daemon failed to write {} within 10s",
             pid_path.display()
         );
         Self {

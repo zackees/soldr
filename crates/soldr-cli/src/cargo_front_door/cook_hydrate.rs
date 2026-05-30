@@ -1,0 +1,354 @@
+//! Cargo-front-door pre-flight: probe the daemon's `cook_index_v1`
+//! for a match and hydrate the workspace `target/` tree on hit
+//! (issue #578, meta #579).
+//!
+//! Auto-hydrate is **ON by default**. Three opt-out mechanisms, in
+//! precedence order (highest wins):
+//!
+//! 1. `SOLDR_COOK_AUTO_HYDRATE=0|1` (env var)
+//! 2. `[soldr.cook] auto_hydrate = false` in `rust-toolchain.toml`
+//! 3. `[cook] auto_hydrate = false` in `~/.soldr/config.toml`
+//!
+//! Hot-path budget: a CookLookup miss with the daemon up must cost
+//! < 100 ms. A daemon-down path is silent. Pre-flight failure NEVER
+//! blocks the cargo invocation — every branch falls through cleanly.
+
+use crate::cache_lib::cook_archive::{
+    self, compute_recipe_hash_proxy, extract_skip_existing, quarantine_artifact, sha_abbrev,
+    verify_sha256,
+};
+use crate::core::git::origin_url;
+use crate::core::{
+    probe_toolchain_binary, read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths,
+    TargetTriple,
+};
+use crate::daemon::client::{self, CookLookupOutcome};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Env var that overrides both file-level settings. `0`/`false`/`no`/
+/// `off` disables; anything else (including unset → fall through to
+/// the config files) leaves the choice to the next layer.
+pub const SOLDR_COOK_AUTO_HYDRATE_ENV: &str = "SOLDR_COOK_AUTO_HYDRATE";
+
+/// Run the pre-flight. Best-effort across the board — any error
+/// (missing manifest, missing Cargo.lock, daemon down, parse failure,
+/// SHA mismatch, extract failure) silently returns to the caller so
+/// cargo runs normally.
+pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths) {
+    let _ = try_hydrate(args, paths);
+}
+
+fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
+    let manifest_path = crate::trampoline::find_nearest_manifest()?;
+    let manifest_dir = manifest_path.parent()?.to_path_buf();
+
+    // Cargo.lock must exist — without it the recipe hash is undefined.
+    if !manifest_dir.join("Cargo.lock").is_file() {
+        return None;
+    }
+
+    // Auto-hydrate gating (env > rust-toolchain.toml > config.toml).
+    let config = SoldrConfig::load(&paths.config_file);
+    if !auto_hydrate_enabled(&manifest_dir, &config.cook) {
+        return None;
+    }
+
+    let recipe_hash = compute_recipe_hash_proxy(&manifest_dir)?;
+    let triple = resolve_target_triple(&manifest_dir, args)?;
+    let profile_name = resolve_profile_name(args);
+    let channel = read_rust_toolchain_manifest(&manifest_dir)
+        .ok()
+        .and_then(|m| m.channel)
+        .unwrap_or_default();
+    let rustc_version = rustc_version_string(&manifest_dir)?;
+    let origin = origin_url(&manifest_dir);
+
+    let sock = client::default_sock_path(paths);
+    let outcome = client::cook_lookup(
+        &sock,
+        recipe_hash,
+        triple,
+        profile_name.clone(),
+        channel,
+        rustc_version,
+        origin,
+    )
+    .ok()?;
+
+    let CookLookupOutcome::Hit {
+        sha256,
+        path,
+        size_bytes,
+        origin_url_normalized,
+    } = outcome
+    else {
+        return None;
+    };
+
+    let artifact = PathBuf::from(&path);
+    match verify_sha256(&artifact, &sha256) {
+        Ok(true) => {}
+        Ok(false) => {
+            let abbrev = sha_abbrev(&sha256);
+            if let Ok(quarantined) = quarantine_artifact(&artifact) {
+                eprintln!(
+                    "{} cook artifact sha256 mismatch — quarantined to {}",
+                    yellow_warning_prefix(),
+                    quarantined.display()
+                );
+            } else {
+                eprintln!(
+                    "{} cook artifact sha256 mismatch for {abbrev} — quarantine failed",
+                    yellow_warning_prefix()
+                );
+            }
+            return None;
+        }
+        Err(_) => return None,
+    }
+
+    let target_dir = resolve_target_dir(&manifest_dir, args);
+    if std::fs::create_dir_all(&target_dir).is_err() {
+        return None;
+    }
+
+    let report = extract_skip_existing(&artifact, &target_dir).ok()?;
+
+    // Fire-and-forget touch so the auto-GC pass prefers entries that
+    // are actually serving traffic.
+    let _ = client::cook_touch(&sock, sha256);
+
+    emit_hydrate_line(
+        &sha256,
+        size_bytes,
+        origin_url_normalized.as_deref(),
+        &report,
+    );
+    Some(())
+}
+
+fn emit_hydrate_line(
+    sha256: &[u8; 32],
+    size_bytes: u64,
+    origin_hint: Option<&str>,
+    report: &cook_archive::ExtractReport,
+) {
+    let mib = size_bytes as f64 / 1024.0 / 1024.0;
+    let origin = origin_hint.unwrap_or("none");
+    eprintln!(
+        "{}  sha256={}  size={mib:.1} MiB  origin-hint={origin}  (files +{} ={})",
+        green_hydrate_prefix(),
+        sha_abbrev(sha256),
+        report.files_written,
+        report.files_skipped,
+    );
+}
+
+fn green_hydrate_prefix() -> &'static str {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        "\x1b[32msoldr cook: auto-hydrate activated\x1b[0m"
+    } else {
+        "soldr cook: auto-hydrate activated"
+    }
+}
+
+fn yellow_warning_prefix() -> &'static str {
+    use std::io::IsTerminal;
+    if std::io::stderr().is_terminal() {
+        "\x1b[33msoldr cook: warning:\x1b[0m"
+    } else {
+        "soldr cook: warning:"
+    }
+}
+
+/// Resolve auto-hydrate setting with the documented precedence.
+pub fn auto_hydrate_enabled(manifest_dir: &Path, global: &CookConfig) -> bool {
+    if let Some(val) = std::env::var_os(SOLDR_COOK_AUTO_HYDRATE_ENV) {
+        let s = val.to_string_lossy();
+        let trimmed = s.trim().to_ascii_lowercase();
+        if !trimmed.is_empty() {
+            return matches!(trimmed.as_str(), "1" | "true" | "yes" | "on");
+        }
+    }
+    if let Ok(manifest) = read_rust_toolchain_manifest(manifest_dir) {
+        if let Some(b) = manifest
+            .soldr
+            .and_then(|s| s.cook)
+            .and_then(|c| c.auto_hydrate)
+        {
+            return b;
+        }
+    }
+    global.auto_hydrate
+}
+
+fn resolve_target_triple(manifest_dir: &Path, args: &[String]) -> Option<String> {
+    if let Some(value) = extract_arg_value(args, "--target") {
+        return Some(value);
+    }
+    TargetTriple::detect_in_dir(manifest_dir)
+        .ok()
+        .map(|t| t.to_string())
+}
+
+/// cargo profile NAME (the same string cargo passes through to
+/// `[profile.<NAME>]`). Maps to a directory name via
+/// [`profile_dir_name`].
+fn resolve_profile_name(args: &[String]) -> String {
+    if let Some(value) = extract_arg_value(args, "--profile") {
+        return value;
+    }
+    if has_flag(args, "--release") {
+        return "release".to_string();
+    }
+    "dev".to_string()
+}
+
+/// Map a cargo profile name to its target/ directory name. cargo
+/// special-cases `dev` to `target/debug/`.
+fn profile_dir_name(profile: &str) -> &str {
+    if profile == "dev" {
+        "debug"
+    } else {
+        profile
+    }
+}
+
+fn resolve_target_dir(manifest_dir: &Path, _args: &[String]) -> PathBuf {
+    // The packed archive (PR 2) records entries with the profile dir
+    // as the leading component (`release/`, `debug/`, ...). So we
+    // extract at the bare `target/` directory and the right paths
+    // fall into place.
+    if let Some(env_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        let p = PathBuf::from(&env_dir);
+        if p.is_absolute() {
+            return p;
+        }
+        return manifest_dir.join(p);
+    }
+    manifest_dir.join("target")
+}
+
+fn rustc_version_string(manifest_dir: &Path) -> Option<String> {
+    let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let out = Command::new(rustc).arg("-V").output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?;
+    Some(s.lines().next()?.trim().to_string())
+}
+
+fn extract_arg_value(args: &[String], flag: &str) -> Option<String> {
+    let prefix = format!("{flag}=");
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if arg == flag {
+            return iter.next().cloned();
+        }
+        if let Some(rest) = arg.strip_prefix(&prefix) {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+fn has_flag(args: &[String], flag: &str) -> bool {
+    args.iter().any(|a| a == flag)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    // Env-mutating tests are serialized — `auto_hydrate_enabled`
+    // reads `SOLDR_COOK_AUTO_HYDRATE` from the process environment.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn clear_env() {
+        std::env::remove_var(SOLDR_COOK_AUTO_HYDRATE_ENV);
+    }
+
+    crate::timed_test!(env_var_disables_overriding_everything, {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.94.1\"\n[soldr.cook]\nauto_hydrate = true\n",
+        )
+        .unwrap();
+        std::env::set_var(SOLDR_COOK_AUTO_HYDRATE_ENV, "0");
+        let cfg = CookConfig {
+            auto_hydrate: true,
+            ..CookConfig::default()
+        };
+        assert!(!auto_hydrate_enabled(dir.path(), &cfg));
+        clear_env();
+    });
+
+    crate::timed_test!(env_var_enables_overriding_project_disable, {
+        let _g = ENV_LOCK.lock().unwrap();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.94.1\"\n[soldr.cook]\nauto_hydrate = false\n",
+        )
+        .unwrap();
+        std::env::set_var(SOLDR_COOK_AUTO_HYDRATE_ENV, "1");
+        let cfg = CookConfig {
+            auto_hydrate: false,
+            ..CookConfig::default()
+        };
+        assert!(auto_hydrate_enabled(dir.path(), &cfg));
+        clear_env();
+    });
+
+    crate::timed_test!(rust_toolchain_disable_beats_global_enable, {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let dir = TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.94.1\"\n[soldr.cook]\nauto_hydrate = false\n",
+        )
+        .unwrap();
+        let cfg = CookConfig {
+            auto_hydrate: true,
+            ..CookConfig::default()
+        };
+        assert!(!auto_hydrate_enabled(dir.path(), &cfg));
+    });
+
+    crate::timed_test!(no_overrides_means_global_default_wins, {
+        let _g = ENV_LOCK.lock().unwrap();
+        clear_env();
+        let dir = TempDir::new().unwrap();
+        let cfg = CookConfig::default();
+        assert!(cfg.auto_hydrate, "global default must be ON");
+        assert!(auto_hydrate_enabled(dir.path(), &cfg));
+    });
+
+    crate::timed_test!(profile_resolution_matches_cargo_semantics, {
+        assert_eq!(resolve_profile_name(&[]), "dev");
+        assert_eq!(
+            resolve_profile_name(&["build".into(), "--release".into()]),
+            "release"
+        );
+        assert_eq!(
+            resolve_profile_name(&["build".into(), "--profile".into(), "ci".into()]),
+            "ci"
+        );
+        assert_eq!(
+            resolve_profile_name(&["build".into(), "--profile=ci".into()]),
+            "ci"
+        );
+        assert_eq!(profile_dir_name("dev"), "debug");
+        assert_eq!(profile_dir_name("release"), "release");
+        assert_eq!(profile_dir_name("ci"), "ci");
+    });
+}
