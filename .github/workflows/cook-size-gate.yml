@@ -5,16 +5,22 @@ name: Cook Size Gate
 # fails when the resulting `target/` is heavier than the documented baseline
 # + a small buffer.
 #
-# Baseline as of 2026-05-30 (measured against zccache main, soldr 0.7.45,
-# compressed via tar + zstd level 3 to match setup-soldr's cook-cache save):
+# Baseline measured by the gate itself on 2026-05-30 against zccache main
+# with soldr 0.7.45 (run https://github.com/zackees/soldr/actions/runs/26680734035):
 #
-#   - compressed tarball ≈ 408 MB
-#   - file count         = 7633
+#   - file count                 = 3690
+#   - inflated target/ size      = 1269 MiB  (info only — not gated)
+#   - compressed tar + zstd -3   = 313 MiB
 #
-# Defaults trip at +30 % of compressed size (530 MB) and +25 % of file count
-# (9500). Both are tunable via workflow_dispatch inputs so a single PR can
+# Defaults trip at ~+33 % of compressed size (415 MiB) and ~+30 % of file
+# count (4800). Tunable via workflow_dispatch inputs so a single PR can
 # raise them in lockstep with a deliberate baseline change (e.g., adopting
 # a heavier bundled tool). For background see issue #571.
+#
+# Note: the 408 MiB / 7633 figures cited in #571's earlier comments came
+# from setup-soldr's cook-cache *restore archive* (which includes its own
+# manifest / metadata layer on top of soldr's bare cook output). This gate
+# measures the raw post-trim cook output directly, so the numbers diverge.
 
 on:
   pull_request:
@@ -33,13 +39,13 @@ on:
   workflow_dispatch:
     inputs:
       max_compressed_mb:
-        description: Maximum allowed compressed tarball size in MiB (baseline ~408)
+        description: Maximum allowed compressed tarball size in MiB (baseline ~313)
         required: false
-        default: '530'
+        default: '415'
       max_file_count:
-        description: Maximum allowed file count in target/ post-trim (baseline 7633)
+        description: Maximum allowed file count in target/ post-trim (baseline 3690)
         required: false
-        default: '9500'
+        default: '4800'
 
 permissions:
   contents: read
@@ -92,8 +98,8 @@ jobs:
       - name: Measure cook output + assert thresholds
         working-directory: zccache-fixture
         env:
-          MAX_COMPRESSED_MB: ${{ github.event.inputs.max_compressed_mb || '530' }}
-          MAX_FILE_COUNT: ${{ github.event.inputs.max_file_count || '9500' }}
+          MAX_COMPRESSED_MB: ${{ github.event.inputs.max_compressed_mb || '415' }}
+          MAX_FILE_COUNT: ${{ github.event.inputs.max_file_count || '4800' }}
         run: |
           set -euo pipefail
 
