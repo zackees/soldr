@@ -1100,7 +1100,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             body,
             mtime_secs,
         };
-        if let Err(_) = dispatch.send(job) {
+        if dispatch.send(job).is_err() {
             // Receivers are gone — there must be a stored error already.
             break;
         }
