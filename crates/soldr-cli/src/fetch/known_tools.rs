@@ -133,6 +133,28 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         tag_prefix: None,
         pinned_version: None,
     },
+    // Cross-compile front-ends (issue #598 child). Both are explicitly
+    // documented in `docs/CROSS_COMPILE.md` as the recommended Rust ↔
+    // Windows / Linux cross-compile path, but neither was registered in
+    // this table — so the docs promised auto-fetch behavior the binary
+    // did not actually deliver. `soldr cargo zigbuild build ...` and
+    // `soldr cargo xwin build ...` should now Just Work.
+    ToolSpec {
+        crate_name: "cargo-zigbuild",
+        cargo_subcommand: Some("zigbuild"),
+        binary_name: "cargo-zigbuild",
+        repo: Some(("rust-cross", "cargo-zigbuild")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
+    ToolSpec {
+        crate_name: "cargo-xwin",
+        cargo_subcommand: Some("xwin"),
+        binary_name: "cargo-xwin",
+        repo: Some(("rust-cross", "cargo-xwin")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     ToolSpec {
         crate_name: "wasm-pack",
@@ -321,5 +343,35 @@ mod tests {
             assert_eq!(spec.cargo_subcommand, None);
             assert!(spec.repo.is_some());
         }
+    }
+
+    #[test]
+    fn cargo_zigbuild_is_registered_for_cross_compile_docs_alignment() {
+        // docs/CROSS_COMPILE.md names cargo-zigbuild as the recommended
+        // Linux → Windows cross-compile front-end. The promise to auto-
+        // fetch it only holds if the registry has the entry.
+        let spec = lookup_by_crate("cargo-zigbuild").expect("cargo-zigbuild must be registered");
+        assert_eq!(spec.cargo_subcommand, Some("zigbuild"));
+        assert_eq!(spec.binary_name, "cargo-zigbuild");
+        assert_eq!(spec.repo, Some(("rust-cross", "cargo-zigbuild")));
+        assert_eq!(
+            lookup_by_cargo_subcommand("zigbuild").map(|s| s.crate_name),
+            Some("cargo-zigbuild")
+        );
+    }
+
+    #[test]
+    fn cargo_xwin_is_registered_for_cross_compile_docs_alignment() {
+        // docs/CROSS_COMPILE.md names cargo-xwin as the recommended
+        // Linux → Windows MSVC cross-compile front-end. Same docs-
+        // alignment rationale as cargo-zigbuild above.
+        let spec = lookup_by_crate("cargo-xwin").expect("cargo-xwin must be registered");
+        assert_eq!(spec.cargo_subcommand, Some("xwin"));
+        assert_eq!(spec.binary_name, "cargo-xwin");
+        assert_eq!(spec.repo, Some(("rust-cross", "cargo-xwin")));
+        assert_eq!(
+            lookup_by_cargo_subcommand("xwin").map(|s| s.crate_name),
+            Some("cargo-xwin")
+        );
     }
 }
