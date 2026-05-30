@@ -4,6 +4,7 @@
 //! per-process state (request count, last activity, optional linked
 //! zccache pid placeholder for Phase 3).
 
+use crate::cache_lib::cook_index::{self, CookEntry, CookKey};
 #[cfg(unix)]
 use crate::cache_lib::daemon_sock_path;
 use crate::cache_lib::target_registry::TargetRegistry;
@@ -13,14 +14,20 @@ use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
-    BuildRecord, Request, Response, StatusInfo, ZccacheDaemonLink, PROTOCOL_VERSION,
+    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink, PROTOCOL_VERSION,
 };
 use crate::daemon::zccache_link;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
+
+/// Upper bound on the drift diagnostic returned in [`Response::CookMiss`].
+/// Keeps the body well under [`crate::daemon::protocol::MAX_BODY_BYTES`]
+/// and matches PR 3's expectation of "most recent N prior recipe
+/// hashes for this origin+target".
+const COOK_DRIFT_LIMIT: usize = 8;
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
@@ -78,6 +85,10 @@ struct State {
     /// writer ordering and build-session correlation, not avoiding
     /// the per-write fs::open cost.
     db_path: PathBuf,
+    /// Resolved `~/.soldr/` layout cached for the daemon's lifetime
+    /// so cook-artifact path construction does not need to re-probe
+    /// HOME/SOLDR_CACHE_DIR on every IPC request.
+    paths: SoldrPaths,
     /// Linked zccache runtime kept in memory for fast `Status` replies;
     /// also persisted to redb so a daemon restart can resume shutdown.
     linked_zccache: std::sync::Mutex<Option<ZccacheDaemonLink>>,
@@ -88,6 +99,22 @@ struct State {
     /// task tag the lifecycle event as `died-idle` instead of
     /// `died-shutdown`.
     exit_via_idle: AtomicBool,
+    /// In-process count of [`Request::CookLookup`] hits served since
+    /// this daemon's last startup. Surfaced via [`Request::Status`]
+    /// for `soldr daemon status` and `soldr doctor`. Resets across
+    /// daemon restarts by design — long-lived totals belong in the
+    /// redb `cook_index_v1` table, not in process-local state.
+    cook_hits_this_session: AtomicU64,
+    /// Serializes cook_index redb opens within the daemon process.
+    /// redb refuses concurrent in-process `Database::open` for the
+    /// same file with `Database already open. Cannot acquire lock.`
+    /// Each cook_index op (`upsert`, `lookup`, `touch`, `stats`,
+    /// `drift_recipe_hashes`) opens + drops a handle per call so the
+    /// CLI side (`soldr cache stats`, `soldr doctor`) can still
+    /// open `state.redb` between daemon ops. This lock guarantees
+    /// only one daemon worker runs a cook_index op at a time so the
+    /// "already open" error never reaches the wire.
+    cook_index_lock: std::sync::Mutex<()>,
     shutdown: Notify,
 }
 
@@ -104,6 +131,15 @@ impl State {
     }
 
     fn status(&self) -> StatusInfo {
+        // Serialize the redb open behind cook_index_lock — see the
+        // field-level comment for why this matters.
+        let (entries, total_bytes) = {
+            let _guard = self
+                .cook_index_lock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            cook_index::stats(&self.db_path).unwrap_or((0, 0))
+        };
         StatusInfo {
             version: PROTOCOL_VERSION,
             pid: std::process::id(),
@@ -114,8 +150,20 @@ impl State {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .clone(),
+            cook_stats: Some(CookStats {
+                entries,
+                total_bytes,
+                hits_this_session: self.cook_hits_this_session.load(Ordering::Relaxed),
+            }),
         }
     }
+}
+
+fn current_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Synchronous entry point used by both the `soldr-daemon` bin target
@@ -144,16 +192,22 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // Initialize the Phase 2 daemon tables (idempotent). Errors here
     // are non-fatal — Phase 1 target tracking still works without them.
     let _ = db::ensure_initialized(&db_path);
+    // Initialize the cook_index_v1 table (issue #576). Idempotent and
+    // non-fatal — old soldr versions ignore this table entirely.
+    let _ = cook_index::ensure_initialized(&db_path);
     // Resume any linked zccache identity persisted across daemon restarts.
     let resumed_link = db::get_linked_zccache(&db_path).ok().flatten();
     let start_instant = Instant::now();
     let state = Arc::new(State {
         db_path,
+        paths: paths.clone(),
         linked_zccache: std::sync::Mutex::new(resumed_link),
         start_instant,
         request_count: AtomicU64::new(0),
         last_activity_ms: AtomicU64::new(0),
         exit_via_idle: AtomicBool::new(false),
+        cook_hits_this_session: AtomicU64::new(0),
+        cook_index_lock: std::sync::Mutex::new(()),
         shutdown: Notify::new(),
     });
 
@@ -394,8 +448,138 @@ where
                 *guard = Some(link);
             }
         }
+        Request::CookLookup {
+            recipe_hash,
+            target_triple,
+            profile,
+            channel,
+            rustc_version,
+            origin_url_normalized,
+        } => {
+            let key = CookKey {
+                recipe_hash,
+                target_triple,
+                profile,
+                channel,
+                rustc_version,
+            };
+            // Hold cook_index_lock for the lookup + drift scan, then
+            // drop before any await — Mutex is sync-only.
+            let reply = {
+                let _guard = state
+                    .cook_index_lock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                match cook_index::lookup(&state.db_path, &key) {
+                    Ok(Some(entry)) => {
+                        state.cook_hits_this_session.fetch_add(1, Ordering::Relaxed);
+                        let path = cook_artifact_path(&state.paths, &entry.sha256)
+                            .display()
+                            .to_string();
+                        Response::CookHit {
+                            sha256: entry.sha256,
+                            path,
+                            size_bytes: entry.size_bytes,
+                            origin_url_normalized: entry.origin_url_normalized,
+                        }
+                    }
+                    Ok(None) => {
+                        let previous = cook_index::drift_recipe_hashes(
+                            &state.db_path,
+                            &key,
+                            origin_url_normalized.as_deref(),
+                            COOK_DRIFT_LIMIT,
+                        )
+                        .unwrap_or_default();
+                        Response::CookMiss {
+                            previous_origin_recipe_hashes: previous,
+                        }
+                    }
+                    Err(e) => Response::Error(format!("cook_index lookup failed: {e}")),
+                }
+            };
+            let _ = write_frame_async(&mut stream, &reply).await;
+        }
+        Request::CookRecord {
+            recipe_hash,
+            target_triple,
+            profile,
+            channel,
+            rustc_version,
+            sha256,
+            size_bytes,
+            origin_url_normalized,
+            cook_cmd_summary,
+        } => {
+            let key = CookKey {
+                recipe_hash,
+                target_triple,
+                profile,
+                channel,
+                rustc_version,
+            };
+            let now_ms = current_unix_ms();
+            let entry = CookEntry {
+                sha256,
+                size_bytes,
+                created_unix_ms: now_ms,
+                last_used_unix_ms: now_ms,
+                origin_url_normalized,
+                cook_cmd_summary,
+            };
+            let result = {
+                let _guard = state
+                    .cook_index_lock
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                cook_index::upsert(&state.db_path, &key, &entry)
+            };
+            match result {
+                Ok(()) => {
+                    let _ = write_frame_async(&mut stream, &Response::Ack).await;
+                }
+                Err(e) => {
+                    let _ = write_frame_async(
+                        &mut stream,
+                        &Response::Error(format!("cook_index upsert failed: {e}")),
+                    )
+                    .await;
+                }
+            }
+        }
+        Request::CookTouch { sha256 } => {
+            // Fire-and-forget bump of last_used_unix_ms. Silent on
+            // failure — the caller already moved on.
+            let _guard = state
+                .cook_index_lock
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
+        }
     }
     Ok(())
+}
+
+/// Best-effort resolver for the `~/.soldr/cache/cook/<sha256>.tar.zst`
+/// path. Returns the canonical content-addressed file even when the
+/// file does not yet exist on disk — the path is informational only;
+/// PR 3 (`Response::CookHit` consumer) is responsible for verifying
+/// the sha256 of the bytes it reads.
+fn cook_artifact_path(paths: &SoldrPaths, sha256: &[u8; 32]) -> PathBuf {
+    paths
+        .cache
+        .join("cook")
+        .join(format!("{}.tar.zst", hex_lower(sha256)))
+}
+
+fn hex_lower(bytes: &[u8; 32]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(64);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0F) as usize] as char);
+    }
+    out
 }
 
 async fn run_idle_watchdog(state: Arc<State>, idle_timeout: Duration) {
