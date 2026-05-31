@@ -828,6 +828,60 @@ fn parallel_extract_many_small_files() {
     }
 }
 
+/// #575 deterministic-failure semantic: when a worker can't write a
+/// file (here because a path component is occupied by a regular file
+/// that blocks `create_dir_all`), `load()` must return Err and the
+/// error must mention the offending path so operators can repro it.
+/// First-error-wins: subsequent workers are allowed to drain quietly,
+/// but the returned error must come from a real failure, not be
+/// swallowed.
+#[test]
+fn parallel_extract_surfaces_worker_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let archive = dir.path().join("snap.tar.zst");
+    let restore = dir.path().join("restore");
+
+    // Make an archive that puts files under cache/conflicted/<n>.bin
+    fs::create_dir_all(&cache).unwrap();
+    for n in 0..32u32 {
+        write(&cache.join(format!("conflicted/file{:02}.bin", n)), b"x");
+    }
+
+    save(&SaveOptions {
+        workspace: None,
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+    })
+    .expect("save ok");
+
+    // Pre-create `restore/conflicted` as a REGULAR FILE — any worker that
+    // tries to create_dir_all underneath this path fails deterministically
+    // with NotADirectory / AlreadyExists. The first failure must surface
+    // via load()'s Err return.
+    fs::create_dir_all(&restore).unwrap();
+    fs::write(restore.join("conflicted"), b"blocker").unwrap();
+
+    let err = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: Some(2),
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .expect_err("worker failure must propagate up");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("conflicted"),
+        "error must reference the blocking path: {msg}",
+    );
+}
+
 /// `profile_extract: true` is non-fatal and a no-op for correctness:
 /// the load report and file contents must match what a normal load
 /// would produce. We can't easily assert the exact stderr line in this

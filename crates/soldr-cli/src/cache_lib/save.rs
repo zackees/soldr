@@ -997,6 +997,11 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         None
     };
     let driver_loop_start = std::time::Instant::now();
+    // Cumulative microseconds the driver spent inside `entry.read_to_end`
+    // for cache-file bodies. That call drives the zstd decoder, so this
+    // is the closest cheap approximation of "zstd_decode" wall-clock the
+    // streaming API gives us. tar_parse_us is the loop's remaining time.
+    let mut zstd_decode_us: u64 = 0;
 
     // #575/#596 Defender auto-exclusion (Windows + admin only — never
     // UAC-prompts). The guard removes the exclusion on drop.
@@ -1078,9 +1083,13 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         // small (<MiB each) and the bounded channel caps how many are
         // resident at once, so memory usage stays bounded.
         let mut body = Vec::new();
+        let body_read_start = opts.profile_extract.then(std::time::Instant::now);
         entry
             .read_to_end(&mut body)
             .map_err(SaveLoadError::BareIo)?;
+        if let Some(t0) = body_read_start {
+            zstd_decode_us = zstd_decode_us.saturating_add(t0.elapsed().as_micros() as u64);
+        }
         let mtime_secs = entry.header().mtime().ok();
         // Capture the tar header's Unix mode so the worker can chmod
         // the file after writing. Without this, executable scripts
@@ -1112,20 +1121,28 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         }
     }
 
-    let driver_loop_ms = driver_loop_start.elapsed().as_millis() as u64;
+    let driver_loop_us = driver_loop_start.elapsed().as_micros() as u64;
     let workers_drain_start = std::time::Instant::now();
     // Close the dispatch channel and wait for workers to drain. Any error
     // from a worker is surfaced here (first-error-wins).
     if let Some(dispatch) = extract_dispatch {
         dispatch.finish()?;
     }
-    let workers_drain_ms = workers_drain_start.elapsed().as_millis() as u64;
+    let workers_drain_us = workers_drain_start.elapsed().as_micros() as u64;
     if let Some(err) = extract_error.lock().expect("extract_error mutex").take() {
         return Err(err);
     }
     let cache_files_restored = cache_files_counter.load(Ordering::Relaxed);
     if let Some(profile) = profile {
-        profile.emit_to_stderr(driver_loop_ms, workers_drain_ms, cache_files_restored);
+        let phases = ExtractPhaseTimings {
+            zstd_decode_us,
+            // tar_parse_us = driver loop time minus the read_to_end accounting.
+            // Saturates to 0 if profile noise (timer jitter, scheduler) pushed
+            // accumulated zstd_decode_us slightly past driver_loop_us.
+            tar_parse_us: driver_loop_us.saturating_sub(zstd_decode_us),
+            extract_total_us: driver_loop_us.saturating_add(workers_drain_us),
+        };
+        profile.emit_to_stderr(phases, cache_files_restored);
     }
 
     let manifest = match manifest_decoded {
@@ -1335,6 +1352,16 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
     Ok(())
 }
 
+/// Per-phase driver-thread wall-clock collected during a profiled load.
+/// Microsecond precision so `format_profile_line` can emit ms with no
+/// loss at the conversion boundary.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ExtractPhaseTimings {
+    pub zstd_decode_us: u64,
+    pub tar_parse_us: u64,
+    pub extract_total_us: u64,
+}
+
 /// Per-load profiling state collected when `LoadOptions::profile_extract`
 /// is on (#575). Each worker writes into its own slot — no contention.
 /// `emit_to_stderr` formats the summary line at the end of `load()`.
@@ -1365,7 +1392,7 @@ impl ExtractProfile {
         }
     }
 
-    fn emit_to_stderr(&self, driver_loop_ms: u64, workers_drain_ms: u64, files: u64) {
+    fn emit_to_stderr(&self, phases: ExtractPhaseTimings, files: u64) {
         let mut all_us: Vec<u64> = Vec::new();
         let mut per_worker_counts = Vec::with_capacity(self.per_worker_latencies.len());
         for slot in &self.per_worker_latencies {
@@ -1373,31 +1400,61 @@ impl ExtractProfile {
             per_worker_counts.push(v.len());
             all_us.extend_from_slice(&v);
         }
-        all_us.sort_unstable();
-        let pct = |p: f64| -> u64 {
-            if all_us.is_empty() {
-                return 0;
-            }
-            let idx = ((all_us.len() as f64 - 1.0) * p).round() as usize;
-            all_us[idx.min(all_us.len() - 1)]
-        };
-        let workers_summary: String = per_worker_counts
-            .iter()
-            .enumerate()
-            .map(|(i, n)| format!("{}:n={}", i, n))
-            .collect::<Vec<_>>()
-            .join(", ");
         eprintln!(
-            "soldr load: profile cache_files={} driver_loop_ms={} workers_drain_ms={} workers={{{}}} per_file_p50_us={} p95_us={} p99_us={}",
-            files,
-            driver_loop_ms,
-            workers_drain_ms,
-            workers_summary,
-            pct(0.50),
-            pct(0.95),
-            pct(0.99),
+            "{}",
+            format_profile_line(phases, &per_worker_counts, &all_us, files)
         );
     }
+}
+
+/// Render the documented `soldr load: profile:` line shape (#575). Exposed
+/// at module scope so unit tests can exercise the format independent of a
+/// live extract.
+///
+/// Shape matches the spec in zackees/soldr#575:
+///
+/// ```text
+/// soldr load: profile: zstd_decode=4120ms tar_parse=890ms extract_total=10510ms
+///   workers={0:n=12058, 1:n=12090, 2:n=12053, 3:n=12030}
+///   per_file_p50_us=180 p95_us=450 p99_us=1200 cache_files=48231
+/// ```
+///
+/// Driven by `extract_total_us` instead of summing — that's the only
+/// wall-clock number that includes the workers-drain tail, which is the
+/// number tuning anyone actually cares about. Worker indices are 0-based
+/// to match rayon's convention.
+pub fn format_profile_line(
+    phases: ExtractPhaseTimings,
+    per_worker_counts: &[usize],
+    per_file_latencies_us: &[u64],
+    files: u64,
+) -> String {
+    let mut sorted: Vec<u64> = per_file_latencies_us.to_vec();
+    sorted.sort_unstable();
+    let pct = |p: f64| -> u64 {
+        if sorted.is_empty() {
+            return 0;
+        }
+        let idx = ((sorted.len() as f64 - 1.0) * p).round() as usize;
+        sorted[idx.min(sorted.len() - 1)]
+    };
+    let workers_summary: String = per_worker_counts
+        .iter()
+        .enumerate()
+        .map(|(i, n)| format!("{}:n={}", i, n))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "soldr load: profile: zstd_decode={zstd}ms tar_parse={tar}ms extract_total={total}ms workers={{{workers}}} per_file_p50_us={p50} p95_us={p95} p99_us={p99} cache_files={files}",
+        zstd = phases.zstd_decode_us / 1000,
+        tar = phases.tar_parse_us / 1000,
+        total = phases.extract_total_us / 1000,
+        workers = workers_summary,
+        p50 = pct(0.50),
+        p95 = pct(0.95),
+        p99 = pct(0.99),
+        files = files,
+    )
 }
 
 /// RAII guard for `--auto-defender-exclude` (#596).
@@ -1606,4 +1663,92 @@ fn num_cpus_for(threads: Option<usize>) -> u32 {
             .map(|n| n.get() as u32)
             .unwrap_or(1)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timed_test;
+
+    timed_test!(profile_line_matches_documented_shape, {
+        // Synthetic per-file latencies: 6 values with known order so the
+        // percentile math is hand-checkable. p50/p95/p99 indices on a
+        // 6-element vec are round((6-1)*p): 3 → 250, 5 → 1200, 5 → 1200.
+        let latencies = vec![100u64, 150, 200, 250, 450, 1200];
+        let per_worker_counts = vec![2usize, 2, 1, 1];
+        let phases = ExtractPhaseTimings {
+            zstd_decode_us: 4_120_000,
+            tar_parse_us: 890_000,
+            extract_total_us: 10_510_000,
+        };
+        let line = format_profile_line(phases, &per_worker_counts, &latencies, 6);
+
+        assert!(
+            line.starts_with("soldr load: profile: "),
+            "missing prefix: {line}"
+        );
+        assert!(
+            line.contains("zstd_decode=4120ms"),
+            "wrong zstd_decode: {line}"
+        );
+        assert!(line.contains("tar_parse=890ms"), "wrong tar_parse: {line}");
+        assert!(
+            line.contains("extract_total=10510ms"),
+            "wrong extract_total: {line}"
+        );
+        assert!(
+            line.contains("workers={0:n=2, 1:n=2, 2:n=1, 3:n=1}"),
+            "wrong workers shape: {line}"
+        );
+        assert!(line.contains("per_file_p50_us=250"), "p50 wrong: {line}");
+        assert!(line.contains("p95_us=1200"), "p95 wrong: {line}");
+        assert!(line.contains("p99_us=1200"), "p99 wrong: {line}");
+        assert!(line.contains("cache_files=6"), "files count wrong: {line}");
+    });
+
+    timed_test!(profile_line_handles_empty_latencies, {
+        // No per-file data (e.g. cache had zero regular entries) — must
+        // still emit a parseable line, with zeros for the percentiles.
+        let line = format_profile_line(
+            ExtractPhaseTimings {
+                zstd_decode_us: 0,
+                tar_parse_us: 0,
+                extract_total_us: 1_000,
+            },
+            &[],
+            &[],
+            0,
+        );
+        assert!(line.contains("per_file_p50_us=0"), "{line}");
+        assert!(line.contains("p95_us=0"), "{line}");
+        assert!(line.contains("p99_us=0"), "{line}");
+        assert!(line.contains("workers={}"), "{line}");
+    });
+
+    // extract_one is the worker entrypoint. Pointing it at a destination
+    // whose parent path conflicts with a pre-existing regular file makes
+    // create_dir_all fail. Gives us a deterministic, OS-agnostic failure
+    // injection without patching production code. The first-error-wins
+    // semantic is exercised end-to-end in tests/save_roundtrip.rs.
+    timed_test!(extract_one_returns_error_with_failing_path, {
+        let tmp = tempfile::tempdir().unwrap();
+        let blocking_file = tmp.path().join("not-a-dir");
+        std::fs::write(&blocking_file, b"i am a file").unwrap();
+
+        // Now try to extract a job whose dest claims the blocking file
+        // is a parent directory. create_dir_all should bail.
+        let job = ExtractJob {
+            dest: blocking_file.join("child.bin"),
+            entry_type: tar::EntryType::Regular,
+            body: b"unused".to_vec(),
+            mtime_secs: None,
+            mode_bits: None,
+        };
+        let err = extract_one(&job).expect_err("worker must surface the IO error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not-a-dir"),
+            "error must mention the offending path: {msg}"
+        );
+    });
 }
