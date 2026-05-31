@@ -6,6 +6,8 @@
 
 use std::path::PathBuf;
 
+pub(crate) use crate::defender::find_powershell;
+
 /// The user-facing platform bucket. Maps Windows build numbers per
 /// Microsoft's published table so the action layer can branch on Dev
 /// Drive availability without reading the build twice.
@@ -172,40 +174,6 @@ pub(crate) fn detect_tools(platform: Platform) -> InstalledTools {
         defender_active: defender.active,
         fsutil_devdrv_supported,
     }
-}
-
-/// Resolve a usable PowerShell binary by checking `pwsh` then
-/// `powershell.exe` on `PATH`. Returns `None` when neither is present.
-pub(crate) fn find_powershell() -> Option<PathBuf> {
-    for candidate in ["pwsh", "powershell"] {
-        if let Some(path) = which_on_path(candidate) {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn which_on_path(tool: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        #[cfg(windows)]
-        {
-            for ext in [".exe", ".cmd", ".bat", ""] {
-                let candidate = dir.join(format!("{tool}{ext}"));
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
-            }
-        }
-        #[cfg(not(windows))]
-        {
-            let candidate = dir.join(tool);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    None
 }
 
 #[derive(Debug, Clone, Copy, Default)]

@@ -998,14 +998,14 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     };
     let driver_loop_start = std::time::Instant::now();
 
-    // #575 Defender auto-exclusion (Windows + admin only — never UAC-
-    // prompts). The guard removes the exclusion on drop.
+    // #575/#596 Defender auto-exclusion (Windows + admin only — never
+    // UAC-prompts). The guard removes the exclusion on drop.
     let _defender_guard = if opts.auto_defender_exclude {
         opts.cache_dir
             .map(defender_exclusion_guard_for)
             .unwrap_or_default()
     } else {
-        DefenderExclusionGuard {}
+        DefenderExclusionGuard::default()
     };
 
     for entry in tar_reader.entries().map_err(SaveLoadError::BareIo)? {
@@ -1400,22 +1400,103 @@ impl ExtractProfile {
     }
 }
 
-/// Placeholder RAII guard for the `--auto-defender-exclude` flag
-/// (#575). The CLI/options surface is stable now so callers (notably
-/// setup-soldr#260) can wire the flag; the actual `Add-MpPreference`
-/// invocation lands in a follow-up PR because the shared exclusion
-/// plumbing lives in the bin-only `optimize` module today and would
-/// require moving that module into the lib tree (cascading dep
-/// cleanup). For now we emit a one-line notice and proceed.
+/// RAII guard for `--auto-defender-exclude` (#596).
+///
+/// When constructed via [`defender_exclusion_guard_for`] on Windows with
+/// an admin token and PowerShell available, the cache directory is added
+/// to Defender's exclusion list via `Add-MpPreference`. On drop the
+/// matching `Remove-MpPreference` runs best-effort. Outside that happy
+/// path the guard is a no-op — we never trigger a UAC prompt.
 #[derive(Default)]
-struct DefenderExclusionGuard;
+struct DefenderExclusionGuard {
+    tracked: Option<(PathBuf, String)>,
+}
+
+impl Drop for DefenderExclusionGuard {
+    fn drop(&mut self) {
+        let Some((powershell, path)) = self.tracked.take() else {
+            return;
+        };
+        let plan = vec![crate::defender::PathAction {
+            path: path.clone(),
+            action: crate::defender::ExclusionAction::Remove,
+            scope: "soldr-load".into(),
+            status: crate::defender::ActionStatus::Planned,
+            detail: None,
+        }];
+        // Why: we just added this path on guard creation, so always
+        // attempt removal — don't re-query Defender (which could return
+        // stale state under heavy load or contention) and pass the
+        // tracked path so apply_exclusions issues `Remove-MpPreference`
+        // unconditionally instead of short-circuiting to Skipped.
+        let existing = vec![path.clone()];
+        let outcomes = crate::defender::apply_exclusions(&powershell, &plan, &existing);
+        let status = outcomes
+            .first()
+            .map(|a| format!("{:?}", a.status))
+            .unwrap_or_else(|| "no-op".into());
+        eprintln!("soldr load: defender exclusion removed for {path} ({status})");
+    }
+}
 
 fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
-    eprintln!(
-        "soldr load: --auto-defender-exclude requested for {} (deferred — follow-up PR will wire to Add-MpPreference; no-op for now)",
-        cache_dir.display()
-    );
-    DefenderExclusionGuard
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = cache_dir;
+        return DefenderExclusionGuard::default();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let Some(powershell) = crate::defender::find_powershell() else {
+            eprintln!(
+                "soldr load: --auto-defender-exclude requested but no PowerShell on PATH; skipping"
+            );
+            return DefenderExclusionGuard::default();
+        };
+        if !crate::defender::is_admin() {
+            eprintln!(
+                "soldr load: --auto-defender-exclude requested but current process is not elevated; skipping (no UAC prompt)"
+            );
+            return DefenderExclusionGuard::default();
+        }
+        let path_str = cache_dir.display().to_string();
+        let existing = crate::defender::current_exclusion_list(&powershell);
+        let plan = vec![crate::defender::PathAction {
+            path: path_str.clone(),
+            action: crate::defender::ExclusionAction::Add,
+            scope: "soldr-load".into(),
+            status: crate::defender::ActionStatus::Planned,
+            detail: None,
+        }];
+        let outcomes = crate::defender::apply_exclusions(&powershell, &plan, &existing);
+        let outcome = outcomes.into_iter().next();
+        let Some(outcome) = outcome else {
+            return DefenderExclusionGuard::default();
+        };
+        match outcome.status {
+            crate::defender::ActionStatus::Applied => {
+                eprintln!("soldr load: defender exclusion added for {path_str}");
+                DefenderExclusionGuard {
+                    tracked: Some((powershell, path_str)),
+                }
+            }
+            crate::defender::ActionStatus::AlreadyApplied => {
+                eprintln!(
+                    "soldr load: {path_str} already on Defender exclusion list; nothing to do"
+                );
+                DefenderExclusionGuard::default()
+            }
+            other => {
+                let detail = outcome.detail.unwrap_or_default();
+                eprintln!(
+                    "soldr load: defender exclusion for {path_str} not applied ({other:?}{}{})",
+                    if detail.is_empty() { "" } else { ": " },
+                    detail
+                );
+                DefenderExclusionGuard::default()
+            }
+        }
+    }
 }
 
 fn replay_one(workspace: &Path, entry: &SourceFile) -> MtimeOutcome {
