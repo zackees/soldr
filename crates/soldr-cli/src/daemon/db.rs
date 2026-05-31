@@ -21,6 +21,7 @@
 //! contents on disk are untouched, only the per-build timing snapshots
 //! are dropped.
 
+use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
 use crate::daemon::protocol::{BuildRecord, WireDecodeError, ZccacheDaemonLink};
 use crate::daemon::wire::{self, prost_tagged_bytes, REDB_TAG_PROST};
@@ -63,12 +64,22 @@ pub struct Event {
     pub exit_code: Option<i32>,
 }
 
-fn open_db(path: &Path) -> Result<Database, RegistryError> {
+/// Acquire the shared [`state_db_open_lock`] and open the redb file
+/// under it. The returned [`StateDbHandle`] derefs to [`Database`] so
+/// existing call sites that just chain `.begin_write()` / `.begin_read()`
+/// keep working. Holding the lock for the full lifetime of the handle
+/// is required: redb's per-file lock is only released on `Database`
+/// drop, so a second opener overlapping us would error out with
+/// `Database already open. Cannot acquire lock.` (#608).
+fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let guard = state_db_open_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let db = Database::builder().create(path)?;
-    Ok(db)
+    Ok(StateDbHandle::new(db, guard))
 }
 
 fn init_tables(db: &Database) -> Result<(), RegistryError> {

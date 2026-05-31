@@ -1500,7 +1500,7 @@ fn defender_exclusion_guard_for(cache_dir: &Path) -> DefenderExclusionGuard {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = cache_dir;
-        return DefenderExclusionGuard::default();
+        DefenderExclusionGuard::default()
     }
     #[cfg(target_os = "windows")]
     {

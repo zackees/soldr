@@ -31,6 +31,7 @@
 //! A future schema change MUST land as `cook_index_v3` rather than
 //! mutating v2 in place.
 
+use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
 use crate::daemon::protocol::WireDecodeError;
 use crate::daemon::wire::{prost_tagged_bytes, proto, REDB_TAG_PROST};
@@ -79,12 +80,20 @@ fn wire_err(e: WireDecodeError) -> RegistryError {
     RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-fn open_db(path: &Path) -> Result<Database, RegistryError> {
+/// Acquire the shared [`state_db_open_lock`] and open the redb file
+/// under it. See `cache_lib::redb_lock` for why the handle holds the
+/// lock for the entire lifetime of the [`Database`]: redb refuses
+/// concurrent in-process opens of the same file and would otherwise
+/// race with [`crate::daemon::db`] (issue #608).
+fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    let guard = state_db_open_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let db = Database::builder().create(path)?;
-    Ok(db)
+    Ok(StateDbHandle::new(db, guard))
 }
 
 fn init_v2(db: &Database) -> Result<(), RegistryError> {
