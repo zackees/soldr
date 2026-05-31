@@ -396,6 +396,39 @@ pub(crate) async fn run_cook(
     // zackees/soldr#566, zackees/zccache#448.
     let source_snapshot = snapshot_project_source(&ctx.manifest_dir)?;
 
+    // #621: skip-cook-when-warm. After Phase 1 (prepare) the recipe is
+    // fully resolved. If a previous successful cook left a marker file
+    // under target/ recording the same recipe + rustc version, the
+    // restored target/ from cook-cache covers the entire dep set and
+    // Phase 2 would do no net work — cargo-chef would still spend ~5
+    // minutes walking the dep graph emitting "Compiling X" lines per
+    // crate, with zccache hitting at ~96% (the orchestration cost is
+    // the bottleneck, not codegen). When the marker matches, short-
+    // circuit Phase 2 entirely.
+    let cook_target_dir = resolve_cook_target_dir(&ctx.manifest_dir, &parsed);
+    let cook_marker_path = cook_target_dir.join(".soldr-cook-marker.json");
+    let expected_marker = compute_cook_marker(&ctx, &parsed);
+    let warm_skip = match (&expected_marker, read_cook_marker(&cook_marker_path)) {
+        (Some(expected), Some(existing)) if existing == *expected => true,
+        _ => false,
+    };
+    if warm_skip {
+        eprintln!(
+            "soldr cook: warm-cook detected (recipe + rustc match the prior cook marker at {}) — skipping Phase 2 (cargo chef cook). Estimated savings: ~5 min on Coverage-shape workloads. See soldr#621.",
+            cook_marker_path.display()
+        );
+        // Restore source before returning — same invariant as the
+        // normal post-cook path (project tree must be pristine for
+        // downstream cargo build).
+        if let Err(e) = restore_project_source(&ctx.manifest_dir, &source_snapshot) {
+            eprintln!(
+                "soldr cook: warning: failed to restore project source after warm-skip \
+                 (project may be left in cargo-chef's stub state): {e}"
+            );
+        }
+        return Ok(0);
+    }
+
     // Phase 2: cook. Heavy — compiles every transitive dep against a stub
     // project. Output lands in `target/`.
     let cook_args = build_chef_cook_args(&ctx, &parsed);
@@ -414,6 +447,21 @@ pub(crate) async fn run_cook(
     let code = cook_result?;
     if code != 0 {
         return Ok(code);
+    }
+
+    // #621: persist the warm-cook marker so the next run with the same
+    // recipe + rustc can short-circuit Phase 2. Best-effort — if the
+    // write fails, the only impact is the next run pays the full
+    // cargo-chef orchestration cost. expected_marker is Some when
+    // recipe + rustc could be hashed; None on rare resolution
+    // failures (e.g. recipe.json missing — shouldn't happen post-cook).
+    if let Some(marker) = expected_marker {
+        if let Err(e) = write_cook_marker(&cook_marker_path, &marker) {
+            eprintln!(
+                "soldr cook: warning: failed to write warm-cook marker {} (next run won't short-circuit Phase 2): {e}",
+                cook_marker_path.display()
+            );
+        }
     }
 
     // Phase 3: post-cook target/ trim (issue #459). Cargo-chef cook
@@ -511,6 +559,87 @@ fn resolve_profile_name(args: &CookArgs) -> &str {
 /// unreachable — the caller treats this as "no rustc identity" and
 /// skips indexing (cross-repo sharing without rustc keying would be
 /// unsafe).
+/// #621 warm-cook marker. Captures the inputs that determine whether
+/// the next Phase-2 cook would do net work. When this matches a
+/// previously-persisted marker under `target/`, the cook orchestration
+/// would walk the dep graph just to confirm zccache hits at ~96% —
+/// ~5 minutes of wasted wall clock on Coverage-shape workloads.
+#[derive(Debug, PartialEq, Eq)]
+struct CookMarker {
+    /// Schema version. Bump on incompatible format changes so an old
+    /// marker doesn't accidentally satisfy a new check.
+    version: u32,
+    /// SHA-256 hex of the post-`sanitize_cargo_chef_recipe` recipe.json.
+    recipe_sha256: String,
+    /// `rustc -V` first line.
+    rustc_version: String,
+    /// `soldr --version` (CARGO_PKG_VERSION). A different soldr could
+    /// theoretically have changed the recipe sanitizer behavior.
+    soldr_version: String,
+}
+
+const COOK_MARKER_VERSION: u32 = 1;
+
+/// Read + parse the warm-cook marker at `path`. Any error (missing
+/// file, malformed JSON, missing field, version mismatch) returns
+/// `None` so the caller falls through to the normal cook path.
+fn read_cook_marker(path: &Path) -> Option<CookMarker> {
+    let bytes = std::fs::read(path).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let version = value.get("version")?.as_u64()? as u32;
+    if version != COOK_MARKER_VERSION {
+        return None;
+    }
+    Some(CookMarker {
+        version,
+        recipe_sha256: value.get("recipe_sha256")?.as_str()?.to_string(),
+        rustc_version: value.get("rustc_version")?.as_str()?.to_string(),
+        soldr_version: value.get("soldr_version")?.as_str()?.to_string(),
+    })
+}
+
+/// Write the marker as JSON. Creates the parent dir if needed.
+fn write_cook_marker(path: &Path, marker: &CookMarker) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::json!({
+        "version": marker.version,
+        "recipe_sha256": &marker.recipe_sha256,
+        "rustc_version": &marker.rustc_version,
+        "soldr_version": &marker.soldr_version,
+    });
+    std::fs::write(path, body.to_string())
+}
+
+/// Compute the expected warm-cook marker for the current invocation.
+/// Returns `None` when any required input can't be resolved (recipe
+/// file missing — shouldn't happen post-Phase-1, but if it does we
+/// simply skip the optimization).
+fn compute_cook_marker(ctx: &CookContext, _parsed: &CookArgs) -> Option<CookMarker> {
+    use sha2::{Digest, Sha256};
+    let recipe_bytes = std::fs::read(&ctx.recipe_path).ok()?;
+    let mut h = Sha256::new();
+    h.update(&recipe_bytes);
+    let recipe_sha256 = hex_lower(&h.finalize());
+    let rustc_version = rustc_version_string(&ctx.manifest_dir).unwrap_or_default();
+    Some(CookMarker {
+        version: COOK_MARKER_VERSION,
+        recipe_sha256,
+        rustc_version,
+        soldr_version: env!("CARGO_PKG_VERSION").to_string(),
+    })
+}
+
+/// Lower-case hex helper (`crate::cache_lib::cook_archive::sha_abbrev` truncates).
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
 fn rustc_version_string(manifest_dir: &Path) -> Option<String> {
     let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
         .unwrap_or_else(|| PathBuf::from("rustc"));

@@ -423,3 +423,82 @@ fn snapshot_restore_undoes_cargo_chef_in_place_skeleton() {
     assert!(root.join("target/debug/out.rs").exists());
     assert!(root.join(".git/HEAD").exists());
 }
+
+// ---------------------------------------------------------------------------
+// #621 warm-cook marker round-trip
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cook_marker_round_trip_preserves_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".soldr-cook-marker.json");
+    let marker = CookMarker {
+        version: COOK_MARKER_VERSION,
+        recipe_sha256: "deadbeef".repeat(8),
+        rustc_version: "rustc 1.94.1 (abc 2025-12-25)".to_string(),
+        soldr_version: "0.7.99".to_string(),
+    };
+    write_cook_marker(&path, &marker).unwrap();
+    let read_back = read_cook_marker(&path).expect("marker round-trips");
+    assert_eq!(read_back, marker);
+}
+
+#[test]
+fn cook_marker_read_returns_none_for_version_mismatch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".soldr-cook-marker.json");
+    let body = serde_json::json!({
+        "version": 999, // wrong version
+        "recipe_sha256": "x",
+        "rustc_version": "x",
+        "soldr_version": "x",
+    });
+    std::fs::write(&path, body.to_string()).unwrap();
+    assert!(
+        read_cook_marker(&path).is_none(),
+        "marker with non-matching schema version must be ignored so we never short-circuit Phase 2 on stale data",
+    );
+}
+
+#[test]
+fn cook_marker_read_returns_none_for_missing_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(".soldr-cook-marker.json");
+    let body = serde_json::json!({
+        "version": COOK_MARKER_VERSION,
+        // missing recipe_sha256, rustc_version, soldr_version
+    });
+    std::fs::write(&path, body.to_string()).unwrap();
+    assert!(read_cook_marker(&path).is_none());
+}
+
+#[test]
+fn cook_marker_read_returns_none_for_missing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does-not-exist.json");
+    assert!(read_cook_marker(&path).is_none());
+}
+
+#[test]
+fn cook_marker_inequality_when_any_field_differs() {
+    let a = CookMarker {
+        version: COOK_MARKER_VERSION,
+        recipe_sha256: "a".into(),
+        rustc_version: "rustc 1".into(),
+        soldr_version: "0.7.50".into(),
+    };
+    let mut b = CookMarker {
+        version: a.version,
+        recipe_sha256: a.recipe_sha256.clone(),
+        rustc_version: a.rustc_version.clone(),
+        soldr_version: a.soldr_version.clone(),
+    };
+    b.recipe_sha256 = "b".into();
+    assert_ne!(a, b, "different recipe must NOT warm-skip");
+    b.recipe_sha256 = a.recipe_sha256.clone();
+    b.rustc_version = "rustc 2".into();
+    assert_ne!(a, b, "different rustc must NOT warm-skip");
+    b.rustc_version = a.rustc_version.clone();
+    b.soldr_version = "0.7.51".into();
+    assert_ne!(a, b, "different soldr must NOT warm-skip");
+}
