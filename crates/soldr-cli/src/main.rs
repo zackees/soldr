@@ -17,6 +17,7 @@ mod cli_args;
 mod cook;
 mod core;
 mod daemon;
+mod defender;
 mod defender_probe;
 mod doctor;
 mod fetch;

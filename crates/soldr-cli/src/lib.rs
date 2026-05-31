@@ -17,6 +17,7 @@
 pub mod cache_lib;
 pub mod core;
 pub mod daemon;
+pub mod defender;
 pub mod fetch;
 pub mod self_relocate;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing

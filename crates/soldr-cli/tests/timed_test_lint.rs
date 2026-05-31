@@ -116,7 +116,6 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "tests/cli_daemon_builds.rs",
     "tests/cli_daemon_lifecycle.rs",
     "tests/cli_daemon_target_touch.rs",
-    "tests/cli_daemon_zccache_link.rs",
     "tests/cli_dispatch.rs",
     "tests/cli_doctor.rs",
     "tests/cli_gc.rs",

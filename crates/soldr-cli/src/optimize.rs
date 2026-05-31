@@ -17,14 +17,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::cache::print_json;
 use crate::JSON_SCHEMA_VERSION;
 
-#[cfg(not(target_os = "windows"))]
-use crate::optimize_windows::{apply_exclusions, current_exclusion_list, is_admin};
+use crate::defender::{apply_exclusions, current_exclusion_list, is_admin};
 #[cfg(target_os = "windows")]
-use crate::optimize_windows::{
-    apply_exclusions, current_exclusion_list, is_admin, relaunch_elevated, ELEVATED_HELPER_FLAG,
-};
+use crate::optimize_windows::{relaunch_elevated, ELEVATED_HELPER_FLAG};
 
-use crate::optimize_detect::{detect_ci, detect_platform, detect_tools, find_powershell, Platform};
+use crate::defender::find_powershell;
+use crate::optimize_detect::{detect_ci, detect_platform, detect_tools, Platform};
 
 /// Filename of the soldr-owned tracking file recording which paths
 /// soldr added to Defender's exclusion list. Stored in `~/.soldr/`.
@@ -99,40 +97,7 @@ pub(crate) struct ManagedExclusion {
     pub(crate) scope: String,
 }
 
-/// What the action layer plans to do (or did) for a single path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum ExclusionAction {
-    Add,
-    Remove,
-}
-
-/// Outcome of a single per-path action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ActionStatus {
-    /// Action would run; `--dry-run` exited before invoking it.
-    Planned,
-    /// Action ran and reported success.
-    Applied,
-    /// Action ran but Defender reported the path was already excluded.
-    AlreadyApplied,
-    /// Action was skipped (e.g. undo on a path Defender no longer has).
-    Skipped,
-    /// Action ran but failed; see `detail`.
-    Failed,
-}
-
-/// One row in the optimize plan / outcome.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct PathAction {
-    pub(crate) path: String,
-    pub(crate) action: ExclusionAction,
-    pub(crate) scope: String,
-    pub(crate) status: ActionStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) detail: Option<String>,
-}
+pub(crate) use crate::defender::{ActionStatus, ExclusionAction, PathAction};
 
 /// Top-level JSON shape returned by `soldr optimize --json`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
