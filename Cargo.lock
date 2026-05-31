@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.7.50"
+version = "0.7.51"
 dependencies = [
  "blake3",
  "clap",
