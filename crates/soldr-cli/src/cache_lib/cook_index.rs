@@ -342,6 +342,65 @@ pub fn touch(db_path: &Path, sha256: &[u8; 32], now_unix_ms: u64) -> Result<bool
     Ok(true)
 }
 
+/// Collect every `(CookKey, CookEntry)` row in `cook_index_v2` for
+/// ranking / filtering by an eviction pass. Undecodable rows are
+/// silently skipped — eviction is best-effort and we never want a
+/// single corrupt row to wedge the pass.
+pub fn iter_entries(db_path: &Path) -> Result<Vec<(CookKey, CookEntry)>, RegistryError> {
+    let db = open_db(db_path)?;
+    init_v2(&db)?;
+    let txn = db.begin_read()?;
+    let table = txn.open_table(COOK_INDEX_V2)?;
+    let mut out: Vec<(CookKey, CookEntry)> = Vec::new();
+    for entry in table.iter()? {
+        let (k_bytes, v_bytes) = entry?;
+        let Ok(key) = decode_key(k_bytes.value()) else {
+            continue;
+        };
+        let Ok(value) = decode_entry(v_bytes.value()) else {
+            continue;
+        };
+        out.push((key, value));
+    }
+    Ok(out)
+}
+
+/// Delete every `cook_index_v2` row whose decoded entry carries the
+/// supplied `sha256`. Returns `true` when at least one row was
+/// removed. Does NOT touch the on-disk `<sha256>.tar.zst` artifact —
+/// the eviction pass is responsible for unlinking that file
+/// separately.
+pub fn evict(db_path: &Path, sha256: &[u8; 32]) -> Result<bool, RegistryError> {
+    let db = open_db(db_path)?;
+    init_v2(&db)?;
+    let mut victims: Vec<Vec<u8>> = Vec::new();
+    {
+        let txn = db.begin_read()?;
+        let table = txn.open_table(COOK_INDEX_V2)?;
+        for entry in table.iter()? {
+            let (k_bytes, v_bytes) = entry?;
+            let Ok(value) = decode_entry(v_bytes.value()) else {
+                continue;
+            };
+            if &value.sha256 == sha256 {
+                victims.push(k_bytes.value().to_vec());
+            }
+        }
+    }
+    if victims.is_empty() {
+        return Ok(false);
+    }
+    let txn = db.begin_write()?;
+    {
+        let mut table = txn.open_table(COOK_INDEX_V2)?;
+        for k in &victims {
+            table.remove(k.as_slice())?;
+        }
+    }
+    txn.commit()?;
+    Ok(true)
+}
+
 /// Aggregate statistics surfaced via `Status` and `soldr daemon
 /// status`: returns `(entry_count, total_size_bytes)`.
 pub fn stats(db_path: &Path) -> Result<(u64, u64), RegistryError> {

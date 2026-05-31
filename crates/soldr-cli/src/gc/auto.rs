@@ -32,8 +32,10 @@ pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
     if auto_gc_env_disabled() {
         return;
     }
-    let config = paths.load_config().auto_gc;
-    if !config.enabled {
+    let cfg = paths.load_config();
+    let disk_pressure_enabled = cfg.auto_gc.enabled;
+    let cook_enabled = cfg.cook.max_total_gb > 0 || cfg.cook.max_age_days > 0;
+    if !disk_pressure_enabled && !cook_enabled {
         return;
     }
     let marker = crate::cache_lib::auto_gc_throttle_marker_path(paths);
@@ -109,10 +111,45 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         }
     }
 
-    let config = paths.load_config().auto_gc;
+    let full_config = paths.load_config();
+    let config = full_config.auto_gc.clone();
+    let cook_config = full_config.cook.clone();
     let (validated, warnings) = crate::cache_lib::auto_gc::validate_config(&config);
     for warning in &warnings {
         let _ = append_auto_gc_log_line(&log_path, &format!("warning: {warning}"));
+    }
+
+    // `[cook]` auto-GC (issue #589). Independent of disk-pressure
+    // tiering: cook artifacts can grow unbounded even on a volume that
+    // is well above `trigger_free_gb`, so the eviction pass runs every
+    // throttle window when the cook knobs are non-zero.
+    if cook_config.max_total_gb > 0 || cook_config.max_age_days > 0 {
+        let report = crate::cache_lib::cook_gc::cook_evict_pass(&paths, &cook_config);
+        if report.time_evicted > 0
+            || report.size_evicted > 0
+            || report.quarantine_evicted > 0
+            || report.errors > 0
+        {
+            let _ = append_auto_gc_log_line(
+                &log_path,
+                &format!(
+                    "cook-gc protected={} time_evicted={} size_evicted={} \
+                     quarantine_evicted={} bytes_freed={} errors={}",
+                    report.protected,
+                    report.time_evicted,
+                    report.size_evicted,
+                    report.quarantine_evicted,
+                    report.bytes_freed,
+                    report.errors,
+                ),
+            );
+        }
+    }
+
+    if !validated.enabled {
+        // Disk-pressure tiers off, but cook-gc above may still have
+        // run. Done.
+        return;
     }
 
     let auto_paths = enumerate_auto_gc_paths(&paths);

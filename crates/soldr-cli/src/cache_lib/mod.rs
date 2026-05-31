@@ -14,6 +14,7 @@ pub mod auto_gc;
 pub mod auto_target_gc;
 pub mod cargo_global_cache;
 pub mod cook_archive;
+pub mod cook_gc;
 pub mod cook_index;
 pub mod gc;
 pub mod prune_target;
