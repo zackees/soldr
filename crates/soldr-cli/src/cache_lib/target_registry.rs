@@ -7,11 +7,13 @@
 //!
 //! The store lives in `~/.soldr/state.redb` alongside other soldr state.
 
+use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
 use redb::{
     backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition,
 };
 use std::{
+    ops::Deref,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -56,30 +58,67 @@ pub struct TargetRow {
     pub last_used: i64,
 }
 
+/// Internal backing store for [`TargetRegistry`]. File-backed instances
+/// hold the process-wide [`state_db_open_lock`] guard alongside the
+/// redb [`Database`] so concurrent opens against `state.redb` from
+/// other daemon code paths (`daemon::db`, `cache_lib::cook_index`)
+/// serialize safely (#608). In-memory instances bypass the lock —
+/// each is an independent database with no file backing and no
+/// cross-instance contention.
+enum TargetRegistryDb {
+    File(StateDbHandle),
+    InMemory(Database),
+}
+
+impl Deref for TargetRegistryDb {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        match self {
+            Self::File(h) => h,
+            Self::InMemory(db) => db,
+        }
+    }
+}
+
 /// Redb registry backed by `~/.soldr/state.redb` (or a caller-provided
 /// path).
 pub struct TargetRegistry {
-    db: Database,
+    db: TargetRegistryDb,
 }
 
 impl TargetRegistry {
     /// Open or create the database at the given path. Parent dirs are
-    /// created automatically.
+    /// created automatically. The returned registry holds the
+    /// process-wide [`state_db_open_lock`] guard for its entire
+    /// lifetime so the redb file lock is never contended by another
+    /// in-process opener — the `RecordTargetTouch` handler runs on
+    /// every rustc-wrapper call and would otherwise race with
+    /// `daemon::db` / `cache_lib::cook_index` (#608).
     pub fn open(path: &Path) -> Result<Self, RegistryError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let guard = state_db_open_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let db = Database::builder().create(path)?;
-        Self::init_schema(&db)?;
-        Ok(Self { db })
+        let handle = StateDbHandle::new(db, guard);
+        Self::init_schema(&handle)?;
+        Ok(Self {
+            db: TargetRegistryDb::File(handle),
+        })
     }
 
     /// Open an in-memory database. Useful for tests and for callers
-    /// that want a registry without touching disk.
+    /// that want a registry without touching disk. In-memory instances
+    /// are independent databases (no file backing), so they do not
+    /// acquire [`state_db_open_lock`].
     pub fn open_in_memory() -> Result<Self, RegistryError> {
         let db = Database::builder().create_with_backend(InMemoryBackend::new())?;
         Self::init_schema(&db)?;
-        Ok(Self { db })
+        Ok(Self {
+            db: TargetRegistryDb::InMemory(db),
+        })
     }
 
     fn init_schema(db: &Database) -> Result<(), RegistryError> {
