@@ -1,0 +1,13 @@
+## Workspace-wide clippy configuration.
+##
+## `disallowed-methods` enforces the "no new bincode" rule from
+## CLAUDE.md's "Serialization (issues #580 / #603)" section. Binary
+## transports and persisted-state metadata must use prost (see
+## `crates/soldr-cli/src/daemon/wire.rs` + `wire.proto` for the
+## established pattern). #603 already removed the bincode workspace
+## dep and every call site; this rule prevents re-introduction even if
+## someone vendors a stray `bincode = "..."` dep into a sub-crate.
+disallowed-methods = [
+    { path = "bincode::serialize",   reason = "use prost; see CLAUDE.md 'Serialization (issues #580 / #603)'." },
+    { path = "bincode::deserialize", reason = "use prost; see CLAUDE.md 'Serialization (issues #580 / #603)'." },
+]

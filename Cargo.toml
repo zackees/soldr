@@ -53,3 +53,10 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 [workspace.lints.rust]
 unused_mut = "deny"
+
+# Enforce the "no new bincode" rule from CLAUDE.md's
+# "Serialization (issues #580 / #603)" section. The actual disallowed-methods
+# list lives in workspace-root `clippy.toml`. #603 already removed every
+# bincode call site; this gate keeps it that way.
+[workspace.lints.clippy]
+disallowed_methods = "deny"
