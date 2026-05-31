@@ -166,100 +166,104 @@ impl Drop for EnvScope {
 }
 
 #[cfg(not(windows))]
-timed_test!(linked_zccache_is_stopped_on_daemon_shutdown, Duration::from_secs(60), {
-    let cache_root = unique_temp_dir("zccache-link-cache");
-    let home_root = unique_temp_dir("zccache-link-home");
-    let log_path = unique_temp_dir("zccache-link-log").join("zccache-calls.log");
+timed_test!(
+    linked_zccache_is_stopped_on_daemon_shutdown,
+    Duration::from_secs(60),
+    {
+        let cache_root = unique_temp_dir("zccache-link-cache");
+        let home_root = unique_temp_dir("zccache-link-home");
+        let log_path = unique_temp_dir("zccache-link-log").join("zccache-calls.log");
 
-    // Install a fake zccache that logs every invocation.
-    let bin = install_fake_zccache(&cache_root, &log_path);
-    let linked_cache_dir = cache_root.join("cache").join("linked-zccache");
-    let unrelated_cache_dir = cache_root.join("cache").join("unrelated-zccache");
-    std::fs::create_dir_all(&linked_cache_dir).expect("linked cache dir");
-    std::fs::create_dir_all(&unrelated_cache_dir).expect("unrelated cache dir");
+        // Install a fake zccache that logs every invocation.
+        let bin = install_fake_zccache(&cache_root, &log_path);
+        let linked_cache_dir = cache_root.join("cache").join("linked-zccache");
+        let unrelated_cache_dir = cache_root.join("cache").join("unrelated-zccache");
+        std::fs::create_dir_all(&linked_cache_dir).expect("linked cache dir");
+        std::fs::create_dir_all(&unrelated_cache_dir).expect("unrelated cache dir");
 
-    let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
+        let mut daemon = DaemonProc::spawn(&cache_root, &home_root);
 
-    let _scope = EnvScope::set(&[
-        ("SOLDR_CACHE_DIR", cache_root.as_path()),
-        ("HOME", home_root.as_path()),
-        ("USERPROFILE", home_root.as_path()),
-    ]);
-    let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
+        let _scope = EnvScope::set(&[
+            ("SOLDR_CACHE_DIR", cache_root.as_path()),
+            ("HOME", home_root.as_path()),
+            ("USERPROFILE", home_root.as_path()),
+        ]);
+        let paths = soldr_cli::core::SoldrPaths::new().expect("paths");
 
-    // Wait until the daemon is fully accepting connections.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let sock = client::default_sock_path(&paths);
-    let mut linked = false;
-    while Instant::now() < deadline {
-        if client::submit_fire_and_forget(
-            &sock,
-            &soldr_cli::daemon::protocol::Request::LinkZccache {
-                link: soldr_cli::daemon::protocol::ZccacheDaemonLink {
-                    binary_path: bin.display().to_string(),
-                    cache_dir: linked_cache_dir.display().to_string(),
-                    session_id: Some("linked-session".into()),
-                    source: "test".into(),
-                    private_daemon: true,
-                    daemon_name: Some("soldr-dev-link-test".into()),
-                    owner_pid: Some(std::process::id()),
-                    private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
+        // Wait until the daemon is fully accepting connections.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let sock = client::default_sock_path(&paths);
+        let mut linked = false;
+        while Instant::now() < deadline {
+            if client::submit_fire_and_forget(
+                &sock,
+                &soldr_cli::daemon::protocol::Request::LinkZccache {
+                    link: soldr_cli::daemon::protocol::ZccacheDaemonLink {
+                        binary_path: bin.display().to_string(),
+                        cache_dir: linked_cache_dir.display().to_string(),
+                        session_id: Some("linked-session".into()),
+                        source: "test".into(),
+                        private_daemon: true,
+                        daemon_name: Some("soldr-dev-link-test".into()),
+                        owner_pid: Some(std::process::id()),
+                        private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
+                    },
                 },
-            },
-        )
-        .is_ok()
-        {
-            linked = true;
-            break;
+            )
+            .is_ok()
+            {
+                linked = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
+        assert!(linked, "LinkZccache fire-and-forget never succeeded");
+
+        // Confirm the linkage landed via Status. LinkZccache is fire-and-
+        // forget so the server task may not have applied it yet — poll
+        // up to 2 s before failing.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut info = client::status(&sock).expect("status");
+        while info.linked_zccache.is_none() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+            info = client::status(&sock).expect("status");
+        }
+        let linked = info.linked_zccache.expect("linked zccache status");
+        assert_eq!(linked.cache_dir, linked_cache_dir.display().to_string());
+        assert_eq!(linked.binary_path, bin.display().to_string());
+        assert_eq!(linked.session_id.as_deref(), Some("linked-session"));
+        assert!(linked.private_daemon);
+        assert_eq!(linked.daemon_name.as_deref(), Some("soldr-dev-link-test"));
+        assert_eq!(
+            linked.private_env_keys,
+            vec!["ZCCACHE_PATH_REMAP".to_string()]
+        );
+
+        // Trigger shutdown via the explicit RPC.
+        client::shutdown(&sock).expect("shutdown");
+        let status = daemon
+            .wait(Duration::from_secs(5))
+            .expect("daemon exits within 5s");
+        assert!(status.success(), "daemon exit status = {status:?}");
+
+        // The fake zccache must have been invoked with `stop`.
+        let calls = std::fs::read_to_string(&log_path).unwrap_or_default();
+        let linked_stop = format!(
+            "zccache stop cache_dir={} daemon_namespace=soldr-dev-link-test",
+            linked_cache_dir.display()
+        );
+        assert!(
+            calls.lines().any(|l| l.trim() == linked_stop),
+            "expected scoped `zccache stop` invocation {linked_stop:?}; log contents:\n{calls}"
+        );
+        assert!(
+            !calls.contains(&unrelated_cache_dir.display().to_string()),
+            "shutdown touched unrelated zccache cache dir {}; log contents:\n{calls}",
+            unrelated_cache_dir.display()
+        );
+
+        // And the linked identity must have been cleared on shutdown.
+        let link = db::get_linked_zccache(&cache_root.join("state.redb")).expect("get");
+        assert_eq!(link, None, "linked zccache must be cleared on shutdown");
     }
-    assert!(linked, "LinkZccache fire-and-forget never succeeded");
-
-    // Confirm the linkage landed via Status. LinkZccache is fire-and-
-    // forget so the server task may not have applied it yet — poll
-    // up to 2 s before failing.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    let mut info = client::status(&sock).expect("status");
-    while info.linked_zccache.is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
-        info = client::status(&sock).expect("status");
-    }
-    let linked = info.linked_zccache.expect("linked zccache status");
-    assert_eq!(linked.cache_dir, linked_cache_dir.display().to_string());
-    assert_eq!(linked.binary_path, bin.display().to_string());
-    assert_eq!(linked.session_id.as_deref(), Some("linked-session"));
-    assert!(linked.private_daemon);
-    assert_eq!(linked.daemon_name.as_deref(), Some("soldr-dev-link-test"));
-    assert_eq!(
-        linked.private_env_keys,
-        vec!["ZCCACHE_PATH_REMAP".to_string()]
-    );
-
-    // Trigger shutdown via the explicit RPC.
-    client::shutdown(&sock).expect("shutdown");
-    let status = daemon
-        .wait(Duration::from_secs(5))
-        .expect("daemon exits within 5s");
-    assert!(status.success(), "daemon exit status = {status:?}");
-
-    // The fake zccache must have been invoked with `stop`.
-    let calls = std::fs::read_to_string(&log_path).unwrap_or_default();
-    let linked_stop = format!(
-        "zccache stop cache_dir={} daemon_namespace=soldr-dev-link-test",
-        linked_cache_dir.display()
-    );
-    assert!(
-        calls.lines().any(|l| l.trim() == linked_stop),
-        "expected scoped `zccache stop` invocation {linked_stop:?}; log contents:\n{calls}"
-    );
-    assert!(
-        !calls.contains(&unrelated_cache_dir.display().to_string()),
-        "shutdown touched unrelated zccache cache dir {}; log contents:\n{calls}",
-        unrelated_cache_dir.display()
-    );
-
-    // And the linked identity must have been cleared on shutdown.
-    let link = db::get_linked_zccache(&cache_root.join("state.redb")).expect("get");
-    assert_eq!(link, None, "linked zccache must be cleared on shutdown");
-});
+);
