@@ -227,6 +227,52 @@ proposes a GitHub Action that key-tarballs the resulting `target/` by
 action's implementation reduces to: hash `Cargo.lock` → restore tarball
 → on miss, `soldr cook` + tar + save.
 
+### `soldr save` / `soldr load`
+
+Bundle a build-cache directory plus a content-verified snapshot of
+source-file mtimes into a single `.tar.zst` archive (`save`), then
+restore it on a fresh checkout (`load`). Intended for CI cache layers
+that need stable Cargo fingerprints across `actions/checkout` runs
+without resorting to mtime-rewrite tricks.
+
+```bash
+soldr save --cache-dir <dir> --workspace <dir> --out cache.tar.zst
+soldr load --archive cache.tar.zst --cache-dir <dir> --workspace <dir>
+```
+
+Recognised `soldr load` flags (issue #575):
+
+- `--archive <FILE>` — input archive produced by `soldr save`.
+- `--cache-dir <DIR>` — destination cache directory; created if absent.
+- `--workspace <DIR>` — workspace whose source-file mtimes get the
+  content-verified replay. Optional when `--mtimes-only` is unset.
+- `--threads <N>` — parallel-extract worker count. Defaults to
+  rayon's `num_cpus`; capped at the value passed here.
+- `--mtimes-only` — refuse cache entries; apply mtime snapshot only.
+- `--manifest-out <FILE>` — write the archive's protobuf manifest for a
+  later `soldr save --delta-from-manifest`.
+- `--profile-extract` — emit a per-phase profile line to stderr after
+  the load completes. Shape:
+  ```text
+  soldr load: profile: zstd_decode=4120ms tar_parse=890ms extract_total=10510ms \
+    workers={0:n=12058, 1:n=12090, 2:n=12053, 3:n=12030} \
+    per_file_p50_us=180 p95_us=450 p99_us=1200 cache_files=48231
+  ```
+  Also enabled when `SOLDR_PROFILE_EXTRACT=1` is set in the environment.
+  Useful for tuning the parallel-extract worker count against real
+  workloads (issue #575). The line lands on **stderr**; the existing
+  `soldr load:` machine-readable status line on stdout is untouched.
+- `--auto-defender-exclude` — on Windows + admin, briefly add
+  `--cache-dir` to Defender's exclusion list for the duration of the
+  load (issue #596). Never UAC-prompts: no-op on non-Windows or when
+  the current process isn't elevated.
+- `--json` — machine-readable status line on stdout instead of the
+  human-readable summary.
+
+`SOLDR_LOAD_WORKERS=<N>` overrides `--threads` and sizes the rayon
+pool that runs both the per-file extract workers and the
+mtime-replay walk.
+
 ### `soldr status`
 
 Show cache and target information.
@@ -1216,6 +1262,8 @@ Commands:
 | `SOLDR_TARGET_AUTO_PRUNE_ENABLED` | Master toggle for the host-volume disk watchdog (issue #574). Falsy values (`0`, `false`, `no`, `off`, empty — case-insensitive) disable the watchdog entirely. | `1` |
 | `SOLDR_GC_TARGET_ROOT` | Default walk root for `soldr gc target` (issue #574). The `--root <PATH>` flag always takes precedence. | `~/dev` |
 | `SOLDR_TEST_DISK_FREE_BYTES` | Test seam for the watchdog: when set to a `u64` byte count (or `error`), overrides the real `fs2::available_space` probe so tests can drive every threshold edge. Internal — never set this in production. | unset |
+| `SOLDR_PROFILE_EXTRACT` | Env-var equivalent of `soldr load --profile-extract` (issue #575). Any non-empty value other than `0` enables the per-phase profile line on stderr after a load (`zstd_decode`, `tar_parse`, `extract_total`, per-worker job counts, per-file `p50`/`p95`/`p99`). Useful for tuning the parallel-extract worker count against real workloads. | unset |
+| `SOLDR_LOAD_WORKERS` | Cap on the parallel-extract worker pool used by `soldr load` (issue #575). Positive integer; wins over the explicit `--threads` flag. When unset, `--threads` (or rayon's `num_cpus` default) is used. | unset |
 
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of its managed zccache. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
