@@ -1,37 +1,31 @@
 //! Daemon-side redb tables for build session correlation and the
-//! linked-zccache runtime identity. Opens `~/.soldr/state.redb` per call and drops
-//! the handle on return — redb refuses concurrent multi-process opens
-//! and the wrapper / GC tools open the same file directly.
+//! linked-zccache runtime identity. Opens `~/.soldr/state.redb` per call
+//! and drops the handle on return — redb refuses concurrent multi-
+//! process opens and the wrapper / GC tools open the same file directly.
 //!
 //! Tables live alongside the existing `target_registry_targets`:
-//! - `daemon_builds`  : u64 session_id → tagged-byte BuildRecord
-//! - `daemon_events`  : u64 event_id   → tagged-byte Event
-//! - `daemon_meta`    : `&str` key     → u64 (next event id, ...)
-//! - `daemon_zccache_link` : `&str` key → tagged-byte ZccacheDaemonLink
+//! - `daemon_builds`        : u64 session_id → tagged-byte BuildRecord
+//! - `daemon_events`        : u64 event_id   → tagged-byte Event
+//! - `daemon_meta`          : `&str` key     → u64 (next event id, ...)
+//! - `daemon_zccache_link`  : `&str` key     → tagged-byte ZccacheDaemonLink
 //!
-//! ## Serialization migration (issue #580)
+//! ## Serialization (issue #603 cleanup of #580)
 //!
-//! Every value written by this module is now `[0x01 tag][prost body]`
-//! (see [`crate::daemon::wire::REDB_TAG_PROST`] +
-//! [`crate::daemon::wire::prost_tagged_bytes`]). Reads classify the
-//! first byte:
-//!
-//! * `0x01` → strip the tag and prost-decode (the new format).
-//! * Anything else → bincode-deserialize the full slice (the legacy
-//!   format that pre-#580 daemons wrote into the same tables).
-//!
-//! The `LegacyZccacheDaemonLink` shim from #265 remains in place as a
-//! second-stage fallback under the bincode branch — it covers the
-//! even-older "before-private-daemon" shape that lacks fields the
-//! current `ZccacheDaemonLink` adds. So a redb row from ANY soldr
-//! version this codebase has ever shipped still decodes.
+//! Every value in every table is `[0x01][prost body]` — no other shape
+//! is accepted. Pre-#580 rows (raw bincode bytes) are dropped on-sight
+//! by [`ensure_initialized`], which scans every table on each daemon
+//! startup and removes any row that doesn't carry the prost tag. That
+//! one-time migration is idempotent (subsequent runs find nothing to
+//! drop) and cheap (the tables are small — single-digit-thousands of
+//! rows at most). Losing build-history rows is acceptable: cache
+//! contents on disk are untouched, only the per-build timing snapshots
+//! are dropped.
 
 use crate::cache_lib::target_registry::RegistryError;
 use crate::daemon::protocol::{BuildRecord, WireDecodeError, ZccacheDaemonLink};
-use crate::daemon::wire::{self, classify_redb_row, prost_tagged_bytes, RedbDecode};
+use crate::daemon::wire::{self, prost_tagged_bytes, REDB_TAG_PROST};
 use prost::Message;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
-use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 fn wire_err(e: WireDecodeError) -> RegistryError {
@@ -50,30 +44,7 @@ const ZCCACHE_LINK: TableDefinition<&str, &[u8]> = TableDefinition::new("daemon_
 const META_NEXT_EVENT_ID: &str = "next_event_id";
 const LINKED_ZCCACHE_KEY: &str = "active";
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-struct LegacyZccacheDaemonLink {
-    binary_path: String,
-    cache_dir: String,
-    session_id: Option<String>,
-    source: String,
-}
-
-impl From<LegacyZccacheDaemonLink> for ZccacheDaemonLink {
-    fn from(value: LegacyZccacheDaemonLink) -> Self {
-        Self {
-            binary_path: value.binary_path,
-            cache_dir: value.cache_dir,
-            session_id: value.session_id,
-            source: value.source,
-            private_daemon: false,
-            daemon_name: None,
-            owner_pid: None,
-            private_env_keys: Vec::new(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
     SessionStart,
     SessionEnd,
@@ -81,7 +52,7 @@ pub enum EventKind {
     CompileEnd,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
     pub ts_ms: i64,
     pub session_id: Option<u64>,
@@ -90,10 +61,6 @@ pub struct Event {
     pub duration_us: Option<u64>,
     pub target_dir: Option<String>,
     pub exit_code: Option<i32>,
-}
-
-fn bincode_err(e: bincode::Error) -> RegistryError {
-    RegistryError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
 fn open_db(path: &Path) -> Result<Database, RegistryError> {
@@ -116,10 +83,85 @@ fn init_tables(db: &Database) -> Result<(), RegistryError> {
     Ok(())
 }
 
-/// Open + initialize the daemon tables in the shared state.redb. Idempotent.
+/// One-time migration sweep: walk every value-bearing table and drop
+/// any row whose first byte is not [`REDB_TAG_PROST`]. Rows written by
+/// pre-#580 daemons are bincode-encoded and start with whatever bincode
+/// emits first (typically not `0x01`) — they're unreadable by the new
+/// prost-only decoder, so we evict them rather than fail on read.
+///
+/// Idempotent. After the first daemon startup post-#603 the function
+/// finds nothing to drop and returns instantly. Costs are bounded:
+/// daemon registry tables hold thousands of rows at most.
+fn migrate_drop_non_prost_rows(db: &Database) -> Result<(), RegistryError> {
+    let mut builds_drop: Vec<u64> = Vec::new();
+    let mut events_drop: Vec<u64> = Vec::new();
+    let mut link_drop: Vec<String> = Vec::new();
+    {
+        let txn = db.begin_read()?;
+        let builds = txn.open_table(BUILDS)?;
+        for entry in builds.iter()? {
+            let (k, v) = entry?;
+            if v.value().first().copied() != Some(REDB_TAG_PROST) {
+                builds_drop.push(k.value());
+            }
+        }
+        let events = txn.open_table(EVENTS)?;
+        for entry in events.iter()? {
+            let (k, v) = entry?;
+            if v.value().first().copied() != Some(REDB_TAG_PROST) {
+                events_drop.push(k.value());
+            }
+        }
+        let links = txn.open_table(ZCCACHE_LINK)?;
+        for entry in links.iter()? {
+            let (k, v) = entry?;
+            if v.value().first().copied() != Some(REDB_TAG_PROST) {
+                link_drop.push(k.value().to_string());
+            }
+        }
+    }
+    if builds_drop.is_empty() && events_drop.is_empty() && link_drop.is_empty() {
+        return Ok(());
+    }
+    let txn = db.begin_write()?;
+    {
+        let mut builds = txn.open_table(BUILDS)?;
+        for id in &builds_drop {
+            builds.remove(*id)?;
+        }
+        let mut events = txn.open_table(EVENTS)?;
+        for id in &events_drop {
+            events.remove(*id)?;
+        }
+        let mut links = txn.open_table(ZCCACHE_LINK)?;
+        for key in &link_drop {
+            links.remove(key.as_str())?;
+        }
+    }
+    txn.commit()?;
+    let dropped = builds_drop.len() + events_drop.len() + link_drop.len();
+    if dropped > 0 {
+        eprintln!(
+            "soldr-daemon: dropped {dropped} pre-#580 redb rows during one-time format migration \
+             (builds={}, events={}, links={})",
+            builds_drop.len(),
+            events_drop.len(),
+            link_drop.len(),
+        );
+    }
+    Ok(())
+}
+
+/// Open + initialize the daemon tables in the shared `state.redb`. Idempotent.
+///
+/// Also runs the [`migrate_drop_non_prost_rows`] one-time migration so a
+/// daemon starting up against a `state.redb` written by a pre-#603 build
+/// returns to a clean, fully-prost-encoded state.
 pub fn ensure_initialized(db_path: &Path) -> Result<(), RegistryError> {
     let db = open_db(db_path)?;
-    init_tables(&db)
+    init_tables(&db)?;
+    migrate_drop_non_prost_rows(&db)?;
+    Ok(())
 }
 
 fn next_event_id(db: &Database) -> Result<u64, RegistryError> {
@@ -173,34 +215,38 @@ pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>,
     let Some(row) = builds.get(session_id)? else {
         return Ok(None);
     };
-    Ok(Some(deserialize_build_record(row.value())?))
+    decode_build_row(row.value()).map(Some)
 }
 
-/// Read a `BuildRecord` from a redb row, dispatching on the leading
-/// tag byte. New rows (0x01) decode via prost; legacy bytes fall
-/// through to bincode.
-fn deserialize_build_record(bytes: &[u8]) -> Result<BuildRecord, RegistryError> {
-    match classify_redb_row(bytes) {
-        RedbDecode::Prost(rest) => {
-            let wire = wire::proto::WireBuildRecord::decode(rest).map_err(prost_decode_err)?;
-            Ok(wire::build_record_from_wire(wire))
-        }
-        RedbDecode::LegacyBincode(bytes) => {
-            bincode::deserialize::<BuildRecord>(bytes).map_err(bincode_err)
-        }
-    }
+/// Strict prost-only decoder. A row that doesn't carry the prost tag
+/// byte surfaces an `InvalidData` error — the migration pass in
+/// [`ensure_initialized`] guarantees no such rows exist post-startup,
+/// so this branch only fires if the file is corrupted in flight.
+fn decode_build_row(bytes: &[u8]) -> Result<BuildRecord, RegistryError> {
+    let rest = strip_prost_tag(bytes)?;
+    let wire = wire::proto::WireBuildRecord::decode(rest).map_err(prost_decode_err)?;
+    Ok(wire::build_record_from_wire(wire))
 }
 
-/// Read an `Event` from a redb row, with the same tag-byte dispatch.
-fn deserialize_event(bytes: &[u8]) -> Result<Event, RegistryError> {
-    match classify_redb_row(bytes) {
-        RedbDecode::Prost(rest) => {
-            let wire = wire::proto::WireEvent::decode(rest).map_err(prost_decode_err)?;
-            wire::event_from_wire(wire).map_err(wire_err)
-        }
-        RedbDecode::LegacyBincode(bytes) => {
-            bincode::deserialize::<Event>(bytes).map_err(bincode_err)
-        }
+fn decode_event_row(bytes: &[u8]) -> Result<Event, RegistryError> {
+    let rest = strip_prost_tag(bytes)?;
+    let wire = wire::proto::WireEvent::decode(rest).map_err(prost_decode_err)?;
+    wire::event_from_wire(wire).map_err(wire_err)
+}
+
+fn decode_link_row(bytes: &[u8]) -> Result<ZccacheDaemonLink, RegistryError> {
+    let rest = strip_prost_tag(bytes)?;
+    let wire = wire::proto::WireZccacheDaemonLink::decode(rest).map_err(prost_decode_err)?;
+    Ok(wire::zccache_link_from_wire(wire))
+}
+
+fn strip_prost_tag(bytes: &[u8]) -> Result<&[u8], RegistryError> {
+    match bytes.split_first() {
+        Some((&REDB_TAG_PROST, rest)) => Ok(rest),
+        _ => Err(RegistryError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "redb row missing prost tag byte (post-#603 daemon expects every value to start with 0x01)",
+        ))),
     }
 }
 
@@ -216,7 +262,7 @@ pub fn list_builds(
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
-        let record: BuildRecord = deserialize_build_record(v.value())?;
+        let record = decode_build_row(v.value())?;
         if let Some(cutoff) = since_ms {
             if record.started_at_ms < cutoff {
                 continue;
@@ -241,7 +287,7 @@ pub fn list_slow_builds(
     let mut rows: Vec<BuildRecord> = Vec::new();
     for entry in builds.iter()? {
         let (_, v) = entry?;
-        let record: BuildRecord = deserialize_build_record(v.value())?;
+        let record = decode_build_row(v.value())?;
         if record.total_wall_ms.unwrap_or(0) >= threshold_ms {
             rows.push(record);
         }
@@ -269,7 +315,7 @@ pub fn aggregate_session(
     let mut slowest_name: Option<String> = None;
     for entry in events.iter()? {
         let (_, v) = entry?;
-        let event: Event = deserialize_event(v.value())?;
+        let event = decode_event_row(v.value())?;
         if event.session_id != Some(session_id) {
             continue;
         }
@@ -318,33 +364,7 @@ pub fn get_linked_zccache(db_path: &Path) -> Result<Option<ZccacheDaemonLink>, R
     let Some(row) = table.get(LINKED_ZCCACHE_KEY)? else {
         return Ok(None);
     };
-    let link = deserialize_zccache_daemon_link(row.value())?;
-    Ok(Some(link))
-}
-
-/// Three-stage fallback decoder:
-///
-/// 1. `0x01` tag prefix → prost-decode (the #580 format new daemons write).
-/// 2. Bincode current `ZccacheDaemonLink` shape (pre-#580 daemons).
-/// 3. Bincode legacy [`LegacyZccacheDaemonLink`] shape lifted via `From`
-///    (pre-#265 even-older daemons that lacked private-daemon fields).
-fn deserialize_zccache_daemon_link(bytes: &[u8]) -> Result<ZccacheDaemonLink, RegistryError> {
-    match classify_redb_row(bytes) {
-        RedbDecode::Prost(rest) => {
-            let wire =
-                wire::proto::WireZccacheDaemonLink::decode(rest).map_err(prost_decode_err)?;
-            Ok(wire::zccache_link_from_wire(wire))
-        }
-        RedbDecode::LegacyBincode(bytes) => {
-            match bincode::deserialize::<ZccacheDaemonLink>(bytes) {
-                Ok(link) => Ok(link),
-                Err(new_err) => match bincode::deserialize::<LegacyZccacheDaemonLink>(bytes) {
-                    Ok(legacy) => Ok(legacy.into()),
-                    Err(_) => Err(bincode_err(new_err)),
-                },
-            }
-        }
-    }
+    decode_link_row(row.value()).map(Some)
 }
 
 /// Delete `daemon_events` rows older than `cutoff_ms`. Returns the
@@ -358,7 +378,7 @@ pub fn prune_events_older_than(db_path: &Path, cutoff_ms: i64) -> Result<u64, Re
         let events = txn.open_table(EVENTS)?;
         for entry in events.iter()? {
             let (k, v) = entry?;
-            let event = deserialize_event(v.value())?;
+            let event = decode_event_row(v.value())?;
             if event.ts_ms < cutoff_ms {
                 to_delete.push(k.value());
             }
@@ -473,7 +493,6 @@ mod tests {
             .expect("upsert");
         }
         let slow = list_slow_builds(&path, 1000, 10).expect("slow");
-        // walls >= 1000 ms: 5000, 1500, 7000 → sorted desc.
         assert_eq!(slow.len(), 3);
         assert_eq!(slow[0].total_wall_ms, Some(7000));
         assert_eq!(slow[1].total_wall_ms, Some(5000));
@@ -507,11 +526,9 @@ mod tests {
         assert_eq!(list[0].session_id, 30);
         assert_eq!(list[1].session_id, 20);
         assert_eq!(list[2].session_id, 10);
-        // since_ms filter
         let filtered = list_builds(&path, 10, Some(base + 150)).expect("filtered");
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].session_id, 30);
-        // limit
         let limited = list_builds(&path, 2, None).expect("limited");
         assert_eq!(limited.len(), 2);
     }
@@ -535,26 +552,6 @@ mod tests {
         assert_eq!(get_linked_zccache(&path).expect("get"), Some(link));
         set_linked_zccache(&path, None).expect("clear");
         assert_eq!(get_linked_zccache(&path).expect("get"), None);
-    }
-
-    #[test]
-    fn linked_zccache_legacy_identity_decodes_as_shared_daemon() {
-        let legacy = LegacyZccacheDaemonLink {
-            binary_path: "/tmp/zccache".into(),
-            cache_dir: "/tmp/cache".into(),
-            session_id: Some("session-1".into()),
-            source: "managed".into(),
-        };
-        let bytes = bincode::serialize(&legacy).expect("serialize legacy");
-        let decoded = deserialize_zccache_daemon_link(&bytes).expect("decode legacy");
-        assert_eq!(decoded.binary_path, legacy.binary_path);
-        assert_eq!(decoded.cache_dir, legacy.cache_dir);
-        assert_eq!(decoded.session_id, legacy.session_id);
-        assert_eq!(decoded.source, legacy.source);
-        assert!(!decoded.private_daemon);
-        assert_eq!(decoded.daemon_name, None);
-        assert_eq!(decoded.owner_pid, None);
-        assert!(decoded.private_env_keys.is_empty());
     }
 
     #[test]
@@ -589,5 +586,32 @@ mod tests {
         .expect("fresh");
         let removed = prune_events_older_than(&path, 3_000).expect("prune");
         assert_eq!(removed, 1);
+    }
+
+    /// `ensure_initialized` evicts pre-#580 (untagged) rows on first
+    /// startup. Subsequent calls find nothing to drop.
+    #[test]
+    fn migration_drops_pre_580_untagged_rows() {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("state.redb");
+        // Seed the BUILDS table with a raw-bytes row that doesn't carry
+        // the 0x01 tag (simulating a pre-#580 bincode-encoded row).
+        {
+            let db = open_db(&path).expect("open");
+            init_tables(&db).expect("init");
+            let txn = db.begin_write().expect("begin");
+            {
+                let mut builds = txn.open_table(BUILDS).expect("builds");
+                builds
+                    .insert(42u64, &[0x00, 0x42, 0xDE, 0xAD][..])
+                    .expect("insert untagged");
+            }
+            txn.commit().expect("commit");
+        }
+        // Migration removes the untagged row.
+        ensure_initialized(&path).expect("ensure");
+        // Verify the row is gone via list_builds (now empty).
+        let list = list_builds(&path, 10, None).expect("list");
+        assert!(list.is_empty(), "untagged pre-#580 row must be dropped");
     }
 }

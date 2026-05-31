@@ -756,7 +756,6 @@ fn target_is_installed(declared: &str, installed: &[String]) -> bool {
 }
 
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 fn print_doctor_human(
     manifest_path: &std::path::Path,
     channel: &str,
