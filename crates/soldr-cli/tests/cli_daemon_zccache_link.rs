@@ -16,6 +16,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::daemon::{client, db};
+use soldr_cli::timed_test;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -165,8 +166,7 @@ impl Drop for EnvScope {
 }
 
 #[cfg(not(windows))]
-#[test]
-fn linked_zccache_is_stopped_on_daemon_shutdown() {
+timed_test!(linked_zccache_is_stopped_on_daemon_shutdown, Duration::from_secs(60), {
     let cache_root = unique_temp_dir("zccache-link-cache");
     let home_root = unique_temp_dir("zccache-link-home");
     let log_path = unique_temp_dir("zccache-link-log").join("zccache-calls.log");
@@ -262,4 +262,4 @@ fn linked_zccache_is_stopped_on_daemon_shutdown() {
     // And the linked identity must have been cleared on shutdown.
     let link = db::get_linked_zccache(&cache_root.join("state.redb")).expect("get");
     assert_eq!(link, None, "linked zccache must be cleared on shutdown");
-}
+});
