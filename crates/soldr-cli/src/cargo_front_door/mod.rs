@@ -381,6 +381,33 @@ pub(crate) async fn run_cargo_front_door(
             .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
         disk::maybe_emit_low_disk_warning(&probe_path);
+        // Issue #574: host-volume disk watchdog. Distinct from the
+        // legacy 2 GiB advisory above — this layer warns at 10 GiB and
+        // aborts at 5 GiB so cross-repo target/ bloat surfaces before
+        // the build sets the disk on fire. Returning Err here lets the
+        // top-level dispatch print the error and exit with a non-zero
+        // code (same path as any other SoldrError from the front door).
+        let watchdog_path = cache_plan
+            .target_dir_for_hooks(args)
+            .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
+        match gc::disk::check_disk_or_warn_or_block(&watchdog_path) {
+            gc::disk::DiskCheckOutcome::Disabled | gc::disk::DiskCheckOutcome::Ok { .. } => {}
+            gc::disk::DiskCheckOutcome::Warn {
+                free_bytes,
+                threshold_gib,
+            } => {
+                eprintln!("{}", gc::disk::render_warn_line(free_bytes, threshold_gib));
+            }
+            gc::disk::DiskCheckOutcome::Block {
+                free_bytes,
+                threshold_gib,
+            } => {
+                return Err(SoldrError::Other(gc::disk::render_block_message(
+                    free_bytes,
+                    threshold_gib,
+                )));
+            }
+        }
     }
     cache_plan.restore_rust_artifacts()?;
 

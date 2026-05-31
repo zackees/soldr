@@ -541,6 +541,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     gc::run_gc_sweep_command(*args)?;
                     return Ok(());
                 }
+                Some(GcSubcommand::Target(args)) => {
+                    gc::run_gc_target_command(*args)?;
+                    return Ok(());
+                }
                 None => gc::GcInvocation {
                     mode: gc::GcMode::Summary,
                     older_than,
