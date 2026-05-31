@@ -155,6 +155,36 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         tag_prefix: None,
         pinned_version: None,
     },
+    // Mindshare cargo subcommands (issue #598 child). Both ship pre-built
+    // GitHub Releases assets for the targets soldr cares about.
+    // `cargo-binstall` — https://github.com/cargo-bins/cargo-binstall.
+    // Tags are plain `vX.Y.Z`. Assets ship in two flavors per target:
+    // `cargo-binstall-<triple>.{zip,tgz}` (binary only) and
+    // `.full.{zip,tgz}` (binary + minisign signatures). Either form
+    // matches the bare-triple lookup the fetch chain performs.
+    ToolSpec {
+        crate_name: "cargo-binstall",
+        cargo_subcommand: Some("binstall"),
+        binary_name: "cargo-binstall",
+        repo: Some(("cargo-bins", "cargo-binstall")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
+    // `cargo-machete` — https://github.com/bnjbvr/cargo-machete.
+    // Tags are `vX.Y.Z`; asset names embed the version
+    // (`cargo-machete-vX.Y.Z-<triple>.tar.gz`).
+    // TODO(#598): upstream does not currently publish
+    // `aarch64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`
+    // (musl-only), or `aarch64-unknown-linux-musl` assets — those
+    // targets fall through to the source-build path.
+    ToolSpec {
+        crate_name: "cargo-machete",
+        cargo_subcommand: Some("machete"),
+        binary_name: "cargo-machete",
+        repo: Some(("bnjbvr", "cargo-machete")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     ToolSpec {
         crate_name: "wasm-pack",
@@ -177,6 +207,52 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         cargo_subcommand: None,
         binary_name: "sccache",
         repo: Some(("mozilla", "sccache")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
+    // Mindshare top-level tools (issue #598 child). Invoked as
+    // `soldr bacon`, `soldr just`, `soldr typos`.
+    // `bacon` — https://github.com/Canop/bacon. Tags are `vX.Y.Z`.
+    // TODO(#598): upstream does NOT publish prebuilt binary assets on
+    // its GitHub Releases (audited through v3.16.0..v3.23.0 — all
+    // empty asset lists). Registering still wins the explicit
+    // (owner, repo) override; the fetch falls through to the
+    // source-build path until upstream starts shipping prebuilts.
+    ToolSpec {
+        crate_name: "bacon",
+        cargo_subcommand: None,
+        binary_name: "bacon",
+        repo: Some(("Canop", "bacon")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
+    // `just` — https://github.com/casey/just. Tags are bare
+    // `X.Y.Z` (no `v` prefix). Asset names embed the version
+    // (`just-X.Y.Z-<triple>.{tar.gz,zip}`).
+    // TODO(#598): upstream ships musl-only on Linux (no
+    // `x86_64-unknown-linux-gnu` / `aarch64-unknown-linux-gnu`
+    // assets); glibc consumers either pick up the musl build or
+    // fall through to source.
+    ToolSpec {
+        crate_name: "just",
+        cargo_subcommand: None,
+        binary_name: "just",
+        repo: Some(("casey", "just")),
+        tag_prefix: None,
+        pinned_version: None,
+    },
+    // `typos` — https://github.com/crate-ci/typos (the `typos-cli`
+    // crate). Tags are `vX.Y.Z`; asset names embed the version
+    // (`typos-vX.Y.Z-<triple>.{tar.gz,zip}`).
+    // TODO(#598): upstream omits `aarch64-pc-windows-msvc`,
+    // `aarch64-unknown-linux-gnu`, and ships musl-only on
+    // `x86_64-unknown-linux`. Those targets fall through to the
+    // source-build path.
+    ToolSpec {
+        crate_name: "typos",
+        cargo_subcommand: None,
+        binary_name: "typos",
+        repo: Some(("crate-ci", "typos")),
         tag_prefix: None,
         pinned_version: None,
     },
@@ -373,5 +449,50 @@ mod tests {
             lookup_by_cargo_subcommand("xwin").map(|s| s.crate_name),
             Some("cargo-xwin")
         );
+    }
+
+    #[test]
+    fn mindshare_cargo_subcommands_are_registered() {
+        // Issue #598 child PR: `soldr cargo binstall ...` and
+        // `soldr cargo machete ...` must resolve to the upstream
+        // (owner, repo) overrides without a crates.io round-trip.
+        let binstall =
+            lookup_by_crate("cargo-binstall").expect("cargo-binstall must be registered");
+        assert_eq!(binstall.cargo_subcommand, Some("binstall"));
+        assert_eq!(binstall.binary_name, "cargo-binstall");
+        assert_eq!(binstall.repo, Some(("cargo-bins", "cargo-binstall")));
+        assert_eq!(
+            lookup_by_cargo_subcommand("binstall").map(|s| s.crate_name),
+            Some("cargo-binstall")
+        );
+
+        let machete = lookup_by_crate("cargo-machete").expect("cargo-machete must be registered");
+        assert_eq!(machete.cargo_subcommand, Some("machete"));
+        assert_eq!(machete.binary_name, "cargo-machete");
+        assert_eq!(machete.repo, Some(("bnjbvr", "cargo-machete")));
+        assert_eq!(
+            lookup_by_cargo_subcommand("machete").map(|s| s.crate_name),
+            Some("cargo-machete")
+        );
+    }
+
+    #[test]
+    fn mindshare_top_level_tools_are_registered() {
+        // Issue #598 child PR: `soldr bacon`, `soldr just`, and
+        // `soldr typos` must resolve to the upstream (owner, repo)
+        // overrides. None of them are cargo subcommands.
+        for (crate_name, repo, binary_name) in [
+            ("bacon", ("Canop", "bacon"), "bacon"),
+            ("just", ("casey", "just"), "just"),
+            ("typos", ("crate-ci", "typos"), "typos"),
+        ] {
+            let spec = lookup_by_crate(crate_name)
+                .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
+            assert_eq!(spec.cargo_subcommand, None);
+            assert_eq!(spec.binary_name, binary_name);
+            assert_eq!(spec.repo, Some(repo));
+            // Top-level tools must NOT shadow a cargo subcommand.
+            assert!(lookup_by_cargo_subcommand(crate_name).is_none());
+        }
     }
 }
