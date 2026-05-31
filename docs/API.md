@@ -1008,6 +1008,85 @@ Stages, in order:
    `--max-src-age=7days --max-crate-age=14days --max-git-co-age=7days`,
    each clamped to `auto_gc.min_age_secs`.
 
+### `soldr gc target` (issue #574)
+
+Cross-repo `target/` reclamation: walks a configurable root, finds every
+workspace with a sibling `target/` directory, and reports their sizes
+(sorted descending). With `--purge` it deletes them after a single
+confirmation prompt (or `--yes` for non-interactive automation).
+
+```bash
+soldr gc target                                    # report under ~/dev (default)
+soldr gc target --root ~/code --max-depth 6        # custom root and walk depth
+soldr gc target --dry-run --json                   # machine-readable report
+soldr gc target --purge                            # interactive deletion
+soldr gc target --purge --yes                      # non-interactive deletion
+soldr gc target --purge --yes --json               # CI-friendly purge + JSON
+```
+
+Options:
+
+- `--root <PATH>` — walk root. Falls back to `$SOLDR_GC_TARGET_ROOT` then
+  `~/dev`.
+- `--max-depth <N>` — maximum directory depth for the workspace scan
+  (default `4`). Hidden directories (leading `.`) and any directory
+  named `target` are skipped.
+- `--dry-run` — report-only (default).
+- `--purge` — delete every reported `target/` directory.
+- `--yes` — skip the y/n confirmation prompt. Required when stdin is
+  not a terminal (CI).
+- `--json` — emit the stable machine-facing payload (`schema_version: 1`).
+
+JSON shape (stable):
+
+```json
+{
+  "schema_version": 1,
+  "command": "gc target",
+  "mode": "report" | "purge",
+  "root": "/home/me/dev",
+  "max_depth": 4,
+  "entry_count": 0,
+  "total_bytes": 0,
+  "total_human": "0 B",
+  "entries": [
+    {
+      "workspace_root": "/home/me/dev/foo",
+      "target_dir": "/home/me/dev/foo/target",
+      "size_bytes": 0,
+      "size_human": "0 B",
+      "file_count": 0,
+      "last_modified_ms": 0
+    }
+  ],
+  "purged_count": 0,
+  "failed_count": 0,
+  "purged_bytes": 0,
+  "purged_human": "0 B",
+  "failures": []
+}
+```
+
+The walker is independent of the per-repo `gc list` taxonomy above —
+it scans real filesystem trees rather than the soldr registry, so it
+finds workspaces that have never gone through `soldr cargo ...`.
+
+### Host-volume disk watchdog (issue #574)
+
+Before every `soldr cargo ...` build, soldr probes free space on the
+build volume (the disk hosting the project's `target/` dir, or CWD if
+`target/` doesn't exist yet) and either warns or aborts:
+
+- Above `SOLDR_TARGET_WARN_FREE_GB` (default 10 GiB) — silent.
+- Between warn and `SOLDR_TARGET_BLOCK_FREE_GB` (default 5 GiB) —
+  one-line stderr warning pointing at `soldr gc target`.
+- Below the block threshold — cargo is refused with a clear error
+  directing the user at `soldr gc target --purge`.
+
+Set `SOLDR_TARGET_AUTO_PRUNE_ENABLED=0` to disable the watchdog
+entirely. The watchdog is layered on top of the legacy 2 GiB low-disk
+advisory (issue #289) and never replaces it.
+
 ### Automatic GC under disk pressure (issue #323)
 
 soldr's cargo front door triggers a background auto-GC pass when free
@@ -1132,6 +1211,11 @@ Commands:
 | `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (Windows MSVC and Linux/MinGW via `clang -fuse-ld=lld`; **no-op on macOS** — see below), `fast` (mold on Linux when present on `PATH`, otherwise rust-lld; rust-lld on Windows MSVC; **no-op on macOS** — see below). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` injected into the spawned cargo process; the active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. On macOS targets `rust-lld` and `fast` fall back silently to the platform default linker (issue #509): Apple clang only accepts `-fuse-ld=lld` when the toolchain wires up an `ld64.lld` shim, and stock macOS toolchains do not — injecting it would break even `cc-rs` build-script compilations. | unset |
 | `SOLDR_QUIET_DEFENDER` | Suppress the once-per-day pre-build warning emitted by the cargo front door when Defender is actively scanning the soldr cache directory (issue #358). Truthy values silence the warning; the warning is also automatically suppressed in CI environments. | unset |
 | `SOLDR_OPTIMIZE_HELPER_OUTPUT` | Internal: set by the parent soldr process when it re-launches itself elevated via `--as-elevated-helper`. The elevated child writes its JSON status to this path so the parent can read and propagate it. | unset |
+| `SOLDR_TARGET_WARN_FREE_GB` | Free-space threshold (in GiB) below which the host-volume disk watchdog (issue #574) emits a one-line stderr warning before `soldr cargo ...` dispatches the build. The watchdog probes the disk hosting the project's `target/` dir, falling back to CWD when `target/` doesn't exist yet. | `10` |
+| `SOLDR_TARGET_BLOCK_FREE_GB` | Free-space threshold (in GiB) below which the host-volume disk watchdog (issue #574) refuses to start the build, pointing the user at `soldr gc target --purge`. Always strictly less than `SOLDR_TARGET_WARN_FREE_GB`; inverted thresholds collapse to "block wins". | `5` |
+| `SOLDR_TARGET_AUTO_PRUNE_ENABLED` | Master toggle for the host-volume disk watchdog (issue #574). Falsy values (`0`, `false`, `no`, `off`, empty — case-insensitive) disable the watchdog entirely. | `1` |
+| `SOLDR_GC_TARGET_ROOT` | Default walk root for `soldr gc target` (issue #574). The `--root <PATH>` flag always takes precedence. | `~/dev` |
+| `SOLDR_TEST_DISK_FREE_BYTES` | Test seam for the watchdog: when set to a `u64` byte count (or `error`), overrides the real `fs2::available_space` probe so tests can drive every threshold edge. Internal — never set this in production. | unset |
 
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of its managed zccache. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.

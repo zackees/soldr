@@ -21,7 +21,9 @@ use serde::Serialize;
 
 mod auto;
 mod cargo_native;
+pub(crate) mod disk;
 mod purge;
+pub(crate) mod target_walker;
 mod walks;
 
 // Re-export the public CLI surface so `crate::gc::*` keeps matching
@@ -527,6 +529,217 @@ pub(crate) fn emit_startup_target_warning_if_due() {
         Ok(None) => {}
         Err(_) => {}
     }
+}
+
+// ---------------------------------------------------------------------------
+// soldr gc target — cross-repo target/ reclamation (#574).
+// ---------------------------------------------------------------------------
+
+/// Env-var override for the walk root used by `soldr gc target`.
+pub(crate) const SOLDR_GC_TARGET_ROOT_ENV_VAR: &str = "SOLDR_GC_TARGET_ROOT";
+
+const GC_TARGET_JSON_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Serialize)]
+struct GcTargetEntryOutput {
+    workspace_root: String,
+    target_dir: String,
+    size_bytes: u64,
+    size_human: String,
+    file_count: u64,
+    last_modified_ms: i64,
+}
+
+#[derive(Serialize)]
+struct GcTargetOutput {
+    schema_version: u32,
+    command: &'static str,
+    mode: &'static str,
+    root: String,
+    max_depth: usize,
+    entry_count: usize,
+    total_bytes: u64,
+    total_human: String,
+    entries: Vec<GcTargetEntryOutput>,
+    purged_count: usize,
+    failed_count: usize,
+    purged_bytes: u64,
+    purged_human: String,
+    failures: Vec<GcTargetFailure>,
+}
+
+#[derive(Serialize)]
+struct GcTargetFailure {
+    target_dir: String,
+    error: String,
+}
+
+pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Result<(), SoldrError> {
+    use std::io::{IsTerminal, Write};
+    use target_walker::TargetEntry;
+
+    let root = resolve_gc_target_root(args.root.as_deref())?;
+    let mut entries: Vec<TargetEntry> = target_walker::walk(&root, args.max_depth);
+    entries.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+
+    let total_bytes: u64 = entries.iter().map(|e| e.size_bytes).sum();
+    let mode = if args.purge { "purge" } else { "report" };
+
+    let entry_outputs: Vec<GcTargetEntryOutput> = entries
+        .iter()
+        .map(|e| GcTargetEntryOutput {
+            workspace_root: e.workspace_root.display().to_string(),
+            target_dir: e.target_dir.display().to_string(),
+            size_bytes: e.size_bytes,
+            size_human: crate::cache_lib::target_registry::human_size(e.size_bytes),
+            file_count: e.file_count,
+            last_modified_ms: e.last_modified_ms,
+        })
+        .collect();
+
+    let mut purged_count = 0usize;
+    let mut purged_bytes = 0u64;
+    let mut failures: Vec<GcTargetFailure> = Vec::new();
+
+    if args.purge {
+        // Print human summary to stderr so JSON callers still get clean
+        // stdout. The y/n prompt also lives on stderr/stdin so piping
+        // stdout through `jq` doesn't break confirmation flow.
+        if !args.json {
+            print_target_report(&root, &entries, total_bytes, /*purge_plan=*/ true);
+        }
+
+        let proceed = if args.yes {
+            true
+        } else if !std::io::stdin().is_terminal() {
+            // Why: refuse to silently delete in CI when --yes is missing.
+            // The non-interactive caller must opt in explicitly.
+            eprintln!(
+                "soldr gc target: refusing to purge without --yes on a non-interactive stdin"
+            );
+            return Err(SoldrError::Other(
+                "soldr gc target --purge requires --yes on non-interactive stdin".into(),
+            ));
+        } else {
+            eprint!(
+                "soldr gc target: purge {} target/ director{} totaling {} ? [y/N] ",
+                entries.len(),
+                if entries.len() == 1 { "y" } else { "ies" },
+                crate::cache_lib::target_registry::human_size(total_bytes),
+            );
+            let _ = std::io::stderr().flush();
+            let mut answer = String::new();
+            std::io::stdin()
+                .read_line(&mut answer)
+                .map_err(|e| SoldrError::Other(format!("failed to read prompt answer: {e}")))?;
+            matches!(answer.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+        };
+
+        if proceed {
+            for entry in &entries {
+                match std::fs::remove_dir_all(&entry.target_dir) {
+                    Ok(()) => {
+                        purged_count += 1;
+                        purged_bytes = purged_bytes.saturating_add(entry.size_bytes);
+                    }
+                    Err(err) => failures.push(GcTargetFailure {
+                        target_dir: entry.target_dir.display().to_string(),
+                        error: err.to_string(),
+                    }),
+                }
+            }
+        } else if !args.json {
+            eprintln!("soldr gc target: aborted; no directories deleted");
+        }
+    } else if !args.json {
+        print_target_report(&root, &entries, total_bytes, /*purge_plan=*/ false);
+    }
+
+    let failed_count = failures.len();
+
+    if args.json {
+        let output = GcTargetOutput {
+            schema_version: GC_TARGET_JSON_SCHEMA_VERSION,
+            command: "gc target",
+            mode,
+            root: root.display().to_string(),
+            max_depth: args.max_depth,
+            entry_count: entries.len(),
+            total_bytes,
+            total_human: crate::cache_lib::target_registry::human_size(total_bytes),
+            entries: entry_outputs,
+            purged_count,
+            failed_count,
+            purged_bytes,
+            purged_human: crate::cache_lib::target_registry::human_size(purged_bytes),
+            failures,
+        };
+        print_json(&output)?;
+    } else if args.purge {
+        eprintln!(
+            "soldr gc target: purged {purged_count} target/ director{} ({}); {} failure{}",
+            if purged_count == 1 { "y" } else { "ies" },
+            crate::cache_lib::target_registry::human_size(purged_bytes),
+            failed_count,
+            if failed_count == 1 { "" } else { "s" },
+        );
+    }
+
+    if args.purge && failed_count > 0 {
+        return Err(SoldrError::Other(format!(
+            "soldr gc target: {failed_count} target/ purge failure{}",
+            if failed_count == 1 { "" } else { "s" }
+        )));
+    }
+    Ok(())
+}
+
+fn print_target_report(
+    root: &std::path::Path,
+    entries: &[target_walker::TargetEntry],
+    total_bytes: u64,
+    purge_plan: bool,
+) {
+    let heading = if purge_plan {
+        "soldr gc target: purge plan"
+    } else {
+        "soldr gc target: report"
+    };
+    println!("{heading}");
+    println!("  root: {}", root.display());
+    println!("  entries: {}", entries.len());
+    println!(
+        "  total: {}",
+        crate::cache_lib::target_registry::human_size(total_bytes)
+    );
+    for entry in entries {
+        println!(
+            "    {}  size={}  files={}  target={}",
+            entry.workspace_root.display(),
+            crate::cache_lib::target_registry::human_size(entry.size_bytes),
+            entry.file_count,
+            entry.target_dir.display(),
+        );
+    }
+    if !purge_plan && !entries.is_empty() {
+        println!("  run with --purge --yes to reclaim these directories");
+    }
+}
+
+fn resolve_gc_target_root(cli: Option<&std::path::Path>) -> Result<std::path::PathBuf, SoldrError> {
+    if let Some(p) = cli {
+        return Ok(p.to_path_buf());
+    }
+    if let Some(raw) = std::env::var_os(SOLDR_GC_TARGET_ROOT_ENV_VAR) {
+        let s = raw.to_string_lossy();
+        let trimmed = s.trim();
+        if !trimmed.is_empty() {
+            return Ok(crate::core::expand_user_home(trimmed));
+        }
+    }
+    let home = crate::core::user_home_dir()
+        .map_err(|e| SoldrError::Other(format!("failed to resolve $HOME: {e}")))?;
+    Ok(home.join("dev"))
 }
 
 #[cfg(test)]

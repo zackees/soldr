@@ -635,6 +635,37 @@ pub(crate) enum GcSubcommand {
     /// `clean gc`, then the soldr target purge — and, with
     /// `--aggressive`, a second cargo GC pass with tighter ages.
     Sweep(Box<GcSweepArgs>),
+    /// Walk a configurable root (default `~/dev`, override via `--root`
+    /// or `SOLDR_GC_TARGET_ROOT`) for every workspace with a sibling
+    /// `target/` directory, then either report (default) or purge them
+    /// (issue #574). Designed for cross-repo `target/` reclamation —
+    /// independent of the per-repo `target/` taxonomy walks above.
+    Target(Box<GcTargetArgs>),
+}
+
+#[derive(clap::Args)]
+pub(crate) struct GcTargetArgs {
+    /// Filesystem root to walk. Defaults to the value of
+    /// `$SOLDR_GC_TARGET_ROOT`, falling back to `~/dev`.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) root: Option<std::path::PathBuf>,
+    /// Maximum walk depth.
+    #[arg(long, default_value_t = 4, value_name = "N")]
+    pub(crate) max_depth: usize,
+    /// Report-only (the default).
+    #[arg(long, conflicts_with = "purge")]
+    pub(crate) dry_run: bool,
+    /// Delete every reported `target/` directory after confirming a
+    /// single y/n prompt (skipped when `--yes` is also passed).
+    #[arg(long, conflicts_with = "dry_run")]
+    pub(crate) purge: bool,
+    /// Skip the interactive y/n prompt before purging. Without
+    /// `--purge` this is a no-op.
+    #[arg(long)]
+    pub(crate) yes: bool,
+    /// Emit the stable machine-facing JSON form for this command.
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 /// Taxonomy kinds accepted by `gc list --kind` / `gc purge --kind`
