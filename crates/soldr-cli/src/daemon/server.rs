@@ -105,16 +105,6 @@ struct State {
     /// daemon restarts by design — long-lived totals belong in the
     /// redb `cook_index_v1` table, not in process-local state.
     cook_hits_this_session: AtomicU64,
-    /// Serializes cook_index redb opens within the daemon process.
-    /// redb refuses concurrent in-process `Database::open` for the
-    /// same file with `Database already open. Cannot acquire lock.`
-    /// Each cook_index op (`upsert`, `lookup`, `touch`, `stats`,
-    /// `drift_recipe_hashes`) opens + drops a handle per call so the
-    /// CLI side (`soldr cache stats`, `soldr doctor`) can still
-    /// open `state.redb` between daemon ops. This lock guarantees
-    /// only one daemon worker runs a cook_index op at a time so the
-    /// "already open" error never reaches the wire.
-    cook_index_lock: std::sync::Mutex<()>,
     shutdown: Notify,
 }
 
@@ -131,15 +121,11 @@ impl State {
     }
 
     fn status(&self) -> StatusInfo {
-        // Serialize the redb open behind cook_index_lock — see the
-        // field-level comment for why this matters.
-        let (entries, total_bytes) = {
-            let _guard = self
-                .cook_index_lock
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            cook_index::stats(&self.db_path).unwrap_or((0, 0))
-        };
+        // Serialization of concurrent redb opens against `state.redb`
+        // is handled inside `cook_index::stats` itself via the shared
+        // `redb_lock::state_db_open_lock` (#608) — no extra mutex
+        // needed here.
+        let (entries, total_bytes) = cook_index::stats(&self.db_path).unwrap_or((0, 0));
         StatusInfo {
             version: PROTOCOL_VERSION,
             pid: std::process::id(),
@@ -207,7 +193,6 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         last_activity_ms: AtomicU64::new(0),
         exit_via_idle: AtomicBool::new(false),
         cook_hits_this_session: AtomicU64::new(0),
-        cook_index_lock: std::sync::Mutex::new(()),
         shutdown: Notify::new(),
     });
 
@@ -443,7 +428,13 @@ where
         Request::LinkZccache { link } => {
             // Persist to redb so a restart can still stop the linked
             // daemon, AND cache in-process for fast Status replies.
-            let _ = db::set_linked_zccache(&state.db_path, Some(&link));
+            // Surface persistence errors on stderr — silently dropping
+            // the disk write is exactly what caused the #608 regression
+            // (`stop_linked_zccache` reads from disk on shutdown, not
+            // from this in-memory mutex).
+            if let Err(err) = db::set_linked_zccache(&state.db_path, Some(&link)) {
+                eprintln!("soldr-daemon: failed to persist linked zccache: {err}");
+            }
             if let Ok(mut guard) = state.linked_zccache.lock() {
                 *guard = Some(link);
             }
@@ -463,13 +454,13 @@ where
                 channel,
                 rustc_version,
             };
-            // Hold cook_index_lock for the lookup + drift scan, then
-            // drop before any await — Mutex is sync-only.
+            // The two cook_index calls below each serialize their own
+            // redb open via `redb_lock::state_db_open_lock` (#608), so
+            // no outer mutex is needed. The window between the two
+            // opens admits a concurrent writer; the worst case is a
+            // stale `previous_origin_recipe_hashes` drift list, which
+            // is purely advisory.
             let reply = {
-                let _guard = state
-                    .cook_index_lock
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
                 match cook_index::lookup(&state.db_path, &key) {
                     Ok(Some(entry)) => {
                         state.cook_hits_this_session.fetch_add(1, Ordering::Relaxed);
@@ -527,13 +518,7 @@ where
                 origin_url_normalized,
                 cook_cmd_summary,
             };
-            let result = {
-                let _guard = state
-                    .cook_index_lock
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                cook_index::upsert(&state.db_path, &key, &entry)
-            };
+            let result = cook_index::upsert(&state.db_path, &key, &entry);
             match result {
                 Ok(()) => {
                     let _ = write_frame_async(&mut stream, &Response::Ack).await;
@@ -550,10 +535,6 @@ where
         Request::CookTouch { sha256 } => {
             // Fire-and-forget bump of last_used_unix_ms. Silent on
             // failure — the caller already moved on.
-            let _guard = state
-                .cook_index_lock
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
             let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
         }
     }

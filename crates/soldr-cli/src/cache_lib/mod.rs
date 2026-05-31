@@ -18,6 +18,7 @@ pub mod cook_gc;
 pub mod cook_index;
 pub mod gc;
 pub mod prune_target;
+pub mod redb_lock;
 pub mod save;
 pub mod state_db;
 pub mod strip_target;
