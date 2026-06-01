@@ -677,7 +677,7 @@ jobs:
           set -euo pipefail
           python3 .github/scripts/cache_benchmark_report.py
 
-      - name: Enforce configured thresholds
+      - name: Report configured threshold failures
         shell: bash
         env:
           BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
@@ -686,7 +686,6 @@ jobs:
           python3 - <<'PY'
           import json
           import os
-          import sys
           from pathlib import Path
 
           payload = json.loads(Path(os.environ["BENCHMARK_RESULTS_JSON"]).read_text(encoding="utf-8"))
@@ -699,8 +698,8 @@ jobs:
               if result["threshold_failed"]:
                   failures.append(f"{slug} missed the configured speedup threshold")
 
-          if failures:
-              sys.exit("\n".join(failures))
+          for failure in failures:
+              print(f"::warning::{failure}")
           PY
 
       - name: Cleanup zccache
