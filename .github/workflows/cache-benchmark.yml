@@ -375,7 +375,8 @@ jobs:
               rows = [row]
               write_payload(rows)
               append_summary(rows)
-              sys.exit(exc.returncode or 1)
+              if native_config["mode"] != "report-only":
+                  sys.exit(exc.returncode or 1)
           finally:
               run_quiet(["zccache", "stop"], check=False)
           PY
