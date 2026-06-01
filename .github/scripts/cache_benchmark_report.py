@@ -84,6 +84,18 @@ def _generated_at_utc() -> str:
     )
 
 
+def _human_datetime_utc(value: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    parsed = parsed.astimezone(timezone.utc)
+    hour = parsed.strftime("%I").lstrip("0") or "0"
+    return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year} at {hour}:{parsed:%M} {parsed:%p} UTC"
+
+
 def _load_config() -> tuple[dict[str, Any], Path]:
     config_path = Path(os.environ.get("BENCHMARK_CONFIG_PATH", DEFAULT_CONFIG_PATH))
     if not config_path.is_absolute():
@@ -290,6 +302,7 @@ def _build_report(
         for profile in profiles
     ]
 
+    generated_at_utc = _generated_at_utc()
     report = {
         "workflow": "cache-benchmark.yml",
         "config_path": str(config_path.relative_to(REPO_ROOT)),
@@ -297,7 +310,8 @@ def _build_report(
         "threshold_ratio": _round_metric(float(os.environ["THRESHOLD_RATIO"])),
         "headline": headline,
         "metadata": {
-            "generated_at_utc": _generated_at_utc(),
+            "generated_at_utc": generated_at_utc,
+            "last_executed_at_human": _human_datetime_utc(generated_at_utc),
             "git_sha": os.environ.get("GITHUB_SHA") or "unknown",
             "github_run_id": os.environ.get("GITHUB_RUN_ID") or "local",
             "runner_os": os.environ.get("RUNNER_OS") or "unknown",
@@ -442,8 +456,9 @@ def _metadata_line(report: dict[str, Any]) -> str:
     metadata = report["metadata"]
     git_sha = metadata["git_sha"]
     short_sha = git_sha[:12] if git_sha != "unknown" else git_sha
+    last_executed = metadata.get("last_executed_at_human") or metadata["generated_at_utc"]
     return (
-        f"Generated {metadata['generated_at_utc']} | "
+        f"Last run {last_executed} | "
         f"SHA {short_sha} | "
         f"{metadata['runner_os']}/{metadata['runner_arch']} | "
         f"Target {metadata['target']}"
@@ -683,10 +698,23 @@ def _write_benchmark_image(report: dict[str, Any], output_path: Path) -> None:
         y += 36
 
     y += 12
+    last_executed = (
+        f"Last run {report['metadata'].get('last_executed_at_human', report['metadata']['generated_at_utc'])}"
+    )
+    draw.text(
+        (x, y),
+        _truncate_text(draw, last_executed, small_font, width - 2 * x),
+        fill=muted,
+        font=small_font,
+    )
+    y += 28
+
     metadata = (
         f"Scenario {report['requested_scenario']} | "
         f"Threshold {report['threshold_ratio']:.2f}x | "
-        f"{_metadata_line(report)}"
+        f"SHA {report['metadata']['git_sha'][:12] if report['metadata']['git_sha'] != 'unknown' else 'unknown'} | "
+        f"{report['metadata']['runner_os']}/{report['metadata']['runner_arch']} | "
+        f"Target {report['metadata']['target']}"
     )
     draw.text(
         (x, y),

@@ -27,6 +27,7 @@ Repository = "https://github.com/zackees/soldr"
 [dependency-groups]
 dev = [
     "maturin>=1.7,<2",
+    "pillow==11.3.0",
     "pytest>=8.0",
     "pytest-xdist>=3.0",
     "ruff>=0.4",

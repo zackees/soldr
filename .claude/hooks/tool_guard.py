@@ -250,7 +250,7 @@ def extract_command(data):
 
 def main():
     try:
-        data = json.load(sys.stdin)
+        data = json.loads(sys.stdin.read().lstrip("\ufeff"))
     except json.JSONDecodeError:
         sys.exit(0)
 
