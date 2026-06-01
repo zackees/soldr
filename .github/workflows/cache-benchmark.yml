@@ -758,8 +758,9 @@ jobs:
           git -C "$publish_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git -C "$publish_dir" add -A
           git -C "$publish_dir" commit -m "Update benchmark stats for ${GITHUB_SHA}"
-          git -C "$publish_dir" -c "http.https://github.com/.extraheader=AUTHORIZATION: bearer ${GITHUB_TOKEN}" \
-            push --force "https://github.com/${GITHUB_REPOSITORY}.git" "HEAD:${STATS_BRANCH}"
+          git -C "$publish_dir" push --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:${STATS_BRANCH}"
 
   deploy-pages:
     if: ${{ always() && needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
