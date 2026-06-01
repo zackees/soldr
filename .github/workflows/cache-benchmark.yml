@@ -6,6 +6,8 @@ on:
       - main
     paths-ignore:
       - "*.md"
+  schedule:
+    - cron: "17 9 * * *"
   workflow_dispatch:
     inputs:
       scenario:

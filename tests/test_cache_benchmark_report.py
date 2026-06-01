@@ -247,6 +247,7 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
             "BENCHMARK_CONFIG_PATH": "benchmark.toml",
             "BENCHMARK_COMMAND_TARGET": "x86_64-unknown-linux-gnu",
             "BENCHMARK_INPUT_JSON": str(input_path),
+            "BENCHMARK_GENERATED_AT_UTC": "2026-06-01T13:45:00Z",
             "BENCHMARK_SUMMARY_JSON": str(json_path),
             "BENCHMARK_SUMMARY_WWW_DIR": str(www_dir),
             "GITHUB_STEP_SUMMARY": str(summary_path),
@@ -259,6 +260,8 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     assert report["workflow"] == "cache-benchmark.yml"
     assert report["config_path"] == "benchmark.toml"
     assert report["threshold_ratio"] == 10.0
+    assert report["metadata"]["generated_at_utc"] == "2026-06-01T13:45:00Z"
+    assert report["metadata"]["last_executed_at_human"] == "June 1, 2026 at 1:45 PM UTC"
     assert report["site"]["base_competitor"] == "swatinem"
     assert len(report["profiles"]) == 3
     assert len(report["comparisons"]) == 6
@@ -295,7 +298,9 @@ def test_cache_benchmark_report_writes_json_and_summary(tmp_path: Path) -> None:
     assert "soldr cargo check -p soldr-cli --locked --target x86_64-unknown-linux-gnu" in www_html
     assert "soldr cargo clippy --workspace --all-targets --locked --target x86_64-unknown-linux-gnu -- -D warnings" in www_html
     assert "soldr uses managed zccache internally." in www_html
+    assert "Last run June 1, 2026 at 1:45 PM UTC" in www_html
     assert "latest.json" in www_html
+    assert (www_dir / "benchmark.jpg").exists()
     assert (www_dir / ".nojekyll").exists()
 
 
