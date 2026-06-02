@@ -508,6 +508,7 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              exit /b %ERRORLEVEL%\n\
              :soldr_zccache_start\n\
              echo zccache start cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE%>>\"{0}\"\n\
+             if defined SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE goto soldr_zccache_start_stale_lock\n\
              if not defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE exit /b 0\n\
              if exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\" exit /b 0\n\
              if not exist \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.failed\" (\n\
@@ -517,6 +518,23 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              )\n\
              echo zccache start retried before stop 1>&2\n\
              exit /b 66\n\
+             :soldr_zccache_start_stale_lock\n\
+             if not defined ZCCACHE_CACHE_DIR (\n\
+               echo zccache start missing ZCCACHE_CACHE_DIR 1>&2\n\
+               exit /b 67\n\
+             )\n\
+             if not exist \"%SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE%.failed\" (\n\
+               if not exist \"%ZCCACHE_CACHE_DIR%\" mkdir \"%ZCCACHE_CACHE_DIR%\"\n\
+               echo 3197>\"%ZCCACHE_CACHE_DIR%\\daemon.lock\"\n\
+               type nul > \"%SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE%.failed\"\n\
+               echo failed to start daemon: daemon started but not accepting connections after 10s 1>&2\n\
+               exit /b 1\n\
+             )\n\
+             if exist \"%ZCCACHE_CACHE_DIR%\\daemon.lock\" (\n\
+               echo zccache start retried while stale daemon.lock remained 1>&2\n\
+               exit /b 66\n\
+             )\n\
+             exit /b 0\n\
              :soldr_zccache_flush\n\
              echo zccache flush args=%* cache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
              if defined SOLDR_TEST_ZCCACHE_FLUSH_UNSUPPORTED goto soldr_zccache_flush_unsupported\n\
@@ -543,6 +561,24 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              case \"$1\" in\n\
                start)\n\
                  echo \"zccache start cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}}\" >> \"{0}\"\n\
+                 if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE:-}}\" ]; then\n\
+                   if [ -z \"${{ZCCACHE_CACHE_DIR:-}}\" ]; then\n\
+                     echo 'zccache start missing ZCCACHE_CACHE_DIR' >&2\n\
+                     exit 67\n\
+                   fi\n\
+                   lock_path=\"${{ZCCACHE_CACHE_DIR}}/daemon.lock\"\n\
+                   if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE}}.failed\" ]; then\n\
+                     mkdir -p \"${{ZCCACHE_CACHE_DIR}}\"\n\
+                     printf '3197\\n' > \"$lock_path\"\n\
+                     : > \"${{SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE}}.failed\"\n\
+                     echo 'failed to start daemon: daemon started but not accepting connections after 10s' >&2\n\
+                     exit 1\n\
+                   fi\n\
+                   if [ -e \"$lock_path\" ]; then\n\
+                     echo 'zccache start retried while stale daemon.lock remained' >&2\n\
+                     exit 66\n\
+                   fi\n\
+                 fi\n\
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
                    if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\" ]; then\n\
                      if [ ! -e \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.failed\" ]; then\n\

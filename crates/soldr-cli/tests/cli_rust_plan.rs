@@ -255,3 +255,51 @@ fn cargo_front_door_recovers_from_stale_zccache_daemon_start() {
         "fake zccache should only allow recovery after stop"
     );
 }
+
+#[test]
+fn cargo_front_door_removes_stale_zccache_daemon_lock_before_retry() {
+    let cache_root = unique_temp_dir("cargo-stale-zccache-daemon-lock");
+    let log_path = cache_root.join("tool.log");
+    let stale_marker = cache_root.join("stale-zccache-lock");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_ZCCACHE_STALE_LOCK_ONCE", &stale_marker)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with stale fake zccache lock");
+
+    assert!(
+        output.status.success(),
+        "cache-enabled front door should remove stale zccache daemon.lock before retry\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert_eq!(
+        log.matches("zccache start").count(),
+        2,
+        "managed zccache start should be retried once after stale lock detection: {log}"
+    );
+    assert!(
+        log.contains("zccache stop"),
+        "managed zccache should still stop stale daemon state before removing the lock: {log}"
+    );
+    assert!(
+        log.contains("zccache session-start")
+            && log.contains("zccache wrapper")
+            && log.contains("zccache session-end test-session"),
+        "recovered build should still exercise the normal managed zccache path: {log}"
+    );
+    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
+    assert!(
+        !zccache_cache_dir.join("daemon.lock").exists(),
+        "soldr should remove stale zccache daemon.lock before retrying start"
+    );
+}
