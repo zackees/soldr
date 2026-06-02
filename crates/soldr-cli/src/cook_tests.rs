@@ -8,6 +8,36 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_string()).collect()
 }
 
+fn run_git_in(dir: &Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}\nstderr: {}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn init_git_repo_with_tracked_lock(repo: &Path) {
+    std::fs::create_dir_all(repo).unwrap();
+    run_git_in(repo, &["init", "-q", "-b", "main"]);
+    run_git_in(repo, &["config", "user.email", "cook@example.com"]);
+    run_git_in(repo, &["config", "user.name", "cook test"]);
+    std::fs::write(
+        repo.join("Cargo.toml"),
+        "[package]\nname = \"cook_index_no_daemon\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(repo.join("Cargo.lock"), "# lockfile\n").unwrap();
+    run_git_in(repo, &["add", "Cargo.toml", "Cargo.lock"]);
+    run_git_in(repo, &["commit", "-q", "-m", "init"]);
+}
+
 #[test]
 fn parse_cook_args_recognises_release_and_workspace_flags() {
     let parsed = parse_cook_args(&argv(&["--release", "--workspace"])).unwrap();
@@ -346,6 +376,45 @@ fn sanitize_cargo_chef_recipe_removes_generated_plugin_lines_from_manifests() {
     assert!(!first.contains("plugin = false"));
     assert!(first.contains("proc-macro = false"));
     assert!(second.contains("plugin = \"user-data\""));
+}
+
+#[test]
+fn index_cooked_artifact_skips_archive_pack_when_daemon_unavailable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().join("repo");
+    init_git_repo_with_tracked_lock(&repo);
+    let target_debug_deps = repo.join("target").join("debug").join("deps");
+    std::fs::create_dir_all(&target_debug_deps).unwrap();
+    std::fs::write(target_debug_deps.join("libdep.rlib"), b"dep").unwrap();
+
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr-cache"));
+    let ctx = CookContext {
+        manifest_dir: repo,
+        recipe_path: tmp.path().join("recipe.json"),
+        recipe_owned_tempdir: false,
+    };
+    let args = CookArgs {
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        ..Default::default()
+    };
+    let mut packer_called = false;
+
+    index_cooked_artifact_with_packer(&ctx, &args, &paths, |_, _| {
+        packer_called = true;
+        panic!("packer must not run when CookLookup cannot reach the daemon")
+    })
+    .unwrap();
+
+    assert!(
+        !packer_called,
+        "daemon-unavailable cook index path must not invoke archive packing"
+    );
+    assert!(
+        !crate::cache_lib::cook_archive::cook_cache_dir(&paths)
+            .join(".tmp")
+            .exists(),
+        "skipping the packer should leave no cook archive temp directory"
+    );
 }
 
 // --- soldr#566: snapshot/restore the project around `cargo chef cook` ---

@@ -408,10 +408,10 @@ pub(crate) async fn run_cook(
     let cook_target_dir = resolve_cook_target_dir(&ctx.manifest_dir, &parsed);
     let cook_marker_path = cook_target_dir.join(".soldr-cook-marker.json");
     let expected_marker = compute_cook_marker(&ctx, &parsed);
-    let warm_skip = match (&expected_marker, read_cook_marker(&cook_marker_path)) {
-        (Some(expected), Some(existing)) if existing == *expected => true,
-        _ => false,
-    };
+    let warm_skip = matches!(
+        (&expected_marker, read_cook_marker(&cook_marker_path)),
+        (Some(expected), Some(existing)) if existing == *expected
+    );
     if warm_skip {
         eprintln!(
             "soldr cook: warm-cook detected (recipe + rustc match the prior cook marker at {}) — skipping Phase 2 (cargo chef cook). Estimated savings: ~5 min on Coverage-shape workloads. See soldr#621.",
@@ -672,6 +672,22 @@ fn resolve_target_triple(manifest_dir: &Path, args: &CookArgs) -> Option<String>
 /// artifact with the daemon via `CookRecord`. Best-effort: a failure
 /// here surfaces as a warning but never fails the cook command.
 fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    index_cooked_artifact_with_packer(ctx, args, &paths, cook_archive::pack_cook_archive)
+}
+
+fn index_cooked_artifact_with_packer<F>(
+    ctx: &CookContext,
+    args: &CookArgs,
+    paths: &SoldrPaths,
+    packer: F,
+) -> Result<(), SoldrError>
+where
+    F: FnOnce(
+        &Path,
+        &Path,
+    ) -> Result<PackedCookArchive, crate::cache_lib::target_registry::RegistryError>,
+{
     // 1. Sharing-eligibility checks.
     let lockfile = ctx.manifest_dir.join("Cargo.lock");
     if !lockfile.is_file() {
@@ -738,8 +754,7 @@ fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), Soldr
     let profile = resolve_profile_name(args).to_string();
 
     // 3. Resolve paths under ~/.soldr/.
-    let paths = SoldrPaths::new()?;
-    let cook_dir = cook_cache_dir(&paths);
+    let cook_dir = cook_cache_dir(paths);
     std::fs::create_dir_all(&cook_dir).map_err(|e| {
         SoldrError::Other(format!(
             "soldr cook: failed to create {}: {e}",
@@ -749,9 +764,10 @@ fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), Soldr
 
     // 4. Pre-flight CookLookup so we can render a drift diagnostic
     //    when a previous recipe hash exists for this (origin, triple,
-    //    profile, channel, rustc). Best-effort: a daemon hiccup
-    //    falls through silently.
-    let sock = client::default_sock_path(&paths);
+    //    profile, channel, rustc). If this cannot reach the daemon,
+    //    CookRecord cannot be relied on either, so skip the expensive
+    //    archive pack entirely.
+    let sock = client::default_sock_path(paths);
     let prior_drift = match client::cook_lookup(
         &sock,
         recipe_hash,
@@ -774,11 +790,17 @@ fn index_cooked_artifact(ctx: &CookContext, args: &CookArgs) -> Result<(), Soldr
             .first()
             .copied()
             .map(DriftSignal::Drifted),
-        Err(_) => None,
+        Err(e) => {
+            eprintln!(
+                "{} cook index unavailable; skipping shared cook archive pack ({e:?}).",
+                yellow_warning_prefix()
+            );
+            return Ok(());
+        }
     };
 
     // 5. Pack the trimmed target/<profile>/ tree.
-    let packed = cook_archive::pack_cook_archive(&target_dir, &cook_dir)
+    let packed = packer(&target_dir, &cook_dir)
         .map_err(|e| SoldrError::Other(format!("soldr cook: failed to pack cook archive: {e}")))?;
 
     // 6. Register with the daemon. If the daemon is unreachable we
