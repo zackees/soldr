@@ -6,11 +6,14 @@
 
 use crate::core::{suppress_windows_console_window, SoldrError};
 use std::ffi::OsStr;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub(crate) const ZCCACHE_DAEMON_NAMESPACE_ENV_VAR: &str = "ZCCACHE_DAEMON_NAMESPACE";
+const ZCCACHE_DAEMON_LOCK_FILENAME: &str = "daemon.lock";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZccacheLifecycleState {
@@ -732,6 +735,20 @@ pub(crate) fn start_zccache_with_recovery_for_daemon(
         Ok(stop) => Some(zccache_command_failure_message(&["stop"], &stop)),
         Err(err) => Some(format!("failed to invoke zccache stop: {err}")),
     };
+    let lock_diagnostic = match remove_stale_zccache_daemon_lock(cache_dir) {
+        Ok(Some(lock_path)) => {
+            eprintln!(
+                "soldr: removed stale zccache daemon lock at {} before retry",
+                lock_path.display()
+            );
+            None
+        }
+        Ok(None) => None,
+        Err(message) => {
+            eprintln!("soldr: {message}");
+            Some(message)
+        }
+    };
 
     match run_zccache_start_command(binary, cache_dir, daemon_name) {
         Ok(retry) if retry.status.success() => Ok(()),
@@ -747,6 +764,11 @@ pub(crate) fn start_zccache_with_recovery_for_daemon(
             if let Some(stop_diagnostic) = stop_diagnostic {
                 message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
             }
+            if let Some(lock_diagnostic) = &lock_diagnostic {
+                message.push_str(&format!(
+                    "\nzccache daemon lock diagnostic: {lock_diagnostic}"
+                ));
+            }
             Err(SoldrError::Other(message))
         }
         Err(err) => {
@@ -759,8 +781,25 @@ pub(crate) fn start_zccache_with_recovery_for_daemon(
             if let Some(stop_diagnostic) = stop_diagnostic {
                 message.push_str(&format!("\nzccache stop diagnostic: {stop_diagnostic}"));
             }
+            if let Some(lock_diagnostic) = &lock_diagnostic {
+                message.push_str(&format!(
+                    "\nzccache daemon lock diagnostic: {lock_diagnostic}"
+                ));
+            }
             Err(SoldrError::Other(message))
         }
+    }
+}
+
+fn remove_stale_zccache_daemon_lock(cache_dir: &Path) -> Result<Option<PathBuf>, String> {
+    let lock_path = cache_dir.join(ZCCACHE_DAEMON_LOCK_FILENAME);
+    match fs::remove_file(&lock_path) {
+        Ok(()) => Ok(Some(lock_path)),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "failed to remove stale zccache daemon lock at {}: {err}",
+            lock_path.display()
+        )),
     }
 }
 
@@ -1031,6 +1070,24 @@ mod tests {
         assert!(zccache_flag_unsupported(&out, "--no-depgraph-save"));
         let unrelated = synthetic_output("error: permission denied", 2);
         assert!(!zccache_flag_unsupported(&unrelated, "--no-depgraph-save"));
+    });
+
+    crate::timed_test!(stale_daemon_lock_recovery_removes_daemon_lock, {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let lock_path = temp.path().join(ZCCACHE_DAEMON_LOCK_FILENAME);
+        fs::write(&lock_path, "3197\n").expect("write stale daemon lock");
+
+        let removed =
+            remove_stale_zccache_daemon_lock(temp.path()).expect("remove stale daemon lock");
+        assert_eq!(removed.as_deref(), Some(lock_path.as_path()));
+        assert!(!lock_path.exists());
+    });
+
+    crate::timed_test!(stale_daemon_lock_recovery_ignores_missing_lock, {
+        let temp = tempfile::tempdir().expect("create temp dir");
+        let removed =
+            remove_stale_zccache_daemon_lock(temp.path()).expect("ignore missing daemon lock");
+        assert_eq!(removed, None);
     });
 
     crate::timed_test!(output_snippet_omits_empty_output, {
