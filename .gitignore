@@ -148,3 +148,6 @@ uv.lock
 .claude/worktrees/
 .claude/settings.local.json
 .claude/.credentials*
+
+# Dependent-repo checkouts coordinated via the clud-extern-repos convention.
+.extern-repos/
