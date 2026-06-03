@@ -559,6 +559,19 @@ def _build_html_page(report: dict[str, Any]) -> str:
         {escape(soldr_note)} Raw detail is published beside this page as
         <a href="latest.json">latest.json</a>.
       </p>
+      <p class="note">
+        <strong>What "warm" measures here:</strong> every cell runs cold &rarr;
+        warm inside the same CI job, so the warm pass already has a hot
+        <code>target/</code> from the cold seed. swatinem's strength
+        (multi-GB <code>target/</code> restore from a prior job) and soldr's
+        strength (on-demand artifact fetch from a shared
+        <a href="https://github.com/zackees/zccache">zccache</a>) are
+        therefore both invisible &mdash; only the per-rustc wrapper overhead
+        on the few units cargo's mtime fingerprint flags as dirty is on the
+        clock. Treat the headline as a same-job-seed measurement, not a
+        general &ldquo;A is faster than B&rdquo; claim. Tracking under
+        <a href="https://github.com/zackees/soldr/issues/633">soldr#633</a>.
+      </p>
       <div class="table-wrap">
         <table>
           <thead>
