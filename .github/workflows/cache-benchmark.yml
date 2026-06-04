@@ -32,6 +32,14 @@ on:
         required: false
         default: ""
         type: string
+      include_restore_phase:
+        description: >
+          Also measure cache-archive + restore + restored-warm timings to expose
+          the cross-job restore advantage (#639). Adds ~3-5 min per cell so it
+          stays opt-in.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -484,6 +492,11 @@ jobs:
           # (zccache::daemon::server::handle_compile::pipeline) and is a no-op
           # when unset, so the cost is borne only here.
           ZCCACHE_PROFILE_RUST_MISS: "1"
+          # Issue #639: opt-in cross-job-restore measurement — surfaces the
+          # archive/restore/restored-warm cycle that's hidden by the
+          # same-job-seed scenario. Defaults off so the scheduled run stays
+          # fast; flip via workflow_dispatch when chasing the 2x story.
+          INCLUDE_RESTORE_PHASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_restore_phase || 'false' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -601,6 +614,89 @@ jobs:
                   return total or None
               return None
 
+          def _backend_cache_roots(backend):
+              """Directories the backend would archive for cross-job restore."""
+              if backend == "zccache":
+                  d = os.environ.get("ZCCACHE_CACHE_DIR")
+                  return [Path(d)] if d and Path(d).is_dir() else []
+              if backend == "swatinem":
+                  return [
+                      p for p in (
+                          repo_root / "target",
+                          Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo"),
+                      ) if p.is_dir()
+                  ]
+              return []
+
+          def measure_restore_phase(backend, profile, mutation):
+              """Snapshot → wipe → restore → warm rebuild cycle.
+
+              Returns a dict with archive_seconds / archive_bytes /
+              restore_seconds / restored_warm_seconds (or None values
+              when the cycle could not run).
+
+              Issue #639: exposes the cross-job restore advantage that the
+              same-job-seed scenario hides. Local untar is a *lower bound*
+              on GHA cache restore time (no network round-trip), but the
+              proportional gap between backends carries through because
+              both backends pay the same untar throughput on the same
+              runner. Use the size + restore-time pair to extrapolate the
+              real CI cost.
+              """
+              import tarfile
+              import tempfile
+
+              phase = {
+                  "archive_seconds": None,
+                  "archive_bytes": None,
+                  "restore_seconds": None,
+                  "restored_warm_seconds": None,
+              }
+              roots = _backend_cache_roots(backend)
+              if not roots:
+                  return phase
+              archive_path = Path(tempfile.mkdtemp()) / f"{backend}-cache.tar.gz"
+              start = time.perf_counter()
+              with tarfile.open(archive_path, "w:gz", compresslevel=3) as tar:
+                  for root in roots:
+                      tar.add(root, arcname=root.name)
+              phase["archive_seconds"] = round(time.perf_counter() - start, 2)
+              phase["archive_bytes"] = archive_path.stat().st_size
+
+              # Wipe every backed-up location and let the restore put bytes
+              # back in their original paths.
+              clean_workspace()
+              reset_backend(backend)
+              for root in roots:
+                  shutil.rmtree(root, ignore_errors=True)
+
+              start = time.perf_counter()
+              with tarfile.open(archive_path, "r:gz") as tar:
+                  # Each member's name starts with `root.name/...` (or just
+                  # `root.name`); since the roots are top-level directories
+                  # we restore each into its original parent.
+                  for member in tar.getmembers():
+                      parts = Path(member.name).parts
+                      if not parts:
+                          continue
+                      head = parts[0]
+                      parent = next(
+                          (root.parent for root in roots if root.name == head),
+                          None,
+                      )
+                      if parent is None:
+                          continue
+                      tar.extract(member, parent)
+              phase["restore_seconds"] = round(time.perf_counter() - start, 2)
+
+              try:
+                  apply_mutation(mutation)
+                  phase["restored_warm_seconds"] = round(run_cargo(profile, backend), 2)
+              except subprocess.CalledProcessError:
+                  phase["restored_warm_seconds"] = None
+
+              return phase
+
           results = []
           failures = []
 
@@ -620,6 +716,10 @@ jobs:
                           "cache_hit": False,
                           "cache_hit_detail": f"backend={backend};same_job_seed=true",
                           "cache_dir_bytes": None,
+                          "archive_seconds": None,
+                          "archive_bytes": None,
+                          "restore_seconds": None,
+                          "restored_warm_seconds": None,
                           "threshold_failed": False,
                       }
 
@@ -651,6 +751,14 @@ jobs:
                           result["cache_hit"] = warm_seconds < cold_seconds
                           result["threshold_failed"] = speedup_ratio < threshold
                           result["cache_dir_bytes"] = measure_cache_size_bytes(backend)
+                          if os.environ.get("INCLUDE_RESTORE_PHASE", "").lower() in ("1", "true"):
+                              try:
+                                  restore_phase = measure_restore_phase(backend, profile, mutation)
+                              except Exception as exc:  # noqa: BLE001
+                                  print(f"::warning::restore-phase measurement failed for "
+                                        f"{profile['id']}/{mutation['id']}/{competitor['id']}: {exc}")
+                              else:
+                                  result.update(restore_phase)
                           if result["threshold_failed"]:
                               failures.append(
                                   f"{profile['id']}/{mutation['id']}/{competitor['id']} observed {speedup_ratio:.2f}x, required {threshold:.2f}x"

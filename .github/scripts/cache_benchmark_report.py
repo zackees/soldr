@@ -218,6 +218,10 @@ def _load_results(
                 "cache_hit": _read_bool(raw_result.get("cache_hit")),
                 "cache_hit_detail": raw_result.get("cache_hit_detail") or None,
                 "cache_dir_bytes": _read_int(raw_result.get("cache_dir_bytes")),
+                "archive_seconds": _read_float(raw_result.get("archive_seconds")),
+                "archive_bytes": _read_int(raw_result.get("archive_bytes")),
+                "restore_seconds": _read_float(raw_result.get("restore_seconds")),
+                "restored_warm_seconds": _read_float(raw_result.get("restored_warm_seconds")),
                 "threshold_failed": bool(raw_result.get("threshold_failed", False)),
             }
         )
