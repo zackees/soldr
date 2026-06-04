@@ -24,6 +24,14 @@ on:
         required: true
         default: "10"
         type: string
+      zccache_source_ref:
+        description: >
+          Git ref of zackees/zccache to build from source instead of installing
+          the latest release. Use for measuring unreleased commits (#641).
+          Empty (default) keeps the published-binary path on the scheduled run.
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -124,6 +132,7 @@ jobs:
           cache-compilation: "false"
           cache-target: "false"
           save-cache: "false"
+          zccache-source-ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.zccache_source_ref || '' }}
 
       - name: Run native SQLite benchmark
         shell: bash
@@ -459,6 +468,7 @@ jobs:
           cache-dir: ${{ runner.temp }}/run-benchmark-zccache
           cache-target: "false"
           save-cache: "false"
+          zccache-source-ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.zccache_source_ref || '' }}
 
       - name: Run configured benchmarks
         shell: bash
