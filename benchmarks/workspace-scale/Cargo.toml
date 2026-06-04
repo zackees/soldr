@@ -1,0 +1,6 @@
+# Skeleton — actual crate graph lands in a follow-up PR (see README).
+# This file exists so the directory has a single-source-of-truth shell
+# and so future PRs can add `members` without re-litigating layout.
+[workspace]
+resolver = "2"
+members = []
