@@ -72,6 +72,29 @@ def _format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
+def _compute_cross_pr_speedup(
+    comparison_rows: list[dict[str, Any]], base_competitor_id: str
+) -> float | None:
+    """Aggregate cross-PR speedup as `sum(base_build) / sum(soldr_build)`.
+
+    Issue #650. Sum/sum rather than mean-of-ratios so a cheap cell (quick
+    check, 13 s soldr vs 37 s swatinem, 2.8x) doesn't outvote an expensive
+    one (release, 90 s vs 140 s, 1.6x). Returns None when no row has both
+    backends populated.
+    """
+    s_total = 0.0
+    b_total = 0.0
+    for row in comparison_rows:
+        soldr = (row.get("competitors", {}) or {}).get("soldr") or {}
+        base = (row.get("competitors", {}) or {}).get(base_competitor_id) or {}
+        s = soldr.get("cross_pr_build_seconds")
+        b = base.get("cross_pr_build_seconds")
+        if isinstance(s, (int, float)) and isinstance(b, (int, float)) and s > 0:
+            s_total += s
+            b_total += b
+    return (b_total / s_total) if s_total > 0 else None
+
+
 def _compute_cache_ratio_pct(
     comparison_rows: list[dict[str, Any]], base_competitor_id: str
 ) -> float | None:
@@ -353,10 +376,28 @@ def _build_report(
             cache_clause = (
                 f"; soldr's cache is {cache_ratio_pct:.0f}% the size of swatinem's"
             )
+        # Issue #650: when the operator dispatches the workflow with
+        # `include_cross_pr=true`, the per-row `cross_pr_build_seconds`
+        # values carry the structural-advantage story — swatinem cannot
+        # share artifacts between two PRs that touch different files,
+        # soldr's content-addressed cache can. Surface the overall
+        # speedup (sum/sum across rows where both backends produced a
+        # number) so the headline reflects the actual measured win when
+        # the scenario was exercised. Clause stays absent on scheduled
+        # runs that don't populate the fields.
+        cross_pr_speedup = _compute_cross_pr_speedup(
+            comparison_rows, base_competitor_id
+        )
+        cross_pr_clause = ""
+        if cross_pr_speedup is not None and cross_pr_speedup >= 1.10:
+            cross_pr_clause = (
+                f"; in the cross-PR cache-sharing scenario, soldr is "
+                f"{cross_pr_speedup:.2f}× faster than swatinem"
+            )
         headline = (
             f"Across {len(comparison_values)} configured comparisons, soldr is "
             f"{abs(average):.2f}% {trend} on warm time than swatinem and leads "
-            f"{soldr_wins} rows{cache_clause}."
+            f"{soldr_wins} rows{cache_clause}{cross_pr_clause}."
         )
 
     profile_commands = [
