@@ -1,0 +1,43 @@
+[package]
+name = "heavy-leaf-0008"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Sibling leaf with a pure-Rust embedded-storage + concurrent
+# collections subgraph: redb (embedded KV), moka (TinyLFU cache),
+# lru, schnellru, dashmap + scc (concurrent maps), indexmap +
+# slotmap + slab (indexed collections), petgraph (graphs),
+# rangemap + intervaltree, fst (finite state transducer),
+# growable-bloom-filter. Distinct from the prior seven leaves'
+# web / http-client / cli / math / parser / crypto / serialization
+# subgraphs. No cc-rs build scripts (sled / rocksdb avoided to
+# stay pure-Rust).
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+redb = "2"
+moka = { version = "0.12", features = ["future", "sync"] }
+lru = "0.12"
+schnellru = "0.2"
+dashmap = "6"
+scc = "2"
+indexmap = { version = "2", features = ["serde"] }
+slotmap = { version = "1", features = ["serde"] }
+slab = "0.4"
+petgraph = "0.6"
+rangemap = "1"
+fst = "0.4"
+growable-bloom-filter = "2"
+ahash = "0.8"
+foldhash = "0.1"
+hashbrown = { version = "0.15", features = ["serde", "rayon"] }
