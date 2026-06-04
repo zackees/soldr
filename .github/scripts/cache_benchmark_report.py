@@ -486,6 +486,83 @@ def _build_native_sqlite_table_rows(report: dict[str, Any]) -> str:
     return "\n".join(rows)
 
 
+def _restore_phase_rows(report: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """Yield (row, soldr_result, swatinem_result) when restore-phase data exists.
+
+    Issue #639: PR #644 added `archive_*` / `restore_*` / `restored_warm_*`
+    fields per row when the operator dispatches the workflow with
+    `include_restore_phase=true`. The section only renders when *any* row
+    has the data, so the scheduled-run page stays unchanged.
+    """
+    base_competitor_id = report["site"]["base_competitor"]
+    out: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for row in report["comparisons"]:
+        soldr = _comparison_result(row, "soldr") or {}
+        base = _comparison_result(row, base_competitor_id) or {}
+        if any(
+            soldr.get(key) is not None or base.get(key) is not None
+            for key in ("archive_seconds", "archive_bytes", "restore_seconds", "restored_warm_seconds")
+        ):
+            out.append((row, soldr, base))
+    return out
+
+
+def _build_restore_phase_section(report: dict[str, Any]) -> str:
+    rows_with_data = _restore_phase_rows(report)
+    if not rows_with_data:
+        return ""
+    table_rows: list[str] = []
+    for row, soldr, base in rows_with_data:
+        table_rows.append(
+            "<tr>"
+            f"<td>{escape(row['profile_label'])}</td>"
+            f"<td>{escape(row['mutation_label'])}</td>"
+            f"<td>{_format_bytes(soldr.get('archive_bytes'))}</td>"
+            f"<td>{_format_seconds(soldr.get('archive_seconds'))}</td>"
+            f"<td>{_format_seconds(soldr.get('restore_seconds'))}</td>"
+            f"<td>{_format_seconds(soldr.get('restored_warm_seconds'))}</td>"
+            f"<td>{_format_bytes(base.get('archive_bytes'))}</td>"
+            f"<td>{_format_seconds(base.get('archive_seconds'))}</td>"
+            f"<td>{_format_seconds(base.get('restore_seconds'))}</td>"
+            f"<td>{_format_seconds(base.get('restored_warm_seconds'))}</td>"
+            "</tr>"
+        )
+    return f"""
+      <h2>Cross-job restore</h2>
+      <p class="meta">
+        Opt-in measurement (workflow_dispatch input
+        <code>include_restore_phase=true</code>). Snapshots the backend's
+        cache to a <code>tar.gz</code>, wipes the workspace, untars,
+        applies the mutation, and runs cargo again. Local untar is a
+        <strong>lower bound</strong> on GHA cache restore (no network
+        round-trip); the size + restore-time pair extrapolates the actual
+        CI cost. Tracking under
+        <a href="https://github.com/zackees/soldr/issues/639">soldr#639</a>.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th>Change</th>
+              <th>soldr archive</th>
+              <th>soldr tar</th>
+              <th>soldr untar</th>
+              <th>soldr warm</th>
+              <th>swatinem archive</th>
+              <th>swatinem tar</th>
+              <th>swatinem untar</th>
+              <th>swatinem warm</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chr(10).join(table_rows)}
+          </tbody>
+        </table>
+      </div>
+"""
+
+
 def _build_native_sqlite_section(report: dict[str, Any]) -> str:
     native = report.get("native_sqlite")
     if not native or not _native_sqlite_results(report):
@@ -663,6 +740,7 @@ def _build_html_page(report: dict[str, Any]) -> str:
           </tbody>
         </table>
       </div>
+      {_build_restore_phase_section(report)}
       {_build_native_sqlite_section(report)}
       <h2>Benchmarked Commands</h2>
       <ul>
