@@ -40,6 +40,16 @@ on:
         required: false
         default: false
         type: boolean
+      include_cross_pr:
+        description: >
+          Also measure the cross-PR sharing scenario (#650): seed cache with
+          mutation A, switch to mutation B (different file), wipe target/,
+          rebuild. swatinem has no cross-PR cache share so it pays a full
+          cold-rebuild; soldr's content-addressed cache serves hits for
+          unchanged units. Adds ~3-5 min per cell so it stays opt-in.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -497,6 +507,9 @@ jobs:
           # same-job-seed scenario. Defaults off so the scheduled run stays
           # fast; flip via workflow_dispatch when chasing the 2x story.
           INCLUDE_RESTORE_PHASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_restore_phase || 'false' }}
+          # Issue #650: opt-in cross-PR cache sharing measurement. Same gate
+          # shape as INCLUDE_RESTORE_PHASE.
+          INCLUDE_CROSS_PR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_cross_pr || 'false' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -708,6 +721,93 @@ jobs:
 
               return phase
 
+          # Issue #650: cross-PR mutation pair. branch-A and branch-B touch
+          # two different deep modules of `soldr-cli`. Both invalidate the
+          # `soldr-cli` crate's compilation but neither invalidates the dep
+          # graph upstream, so a content-addressed cache populated by
+          # branch-A serves hits for every dep when branch-B then builds.
+          # swatinem caches by-key per the PR's commit SHA, so the branch-B
+          # job in real CI has no cache to restore from branch-A — we
+          # simulate that by NOT restoring any backend cache for swatinem.
+          CROSS_PR_BRANCH_A_PATH = "crates/soldr-cli/src/fetch/github.rs"
+          CROSS_PR_BRANCH_B_PATH = "crates/soldr-cli/src/core/git.rs"
+
+          def _apply_mutation_at(path_str, marker):
+              p = repo_root / path_str
+              with p.open("a", encoding="utf-8") as handle:
+                  handle.write(f"\n// cache benchmark mutation: {marker}\n")
+
+          def measure_cross_pr_sharing(profile, backend):
+              """Cross-PR cache-share simulation.
+
+              For soldr the zccache content store is retained between the
+              branch-A seed and the branch-B build (target/ is wiped to
+              force cargo to invoke rustc per unit so the cache is
+              actually consulted). swatinem has no cross-PR mechanism, so
+              its branch-B build is effectively cold (cache + target wiped).
+
+              Returns `{branch_a_seed_seconds, branch_b_seconds}`.
+              """
+              phase = {
+                  "cross_pr_seed_seconds": None,
+                  "cross_pr_build_seconds": None,
+              }
+              # Branch A seed: clean state, apply branch-A mutation, run cargo
+              # with the backend wrapper so the cache populates.
+              clean_workspace()
+              reset_backend(backend)
+              _apply_mutation_at(CROSS_PR_BRANCH_A_PATH, "cross-pr-branch-a")
+              start = time.perf_counter()
+              subprocess.run(
+                  ["cargo", *render_parts(profile["cargo_args"])],
+                  cwd=repo_root,
+                  env=_cargo_env_for(backend),
+                  check=True,
+              )
+              phase["cross_pr_seed_seconds"] = round(time.perf_counter() - start, 2)
+
+              # Switch to branch B: revert the workspace (drops branch-A's
+              # marker), wipe target/ so cargo re-invokes rustc per unit.
+              # For zccache: KEEP the cache (content store), so unchanged
+              # crates serve from cache. For swatinem (no wrapper): there's
+              # no out-of-band cache so the cargo clean is the only state
+              # change — the build is effectively cold.
+              clean_workspace()
+              subprocess.run(
+                  ["cargo", "clean"],
+                  cwd=repo_root,
+                  check=False,
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              )
+              _apply_mutation_at(CROSS_PR_BRANCH_B_PATH, "cross-pr-branch-b")
+              try:
+                  start = time.perf_counter()
+                  subprocess.run(
+                      ["cargo", *render_parts(profile["cargo_args"])],
+                      cwd=repo_root,
+                      env=_cargo_env_for(backend),
+                      check=True,
+                  )
+                  phase["cross_pr_build_seconds"] = round(time.perf_counter() - start, 2)
+              except subprocess.CalledProcessError:
+                  pass
+              return phase
+
+          def _cargo_env_for(backend):
+              env = os.environ.copy()
+              env["CARGO_TERM_COLOR"] = "never"
+              env.pop("RUSTC_WRAPPER", None)
+              if backend == "zccache":
+                  subprocess.run(
+                      ["zccache", "start"],
+                      check=True,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                  )
+                  env["RUSTC_WRAPPER"] = "zccache"
+              return env
+
           results = []
           failures = []
 
@@ -731,6 +831,8 @@ jobs:
                           "archive_bytes": None,
                           "restore_seconds": None,
                           "restored_warm_seconds": None,
+                          "cross_pr_seed_seconds": None,
+                          "cross_pr_build_seconds": None,
                           "threshold_failed": False,
                       }
 
@@ -770,6 +872,14 @@ jobs:
                                         f"{profile['id']}/{mutation['id']}/{competitor['id']}: {exc}")
                               else:
                                   result.update(restore_phase)
+                          if os.environ.get("INCLUDE_CROSS_PR", "").lower() in ("1", "true"):
+                              try:
+                                  cross_pr = measure_cross_pr_sharing(profile, backend)
+                              except Exception as exc:  # noqa: BLE001
+                                  print(f"::warning::cross-pr measurement failed for "
+                                        f"{profile['id']}/{mutation['id']}/{competitor['id']}: {exc}")
+                              else:
+                                  result.update(cross_pr)
                           if result["threshold_failed"]:
                               failures.append(
                                   f"{profile['id']}/{mutation['id']}/{competitor['id']} observed {speedup_ratio:.2f}x, required {threshold:.2f}x"
