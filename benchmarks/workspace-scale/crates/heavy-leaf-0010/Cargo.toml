@@ -1,0 +1,41 @@
+[package]
+name = "heavy-leaf-0010"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Sibling leaf with a pure-Rust image / graphics subgraph:
+# image (with png + jpeg-decoder + gif + tiff), qoi, exr (OpenEXR
+# HDR), ravif + rav1e (AV1 still encoder), imageproc, resvg +
+# tiny-skia + usvg (SVG render to raster), fontdue, palette,
+# color, kurbo, lyon. Heavy mixed compute (proc-macros,
+# generics, large pixel-data routines) distinct from the prior
+# nine leaves' web / http-client / cli / math / parser / crypto /
+# serialization / storage / text-Unicode subgraphs. No cc-rs
+# build scripts (webp / libheif / libwebp avoided to stay
+# pure-Rust).
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "tiff", "bmp", "ico", "qoi", "pnm", "rayon", "serde"] }
+qoi = "0.4"
+exr = "1"
+ravif = "0.11"
+imageproc = "0.25"
+resvg = "0.43"
+tiny-skia = "0.11"
+usvg = "0.43"
+fontdue = "0.9"
+palette = "0.7"
+color = "0.2"
+kurbo = "0.11"
+lyon = "1"
