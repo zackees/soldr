@@ -468,6 +468,12 @@ jobs:
           BENCHMARK_RESULTS_JSON: benchmark-summary/cache-benchmark-results.json
           SCENARIO: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scenario || 'all' }}
           THRESHOLD_RATIO: ${{ steps.config.outputs.threshold_ratio }}
+          # Issue #637: emit per-miss phase breakdown to the daemon log so
+          # next-round zccache optimization decisions can be made from data
+          # instead of guesses. The env var is a daemon-side gate
+          # (zccache::daemon::server::handle_compile::pipeline) and is a no-op
+          # when unset, so the cost is borne only here.
+          ZCCACHE_PROFILE_RUST_MISS: "1"
         run: |
           set -euo pipefail
           python3 - <<'PY'
@@ -702,9 +708,72 @@ jobs:
               print(f"::warning::{failure}")
           PY
 
+      - name: Collect zccache daemon logs (rust miss profile)
+        if: ${{ always() }}
+        shell: bash
+        env:
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/run-benchmark-zccache
+        run: |
+          set -euo pipefail
+          out_dir=benchmark-summary/zccache-daemon-logs
+          mkdir -p "$out_dir"
+          if [ ! -d "$ZCCACHE_CACHE_DIR" ]; then
+            echo "no cache dir at $ZCCACHE_CACHE_DIR — skipping log collection"
+            exit 0
+          fi
+          # Copy *.log files under the cache dir into the artifact directory,
+          # preserving the relative path so reviewers can correlate cells
+          # with daemon sessions. `find … -type f -name '*.log'` filters out
+          # the multi-MB compile_journal.jsonl payloads, which the rust miss
+          # profile data does not need.
+          (cd "$ZCCACHE_CACHE_DIR" && find . -type f -name '*.log' -print0) \
+            | (cd "$ZCCACHE_CACHE_DIR" && tar --null --files-from=- -cf - 2>/dev/null) \
+            | (cd "$out_dir" && tar -xf - 2>/dev/null) \
+            || echo "no *.log files found under $ZCCACHE_CACHE_DIR"
+          # Extract just the rust_miss_profile lines into a single JSONL so
+          # next-iteration tooling can aggregate without re-parsing the full
+          # daemon log. Each line: a flat {key: value, ...} object keyed on
+          # the space-separated key=value format emitted by
+          # `emit_rust_miss_profile`. Integer values are parsed as ints.
+          jsonl="$out_dir/rust-miss-profile.jsonl"
+          extract_script="$(mktemp)"
+          trap 'rm -f "$extract_script"' EXIT
+          cat >"$extract_script" <<'PY'
+          import json
+          import sys
+
+          for line in sys.stdin:
+              parts = line.strip().split()
+              if not parts or parts[0] != "zccache_rust_miss_profile":
+                  continue
+              row = {}
+              for kv in parts[1:]:
+                  k, _, v = kv.partition("=")
+                  if not k:
+                      continue
+                  try:
+                      row[k] = int(v)
+                  except ValueError:
+                      row[k] = v
+              print(json.dumps(row))
+          PY
+          : > "$jsonl"
+          find "$ZCCACHE_CACHE_DIR" -type f -name '*.log' -print0 \
+            | xargs -0 -I{} grep -h '^zccache_rust_miss_profile ' {} \
+            | python3 "$extract_script" >> "$jsonl" || true
+          echo "rust-miss-profile.jsonl: $(wc -l < "$jsonl") rows"
+
       - name: Cleanup zccache
         if: ${{ always() }}
         uses: ./.github/actions/cache-benchmark-zccache-cleanup
+
+      - name: Upload zccache rust-miss profile artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cache-benchmark-zccache-profile
+          path: benchmark-summary/zccache-daemon-logs
+          if-no-files-found: warn
 
       - name: Upload raw benchmark artifact
         if: ${{ always() }}
