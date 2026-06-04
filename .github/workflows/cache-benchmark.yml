@@ -507,14 +507,17 @@ jobs:
           # same-job-seed scenario. Defaults off so the scheduled run stays
           # fast; flip via workflow_dispatch when chasing the 2x story.
           INCLUDE_RESTORE_PHASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_restore_phase || 'false' }}
-          # Issue #650: cross-PR cache sharing measurement. Enabled on the
-          # daily schedule so the published headline at
-          # https://zackees.github.io/soldr/ continues to carry the 1.77x
-          # cross-PR clause without a manual dispatch every cycle. Still
-          # opt-in on workflow_dispatch so ad-hoc runs can chase other
-          # scenarios without paying the ~30 min the cross-PR cells add.
-          # Skipped on push so post-merge feedback stays fast.
-          INCLUDE_CROSS_PR: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.include_cross_pr) || (github.event_name == 'schedule' && 'true') || 'false' }}
+          # Issue #650: cross-PR cache sharing measurement.
+          #
+          # Enabled on **every** event source except a workflow_dispatch
+          # that explicitly opts out. The reason it's always-on is the
+          # publish race: when a push bench finishes after a dispatched
+          # cross-PR bench, the push run's `latest.json` (no
+          # cross_pr_build_seconds fields) overwrites the dispatched
+          # run's, and the rendered headline loses the cross-PR clause.
+          # Paying the +30 min per push bench is worth the guarantee
+          # that the published page reflects the canonical state.
+          INCLUDE_CROSS_PR: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.include_cross_pr == 'false' && 'false') || 'true' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
