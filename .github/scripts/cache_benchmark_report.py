@@ -30,6 +30,12 @@ def _read_float(value: Any) -> float | None:
     return float(value)
 
 
+def _read_int(value: Any) -> int | None:
+    if value in ("", None):
+        return None
+    return int(value)
+
+
 def _read_bool(value: Any) -> bool | None:
     if value in ("", None):
         return None
@@ -64,6 +70,23 @@ def _format_ratio(value: float | None) -> str:
 
 def _format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
+
+
+def _format_bytes(value: int | None) -> str:
+    """Compact human-readable size. Powers of 1024 with two-decimal MiB / GiB.
+
+    Issue #639: the 8 GB cache-size budget the project tracks against
+    real-world workspaces (fastled/fbuild) needs to be visible in the
+    rendered headline alongside the speedup, so the report uses GiB above
+    1 GiB and MiB below — same convention the GitHub Actions cache UI uses.
+    """
+    if value is None:
+        return "n/a"
+    if value < 1024 * 1024:
+        return f"{value / 1024:.1f} KiB"
+    if value < 1024 * 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MiB"
+    return f"{value / (1024 * 1024 * 1024):.2f} GiB"
 
 
 def _format_bool(value: bool | None) -> str:
@@ -166,6 +189,7 @@ def _load_results(
                 "speedup_ratio": _round_metric(_read_float(raw_result.get("speedup_ratio"))),
                 "cache_hit": _read_bool(raw_result.get("cache_hit")),
                 "cache_hit_detail": raw_result.get("cache_hit_detail") or None,
+                "cache_dir_bytes": _read_int(raw_result.get("cache_dir_bytes")),
                 "threshold_failed": bool(raw_result.get("threshold_failed", False)),
             }
         )
@@ -371,9 +395,11 @@ def _build_table_rows(report: dict[str, Any]) -> str:
             f"<td>{_format_seconds(soldr.get('cold_seconds'))}</td>"
             f"<td>{_format_seconds(soldr.get('warm_seconds'))}</td>"
             f"<td>{_format_ratio(soldr.get('speedup_ratio'))}</td>"
+            f"<td>{_format_bytes(soldr.get('cache_dir_bytes'))}</td>"
             f"<td>{_format_seconds(swatinem.get('cold_seconds'))}</td>"
             f"<td>{_format_seconds(swatinem.get('warm_seconds'))}</td>"
             f"<td>{_format_ratio(swatinem.get('speedup_ratio'))}</td>"
+            f"<td>{_format_bytes(swatinem.get('cache_dir_bytes'))}</td>"
             f"<td>{_format_percent(row['soldr_vs_base_warm_percent'])}</td>"
             "</tr>"
         )
@@ -581,9 +607,11 @@ def _build_html_page(report: dict[str, Any]) -> str:
               <th>soldr cold</th>
               <th>soldr warm</th>
               <th>soldr speedup</th>
+              <th>soldr cache</th>
               <th>swatinem cold</th>
               <th>swatinem warm</th>
               <th>swatinem speedup</th>
+              <th>swatinem cache</th>
               <th>soldr vs swatinem</th>
             </tr>
           </thead>

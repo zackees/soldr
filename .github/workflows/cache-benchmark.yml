@@ -552,6 +552,45 @@ jobs:
               subprocess.run(command, cwd=repo_root, env=env, check=True)
               return time.perf_counter() - start
 
+          def _dir_size_bytes(path):
+              """Walk path and return total file bytes; None on missing."""
+              if not path or not Path(path).is_dir():
+                  return None
+              total = 0
+              for root, _dirs, files in os.walk(path):
+                  for name in files:
+                      try:
+                          total += (Path(root) / name).stat().st_size
+                      except OSError:
+                          pass
+              return total
+
+          def measure_cache_size_bytes(backend):
+              """Per-backend on-disk cache size *after* the warm run.
+
+              Issue #639: the headline number is silent on the storage cost
+              of each backend, which matters for the 8 GB cache budget claim
+              the project tracks against real-world workspaces (e.g. fbuild).
+
+              - zccache: the cache lives under `$ZCCACHE_CACHE_DIR`. Soldr
+                manages this dir end-to-end so its size is the on-disk cost.
+              - swatinem (no wrapper): the `Cache cargo registry and target`
+                step in `Swatinem/rust-cache` persists `target/` plus the
+                cargo registry. Approximate it with `target/` + `$CARGO_HOME`
+                so the comparison is apples-to-apples — both backends report
+                the bytes they cause to be cached across CI jobs.
+              """
+              if backend == "zccache":
+                  return _dir_size_bytes(os.environ.get("ZCCACHE_CACHE_DIR"))
+              if backend == "swatinem":
+                  total = 0
+                  for sub in (repo_root / "target", Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")):
+                      sz = _dir_size_bytes(sub)
+                      if sz is not None:
+                          total += sz
+                  return total or None
+              return None
+
           results = []
           failures = []
 
@@ -570,6 +609,7 @@ jobs:
                           "speedup_ratio": None,
                           "cache_hit": False,
                           "cache_hit_detail": f"backend={backend};same_job_seed=true",
+                          "cache_dir_bytes": None,
                           "threshold_failed": False,
                       }
 
@@ -600,6 +640,7 @@ jobs:
                           result["speedup_ratio"] = round(speedup_ratio, 2)
                           result["cache_hit"] = warm_seconds < cold_seconds
                           result["threshold_failed"] = speedup_ratio < threshold
+                          result["cache_dir_bytes"] = measure_cache_size_bytes(backend)
                           if result["threshold_failed"]:
                               failures.append(
                                   f"{profile['id']}/{mutation['id']}/{competitor['id']} observed {speedup_ratio:.2f}x, required {threshold:.2f}x"
