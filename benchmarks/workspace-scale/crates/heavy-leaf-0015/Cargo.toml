@@ -1,0 +1,36 @@
+[package]
+name = "heavy-leaf-0015"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Sibling leaf with a pure-Rust WebAssembly tooling subgraph:
+# wasmi (pure-Rust interpreter), wasmparser, wat (text → binary
+# assembler), wasmprinter (binary → text), wasm-encoder
+# (builder), wast (full text-format parser), walrus (binary edit
+# library), wasm-smith (test-shape generator), wasm-metadata,
+# leb128 (low-level LEB128 codec). Distinct from the prior
+# fourteen leaves' subgraphs. No cc-rs build scripts (wasmtime
+# / cranelift with cc-rs avoided).
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+wasmi = { version = "0.40", default-features = false, features = ["std"] }
+wasmparser = "0.218"
+wat = "1"
+wasmprinter = "0.218"
+wasm-encoder = "0.218"
+wast = "218"
+walrus = "0.23"
+wasm-smith = "0.218"
+wasm-metadata = "0.218"
+leb128 = "0.2"
