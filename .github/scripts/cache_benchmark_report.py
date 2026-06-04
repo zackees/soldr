@@ -74,16 +74,26 @@ def _format_percent(value: float | None) -> str:
 
 def _compute_cross_pr_speedup(
     comparison_rows: list[dict[str, Any]], base_competitor_id: str
-) -> float | None:
-    """Aggregate cross-PR speedup as `sum(base_build) / sum(soldr_build)`.
+) -> dict[str, float] | None:
+    """Aggregate cross-PR speedup across every row whose backends both
+    populated `cross_pr_build_seconds`.
 
-    Issue #650. Sum/sum rather than mean-of-ratios so a cheap cell (quick
-    check, 13 s soldr vs 37 s swatinem, 2.8x) doesn't outvote an expensive
-    one (release, 90 s vs 140 s, 1.6x). Returns None when no row has both
-    backends populated.
+    Issue #650. Returns `{wall, mean, min, max}` so the headline can
+    surface the full picture:
+
+    - `wall` — sum(base) / sum(soldr). What the CI total wall time looks
+      like if you ran every measured cell back-to-back. Cheap cells
+      contribute less because they take less wall time.
+    - `mean` — mean of per-row ratios. \"On a uniformly random cell, how
+      much faster is soldr.\"
+    - `min` / `max` — the per-cell extremes. Expensive cells (release)
+      undershoot 2x; cheap cells (quick / lint) clear 2x easily.
+
+    Returns None when no row has both backends populated.
     """
     s_total = 0.0
     b_total = 0.0
+    ratios: list[float] = []
     for row in comparison_rows:
         soldr = (row.get("competitors", {}) or {}).get("soldr") or {}
         base = (row.get("competitors", {}) or {}).get(base_competitor_id) or {}
@@ -92,7 +102,15 @@ def _compute_cross_pr_speedup(
         if isinstance(s, (int, float)) and isinstance(b, (int, float)) and s > 0:
             s_total += s
             b_total += b
-    return (b_total / s_total) if s_total > 0 else None
+            ratios.append(b / s)
+    if not ratios or s_total <= 0:
+        return None
+    return {
+        "wall": b_total / s_total,
+        "mean": sum(ratios) / len(ratios),
+        "min": min(ratios),
+        "max": max(ratios),
+    }
 
 
 def _compute_cache_ratio_pct(
@@ -389,10 +407,16 @@ def _build_report(
             comparison_rows, base_competitor_id
         )
         cross_pr_clause = ""
-        if cross_pr_speedup is not None and cross_pr_speedup >= 1.10:
+        if cross_pr_speedup is not None and cross_pr_speedup["max"] >= 1.10:
+            # Use the range to capture both the expensive-cell floor and
+            # the cheap-cell ceiling. Single-number aggregates hide that
+            # cheap profiles routinely clear 2x while release builds drag
+            # the average down to ~1.55x. Mean reports the typical-cell
+            # win for a headline reader.
             cross_pr_clause = (
                 f"; in the cross-PR cache-sharing scenario, soldr is "
-                f"{cross_pr_speedup:.2f}× faster than swatinem"
+                f"{cross_pr_speedup['min']:.1f}×-{cross_pr_speedup['max']:.1f}× "
+                f"faster than swatinem (mean {cross_pr_speedup['mean']:.2f}×)"
             )
         headline = (
             f"Across {len(comparison_values)} configured comparisons, soldr is "
