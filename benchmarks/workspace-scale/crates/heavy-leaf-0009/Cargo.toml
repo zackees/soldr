@@ -1,0 +1,52 @@
+[package]
+name = "heavy-leaf-0009"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Sibling leaf with a pure-Rust text-processing / Unicode / diff
+# subgraph: aho-corasick + daachorse (multi-pattern), bstr +
+# memchr + memmem (byte search), unicode-segmentation +
+# unicode-normalization + unicode-width + unicode-bidi +
+# unicode-script + unicode-xid + unicode-properties (Unicode
+# tables), icu_collator + icu_normalizer + icu_properties +
+# icu_locid (pure-Rust ICU), similar (diff), strsim,
+# percent-encoding + url + base64 + hex (encoding). Distinct from
+# the prior eight leaves' web / http-client / cli / math /
+# parser / crypto / serialization / storage subgraphs. No cc-rs
+# build scripts.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+aho-corasick = "1"
+daachorse = "1"
+bstr = { version = "1", features = ["serde"] }
+memchr = "2"
+memmem = "0.1"
+unicode-segmentation = "1"
+unicode-normalization = "0.1"
+unicode-width = "0.2"
+unicode-bidi = "0.3"
+unicode-script = "0.5"
+unicode-xid = "0.2"
+unicode-properties = "0.1"
+icu_collator = "1.5"
+icu_normalizer = "1.5"
+icu_properties = "1.5"
+icu_locid = "1.5"
+icu_segmenter = "1.5"
+similar = { version = "2", features = ["serde"] }
+strsim = "0.11"
+percent-encoding = "2"
+url = "2"
+base64 = "0.22"
+hex = "0.4"
