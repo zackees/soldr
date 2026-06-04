@@ -72,6 +72,34 @@ def _format_percent(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
+def _compute_cache_ratio_pct(
+    comparison_rows: list[dict[str, Any]], base_competitor_id: str
+) -> float | None:
+    """Median soldr cache size / swatinem cache size across successful rows.
+
+    Issue #639. Headline-level summary: if soldr's cache is consistently
+    smaller than swatinem's across the configured cells, the published
+    page should say so. Median (not mean) so a single outlier row from
+    a profile mismatch doesn't drag the number.
+    """
+    ratios: list[float] = []
+    for row in comparison_rows:
+        soldr = row.get("competitors", {}).get("soldr") or {}
+        base = row.get("competitors", {}).get(base_competitor_id) or {}
+        s_bytes = soldr.get("cache_dir_bytes")
+        b_bytes = base.get("cache_dir_bytes")
+        if not s_bytes or not b_bytes:
+            continue
+        ratios.append(100.0 * s_bytes / b_bytes)
+    if not ratios:
+        return None
+    ratios.sort()
+    n = len(ratios)
+    if n % 2 == 1:
+        return ratios[n // 2]
+    return 0.5 * (ratios[n // 2 - 1] + ratios[n // 2])
+
+
 def _format_bytes(value: int | None) -> str:
     """Compact human-readable size. Powers of 1024 with two-decimal MiB / GiB.
 
@@ -308,10 +336,21 @@ def _build_report(
     if comparison_values:
         average = sum(comparison_values) / len(comparison_values)
         trend = "faster" if average >= 0 else "slower"
+        # Issue #639: same-job-seed warm timing is almost-tied; the real
+        # advantage soldr ships in CI is a substantially smaller on-disk
+        # cache (~half swatinem's in this workspace, since #640 wired the
+        # measurement). Surface that ratio in the headline so the rendered
+        # page doesn't read like "soldr is X% slower" without context.
+        cache_ratio_pct = _compute_cache_ratio_pct(comparison_rows, base_competitor_id)
+        cache_clause = ""
+        if cache_ratio_pct is not None and cache_ratio_pct < 95:
+            cache_clause = (
+                f"; soldr's cache is {cache_ratio_pct:.0f}% the size of swatinem's"
+            )
         headline = (
             f"Across {len(comparison_values)} configured comparisons, soldr is "
             f"{abs(average):.2f}% {trend} on warm time than swatinem and leads "
-            f"{soldr_wins} rows."
+            f"{soldr_wins} rows{cache_clause}."
         )
 
     profile_commands = [
