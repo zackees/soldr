@@ -507,9 +507,14 @@ jobs:
           # same-job-seed scenario. Defaults off so the scheduled run stays
           # fast; flip via workflow_dispatch when chasing the 2x story.
           INCLUDE_RESTORE_PHASE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_restore_phase || 'false' }}
-          # Issue #650: opt-in cross-PR cache sharing measurement. Same gate
-          # shape as INCLUDE_RESTORE_PHASE.
-          INCLUDE_CROSS_PR: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.include_cross_pr || 'false' }}
+          # Issue #650: cross-PR cache sharing measurement. Enabled on the
+          # daily schedule so the published headline at
+          # https://zackees.github.io/soldr/ continues to carry the 1.77x
+          # cross-PR clause without a manual dispatch every cycle. Still
+          # opt-in on workflow_dispatch so ad-hoc runs can chase other
+          # scenarios without paying the ~30 min the cross-PR cells add.
+          # Skipped on push so post-merge feedback stays fast.
+          INCLUDE_CROSS_PR: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.include_cross_pr) || (github.event_name == 'schedule' && 'true') || 'false' }}
         run: |
           set -euo pipefail
           python3 - <<'PY'
