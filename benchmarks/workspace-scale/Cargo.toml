@@ -11,4 +11,5 @@ members = [
     "crates/heavy-leaf-0004",
     "crates/heavy-leaf-0005",
     "crates/heavy-leaf-0006",
+    "crates/heavy-leaf-0007",
 ]
