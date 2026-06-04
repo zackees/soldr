@@ -4,4 +4,7 @@
 # Swatinem/rust-cache can no longer save.
 [workspace]
 resolver = "2"
-members = ["crates/heavy-leaf-0001"]
+members = [
+    "crates/heavy-leaf-0001",
+    "crates/heavy-leaf-0002",
+]
