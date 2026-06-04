@@ -1,6 +1,7 @@
-# Skeleton — actual crate graph lands in a follow-up PR (see README).
-# This file exists so the directory has a single-source-of-truth shell
-# and so future PRs can add `members` without re-litigating layout.
+# Seed shape — one leaf crate with heavy deps so a release build
+# produces ~2 GiB target/. Subsequent PRs grow members[] toward the
+# fbuild-scale target where target/ exceeds GHA's 10 GiB cache cap and
+# Swatinem/rust-cache can no longer save.
 [workspace]
 resolver = "2"
-members = []
+members = ["crates/heavy-leaf-0001"]

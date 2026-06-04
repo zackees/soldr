@@ -1,0 +1,35 @@
+[package]
+name = "heavy-leaf-0001"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Deps chosen to maximise compiled-output size on a release build —
+# the goal is exercising the workspace-scale scenario soldr#648
+# proposes, not modelling a real application. Heavy proc-macro
+# expansion (serde derive, tokio macros, tracing instrument), heavy
+# generics (tokio, hyper, axum), and large pulled-in crates (tonic,
+# prost) all contribute. Pinning to current minor versions keeps the
+# fixture stable across bench cycles without locking us out of
+# upstream security fixes.
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+regex = "1"
+hyper = { version = "1", features = ["full"] }
+tower = { version = "0.5", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "compression-full"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+prost = "0.13"
+bytes = "1"
+futures = "0.3"
