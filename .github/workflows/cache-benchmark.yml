@@ -588,45 +588,56 @@ jobs:
                           pass
               return total
 
-          def measure_cache_size_bytes(backend):
-              """Per-backend on-disk cache size *after* the warm run.
-
-              Issue #639: the headline number is silent on the storage cost
-              of each backend, which matters for the 8 GB cache budget claim
-              the project tracks against real-world workspaces (e.g. fbuild).
-
-              - zccache: the cache lives under `$ZCCACHE_CACHE_DIR`. Soldr
-                manages this dir end-to-end so its size is the on-disk cost.
-              - swatinem (no wrapper): the `Cache cargo registry and target`
-                step in `Swatinem/rust-cache` persists `target/` plus the
-                cargo registry. Approximate it with `target/` + `$CARGO_HOME`
-                so the comparison is apples-to-apples — both backends report
-                the bytes they cause to be cached across CI jobs.
-              """
-              if backend == "zccache":
-                  return _dir_size_bytes(os.environ.get("ZCCACHE_CACHE_DIR"))
-              if backend == "swatinem":
-                  total = 0
-                  for sub in (repo_root / "target", Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")):
-                      sz = _dir_size_bytes(sub)
-                      if sz is not None:
-                          total += sz
-                  return total or None
-              return None
+          # Issue #645: both backends pay the same cargo baseline.
+          # `Swatinem/rust-cache` persists exactly these three subdirs of
+          # `$CARGO_HOME` plus each workspace's `target/`. The cache-benchmark
+          # zccache shim defaults `cache-cargo-registry: true`, so soldr-managed
+          # CI cycles persist the same three baseline subdirs plus
+          # `$ZCCACHE_CACHE_DIR`. The shared baseline cancels in the headline
+          # ratio; only the backend-specific delta (`target/` vs zccache dir)
+          # drives the structural advantage. Pre-#645 the measurement walked
+          # the full `$CARGO_HOME` for swatinem and only the zccache dir for
+          # soldr, biasing both directions.
+          CARGO_CACHE_SUBDIRS = ("registry", "git", "bin")
 
           def _backend_cache_roots(backend):
-              """Directories the backend would archive for cross-job restore."""
-              if backend == "zccache":
-                  d = os.environ.get("ZCCACHE_CACHE_DIR")
-                  return [Path(d)] if d and Path(d).is_dir() else []
+              """Directories the backend would archive for cross-job restore.
+
+              See the `Swatinem/rust-cache` `cachePaths` definition and the
+              repo-local `cache-benchmark-zccache` shim defaults; the lists
+              are deliberately the same for the common (cargo) bits and
+              differ only on the backend-specific tail.
+              """
+              cargo_home = Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo")
+              roots = [cargo_home / sub for sub in CARGO_CACHE_SUBDIRS]
               if backend == "swatinem":
-                  return [
-                      p for p in (
-                          repo_root / "target",
-                          Path(os.environ.get("CARGO_HOME") or Path.home() / ".cargo"),
-                      ) if p.is_dir()
-                  ]
-              return []
+                  roots.append(repo_root / "target")
+              elif backend == "zccache":
+                  zdir = os.environ.get("ZCCACHE_CACHE_DIR")
+                  if zdir:
+                      roots.append(Path(zdir))
+              return [p for p in roots if p.is_dir()]
+
+          def measure_cache_size_bytes(backend):
+              """Per-backend persisted-cache size *after* the warm run.
+
+              Issue #639 + #645: the headline number is silent on the
+              storage cost of each backend, which matters for the 8 GiB
+              cache budget claim the project tracks against real-world
+              workspaces (e.g. fbuild). The measurement walks the exact
+              union the backend's CI action persists — the shared cargo
+              baseline cancels in the headline ratio and only the
+              backend-specific delta drives the structural advantage.
+              """
+              roots = _backend_cache_roots(backend)
+              if not roots:
+                  return None
+              total = 0
+              for root in roots:
+                  sz = _dir_size_bytes(root)
+                  if sz is not None:
+                      total += sz
+              return total or None
 
           def measure_restore_phase(backend, profile, mutation):
               """Snapshot → wipe → restore → warm rebuild cycle.
