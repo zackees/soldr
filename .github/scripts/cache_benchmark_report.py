@@ -222,6 +222,8 @@ def _load_results(
                 "archive_bytes": _read_int(raw_result.get("archive_bytes")),
                 "restore_seconds": _read_float(raw_result.get("restore_seconds")),
                 "restored_warm_seconds": _read_float(raw_result.get("restored_warm_seconds")),
+                "cross_pr_seed_seconds": _read_float(raw_result.get("cross_pr_seed_seconds")),
+                "cross_pr_build_seconds": _read_float(raw_result.get("cross_pr_build_seconds")),
                 "threshold_failed": bool(raw_result.get("threshold_failed", False)),
             }
         )
@@ -563,6 +565,87 @@ def _build_restore_phase_section(report: dict[str, Any]) -> str:
 """
 
 
+def _cross_pr_rows(report: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """Yield (row, soldr_result, swatinem_result) when cross-PR data exists.
+
+    Issue #650: only renders when at least one row has the cross-PR fields
+    populated, so scheduled runs are unaffected.
+    """
+    base_competitor_id = report["site"]["base_competitor"]
+    out: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for row in report["comparisons"]:
+        soldr = _comparison_result(row, "soldr") or {}
+        base = _comparison_result(row, base_competitor_id) or {}
+        if any(
+            soldr.get(key) is not None or base.get(key) is not None
+            for key in ("cross_pr_seed_seconds", "cross_pr_build_seconds")
+        ):
+            out.append((row, soldr, base))
+    return out
+
+
+def _build_cross_pr_section(report: dict[str, Any]) -> str:
+    rows = _cross_pr_rows(report)
+    if not rows:
+        return ""
+    table_rows: list[str] = []
+    for row, soldr, base in rows:
+        s_seed = soldr.get("cross_pr_seed_seconds")
+        s_build = soldr.get("cross_pr_build_seconds")
+        b_seed = base.get("cross_pr_seed_seconds")
+        b_build = base.get("cross_pr_build_seconds")
+        speedup = (
+            f"{b_build / s_build:.2f}x"
+            if s_build and b_build and s_build > 0 and b_build > 0
+            else "n/a"
+        )
+        table_rows.append(
+            "<tr>"
+            f"<td>{escape(row['profile_label'])}</td>"
+            f"<td>{escape(row['mutation_label'])}</td>"
+            f"<td>{_format_seconds(s_seed)}</td>"
+            f"<td>{_format_seconds(s_build)}</td>"
+            f"<td>{_format_seconds(b_seed)}</td>"
+            f"<td>{_format_seconds(b_build)}</td>"
+            f"<td>{escape(speedup)}</td>"
+            "</tr>"
+        )
+    return f"""
+      <h2>Cross-PR cache sharing</h2>
+      <p class="meta">
+        Opt-in measurement (workflow_dispatch input
+        <code>include_cross_pr=true</code>). Seeds the backend's cache
+        with mutation A applied (touch
+        <code>crates/soldr-cli/src/fetch/github.rs</code>), switches to
+        mutation B (touch <code>crates/soldr-cli/src/core/git.rs</code>,
+        a deep module in a different subtree), wipes <code>target/</code>
+        so cargo invokes rustc per unit, and times the rebuild. swatinem
+        has no cross-PR cache share so this is effectively a cold rebuild
+        for it; soldr's content-addressed cache serves hits for every
+        unit whose inputs are unchanged across mutations. Tracking under
+        <a href="https://github.com/zackees/soldr/issues/650">soldr#650</a>.
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th>Change</th>
+              <th>soldr seed (A)</th>
+              <th>soldr build (B)</th>
+              <th>swatinem seed (A)</th>
+              <th>swatinem build (B)</th>
+              <th>soldr speedup vs swatinem</th>
+            </tr>
+          </thead>
+          <tbody>
+            {chr(10).join(table_rows)}
+          </tbody>
+        </table>
+      </div>
+"""
+
+
 def _build_native_sqlite_section(report: dict[str, Any]) -> str:
     native = report.get("native_sqlite")
     if not native or not _native_sqlite_results(report):
@@ -741,6 +824,7 @@ def _build_html_page(report: dict[str, Any]) -> str:
         </table>
       </div>
       {_build_restore_phase_section(report)}
+      {_build_cross_pr_section(report)}
       {_build_native_sqlite_section(report)}
       <h2>Benchmarked Commands</h2>
       <ul>
