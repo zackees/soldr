@@ -4,7 +4,7 @@
 <img width="1536" height="1024" alt="ChatGPT Image Apr 19, 2026, 09_43_32 PM" src="https://github.com/user-attachments/assets/87d94693-3542-4f4f-8b02-600bf0b9810e" />
 
 
-*A tool to download rust tool sets and aggressive cache your build. Instant warm compiles. Gh and local builds. Just add soldr before all your build commands*
+*A tool to download rust tool sets and aggressive cache your build. **2× faster cross-PR builds** via content-addressed caching that swatinem's per-key cache cannot share. GH and local builds. Just add soldr before all your build commands.*
 
 [![Latest soldr benchmark stats](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark.jpg)](https://zackees.github.io/soldr/)
 
