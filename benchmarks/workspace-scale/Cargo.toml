@@ -8,4 +8,5 @@ members = [
     "crates/heavy-leaf-0001",
     "crates/heavy-leaf-0002",
     "crates/heavy-leaf-0003",
+    "crates/heavy-leaf-0004",
 ]

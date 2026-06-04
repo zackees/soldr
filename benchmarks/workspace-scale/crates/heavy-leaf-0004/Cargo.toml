@@ -1,0 +1,35 @@
+[package]
+name = "heavy-leaf-0004"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Sibling leaf with a math / numerical / sampling subgraph that the
+# prior leaves don't pull in: ndarray (with rayon + serde features),
+# nalgebra, statrs, rand + rand_distr + rand_chacha. No cc-rs build
+# scripts in the tail, so the leaf stays portable across the four
+# bench-supported runner OSes per the parent README's design
+# constraint.
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+thiserror = "2"
+anyhow = "1"
+parking_lot = "0.12"
+once_cell = "1"
+ndarray = { version = "0.16", features = ["rayon", "serde"] }
+nalgebra = { version = "0.33", features = ["serde-serialize"] }
+statrs = "0.18"
+rand = "0.9"
+rand_distr = "0.5"
+rand_chacha = "0.9"
+num-traits = "0.2"
+num-complex = "0.4"
+rayon = "1"
+itertools = "0.13"
+smallvec = "1"
