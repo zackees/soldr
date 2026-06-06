@@ -81,13 +81,52 @@ soldr maturin@1.7.0 build
 
 Resolution order:
 
-1. Local cache in `~/.soldr/bin/`
-2. crates.io repository lookup
-3. GitHub Releases for that repository
+1. **Cargo verb shorthand** — if `<tool>` (with no `@<version>` suffix) is either a cargo subcommand soldr already prebuilds (`nextest`, `deny`, `audit`, ...) OR one of cargo's own first-party verbs (`build`, `test`, `clippy`, ...), the invocation is rewritten as `soldr cargo <tool> [args...]` and dispatched through the cargo front door. See [Cargo Verb Shorthand](#cargo-verb-shorthand) below for the full list.
+2. Local cache in `~/.soldr/bin/`
+3. crates.io repository lookup
+4. GitHub Releases for that repository
 
 Current implementation note:
 
 - the broader binstall/QuickInstall/`cargo install` fallback chain is planned behavior, not the current shipped fetch path
+
+#### Cargo Verb Shorthand
+
+When `soldr <verb> [args...]` is invoked and `<verb>` is not a frozen soldr built-in, the External arm rewrites the invocation as `soldr cargo <verb> [args...]` whenever `<verb>` matches one of two lists. The long form `soldr cargo <verb>` continues to work — the shorthand is purely additive.
+
+**Routed cargo subcommands** (soldr prebuilds these via `KNOWN_TOOLS`):
+
+`nextest`, `deny`, `audit`, `llvm-cov`, `udeps`, `semver-checks`, `expand`, `watch`, `chef`, `zigbuild`, `xwin`, `binstall`, `machete`
+
+**Routed cargo built-in verbs** (cargo's first-party commands):
+
+`build`, `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish`
+
+**Collision policy.** These three verbs MUST stay anchored to their soldr-native meaning and are explicitly excluded from the shorthand:
+
+| Verb       | soldr-native meaning                              | Cargo equivalent (use long form) |
+|------------|---------------------------------------------------|-----------------------------------|
+| `clean`    | Clear the managed zccache build cache             | `soldr cargo clean`               |
+| `config`   | Show or set soldr configuration                   | `soldr cargo config` (unstable)   |
+| `version`  | Print soldr's version                             | `soldr cargo --version`           |
+
+The borderline case `install`: bare `soldr install <crate>` routes to `cargo install <crate>` (the far more common interpretation). The zccache install keeps its existing explicit name `soldr install-zccache`.
+
+**Version pinning skips the shorthand.** Cargo built-in verbs and registered cargo subcommands cannot be version-pinned via the bare `@<version>` form — the cargo front door has no per-invocation version knob. `soldr build@1.0` keeps the existing External fetch path (and errors with "no crate named build"), and so do the registered subcommands (`soldr nextest@0.9.x` falls through to External). For pinned cargo-subcommand versions, use the soldr registry (`KNOWN_TOOLS::pinned_version` in source); for pinned tool fetches, use the External path for crates that actually exist.
+
+```bash
+# Shorthand
+soldr build --release          # == soldr cargo build --release
+soldr test --workspace         # == soldr cargo test --workspace
+soldr clippy -- -D warnings    # == soldr cargo clippy -- -D warnings
+soldr fmt --all -- --check     # == soldr cargo fmt --all -- --check
+soldr nextest run              # == soldr cargo nextest run
+soldr zigbuild build --target ...  # == soldr cargo zigbuild build --target ...
+
+# Long form (always works as the escape hatch)
+soldr cargo clean              # explicitly route `clean` to cargo (NOT soldr's cache clean)
+soldr cargo config get profile.dev
+```
 
 ### Mode 3: Internal Wrapper Mode
 
@@ -116,7 +155,7 @@ When soldr starts, it decides its mode in this order:
 1. If `argv[1]` looks like `rustc` or a path to `rustc`, enter wrapper mode.
 2. Otherwise, parse CLI commands with Clap.
 3. `cargo` is a first-class built-in subcommand.
-4. Any unknown first argument is treated as a tool name to fetch and run.
+4. Any other first argument falls through to the External arm, which itself tries dispatch in order: cargo verb shorthand (see [Cargo Verb Shorthand](#cargo-verb-shorthand)) first; if no match, treat the argument as a tool name to fetch and run.
 
 ---
 
