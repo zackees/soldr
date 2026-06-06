@@ -44,6 +44,63 @@ pub(crate) enum ZccacheSourceArg {
 /// against clap's discovered subcommands and fails when they drift,
 /// so adding a new verb here without updating the enum (or vice
 /// versa) trips the build.
+/// Cargo's own first-party verbs that — when typed bare as
+/// `soldr <verb>` — should be routed through soldr's cargo front
+/// door (`soldr cargo <verb> ...`) instead of falling through
+/// `Commands::External` and attempting a doomed crates.io fetch
+/// for a literally-named crate (`build`, `test`, etc. are not
+/// real crates). Issue #685, phase 2 of #682.
+///
+/// The collision verbs `clean`, `config`, and `version` are
+/// deliberately EXCLUDED — those map to soldr-native built-ins
+/// that clap captures before the External arm runs. `soldr cargo
+/// clean` / `soldr cargo config` continue to work as the explicit
+/// escape hatch. A unit test in `main_tests.rs` asserts the
+/// exclusion stays in place.
+///
+/// The list is intentionally a superset of cargo's own `--list`
+/// output of first-party commands; new cargo verbs (rare) need an
+/// explicit add here.
+pub(crate) const CARGO_BUILTIN_VERBS: &[&str] = &[
+    "build",
+    "test",
+    "check",
+    "run",
+    "bench",
+    "doc",
+    "fmt",
+    "clippy",
+    "tree",
+    "update",
+    "fix",
+    "add",
+    "remove",
+    "metadata",
+    "pkgid",
+    "search",
+    "vendor",
+    "yank",
+    "owner",
+    "login",
+    "logout",
+    "init",
+    "new",
+    "generate-lockfile",
+    "verify-project",
+    "locate-project",
+    "report",
+    "install",
+    "uninstall",
+    "publish",
+];
+
+/// Predicate form of [`CARGO_BUILTIN_VERBS`]. Lives next to the const
+/// so callers (the External arm dispatcher and the tests) share one
+/// source of truth.
+pub(crate) fn is_cargo_builtin_verb(verb: &str) -> bool {
+    CARGO_BUILTIN_VERBS.contains(&verb)
+}
+
 pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "cargo",
     "cook",

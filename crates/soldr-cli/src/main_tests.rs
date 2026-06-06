@@ -381,11 +381,11 @@ fn bare_shorthand_skips_when_user_pinned_a_version() {
 
 #[test]
 fn bare_shorthand_does_not_capture_unrelated_verbs() {
-    // Negative coverage: a verb that ISN'T a cargo subcommand
-    // (top-level fetch tool, made-up name, cargo built-in) must NOT
-    // be routed through the cargo front door by this gate. Top-level
-    // tools already dispatch through External (their own fetch
-    // path); cargo built-ins remain out-of-scope for phase 1.
+    // Negative coverage for the phase-1 (cargo subcommand) hop: a
+    // verb that ISN'T in `KNOWN_TOOLS::cargo_subcommand` must NOT
+    // be matched by `lookup_by_cargo_subcommand`. Top-level fetch
+    // tools (cross, mdbook, bacon) and made-up names go to External;
+    // cargo built-ins (build, test) take the phase-2 hop instead.
     for verb in [
         "cross",
         "mdbook",
@@ -398,6 +398,151 @@ fn bare_shorthand_does_not_capture_unrelated_verbs() {
         assert!(
             crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_none(),
             "verb {verb:?} must NOT be matched as a cargo subcommand in phase 1"
+        );
+    }
+}
+
+/// Issue #685 (parent #682, phase 2): bare cargo-built-in
+/// shorthand. `soldr build` / `soldr test` / `soldr clippy` etc.
+/// must resolve as `soldr cargo <verb>` via the External arm,
+/// NOT fall through to a doomed crates.io fetch. The dispatch
+/// decision keys on `parse_tool_spec` + `is_cargo_builtin_verb`;
+/// these tests exercise that contract directly.
+#[test]
+fn cargo_builtin_shorthand_covers_every_verb_in_the_const() {
+    // Every entry in `CARGO_BUILTIN_VERBS` must round-trip through
+    // `is_cargo_builtin_verb` and through `parse_tool_spec` as a
+    // bare, version-unpinned form. The list is intentionally
+    // hard-coded — adding a new cargo verb to the const without
+    // also adding it here is the kind of drift this test catches.
+    let expected = [
+        "build",
+        "test",
+        "check",
+        "run",
+        "bench",
+        "doc",
+        "fmt",
+        "clippy",
+        "tree",
+        "update",
+        "fix",
+        "add",
+        "remove",
+        "metadata",
+        "pkgid",
+        "search",
+        "vendor",
+        "yank",
+        "owner",
+        "login",
+        "logout",
+        "init",
+        "new",
+        "generate-lockfile",
+        "verify-project",
+        "locate-project",
+        "report",
+        "install",
+        "uninstall",
+        "publish",
+    ];
+    for verb in expected {
+        let (crate_name, version) = parse_tool_spec(verb);
+        assert!(
+            matches!(version, VersionSpec::Latest),
+            "bare verb {verb:?} must parse to VersionSpec::Latest"
+        );
+        assert!(
+            is_cargo_builtin_verb(&crate_name),
+            "bare cargo built-in verb {verb:?} must be matched by is_cargo_builtin_verb"
+        );
+    }
+    // And the reverse: every const entry is in the expected list.
+    // Cheap, but if a future cargo gains a new verb and someone adds
+    // it to the const without updating tests, this fails loudly.
+    for verb in CARGO_BUILTIN_VERBS {
+        assert!(
+            expected.contains(verb),
+            "CARGO_BUILTIN_VERBS gained {verb:?} without a test update"
+        );
+    }
+}
+
+#[test]
+fn cargo_builtin_shorthand_excludes_soldr_native_collision_verbs() {
+    // The three collision verbs (`clean`, `config`, `version`) own
+    // a soldr-native meaning today and MUST NOT be remapped to
+    // cargo by the phase-2 hop. Clap captures them before the
+    // External arm runs, but we also assert the const itself
+    // excludes them — defense in depth + intent documentation.
+    for collision_verb in ["clean", "config", "version"] {
+        assert!(
+            !is_cargo_builtin_verb(collision_verb),
+            "soldr-native verb {collision_verb:?} must NOT be in CARGO_BUILTIN_VERBS"
+        );
+    }
+}
+
+#[test]
+fn cargo_builtin_shorthand_skips_when_user_pinned_a_version() {
+    // `soldr build@1.0` keeps the existing External fetch path —
+    // cargo built-ins have no per-invocation version dimension and
+    // the parse-time `@version` form is reserved for the
+    // crate-fetch path. Same shape as the phase-1
+    // `bare_shorthand_skips_when_user_pinned_a_version` test.
+    let (crate_name, version) = parse_tool_spec("build@1.0");
+    assert_eq!(crate_name, "build");
+    assert!(
+        matches!(version, VersionSpec::Exact(_)),
+        "pinned bare verb must parse to VersionSpec::Exact"
+    );
+    // Sanity: the lookup still matches the verb itself, so the gate
+    // condition `matches!(version, VersionSpec::Latest) && is_…`
+    // depends entirely on the version arm.
+    assert!(is_cargo_builtin_verb(&crate_name));
+}
+
+#[test]
+fn cargo_builtin_shorthand_includes_borderline_install_verb() {
+    // `install` is the borderline case: `soldr install-zccache`
+    // already exists as a soldr built-in (different name, different
+    // verb). Bare `soldr install <crate>` is documented to route to
+    // `cargo install <crate>` because that's the far more common
+    // interpretation. The const-level expectation is asserted here.
+    assert!(
+        is_cargo_builtin_verb("install"),
+        "bare `soldr install` must route to `cargo install` (zccache install is install-zccache)"
+    );
+    // Sanity: the clap built-in keeps its long name and is NOT
+    // remapped.
+    assert!(SOLDR_BUILTIN_VERBS.contains(&"install-zccache"));
+    assert!(!is_cargo_builtin_verb("install-zccache"));
+}
+
+#[test]
+fn cargo_builtin_shorthand_does_not_capture_other_verbs() {
+    // Negative coverage. None of:
+    //   - phase-1 known cargo subcommands (handled by their own hop)
+    //   - top-level fetch tools (cross, mdbook, ...)
+    //   - made-up names
+    //   - soldr-native verbs
+    // should be captured as cargo built-ins.
+    for verb in [
+        "nextest",  // phase-1 known cargo subcommand
+        "zigbuild", // phase-1 known cargo subcommand
+        "cross",    // top-level fetch tool
+        "mdbook",   // top-level fetch tool
+        "bacon",    // top-level fetch tool
+        "completely-made-up-name",
+        "clean",   // soldr-native
+        "config",  // soldr-native
+        "version", // soldr-native
+        "doctor",  // soldr-native
+    ] {
+        assert!(
+            !is_cargo_builtin_verb(verb),
+            "verb {verb:?} must NOT be classified as a cargo built-in"
         );
     }
 }

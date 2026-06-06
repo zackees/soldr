@@ -53,9 +53,10 @@ mod zccache_lifecycle;
 mod test_util;
 
 use cli_args::{
-    CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand, DaemonSubcommand,
-    DefenderExclusionsSubcommand, GcCargoArgs, GcListKind, GcSubcommand, GcSweepArgs,
-    ToolchainSubcommand, TrimProfileArg, ZccacheSourceArg, SOLDR_BUILTIN_VERBS,
+    is_cargo_builtin_verb, CacheSubcommand, Cli, Commands, DaemonBuildsSubcommand,
+    DaemonSubcommand, DefenderExclusionsSubcommand, GcCargoArgs, GcListKind, GcSubcommand,
+    GcSweepArgs, ToolchainSubcommand, TrimProfileArg, ZccacheSourceArg, CARGO_BUILTIN_VERBS,
+    SOLDR_BUILTIN_VERBS,
 };
 
 use crate::core::{suppress_windows_console_window, SoldrError};
@@ -591,6 +592,31 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             if matches!(version, VersionSpec::Latest)
                 && crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_some()
             {
+                let mut cargo_args = Vec::with_capacity(args.len());
+                cargo_args.push(crate_name.clone());
+                cargo_args.extend(tool_args.iter().cloned());
+                std::process::exit(
+                    cargo_front_door::run_cargo_front_door(
+                        &cargo_args,
+                        cache_enabled,
+                        zccache_source,
+                    )
+                    .await?,
+                );
+            }
+
+            // Issue #685 (parent #682, phase 2): bare cargo built-in
+            // shorthand. When the typed verb is one of cargo's own
+            // first-party verbs (`build`, `test`, `check`, `clippy`,
+            // `fmt`, ...), route through the cargo front door —
+            // `soldr build --release` becomes `soldr cargo build
+            // --release`. The collision verbs `clean` / `config` /
+            // `version` are captured by clap before reaching this
+            // arm; see `is_cargo_builtin_verb` for the explicit
+            // exclusion list. Version-pinned forms keep the existing
+            // External fetch path so `soldr build@1.0` parses
+            // exactly like `soldr <unknown-tool>@1.0` does today.
+            if matches!(version, VersionSpec::Latest) && is_cargo_builtin_verb(&crate_name) {
                 let mut cargo_args = Vec::with_capacity(args.len());
                 cargo_args.push(crate_name.clone());
                 cargo_args.extend(tool_args.iter().cloned());
