@@ -577,6 +577,33 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let (crate_name, version) = parse_tool_spec(&args[0]);
             let tool_args = &args[1..];
 
+            // Issue #683 (parent #682, phase 1): bare cargo-subcommand
+            // shorthand. When the typed verb (sans `@version`) is one
+            // soldr already prebuilds as a cargo subcommand
+            // (`KNOWN_TOOLS::lookup_by_cargo_subcommand`), route through
+            // the cargo front door — `soldr nextest run` becomes
+            // `soldr cargo nextest run`. This avoids the doomed
+            // crates.io fetch for a literally-named `nextest` crate.
+            // Version-pinned forms (`soldr nextest@0.9.x`) keep the
+            // existing External path; cargo-subcommand pins are
+            // managed in the soldr registry and the front door has no
+            // per-invocation knob.
+            if matches!(version, VersionSpec::Latest)
+                && crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_some()
+            {
+                let mut cargo_args = Vec::with_capacity(args.len());
+                cargo_args.push(crate_name.clone());
+                cargo_args.extend(tool_args.iter().cloned());
+                std::process::exit(
+                    cargo_front_door::run_cargo_front_door(
+                        &cargo_args,
+                        cache_enabled,
+                        zccache_source,
+                    )
+                    .await?,
+                );
+            }
+
             // Issue #412: when the user typed a verb that LOOKS like
             // a typo or a renamed built-in (e.g. `update-zccacheee`,
             // `installzccache`), emit a "did you mean?" hint before

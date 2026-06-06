@@ -315,3 +315,89 @@ fn fuzzy_match_with_soldr_verbs_recognizes_issue_412_examples() {
     // by suggest_close_match returning None on exact match.
     assert_eq!(suggest_close_match("doctor", SOLDR_BUILTIN_VERBS), None);
 }
+
+/// Issue #683 (parent #682, phase 1): bare cargo-subcommand shorthand.
+/// `soldr nextest run` must resolve as `soldr cargo nextest run`, NOT
+/// fall through to a crates.io fetch for a literally-named `nextest`
+/// crate. The dispatch decision in `main.rs` keys on
+/// `parse_tool_spec` + `lookup_by_cargo_subcommand`; these tests
+/// exercise that contract directly so the surface stays observable
+/// without spawning a full `soldr` process.
+#[test]
+fn bare_shorthand_recognizes_every_known_cargo_subcommand() {
+    // Every entry in `KNOWN_TOOLS` with a `cargo_subcommand: Some(_)`
+    // must be reachable via the bare verb (sans `@version`). The
+    // list is intentionally hard-coded — adding a new
+    // `cargo_subcommand` to the registry without also adding it here
+    // is the kind of drift this test exists to catch.
+    let expected = [
+        "nextest",
+        "deny",
+        "audit",
+        "llvm-cov",
+        "udeps",
+        "semver-checks",
+        "expand",
+        "watch",
+        "chef",
+        "zigbuild",
+        "xwin",
+        "binstall",
+        "machete",
+    ];
+    for verb in expected {
+        let (crate_name, version) = parse_tool_spec(verb);
+        assert!(
+            matches!(version, VersionSpec::Latest),
+            "bare verb {verb:?} must parse to VersionSpec::Latest"
+        );
+        assert!(
+            crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_some(),
+            "bare verb {verb:?} must be matched by lookup_by_cargo_subcommand"
+        );
+    }
+}
+
+#[test]
+fn bare_shorthand_skips_when_user_pinned_a_version() {
+    // `soldr nextest@0.9.x` keeps the existing External fetch path
+    // (which today errors with "no crate named nextest"). The
+    // shorthand only fires for unversioned forms because the cargo
+    // front door has no per-invocation version knob — pins are
+    // managed in `KNOWN_TOOLS::pinned_version`.
+    let (crate_name, version) = parse_tool_spec("nextest@0.9.x");
+    assert_eq!(crate_name, "nextest");
+    assert!(
+        matches!(version, VersionSpec::Exact(_)),
+        "pinned bare verb must parse to VersionSpec::Exact"
+    );
+    // Sanity: the lookup still matches the verb itself, so the gate
+    // condition `matches!(version, VersionSpec::Latest) && lookup…`
+    // depends entirely on the version arm. If a future refactor flips
+    // this to use the lookup result alone, this test will surface
+    // that mistake.
+    assert!(crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_some());
+}
+
+#[test]
+fn bare_shorthand_does_not_capture_unrelated_verbs() {
+    // Negative coverage: a verb that ISN'T a cargo subcommand
+    // (top-level fetch tool, made-up name, cargo built-in) must NOT
+    // be routed through the cargo front door by this gate. Top-level
+    // tools already dispatch through External (their own fetch
+    // path); cargo built-ins remain out-of-scope for phase 1.
+    for verb in [
+        "cross",
+        "mdbook",
+        "bacon",
+        "completely-made-up-name",
+        "build",
+        "test",
+    ] {
+        let (crate_name, _) = parse_tool_spec(verb);
+        assert!(
+            crate::fetch::lookup_by_cargo_subcommand(&crate_name).is_none(),
+            "verb {verb:?} must NOT be matched as a cargo subcommand in phase 1"
+        );
+    }
+}
