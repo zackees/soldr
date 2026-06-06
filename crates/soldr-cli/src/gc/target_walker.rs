@@ -31,9 +31,18 @@ pub(crate) struct TargetEntry {
 }
 
 /// Walk `root` up to `max_depth` directories deep, collecting every
-/// workspace that has a sibling `target/` directory. Hidden dirs
-/// (leading `.`) are skipped to avoid descending into `.git/` and
-/// similar VCS roots. Symlinks are not followed.
+/// workspace that has a sibling `target/` directory. VCS metadata
+/// (`.git/`, `.hg/`, `.svn/`, `.jj/`) and `node_modules/` are pruned;
+/// other dot-prefixed dirs (notably `.claude/worktrees/` where clud's
+/// `/clud-pr` skill puts feature-branch workspaces) are descended into
+/// because they routinely contain real Rust build artifacts that
+/// `soldr gc target --purge` should be able to reclaim. Symlinks are
+/// not followed.
+///
+/// Issue #680: the previous `skip_hidden(true)` filter was too
+/// coarse — it conflated "VCS metadata" (skip) with "tool sandboxes
+/// that happen to be dot-prefixed" (don't skip). On the reporter's box
+/// that flipped 9.1 GB of reclaimable space invisible to `gc target`.
 pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
     if !root.is_dir() {
         return Vec::new();
@@ -42,18 +51,30 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
     let walker = WalkDir::new(root)
         .follow_links(false)
         .max_depth(max_depth)
-        .skip_hidden(true)
+        .skip_hidden(false)
         .process_read_dir(|_depth, _path, _state, children| {
             // Why: never descend into a `target/` we're about to report
             // on — saves a huge amount of recursive stat work on big
             // workspaces and avoids surfacing nested workspace target
             // dirs as their own entries.
+            //
+            // Why the explicit deny-list instead of `skip_hidden(true)`:
+            // see #680. We still want to skip VCS metadata roots and
+            // `node_modules` (gigantic, never holds Rust `target/`), but
+            // dot-prefixed tool sandboxes like `.claude/worktrees/` DO
+            // hold real Rust workspaces and must be walked.
             children.retain(|entry_result| {
                 let Ok(entry) = entry_result else {
                     return true;
                 };
                 let name = entry.file_name().to_string_lossy().to_string();
-                name != "target"
+                if name == "target" {
+                    return false;
+                }
+                !matches!(
+                    name.as_str(),
+                    ".git" | ".hg" | ".svn" | ".jj" | "node_modules"
+                )
             });
         });
 
@@ -148,15 +169,51 @@ mod tests {
         assert!(large_entry.file_count >= 1);
     });
 
-    timed_test!(walk_skips_hidden_directories, {
+    timed_test!(walk_descends_into_dot_claude_worktrees, {
+        // Issue #680: clud's `/clud-pr` skill stores every PR's
+        // feature-branch worktree under `.claude/worktrees/<branch>/`
+        // and builds Rust there. The walker MUST descend into
+        // `.claude/` so those targets are reclaimable.
         let tmp = tempfile::tempdir().expect("tempdir");
         let root = tmp.path();
-        let _shown = seed_workspace(root, "visible", 1024);
-        let _hidden = seed_workspace(root, ".cache", 1024);
+        let worktree_parent = root
+            .join(".claude")
+            .join("worktrees")
+            .join("feat-some-branch");
+        std::fs::create_dir_all(&worktree_parent).expect("create worktree parent");
+        let workspace = seed_workspace(&worktree_parent, "ws", 4096);
 
-        let entries = walk(root, 4);
-        assert_eq!(entries.len(), 1);
-        assert!(entries[0].workspace_root.ends_with("visible"));
+        let entries = walk(root, 8);
+        let paths: Vec<&Path> = entries.iter().map(|e| e.workspace_root.as_path()).collect();
+        assert!(
+            paths.contains(&workspace.as_path()),
+            "expected `.claude/worktrees/...` target to be discovered; got {paths:?}",
+        );
+    });
+
+    timed_test!(walk_still_skips_vcs_metadata_dirs, {
+        // Issue #680: the relaxed hidden-dir filter must NOT cause
+        // VCS metadata roots (`.git/`, `.hg/`, `.svn/`, `.jj/`) or
+        // `node_modules/` to be walked. Cargo-shaped layouts can show
+        // up inside `.git/modules/<sub>/` (git submodules), inside
+        // checked-in fixtures, etc. — none of those are user-managed
+        // build artifacts and must stay invisible to `gc target`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        for vcs in [".git", ".hg", ".svn", ".jj", "node_modules"] {
+            let _seeded = seed_workspace(&root.join(vcs), "ws", 2048);
+        }
+        // And one positive-control workspace so we know walking happened.
+        let real = seed_workspace(root, "real-project", 1024);
+
+        let entries = walk(root, 8);
+        let paths: Vec<&Path> = entries.iter().map(|e| e.workspace_root.as_path()).collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected only the real workspace; got {paths:?}",
+        );
+        assert!(paths.contains(&real.as_path()));
     });
 
     timed_test!(walk_does_not_recurse_into_target_dirs, {

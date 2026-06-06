@@ -706,8 +706,13 @@ pub(crate) struct GcTargetArgs {
     /// `$SOLDR_GC_TARGET_ROOT`, falling back to `~/dev`.
     #[arg(long, value_name = "PATH")]
     pub(crate) root: Option<std::path::PathBuf>,
-    /// Maximum walk depth.
-    #[arg(long, default_value_t = 4, value_name = "N")]
+    /// Maximum walk depth. Default raised from 4 to 8 in #680 — clud's
+    /// `/clud-pr` worktree layout puts targets at
+    /// `~/dev/<repo>/.claude/worktrees/<branch>/target` (depth 6), and
+    /// workspace-member projects routinely sit one or two levels deeper
+    /// than that. `jwalk` scan time is roughly linear in depth, and a
+    /// shallow `~/dev` adds <1s at depth 8.
+    #[arg(long, default_value_t = 8, value_name = "N")]
     pub(crate) max_depth: usize,
     /// Report-only (the default).
     #[arg(long, conflicts_with = "purge")]
