@@ -548,6 +548,12 @@ struct GcTargetEntryOutput {
     size_human: String,
     file_count: u64,
     last_modified_ms: i64,
+    /// How this entry was discovered. `"manifest"` is the original
+    /// sibling-`Cargo.toml` path; `"content"` is the cargo-shape
+    /// heuristic added in #681. Additive JSON field — readers that
+    /// don't know about it stay forward-compatible. Schema stays at
+    /// version 1; this is a pure additive change.
+    discovery: &'static str,
 }
 
 #[derive(Serialize)]
@@ -594,6 +600,10 @@ pub(crate) fn run_gc_target_command(args: crate::cli_args::GcTargetArgs) -> Resu
             size_human: crate::cache_lib::target_registry::human_size(e.size_bytes),
             file_count: e.file_count,
             last_modified_ms: e.last_modified_ms,
+            discovery: match e.discovery {
+                target_walker::TargetDiscovery::Manifest => "manifest",
+                target_walker::TargetDiscovery::Content => "content",
+            },
         })
         .collect();
 
@@ -713,8 +723,14 @@ fn print_target_report(
         crate::cache_lib::target_registry::human_size(total_bytes)
     );
     for entry in entries {
+        // Surface discovery=content prominently so users can
+        // spot-check heuristic matches before accepting --yes (#681).
+        let discovery = match entry.discovery {
+            target_walker::TargetDiscovery::Manifest => "manifest",
+            target_walker::TargetDiscovery::Content => "content",
+        };
         println!(
-            "    {}  size={}  files={}  target={}",
+            "    {}  size={}  files={}  discovery={discovery}  target={}",
             entry.workspace_root.display(),
             crate::cache_lib::target_registry::human_size(entry.size_bytes),
             entry.file_count,

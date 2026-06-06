@@ -5,8 +5,16 @@
 //! Returned entries are NOT sorted; sorting is the caller's
 //! responsibility so the CLI handler can choose between size-desc
 //! reports, JSON-stable paths, etc.
+//!
+//! Discovery (#681) is dual-path: a `target/` is reclaimable either
+//! because a sibling `Cargo.toml` proves the parent is a cargo
+//! workspace (the original "manifest" path), or because the contents
+//! of `target/` itself look like cargo output (the new "content"
+//! path — covers perf-test scratch trees and other layouts that lack
+//! a manifest neighbor).
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jwalk::WalkDir;
@@ -14,10 +22,29 @@ use serde::Serialize;
 
 use super::walks::fast_directory_size_and_files;
 
+/// How a `TargetEntry` was discovered. Surfaced in the human-readable
+/// purge plan and JSON output so users can spot-check
+/// content-discovered entries before accepting `--yes`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum TargetDiscovery {
+    /// `target/` was identified via a sibling `Cargo.toml`. The
+    /// original (pre-#681) detection path. Treat as high-confidence:
+    /// the parent declared itself a cargo workspace.
+    Manifest,
+    /// `target/` was identified by its own contents (`debug/`,
+    /// `release/`, `doc/`, `.rustc_info.json`, or `CACHEDIR.TAG`).
+    /// Covers perf-test scratch dirs and workspace fixtures whose
+    /// driver lives elsewhere in the tree.
+    Content,
+}
+
 /// One reclaimable workspace `target/` directory.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct TargetEntry {
-    /// Workspace root — the directory containing `Cargo.toml`.
+    /// Workspace root — the directory containing `Cargo.toml` (for
+    /// `Manifest` discovery) or the parent of `target/` (for `Content`
+    /// discovery, where no manifest is present).
     pub(crate) workspace_root: PathBuf,
     /// Sibling `target/` directory we'd actually delete.
     pub(crate) target_dir: PathBuf,
@@ -28,6 +55,39 @@ pub(crate) struct TargetEntry {
     /// Unix-ms mtime of `target_dir` (most-recently-modified entry
     /// at the top level). Zero when unavailable.
     pub(crate) last_modified_ms: i64,
+    /// Whether this entry was found via a sibling `Cargo.toml`
+    /// (`Manifest`) or by inspecting `target/`'s contents (`Content`).
+    pub(crate) discovery: TargetDiscovery,
+}
+
+/// Top-level markers inside a `target/` directory that signal it was
+/// produced by cargo. Any one is enough — cargo lays down all of
+/// these depending on what's been run.
+///
+/// `debug/`, `release/`, `doc/`: profile output directories.
+/// `.rustc_info.json`: cargo's metadata stamp.
+/// `CACHEDIR.TAG`: cargo writes this so other tools can opt out of
+/// indexing the tree.
+///
+/// Maven and JVM tooling also use a `target/` dir, but they ship
+/// `target/classes/` or `target/maven-archiver/`, not these markers —
+/// so the heuristic stays Rust-specific.
+const CARGO_TARGET_MARKERS: &[&str] = &[
+    "debug",
+    "release",
+    "doc",
+    ".rustc_info.json",
+    "CACHEDIR.TAG",
+];
+
+/// Returns true when `target_dir` contains any cargo-shape marker.
+/// Used by the content-discovery path (#681) so a `target/` without
+/// a sibling `Cargo.toml` is still reclaimable if its contents prove
+/// it was produced by cargo.
+fn looks_like_cargo_target(target_dir: &Path) -> bool {
+    CARGO_TARGET_MARKERS
+        .iter()
+        .any(|m| target_dir.join(m).exists())
 }
 
 /// Walk `root` up to `max_depth` directories deep, collecting every
@@ -48,11 +108,51 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
         return Vec::new();
     }
     let mut out: Vec<TargetEntry> = Vec::new();
+
+    // Shared collector for content-discovery candidates (#681). The
+    // `process_read_dir` closure is `Fn` and may be invoked from
+    // multiple jwalk worker threads — Arc<Mutex<...>> keeps the
+    // append-only collection sound without restricting the walk's
+    // parallelism in any meaningful way (push is O(1)).
+    let content_candidates: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+    let content_candidates_for_closure = content_candidates.clone();
+
     let walker = WalkDir::new(root)
         .follow_links(false)
         .max_depth(max_depth)
         .skip_hidden(false)
-        .process_read_dir(|_depth, _path, _state, children| {
+        .process_read_dir(move |_depth, _path, _state, children| {
+            // Content-discovery hook (#681): if this directory holds a
+            // `target/` child but NO sibling `Cargo.toml`, peek at the
+            // target's top-level entries for cargo-shape markers and
+            // record it as a candidate. Done before pruning so we still
+            // see the `target/` child here. Skipped entirely when a
+            // sibling `Cargo.toml` is present — the manifest pass below
+            // will pick that case up at higher confidence.
+            let has_cargo_toml = children.iter().any(|c| {
+                c.as_ref()
+                    .ok()
+                    .is_some_and(|e| e.file_name().to_string_lossy() == "Cargo.toml")
+            });
+            if !has_cargo_toml {
+                for child in children.iter() {
+                    let Ok(entry) = child else { continue };
+                    if !entry.file_type().is_dir() {
+                        continue;
+                    }
+                    if entry.file_name().to_string_lossy() != "target" {
+                        continue;
+                    }
+                    let target_path = entry.path();
+                    if looks_like_cargo_target(&target_path) {
+                        content_candidates_for_closure
+                            .lock()
+                            .unwrap()
+                            .push(target_path);
+                    }
+                }
+            }
+
             // Why: never descend into a `target/` we're about to report
             // on — saves a huge amount of recursive stat work on big
             // workspaces and avoids surfacing nested workspace target
@@ -78,6 +178,7 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
             });
         });
 
+    // Pass 1 — manifest discovery (the original behavior).
     for entry in walker.into_iter().flatten() {
         if !entry.file_type().is_file() {
             continue;
@@ -104,6 +205,37 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
             size_bytes,
             file_count,
             last_modified_ms,
+            discovery: TargetDiscovery::Manifest,
+        });
+    }
+
+    // Pass 2 — content discovery (#681). Dedup against the manifest
+    // pass: a `target/` already surfaced as `Manifest` always wins,
+    // because the parent declared itself a cargo workspace and we
+    // trust that over the heuristic.
+    let manifest_targets: std::collections::HashSet<PathBuf> =
+        out.iter().map(|e| e.target_dir.clone()).collect();
+    let candidates = std::mem::take(&mut *content_candidates.lock().unwrap());
+    for target_dir in candidates {
+        if manifest_targets.contains(&target_dir) {
+            continue;
+        }
+        let (size_bytes, file_count) = fast_directory_size_and_files(&target_dir);
+        if size_bytes == 0 && file_count == 0 {
+            continue;
+        }
+        let last_modified_ms = directory_mtime_ms(&target_dir);
+        let workspace_root = target_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| target_dir.clone());
+        out.push(TargetEntry {
+            workspace_root,
+            target_dir,
+            size_bytes,
+            file_count,
+            last_modified_ms,
+            discovery: TargetDiscovery::Content,
         });
     }
     out
@@ -269,5 +401,140 @@ mod tests {
         let bogus = tmp.path().join("does-not-exist");
         let entries = walk(&bogus, 4);
         assert!(entries.is_empty());
+    });
+
+    /// Seed a `target/` directory without a sibling `Cargo.toml`,
+    /// laying down a cargo-shape marker so the content-discovery
+    /// pass (#681) recognises it. Returns the parent of `target/`.
+    fn seed_orphan_target(root: &Path, name: &str, marker: &str, bytes: usize) -> PathBuf {
+        let parent = root.join(name);
+        std::fs::create_dir_all(&parent).expect("create parent");
+        let target = parent.join("target");
+        std::fs::create_dir_all(&target).expect("create target/");
+        // Drop the marker. For directory markers (debug/release/doc)
+        // we create the dir AND a blob inside so size > 0. For file
+        // markers (.rustc_info.json / CACHEDIR.TAG) we write the file.
+        let marker_path = target.join(marker);
+        if matches!(marker, "debug" | "release" | "doc") {
+            std::fs::create_dir_all(&marker_path).expect("create marker dir");
+            std::fs::write(marker_path.join("blob.bin"), vec![0u8; bytes])
+                .expect("write marker blob");
+        } else {
+            std::fs::write(&marker_path, vec![0u8; bytes]).expect("write marker file");
+        }
+        parent
+    }
+
+    timed_test!(walk_content_discovers_target_without_sibling_cargo_toml, {
+        // Issue #681: a `target/` dir whose contents look cargo-shaped
+        // but lacks a sibling Cargo.toml must still be reclaimable.
+        // Exercises each of the five recognized markers.
+        for marker in [
+            "debug",
+            "release",
+            "doc",
+            ".rustc_info.json",
+            "CACHEDIR.TAG",
+        ] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path();
+            let parent = seed_orphan_target(root, &format!("scratch-{marker}"), marker, 4096);
+
+            let entries = walk(root, 8);
+            let by_disco: Vec<(TargetDiscovery, &Path)> = entries
+                .iter()
+                .map(|e| (e.discovery, e.workspace_root.as_path()))
+                .collect();
+            assert_eq!(
+                entries.len(),
+                1,
+                "expected one content-discovered entry for marker {marker:?}; got {by_disco:?}",
+            );
+            assert_eq!(
+                entries[0].discovery,
+                TargetDiscovery::Content,
+                "marker {marker:?} should produce a Content entry",
+            );
+            assert_eq!(entries[0].workspace_root, parent);
+        }
+    });
+
+    timed_test!(walk_content_skips_target_without_cargo_markers, {
+        // Negative: a `target/` dir with NO cargo-shape markers (e.g.
+        // a Maven-style `target/classes/` layout) must NOT be picked
+        // up by content discovery. This protects the heuristic from
+        // false positives in JVM trees that share the `target/` name.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let maven_like = root.join("java-project").join("target");
+        std::fs::create_dir_all(maven_like.join("classes")).expect("create maven-like layout");
+        std::fs::write(
+            maven_like.join("classes").join("Main.class"),
+            b"\xca\xfe\xba\xbe",
+        )
+        .expect("write fake class file");
+
+        let entries = walk(root, 8);
+        assert!(
+            entries.is_empty(),
+            "Maven-style target/ without cargo markers must NOT be picked up; got {entries:?}",
+        );
+    });
+
+    timed_test!(walk_manifest_path_wins_over_content_path, {
+        // When both detection paths fire on the same target/, the
+        // manifest entry (high-confidence, parent declared itself a
+        // cargo workspace) wins. We never emit both.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        // `seed_workspace` lays down a Cargo.toml AND a target/debug/
+        // blob — exactly the dual-eligible shape.
+        let workspace = seed_workspace(root, "dual", 1024);
+
+        let entries = walk(root, 8);
+        assert_eq!(
+            entries.len(),
+            1,
+            "expected exactly one entry; got {entries:?}"
+        );
+        assert_eq!(entries[0].workspace_root, workspace);
+        assert_eq!(
+            entries[0].discovery,
+            TargetDiscovery::Manifest,
+            "dual-eligible target/ must report as Manifest, not Content",
+        );
+    });
+
+    timed_test!(walk_emits_both_paths_when_distinct_targets, {
+        // A root with one manifest-discovered AND one
+        // content-discovered target/ must emit both entries, each
+        // tagged with the correct discovery field.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let manifest_workspace = seed_workspace(root, "real-project", 2048);
+        let orphan_parent = seed_orphan_target(root, "perf-scratch", "debug", 4096);
+
+        let entries = walk(root, 8);
+        assert_eq!(entries.len(), 2, "expected two entries; got {entries:?}");
+        let manifest = entries
+            .iter()
+            .find(|e| e.workspace_root == manifest_workspace)
+            .expect("manifest entry present");
+        let content = entries
+            .iter()
+            .find(|e| e.workspace_root == orphan_parent)
+            .expect("content entry present");
+        assert_eq!(manifest.discovery, TargetDiscovery::Manifest);
+        assert_eq!(content.discovery, TargetDiscovery::Content);
+    });
+
+    timed_test!(walk_content_path_serializes_lowercase_discovery_in_json, {
+        // The `TargetDiscovery` enum carries `#[serde(rename_all =
+        // "lowercase")]` so the JSON wire form is the stable
+        // string contract the CLI handler depends on. Lock it in.
+        let manifest = serde_json::to_string(&TargetDiscovery::Manifest).expect("serialize");
+        let content = serde_json::to_string(&TargetDiscovery::Content).expect("serialize");
+        assert_eq!(manifest, "\"manifest\"");
+        assert_eq!(content, "\"content\"");
     });
 }
