@@ -21,7 +21,7 @@ A single Rust binary with two jobs:
 
 Mode is detected automatically from argv[1]: path-to-rustc → cache mode, built-in command → dispatch, anything else → tool fetch.
 
-**soldr wraps rustc, NOT cargo.** This is the most important design decision. No `soldr build`, `soldr test`, etc. Cargo owns build orchestration; soldr owns per-unit caching. See DESIGN.md "Why no `soldr build`" for rationale.
+**soldr wraps rustc, NOT cargo.** This is the most important design decision: cargo owns build orchestration, soldr owns per-unit caching. See DESIGN.md "Why no `soldr build`" for rationale. As of #685 (phase 2 of #682) `soldr build` / `soldr test` / `soldr clippy` / etc. are accepted as **dispatch shorthand** for `soldr cargo build` / `soldr cargo test` / `soldr cargo clippy` — they route through the cargo front door and do not become soldr-native verbs (the `Commands::Cargo` arm is still where the work happens).
 
 ## Build Commands
 
@@ -99,7 +99,7 @@ Anything not registered falls through the generic External subcommand, which res
 
 ## Key Design Rules
 
-- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook` plus the toolchain passthroughs listed above. Never add `build`, `test`, `lint`, `fmt`, `check`, `doc`, `bench`, `publish` — prevents namespace collision with tool names.
+- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook` plus the toolchain passthroughs listed above. These are clap-captured and must NOT be repurposed. Bare cargo built-in verbs — `build`, `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish` — route to `cargo <verb>` via the External arm (see `CARGO_BUILTIN_VERBS` in `cli_args.rs` and the phase-2 hop in `Commands::External` of `main.rs`). They are NOT soldr-native verbs and may not be reused as such; their soldr meaning is "shorthand for `cargo <verb>`."
 - **MSVC on Windows always**: Default to `x86_64-pc-windows-msvc` (or aarch64). Only use GNU if `rust-toolchain.toml` explicitly says so. Target resolved at runtime, not compile-time.
 - **Pre-built first**: Try every binary source before `cargo install`. Resolution order matters.
 - **RUSTC_WRAPPER defaults to zccache**: If `RUSTC_WRAPPER` is not set, soldr defaults to using `zccache` as the wrapper.
