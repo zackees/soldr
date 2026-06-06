@@ -177,6 +177,17 @@ soldr purge
 SOLDR_RUSTC_WRAPPER=sccache soldr cargo build
 SOLDR_RUSTC_WRAPPER=none soldr cargo build
 
+# Shorthand: drop the `cargo` prefix for cargo's built-in verbs and for
+# any cargo subcommand soldr already prebuilds. `soldr cargo <verb>` is
+# preserved as the explicit escape hatch (always works), and the
+# collision verbs `clean`, `config`, and `version` keep their
+# soldr-native meaning. See docs/API.md "Cargo Verb Shorthand" for the
+# full list.
+soldr build --release          # == soldr cargo build --release
+soldr test --workspace         # == soldr cargo test --workspace
+soldr clippy -- -D warnings    # == soldr cargo clippy -- -D warnings
+soldr nextest run              # == soldr cargo nextest run
+
 # Fetch and run any Rust tool instantly:
 soldr maturin build --release
 soldr cargo-dylint check
