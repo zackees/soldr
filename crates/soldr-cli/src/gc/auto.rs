@@ -215,45 +215,79 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
                 .map(|p| p.path.clone())
                 .collect();
             if !workspace_targets.is_empty() {
-                let reclaimed = run_soldr_target_purge_background(
+                let tier2 = run_soldr_target_purge_background(
                     &paths,
                     &workspace_targets,
                     validated.min_age_secs,
                 );
                 last_tier = 2;
                 free_bytes = probe.free_bytes(&plan.paths[0].path).unwrap_or(free_bytes);
+                // Per-stage counts (#705) — distinguishes
+                // "no candidates" vs "candidates filtered out
+                // pre-delete" so the next time someone hits 0-byte
+                // tier-2 reclaim, they can immediately see WHERE
+                // candidates went. registry_rows_on_volume is the
+                // pre-scan view; candidates is the post-threshold +
+                // post-guard view; on_volume_matched is the after-
+                // intersect-with-affected-volumes view.
                 let _ = append_auto_gc_log_line(
                     &log_path,
                     &format!(
-                        "tier=2 volume={} reclaimed_bytes={} free_gib={:.2}",
+                        "tier=2 volume={} reclaimed_bytes={} free_gib={:.2} \
+                         registry_rows_on_volume={} candidates={} skipped={} \
+                         dropped_missing={} on_volume_matched={}",
                         plan.volume_key,
-                        reclaimed,
+                        tier2.reclaimed,
                         (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
+                        workspace_targets.len(),
+                        tier2.candidates,
+                        tier2.skipped,
+                        tier2.dropped_missing,
+                        tier2.on_volume_matched,
                     ),
                 );
             }
         }
 
         // Tier 3: aggressive cargo GC (clamped to min_age_secs).
+        // #705: probe for nightly before invoking — the unstable
+        // `-Zgc` flag requires it, and without it every Tier-3
+        // invocation exits non-zero silently. The probe lets us
+        // record `skipped=true reason=no_nightly_toolchain` so the
+        // user can see WHY tier 3 isn't helping and either install
+        // nightly or accept that tier 3 won't fire on this box.
         if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_some()
             && cargo_volume_paths > 0
         {
-            let ages =
-                crate::cache_lib::auto_gc::TIER3_AGES.clamped_seconds(validated.min_age_secs);
-            let outcome = run_aggressive_cargo_gc_background(&log_path, &ages);
-            last_tier = 3;
-            free_bytes = probe.free_bytes(&plan.paths[0].path).unwrap_or(free_bytes);
-            let _ = append_auto_gc_log_line(
-                &log_path,
-                &format!(
-                    "tier=3 volume={} exit_code={} skipped={} reason={} free_gib={:.2}",
-                    plan.volume_key,
-                    outcome.exit_code,
-                    outcome.skipped,
-                    outcome.reason.as_deref().unwrap_or("ran"),
-                    (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
-                ),
-            );
+            if !nightly_toolchain_available() {
+                last_tier = 3;
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!(
+                        "tier=3 volume={} exit_code=0 skipped=true \
+                         reason=no_nightly_toolchain free_gib={:.2}",
+                        plan.volume_key,
+                        (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
+                    ),
+                );
+            } else {
+                let ages =
+                    crate::cache_lib::auto_gc::TIER3_AGES.clamped_seconds(validated.min_age_secs);
+                let outcome = run_aggressive_cargo_gc_background(&log_path, &ages);
+                last_tier = 3;
+                free_bytes = probe.free_bytes(&plan.paths[0].path).unwrap_or(free_bytes);
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!(
+                        "tier=3 volume={} exit_code={} skipped={} reason={} free_gib={:.2}",
+                        plan.volume_key,
+                        outcome.exit_code,
+                        outcome.skipped,
+                        outcome.reason.as_deref().unwrap_or("ran"),
+                        (free_bytes as f64) / (crate::cache_lib::auto_gc::GIB as f64),
+                    ),
+                );
+            }
         }
 
         if crate::cache_lib::auto_gc::next_tier(free_bytes, target_bytes, last_tier).is_none()
@@ -358,15 +392,36 @@ fn run_aggressive_cargo_gc_background(
     }
 }
 
+/// Outcome of one Tier-2 purge pass. Surfaces per-stage counts so the
+/// auto-GC log distinguishes "nothing to clean" from "couldn't see
+/// anything to clean" — the diagnostic gap documented in #705.
+#[derive(Debug, Clone, Copy, Default)]
+struct Tier2Outcome {
+    /// Bytes actually deleted.
+    reclaimed: u64,
+    /// Eligible candidates returned by `scan` (passed threshold + guards).
+    candidates: usize,
+    /// Skipped rows (under threshold or guard-rejected).
+    skipped: usize,
+    /// Registry rows whose path no longer existed and were dropped.
+    dropped_missing: usize,
+    /// Candidates that survived the eligibility scan AND matched a
+    /// volume in `workspace_targets`. If `candidates > 0` but
+    /// `on_volume_matched == 0`, the on-volume filter ate everything
+    /// (a path-normalisation drift between the registry rows and the
+    /// volume-grouped paths the orchestrator handed us).
+    on_volume_matched: usize,
+}
+
 fn run_soldr_target_purge_background(
     paths: &SoldrPaths,
     workspace_targets: &[std::path::PathBuf],
     min_age_secs: u64,
-) -> u64 {
+) -> Tier2Outcome {
     use crate::cache_lib::gc::{parse_size, scan, GcOptions};
     let db_path = crate::cache_lib::data_db_path(paths);
     let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) else {
-        return 0;
+        return Tier2Outcome::default();
     };
     let larger_than_bytes = parse_size("256M").unwrap_or(256 * 1024 * 1024);
     // Auto-GC always honors at least the configured min-age floor.
@@ -380,16 +435,21 @@ fn run_soldr_target_purge_background(
     };
     let report = match scan(&registry, &options) {
         Ok(r) => r,
-        Err(_) => return 0,
+        Err(_) => return Tier2Outcome::default(),
     };
+    let candidates = report.candidates.len();
+    let skipped = report.skipped.len();
+    let dropped_missing = report.dropped_missing;
     // Filter to candidates that actually live on the affected volumes.
     let mut reclaimed = 0u64;
+    let mut on_volume_matched = 0usize;
     let on_volume: std::collections::HashSet<&std::path::Path> =
         workspace_targets.iter().map(|p| p.as_path()).collect();
     for cand in report.candidates {
         if !on_volume.contains(cand.path.as_path()) {
             continue;
         }
+        on_volume_matched += 1;
         let bytes = cand.size_bytes;
         let outcome = crate::cache_lib::gc::delete_candidate_dir(cand);
         if outcome.removed {
@@ -397,7 +457,36 @@ fn run_soldr_target_purge_background(
             let _ = registry.remove(&outcome.candidate.path);
         }
     }
-    reclaimed
+    Tier2Outcome {
+        reclaimed,
+        candidates,
+        skipped,
+        dropped_missing,
+        on_volume_matched,
+    }
+}
+
+/// Probe whether a `nightly` rustup toolchain is installed. The
+/// Tier-3 aggressive `cargo clean gc` requires the unstable `-Zgc`
+/// flag, so without nightly the tier silently fails with `exit_code=1`
+/// (which is what #705 reported as 100% of the Tier-3 invocations in
+/// the user's log). We probe via `rustup toolchain list` because it's
+/// the cheapest and most-reliable check that doesn't actually spawn
+/// rustc — see the auto-GC `tier=3 skipped=true reason=…` branch
+/// below for how the outcome is reported.
+fn nightly_toolchain_available() -> bool {
+    let Ok(output) = std::process::Command::new("rustup")
+        .args(["toolchain", "list"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .any(|line| line.trim_start().starts_with("nightly"))
 }
 
 /// Enumerate every soldr-owned path for the auto-GC orchestrator.
