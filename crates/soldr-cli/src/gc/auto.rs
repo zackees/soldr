@@ -146,6 +146,23 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         }
     }
 
+    // `release-worktree` trash sweep (#710 follow-up). Runs every
+    // throttle window so the per-volume `~/.soldr/trash-*/` buckets
+    // get reclaimed without requiring the user to call
+    // `soldr cache sweep-trash` manually. Tolerates per-entry failures
+    // (Windows daemon may still hold handles); retries next pass.
+    if let Ok(report) = crate::cache::sweep_trash(&paths) {
+        if report.removed > 0 || report.retained > 0 {
+            let _ = append_auto_gc_log_line(
+                &log_path,
+                &format!(
+                    "trash-sweep removed={} retained={}",
+                    report.removed, report.retained,
+                ),
+            );
+        }
+    }
+
     if !validated.enabled {
         // Disk-pressure tiers off, but cook-gc above may still have
         // run. Done.

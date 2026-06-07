@@ -24,7 +24,7 @@ pub(super) use crate::zccache_lifecycle::{
 };
 pub(crate) use install::run_install_zccache;
 pub(crate) use release_worktree::{
-    run_cache_release_worktree_command, run_cache_sweep_trash_command,
+    run_cache_release_worktree_command, run_cache_sweep_trash_command, sweep_trash, SweepReport,
 };
 pub(crate) use report::run_cache_report_command;
 pub(crate) use session::{
