@@ -519,6 +519,7 @@ pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), 
             write_zccache_session_stats_json(session, stats_json)?;
             let stats = parse_zccache_session_stats_json(stats_json)?;
             print_zccache_session_stats(&stats, &session.session_stats_path);
+            print_wasted_depgraph_hits_if_any(&session.session_log_path);
         }
         return Ok(());
     }
@@ -654,6 +655,51 @@ fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
 
 fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
     value.get(key).and_then(serde_json::Value::as_f64)
+}
+
+/// Count "depgraph said Hit, artifact store had no payload" events in
+/// a zccache session log. Each `[DIAG] artifact_not_found:` line is a
+/// hit-classified lookup that fell through to a forced miss — i.e. the
+/// cache *thought* it had the unit, the lookup succeeded, then the
+/// storage layer dropped it. Surfaces issue #704's "depgraph Hit +
+/// artifact_not_found -> forced miss" pattern without grep'ing the log.
+///
+/// Pure parser over the log body — caller is responsible for reading
+/// the file (so this stays testable without filesystem I/O).
+pub(crate) fn count_wasted_depgraph_hits(log_body: &str) -> u64 {
+    log_body
+        .lines()
+        .filter(|line| line.trim_start().starts_with("[DIAG] artifact_not_found:"))
+        .count() as u64
+}
+
+/// Cap on how much of the session log we'll read to compute the wasted-
+/// hit count. 16 MiB covers full debug sessions on dogfood builds with
+/// substantial headroom; anything larger almost certainly has bigger
+/// problems than a missing diagnostic line.
+const SESSION_LOG_READ_CAP: u64 = 16 * 1024 * 1024;
+
+/// Emit a `  wasted depgraph hits: N` summary line when the log shows
+/// any artifact-not-found events. Silent when the log is missing,
+/// unreadable, oversized, or shows zero wasted hits — this is purely
+/// additive diagnostic surface and must not break existing output.
+fn print_wasted_depgraph_hits_if_any(session_log_path: &std::path::Path) {
+    let Ok(metadata) = std::fs::metadata(session_log_path) else {
+        return;
+    };
+    if metadata.len() > SESSION_LOG_READ_CAP {
+        return;
+    }
+    let Ok(body) = std::fs::read_to_string(session_log_path) else {
+        return;
+    };
+    let wasted = count_wasted_depgraph_hits(&body);
+    if wasted > 0 {
+        eprintln!(
+            "  wasted depgraph hits: {wasted} (depgraph said Hit but artifact store had \
+             no payload; see issue #704)"
+        );
+    }
 }
 
 pub(crate) fn private_zccache_cache_dir(
@@ -893,6 +939,58 @@ mod tests {
         assert!(is_sccache_wrapper(OsStr::new("/tmp/tools/sccache")));
         assert!(!is_sccache_wrapper(OsStr::new("zccache")));
         assert!(!is_sccache_wrapper(OsStr::new("sccache-proxy")));
+    }
+
+    #[test]
+    fn count_wasted_depgraph_hits_returns_zero_when_no_artifact_not_found_lines() {
+        let body = "\
+[DIAG] depgraph_check: foo verdict=Hit reason=fast_key_match
+[HIT] foo (reason: fast_key_match)
+[DIAG] depgraph_check: bar verdict=Miss reason=key_mismatch
+[MISS] bar (reason: key_mismatch)
+";
+        assert_eq!(count_wasted_depgraph_hits(body), 0);
+    }
+
+    #[test]
+    fn count_wasted_depgraph_hits_counts_each_artifact_not_found_line() {
+        let body = "\
+[DIAG] depgraph_check: foo verdict=Hit reason=fast_key_match
+[DIAG] artifact_not_found: key=aaaaaaaa
+[MISS] foo (reason: fast_key_match)
+[DIAG] depgraph_check: bar verdict=Hit reason=first_check_after_update
+[DIAG] artifact_not_found: key=bbbbbbbb
+[MISS] bar (reason: first_check_after_update)
+";
+        assert_eq!(count_wasted_depgraph_hits(body), 2);
+    }
+
+    #[test]
+    fn count_wasted_depgraph_hits_tolerates_leading_whitespace() {
+        // Some log frameworks indent diagnostic lines under a parent span.
+        let body = "\
+    [DIAG] artifact_not_found: key=aaaaaaaa
+\t[DIAG] artifact_not_found: key=bbbbbbbb
+[DIAG] artifact_not_found: key=cccccccc
+";
+        assert_eq!(count_wasted_depgraph_hits(body), 3);
+    }
+
+    #[test]
+    fn count_wasted_depgraph_hits_ignores_unrelated_diag_lines() {
+        let body = "\
+[DIAG] depgraph_check: foo verdict=Hit
+[DIAG] artifact_size: 12345
+[DIAG] artifact_not_found_recovered: key=xxxx
+[DIAG] artifact_not_foundish: key=yyyy
+[INFO] artifact_not_found: this is not a DIAG line
+";
+        assert_eq!(count_wasted_depgraph_hits(body), 0);
+    }
+
+    #[test]
+    fn count_wasted_depgraph_hits_handles_empty_log() {
+        assert_eq!(count_wasted_depgraph_hits(""), 0);
     }
 
     // Parent-cache L1.x env injection (issue #352). The decision function
