@@ -8,6 +8,21 @@ fn argv(parts: &[&str]) -> Vec<String> {
     parts.iter().map(|s| (*s).to_string()).collect()
 }
 
+/// Probe whether a `git` binary is reachable on `PATH`. Used to skip
+/// git-dependent tests under runner environments that strip `PATH`
+/// (#693: the `setup-soldr-action.yml` workflow lands here — `git`
+/// is preinstalled on every stock GHA runner, but the setup-soldr
+/// action's exported environment doesn't include `/usr/bin` on its
+/// `PATH` so the subprocess spawn errors with `ENOENT`). Callers
+/// should bail with a `return;` from the test body when this
+/// returns false; rustc test-runner has no runtime "skip" verdict.
+fn git_available() -> bool {
+    std::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
 fn run_git_in(dir: &Path, args: &[&str]) {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -380,6 +395,18 @@ fn sanitize_cargo_chef_recipe_removes_generated_plugin_lines_from_manifests() {
 
 #[test]
 fn index_cooked_artifact_skips_archive_pack_when_daemon_unavailable() {
+    // #693: gracefully skip when `git` is not on PATH. Happens under
+    // the `setup-soldr-action.yml` runner where the action's exported
+    // env strips `/usr/bin`. The assertion this test exercises is
+    // about cook archive-pack behavior when the daemon is gone — git
+    // is only needed to set up the fixture repo.
+    if !git_available() {
+        eprintln!(
+            "skipping index_cooked_artifact_skips_archive_pack_when_daemon_unavailable: \
+             git binary not found on PATH (see #693)"
+        );
+        return;
+    }
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path().join("repo");
     init_git_repo_with_tracked_lock(&repo);
