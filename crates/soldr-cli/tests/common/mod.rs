@@ -29,7 +29,20 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         .env_remove("SOLDR_LINKER")
         .env_remove("CARGO_BUILD_TARGET")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS");
+        .env_remove("RUSTFLAGS")
+        // #692: parent-cache-sharing env vars leak from the setup-soldr
+        // action's exported environment ("Parent-cache sharing is
+        // default-on" per CLAUDE.md). They make the test fixture's
+        // child soldr take the "user already set ZCCACHE_PATH_REMAP"
+        // branch and skip the `--private-env` injection that the
+        // contract-matrix test asserts on, breaking
+        // `cli_zccache_contract_matrix` on every Linux/macOS CI run.
+        // Scrub them so soldr always exercises its own injection path
+        // under tests, regardless of the parent process's parent-cache
+        // configuration.
+        .env_remove("ZCCACHE_PATH_REMAP")
+        .env_remove("ZCCACHE_WORKTREE_ROOT")
+        .env_remove("SOLDR_PATH_REMAP");
     for (name, _) in std::env::vars_os() {
         if name
             .to_str()
