@@ -407,6 +407,15 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     trim_json || json,
                 )?;
             }
+            Some(CacheSubcommand::ReleaseWorktree {
+                path,
+                json: rw_json,
+            }) => {
+                cache::run_cache_release_worktree_command(path, rw_json || json)?;
+            }
+            Some(CacheSubcommand::SweepTrash { json: st_json }) => {
+                cache::run_cache_sweep_trash_command(st_json || json)?;
+            }
             None => {
                 let output = cache::collect_cache_output()?;
                 if json {

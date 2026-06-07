@@ -13,6 +13,7 @@ use crate::{cached_active_zccache, cached_active_zccache_runtime, JSON_SCHEMA_VE
 use serde::Serialize;
 
 mod install;
+mod release_worktree;
 mod report;
 mod session;
 mod trim;
@@ -22,6 +23,9 @@ pub(super) use crate::zccache_lifecycle::{
     ZCCACHE_ANALYZE_NOTE_LIMIT,
 };
 pub(crate) use install::run_install_zccache;
+pub(crate) use release_worktree::{
+    run_cache_release_worktree_command, run_cache_sweep_trash_command,
+};
 pub(crate) use report::run_cache_report_command;
 pub(crate) use session::{
     run_cache_flush_command, run_cache_shutdown_command, run_session_end_command,
