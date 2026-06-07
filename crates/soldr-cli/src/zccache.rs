@@ -1140,13 +1140,13 @@ mod tests {
             resolve_private_zccache_daemon_name(
                 None,
                 std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.11.18/zccache"),
+                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.11.20/zccache"),
                 std::path::Path::new("/tmp/cache-cold/cache/zccache"),
             ),
             resolve_private_zccache_daemon_name(
                 None,
                 std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.11.18/zccache"),
+                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.11.20/zccache"),
                 std::path::Path::new("/tmp/cache-warm/cache/zccache"),
             ),
             "managed zccache binaries under different SOLDR_CACHE_DIR roots must hash by runtime identity, not absolute path",
