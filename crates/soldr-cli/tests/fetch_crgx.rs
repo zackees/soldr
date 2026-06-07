@@ -13,6 +13,19 @@ use soldr_cli::fetch::{fetch_tool, VersionSpec};
 async fn fetch_crgx_and_run() {
     const CRGX_VERSION: &str = "0.1.0";
 
+    // #692: upstream crgx 0.1.0 publishes Linux x64/aarch64/musl,
+    // macOS x64/aarch64, and Windows x64 assets -- but NOT a Windows
+    // ARM64 (aarch64-pc-windows-msvc) asset. The failing run logs the
+    // full asset list. Skip on Windows ARM64 until upstream ships one;
+    // the rest of the matrix still exercises the fetch chain.
+    if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        eprintln!(
+            "skipping fetch_crgx_and_run on aarch64-pc-windows-msvc: \
+             upstream crgx {CRGX_VERSION} has no Windows ARM64 asset (see #692)"
+        );
+        return;
+    }
+
     // Fetch a pinned crgx release for the current platform.
     let result = fetch_tool("crgx", &VersionSpec::Exact(CRGX_VERSION.into()))
         .await
