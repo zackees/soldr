@@ -87,7 +87,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.11.14";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.11.18";
 // After the Wave 7 monocrate rename in zccache (`zccache-monocrate` -> `zccache`),
 // all three native binaries (`zccache`, `zccache-daemon`, `zccache-fp`) are
 // `[[bin]]` targets inside the umbrella `zccache` crate on crates.io. The
