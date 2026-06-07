@@ -974,6 +974,39 @@ pub(crate) enum CacheSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Remove a worktree-like directory robustly across Windows file-
+    /// lock races with long-lived caching daemons (zccache,
+    /// rust-analyzer). See soldr#710 for design.
+    ///
+    /// Tier 1: try inline `remove_dir_all`. POSIX always wins here
+    /// (delete-on-close semantics); Windows wins in the no-handle case.
+    /// Tier 2 (Windows fallback): on EACCES/EBUSY, atomically rename
+    /// to a per-volume trash dir (`~/.soldr/trash-<volume>/<id>/`) and
+    /// return immediately. Run `soldr cache sweep-trash` later (or
+    /// from a periodic hook) to reclaim the bytes once the daemon
+    /// idles.
+    ///
+    /// Intended consumers: the `clud-pr` skill's worktree teardown
+    /// step; CI scripts that tear down per-PR build dirs.
+    #[command(name = "release-worktree")]
+    ReleaseWorktree {
+        /// Path to remove (typically a `.claude/worktrees/<branch>/`
+        /// directory).
+        path: std::path::PathBuf,
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Recursively delete every entry under `~/.soldr/trash-*/` that
+    /// can currently be deleted. Per-entry failures are tolerated
+    /// (daemon may still hold handles); re-run after the daemon idles
+    /// to reclaim the rest. Pair with `release-worktree`.
+    #[command(name = "sweep-trash")]
+    SweepTrash {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Trim profile presets for `cache trim-target`. Local keeps everything
