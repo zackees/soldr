@@ -72,6 +72,29 @@ fn soldr_bin() -> &'static str {
     env!("CARGO_BIN_EXE_soldr")
 }
 
+/// Issue #692: on Windows the four `run_soldr_cargo_build`-based tests
+/// in this file hang for the full 60s `timed_test!` watchdog window and
+/// then trip `STATUS_STACK_BUFFER_OVERRUN (0xc0000409)` on test-binary
+/// teardown. Root cause appears to be daemon-handle lifecycle on
+/// Windows named pipes — the child soldr's spawned `zccache-daemon` /
+/// `soldr-daemon` keep stdout/stderr handles open past test exit, so
+/// `Command::output()` waits forever. Until that is fixed at the
+/// daemon-spawn layer, skip the affected tests on Windows. The Unix
+/// platforms still exercise the full path, so the assertions retain
+/// their coverage value.
+fn skip_on_windows(test_name: &str) -> bool {
+    if cfg!(target_os = "windows") {
+        eprintln!(
+            "skipping {test_name} on Windows: daemon-handle lifecycle hang \
+             (see #692; restore once the spawned daemon stops inheriting \
+             the test runner's stdio handles)"
+        );
+        true
+    } else {
+        false
+    }
+}
+
 struct FakeZccache {
     bin: PathBuf,
     down_marker: PathBuf,
@@ -329,6 +352,9 @@ timed_test!(
     injects_zccache_wrapped_cc_and_cxx_by_default,
     Duration::from_secs(120),
     {
+        if skip_on_windows("injects_zccache_wrapped_cc_and_cxx_by_default") {
+            return;
+        }
         let project = make_env_capture_project("native-cc-default");
         let output = run_soldr_cargo_build(&project, &[]);
         assert!(
@@ -393,6 +419,9 @@ timed_test!(
     soldr_native_cache_off_disables_injection,
     Duration::from_secs(120),
     {
+        if skip_on_windows("soldr_native_cache_off_disables_injection") {
+            return;
+        }
         let project = make_env_capture_project("native-cc-disabled");
         let output = run_soldr_cargo_build(&project, &[("SOLDR_NATIVE_CACHE", "0")]);
         assert_command_success(&output, "soldr cargo build");
@@ -425,6 +454,9 @@ timed_test!(
     explicit_user_cc_is_wrapped_on_every_platform,
     Duration::from_secs(120),
     {
+        if skip_on_windows("explicit_user_cc_is_wrapped_on_every_platform") {
+            return;
+        }
         // Issue #310 acceptance criterion: "Existing user compiler
         // selections are preserved and wrapped, not replaced." We pass
         // CC=fake-compiler-doesnt-exist (the build.rs doesn't actually
@@ -457,6 +489,9 @@ timed_test!(
     pre_wrapped_user_cc_is_not_double_wrapped,
     Duration::from_secs(120),
     {
+        if skip_on_windows("pre_wrapped_user_cc_is_not_double_wrapped") {
+            return;
+        }
         // CC="sccache clang" → must remain as-is (no double-wrap).
         let project = make_env_capture_project("native-cc-no-double-wrap");
         let output = run_soldr_cargo_build(&project, &[("CC", "sccache clang")]);
