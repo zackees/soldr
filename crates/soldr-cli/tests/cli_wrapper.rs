@@ -89,8 +89,19 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // #692: the MSVC target soldr forces is host-arch-dependent
+    // (CLAUDE.md: "Default to `x86_64-pc-windows-msvc` (or aarch64)").
+    // On a Windows ARM64 runner soldr correctly picks
+    // `aarch64-pc-windows-msvc`, so we have to look in the matching
+    // sub-directory under target/. Hardcoding `x86_64-pc-windows-msvc`
+    // broke ci.yml on the Windows ARM64 job.
+    let host_msvc_triple = if cfg!(target_arch = "aarch64") {
+        "aarch64-pc-windows-msvc"
+    } else {
+        "x86_64-pc-windows-msvc"
+    };
     let artifact = target_dir
-        .join("x86_64-pc-windows-msvc")
+        .join(host_msvc_triple)
         .join("debug")
         .join("windows-msvc-default.exe");
     assert!(
