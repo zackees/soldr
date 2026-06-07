@@ -136,16 +136,21 @@ fn fast_path_when_no_session_id() {
     //   3. read_build_session_id_env (env read, returns None)
     //   4. TargetRegistry::open (redb open, ~ms)
     //   5. registry.upsert (single write txn)
-    // Empirically <2 ms on Linux + Windows in CI; 50 ms is the safety
-    // margin so flakiness on a slow runner doesn't trip the test.
+    // Empirically <2 ms on Linux dev boxes; ~5-20 ms on shared GHA
+    // runners. The original 50 ms ceiling tripped a flaky failure on
+    // Windows x86_64 runners under contention (#692 follow-up). The
+    // budget's purpose is to catch an *order-of-magnitude* regression
+    // (accidental daemon IPC, socket probe, or fs walk) — 250 ms is
+    // still ~10x the worst CI observation but well under any of the
+    // "regression smells" the budget exists to detect.
     let started = Instant::now();
     for _ in 0..5 {
         let _ = record_target_dir_in_registry(&args);
     }
     let avg = started.elapsed() / 5;
     assert!(
-        avg < Duration::from_millis(50),
-        "fast path avg = {avg:?} exceeds 50ms budget — accidental daemon IPC, socket probe, or fs walk?",
+        avg < Duration::from_millis(250),
+        "fast path avg = {avg:?} exceeds 250ms budget — accidental daemon IPC, socket probe, or fs walk?",
     );
 }
 

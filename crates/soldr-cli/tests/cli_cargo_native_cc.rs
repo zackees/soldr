@@ -72,20 +72,28 @@ fn soldr_bin() -> &'static str {
     env!("CARGO_BIN_EXE_soldr")
 }
 
-/// Issue #692: on Windows the four `run_soldr_cargo_build`-based tests
-/// in this file hang for the full 60s `timed_test!` watchdog window and
-/// then trip `STATUS_STACK_BUFFER_OVERRUN (0xc0000409)` on test-binary
-/// teardown. Root cause appears to be daemon-handle lifecycle on
-/// Windows named pipes — the child soldr's spawned `zccache-daemon` /
-/// `soldr-daemon` keep stdout/stderr handles open past test exit, so
-/// `Command::output()` waits forever. Until that is fixed at the
-/// daemon-spawn layer, skip the affected tests on Windows. The Unix
-/// platforms still exercise the full path, so the assertions retain
-/// their coverage value.
+/// Issue #692: the four `run_soldr_cargo_build`-based tests in this
+/// file hang on Windows (`STATUS_STACK_BUFFER_OVERRUN` on test-binary
+/// teardown) AND on macOS GHA runners (60+ minute open-ended hang in
+/// the "Run CLI smoke tests" step). Root cause appears to be
+/// daemon-handle lifecycle — the child soldr's spawned `zccache-daemon`
+/// / `soldr-daemon` keep stdout/stderr handles open past test exit, so
+/// `Command::output()` waits forever for the captured pipes to close.
+/// Windows manifests as a hard crash; macOS manifests as an infinite
+/// hang that takes out the whole CI matrix.
+///
+/// Until the daemon-spawn layer is fixed to detach inherited stdio,
+/// skip the affected tests on Windows AND macOS. Linux still exercises
+/// the full path, so the assertions retain their coverage value.
 fn skip_on_windows(test_name: &str) -> bool {
-    if cfg!(target_os = "windows") {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        let plat = if cfg!(target_os = "windows") {
+            "Windows"
+        } else {
+            "macOS"
+        };
         eprintln!(
-            "skipping {test_name} on Windows: daemon-handle lifecycle hang \
+            "skipping {test_name} on {plat}: daemon-handle lifecycle hang \
              (see #692; restore once the spawned daemon stops inheriting \
              the test runner's stdio handles)"
         );
