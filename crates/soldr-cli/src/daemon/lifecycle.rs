@@ -46,12 +46,7 @@ pub fn read_pid_file(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
 /// running exe stem looks like a soldr-daemon. Returns the PID on
 /// success, None on any mismatch / missing file.
 pub fn is_live(paths: &SoldrPaths) -> Option<u32> {
-    let (pid, _) = read_pid_file(paths)?;
-    if pid_is_alive(pid) && pid_exe_stem_matches(pid, "soldr-daemon") {
-        Some(pid)
-    } else {
-        None
-    }
+    crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths).map(|handle| handle.pid())
 }
 
 /// Write the PID file for the running daemon. Overwrites any stale
@@ -240,7 +235,7 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(unix)]
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a well-defined liveness probe — no
     // signal is delivered, the syscall just returns 0 if the pid
     // exists and the caller has permission to signal it.
@@ -249,7 +244,7 @@ fn pid_is_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 #[allow(clippy::upper_case_acronyms, non_snake_case)]
-fn pid_is_alive(pid: u32) -> bool {
+pub(crate) fn pid_is_alive(pid: u32) -> bool {
     use std::os::windows::raw::HANDLE;
     type DWORD = u32;
     type BOOL = i32;
@@ -271,7 +266,7 @@ fn pid_is_alive(pid: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
+pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
     let link = PathBuf::from(format!("/proc/{pid}/exe"));
     match fs::read_link(&link) {
         Ok(p) => p
@@ -288,7 +283,7 @@ fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
 
 #[cfg(windows)]
 #[allow(clippy::upper_case_acronyms, non_snake_case)]
-fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
+pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
     use std::os::windows::raw::HANDLE;
     type DWORD = u32;
     type BOOL = i32;
