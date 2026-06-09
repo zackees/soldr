@@ -9,10 +9,35 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+struct EnvScope {
+    key: &'static str,
+    prior: Option<OsString>,
+}
+
+impl EnvScope {
+    fn set(key: &'static str, value: &str) -> Self {
+        let prior = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, prior }
+    }
+}
+
+impl Drop for EnvScope {
+    fn drop(&mut self) {
+        match &self.prior {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -162,6 +187,34 @@ fn start_status_stop_round_trip() {
         "pid file left behind at {}",
         pid_path.display()
     );
+}
+
+#[test]
+fn running_process_disable_uses_direct_daemon_liveness() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let daemon = Daemon::spawn();
+    let cache_root = daemon.cache_root.clone();
+    let home_root = daemon.home_root.clone();
+
+    let status = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
+    assert!(
+        status.status.success(),
+        "soldr daemon status failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let body: Value = serde_json::from_slice(&status.stdout).expect("status json");
+    let pid = body["pid"].as_u64().expect("status carries pid");
+
+    let _env = EnvScope::set("RUNNING_PROCESS_DISABLE", "1");
+    let paths = SoldrPaths::with_root(cache_root);
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::is_live(&paths).map(u64::from),
+        Some(pid),
+        "RUNNING_PROCESS_DISABLE=1 should bypass BackendHandle but keep direct daemon liveness",
+    );
+
+    drop(daemon);
 }
 
 #[test]

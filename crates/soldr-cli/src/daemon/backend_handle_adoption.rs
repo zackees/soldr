@@ -31,6 +31,7 @@ const BACKEND_HANDLE_PROBE_NONCE_BYTES: usize = 32;
 
 pub(crate) const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 
 pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHandleStatus =
     RunningProcessBackendHandleStatus {
@@ -78,6 +79,10 @@ impl SoldrDaemonBackendHandle {
     pub(crate) fn is_alive(&self) -> bool {
         pid_is_alive(self.pid) && pid_exe_stem_matches(self.pid, SOLDR_DAEMON_SERVICE_NAME)
     }
+}
+
+pub(crate) fn running_process_disabled() -> bool {
+    std::env::var(RUNNING_PROCESS_DISABLE_ENV).is_ok_and(|value| value == "1")
 }
 
 pub(crate) fn probe_soldr_daemon(paths: &SoldrPaths) -> Option<SoldrDaemonBackendHandle> {
@@ -294,6 +299,27 @@ mod tests {
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
         assert!(status.remaining_gate.contains("three-OS"));
+    }
+
+    #[test]
+    fn running_process_disable_requires_exact_one() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+        let prior = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
+
+        std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV);
+        assert!(!running_process_disabled());
+
+        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "true");
+        assert!(!running_process_disabled());
+
+        std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, "1");
+        assert!(running_process_disabled());
+
+        match prior {
+            Some(value) => std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, value),
+            None => std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV),
+        }
     }
 
     #[test]

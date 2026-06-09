@@ -46,7 +46,37 @@ pub fn read_pid_file(paths: &SoldrPaths) -> Option<(u32, PathBuf)> {
 /// running exe stem looks like a soldr-daemon. Returns the PID on
 /// success, None on any mismatch / missing file.
 pub fn is_live(paths: &SoldrPaths) -> Option<u32> {
+    is_live_with_running_process_disabled(
+        paths,
+        crate::daemon::backend_handle_adoption::running_process_disabled(),
+    )
+}
+
+pub(crate) fn is_live_with_running_process_disabled(
+    paths: &SoldrPaths,
+    running_process_disabled: bool,
+) -> Option<u32> {
+    if running_process_disabled {
+        return direct_pid_file_live(paths);
+    }
+
     crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths).map(|handle| handle.pid())
+}
+
+pub(crate) fn direct_pid_file_live(paths: &SoldrPaths) -> Option<u32> {
+    direct_pid_file_live_for_stem(
+        paths,
+        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+    )
+}
+
+fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Option<u32> {
+    let (pid, _exe_path) = read_pid_file(paths)?;
+    if pid_is_alive(pid) && pid_exe_stem_matches(pid, expected_stem) {
+        Some(pid)
+    } else {
+        None
+    }
 }
 
 /// Write the PID file for the running daemon. Overwrites any stale
@@ -149,7 +179,9 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         None => daemon_src,
     };
 
-    let _ = crate::daemon::service_definition::install_service_definition(&relocated);
+    if !crate::daemon::backend_handle_adoption::running_process_disabled() {
+        let _ = crate::daemon::service_definition::install_service_definition(&relocated);
+    }
     spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
 }
 
@@ -333,6 +365,29 @@ mod spawn_lock_tests {
         // After release, the next call gets the lock back.
         let third = acquire_spawn_lock(&paths).expect("third acquire after release");
         drop(third);
+    }
+
+    #[test]
+    fn direct_pid_file_live_accepts_expected_process_stem() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        let current_exe = std::env::current_exe().expect("current exe");
+        let current_stem = current_exe
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .expect("current exe stem")
+            .to_string();
+        std::fs::write(
+            daemon_pid_path(&paths),
+            format!("{}\n{}\n", std::process::id(), current_exe.display()),
+        )
+        .expect("pid file");
+
+        assert_eq!(
+            direct_pid_file_live_for_stem(&paths, &current_stem),
+            Some(std::process::id())
+        );
     }
 
     #[test]
