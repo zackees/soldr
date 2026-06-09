@@ -18,8 +18,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 pub(crate) const SOLDR_DAEMON_SERVICE_DEF_DEFERRED: &[&str] = &[
+    "package/postinstall servicedef auto-install coverage",
     "broker-client connect_to_backend wiring",
-    "RUNNING_PROCESS_DISABLE escape-hatch enforcement",
     "default-on rollout and escape-hatch removal",
 ];
 
@@ -161,6 +161,9 @@ mod tests {
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
             .any(|item| item.contains("connect_to_backend")));
+        assert!(!SOLDR_DAEMON_SERVICE_DEF_DEFERRED
+            .iter()
+            .any(|item| item.contains("RUNNING_PROCESS_DISABLE")));
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
             .any(|item| item.contains("escape-hatch")));
