@@ -261,7 +261,21 @@ impl ZccacheLifecycle {
 
         let args = session_start_args(&options, &self.cache_dir, self.private_daemon.as_ref());
 
-        let session_json = self.run_strings(&args)?;
+        let session_json = match self.run_strings(&args) {
+            Ok(output) => output,
+            Err(err) if zccache_session_start_lost_connection(&err) => {
+                eprintln!(
+                    "soldr: zccache session-start lost connection to daemon; restarting and retrying once"
+                );
+                self.start_with_recovery()?;
+                self.run_strings(&args).map_err(|retry_err| {
+                    SoldrError::Other(format!(
+                        "{retry_err}\ninitial zccache session-start failure before retry: {err}"
+                    ))
+                })?
+            }
+            Err(err) => return Err(err),
+        };
         let session_id = crate::cache_lib::parse_zccache_session_id(&session_json.stdout)
             .ok_or_else(|| {
                 SoldrError::Other(format!(
@@ -854,6 +868,16 @@ pub(crate) fn zccache_session_already_ended(output: &Output) -> bool {
         || stderr.contains("unknown session")
 }
 
+fn zccache_session_start_lost_connection(err: &SoldrError) -> bool {
+    let SoldrError::Other(message) = err else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    message.contains("zccache session-start failed")
+        && message.contains("lost connection to daemon")
+        && (message.contains("no response") || message.contains("no response received"))
+}
+
 pub(crate) fn zccache_json_flag_unsupported(output: &Output) -> bool {
     let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
     stderr.contains("unexpected argument")
@@ -1049,6 +1073,28 @@ mod tests {
             "permission denied",
             1
         )));
+    });
+
+    crate::timed_test!(session_start_lost_connection_detector_is_narrow, {
+        let observed = SoldrError::Other(
+            "zccache session-start failed: zccache[err][R]: lost connection to daemon (no response). The daemon may have crashed or been killed mid-request".to_string(),
+        );
+        assert!(zccache_session_start_lost_connection(&observed));
+
+        let unrelated_lost_connection = SoldrError::Other(
+            "zccache status failed: zccache[err][R]: lost connection to daemon (no response)"
+                .to_string(),
+        );
+        assert!(!zccache_session_start_lost_connection(
+            &unrelated_lost_connection
+        ));
+
+        let unrelated_session_start = SoldrError::Other(
+            "zccache session-start failed: zccache error: unknown session: abc".to_string(),
+        );
+        assert!(!zccache_session_start_lost_connection(
+            &unrelated_session_start
+        ));
     });
 
     crate::timed_test!(daemon_already_stopped_detects_common_states, {
