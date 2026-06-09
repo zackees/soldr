@@ -18,9 +18,11 @@ fs2 = { workspace = true }
 hex = { workspace = true }
 jwalk = { workspace = true }
 prost = { workspace = true }
+prost14 = { package = "prost", version = "0.14" }
 rayon = { workspace = true }
 redb = { workspace = true }
 reqwest = { workspace = true }
+running-process = { git = "https://github.com/zackees/running-process", rev = "04f6387c3cf5b2a984cd4bbba8a3e6f177d43a89", default-features = false, features = ["client"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

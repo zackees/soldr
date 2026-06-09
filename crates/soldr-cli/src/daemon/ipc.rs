@@ -115,9 +115,26 @@ where
     R: tokio::io::AsyncRead + Unpin,
     T: WireBody,
 {
+    read_frame_async_with_prefix(r, &[]).await
+}
+
+pub async fn read_frame_async_with_prefix<R, T>(r: &mut R, prefix: &[u8]) -> io::Result<T>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    T: WireBody,
+{
     use tokio::io::AsyncReadExt;
+    if prefix.len() > HEADER_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "frame prefix exceeds header length",
+        ));
+    }
     let mut header = [0u8; HEADER_BYTES];
-    r.read_exact(&mut header).await?;
+    header[..prefix.len()].copy_from_slice(prefix);
+    if prefix.len() < HEADER_BYTES {
+        r.read_exact(&mut header[prefix.len()..]).await?;
+    }
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
     let version = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
     if version != PROTOCOL_VERSION {

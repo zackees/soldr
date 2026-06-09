@@ -10,8 +10,11 @@ use crate::cache_lib::daemon_sock_path;
 use crate::cache_lib::target_registry::TargetRegistry;
 use crate::cache_lib::{data_db_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
+use crate::daemon::backend_handle_adoption::{
+    current_daemon_process, handle_backend_handle_probe_async, is_backend_handle_probe_prefix,
+};
 use crate::daemon::db;
-use crate::daemon::ipc::{read_frame_async, write_frame_async};
+use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
     BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink, PROTOCOL_VERSION,
@@ -89,6 +92,10 @@ struct State {
     /// so cook-artifact path construction does not need to re-probe
     /// HOME/SOLDR_CACHE_DIR on every IPC request.
     paths: SoldrPaths,
+    /// Identity returned to `running-process` BackendHandle endpoint
+    /// probes. The client-side liveness check only trusts the PID
+    /// file after this endpoint response matches.
+    daemon_identity: running_process::broker::backend_handle::DaemonProcess,
     /// Linked zccache runtime kept in memory for fast `Status` replies;
     /// also persisted to redb so a daemon restart can resume shutdown.
     linked_zccache: std::sync::Mutex<Option<ZccacheDaemonLink>>,
@@ -184,9 +191,13 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // Resume any linked zccache identity persisted across daemon restarts.
     let resumed_link = db::get_linked_zccache(&db_path).ok().flatten();
     let start_instant = Instant::now();
+    let idle_timeout_secs = u32::try_from(opts.idle_timeout.as_secs()).ok();
+    let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
+        .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
     let state = Arc::new(State {
         db_path,
         paths: paths.clone(),
+        daemon_identity,
         linked_zccache: std::sync::Mutex::new(resumed_link),
         start_instant,
         request_count: AtomicU64::new(0),
@@ -303,7 +314,19 @@ async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Resu
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    let req: Request = match read_frame_async(&mut stream).await {
+    use tokio::io::AsyncReadExt;
+
+    let mut prefix = [0_u8; 5];
+    if stream.read_exact(&mut prefix).await.is_err() {
+        return Ok(());
+    }
+    if is_backend_handle_probe_prefix(&prefix) {
+        let _ =
+            handle_backend_handle_probe_async(&mut stream, &prefix, &state.daemon_identity).await;
+        return Ok(());
+    }
+
+    let req: Request = match read_frame_async_with_prefix(&mut stream, &prefix).await {
         Ok(r) => r,
         Err(_) => return Ok(()),
     };
