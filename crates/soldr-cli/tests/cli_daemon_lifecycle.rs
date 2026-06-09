@@ -11,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
+use soldr_cli::core::SoldrPaths;
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -136,6 +137,12 @@ fn start_status_stop_round_trip() {
     assert_eq!(body["running"].as_bool(), Some(true));
     let pid = body["pid"].as_u64().expect("status carries pid");
     assert!(pid > 0);
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::is_live(&paths).map(u64::from),
+        Some(pid),
+        "lifecycle::is_live must verify the daemon through running-process BackendHandle",
+    );
 
     let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
     assert!(stop.status.success(), "stop failed: {stop:?}");

@@ -76,29 +76,27 @@ pub fn release_worktree(paths: &SoldrPaths, target: &Path) -> Result<ReleaseOutc
 
     // Tier 1.
     match std::fs::remove_dir_all(&canonical_or_self) {
-        Ok(()) => {
-            return Ok(ReleaseOutcome::Removed {
-                path: canonical_or_self,
-            });
-        }
+        Ok(()) => Ok(ReleaseOutcome::Removed {
+            path: canonical_or_self,
+        }),
         Err(err) if is_busy_or_permission_error(&err) => {
             // Fall through to Tier 2.
             let tier1_error = err.to_string();
-            return tier2_rename_to_trash(paths, &canonical_or_self, tier1_error);
+            tier2_rename_to_trash(paths, &canonical_or_self, tier1_error)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             // Already gone — treat as success, no work needed.
-            return Ok(ReleaseOutcome::Removed {
+            Ok(ReleaseOutcome::Removed {
                 path: canonical_or_self,
-            });
+            })
         }
         Err(err) => {
             // Some other error (read-only fs, broken symlink, etc.) —
             // don't try Tier 2, it'd just fail too. Surface.
-            return Err(SoldrError::Other(format!(
+            Err(SoldrError::Other(format!(
                 "release-worktree: tier-1 remove_dir_all({}) failed: {err}",
                 canonical_or_self.display()
-            )));
+            )))
         }
     }
 }
