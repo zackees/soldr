@@ -110,10 +110,10 @@ pub enum Request {
     LinkZccache { link: ZccacheDaemonLink },
     /// Request-response: probe the cook-artifact index for the given
     /// `(recipe_hash, target_triple, profile, channel, rustc_version)`
-    /// tuple. On hit returns [`Response::CookHit`]; on miss returns
-    /// [`Response::CookMiss`] with up to N previous recipe hashes
-    /// recorded under the same `(origin, triple, profile, channel,
-    /// rustc)` matrix.
+    /// tuple. On exact hit returns [`Response::CookHit`] with
+    /// `exact_recipe_match = true`. On exact miss, the daemon may
+    /// return a same-origin fallback [`Response::CookHit`] ranked by
+    /// `branch_lineage`; otherwise it returns [`Response::CookMiss`].
     CookLookup {
         recipe_hash: [u8; 32],
         target_triple: String,
@@ -121,6 +121,7 @@ pub enum Request {
         channel: String,
         rustc_version: String,
         origin_url_normalized: Option<String>,
+        branch_lineage: Vec<String>,
     },
     /// Request-response: register a cook artifact written by PR 2's
     /// `soldr cook` worker at `~/.soldr/cache/cook/<sha256>.tar.zst`.
@@ -134,6 +135,7 @@ pub enum Request {
         sha256: [u8; 32],
         size_bytes: u64,
         origin_url_normalized: Option<String>,
+        branch_name: Option<String>,
         cook_cmd_summary: String,
     },
     /// Fire-and-forget: bump the `last_used_unix_ms` field for the
@@ -150,14 +152,19 @@ pub enum Response {
     /// Reply to [`Request::CookLookup`] on hit. Carries the on-disk
     /// path to the `<sha256>.tar.zst` artifact, the recorded sha256
     /// (PR 3 verifies it before extraction), the byte size for
-    /// hydration reporting, and the recorded origin URL hint.
+    /// hydration reporting, the recorded origin URL hint, and whether
+    /// the hit was exact or a same-origin fallback seed.
     CookHit {
         sha256: [u8; 32],
         path: String,
         size_bytes: u64,
         origin_url_normalized: Option<String>,
+        matched_recipe_hash: Option<[u8; 32]>,
+        exact_recipe_match: bool,
+        branch_name: Option<String>,
     },
-    /// Reply to [`Request::CookLookup`] on miss. `previous_origin_recipe_hashes`
+    /// Reply to [`Request::CookLookup`] when neither an exact nor
+    /// fallback artifact is available. `previous_origin_recipe_hashes`
     /// is a diagnostic: at most 8 prior recipe hashes recorded under
     /// the same `(origin, triple, profile, channel, rustc)` matrix,
     /// newest-first.

@@ -42,6 +42,46 @@ pub fn origin_url(workspace_root: &Path) -> Option<String> {
     Some(normalize_origin_url(trimmed))
 }
 
+/// Return the current checked-out branch name, or `None` for detached
+/// HEAD / no-git workspaces.
+pub fn current_branch_name(workspace_root: &Path) -> Option<String> {
+    let repo_root = find_git_worktree_root(workspace_root)?;
+    let raw = run_git(&repo_root, ["branch", "--show-current"])?;
+    let branch = raw.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return None;
+    }
+    Some(branch.to_string())
+}
+
+/// Branch preference list for same-origin cook fallback hydration.
+///
+/// Exact recipe hits do not use this. On a recipe miss, the daemon may
+/// seed `target/` from a compatible same-repo artifact. Ranking prefers
+/// the current branch first, then common mainline branches. This
+/// captures the dominant `main -> feature` flow without network access.
+pub fn branch_lineage(workspace_root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(branch) = current_branch_name(workspace_root) {
+        push_unique(&mut out, branch);
+    }
+    for branch in ["main", "master", "trunk", "develop"] {
+        push_unique(&mut out, branch.to_string());
+    }
+    out
+}
+
+fn push_unique(out: &mut Vec<String>, value: String) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if out.iter().any(|existing| existing == trimmed) {
+        return;
+    }
+    out.push(trimmed.to_string());
+}
+
 /// Canonicalize a git remote URL for use as a cross-repo prefetch
 /// hint. The output is purely a hint — the authoritative cache key
 /// is the recipe hash — so we lean conservative: best-effort lower-
@@ -239,5 +279,21 @@ mod tests {
             normalize_origin_url("file:///srv/git/repo.git"),
             "file:///srv/git/repo"
         );
+    });
+
+    crate::timed_test!(branch_lineage_dedups_current_main, {
+        let dir = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(["init", "-q", "-b", "main"])
+            .status()
+            .expect("git init");
+        assert!(status.success());
+
+        let lineage = branch_lineage(dir.path());
+        assert_eq!(lineage.first().map(String::as_str), Some("main"));
+        assert_eq!(lineage.iter().filter(|b| b.as_str() == "main").count(), 1);
+        assert!(lineage.iter().any(|b| b == "master"));
     });
 }

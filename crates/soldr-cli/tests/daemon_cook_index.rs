@@ -192,6 +192,7 @@ timed_test!(
                 path,
                 size_bytes,
                 origin_url_normalized,
+                ..
             } => {
                 assert_eq!(sha256, [0xAAu8; 32]);
                 assert_eq!(size_bytes, 4_096);
@@ -210,10 +211,12 @@ timed_test!(
 );
 
 timed_test!(
-    cook_lookup_miss_reports_drift_recipe_hashes,
+    cook_lookup_recipe_miss_falls_back_to_newest_same_origin_artifact,
     Duration::from_secs(60),
     {
-        if skip_unless_in_container("cook_lookup_miss_reports_drift_recipe_hashes") {
+        if skip_unless_in_container(
+            "cook_lookup_recipe_miss_falls_back_to_newest_same_origin_artifact",
+        ) {
             return;
         }
         let cache_root = unique_temp_dir("drift-cache");
@@ -239,6 +242,7 @@ timed_test!(
             "cook a".to_string(),
         )
         .expect("CookRecord a");
+        std::thread::sleep(Duration::from_millis(2));
         cook_record(
             &sock,
             [6u8; 32],
@@ -266,17 +270,17 @@ timed_test!(
         .expect("CookLookup");
 
         match outcome {
-            CookLookupOutcome::Miss {
-                previous_origin_recipe_hashes,
+            CookLookupOutcome::Hit {
+                sha256,
+                matched_recipe_hash,
+                exact_recipe_match,
+                ..
             } => {
-                assert_eq!(previous_origin_recipe_hashes.len(), 2);
-                // newest-first order driven by last_used_unix_ms; the
-                // two records were upserted in (5,6) order so 6 is
-                // most recent and appears first.
-                assert_eq!(previous_origin_recipe_hashes[0], [6u8; 32]);
-                assert_eq!(previous_origin_recipe_hashes[1], [5u8; 32]);
+                assert_eq!(sha256, [0x66u8; 32]);
+                assert_eq!(matched_recipe_hash, Some([6u8; 32]));
+                assert!(!exact_recipe_match);
             }
-            CookLookupOutcome::Hit { .. } => panic!("expected CookMiss, got CookHit"),
+            CookLookupOutcome::Miss { .. } => panic!("expected fallback CookHit, got CookMiss"),
         }
     }
 );

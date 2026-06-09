@@ -88,6 +88,7 @@ message WireCookLookup {
   string channel = 4;
   string rustc_version = 5;
   optional string origin_url_normalized = 6;
+  repeated string branch_lineage = 7;
 }
 
 message WireCookRecord {
@@ -100,6 +101,7 @@ message WireCookRecord {
   uint64 size_bytes = 7;
   optional string origin_url_normalized = 8;
   string cook_cmd_summary = 9;
+  optional string branch_name = 10;
 }
 
 message WireCookTouch {
@@ -131,6 +133,9 @@ message WireCookHit {
   string path = 2;
   uint64 size_bytes = 3;
   optional string origin_url_normalized = 4;
+  bytes matched_recipe_hash = 5;  // empty when unavailable
+  bool exact_recipe_match = 6;
+  optional string branch_name = 7;
 }
 
 message WireCookMiss {
@@ -210,4 +215,5 @@ message WireCookEntry {
   uint64 last_used_unix_ms = 4;
   optional string origin_url_normalized = 5;
   string cook_cmd_summary = 6;
+  optional string branch_name = 7;
 }

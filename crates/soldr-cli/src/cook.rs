@@ -19,7 +19,8 @@ use crate::cache_lib::cook_archive::{self, cook_cache_dir, sha_abbrev, PackedCoo
 use crate::cache_lib::strip_target::{strip_target, StripTargetOptions};
 use crate::cargo_front_door;
 use crate::core::git::{
-    cargo_lock_is_gitignored, cargo_lock_is_tracked, find_git_worktree_root, origin_url,
+    cargo_lock_is_gitignored, cargo_lock_is_tracked, current_branch_name, find_git_worktree_root,
+    origin_url,
 };
 use crate::core::{
     probe_toolchain_binary, read_rust_toolchain_manifest, SoldrError, SoldrPaths, TargetTriple,
@@ -751,6 +752,7 @@ where
             )
         })?;
     let origin = origin_url(&ctx.manifest_dir);
+    let branch_name = current_branch_name(&ctx.manifest_dir);
     let profile = resolve_profile_name(args).to_string();
 
     // 3. Resolve paths under ~/.soldr/.
@@ -777,12 +779,21 @@ where
         rustc_version.clone(),
         origin.clone(),
     ) {
-        Ok(CookLookupOutcome::Hit { sha256, .. }) => {
+        Ok(CookLookupOutcome::Hit {
+            sha256,
+            matched_recipe_hash,
+            exact_recipe_match,
+            ..
+        }) => {
             // Already-cached for this exact key. Re-pack + re-record
             // anyway so the artifact bytes match the freshly built
             // target/ — a previous run might have written from a
             // sibling worktree with slightly different mtimes.
-            Some(DriftSignal::AlreadyIndexed(sha256))
+            if exact_recipe_match {
+                Some(DriftSignal::AlreadyIndexed(sha256))
+            } else {
+                matched_recipe_hash.map(DriftSignal::Drifted)
+            }
         }
         Ok(CookLookupOutcome::Miss {
             previous_origin_recipe_hashes,
@@ -807,7 +818,7 @@ where
     //    still keep the on-disk artifact for the next PR-3 hydrate
     //    attempt, but warn so the user knows sharing is one-sided.
     let cook_cmd_summary = build_cook_cmd_summary(args);
-    let register = client::cook_record(
+    let register = client::cook_record_with_branch(
         &sock,
         recipe_hash,
         triple.clone(),
@@ -817,6 +828,7 @@ where
         packed.sha256,
         packed.size_bytes,
         origin.clone(),
+        branch_name,
         cook_cmd_summary,
     );
     if let Err(e) = register {

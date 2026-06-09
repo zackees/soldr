@@ -22,9 +22,13 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::cache_lib::cook_archive::{
-    cook_cache_dir, extract_skip_existing, pack_cook_archive, quarantine_artifact, verify_sha256,
+    compute_recipe_hash_proxy, cook_cache_dir, extract_skip_existing, pack_cook_archive,
+    quarantine_artifact, verify_sha256,
 };
-use soldr_cli::daemon::client::{self, cook_lookup, cook_record, CookLookupOutcome};
+use soldr_cli::core::{probe_toolchain_binary, TargetTriple};
+use soldr_cli::daemon::client::{
+    self, cook_lookup, cook_record, cook_record_with_branch, CookLookupOutcome,
+};
 use soldr_cli::timed_test;
 
 const HARNESS_ENV: &str = "SOLDR_COOK_DOCKER_HARNESS";
@@ -71,6 +75,55 @@ fn soldr_daemon_bin() -> PathBuf {
         "soldr-daemon"
     };
     parent.join(stem)
+}
+
+fn soldr_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_soldr"))
+}
+
+fn run_git_in(dir: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        dir.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn run_command_success(mut command: Command, label: &str) {
+    let output = command.output().expect(label);
+    assert!(
+        output.status.success(),
+        "{label} failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+fn rustc_version_string(manifest_dir: &Path) -> String {
+    let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
+        .unwrap_or_else(|| PathBuf::from("rustc"));
+    let output = Command::new(rustc).arg("-V").output().expect("rustc -V");
+    assert!(
+        output.status.success(),
+        "rustc -V failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    String::from_utf8(output.stdout)
+        .expect("rustc -V stdout is UTF-8")
+        .lines()
+        .next()
+        .expect("rustc -V emitted a line")
+        .trim()
+        .to_string()
 }
 
 struct DaemonProc {
@@ -388,5 +441,149 @@ timed_test!(
             })
             .unwrap_or(0);
         assert_eq!(count, 0);
+    }
+);
+
+// A feature branch with a new recipe hash can still hydrate from an
+// ancestor `main` branch artifact when the origin, target, profile,
+// channel, and rustc version are compatible. This exercises the real
+// `soldr cargo build` pre-flight path in a container-local git repo.
+timed_test!(
+    feature_branch_soldr_cargo_build_hydrates_from_main_fallback,
+    Duration::from_secs(120),
+    {
+        if skip_unless_in_container("feature_branch_soldr_cargo_build_hydrates_from_main_fallback")
+        {
+            return;
+        }
+
+        let cache_root = unique_temp_dir("branch-fallback-cache");
+        let home_root = unique_temp_dir("branch-fallback-home");
+        let daemon = DaemonProc::spawn(&cache_root, &home_root);
+        let sock = daemon.sock_path();
+
+        let origin = "https://github.com/example/branch-fallback-demo";
+        let repo = unique_temp_dir("branch-fallback-repo");
+        run_git_in(&repo, &["init", "-q", "-b", "main"]);
+        run_git_in(&repo, &["config", "user.email", "cook@example.com"]);
+        run_git_in(&repo, &["config", "user.name", "cook test"]);
+        run_git_in(&repo, &["remote", "add", "origin", origin]);
+
+        write_file(
+            &repo.join("Cargo.toml"),
+            br#"[package]
+name = "branch_fallback_demo"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.soldr-test]
+marker = "main"
+"#,
+        );
+        write_file(
+            &repo.join("src").join("main.rs"),
+            b"fn main() { println!(\"branch fallback demo\"); }\n",
+        );
+        let mut generate_lock = Command::new("cargo");
+        generate_lock.arg("generate-lockfile").current_dir(&repo);
+        run_command_success(generate_lock, "cargo generate-lockfile");
+        run_git_in(&repo, &["add", "Cargo.toml", "Cargo.lock", "src/main.rs"]);
+        run_git_in(&repo, &["commit", "-q", "-m", "main"]);
+
+        let main_recipe = compute_recipe_hash_proxy(&repo).expect("main recipe hash");
+        let target_triple = TargetTriple::detect_in_dir(&repo)
+            .expect("target triple")
+            .to_string();
+        let rustc_version = rustc_version_string(&repo);
+        let channel = String::new();
+
+        let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.clone());
+        let cook_dir = cook_cache_dir(&paths);
+        std::fs::create_dir_all(&cook_dir).unwrap();
+        let artifact_root = unique_temp_dir("branch-main-artifact");
+        let debug_dir = artifact_root.join("debug");
+        let sentinel_path = Path::new("debug")
+            .join("deps")
+            .join("soldr-main-seed.rmeta");
+        write_file(
+            &debug_dir.join("deps").join("soldr-main-seed.rmeta"),
+            b"main branch synthetic artifact\n",
+        );
+        let packed = pack_cook_archive(&debug_dir, &cook_dir).expect("pack main artifact");
+
+        cook_record_with_branch(
+            &sock,
+            main_recipe,
+            target_triple,
+            "dev".to_string(),
+            channel,
+            rustc_version,
+            packed.sha256,
+            packed.size_bytes,
+            Some(origin.to_string()),
+            Some("main".to_string()),
+            "synthetic main cook".to_string(),
+        )
+        .expect("record main cook artifact");
+
+        run_git_in(&repo, &["checkout", "-q", "-b", "feature/reuse-main"]);
+        write_file(
+            &repo.join("Cargo.toml"),
+            br#"[package]
+name = "branch_fallback_demo"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata.soldr-test]
+marker = "feature"
+"#,
+        );
+        run_git_in(&repo, &["add", "Cargo.toml"]);
+        run_git_in(&repo, &["commit", "-q", "-m", "feature recipe drift"]);
+
+        let feature_recipe = compute_recipe_hash_proxy(&repo).expect("feature recipe hash");
+        assert_ne!(
+            feature_recipe, main_recipe,
+            "feature branch metadata edit must drift the recipe hash"
+        );
+        assert!(
+            !repo.join("target").join(&sentinel_path).exists(),
+            "sentinel should not exist before auto-hydrate"
+        );
+
+        let mut soldr = Command::new(soldr_bin());
+        soldr
+            .current_dir(&repo)
+            .args(["--no-cache", "cargo", "build", "--quiet"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("HOME", &home_root)
+            .env("USERPROFILE", &home_root)
+            .env("SOLDR_COOK_AUTO_HYDRATE", "1")
+            .env("SOLDR_NO_GC_TARGET", "1")
+            .env("SOLDR_TEST_FREE_DISK_BYTES", "21474836480")
+            .env("SOLDR_TEST_DISK_FREE_BYTES", "21474836480");
+        let output = soldr.output().expect("soldr cargo build");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "soldr cargo build failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("soldr cook: auto-hydrate activated"),
+            "expected auto-hydrate line\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("match=fallback"),
+            "expected branch fallback hydrate\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("branch=main"),
+            "expected fallback artifact to come from main\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            repo.join("target").join(&sentinel_path).is_file(),
+            "expected sentinel artifact to be extracted into target/"
+        );
     }
 );

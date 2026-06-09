@@ -17,7 +17,7 @@ use crate::cache_lib::cook_archive::{
     self, compute_recipe_hash_proxy, extract_skip_existing, quarantine_artifact, sha_abbrev,
     verify_sha256,
 };
-use crate::core::git::origin_url;
+use crate::core::git::{branch_lineage, origin_url};
 use crate::core::{
     probe_toolchain_binary, read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths,
     TargetTriple,
@@ -65,7 +65,8 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
     let origin = origin_url(&manifest_dir);
 
     let sock = client::default_sock_path(paths);
-    let outcome = client::cook_lookup(
+    let lineage = branch_lineage(&manifest_dir);
+    let outcome = client::cook_lookup_with_branch_lineage(
         &sock,
         recipe_hash,
         triple,
@@ -73,6 +74,7 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
         channel,
         rustc_version,
         origin,
+        lineage,
     )
     .ok()?;
 
@@ -81,6 +83,9 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
         path,
         size_bytes,
         origin_url_normalized,
+        matched_recipe_hash,
+        exact_recipe_match,
+        branch_name,
     } = outcome
     else {
         return None;
@@ -123,6 +128,9 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
         &sha256,
         size_bytes,
         origin_url_normalized.as_deref(),
+        matched_recipe_hash.as_ref(),
+        exact_recipe_match,
+        branch_name.as_deref(),
         &report,
     );
     Some(())
@@ -132,12 +140,24 @@ fn emit_hydrate_line(
     sha256: &[u8; 32],
     size_bytes: u64,
     origin_hint: Option<&str>,
+    matched_recipe_hash: Option<&[u8; 32]>,
+    exact_recipe_match: bool,
+    branch_name: Option<&str>,
     report: &cook_archive::ExtractReport,
 ) {
     let mib = size_bytes as f64 / 1024.0 / 1024.0;
     let origin = origin_hint.unwrap_or("none");
+    let match_kind = if exact_recipe_match {
+        "exact"
+    } else {
+        "fallback"
+    };
+    let matched = matched_recipe_hash
+        .map(sha_abbrev)
+        .unwrap_or_else(|| "unknown".to_string());
+    let branch = branch_name.unwrap_or("unknown");
     eprintln!(
-        "{}  sha256={}  size={mib:.1} MiB  origin-hint={origin}  (files +{} ={})",
+        "{}  sha256={}  size={mib:.1} MiB  origin-hint={origin}  match={match_kind} recipe={matched} branch={branch}  (files +{} ={})",
         green_hydrate_prefix(),
         sha_abbrev(sha256),
         report.files_written,
