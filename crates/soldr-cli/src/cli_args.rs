@@ -421,6 +421,17 @@ pub(crate) enum DaemonSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// Write soldr-daemon's running-process service definition.
+    #[command(name = "install-servicedef")]
+    InstallServiceDef {
+        /// Override the soldr-daemon binary path. Defaults to a sibling
+        /// of the current soldr executable.
+        #[arg(long, value_name = "PATH")]
+        daemon_binary: Option<std::path::PathBuf>,
+        /// Emit the installed path and deferred broker-adoption items as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Query recorded build sessions.
     Builds {
         #[command(subcommand)]

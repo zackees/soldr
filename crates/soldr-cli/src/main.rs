@@ -1010,6 +1010,35 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
             }
             Err(e) => Err(SoldrError::Other(format!("daemon status failed: {e:?}"))),
         },
+        DaemonSubcommand::InstallServiceDef {
+            daemon_binary,
+            json,
+        } => {
+            let installed = match daemon_binary {
+                Some(path) => crate::daemon::service_definition::install_service_definition(&path),
+                None => crate::daemon::service_definition::install_default_service_definition(),
+            }
+            .map_err(|e| SoldrError::Other(format!("failed to install servicedef: {e}")))?;
+            if json {
+                let payload = serde_json::json!({
+                    "path": installed.path,
+                    "service_name": installed.definition.service_name,
+                    "binary_path": installed.definition.binary_path,
+                    "per_version_binary_dir": installed.definition.per_version_binary_dir,
+                    "min_version": installed.definition.min_version,
+                    "version_allow_list": installed.definition.version_allow_list,
+                    "isolation": "SHARED_BROKER",
+                    "deferred": crate::daemon::service_definition::SOLDR_DAEMON_SERVICE_DEF_DEFERRED,
+                });
+                println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+            } else {
+                println!(
+                    "soldr-daemon servicedef installed at {}",
+                    installed.path.display()
+                );
+            }
+            Ok(())
+        }
         DaemonSubcommand::Builds { command } => match command {
             DaemonBuildsSubcommand::List {
                 limit,

@@ -116,7 +116,7 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 /// before the socket is ready.
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
-    let daemon_src = sibling_daemon_binary(&current);
+    let daemon_src = crate::daemon::service_definition::sibling_daemon_binary(&current);
     if !daemon_src.exists() {
         return Err(LifecycleError::NoExe);
     }
@@ -149,6 +149,7 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         None => daemon_src,
     };
 
+    let _ = crate::daemon::service_definition::install_service_definition(&relocated);
     spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
 }
 
@@ -180,18 +181,6 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
         Ok(()) => Some(file),
         Err(_) => None,
     }
-}
-
-fn sibling_daemon_binary(current: &Path) -> PathBuf {
-    let stem = if cfg!(windows) {
-        "soldr-daemon.exe"
-    } else {
-        "soldr-daemon"
-    };
-    current
-        .parent()
-        .map(|p| p.join(stem))
-        .unwrap_or_else(|| PathBuf::from(stem))
 }
 
 #[cfg(unix)]
