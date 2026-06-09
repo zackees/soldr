@@ -26,5 +26,6 @@ pub mod ipc;
 pub mod lifecycle;
 pub mod protocol;
 pub mod server;
+pub mod service_definition;
 pub mod wire;
 pub mod zccache_link;

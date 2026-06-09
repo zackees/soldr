@@ -6,6 +6,7 @@
 #![allow(clippy::print_stdout)]
 
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -175,4 +176,66 @@ fn status_when_daemon_absent_reports_not_running() {
     );
     let body: Value = serde_json::from_slice(&out.stdout).expect("status json");
     assert_eq!(body["running"].as_bool(), Some(false));
+}
+
+#[test]
+fn install_servicedef_writes_running_process_definition() {
+    let cache_root = unique_temp_dir("daemon-servicedef-cache");
+    let home_root = unique_temp_dir("daemon-servicedef-home");
+    let service_root = unique_temp_dir("daemon-servicedef-services");
+    let daemon_dir = unique_temp_dir("daemon-servicedef-bin");
+    let daemon_binary = daemon_dir.join(if cfg!(windows) {
+        "soldr-daemon.exe"
+    } else {
+        "soldr-daemon"
+    });
+    fs::write(&daemon_binary, b"stub daemon").expect("write fake daemon binary");
+
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    cmd.args([
+        "daemon",
+        "install-servicedef",
+        "--daemon-binary",
+        daemon_binary.to_str().expect("utf8 daemon path"),
+        "--json",
+    ]);
+    for (k, v) in isolated_env(&cache_root, &home_root) {
+        cmd.env(k, v);
+    }
+    cmd.env("RUNNING_PROCESS_SERVICE_DEF_DIR", &service_root);
+    cmd.env_remove("RUSTC_WRAPPER");
+    let out = cmd.output().expect("run soldr daemon install-servicedef");
+
+    assert!(
+        out.status.success(),
+        "install-servicedef failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    let body: Value = serde_json::from_slice(&out.stdout).expect("servicedef json");
+    assert_eq!(body["service_name"].as_str(), Some("soldr-daemon"));
+    assert!(body["deferred"]
+        .as_array()
+        .expect("deferred array")
+        .iter()
+        .any(|item| item
+            .as_str()
+            .is_some_and(|value| value.contains("connect_to_backend"))));
+
+    let loaded = running_process::broker::server::ServiceDefinitionLoader::new(&service_root)
+        .load("soldr-daemon")
+        .expect("running-process loader validates soldr servicedef");
+    assert_eq!(loaded.service_name, "soldr-daemon");
+    assert_eq!(
+        loaded.isolation,
+        running_process::broker::protocol::BrokerIsolation::SharedBroker as i32,
+    );
+    assert_eq!(
+        loaded.binary_path,
+        fs::canonicalize(&daemon_binary)
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    assert_eq!(loaded.min_version, env!("CARGO_PKG_VERSION"));
 }
