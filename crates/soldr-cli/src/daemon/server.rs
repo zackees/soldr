@@ -446,6 +446,7 @@ where
             channel,
             rustc_version,
             origin_url_normalized,
+            branch_lineage,
         } => {
             let key = CookKey {
                 recipe_hash,
@@ -472,18 +473,48 @@ where
                             path,
                             size_bytes: entry.size_bytes,
                             origin_url_normalized: entry.origin_url_normalized,
+                            matched_recipe_hash: Some(recipe_hash),
+                            exact_recipe_match: true,
+                            branch_name: entry.branch_name,
                         }
                     }
                     Ok(None) => {
-                        let previous = cook_index::drift_recipe_hashes(
+                        match cook_index::lookup_origin_fallback(
                             &state.db_path,
                             &key,
                             origin_url_normalized.as_deref(),
-                            COOK_DRIFT_LIMIT,
-                        )
-                        .unwrap_or_default();
-                        Response::CookMiss {
-                            previous_origin_recipe_hashes: previous,
+                            &branch_lineage,
+                        ) {
+                            Ok(Some((matched_key, entry))) => {
+                                state.cook_hits_this_session.fetch_add(1, Ordering::Relaxed);
+                                let path = cook_artifact_path(&state.paths, &entry.sha256)
+                                    .display()
+                                    .to_string();
+                                Response::CookHit {
+                                    sha256: entry.sha256,
+                                    path,
+                                    size_bytes: entry.size_bytes,
+                                    origin_url_normalized: entry.origin_url_normalized,
+                                    matched_recipe_hash: Some(matched_key.recipe_hash),
+                                    exact_recipe_match: false,
+                                    branch_name: entry.branch_name,
+                                }
+                            }
+                            Ok(None) => {
+                                let previous = cook_index::drift_recipe_hashes(
+                                    &state.db_path,
+                                    &key,
+                                    origin_url_normalized.as_deref(),
+                                    COOK_DRIFT_LIMIT,
+                                )
+                                .unwrap_or_default();
+                                Response::CookMiss {
+                                    previous_origin_recipe_hashes: previous,
+                                }
+                            }
+                            Err(e) => {
+                                Response::Error(format!("cook_index fallback lookup failed: {e}"))
+                            }
                         }
                     }
                     Err(e) => Response::Error(format!("cook_index lookup failed: {e}")),
@@ -500,6 +531,7 @@ where
             sha256,
             size_bytes,
             origin_url_normalized,
+            branch_name,
             cook_cmd_summary,
         } => {
             let key = CookKey {
@@ -517,6 +549,7 @@ where
                 last_used_unix_ms: now_ms,
                 origin_url_normalized,
                 cook_cmd_summary,
+                branch_name,
             };
             let result = cook_index::upsert(&state.db_path, &key, &entry);
             match result {

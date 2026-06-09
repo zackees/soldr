@@ -157,6 +157,8 @@ pub mod proto {
         pub rustc_version: String,
         #[prost(string, optional, tag = "6")]
         pub origin_url_normalized: Option<String>,
+        #[prost(string, repeated, tag = "7")]
+        pub branch_lineage: Vec<String>,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -179,6 +181,8 @@ pub mod proto {
         pub origin_url_normalized: Option<String>,
         #[prost(string, tag = "9")]
         pub cook_cmd_summary: String,
+        #[prost(string, optional, tag = "10")]
+        pub branch_name: Option<String>,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -229,6 +233,12 @@ pub mod proto {
         pub size_bytes: u64,
         #[prost(string, optional, tag = "4")]
         pub origin_url_normalized: Option<String>,
+        #[prost(bytes = "vec", tag = "5")]
+        pub matched_recipe_hash: Vec<u8>,
+        #[prost(bool, tag = "6")]
+        pub exact_recipe_match: bool,
+        #[prost(string, optional, tag = "7")]
+        pub branch_name: Option<String>,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -355,6 +365,8 @@ pub mod proto {
         pub origin_url_normalized: Option<String>,
         #[prost(string, tag = "6")]
         pub cook_cmd_summary: String,
+        #[prost(string, optional, tag = "7")]
+        pub branch_name: Option<String>,
     }
 }
 
@@ -375,6 +387,13 @@ fn vec_to_sha(bytes: &[u8]) -> Result<[u8; 32], WireDecodeError> {
     let mut out = [0u8; 32];
     out.copy_from_slice(bytes);
     Ok(out)
+}
+
+fn vec_to_optional_sha(bytes: &[u8]) -> Result<Option<[u8; 32]>, WireDecodeError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    vec_to_sha(bytes).map(Some)
 }
 
 // =========================================================================
@@ -634,6 +653,7 @@ impl From<&Request> for proto::WireRequest {
                 channel,
                 rustc_version,
                 origin_url_normalized,
+                branch_lineage,
             } => proto::WireRequestKind::CookLookup(proto::WireCookLookup {
                 recipe_hash: sha_to_vec(recipe_hash),
                 target_triple: target_triple.clone(),
@@ -641,6 +661,7 @@ impl From<&Request> for proto::WireRequest {
                 channel: channel.clone(),
                 rustc_version: rustc_version.clone(),
                 origin_url_normalized: origin_url_normalized.clone(),
+                branch_lineage: branch_lineage.clone(),
             }),
             Request::CookRecord {
                 recipe_hash,
@@ -651,6 +672,7 @@ impl From<&Request> for proto::WireRequest {
                 sha256,
                 size_bytes,
                 origin_url_normalized,
+                branch_name,
                 cook_cmd_summary,
             } => proto::WireRequestKind::CookRecord(proto::WireCookRecord {
                 recipe_hash: sha_to_vec(recipe_hash),
@@ -662,6 +684,7 @@ impl From<&Request> for proto::WireRequest {
                 size_bytes: *size_bytes,
                 origin_url_normalized: origin_url_normalized.clone(),
                 cook_cmd_summary: cook_cmd_summary.clone(),
+                branch_name: branch_name.clone(),
             }),
             Request::CookTouch { sha256 } => {
                 proto::WireRequestKind::CookTouch(proto::WireCookTouch {
@@ -723,6 +746,7 @@ impl TryFrom<proto::WireRequest> for Request {
                 channel: m.channel,
                 rustc_version: m.rustc_version,
                 origin_url_normalized: m.origin_url_normalized,
+                branch_lineage: m.branch_lineage,
             },
             proto::WireRequestKind::CookRecord(m) => Request::CookRecord {
                 recipe_hash: vec_to_sha(&m.recipe_hash)?,
@@ -733,6 +757,7 @@ impl TryFrom<proto::WireRequest> for Request {
                 sha256: vec_to_sha(&m.sha256)?,
                 size_bytes: m.size_bytes,
                 origin_url_normalized: m.origin_url_normalized,
+                branch_name: m.branch_name,
                 cook_cmd_summary: m.cook_cmd_summary,
             },
             proto::WireRequestKind::CookTouch(m) => Request::CookTouch {
@@ -760,11 +785,20 @@ impl From<&Response> for proto::WireResponse {
                 path,
                 size_bytes,
                 origin_url_normalized,
+                matched_recipe_hash,
+                exact_recipe_match,
+                branch_name,
             } => proto::WireResponseKind::CookHit(proto::WireCookHit {
                 sha256: sha_to_vec(sha256),
                 path: path.clone(),
                 size_bytes: *size_bytes,
                 origin_url_normalized: origin_url_normalized.clone(),
+                matched_recipe_hash: matched_recipe_hash
+                    .as_ref()
+                    .map(sha_to_vec)
+                    .unwrap_or_default(),
+                exact_recipe_match: *exact_recipe_match,
+                branch_name: branch_name.clone(),
             }),
             Response::CookMiss {
                 previous_origin_recipe_hashes,
@@ -797,6 +831,9 @@ impl TryFrom<proto::WireResponse> for Response {
                 path: m.path,
                 size_bytes: m.size_bytes,
                 origin_url_normalized: m.origin_url_normalized,
+                matched_recipe_hash: vec_to_optional_sha(&m.matched_recipe_hash)?,
+                exact_recipe_match: m.exact_recipe_match,
+                branch_name: m.branch_name,
             },
             proto::WireResponseKind::CookMiss(m) => {
                 let mut hashes = Vec::with_capacity(m.previous_origin_recipe_hashes.len());
@@ -860,6 +897,7 @@ mod tests {
             channel: "1.94.1".into(),
             rustc_version: "rustc 1.94.1".into(),
             origin_url_normalized: Some("https://github.com/zackees/soldr".into()),
+            branch_lineage: vec!["feature/cook".into(), "main".into()],
         };
         let bytes = encode_request(&req);
         let decoded = decode_request(&bytes).expect("decode");
@@ -871,6 +909,7 @@ mod tests {
                 channel,
                 rustc_version,
                 origin_url_normalized,
+                branch_lineage,
             } => {
                 assert_eq!(recipe_hash, [0x42; 32]);
                 assert_eq!(target_triple, "x86_64-pc-windows-msvc");
@@ -881,6 +920,7 @@ mod tests {
                     origin_url_normalized.as_deref(),
                     Some("https://github.com/zackees/soldr")
                 );
+                assert_eq!(branch_lineage, vec!["feature/cook", "main"]);
             }
             other => panic!("unexpected variant: {other:?}"),
         }
@@ -896,6 +936,7 @@ mod tests {
             sha256: [0xAA; 32],
             size_bytes: 4_096,
             origin_url_normalized: None,
+            branch_name: Some("main".into()),
             cook_cmd_summary: "cook --release".into(),
         };
         let bytes = encode_request(&req);
@@ -903,6 +944,7 @@ mod tests {
             recipe_hash,
             sha256,
             size_bytes,
+            branch_name,
             ..
         } = decode_request(&bytes).expect("decode")
         else {
@@ -911,6 +953,7 @@ mod tests {
         assert_eq!(recipe_hash, [0x11; 32]);
         assert_eq!(sha256, [0xAA; 32]);
         assert_eq!(size_bytes, 4_096);
+        assert_eq!(branch_name.as_deref(), Some("main"));
     });
 
     crate::timed_test!(link_zccache_round_trips_with_optional_fields, {
@@ -955,6 +998,9 @@ mod tests {
             path: "/home/runner/.soldr/cache/cook/abcd.tar.zst".into(),
             size_bytes: 4_096,
             origin_url_normalized: Some("https://github.com/zackees/soldr".into()),
+            matched_recipe_hash: Some([0x11; 32]),
+            exact_recipe_match: false,
+            branch_name: Some("main".into()),
         };
         let bytes = encode_response(&resp);
         match decode_response(&bytes).expect("decode") {
@@ -963,6 +1009,9 @@ mod tests {
                 path,
                 size_bytes,
                 origin_url_normalized,
+                matched_recipe_hash,
+                exact_recipe_match,
+                branch_name,
             } => {
                 assert_eq!(sha256, [0xCC; 32]);
                 assert!(path.ends_with(".tar.zst"));
@@ -971,6 +1020,9 @@ mod tests {
                     origin_url_normalized.as_deref(),
                     Some("https://github.com/zackees/soldr")
                 );
+                assert_eq!(matched_recipe_hash, Some([0x11; 32]));
+                assert!(!exact_recipe_match);
+                assert_eq!(branch_name.as_deref(), Some("main"));
             }
             other => panic!("unexpected variant: {other:?}"),
         }

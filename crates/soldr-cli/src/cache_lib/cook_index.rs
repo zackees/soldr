@@ -70,6 +70,9 @@ pub struct CookEntry {
     /// Human-readable cook command summary stored for diagnostics
     /// (e.g. shown by `soldr cache stats`).
     pub cook_cmd_summary: String,
+    /// Best-effort local branch name recorded at cook time. Used only
+    /// to rank same-origin fallback hydration candidates.
+    pub branch_name: Option<String>,
 }
 
 fn prost_decode_err(e: prost::DecodeError) -> RegistryError {
@@ -187,6 +190,7 @@ fn cook_entry_to_wire(entry: &CookEntry) -> proto::WireCookEntry {
         last_used_unix_ms: entry.last_used_unix_ms,
         origin_url_normalized: entry.origin_url_normalized.clone(),
         cook_cmd_summary: entry.cook_cmd_summary.clone(),
+        branch_name: entry.branch_name.clone(),
     }
 }
 
@@ -203,6 +207,7 @@ fn cook_entry_from_wire(wire: proto::WireCookEntry) -> Result<CookEntry, WireDec
         last_used_unix_ms: wire.last_used_unix_ms,
         origin_url_normalized: wire.origin_url_normalized,
         cook_cmd_summary: wire.cook_cmd_summary,
+        branch_name: wire.branch_name,
     })
 }
 
@@ -265,6 +270,67 @@ pub fn lookup(db_path: &Path, key: &CookKey) -> Result<Option<CookEntry>, Regist
         return Ok(None);
     };
     Ok(Some(decode_entry(row.value())?))
+}
+
+/// Best-effort same-origin fallback used when the exact recipe hash
+/// misses. Returns the highest-ranked compatible row and the key it
+/// was stored under.
+pub fn lookup_origin_fallback(
+    db_path: &Path,
+    miss_key: &CookKey,
+    origin_url_normalized: Option<&str>,
+    branch_lineage: &[String],
+) -> Result<Option<(CookKey, CookEntry)>, RegistryError> {
+    let Some(origin) = origin_url_normalized else {
+        return Ok(None);
+    };
+    let db = open_db(db_path)?;
+    init_v2(&db)?;
+    let txn = db.begin_read()?;
+    let table = txn.open_table(COOK_INDEX_V2)?;
+    let mut best: Option<(usize, u64, CookKey, CookEntry)> = None;
+    for entry in table.iter()? {
+        let (k_bytes, v_bytes) = entry?;
+        let Ok(stored_key) = decode_key(k_bytes.value()) else {
+            continue;
+        };
+        if !key_matches_origin_matrix(&stored_key, miss_key) {
+            continue;
+        }
+        let Ok(stored_entry) = decode_entry(v_bytes.value()) else {
+            continue;
+        };
+        if stored_entry.origin_url_normalized.as_deref() != Some(origin) {
+            continue;
+        }
+        let Some(rank) = fallback_branch_rank(stored_entry.branch_name.as_deref(), branch_lineage)
+        else {
+            continue;
+        };
+        let used = stored_entry.last_used_unix_ms;
+        let replace = match &best {
+            None => true,
+            Some((best_rank, best_used, _, _)) => {
+                rank < *best_rank || (rank == *best_rank && used > *best_used)
+            }
+        };
+        if replace {
+            best = Some((rank, used, stored_key, stored_entry));
+        }
+    }
+    Ok(best.map(|(_, _, key, entry)| (key, entry)))
+}
+
+fn fallback_branch_rank(branch_name: Option<&str>, branch_lineage: &[String]) -> Option<usize> {
+    if branch_lineage.is_empty() {
+        return Some(0);
+    }
+    match branch_name {
+        Some(branch) => branch_lineage
+            .iter()
+            .position(|candidate| candidate == branch),
+        None => Some(usize::MAX),
+    }
 }
 
 /// Drift diagnostic: given a (missing) lookup key, scan v2 for other
@@ -452,6 +518,7 @@ mod tests {
             last_used_unix_ms: 1_700_000_000_000,
             origin_url_normalized: origin.map(str::to_owned),
             cook_cmd_summary: "cook --release".into(),
+            branch_name: None,
         }
     }
 
@@ -547,6 +614,88 @@ mod tests {
         miss.target_triple = "x86_64-unknown-linux-gnu".into();
         let drift = drift_recipe_hashes(&path, &miss, Some(origin), 10).expect("drift");
         assert!(drift.is_empty());
+    });
+
+    crate::timed_test!(
+        fallback_prefers_branch_lineage_before_newer_unrelated_branch,
+        {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            let origin = "https://github.com/zackees/soldr";
+
+            let main_key = sample_key(60);
+            let other_key = sample_key(61);
+
+            let mut main_entry = sample_entry(0x60, 10, Some(origin));
+            main_entry.branch_name = Some("main".into());
+            main_entry.last_used_unix_ms = 100;
+            let mut other_entry = sample_entry(0x61, 20, Some(origin));
+            other_entry.branch_name = Some("other".into());
+            other_entry.last_used_unix_ms = 200;
+
+            upsert(&path, &main_key, &main_entry).expect("upsert main");
+            upsert(&path, &other_key, &other_entry).expect("upsert other");
+
+            let miss = sample_key(62);
+            let lineage = vec!["feature/cook".to_string(), "main".to_string()];
+            let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
+                .expect("fallback")
+                .expect("hit");
+            assert_eq!(key.recipe_hash, [60u8; 32]);
+            assert_eq!(entry.sha256, [0x60; 32]);
+        }
+    );
+
+    crate::timed_test!(
+        fallback_keeps_legacy_unbranched_entries_when_lineage_is_known,
+        {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            let origin = "https://github.com/zackees/soldr";
+
+            let old_key = sample_key(70);
+            let new_key = sample_key(71);
+            let mut old_entry = sample_entry(0x70, 10, Some(origin));
+            old_entry.last_used_unix_ms = 100;
+            let mut new_entry = sample_entry(0x71, 20, Some(origin));
+            new_entry.branch_name = Some("other".into());
+            new_entry.last_used_unix_ms = 200;
+
+            upsert(&path, &old_key, &old_entry).expect("upsert old");
+            upsert(&path, &new_key, &new_entry).expect("upsert new");
+
+            let miss = sample_key(72);
+            let lineage = vec!["feature/cook".to_string(), "main".to_string()];
+            let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &lineage)
+                .expect("fallback")
+                .expect("hit");
+            assert_eq!(key.recipe_hash, [70u8; 32]);
+            assert_eq!(entry.sha256, [0x70; 32]);
+        }
+    );
+
+    crate::timed_test!(fallback_uses_newest_same_origin_when_lineage_is_empty, {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("state.redb");
+        let origin = "https://github.com/zackees/soldr";
+
+        let old_key = sample_key(80);
+        let new_key = sample_key(81);
+        let mut old_entry = sample_entry(0x80, 10, Some(origin));
+        old_entry.last_used_unix_ms = 100;
+        let mut new_entry = sample_entry(0x81, 20, Some(origin));
+        new_entry.branch_name = Some("other".into());
+        new_entry.last_used_unix_ms = 200;
+
+        upsert(&path, &old_key, &old_entry).expect("upsert old");
+        upsert(&path, &new_key, &new_entry).expect("upsert new");
+
+        let miss = sample_key(82);
+        let (key, entry) = lookup_origin_fallback(&path, &miss, Some(origin), &[])
+            .expect("fallback")
+            .expect("hit");
+        assert_eq!(key.recipe_hash, [81u8; 32]);
+        assert_eq!(entry.sha256, [0x81; 32]);
     });
 
     crate::timed_test!(drift_returns_empty_without_origin_hint, {

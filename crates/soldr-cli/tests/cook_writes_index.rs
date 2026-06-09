@@ -234,6 +234,7 @@ timed_test!(
                 path,
                 size_bytes,
                 origin_url_normalized,
+                ..
             } => {
                 assert_eq!(sha256, packed.sha256);
                 assert_eq!(size_bytes, packed.size_bytes);

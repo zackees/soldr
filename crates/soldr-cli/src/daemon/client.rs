@@ -198,6 +198,29 @@ pub fn cook_lookup(
     rustc_version: String,
     origin_url_normalized: Option<String>,
 ) -> Result<CookLookupOutcome, ClientError> {
+    cook_lookup_with_branch_lineage(
+        sock_path,
+        recipe_hash,
+        target_triple,
+        profile,
+        channel,
+        rustc_version,
+        origin_url_normalized,
+        Vec::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cook_lookup_with_branch_lineage(
+    sock_path: &Path,
+    recipe_hash: [u8; 32],
+    target_triple: String,
+    profile: String,
+    channel: String,
+    rustc_version: String,
+    origin_url_normalized: Option<String>,
+    branch_lineage: Vec<String>,
+) -> Result<CookLookupOutcome, ClientError> {
     let req = Request::CookLookup {
         recipe_hash,
         target_triple,
@@ -205,6 +228,7 @@ pub fn cook_lookup(
         channel,
         rustc_version,
         origin_url_normalized,
+        branch_lineage,
     };
     match submit_request(sock_path, &req)? {
         Response::CookHit {
@@ -212,11 +236,17 @@ pub fn cook_lookup(
             path,
             size_bytes,
             origin_url_normalized,
+            matched_recipe_hash,
+            exact_recipe_match,
+            branch_name,
         } => Ok(CookLookupOutcome::Hit {
             sha256,
             path,
             size_bytes,
             origin_url_normalized,
+            matched_recipe_hash,
+            exact_recipe_match,
+            branch_name,
         }),
         Response::CookMiss {
             previous_origin_recipe_hashes,
@@ -238,6 +268,9 @@ pub enum CookLookupOutcome {
         path: String,
         size_bytes: u64,
         origin_url_normalized: Option<String>,
+        matched_recipe_hash: Option<[u8; 32]>,
+        exact_recipe_match: bool,
+        branch_name: Option<String>,
     },
     Miss {
         previous_origin_recipe_hashes: Vec<[u8; 32]>,
@@ -262,6 +295,35 @@ pub fn cook_record(
     origin_url_normalized: Option<String>,
     cook_cmd_summary: String,
 ) -> Result<(), ClientError> {
+    cook_record_with_branch(
+        sock_path,
+        recipe_hash,
+        target_triple,
+        profile,
+        channel,
+        rustc_version,
+        sha256,
+        size_bytes,
+        origin_url_normalized,
+        None,
+        cook_cmd_summary,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn cook_record_with_branch(
+    sock_path: &Path,
+    recipe_hash: [u8; 32],
+    target_triple: String,
+    profile: String,
+    channel: String,
+    rustc_version: String,
+    sha256: [u8; 32],
+    size_bytes: u64,
+    origin_url_normalized: Option<String>,
+    branch_name: Option<String>,
+    cook_cmd_summary: String,
+) -> Result<(), ClientError> {
     let req = Request::CookRecord {
         recipe_hash,
         target_triple,
@@ -271,6 +333,7 @@ pub fn cook_record(
         sha256,
         size_bytes,
         origin_url_normalized,
+        branch_name,
         cook_cmd_summary,
     };
     match submit_request(sock_path, &req)? {
