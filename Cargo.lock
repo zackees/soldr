@@ -1800,8 +1800,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.0.3"
-source = "git+https://github.com/zackees/running-process?rev=04f6387c3cf5b2a984cd4bbba8a3e6f177d43a89#04f6387c3cf5b2a984cd4bbba8a3e6f177d43a89"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b463aaf22bc2a27eb0b7bf347c4aa315075796908f859fbd8bcd469041cfc940"
 dependencies = [
  "anyhow",
  "blake3",
@@ -2102,7 +2103,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.7.53"
+version = "0.7.54"
 dependencies = [
  "blake3",
  "clap",
