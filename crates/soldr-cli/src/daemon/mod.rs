@@ -20,6 +20,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod backend_handle_adoption;
+pub mod broker_discovery;
 pub mod client;
 pub mod db;
 pub mod ipc;
