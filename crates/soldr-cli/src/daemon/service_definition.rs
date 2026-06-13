@@ -120,8 +120,7 @@ mod tests {
         binary
     }
 
-    #[test]
-    fn service_definition_declares_soldr_daemon_shared_broker() {
+    crate::timed_test!(service_definition_declares_soldr_daemon_shared_broker, {
         let temp = TempDir::new().expect("tempdir");
         let daemon = fake_daemon_binary(temp.path());
 
@@ -138,10 +137,9 @@ mod tests {
                 .map(String::as_str),
             Some("zackees/soldr#718"),
         );
-    }
+    });
 
-    #[test]
-    fn install_service_definition_writes_loader_compatible_protobuf() {
+    crate::timed_test!(install_service_definition_writes_loader_compatible_protobuf, {
         let temp = TempDir::new().expect("tempdir");
         let service_root = temp.path().join("services");
         let daemon = fake_daemon_binary(temp.path());
@@ -154,10 +152,9 @@ mod tests {
             .load("soldr-daemon")
             .expect("load service definition");
         assert_eq!(loaded, installed.definition);
-    }
+    });
 
-    #[test]
-    fn deferred_items_document_minimal_slice_boundary() {
+    crate::timed_test!(deferred_items_document_minimal_slice_boundary, {
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
             .any(|item| item.contains("connect_to_backend")));
@@ -167,5 +164,5 @@ mod tests {
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
             .any(|item| item.contains("escape-hatch")));
-    }
+    });
 }

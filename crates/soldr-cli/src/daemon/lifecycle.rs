@@ -60,6 +60,20 @@ pub(crate) fn is_live_with_running_process_disabled(
         return direct_pid_file_live(paths);
     }
 
+    // Full v1 broker adoption (zackees/running-process#434): try broker
+    // discovery first. The broker negotiates a verified backend endpoint via a
+    // Hello handshake. When the broker is unreachable, refuses, or is disabled,
+    // `broker_discovery::soldr_daemon_pid_via_broker` returns None and we fall
+    // through to the existing direct `BackendHandle` probe — keeping the direct
+    // soldr-daemon path active during the rollout window.
+    crate::daemon::broker_discovery::soldr_daemon_pid_via_broker(paths)
+        .or_else(|| direct_backend_handle_probe(paths))
+}
+
+/// The pre-#434 direct discovery path: probe the local PID file's recorded
+/// daemon with the `running-process` `BackendHandle` nonce challenge. Kept as
+/// the fall-through when broker discovery does not resolve a backend.
+pub(crate) fn direct_backend_handle_probe(paths: &SoldrPaths) -> Option<u32> {
     crate::daemon::backend_handle_adoption::probe_soldr_daemon(paths).map(|handle| handle.pid())
 }
 

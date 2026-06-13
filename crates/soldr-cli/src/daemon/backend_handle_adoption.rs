@@ -285,8 +285,7 @@ mod tests {
         .expect("write pid file");
     }
 
-    #[test]
-    fn dependency_status_documents_active_backend_handle_usage() {
+    crate::timed_test!(dependency_status_documents_active_backend_handle_usage, {
         let status = RUNNING_PROCESS_BACKEND_HANDLE_STATUS;
         assert_eq!(status.crate_name, "running-process");
         assert!(status.dependency_source.contains("04f6387c3cf5b2a984"));
@@ -299,10 +298,9 @@ mod tests {
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
         assert!(status.remaining_gate.contains("three-OS"));
-    }
+    });
 
-    #[test]
-    fn running_process_disable_requires_exact_one() {
+    crate::timed_test!(running_process_disable_requires_exact_one, {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
         let prior = std::env::var_os(RUNNING_PROCESS_DISABLE_ENV);
@@ -320,27 +318,24 @@ mod tests {
             Some(value) => std::env::set_var(RUNNING_PROCESS_DISABLE_ENV, value),
             None => std::env::remove_var(RUNNING_PROCESS_DISABLE_ENV),
         }
-    }
+    });
 
-    #[test]
-    fn probe_missing_pid_file_reports_no_handle() {
+    crate::timed_test!(probe_missing_pid_file_reports_no_handle, {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
 
         assert!(probe_soldr_daemon(&paths).is_none());
-    }
+    });
 
-    #[test]
-    fn probe_stale_pid_file_reports_no_handle() {
+    crate::timed_test!(probe_stale_pid_file_reports_no_handle, {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         write_pid_file(&paths, u32::MAX, Path::new("soldr-daemon"));
 
         assert!(probe_soldr_daemon(&paths).is_none());
-    }
+    });
 
-    #[test]
-    fn pid_file_identity_records_running_process_backend_handle_shape() {
+    crate::timed_test!(pid_file_identity_records_running_process_backend_handle_shape, {
         let temp = TempDir::new().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().to_path_buf());
         let current_exe = std::env::current_exe().expect("current exe");
@@ -354,10 +349,9 @@ mod tests {
         assert_eq!(identity.ipc_endpoint, soldr_daemon_endpoint(&paths));
         assert_eq!(identity.exe_sha256, sha256_file(&current_exe).unwrap());
         assert!(!identity.boot_id.is_empty());
-    }
+    });
 
-    #[test]
-    fn backend_handle_probe_prefix_classifies_broker_v1_only() {
+    crate::timed_test!(backend_handle_probe_prefix_classifies_broker_v1_only, {
         let mut running_process_prefix = [0_u8; BACKEND_HANDLE_PROBE_PREFIX_BYTES];
         running_process_prefix[0] = ENVELOPE_VERSION;
         running_process_prefix[1..].copy_from_slice(&16_u32.to_le_bytes());
@@ -367,5 +361,5 @@ mod tests {
         soldr_prefix[..4].copy_from_slice(&1_u32.to_le_bytes());
         soldr_prefix[4] = PROTOCOL_VERSION as u8;
         assert!(!is_backend_handle_probe_prefix(&soldr_prefix));
-    }
+    });
 }
