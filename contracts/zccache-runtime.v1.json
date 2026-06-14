@@ -18,7 +18,7 @@
     "linux_zccache_target_libc": "musl"
   },
   "zccache": {
-    "managed_version": "1.12.3",
+    "managed_version": "1.12.4",
     "local_dir_env": "SOLDR_ZCCACHE_LOCAL_DIR",
     "cache_dir_env": "ZCCACHE_CACHE_DIR",
     "required_binaries": [
