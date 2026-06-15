@@ -36,15 +36,18 @@ pub(crate) const RUNNING_PROCESS_DISABLE_ENV: &str = "RUNNING_PROCESS_DISABLE";
 pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHandleStatus =
     RunningProcessBackendHandleStatus {
         crate_name: "running-process",
-        dependency_source:
-            "git:https://github.com/zackees/running-process#04f6387c3cf5b2a984cd4bbba8a3e6f177d43a89",
+        // Tracks the published crates.io release the soldr-side adoption is
+        // anchored against. Bumped to 4.4.0 in #726 so the new `backend_sdk`
+        // module (`BackendEndpointMux`, `FrameClient`, identity-file helpers)
+        // is in scope; keep this in lockstep with `Cargo.toml`.
+        dependency_source: "crates.io:running-process@4.4.0",
         required_symbol: "running_process::broker::backend_handle::BackendHandle",
         running_process_issue: "zackees/running-process#232",
         adoption_tracker_issue: "zackees/running-process#242",
         soldr_issue: "zackees/soldr#718",
         active_endpoint_probe: true,
         remaining_gate:
-            "publish running-process with BackendHandle and collect three-OS downstream acceptance",
+            "adopt backend_sdk BackendEndpointMux for the probe handler (soldr#726 follow-up)",
     };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,22 +156,30 @@ fn daemon_process_from_pid_file(
 }
 
 fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
-    Endpoint {
-        namespace_id: host_identity::current().namespace_id,
-        path: soldr_daemon_endpoint_path(paths),
+    let namespace_id = host_identity::current().namespace_id;
+    // Use running-process's smart constructors (issue #726): on
+    // Windows `Endpoint::windows_pipe` enforces the bare-pipe-name
+    // invariant (no leading `\\.\pipe\`, never empty), which the
+    // prior manual `Endpoint { path }` literal could silently
+    // violate and address the wrong pipe. `daemon_pipe_name` and
+    // `default_sock_path` are both soldr-controlled producers, so
+    // the smart-constructor errors only fire on a programming bug
+    // — `expect` is correct.
+    #[cfg(windows)]
+    {
+        Endpoint::windows_pipe(namespace_id, crate::cache_lib::daemon_pipe_name(paths))
+            .expect("daemon_pipe_name returns a bare, non-empty pipe name")
     }
-}
-
-#[cfg(unix)]
-fn soldr_daemon_endpoint_path(paths: &SoldrPaths) -> String {
-    client::default_sock_path(paths)
-        .to_string_lossy()
-        .into_owned()
-}
-
-#[cfg(windows)]
-fn soldr_daemon_endpoint_path(paths: &SoldrPaths) -> String {
-    crate::cache_lib::daemon_pipe_name(paths)
+    #[cfg(unix)]
+    {
+        Endpoint::unix_socket(
+            namespace_id,
+            client::default_sock_path(paths)
+                .to_string_lossy()
+                .into_owned(),
+        )
+        .expect("default_sock_path returns a non-empty socket path")
+    }
 }
 
 async fn read_backend_handle_probe_request<S>(stream: &mut S, prefix: &[u8]) -> io::Result<Frame>
@@ -288,7 +299,10 @@ mod tests {
     crate::timed_test!(dependency_status_documents_active_backend_handle_usage, {
         let status = RUNNING_PROCESS_BACKEND_HANDLE_STATUS;
         assert_eq!(status.crate_name, "running-process");
-        assert!(status.dependency_source.contains("04f6387c3cf5b2a984"));
+        // After #726 the dep ships as a published crates.io release rather
+        // than the pre-publication git pin.
+        assert!(status.dependency_source.starts_with("crates.io:"));
+        assert!(status.dependency_source.contains("running-process@"));
         assert_eq!(
             status.required_symbol,
             "running_process::broker::backend_handle::BackendHandle"
@@ -297,7 +311,8 @@ mod tests {
         assert_eq!(status.adoption_tracker_issue, "zackees/running-process#242");
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
-        assert!(status.remaining_gate.contains("three-OS"));
+        // Remaining gate now describes the deferred BackendEndpointMux adoption.
+        assert!(status.remaining_gate.contains("backend_sdk"));
     });
 
     crate::timed_test!(running_process_disable_requires_exact_one, {
