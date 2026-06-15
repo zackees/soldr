@@ -142,6 +142,23 @@ When pulling in a new managed zccache release, **three files must be updated in 
 
 If you bump only #1, the contract test now panics with a directive message naming both files. Same procedure applies for `MANAGED_CRGX_VERSION` and `CARGO_CHEF_PINNED_VERSION` — see the matching `crgx.managed_version` / `cargo_chef.managed_version` entries in the contract.
 
+### Bumps are manual — no watcher exists (and that's the friction)
+
+Upstream `zackees/zccache` ships on an **automated release pipeline** — six releases in ~28 hours during the 1.12.0 → 1.12.5 window. The consumer side here has **no GitHub Action, bot, or scheduled job** that watches it (nor `zackees/crgx`, nor `LukeMathWalker/cargo-chef`). The `chore(deps): bump managed zccache ...` PRs are all hand-authored by a human running Claude Code. The asymmetry is the bug: a fast auto-publisher feeding a hand-driven consumer guarantees lag. 1.12.2 was skipped entirely (1.12.1 → 1.12.3 in #730), and 1.12.5 dropped ~6 hours after the 1.12.4 bump landed and sat invisible locally until a manual check.
+
+When working in this area, or before claiming the pin is current, run the check yourself:
+
+```bash
+# Current local pin vs. upstream latest:
+grep MANAGED_ZCCACHE_VERSION crates/soldr-cli/src/fetch/mod.rs
+gh release list --repo zackees/zccache --limit 5
+# Same shape for crgx and cargo-chef:
+gh release list --repo zackees/crgx --limit 5
+gh release list --repo LukeMathWalker/cargo-chef --limit 5
+```
+
+If upstream is ahead, open a bump PR per the lockstep instructions above. Do not assume a bot has it covered.
+
 ## Reference Docs
 
 - **`PERF.md` — Performance testing. Read this BEFORE running any perf work. See callout at the top of this file.**
