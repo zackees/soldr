@@ -132,6 +132,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "save",
     "load",
     "daemon",
+    "shims",
 ];
 
 #[derive(clap::Subcommand)]
