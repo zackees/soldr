@@ -393,10 +393,13 @@ impl<'a> ZccacheResolver<'a> {
         if install_zccache::pinned_version_older_than_managed(&pinned.version) {
             if log_stale_pin {
                 eprintln!(
-                    "soldr: ignoring pinned zccache {} at {} because this soldr requires managed zccache {} or newer",
-                    pinned.version,
-                    pinned.runtime_dir.display(),
-                    MANAGED_ZCCACHE_VERSION
+                    "{}",
+                    stale_pin_warning(
+                        &pinned.version,
+                        &pinned.runtime_dir,
+                        MANAGED_ZCCACHE_VERSION,
+                        stderr_should_use_color(),
+                    )
                 );
             }
             return Ok(None);
@@ -407,4 +410,80 @@ impl<'a> ZccacheResolver<'a> {
 
 fn managed_runtime_dir(paths: &SoldrPaths) -> PathBuf {
     paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"))
+}
+
+/// Build the two-line "stale pinned zccache" warning. Pure so the
+/// color-on / color-off forms can be asserted from a unit test;
+/// mirrors `cargo_front_door::disk::low_disk_warning_for_free_bytes`.
+fn stale_pin_warning(
+    pinned_version: &str,
+    pinned_dir: &Path,
+    managed_version: &str,
+    use_color: bool,
+) -> String {
+    let warning = if use_color {
+        "\x1b[33mwarning\x1b[0m"
+    } else {
+        "warning"
+    };
+    format!(
+        "soldr: {warning}: pinned zccache {pinned_version} at {dir} is older than the managed zccache {managed_version} this soldr build requires; falling back to the managed install.\n\
+         soldr: {warning}:   recommendation: run `soldr install-zccache --remove` to purge the stale pin and silence this warning.",
+        dir = pinned_dir.display(),
+    )
+}
+
+fn stderr_should_use_color() -> bool {
+    use std::io::IsTerminal;
+
+    std::env::var_os("NO_COLOR").is_none() && std::io::stderr().is_terminal()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    crate::timed_test!(stale_pin_warning_colorizes_only_warning_label, {
+        let dir = PathBuf::from("/fake/.soldr/bin/zccache-pinned");
+        let colored = stale_pin_warning("1.8.1", &dir, "1.12.7", true);
+        assert!(
+            colored.contains("\x1b[33mwarning\x1b[0m"),
+            "expected ANSI-yellow warning label, got: {colored}"
+        );
+        assert!(
+            colored.starts_with("soldr: "),
+            "soldr: prefix must remain uncolored for log-grep: {colored}"
+        );
+        assert!(
+            colored.contains("1.8.1"),
+            "pinned version must appear in the message: {colored}"
+        );
+        assert!(
+            colored.contains("1.12.7"),
+            "managed version must appear in the message: {colored}"
+        );
+        assert!(
+            colored.contains("older than the managed zccache"),
+            "diagnostic phrasing missing: {colored}"
+        );
+        assert!(
+            colored.contains("soldr install-zccache --remove"),
+            "remediation recommendation missing: {colored}"
+        );
+    });
+
+    crate::timed_test!(stale_pin_warning_plain_form_drops_ansi, {
+        let dir = PathBuf::from("/fake/.soldr/bin/zccache-pinned");
+        let plain = stale_pin_warning("1.8.1", &dir, "1.12.7", false);
+        assert!(
+            !plain.contains('\x1b'),
+            "plain form must not contain ANSI escapes: {plain:?}"
+        );
+        assert!(plain.contains("warning"), "plain warning token missing");
+        assert!(
+            plain.contains("soldr install-zccache --remove"),
+            "remediation recommendation missing in plain form: {plain}"
+        );
+    });
 }
