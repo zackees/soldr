@@ -294,6 +294,24 @@ pub(crate) enum Commands {
         #[arg(long)]
         refresh_defender_probe: bool,
     },
+    /// Install per-version shims (`cargo`, `rustc`, `rustfmt`,
+    /// `clippy-driver`, `rustdoc`) under
+    /// `~/.soldr/v<MANAGED_SHIM_VERSION>/shims/` and emit a stable JSON
+    /// describing where they live. Consumers (e.g.
+    /// [`clud`](https://github.com/zackees/clud/issues/343)) prepend
+    /// `path_entry` from the JSON to their session `PATH` to route
+    /// Rust toolchain calls through soldr.
+    ///
+    /// Idempotent: re-runs no-op when the on-disk shims still match the
+    /// soldr-shim source binary (blake3 content-hash check). The
+    /// installed shim is a copy of the sibling `soldr-shim` binary
+    /// that ships in the same release tarball. See zackees/soldr#742.
+    Shims {
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`).
+        #[arg(long)]
+        json: bool,
+    },
     /// Apply platform-specific hot-cache optimizations (Windows
     /// Defender exclusions today; future platforms TBD). Auto-skips on
     /// CI. See `docs/API.md` for the full matrix.

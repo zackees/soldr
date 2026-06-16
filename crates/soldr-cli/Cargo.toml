@@ -89,6 +89,14 @@ name = "soldr-daemon"
 path = "src/bin/soldr_daemon.rs"
 
 [[bin]]
+# Tiny multi-tool shim binary installed under each toolchain tool name
+# (`cargo`, `rustc`, `rustfmt`, `clippy-driver`, `rustdoc`) by
+# `soldr shims`. Reads argv[0] basename, strips its own dir from PATH
+# (recursion guard), then execs `soldr <tool> ...`. See zackees/soldr#742.
+name = "soldr-shim"
+path = "src/bin/soldr_shim.rs"
+
+[[bin]]
 # Test fixture for crates/soldr-cli/tests/cli_unknown_session_retry.rs
 # (covers the deferred integration test from #265 / closes #266).
 # Gated behind the `test-stubs` feature so the stub is not built or
