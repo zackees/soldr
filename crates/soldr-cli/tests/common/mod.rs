@@ -154,7 +154,23 @@ pub(crate) fn discovered_private_zccache_cache_dir(cache_root: &Path) -> PathBuf
         private_root.display(),
         dirs
     );
-    dirs.remove(0)
+    let namespace_dir = dirs.remove(0);
+    let mut version_dirs: Vec<PathBuf> = fs::read_dir(&namespace_dir)
+        .unwrap_or_else(|err| panic!("failed to read {}: {err}", namespace_dir.display()))
+        .map(|entry| entry.expect("read private zccache version dir").path())
+        .filter(|path| {
+            path.is_dir()
+                && path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with('v'))
+        })
+        .collect();
+    version_dirs.sort();
+    if version_dirs.len() == 1 {
+        return version_dirs.remove(0);
+    }
+    namespace_dir
 }
 
 pub(crate) fn logged_cargo_wrapper(log: &str) -> Option<String> {
