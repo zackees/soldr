@@ -139,20 +139,23 @@ mod tests {
         );
     });
 
-    crate::timed_test!(install_service_definition_writes_loader_compatible_protobuf, {
-        let temp = TempDir::new().expect("tempdir");
-        let service_root = temp.path().join("services");
-        let daemon = fake_daemon_binary(temp.path());
+    crate::timed_test!(
+        install_service_definition_writes_loader_compatible_protobuf,
+        {
+            let temp = TempDir::new().expect("tempdir");
+            let service_root = temp.path().join("services");
+            let daemon = fake_daemon_binary(temp.path());
 
-        let installed = install_service_definition_to_dir(&service_root, &daemon)
-            .expect("install service definition");
+            let installed = install_service_definition_to_dir(&service_root, &daemon)
+                .expect("install service definition");
 
-        assert_eq!(installed.path, service_root.join("soldr-daemon.servicedef"));
-        let loaded = ServiceDefinitionLoader::new(&service_root)
-            .load("soldr-daemon")
-            .expect("load service definition");
-        assert_eq!(loaded, installed.definition);
-    });
+            assert_eq!(installed.path, service_root.join("soldr-daemon.servicedef"));
+            let loaded = ServiceDefinitionLoader::new(&service_root)
+                .load("soldr-daemon")
+                .expect("load service definition");
+            assert_eq!(loaded, installed.definition);
+        }
+    );
 
     crate::timed_test!(deferred_items_document_minimal_slice_boundary, {
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED

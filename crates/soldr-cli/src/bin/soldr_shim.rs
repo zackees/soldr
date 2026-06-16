@@ -165,10 +165,7 @@ fn delegate_to_soldr(soldr: &Path, tool: &str, rest: &[String]) -> ExitCode {
                 }
             }
             Err(err) => {
-                eprintln!(
-                    "soldr-shim: failed to spawn `{}`: {err}",
-                    soldr.display()
-                );
+                eprintln!("soldr-shim: failed to spawn `{}`: {err}", soldr.display());
                 ExitCode::from(127)
             }
         }

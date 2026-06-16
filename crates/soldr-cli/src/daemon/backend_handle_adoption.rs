@@ -350,21 +350,24 @@ mod tests {
         assert!(probe_soldr_daemon(&paths).is_none());
     });
 
-    crate::timed_test!(pid_file_identity_records_running_process_backend_handle_shape, {
-        let temp = TempDir::new().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-        let current_exe = std::env::current_exe().expect("current exe");
+    crate::timed_test!(
+        pid_file_identity_records_running_process_backend_handle_shape,
+        {
+            let temp = TempDir::new().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+            let current_exe = std::env::current_exe().expect("current exe");
 
-        let identity =
-            daemon_process_from_pid_file(&paths, std::process::id(), current_exe.clone())
-                .expect("identity");
+            let identity =
+                daemon_process_from_pid_file(&paths, std::process::id(), current_exe.clone())
+                    .expect("identity");
 
-        assert_eq!(identity.pid, std::process::id());
-        assert_eq!(identity.exe_path, current_exe);
-        assert_eq!(identity.ipc_endpoint, soldr_daemon_endpoint(&paths));
-        assert_eq!(identity.exe_sha256, sha256_file(&current_exe).unwrap());
-        assert!(!identity.boot_id.is_empty());
-    });
+            assert_eq!(identity.pid, std::process::id());
+            assert_eq!(identity.exe_path, current_exe);
+            assert_eq!(identity.ipc_endpoint, soldr_daemon_endpoint(&paths));
+            assert_eq!(identity.exe_sha256, sha256_file(&current_exe).unwrap());
+            assert!(!identity.boot_id.is_empty());
+        }
+    );
 
     crate::timed_test!(backend_handle_probe_prefix_classifies_broker_v1_only, {
         let mut running_process_prefix = [0_u8; BACKEND_HANDLE_PROBE_PREFIX_BYTES];
