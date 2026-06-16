@@ -87,7 +87,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.7";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.8";
 
 /// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
 /// state. Source of truth for `SoldrPaths::versioned_root` and

@@ -153,7 +153,9 @@ fn install_one(target: &Path, source: &Path, tool: &str) -> Result<ToolEntry, So
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp).map_err(SoldrError::Io)?.permissions();
+        let mut perms = std::fs::metadata(&tmp)
+            .map_err(SoldrError::Io)?
+            .permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&tmp, perms).map_err(SoldrError::Io)?;
     }
