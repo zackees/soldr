@@ -44,6 +44,7 @@ use soldr_cli::timed_test;
 /// stable.
 const LEGACY_ALLOWLIST: &[&str] = &[
     // ----- src/ unit-test modules -----
+    "src/bin/soldr_shim.rs",
     "src/binaries.rs",
     "src/cache/install.rs",
     "src/cache/session.rs",
