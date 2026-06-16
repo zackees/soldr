@@ -48,6 +48,7 @@ pub(crate) struct ZccachePrivateDaemonConfig {
     pub(crate) daemon_name: String,
     pub(crate) owner_pid: Option<u32>,
     pub(crate) private_env: Vec<ZccachePrivateEnv>,
+    pub(crate) cache_dir_arg: Option<PathBuf>,
 }
 
 impl ZccachePrivateDaemonConfig {
@@ -56,6 +57,7 @@ impl ZccachePrivateDaemonConfig {
             daemon_name: daemon_name.into(),
             owner_pid: None,
             private_env: Vec::new(),
+            cache_dir_arg: None,
         }
     }
 
@@ -66,6 +68,11 @@ impl ZccachePrivateDaemonConfig {
 
     pub(crate) fn with_private_env(mut self, private_env: Vec<ZccachePrivateEnv>) -> Self {
         self.private_env = private_env;
+        self
+    }
+
+    pub(crate) fn with_cache_dir_arg(mut self, cache_dir_arg: PathBuf) -> Self {
+        self.cache_dir_arg = Some(cache_dir_arg);
         self
     }
 
@@ -537,7 +544,14 @@ pub(crate) fn session_start_args(
         args.push("--daemon-name".to_string());
         args.push(private.daemon_name.clone());
         args.push("--cache-dir".to_string());
-        args.push(cache_dir.display().to_string());
+        args.push(
+            private
+                .cache_dir_arg
+                .as_deref()
+                .unwrap_or(cache_dir)
+                .display()
+                .to_string(),
+        );
         if let Some(owner_pid) = private.owner_pid {
             args.push("--owner-pid".to_string());
             args.push(owner_pid.to_string());
@@ -1056,6 +1070,21 @@ mod tests {
                 .any(|w| w[0] == "--private-env" && w[1] == "ZCCACHE_WORKTREE_ROOT=/repo"));
         }
     );
+
+    crate::timed_test!(private_session_start_args_can_override_cache_dir_arg, {
+        let options = ZccacheSessionStartOptions {
+            id: None,
+            session_log_path: PathBuf::from("/tmp/zccache/log"),
+            journal_path: PathBuf::from("/tmp/zccache/journal"),
+            session_stats_path: PathBuf::from("/tmp/zccache/stats"),
+        };
+        let private = ZccachePrivateDaemonConfig::new("soldr-dev-test")
+            .with_cache_dir_arg(PathBuf::from("/tmp/zccache/v1.12.7"));
+        let args = session_start_args(&options, Path::new("/tmp/zccache"), Some(&private));
+        assert!(args
+            .windows(2)
+            .any(|w| w[0] == "--cache-dir" && w[1] == "/tmp/zccache/v1.12.7"));
+    });
 
     crate::timed_test!(session_already_ended_detects_common_states, {
         for needle in [

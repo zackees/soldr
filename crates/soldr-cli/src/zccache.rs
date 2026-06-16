@@ -396,12 +396,13 @@ async fn prepare_zccache_build(
         &fetch.binary_path,
         &zccache_base_dir,
     );
-    let zccache_dir =
-        private_zccache_cache_dir(&zccache_base_dir, &private_daemon_name, &runtime.version);
+    let zccache_dir = private_zccache_cache_dir(&zccache_base_dir, &private_daemon_name);
+    let zccache_cache_dir_arg = private_zccache_cache_dir_arg(&zccache_dir, &runtime.version);
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
     let private_daemon = ZccachePrivateDaemonConfig::new(private_daemon_name.clone())
         .with_owner_pid(std::process::id())
+        .with_cache_dir_arg(zccache_cache_dir_arg)
         .with_private_env(child_env.private_env_assignments());
 
     // When the resolved zccache CLI binary differs from the one a
@@ -720,12 +721,15 @@ fn print_wasted_depgraph_hits_if_any(session_log_path: &std::path::Path) {
 pub(crate) fn private_zccache_cache_dir(
     base_dir: &std::path::Path,
     daemon_name: &str,
+) -> std::path::PathBuf {
+    base_dir.join("private").join(daemon_name)
+}
+
+pub(crate) fn private_zccache_cache_dir_arg(
+    cache_dir: &std::path::Path,
     zccache_version: &str,
 ) -> std::path::PathBuf {
-    base_dir
-        .join("private")
-        .join(daemon_name)
-        .join(format!("v{zccache_version}"))
+    cache_dir.join(format!("v{zccache_version}"))
 }
 
 pub(crate) fn resolve_private_zccache_daemon_name(
@@ -1331,10 +1335,9 @@ mod tests {
     }
 
     #[test]
-    fn private_zccache_cache_dir_is_version_scoped() {
-        let dir = private_zccache_cache_dir(
-            std::path::Path::new("/tmp/cache/zccache"),
-            "soldr-dev-abc",
+    fn private_zccache_cache_dir_arg_is_version_scoped() {
+        let dir = private_zccache_cache_dir_arg(
+            &private_zccache_cache_dir(std::path::Path::new("/tmp/cache/zccache"), "soldr-dev-abc"),
             "1.12.7",
         );
         assert_eq!(
