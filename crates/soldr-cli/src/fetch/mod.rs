@@ -88,6 +88,12 @@ pub struct FetchResult {
 }
 
 pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.7";
+
+/// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
+/// state. Source of truth for `SoldrPaths::versioned_root` and
+/// `SoldrPaths::versioned_shims_dir`. See zackees/soldr#743 for the
+/// layout RFC and zackees/soldr#742 for the first consumer.
+pub const MANAGED_SHIM_VERSION: &str = env!("CARGO_PKG_VERSION");
 // After the Wave 7 monocrate rename in zccache (`zccache-monocrate` -> `zccache`),
 // all three native binaries (`zccache`, `zccache-daemon`, `zccache-fp`) are
 // `[[bin]]` targets inside the umbrella `zccache` crate on crates.io. The

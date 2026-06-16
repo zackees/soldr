@@ -92,6 +92,28 @@ impl SoldrPaths {
         Ok(())
     }
 
+    /// Per-version state root — `<root>/v<MANAGED_SHIM_VERSION>/`.
+    ///
+    /// Reserved for the layout RFC tracked at zackees/soldr#743 (per-soldr-version
+    /// isolation of `shims/`, future `bin/`, `cache/`, `state.redb`, etc.).
+    /// This PR only exposes the accessor; existing top-level subdirs
+    /// (`bin`, `cache`, `config_file`) are NOT migrated here. The first
+    /// real consumer is `versioned_shims_dir` (zackees/soldr#742).
+    pub fn versioned_root(&self) -> PathBuf {
+        self.root
+            .join(format!("v{}", crate::fetch::MANAGED_SHIM_VERSION))
+    }
+
+    /// Per-version shim directory — `<versioned_root>/shims/`.
+    ///
+    /// Owned and populated by the `soldr shims` verb (zackees/soldr#742).
+    /// Holds the native `soldr-shim` install (symlinked/hardlinked under
+    /// each tool name) for THIS soldr version. Multi-version soldr installs
+    /// coexist cleanly because each version has its own subdir.
+    pub fn versioned_shims_dir(&self) -> PathBuf {
+        self.versioned_root().join("shims")
+    }
+
     /// Load the soldr config from `config.toml` if it exists. Missing
     /// or malformed files yield `Default::default()` so callers can
     /// proceed with reasonable defaults.
@@ -429,4 +451,71 @@ min_age_secs = 7200
     fn soldr_root_override_ignores_empty_env() {
         assert!(soldr_root_from_env_var(Some(OsStr::new(""))).is_none());
     }
+
+    // ---------------------------------------------------------------------
+    // Per-version layout helpers (zackees/soldr#743 Phase A).
+    //
+    // These are NEW tests covering only the just-added accessors, so they
+    // use `crate::timed_test!` per the CLAUDE.md "Test Infrastructure"
+    // policy. The legacy bare `#[test]` cases above this block are
+    // grandfathered.
+    // ---------------------------------------------------------------------
+
+    crate::timed_test!(managed_shim_version_matches_cargo_pkg_version, {
+        // The const exists so callers can refer to it without duplicating
+        // the version string. If anyone changes its source away from
+        // `env!("CARGO_PKG_VERSION")`, this guard fires.
+        assert_eq!(
+            crate::fetch::MANAGED_SHIM_VERSION,
+            env!("CARGO_PKG_VERSION"),
+            "MANAGED_SHIM_VERSION must equal the workspace package version"
+        );
+    });
+
+    crate::timed_test!(versioned_root_appends_v_prefix_and_pkg_version, {
+        let root = PathBuf::from("/tmp/synthetic-versioned-root");
+        let paths = SoldrPaths::with_root(root.clone());
+        let v_root = paths.versioned_root();
+
+        let expected_leaf = format!("v{}", crate::fetch::MANAGED_SHIM_VERSION);
+        assert_eq!(
+            v_root,
+            root.join(&expected_leaf),
+            "versioned_root must be <root>/v<MANAGED_SHIM_VERSION>"
+        );
+        assert!(
+            v_root.starts_with(&root),
+            "versioned_root must live under root: {} not under {}",
+            v_root.display(),
+            root.display()
+        );
+        assert_eq!(
+            v_root.file_name().and_then(|s| s.to_str()),
+            Some(expected_leaf.as_str()),
+            "versioned_root leaf must be `v<MANAGED_SHIM_VERSION>`"
+        );
+    });
+
+    crate::timed_test!(versioned_shims_dir_is_under_versioned_root, {
+        let root = PathBuf::from("/tmp/synthetic-versioned-shims");
+        let paths = SoldrPaths::with_root(root.clone());
+
+        let v_root = paths.versioned_root();
+        let shims = paths.versioned_shims_dir();
+
+        assert_eq!(
+            shims.parent(),
+            Some(v_root.as_path()),
+            "versioned_shims_dir parent must be versioned_root"
+        );
+        assert_eq!(
+            shims.file_name().and_then(|s| s.to_str()),
+            Some("shims"),
+            "versioned_shims_dir leaf must be `shims`"
+        );
+        assert!(
+            shims.starts_with(&v_root),
+            "versioned_shims_dir must live under versioned_root"
+        );
+    });
 }
