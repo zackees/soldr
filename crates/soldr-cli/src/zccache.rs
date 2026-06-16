@@ -417,6 +417,20 @@ async fn prepare_zccache_build(
         Some(&private_daemon_name),
     )?;
 
+    // Refresh stale `runtime-binaries/` from a previous pinned zccache
+    // version. The namespace key is `(soldr-binary-path,
+    // zccache-binary-path)` and stays stable across `pip install -U
+    // soldr` bumps that flip `MANAGED_ZCCACHE_VERSION` while keeping
+    // the soldr binary at the same on-disk path; without this check
+    // zccache's own "directory already populated -> skip copy"
+    // short-circuit keeps the old daemon binary forever. Issue #714.
+    refresh_runtime_binaries_if_version_changed_scoped(
+        &fetch.binary_path,
+        &zccache_dir,
+        Some(&private_daemon_name),
+        &runtime.version,
+    )?;
+
     let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
@@ -900,6 +914,140 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed_scoped(
     Ok(())
 }
 
+/// Name of the JSON manifest soldr writes alongside the
+/// `runtime-binaries/` subdir that zccache populates inside a
+/// private-daemon namespace. Records the zccache version that was
+/// current the last time soldr (re)established the dir. The
+/// namespace key is `(soldr-binary-path, zccache-binary-path)`,
+/// which stays stable across `pip install -U soldr` bumps that flip
+/// `MANAGED_ZCCACHE_VERSION` without moving the soldr binary on
+/// disk. Without this marker, zccache's own "directory already
+/// populated -> skip copy" short-circuit keeps the OLD daemon
+/// binary in place forever. Issue #714.
+pub(crate) const RUNTIME_BINARIES_MANIFEST_FILENAME: &str = "soldr-runtime-binaries.manifest.json";
+
+/// Pure decision: should soldr refresh the namespace's
+/// `runtime-binaries/` subdir before starting a fresh daemon?
+///
+/// - `current` is the zccache version soldr just resolved
+///   (`ZccacheRuntime::version`).
+/// - `previous` is the version recorded in the manifest from the
+///   last refresh, or `None` if absent / unreadable.
+/// - `runtime_binaries_exists` is whether `runtime-binaries/`
+///   currently exists inside the namespace dir.
+///
+/// Returns `true` when the dir exists and either (a) the recorded
+/// version differs from the current one, or (b) the manifest is
+/// missing — we cannot prove the dir is current, so refresh
+/// defensively. This handles the pre-fix migration: namespaces that
+/// existed before this manifest was introduced all refresh exactly
+/// once on the first post-fix soldr invocation.
+///
+/// Returns `false` when there is no `runtime-binaries/` dir to
+/// refresh (zccache will populate it on first session-start) OR
+/// when the recorded version matches.
+pub(crate) fn should_refresh_runtime_binaries(
+    current: &str,
+    previous: Option<&str>,
+    runtime_binaries_exists: bool,
+) -> bool {
+    if !runtime_binaries_exists {
+        return false;
+    }
+    match previous {
+        None => true,
+        Some(prev) if prev == current => false,
+        Some(_) => true,
+    }
+}
+
+/// If the `runtime-binaries/` subdir under `cache_dir` was populated
+/// by a previous soldr invocation pinned to a different zccache
+/// version, stop the running daemon and delete the dir so the next
+/// `zccache session-start` repopulates from the current
+/// `~/.soldr/bin/zccache-<VERSION>/`. Always (re)writes the
+/// manifest so future invocations can detect the next drift.
+/// Best-effort: I/O failures log and continue. Issue #714.
+pub(crate) fn refresh_runtime_binaries_if_version_changed_scoped(
+    binary: &std::path::Path,
+    cache_dir: &std::path::Path,
+    daemon_name: Option<&str>,
+    current_version: &str,
+) -> Result<(), SoldrError> {
+    let manifest_path = cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME);
+    let runtime_binaries_dir = cache_dir.join("runtime-binaries");
+    let previous_version = read_runtime_binaries_manifest_version(&manifest_path);
+    let exists = runtime_binaries_dir.exists();
+
+    if should_refresh_runtime_binaries(current_version, previous_version.as_deref(), exists) {
+        eprintln!(
+            "soldr: refreshing stale zccache runtime-binaries (had={}, want={}) — issue #714",
+            previous_version.as_deref().unwrap_or("<no manifest>"),
+            current_version,
+        );
+        if let Err(err) = run_zccache_command_raw_in_cache_dir_with_daemon_name(
+            binary,
+            &["stop"],
+            cache_dir,
+            daemon_name,
+        ) {
+            // Daemon may already be dead; the subsequent file removal
+            // is what actually unblocks the refresh.
+            eprintln!(
+                "soldr: zccache stop reported {err}; continuing with runtime-binaries refresh"
+            );
+        }
+        if let Err(err) = std::fs::remove_dir_all(&runtime_binaries_dir) {
+            eprintln!(
+                "soldr: failed to remove stale runtime-binaries at {}: {err}; manifest not updated, will retry on next invocation",
+                runtime_binaries_dir.display(),
+            );
+            // Bail before writing the manifest so next run retries.
+            return Ok(());
+        }
+    }
+
+    write_runtime_binaries_manifest(&manifest_path, current_version);
+    Ok(())
+}
+
+fn read_runtime_binaries_manifest_version(path: &std::path::Path) -> Option<String> {
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value
+        .get("zccache_version")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn write_runtime_binaries_manifest(path: &std::path::Path, version: &str) {
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = serde_json::json!({
+        "zccache_version": version,
+        "refreshed_at_unix_secs": now_unix,
+    });
+    let pretty =
+        serde_json::to_string_pretty(&body).expect("constructed json value always serializes");
+    if let Some(parent) = path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "soldr: failed to create runtime-binaries manifest parent {}: {err}",
+                parent.display(),
+            );
+            return;
+        }
+    }
+    if let Err(err) = std::fs::write(path, pretty) {
+        eprintln!(
+            "soldr: failed to record runtime-binaries manifest at {}: {err}",
+            path.display(),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1233,6 +1381,146 @@ mod tests {
         let previous = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
         let current = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
         assert!(should_evict_zccache_daemon(current, Some(previous)));
+    }
+
+    // ---------------------------------------------------------------
+    // Stale `runtime-binaries/` refresh on managed-zccache version
+    // bump (issue #714). Namespace key is (soldr-binary-path,
+    // zccache-binary-path) and stays stable when MANAGED_ZCCACHE_VERSION
+    // flips under a `pip install -U soldr` bump that doesn't move
+    // the soldr binary; zccache's own "directory populated -> skip"
+    // short-circuit then keeps the old daemon binary forever.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn refresh_decision_skips_when_runtime_binaries_dir_missing() {
+        // Fresh namespace, no `runtime-binaries/` yet -> nothing to
+        // refresh. zccache populates it on the first session-start;
+        // the manifest write that follows establishes the baseline.
+        assert!(!should_refresh_runtime_binaries("1.12.4", None, false));
+        assert!(!should_refresh_runtime_binaries(
+            "1.12.4",
+            Some("1.11.8"),
+            false
+        ));
+    }
+
+    #[test]
+    fn refresh_decision_skips_when_versions_match() {
+        // Steady state: manifest matches what we just resolved.
+        assert!(!should_refresh_runtime_binaries(
+            "1.12.4",
+            Some("1.12.4"),
+            true
+        ));
+    }
+
+    #[test]
+    fn refresh_decision_triggers_when_versions_differ() {
+        // The actual #714 scenario: user upgraded soldr; namespace
+        // already has 1.11.8 binaries copied; soldr now pins 1.12.4.
+        assert!(should_refresh_runtime_binaries(
+            "1.12.4",
+            Some("1.11.8"),
+            true
+        ));
+    }
+
+    #[test]
+    fn refresh_decision_triggers_when_manifest_missing_but_dir_exists() {
+        // Migration case: namespace was populated by a pre-#714
+        // soldr that didn't write the manifest. We can't prove the
+        // dir is current, so refresh defensively on the first
+        // post-fix invocation. After that the manifest establishes
+        // a baseline and subsequent runs become no-ops.
+        assert!(should_refresh_runtime_binaries("1.12.4", None, true));
+    }
+
+    #[test]
+    fn refresh_writes_manifest_for_fresh_namespace() {
+        // Fresh namespace: no runtime-binaries/, no daemon. The call
+        // should be a no-op aside from establishing the manifest so
+        // subsequent invocations recognize the baseline.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path();
+        // Point the (unused) binary at our own current_exe so the
+        // zccache stop branch — which won't fire — has a valid path
+        // if anything regresses.
+        let dummy_binary = std::env::current_exe().expect("current_exe");
+
+        refresh_runtime_binaries_if_version_changed_scoped(
+            &dummy_binary,
+            cache_dir,
+            Some("soldr-dev-test"),
+            "1.12.4",
+        )
+        .expect("fresh-namespace refresh is best-effort and Ok(())");
+
+        let manifest = cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME);
+        assert!(manifest.exists(), "manifest must be created on first run");
+        let recorded = read_runtime_binaries_manifest_version(&manifest);
+        assert_eq!(recorded.as_deref(), Some("1.12.4"));
+    }
+
+    #[test]
+    fn refresh_no_op_when_manifest_matches_current_version() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let cache_dir = tmp.path();
+        let runtime_binaries = cache_dir.join("runtime-binaries");
+        std::fs::create_dir_all(&runtime_binaries).expect("create runtime-binaries");
+        // Drop a sentinel file so we can prove the refresh path
+        // didn't delete the directory contents on a no-op.
+        let sentinel_inside = runtime_binaries.join("untouched-marker");
+        std::fs::write(&sentinel_inside, b"keep").expect("write sentinel");
+
+        // Pre-write a matching manifest.
+        write_runtime_binaries_manifest(
+            &cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME),
+            "1.12.4",
+        );
+
+        let dummy_binary = std::env::current_exe().expect("current_exe");
+        refresh_runtime_binaries_if_version_changed_scoped(
+            &dummy_binary,
+            cache_dir,
+            Some("soldr-dev-test"),
+            "1.12.4",
+        )
+        .expect("matching-version refresh is Ok(())");
+
+        assert!(
+            sentinel_inside.exists(),
+            "matching-version refresh must not touch runtime-binaries/"
+        );
+    }
+
+    #[test]
+    fn manifest_round_trip_records_version_field() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(RUNTIME_BINARIES_MANIFEST_FILENAME);
+        write_runtime_binaries_manifest(&path, "1.12.4");
+        assert_eq!(
+            read_runtime_binaries_manifest_version(&path).as_deref(),
+            Some("1.12.4")
+        );
+    }
+
+    #[test]
+    fn manifest_read_returns_none_for_missing_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("never-existed.json");
+        assert!(read_runtime_binaries_manifest_version(&path).is_none());
+    }
+
+    #[test]
+    fn manifest_read_returns_none_for_corrupt_json() {
+        // A corrupt manifest must be treated the same as missing —
+        // refresh_decision then triggers a defensive refresh, which
+        // is the safe outcome.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join(RUNTIME_BINARIES_MANIFEST_FILENAME);
+        std::fs::write(&path, b"{ not valid json").expect("write garbage");
+        assert!(read_runtime_binaries_manifest_version(&path).is_none());
     }
 
     // ---------------------------------------------------------------
