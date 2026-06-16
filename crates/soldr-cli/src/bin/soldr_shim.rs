@@ -194,12 +194,21 @@ mod tests {
         assert_eq!(resolve_tool("clippy-driver.exe"), Some("clippy-driver"));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn resolve_tool_recognizes_with_full_path() {
+    fn resolve_tool_recognizes_with_full_path_unix() {
+        // `Path::file_stem` is platform-aware — backslashes aren't path
+        // separators on Unix, so a Windows path string would resolve to
+        // a single-component name and fail to match. Gate by platform.
         assert_eq!(
             resolve_tool("/home/user/.soldr/v0.7.55/shims/cargo"),
             Some("cargo")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_tool_recognizes_with_full_path_windows() {
         assert_eq!(
             resolve_tool(r"C:\Users\u\.soldr\v0.7.55\shims\rustc.exe"),
             Some("rustc")
