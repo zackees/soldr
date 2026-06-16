@@ -7,18 +7,84 @@
 
 use crate::{optimize, save_load};
 
+const ROOT_LONG_ABOUT: &str = "Instant tools. Instant builds.\n\n\
+soldr wraps cargo and the rustup toolchain so every Rust command goes through a\n\
+managed, content-addressable cache and a repo-pinned toolchain.";
+
+const ROOT_AFTER_HELP: &str = "\
+Examples:\n  \
+soldr cargo build --release   # cached build, pinned toolchain\n  \
+soldr rustfmt --check src     # format check via pinned rustfmt\n  \
+soldr toolchain               # install rust-toolchain.toml\n  \
+soldr cook --release          # prebuild deps as a cache layer\n  \
+soldr status                  # cache health + active toolchain\n\n\
+Run `soldr help <command>` for detailed help on a subcommand,\n\
+including environment variables, exit codes, and on-disk layout.";
+
+const ROOT_BEFORE_HELP: &str = "\
+Common commands:\n  \
+cargo                  Run cargo through soldr (cached, pinned toolchain)\n  \
+rustc                  Compile Rust source via the pinned toolchain\n  \
+rustfmt                Format Rust source via the pinned toolchain\n  \
+clippy-driver          Run the clippy linter via the pinned toolchain\n  \
+rustup                 Drop-in passthrough to the system rustup binary\n\n\
+Less common toolchain commands:\n  \
+rustdoc                Generate Rust documentation\n  \
+rust-analyzer          Run the rust-analyzer language server\n  \
+rust-gdb               Debug with gdb + Rust pretty-printers\n  \
+rust-lldb              Debug with lldb + Rust pretty-printers\n  \
+toolchain              Install the channel declared in rust-toolchain.toml\n  \
+bootstrap              Install rustup itself into soldr's managed bin dir\n  \
+doctor                 Report drift between rust-toolchain.toml and rustup\n  \
+shims                  Install per-version PATH shims for Rust tools\n\n\
+soldr cache & build:\n  \
+cook                   Prebuild dependencies via bundled cargo-chef\n  \
+status                 Show cache status and active toolchain\n  \
+cache                  Inspect compilation cache entries\n  \
+config                 Show or set soldr configuration\n  \
+clean                  Clear the managed zccache build cache\n  \
+purge                  Purge all soldr-managed cache artifacts\n  \
+gc                     Review reclaimable cargo target/ directories\n  \
+save                   Bundle a build cache + source mtimes into a .tar.zst\n  \
+load                   Restore a soldr-save archive on a fresh checkout\n\n\
+soldr ops & infrastructure:\n  \
+daemon                 Manage the long-lived soldr-daemon process\n  \
+session-start          Start a zccache session and print its id\n  \
+session-end            End a zccache session and emit its stats\n  \
+optimize               Apply platform-specific hot-cache tuning\n  \
+defender-exclusions    Manage Windows Defender exclusions for soldr caches\n  \
+install-zccache        Pin local zccache binaries (skip managed fetch)\n\n  \
+help                   Print this message or the help of the given subcommand\n\n";
+
 #[derive(clap::Parser)]
-#[command(name = "soldr", version, about = "Instant tools. Instant builds.")]
+#[command(
+    name = "soldr",
+    version,
+    about = "Instant tools. Instant builds.",
+    long_about = ROOT_LONG_ABOUT,
+    before_help = ROOT_BEFORE_HELP,
+    after_help = ROOT_AFTER_HELP,
+    after_long_help = ROOT_AFTER_HELP,
+    next_line_help = true,
+    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n{before-help}Options:\n{options}{after-help}",
+    max_term_width = 80
+)]
 pub(crate) struct Cli {
-    /// Disable soldr's compilation cache for this invocation
+    /// Disable soldr's compilation cache for this run
     #[arg(long)]
     pub(crate) no_cache: bool,
-    /// Pick the zccache binary backing the compilation cache.
-    ///
-    /// `managed` (default) fetches the pinned zccache release into
-    /// `~/.soldr/`. `system` uses the `zccache` already on PATH
-    /// (must have `zccache-daemon` and `zccache-fp` as siblings).
-    #[arg(long, value_enum, default_value_t = ZccacheSourceArg::Managed, value_name = "SOURCE")]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ZccacheSourceArg::Managed,
+        value_name = "SOURCE",
+        hide_possible_values = true,
+        help = "Backing zccache binary",
+        long_help = "Pick the zccache binary backing the compilation cache.\n\n\
+`managed` (default) fetches the pinned release into `~/.soldr/`.\n\
+`system` uses the `zccache` on PATH (with `zccache-daemon` and\n\
+`zccache-fp` as siblings)."
+    )]
     pub(crate) zccache: ZccacheSourceArg,
     #[command(subcommand)]
     pub(crate) command: Commands,
@@ -123,6 +189,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "toolchain",
     "bootstrap",
     "doctor",
+    "shims",
     "optimize",
     "defender-exclusions",
     "session-start",
@@ -136,80 +203,117 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Commands {
-    /// Run Cargo through soldr's front door
+    /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Content-addressable dep prebuild via the bundled `cargo-chef`
-    /// (issue #359). Splits a project build into a recipe phase
-    /// (`cargo chef prepare`) and a stub-project compile phase
-    /// (`cargo chef cook`) so the dep set can be cached as an output
-    /// layer (Docker), a tarball (CI), or just a warm `target/` (local
-    /// dev) that survives source-code commits. Routes both phases
-    /// through the cargo front door so zccache, `ZCCACHE_PATH_REMAP=auto`,
-    /// and the soldr-managed toolchain homes all apply.
-    ///
-    /// Recognised flags (everything else: pass after `--`):
-    /// `--release`, `--target <triple>`, `--workspace`, `--profile <name>`,
-    /// `-p`/`--package <name>` (repeatable), `--recipe-path <path>`,
-    /// `--keep-recipe`, `--prepare-only`, `--cook-only`.
-    Cook {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Run rustc from the active toolchain
+    /// Compile Rust source via the pinned toolchain
     Rustc {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run rustfmt from the active toolchain
+    /// Format Rust source via the pinned toolchain
     Rustfmt {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run clippy-driver from the active toolchain
+    /// Run the clippy linter via the pinned toolchain
     #[command(name = "clippy-driver")]
     ClippyDriver {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run rustdoc from the active toolchain
+    /// Drop-in passthrough to the system rustup binary
+    ///
+    /// When the first non-flag positional argument is `target` or
+    /// `component` and `rust-toolchain.toml` declares a `channel`,
+    /// soldr automatically inserts `--toolchain <channel>` after the
+    /// subcommand (unless the user already passed `--toolchain`).
+    /// Every other invocation is forwarded verbatim.
+    Rustup {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+
+    /// Generate Rust documentation
     Rustdoc {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Run rust-gdb from the active toolchain
-    #[command(name = "rust-gdb")]
-    RustGdb {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Run rust-lldb from the active toolchain
-    #[command(name = "rust-lldb")]
-    RustLldb {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Run rust-analyzer from the active toolchain
+    /// Run the rust-analyzer language server
     #[command(name = "rust-analyzer")]
     RustAnalyzer {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Show cache status and tool info
+    /// Debug with gdb + Rust pretty-printers
+    #[command(name = "rust-gdb")]
+    RustGdb {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Debug with lldb + Rust pretty-printers
+    #[command(name = "rust-lldb")]
+    RustLldb {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Install the channel declared in rust-toolchain.toml
+    Toolchain {
+        #[command(subcommand)]
+        subcommand: ToolchainSubcommand,
+    },
+    /// Install rustup itself into soldr's managed bin dir
+    #[command(
+        long_about = "Install `rustup` itself into the soldr-managed bin dir when the host has no system-managed toolchain manager. Idempotent: a re-run with rustup already present prints the resolved path and exits 0.\n\nFetches `rustup-init` from `https://static.rust-lang.org/rustup/dist/<host-triple>/` under the same `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` policy as every other soldr-fetched binary. Set `SOLDR_NO_BOOTSTRAP=1` to disable the implicit auto-install that runs from `soldr cargo` / `soldr rustup ...` when rustup is missing."
+    )]
+    Bootstrap {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report drift between rust-toolchain.toml and rustup
+    #[command(
+        long_about = "Diagnose drift between `rust-toolchain.toml` and the currently installed rustup state. Read-only: never mutates rustup. Exit code is `1` when drift is detected, `0` otherwise."
+    )]
+    Doctor {
+        /// Emit the stable machine-facing JSON form for this command.
+        #[arg(long)]
+        json: bool,
+        /// Force a fresh Defender real-time-scan probe of the soldr
+        /// cache directory, ignoring the cached result. No-op outside
+        /// Windows. Issue #357.
+        #[arg(long)]
+        refresh_defender_probe: bool,
+    },
+    /// Install per-version PATH shims for Rust tools
+    ///
+    /// Writes `cargo`, `rustc`, `rustfmt`, `clippy-driver`, and
+    /// `rustdoc` shims under `~/.soldr/v<MANAGED_SHIM_VERSION>/shims/`
+    /// and emits stable JSON describing where they live.
+    Shims {
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`).
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Prebuild dependencies via bundled cargo-chef
+    #[command(
+        long_about = "Content-addressable dependency prebuild via the bundled `cargo-chef`. Splits a project build into a recipe phase (`cargo chef prepare`) and a stub-project compile phase (`cargo chef cook`) so the dep set can be cached as an output layer (Docker), a tarball (CI), or just a warm `target/` (local dev) that survives source-code commits.\n\nRoutes both phases through the cargo front door so zccache, `ZCCACHE_PATH_REMAP=auto`, and the soldr-managed toolchain homes all apply.\n\nRecognised flags (everything else: pass after `--`): `--release`, `--target <triple>`, `--workspace`, `--profile <name>`, `-p`/`--package <name>` (repeatable), `--recipe-path <path>`, `--keep-recipe`, `--prepare-only`, `--cook-only`."
+    )]
+    Cook {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Show cache status and active toolchain
     Status {
         /// Emit the stable machine-facing JSON form for this command
         #[arg(long)]
         json: bool,
     },
-    /// Clear the managed zccache build cache
-    Clean,
-    /// Purge all soldr-managed cache artifacts
-    Purge,
-    /// Show or set configuration
-    Config,
-    /// Inspect the compilation cache
+    /// Inspect compilation cache entries
     Cache {
         /// Emit the stable machine-facing JSON form for this command
         #[arg(long)]
@@ -217,17 +321,17 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: Option<CacheSubcommand>,
     },
-    /// Show version
-    Version {
-        /// Emit the stable machine-facing JSON form for this command
-        #[arg(long)]
-        json: bool,
-    },
-    /// Review reclaimable Cargo `target/` directories tracked by
-    /// the soldr registry (`~/.soldr/state.redb`).
+    /// Show or set soldr configuration
+    Config,
+    /// Clear the managed zccache build cache
+    Clean,
+    /// Purge all soldr-managed cache artifacts
+    Purge,
+    /// Review reclaimable cargo target/ directories
     ///
     /// Aliases: `purge-targets` (matches issue #234's `soldr --purge`
-    /// wording).
+    /// wording). Uses the soldr registry (`~/.soldr/state.redb`) to
+    /// discover tracked Cargo `target/` directories.
     #[command(alias = "purge-targets")]
     Gc {
         /// Deprecated: `soldr gc` is already a non-destructive summary.
@@ -250,84 +354,23 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: Option<GcSubcommand>,
     },
-    /// Drop-in passthrough to the system `rustup` binary.
-    ///
-    /// When the first non-flag positional argument is `target` or
-    /// `component` and `rust-toolchain.toml` declares a `channel`,
-    /// soldr automatically inserts `--toolchain <channel>` after the
-    /// subcommand (unless the user already passed `--toolchain`).
-    /// Every other invocation is forwarded verbatim.
-    Rustup {
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        args: Vec<String>,
-    },
-    /// Read `rust-toolchain.toml` and install the declared channel /
-    /// components / targets via `rustup`.
-    Toolchain {
+    /// Bundle a build cache + source mtimes into a .tar.zst
+    #[command(
+        long_about = "Bundle a build-cache directory plus a content-verified snapshot of source-file mtimes into a single `.tar.zst` archive. The output is consumed by `soldr load` to restore both the cache and Cargo-friendly source mtimes on a fresh checkout."
+    )]
+    Save(save_load::SaveArgs),
+    /// Restore a soldr-save archive on a fresh checkout
+    #[command(
+        long_about = "Restore an archive produced by `soldr save`: unpack the cache to the destination directory and replay each source-file mtime, but only when the current file's size and BLAKE3 hash still match the snapshot so soldr cannot underbuild after a real source change."
+    )]
+    Load(save_load::LoadArgs),
+
+    /// Manage the long-lived soldr-daemon process
+    Daemon {
         #[command(subcommand)]
-        subcommand: ToolchainSubcommand,
+        command: DaemonSubcommand,
     },
-    /// Install `rustup` itself into the soldr-managed bin dir when the
-    /// host has no system-managed toolchain manager. Idempotent — a
-    /// re-run with rustup already present prints the resolved path and
-    /// exits 0. Fetches `rustup-init` from
-    /// `https://static.rust-lang.org/rustup/dist/<host-triple>/` under
-    /// the same `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` policy as
-    /// every other soldr-fetched binary. Set `SOLDR_NO_BOOTSTRAP=1` to
-    /// disable the implicit auto-install that runs from
-    /// `soldr cargo` / `soldr rustup ...` when rustup is missing.
-    Bootstrap {
-        /// Emit the stable machine-facing JSON form for this command.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Diagnose drift between `rust-toolchain.toml` and the
-    /// currently installed rustup state. Read-only — never mutates
-    /// rustup. Exit code is `1` when drift is detected, `0` otherwise.
-    Doctor {
-        /// Emit the stable machine-facing JSON form for this command.
-        #[arg(long)]
-        json: bool,
-        /// Force a fresh Defender real-time-scan probe of the soldr
-        /// cache directory, ignoring the cached result. No-op outside
-        /// Windows. Issue #357.
-        #[arg(long)]
-        refresh_defender_probe: bool,
-    },
-    /// Install per-version shims (`cargo`, `rustc`, `rustfmt`,
-    /// `clippy-driver`, `rustdoc`) under
-    /// `~/.soldr/v<MANAGED_SHIM_VERSION>/shims/` and emit a stable JSON
-    /// describing where they live. Consumers (e.g.
-    /// [`clud`](https://github.com/zackees/clud/issues/343)) prepend
-    /// `path_entry` from the JSON to their session `PATH` to route
-    /// Rust toolchain calls through soldr.
-    ///
-    /// Idempotent: re-runs no-op when the on-disk shims still match the
-    /// soldr-shim source binary (blake3 content-hash check). The
-    /// installed shim is a copy of the sibling `soldr-shim` binary
-    /// that ships in the same release tarball. See zackees/soldr#742.
-    Shims {
-        /// Emit the stable machine-facing JSON form
-        /// (`schema_version: 1`).
-        #[arg(long)]
-        json: bool,
-    },
-    /// Apply platform-specific hot-cache optimizations (Windows
-    /// Defender exclusions today; future platforms TBD). Auto-skips on
-    /// CI. See `docs/API.md` for the full matrix.
-    Optimize(optimize::OptimizeArgs),
-    /// First-class surface for managing Windows Defender real-time-scan
-    /// exclusions on soldr's hot cache directories (issue #355).
-    ///
-    /// Self-documenting verbs (`check` / `add` / `remove`) over the same
-    /// Defender machinery `soldr optimize` already exposes. Windows-only;
-    /// no-op with a clear message on macOS / Linux.
-    #[command(name = "defender-exclusions")]
-    DefenderExclusions {
-        #[command(subcommand)]
-        subcommand: DefenderExclusionsSubcommand,
-    },
-    /// Start a zccache session and return its identifier.
+    /// Start a zccache session and print its id
     ///
     /// Idempotent: when `ZCCACHE_SESSION_ID` is already set in the
     /// environment (and `--id` is not), emits the existing session
@@ -351,7 +394,7 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// End a zccache session and emit its finalized stats.
+    /// End a zccache session and emit its stats
     ///
     /// Idempotent: a second call against an already-finalized session
     /// reports the prior stats (or notes that the session is gone)
@@ -369,17 +412,27 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Install zccache binaries into soldr's private dir so soldr stops
-    /// fetching the managed GitHub release. Pins a user-supplied set of
-    /// three zccache binaries (zccache, zccache-daemon, zccache-fp) into
-    /// `<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...`
-    /// invocations resolve the pinned binaries automatically.
+    /// Apply platform-specific hot-cache tuning
+    #[command(
+        long_about = "Apply platform-specific hot-cache optimizations (Windows Defender exclusions today; future platforms TBD). Auto-skips on CI. See `docs/API.md` for the full matrix."
+    )]
+    Optimize(optimize::OptimizeArgs),
+    /// Manage Windows Defender exclusions for soldr caches
     ///
-    /// Exactly one of `<source>`, `--remove`, or `--status` must be
-    /// provided. `<source>` accepts `system`, a directory or archive
-    /// path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL
-    /// pointing at such an archive.
-    #[command(name = "install-zccache", alias = "update-zccache")]
+    /// Self-documenting verbs (`check` / `add` / `remove`) over the same
+    /// Defender machinery `soldr optimize` already exposes. Windows-only;
+    /// no-op with a clear message on macOS / Linux.
+    #[command(name = "defender-exclusions")]
+    DefenderExclusions {
+        #[command(subcommand)]
+        subcommand: DefenderExclusionsSubcommand,
+    },
+    /// Pin local zccache binaries (skip managed fetch)
+    #[command(
+        name = "install-zccache",
+        alias = "update-zccache",
+        long_about = "Install zccache binaries into soldr's private dir so soldr stops fetching the managed GitHub release. Pins a user-supplied set of three zccache binaries (`zccache`, `zccache-daemon`, `zccache-fp`) into `<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...` invocations resolve the pinned binaries automatically.\n\nExactly one of `<source>`, `--remove`, or `--status` must be provided. `<source>` accepts `system`, a directory or archive path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL pointing at such an archive."
+    )]
     InstallZccache {
         /// Source for the three zccache binaries. Mutually exclusive
         /// with `--remove` / `--status`.
@@ -397,23 +450,13 @@ pub(crate) enum Commands {
         #[arg(long)]
         json: bool,
     },
-    /// Bundle a build-cache directory plus a content-verified
-    /// snapshot of source-file mtimes into a single `.tar.zst`
-    /// archive. The output is consumed by `soldr load` to restore
-    /// both the cache and Cargo-friendly source mtimes on a fresh
-    /// checkout.
-    Save(save_load::SaveArgs),
-    /// Restore an archive produced by `soldr save`: unpack the cache
-    /// to the destination directory and replay each source-file
-    /// mtime, but only when the current file's size and BLAKE3 hash
-    /// still match the snapshot (so we cannot underbuild after a
-    /// real source change).
-    Load(save_load::LoadArgs),
-    /// Manage the long-lived `soldr-daemon` companion process that owns
-    /// target/ tracking. Phase 1 — `start`, `stop`, `status` only.
-    Daemon {
-        #[command(subcommand)]
-        command: DaemonSubcommand,
+
+    /// Show version
+    #[command(hide = true)]
+    Version {
+        /// Emit the stable machine-facing JSON form for this command
+        #[arg(long)]
+        json: bool,
     },
     /// Anything else is a tool to fetch and run
     #[command(external_subcommand)]
