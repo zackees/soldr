@@ -36,6 +36,7 @@ mod startup_profile;
 mod toolchain;
 mod toolchain_doctor;
 mod toolchain_ensure;
+mod install_shims;
 mod toolchain_link;
 mod trampoline;
 mod trampoline_workspace;
@@ -59,7 +60,7 @@ use cli_args::{
     SOLDR_BUILTIN_VERBS,
 };
 
-use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
@@ -309,6 +310,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Optimize(args) => {
             std::process::exit(optimize::run_optimize(args)?);
+        }
+        Commands::Shims { json } => {
+            let paths = SoldrPaths::new()?;
+            std::process::exit(install_shims::run_shims(&paths, json)?);
         }
         Commands::DefenderExclusions { subcommand } => {
             std::process::exit(optimize::run_defender_exclusions(subcommand)?);
