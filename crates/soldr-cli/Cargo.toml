@@ -22,7 +22,7 @@ prost14 = { package = "prost", version = "0.14" }
 rayon = { workspace = true }
 redb = { workspace = true }
 reqwest = { workspace = true }
-running-process = { version = "4.3.0", default-features = false, features = ["client"] }
+running-process = { version = "4.4.0", default-features = false, features = ["client"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
