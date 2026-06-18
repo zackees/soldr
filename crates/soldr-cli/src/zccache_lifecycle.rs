@@ -265,9 +265,9 @@ impl ZccacheLifecycle {
             Ok(output) => output,
             Err(err) if zccache_session_start_lost_connection(&err) => {
                 eprintln!(
-                    "soldr: zccache session-start lost connection to daemon; restarting and retrying once"
+                    "soldr: zccache session-start lost connection to daemon; stopping stale state and retrying once"
                 );
-                self.start_with_recovery()?;
+                self.recover_after_session_start_lost_connection()?;
                 self.run_strings(&args).map_err(|retry_err| {
                     SoldrError::Other(format!(
                         "{retry_err}\ninitial zccache session-start failure before retry: {err}"
@@ -297,6 +297,24 @@ impl ZccacheLifecycle {
                 .as_ref()
                 .map(ZccachePrivateDaemonSession::from),
         })
+    }
+
+    fn recover_after_session_start_lost_connection(&mut self) -> Result<(), SoldrError> {
+        let stop = self.stop(false);
+        if let Ok(outcome) = &stop {
+            if let Some(failure) = &outcome.failure {
+                eprintln!(
+                    "soldr: zccache stop during session-start recovery reported: {}",
+                    failure.trim()
+                );
+            }
+        } else if let Err(err) = &stop {
+            eprintln!("soldr: failed to invoke zccache stop during session-start recovery: {err}");
+        }
+        if let Err(message) = remove_stale_zccache_daemon_lock(&self.cache_dir) {
+            eprintln!("soldr: {message}");
+        }
+        self.start_with_recovery()
     }
 
     pub(crate) fn end_session_json(
@@ -873,7 +891,8 @@ fn zccache_session_start_lost_connection(err: &SoldrError) -> bool {
         return false;
     };
     let message = message.to_ascii_lowercase();
-    message.contains("zccache session-start failed")
+    message.contains("zccache session-start")
+        && message.contains("failed")
         && message.contains("lost connection to daemon")
         && (message.contains("no response") || message.contains("no response received"))
 }
@@ -1080,6 +1099,12 @@ mod tests {
             "zccache session-start failed: zccache[err][R]: lost connection to daemon (no response). The daemon may have crashed or been killed mid-request".to_string(),
         );
         assert!(zccache_session_start_lost_connection(&observed));
+
+        let observed_with_args = SoldrError::Other(
+            "zccache session-start --stats --log last-session.log --journal last-session.jsonl failed: zccache[err][R]: lost connection to daemon (no response)"
+                .to_string(),
+        );
+        assert!(zccache_session_start_lost_connection(&observed_with_args));
 
         let unrelated_lost_connection = SoldrError::Other(
             "zccache status failed: zccache[err][R]: lost connection to daemon (no response)"

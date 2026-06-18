@@ -263,6 +263,56 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
 }
 
 #[test]
+fn cargo_front_door_recovers_when_session_start_loses_daemon() {
+    let cache_root = unique_temp_dir("cargo-session-start-lost-daemon");
+    let log_path = cache_root.join("tool.log");
+    let lost_marker = cache_root.join("session-start-lost");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        .args(["cargo", "build"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE", &lost_marker)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo build with fake zccache");
+
+    assert!(
+        output.status.success(),
+        "session-start recovery build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let first_session_start = log
+        .find("zccache session-start")
+        .unwrap_or_else(|| panic!("first session-start missing from fake zccache log: {log}"));
+    let stop = log
+        .find("zccache stop")
+        .unwrap_or_else(|| panic!("zccache stop missing from recovery log: {log}"));
+    let second_session_start = log
+        .rfind("zccache session-start")
+        .unwrap_or_else(|| panic!("second session-start missing from fake zccache log: {log}"));
+    let cargo = log
+        .find("cargo wrapper=")
+        .unwrap_or_else(|| panic!("cargo did not run after recovery: {log}"));
+    assert!(
+        first_session_start < stop && stop < second_session_start && second_session_start < cargo,
+        "session-start recovery must stop the stale daemon before retrying: {log}"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("session-start lost connection to daemon; stopping stale state"),
+        "expected recovery diagnostic in stderr: {stderr}"
+    );
+}
+
+#[test]
 fn command_lifetime_cache_stops_zccache_after_successful_cargo() {
     let cache_root = unique_temp_dir("cargo-command-lifetime-success");
     let log_path = cache_root.join("tool.log");

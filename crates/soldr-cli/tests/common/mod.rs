@@ -471,11 +471,18 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              if \"%~1\"==\"stop\" (\n\
                echo zccache stop cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE%>>\"{0}\"\n\
                if defined SOLDR_TEST_ZCCACHE_STALE_START_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_STALE_START_ONCE%.stopped\"\n\
+               if defined SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE type nul > \"%SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE%.stopped\"\n\
                if defined SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER type nul > \"%SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER%\"\n\
                exit /b 0\n\
              )\n\
               if \"%~1\"==\"session-start\" (\n\
                 echo zccache session-start cache_dir=%ZCCACHE_CACHE_DIR% daemon_namespace=%ZCCACHE_DAEMON_NAMESPACE% args=%*>>\"{0}\"\n\
+                if defined SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE (\n\
+                  if not exist \"%SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE%.stopped\" (\n\
+                    if not exist \"%SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE%.failed\" goto soldr_zccache_session_start_lost_first\n\
+                    goto soldr_zccache_session_start_lost_retry\n\
+                  )\n\
+                )\n\
                 if not \"%~4\"==\"\" type nul > \"%~4\"\n\
                 if not \"%~6\"==\"\" type nul > \"%~6\"\n\
                 echo {{\"session_id\":\"test-session\"}}\n\
@@ -563,7 +570,14 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
              exit /b 2\n\
              :soldr_zccache_flush_no_json\n\
              echo error: unexpected argument '--json' found 1>&2\n\
-             exit /b 2\n",
+             exit /b 2\n\
+             :soldr_zccache_session_start_lost_first\n\
+             type nul > \"%SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE%.failed\"\n\
+             echo zccache lost connection to daemon no response 1>&2\n\
+             exit /b 1\n\
+             :soldr_zccache_session_start_lost_retry\n\
+             echo zccache session-start retried before stop 1>&2\n\
+             exit /b 66\n",
             log_path.display()
         )
     }
@@ -610,6 +624,9 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE:-}}\" ]; then\n\
                    : > \"${{SOLDR_TEST_ZCCACHE_STALE_START_ONCE}}.stopped\"\n\
                  fi\n\
+                 if [ -n \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE:-}}\" ]; then\n\
+                   : > \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE}}.stopped\"\n\
+                 fi\n\
                  if [ -n \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER:-}}\" ]; then\n\
                    : > \"${{SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER}}\"\n\
                  fi\n\
@@ -617,6 +634,15 @@ pub(crate) fn fake_zccache_script(log_path: &Path) -> String {
                  ;;\n\
                 session-start)\n\
                   echo \"zccache session-start cache_dir=${{ZCCACHE_CACHE_DIR:-}} daemon_namespace=${{ZCCACHE_DAEMON_NAMESPACE:-}} args=$*\" >> \"{0}\"\n\
+                  if [ -n \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE:-}}\" ] && [ ! -e \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE}}.stopped\" ]; then\n\
+                    if [ ! -e \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE}}.failed\" ]; then\n\
+                      : > \"${{SOLDR_TEST_ZCCACHE_SESSION_START_LOST_ONCE}}.failed\"\n\
+                      echo 'zccache[err][R]: lost connection to daemon (no response)' >&2\n\
+                      exit 1\n\
+                    fi\n\
+                    echo 'zccache session-start retried before stop' >&2\n\
+                    exit 66\n\
+                  fi\n\
                   : > \"$4\"\n\
                   : > \"$6\"\n\
                   echo '{{\"session_id\":\"test-session\"}}'\n\
