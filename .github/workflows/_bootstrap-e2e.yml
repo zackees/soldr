@@ -51,6 +51,11 @@ jobs:
       CXX_x86_64_unknown_linux_musl: musl-g++
       CC_aarch64_unknown_linux_musl: musl-gcc
       CXX_aarch64_unknown_linux_musl: musl-g++
+      # Managed zccache is fetched from zackees/zccache, which is a
+      # cross-repo GitHub Releases lookup from this workflow. Use soldr's
+      # explicit opt-in token env so release metadata requests are
+      # authenticated without weakening the generic GITHUB_TOKEN guard.
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
