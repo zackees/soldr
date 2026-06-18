@@ -535,7 +535,7 @@ pub(crate) struct CommandOutput {
 
 pub(crate) fn session_start_args(
     options: &ZccacheSessionStartOptions,
-    cache_dir: &Path,
+    _cache_dir: &Path,
     private_daemon: Option<&ZccachePrivateDaemonConfig>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -554,8 +554,6 @@ pub(crate) fn session_start_args(
         args.push("--private-daemon".to_string());
         args.push("--daemon-name".to_string());
         args.push(private.daemon_name.clone());
-        args.push("--cache-dir".to_string());
-        args.push(cache_dir.display().to_string());
         if let Some(owner_pid) = private.owner_pid {
             args.push("--owner-pid".to_string());
             args.push(owner_pid.to_string());
@@ -1061,9 +1059,10 @@ mod tests {
             assert!(args
                 .windows(2)
                 .any(|w| w[0] == "--daemon-name" && w[1] == "soldr-dev-test"));
-            assert!(args
-                .windows(2)
-                .any(|w| w[0] == "--cache-dir" && w[1] == "/tmp/zccache"));
+            assert!(
+                !args.iter().any(|arg| arg == "--cache-dir"),
+                "private session-start should rely on ZCCACHE_CACHE_DIR instead of --cache-dir: {args:?}"
+            );
             assert!(args
                 .windows(2)
                 .any(|w| w[0] == "--owner-pid" && w[1] == "4242"));
