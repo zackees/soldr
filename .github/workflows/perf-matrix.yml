@@ -509,19 +509,9 @@ jobs:
           # scenario -> "fail" or "warn". cold-tar-untar-warm is the
           # designed hard gate; the others are soft until their baselines
           # stabilize (see workflow header).
-          #
-          # Issue #761: every scenario currently reports hits+misses=0 on
-          # post-#747 main because a zccache private-daemon lifecycle bug
-          # silently neuters the warm session. The hard gate has been
-          # firing on every push to main for the wrong reason — that
-          # trains people to ignore the alarm and would hide a real
-          # regression when one lands. Temporarily demote cold-tar-untar
-          # -warm to `warn` until #761 lands. The line is one edit to
-          # restore once the lifecycle bug is fixed.
           mode_for() {
             case "$1" in
-              # cold-tar-untar-warm) echo "fail" ;;  # restored once #761 is fixed
-              cold-tar-untar-warm) echo "warn" ;;
+              cold-tar-untar-warm) echo "fail" ;;
               worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac
