@@ -53,13 +53,28 @@ cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 # Flush so the depgraph snapshot is durable before the cross-verb pass.
 SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
 
+# Cargo's check fingerprint can short-circuit when it judges build's
+# rmeta as fresh-enough — observed on Linux GHA, NOT on Windows MSVC.
+# A short-circuit means zero rustc invocations and zero zccache hits or
+# misses, which collapses this scenario to "MISSING stats" in the
+# evaluate gate.
+#
+# Advance every source-file mtime (same trick as touch-no-change) so
+# cargo's fingerprint check fails uniformly across platforms and cargo
+# is forced to ask rustc for every unit. Content is unchanged, so this
+# is still an apples-to-apples zccache test: either zccache canonical-
+# izes the cross-verb cache key (the eventual fix) and returns hits, or
+# it recompiles (status quo). Either way the (hits, misses) pair is
+# populated and the gate has a number to compare.
+find "${FIXTURE_DIR}" -name '*.rs' -exec touch {} +
+find "${FIXTURE_DIR}" -name 'Cargo.toml' -exec touch {} +
+find "${FIXTURE_DIR}" -name 'Cargo.lock' -exec touch {} +
+
 # --- Cross-verb check pass -----------------------------------------
-# No source edits, same profile. cargo's own freshness check would
-# accept the rlibs from build, but `cargo check` writes freshness
-# under a different cache key (`-check-*` vs `-build-*`), so cargo
-# re-invokes rustc with `--emit=metadata`. Every such rustc hop hits
-# zccache; this measures whether zccache returns the cached metadata
-# or recompiles.
+# Source mtimes advanced; content identical. cargo refingerprints and
+# re-invokes rustc with `--emit=metadata` per unit. Each hop reaches
+# zccache; this measures whether the cross-verb cache key is canonical-
+# ized (the eventual fix) or split (status quo).
 
 warm_start_ms="$(measure::now_ms)"
 (
