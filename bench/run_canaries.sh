@@ -32,38 +32,9 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 
 mkdir -p "${OUT_DIR}"
 
-# Issue #778: setup-soldr exports a fleet of env vars that pin soldr's
-# behavior to the soldr workspace it was set up for
-# (`<runner>/soldr/soldr/soldr`). When the canary script cd's to the
-# medium fixture, those env vars cross-talk:
-#   - ZCCACHE_CACHE_DIR is pinned to setup-soldr's tempdir, but we
-#     override SOLDR_CACHE_DIR below — soldr passes our SOLDR_CACHE_DIR
-#     to zccache while zccache sees the old ZCCACHE_CACHE_DIR and the
-#     two disagree.
-#   - SOLDR_TARGET_CACHE_DIR / _BUNDLE_DIR / _REGISTRY_RECORDED point
-#     at paths under setup-soldr's tempdir; the medium fixture has its
-#     own target/ in a totally unrelated place.
-#   - SETUP_SOLDR_* / SOLDR_BUILD_CACHE_MODE / SOLDR_TARGET_CACHE_MODE
-#     are setup-soldr bookkeeping; safe to strip.
-#
-# KEEP: PATH (soldr lives there), RUSTUP_HOME / RUSTUP_TOOLCHAIN /
-# CARGO_HOME (toolchain), SOLDR_BINARY (alternate binary resolution),
-# SOLDR_LINKER, ZCCACHE_COMPILE_PRIORITY (useful, not workspace-pinned).
-#
-# This keeps setup-soldr's fast-build benefits for the soldr binary
-# itself (which was built earlier in the workflow's setup phase) while
-# letting the canaries run as if from a clean shell.
-unset ZCCACHE_CACHE_DIR \
-      SOLDR_TARGET_CACHE_DIR \
-      SOLDR_TARGET_CACHE_BUNDLE_DIR \
-      SOLDR_TARGET_CACHE_MODE \
-      SOLDR_TARGET_CACHE_PROFILE \
-      SOLDR_TARGET_CACHE_BACKEND \
-      SOLDR_TARGET_CACHE_COMPRESS \
-      SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
-      SOLDR_TARGET_REGISTRY_RECORDED \
-      SOLDR_BUILD_CACHE_MODE \
-      SETUP_SOLDR_BUILD_CACHE_MODE
+# Issue #797: soldr cargo resolves a fresh soldr workspace context by
+# default, so canaries do not maintain their own soldr/zccache env
+# allowlist.
 
 # Single private cache for the whole canary sweep. Every canary writes
 # to the same daemon so warm-cache measurements are meaningful.

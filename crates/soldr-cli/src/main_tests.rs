@@ -161,6 +161,16 @@ fn cli_parses_zccache_flag_values() {
 }
 
 #[test]
+fn cli_parses_trust_inherited_soldr_env_flag() {
+    let default = Cli::try_parse_from(["soldr", "cargo", "build"]).unwrap();
+    assert!(!default.trust_inherited_soldr_env);
+
+    let trusted =
+        Cli::try_parse_from(["soldr", "--trust-inherited-soldr-env", "cargo", "build"]).unwrap();
+    assert!(trusted.trust_inherited_soldr_env);
+}
+
+#[test]
 fn root_help_groups_commands_and_keeps_lines_short() {
     let help = Cli::command().render_help().to_string();
 

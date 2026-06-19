@@ -122,6 +122,9 @@ pub(crate) const THIN_MANIFEST_FILENAME: &str = "manifest.v2.json";
 /// value (`0` / `false` / `no` / `off` / empty, case-insensitive) to opt out;
 /// unset or any other value keeps the short-circuit enabled.
 pub(crate) const SKIP_WARM_RESTORE_ENV_VAR: &str = "SOLDR_RUST_PLAN_SKIP_WARM_RESTORE";
+/// Opt-in escape hatch for advanced workflows that intentionally inject
+/// soldr/zccache workspace-pinned state into `soldr cargo ...`.
+pub(crate) const TRUST_INHERITED_SOLDR_ENV_VAR: &str = "SOLDR_TRUST_INHERITED_ENV";
 /// Filename of the sentinel written next to the thin-slice bundle root after
 /// a successful `rust-plan save`. Read on the next invocation by
 /// `should_skip_warm_restore` to decide whether `rust-plan restore` would be
@@ -231,12 +234,18 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
 async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     let cache_enabled = !cli.no_cache;
     let zccache_source = cli.zccache;
+    let trust_inherited_soldr_env = cli.trust_inherited_soldr_env;
 
     match cli.command {
         Commands::Cargo { args } => {
             std::process::exit(
-                cargo_front_door::run_cargo_front_door(&args, cache_enabled, zccache_source)
-                    .await?,
+                cargo_front_door::run_cargo_front_door(
+                    &args,
+                    cache_enabled,
+                    zccache_source,
+                    trust_inherited_soldr_env,
+                )
+                .await?,
             );
         }
         Commands::Cook { args } => {
@@ -614,6 +623,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         &cargo_args,
                         cache_enabled,
                         zccache_source,
+                        trust_inherited_soldr_env,
                     )
                     .await?,
                 );
@@ -639,6 +649,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         &cargo_args,
                         cache_enabled,
                         zccache_source,
+                        trust_inherited_soldr_env,
                     )
                     .await?,
                 );
