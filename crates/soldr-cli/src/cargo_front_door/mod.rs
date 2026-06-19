@@ -694,6 +694,23 @@ fn workspace_trampoline_suppressed_for_tests() -> bool {
         || non_empty(&format!("{}CARGO", crate::REAL_TOOLCHAIN_BINARY_ENV_PREFIX))
 }
 
+/// Decide whether the "did you mean: cargo X?" hint applies to a typed
+/// subcommand that isn't in `known_tools`. Returns `Some(suggestion)`
+/// only when `sub` looks like a typo of a registered cargo subcommand
+/// AND is not itself a legitimate cargo built-in verb.
+///
+/// Issue #755: without the built-in guard, `soldr cargo check` falsely
+/// suggested `cargo chef` (Levenshtein distance 2). Built-in verbs are
+/// routed through the External arm by `cargo` itself; treating them as
+/// typos contradicts the contract documented in `CARGO_BUILTIN_VERBS`.
+fn suggest_cargo_subcommand_typo(sub: &str) -> Option<String> {
+    if crate::cli_args::is_cargo_builtin_verb(sub) {
+        return None;
+    }
+    let known = crate::fetch::known_cargo_subcommands();
+    crate::fuzzy_match::suggest_close_match(sub, &known).map(|s| s.to_string())
+}
+
 async fn ensure_known_subcommand_tool(
     args: &[String],
     paths: &SoldrPaths,
@@ -708,8 +725,7 @@ async fn ensure_known_subcommand_tool(
         // so the underlying cargo invocation continues as today —
         // the suggestion is advisory and cargo's own external-command
         // dispatch may still find the tool on PATH.
-        let known = crate::fetch::known_cargo_subcommands();
-        if let Some(suggestion) = crate::fuzzy_match::suggest_close_match(sub, &known) {
+        if let Some(suggestion) = suggest_cargo_subcommand_typo(sub) {
             eprintln!("soldr: '{sub}' is not a cargo subcommand soldr ships a prebuilt for.");
             eprintln!("soldr: did you mean: cargo {suggestion}?");
         }
