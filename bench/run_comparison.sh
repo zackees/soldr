@@ -16,11 +16,22 @@ trap 'for wt in "${WORKTREES_TO_REMOVE[@]:-}"; do git -C "${REPO_ROOT}" worktree
 
 mkdir -p "${OUT_DIR}"
 
-# Keep wrapper-specific env out of the comparison cells. soldr/zccache
-# workspace-state env is handled inside soldr cargo by default (#797).
-unset SCCACHE_DIR \
+# Keep setup-soldr's toolchain/PATH benefits, but remove wrapper and cache
+# state so each comparison cell owns its cache and target dirs.
+unset ZCCACHE_CACHE_DIR \
+      SCCACHE_DIR \
       RUSTC_WRAPPER \
-      SOLDR_RUSTC_WRAPPER
+      SOLDR_RUSTC_WRAPPER \
+      SOLDR_CACHE_DIR \
+      SOLDR_TARGET_CACHE_DIR \
+      SOLDR_TARGET_CACHE_BUNDLE_DIR \
+      SOLDR_TARGET_CACHE_MODE \
+      SOLDR_TARGET_CACHE_PROFILE \
+      SOLDR_TARGET_CACHE_BACKEND \
+      SOLDR_TARGET_CACHE_COMPRESS \
+      SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
+      SOLDR_BUILD_CACHE_MODE \
+      SETUP_SOLDR_BUILD_CACHE_MODE
 
 now_ms() { date +%s%3N; }
 
