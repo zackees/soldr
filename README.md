@@ -20,7 +20,8 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 
 ## Performance
 
-[![soldr local-build canary trend](https://zackees.github.io/soldr/benchmark-trend.png)](https://zackees.github.io/soldr/)
+[![soldr vs sccache vs bare cargo - Rust workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-only.jpg)](https://zackees.github.io/soldr/)
+[![soldr vs sccache vs bare cargo - Rust+C workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg)](https://zackees.github.io/soldr/)
 
 *[performance details](https://zackees.github.io/soldr/)*
 

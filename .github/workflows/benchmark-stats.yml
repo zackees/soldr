@@ -82,7 +82,7 @@ jobs:
         run: python3 bench/render_comparison_bars.py
 
       - name: Publish to benchmark-stats branch
-        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         working-directory: soldr
         env:
           GH_TOKEN: ${{ github.token }}
@@ -91,11 +91,11 @@ jobs:
         run: bash bench/publish_benchmark_stats.sh
 
       - name: Configure Pages
-        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
       - name: Upload Pages artifact
-        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: soldr/benchmark-stats
@@ -112,7 +112,7 @@ jobs:
   deploy-pages:
     name: Deploy benchmark page
     needs: benchmark
-    if: ${{ needs.benchmark.result == 'success' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: ${{ needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
