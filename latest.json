@@ -1,21 +1,273 @@
 {
   "schema_version": 1,
   "metadata": {
-    "generated_at": "2026-06-19T20:06:20Z",
-    "git_sha": "7c9e4fae58df03466afda9347c7aa0e08705b2c7",
+    "generated_at": "2026-06-19T21:16:38Z",
+    "git_sha": "c722b0e54530837deca55bbe198749ad312e4dd2",
     "git_ref": "main",
     "repository": "zackees/soldr",
-    "run_url": "https://github.com/zackees/soldr/actions/runs/27846074366",
+    "run_url": "https://github.com/zackees/soldr/actions/runs/27848433127",
     "fixture": "medium",
     "soldr_version": "soldr 0.7.42",
-    "rustc_version": "rustc 1.94.1 (e408947bf 2026-03-25)"
+    "rustc_version": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "sccache_version": "sccache 0.7.7"
   },
   "canaries": {
-    "cargo-build-medium-cold": 51766,
-    "cargo-build-medium-warm": 54,
-    "cargo-build-medium-from-warm-zccache": 957,
-    "cargo-check-medium-cross-verb": 9920,
-    "touch-no-change-medium-warm": 1130,
-    "worktree-share-medium-warm": 1058
-  }
+    "cargo-build-medium-cold": 53760,
+    "cargo-build-medium-warm": 49,
+    "cargo-build-medium-from-warm-zccache": 875,
+    "cargo-check-medium-cross-verb": 10000,
+    "touch-no-change-medium-warm": 949,
+    "worktree-share-medium-warm": 964
+  },
+  "comparison": {
+    "scenarios": [
+      {
+        "key": "cold",
+        "label": "Cold build",
+        "samples": 3
+      },
+      {
+        "key": "warm",
+        "label": "Warm rebuild (same workspace)",
+        "samples": 1
+      },
+      {
+        "key": "worktree-share",
+        "label": "Agent worktree / parent-child share",
+        "samples": 1
+      }
+    ],
+    "tools": [
+      {
+        "key": "bare",
+        "label": "Bare cargo"
+      },
+      {
+        "key": "sccache",
+        "label": "sccache"
+      },
+      {
+        "key": "soldr",
+        "label": "soldr"
+      }
+    ]
+  },
+  "results": [
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 161404,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 162860,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 167969,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 142753,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 48961,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 138845,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 176985,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 5776,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-only",
+      "fixture": "soldr",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 5868,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 46319,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 46502,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "bare",
+      "tool_label": "Bare cargo",
+      "command": "cargo build --release --locked",
+      "wall_ms": 45820,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 8923,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 3163,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "sccache",
+      "tool_label": "sccache",
+      "command": "RUSTC_WRAPPER=sccache cargo build --release --locked",
+      "wall_ms": 9128,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "cold",
+      "scenario": "Cold build",
+      "mode": "cold",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 47837,
+      "project_path": "median-of-3"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "warm",
+      "scenario": "Warm rebuild (same workspace)",
+      "mode": "warm",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 392,
+      "project_path": "single-sample"
+    },
+    {
+      "benchmark": "rust-c",
+      "fixture": "sqlite-link",
+      "scenario_key": "worktree-share",
+      "scenario": "Agent worktree / parent-child share",
+      "mode": "worktree-share",
+      "tool": "soldr",
+      "tool_label": "soldr",
+      "command": "soldr cargo build --release --locked",
+      "wall_ms": 410,
+      "project_path": "single-sample"
+    }
+  ]
 }

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-19T20:06:20Z",
-  "git_sha": "7c9e4fae58df03466afda9347c7aa0e08705b2c7",
+  "generated_at": "2026-06-19T21:16:38Z",
+  "git_sha": "c722b0e54530837deca55bbe198749ad312e4dd2",
   "branch": "benchmark-stats",
   "repository": "zackees/soldr",
   "artifacts": {
@@ -34,10 +34,20 @@
       "url": "https://zackees.github.io/soldr/",
       "content_type": "text/html"
     },
-    "readme_image": {
-      "description": "Static PNG of the canary trend; embedded in repo README.md and updated on every main-merge (#771).",
+    "trend_image": {
+      "description": "Static PNG of the canary trend; retained for the Pages historical deep-dive.",
       "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png",
       "content_type": "image/png"
+    },
+    "comparison_rust": {
+      "description": "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-only.jpg",
+      "content_type": "image/jpeg"
+    },
+    "comparison_rust_c": {
+      "description": "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg",
+      "content_type": "image/jpeg"
     }
   },
   "canaries": {
