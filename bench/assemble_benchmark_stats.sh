@@ -144,6 +144,11 @@ jq -n \
                 description: "Human-facing rendered view with Chart.js interactive graphs.",
                 url: $pages_url,
                 content_type: "text/html"
+            },
+            readme_image: {
+                description: "Static PNG of the canary trend; embedded in repo README.md and updated on every main-merge (#771).",
+                url: ($raw_base + "/benchmark-trend.png"),
+                content_type: "image/png"
             }
         },
         canaries: {

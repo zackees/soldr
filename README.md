@@ -18,6 +18,12 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 [![Windows x64](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml)
 [![Windows ARM64](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml)
 
+## Performance
+
+[![soldr local-build canary trend](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png)](https://github.com/zackees/soldr/tree/benchmark-stats)
+
+The image is regenerated on every push to `main` by [`.github/workflows/benchmark-stats.yml`](.github/workflows/benchmark-stats.yml). Full data + an interactive Chart.js view are published in the [`benchmark-stats` branch](https://github.com/zackees/soldr/tree/benchmark-stats) and at [zackees.github.io/soldr](https://zackees.github.io/soldr/). The AI-discoverable discovery index is at [`manifest.json`](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json). Canary set and methodology: [PERF.md § Per-commit benchmark stats](PERF.md#per-commit-benchmark-stats-issue-768).
+
 **Instant tools. Instant builds. One command.**
 
 soldr = [crgx](https://crgx.dev/) + [zccache](https://github.com/zackees/zccache) in a single tool.
