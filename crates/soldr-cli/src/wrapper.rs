@@ -272,7 +272,19 @@ fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Resul
     eprintln!(
         "soldr: zccache private daemon {daemon_name} unavailable before rustc exec; restarting"
     );
-    let start = zccache_command_output(zccache, &["start"])?;
+    // Issue #761: start the PRIVATE daemon that the wrapper is about
+    // to exec into, NOT the default daemon. Bare `zccache start`
+    // launches the default daemon, leaving the inherited private
+    // namespace empty and the post-exec wrapper unable to connect.
+    // Threading these flags onto the start call is safe — `zccache
+    // start` accepts them (unlike `zccache status`, which is left
+    // bare on the probe above). On a fresh CI runner the typical
+    // sequence is bare-status-fails -> private-start-succeeds ->
+    // private-status-succeeds.
+    let start = zccache_command_output(
+        zccache,
+        &["start", "--private-daemon", "--daemon-name", &daemon_name],
+    )?;
     if !start.status.success() {
         return Err(SoldrError::Other(format!(
             "zccache start failed while recovering private daemon {daemon_name}: {}",
