@@ -397,3 +397,38 @@ fn env_disables_target_gc_preserves_explicit_flag_opt_outs() {
     assert!(merged.before);
     assert!(!merged.after);
 }
+
+// Issue #755: cargo built-in verbs must not trigger the fuzzy "did you
+// mean: cargo X?" hint. The External arm hands them straight to cargo;
+// treating them as typos is misleading.
+#[test]
+fn suggest_cargo_subcommand_typo_skips_cargo_builtin_verbs() {
+    for verb in crate::cli_args::CARGO_BUILTIN_VERBS {
+        assert_eq!(
+            suggest_cargo_subcommand_typo(verb),
+            None,
+            "cargo built-in verb {verb:?} must not be suggested as a typo of a known subcommand",
+        );
+    }
+}
+
+#[test]
+fn suggest_cargo_subcommand_typo_still_catches_genuine_typos() {
+    // Regression guard for issue #412: a clear typo of a registered
+    // cargo subcommand (e.g. `ntest` → `nextest`) still gets the hint.
+    assert_eq!(
+        suggest_cargo_subcommand_typo("ntest").as_deref(),
+        Some("nextest"),
+        "fuzzy hint must still fire for genuine typos of known cargo subcommands",
+    );
+}
+
+#[test]
+fn suggest_cargo_subcommand_typo_returns_none_for_unrelated_input() {
+    // Sanity check: random garbage that isn't close to any candidate
+    // gets no suggestion at all.
+    assert_eq!(
+        suggest_cargo_subcommand_typo("completely-made-up-name"),
+        None,
+    );
+}
