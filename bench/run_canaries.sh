@@ -35,6 +35,25 @@ mkdir -p "${OUT_DIR}"
 # Issue #797: soldr cargo resolves a fresh soldr workspace context by
 # default, so canaries do not maintain their own soldr/zccache env
 # allowlist.
+#
+# The workflow itself is bootstrapped by setup-soldr, which exports wrapper
+# and cache variables for the checkout build. Managed soldr invocations reject
+# those inherited values, so each benchmark script boundary starts clean and
+# then chooses its own private cache root below.
+unset ZCCACHE_CACHE_DIR \
+      SCCACHE_DIR \
+      RUSTC_WRAPPER \
+      SOLDR_RUSTC_WRAPPER \
+      SOLDR_CACHE_DIR \
+      SOLDR_TARGET_CACHE_DIR \
+      SOLDR_TARGET_CACHE_BUNDLE_DIR \
+      SOLDR_TARGET_CACHE_MODE \
+      SOLDR_TARGET_CACHE_PROFILE \
+      SOLDR_TARGET_CACHE_BACKEND \
+      SOLDR_TARGET_CACHE_COMPRESS \
+      SOLDR_TARGET_CACHE_COMPRESS_LEVEL \
+      SOLDR_BUILD_CACHE_MODE \
+      SETUP_SOLDR_BUILD_CACHE_MODE
 
 # Single private cache for the whole canary sweep. Every canary writes
 # to the same daemon so warm-cache measurements are meaningful.
