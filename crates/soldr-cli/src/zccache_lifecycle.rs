@@ -535,7 +535,7 @@ pub(crate) struct CommandOutput {
 
 pub(crate) fn session_start_args(
     options: &ZccacheSessionStartOptions,
-    _cache_dir: &Path,
+    cache_dir: &Path,
     private_daemon: Option<&ZccachePrivateDaemonConfig>,
 ) -> Vec<String> {
     let mut args = vec![
@@ -554,6 +554,18 @@ pub(crate) fn session_start_args(
         args.push("--private-daemon".to_string());
         args.push("--daemon-name".to_string());
         args.push(private.daemon_name.clone());
+        // Issue #761: PR #747 commit 3 dropped this --cache-dir on the
+        // theory that zccache appends its own version subdir and the
+        // env (ZCCACHE_CACHE_DIR) would suffice. Empirically the
+        // private daemon never bootstraps without an explicit
+        // --cache-dir on session-start: warm sessions report 0% hits
+        // across every perf-matrix cell, and freshly-built debug soldr
+        // binaries fail their first rustc-vV invocation with `cannot
+        // connect to daemon`. Restoring the arg fixes both symptoms.
+        // If the version-subdir mismatch concern is real, zccache's
+        // own handling of it must not depend on omitting the arg.
+        args.push("--cache-dir".to_string());
+        args.push(cache_dir.display().to_string());
         if let Some(owner_pid) = private.owner_pid {
             args.push("--owner-pid".to_string());
             args.push(owner_pid.to_string());
@@ -1060,8 +1072,9 @@ mod tests {
                 .windows(2)
                 .any(|w| w[0] == "--daemon-name" && w[1] == "soldr-dev-test"));
             assert!(
-                !args.iter().any(|arg| arg == "--cache-dir"),
-                "private session-start should rely on ZCCACHE_CACHE_DIR instead of --cache-dir: {args:?}"
+                args.windows(2)
+                    .any(|w| w[0] == "--cache-dir" && w[1] == "/tmp/zccache"),
+                "private session-start must thread --cache-dir to bootstrap the private daemon (#761): {args:?}"
             );
             assert!(args
                 .windows(2)
