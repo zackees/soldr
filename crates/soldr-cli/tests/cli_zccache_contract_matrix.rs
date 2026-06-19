@@ -208,22 +208,18 @@ timed_test!(
             log.contains("cache=1") && log.contains("session=test-session"),
             "cargo child should receive cache/session env:\n{log}"
         );
-        let zccache_cache_dir = discovered_private_zccache_cache_dir(&fixture.cache_root);
+        let zccache_session_dir = fixture.cache_root.join("cache").join("zccache");
         assert!(
-            log_contains_path(&log, "zccache_dir=", &zccache_cache_dir)
-                && log_contains_path(&log, "cache_dir=", &zccache_cache_dir),
-            "cargo and zccache should use the private soldr-owned zccache cache dir:\n{log}"
+            log.contains("zccache_dir= ") || log.contains("zccache_dir= path_remap="),
+            "default managed cargo env should not force ZCCACHE_CACHE_DIR:\n{log}"
         );
         assert!(
-            log.contains("daemon_namespace=soldr-dev-")
-                && log.contains("--private-daemon")
-                && log.contains("--daemon-name soldr-dev-")
-                && log.contains("--owner-pid")
-                && (log.contains("--private-env ZCCACHE_PATH_REMAP=auto")
-                    || log.contains("--private-env \"ZCCACHE_PATH_REMAP=auto\""))
-                && (log.contains("--private-env ZCCACHE_WORKTREE_ROOT=")
-                    || log.contains("--private-env \"ZCCACHE_WORKTREE_ROOT=")),
-            "managed zccache should start a private daemon with session-scoped env:\n{log}"
+            !log.contains("daemon_namespace=soldr-dev-")
+                && !log.contains("--private-daemon")
+                && !log.contains("--daemon-name soldr-dev-")
+                && !log.contains("--owner-pid")
+                && !log.contains("--private-env"),
+            "default managed zccache should use zccache's normal daemon/session behavior:\n{log}"
         );
         assert!(
             log.contains("path_remap=auto"),
@@ -238,7 +234,7 @@ timed_test!(
             "rust-plan should receive the target artifact bundle dir:\n{log}"
         );
 
-        let logs_dir = zccache_cache_dir.join("logs");
+        let logs_dir = zccache_session_dir.join("logs");
         let session_log = logs_dir.join("last-session.log");
         let journal = logs_dir.join("last-session.jsonl");
         let stats = logs_dir.join("last-session-stats.json");

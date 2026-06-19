@@ -51,6 +51,7 @@ fn make_plan_ctx(target_dir: &std::path::Path) -> RustArtifactPlanContext {
         zccache_binary: PathBuf::from("/tmp/zccache"),
         cache_dir: PathBuf::from("/tmp/cache"),
         zccache_daemon_cache_dir: PathBuf::from("/tmp/cache"),
+        zccache_daemon_cache_dir_env: true,
         zccache_daemon_name: None,
         session_id: "session".to_string(),
         journal_path: PathBuf::from("/tmp/journal"),

@@ -190,6 +190,7 @@ mod tests {
         ZccacheBuildSession {
             binary_path: std::path::PathBuf::from("/tmp/zccache"),
             cache_dir: std::path::PathBuf::from("/tmp/soldr-zccache"),
+            cache_dir_env: true,
             session_id: "session-1".into(),
             session_log_path: std::path::PathBuf::from("/tmp/soldr-zccache/log"),
             journal_path: std::path::PathBuf::from("/tmp/soldr-zccache/journal"),

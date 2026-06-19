@@ -48,11 +48,11 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
   overrides, local development builds, pinned managed runtime, managed cached
   runtime, and system fallback diagnostics.
 - `managed-session-env`: locks managed daemon/session startup and the cargo
-  child environment: `ZCCACHE_SESSION_ID`, `ZCCACHE_CACHE_DIR`,
-  `ZCCACHE_PATH_REMAP`, and `ZCCACHE_WORKTREE_ROOT`.
+  child environment: `ZCCACHE_SESSION_ID`, default absence of
+  `ZCCACHE_CACHE_DIR`, `ZCCACHE_PATH_REMAP`, and `ZCCACHE_WORKTREE_ROOT`.
 - `rust-plan-cache`: locks zccache `rust-plan restore` before Cargo and
-  `rust-plan save` after Cargo, while keeping the managed daemon cache root
-  separate from the target artifact bundle path.
+  `rust-plan save` after Cargo, while keeping zccache's active daemon/cache
+  behavior separate from the target artifact bundle path.
 - `disabled-and-non-build`: locks `--no-cache` and non-build cargo commands so
   they propagate `SOLDR_CACHE_ENABLED=0` and do not start managed zccache.
 - `unknown-session-retry`: locks the Windows wrapper recovery path for

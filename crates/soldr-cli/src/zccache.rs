@@ -5,7 +5,7 @@ use crate::core::{SoldrError, SoldrPaths};
 use crate::fetch::{ZccacheRuntime, ZccacheRuntimeSource};
 use crate::zccache_lifecycle::{
     zccache_command_failure_message, zccache_json_flag_unsupported, ZccacheLifecycle,
-    ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
+    ZccachePrivateEnv, ZccacheSessionStartOptions,
 };
 use crate::{
     current_soldr_binary, fetch_active_zccache_runtime, non_empty_env_path, ZccacheSourceArg,
@@ -26,6 +26,7 @@ pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
     "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS";
 pub(crate) const SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR: &str =
     "SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME";
+pub(crate) const SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_SESSION_DIR";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheLifecycle {
@@ -281,20 +282,28 @@ impl RustcWrapperPlan {
                     crate::cache_lib::ZCCACHE_BINARY_ENV_VAR,
                     &session.binary_path,
                 );
-                cargo.env(
-                    crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-                    &session.cache_dir,
-                );
-                cargo.env(
-                    crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
-                    &session.cache_dir,
-                );
+                cargo.env(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR, &session.cache_dir);
+                if session.cache_dir_env {
+                    cargo.env(
+                        crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
+                        &session.cache_dir,
+                    );
+                    cargo.env(
+                        crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+                        &session.cache_dir,
+                    );
+                } else {
+                    cargo.env_remove(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR);
+                    cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
+                }
                 cargo.env(
                     crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
                     &session.session_id,
                 );
                 if let Some(private) = session.private_daemon.as_ref() {
                     cargo.env(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR, &private.daemon_name);
+                } else {
+                    cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
                 }
                 plan.child_env.apply_to_command(cargo);
             }
@@ -388,20 +397,19 @@ async fn prepare_zccache_build(
     print_zccache_runtime_diagnostic(&runtime);
 
     let child_env = ZccacheChildEnv::from_current_process()?;
-    let private_daemon_name = resolve_private_zccache_daemon_name(
-        std::env::var(SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR)
-            .ok()
-            .as_deref(),
-        &current_soldr_binary()?,
-        &fetch.binary_path,
-        &zccache_base_dir,
-    );
-    let zccache_dir = private_zccache_cache_dir(&zccache_base_dir, &private_daemon_name);
+    let inherited_soldr_managed_dir =
+        non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
+            .map(|path| normalize_path_for_compare(&path))
+            .transpose()?;
+    let explicit_zccache_cache_dir =
+        non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
+            .map(|path| normalize_path_for_compare(&path))
+            .transpose()?
+            .filter(|path| inherited_soldr_managed_dir.as_ref() != Some(path));
+    let cache_dir_env = explicit_zccache_cache_dir.is_some();
+    let zccache_dir = explicit_zccache_cache_dir.unwrap_or(zccache_base_dir);
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
-    let private_daemon = ZccachePrivateDaemonConfig::new(private_daemon_name.clone())
-        .with_owner_pid(std::process::id())
-        .with_private_env(child_env.private_env_assignments());
 
     // When the resolved zccache CLI binary differs from the one a
     // previous soldr invocation started the daemon with, the live
@@ -414,7 +422,8 @@ async fn prepare_zccache_build(
     evict_zccache_daemon_if_binary_changed_scoped(
         &fetch.binary_path,
         &zccache_dir,
-        Some(&private_daemon_name),
+        cache_dir_env,
+        None,
     )?;
 
     // Refresh stale `runtime-binaries/` from a previous pinned zccache
@@ -427,7 +436,8 @@ async fn prepare_zccache_build(
     refresh_runtime_binaries_if_version_changed_scoped(
         &fetch.binary_path,
         &zccache_dir,
-        Some(&private_daemon_name),
+        cache_dir_env,
+        None,
         &runtime.version,
     )?;
 
@@ -435,7 +445,7 @@ async fn prepare_zccache_build(
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let mut lifecycle =
-        ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir).with_private_daemon(private_daemon);
+        ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir).with_cache_dir_env(cache_dir_env);
     let session = lifecycle.start_session(ZccacheSessionStartOptions {
         id: None,
         session_log_path,
@@ -811,21 +821,7 @@ pub(crate) fn sanitize_zccache_daemon_name(raw: &str) -> Option<String> {
 pub(crate) fn managed_zccache_cache_dir(
     paths: &SoldrPaths,
 ) -> Result<std::path::PathBuf, SoldrError> {
-    let zccache_dir = normalize_path_for_compare(&crate::cache_lib::zccache_dir(paths))?;
-    let inherited_soldr_managed_dir =
-        non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
-            .map(|path| normalize_path_for_compare(&path))
-            .transpose()?;
-    if let Some(explicit) = non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR) {
-        let explicit = normalize_path_for_compare(&explicit)?;
-        if explicit != zccache_dir && inherited_soldr_managed_dir.as_ref() != Some(&explicit) {
-            return Err(SoldrError::Other(format!(
-                "{} is managed by soldr for managed zccache builds. Unset it, set SOLDR_CACHE_DIR to choose soldr's cache root, or set SOLDR_RUSTC_WRAPPER to use a custom wrapper.",
-                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR
-            )));
-        }
-    }
-    Ok(zccache_dir)
+    normalize_path_for_compare(&crate::cache_lib::zccache_dir(paths))
 }
 
 pub(crate) fn normalize_path_for_compare(
@@ -873,12 +869,13 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
 ) -> Result<(), SoldrError> {
-    evict_zccache_daemon_if_binary_changed_scoped(binary, cache_dir, None)
+    evict_zccache_daemon_if_binary_changed_scoped(binary, cache_dir, true, None)
 }
 
 pub(crate) fn evict_zccache_daemon_if_binary_changed_scoped(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
+    cache_dir_env: bool,
     daemon_name: Option<&str>,
 ) -> Result<(), SoldrError> {
     let sentinel = cache_dir.join(ZCCACHE_LAST_CLI_BINARY_SENTINEL);
@@ -895,6 +892,7 @@ pub(crate) fn evict_zccache_daemon_if_binary_changed_scoped(
             binary,
             &["stop"],
             cache_dir,
+            cache_dir_env,
             daemon_name,
         ) {
             // Stop failures shouldn't block the build — the start
@@ -971,6 +969,7 @@ pub(crate) fn should_refresh_runtime_binaries(
 pub(crate) fn refresh_runtime_binaries_if_version_changed_scoped(
     binary: &std::path::Path,
     cache_dir: &std::path::Path,
+    cache_dir_env: bool,
     daemon_name: Option<&str>,
     current_version: &str,
 ) -> Result<(), SoldrError> {
@@ -989,6 +988,7 @@ pub(crate) fn refresh_runtime_binaries_if_version_changed_scoped(
             binary,
             &["stop"],
             cache_dir,
+            cache_dir_env,
             daemon_name,
         ) {
             // Daemon may already be dead; the subsequent file removal
@@ -1451,6 +1451,7 @@ mod tests {
         refresh_runtime_binaries_if_version_changed_scoped(
             &dummy_binary,
             cache_dir,
+            true,
             Some("soldr-dev-test"),
             "1.12.4",
         )
@@ -1483,6 +1484,7 @@ mod tests {
         refresh_runtime_binaries_if_version_changed_scoped(
             &dummy_binary,
             cache_dir,
+            true,
             Some("soldr-dev-test"),
             "1.12.4",
         )

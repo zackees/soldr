@@ -95,16 +95,16 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
+    let zccache_session_dir = cache_root.join("cache").join("zccache");
     assert!(
         log.contains("zccache rust-plan restore") && log.contains("zccache rust-plan save"),
         "soldr should call zccache rust-plan restore/save when target cache is enabled: {log}"
     );
     assert!(
-        path_display_variants(&zccache_cache_dir)
-            .iter()
-            .any(|path| log.contains(&format!("cache_dir={path}"))),
-        "rust-plan calls should query the active managed zccache daemon cache dir: {log}"
+        !log.contains("--private-daemon")
+            && !log.contains("--daemon-name soldr-dev-")
+            && !log.contains("daemon_namespace=soldr-dev-"),
+        "rust-plan calls should use the default zccache daemon/session by default: {log}"
     );
     assert!(
         path_display_variants(&plan_cache).iter().any(|path| {
@@ -119,7 +119,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         "rust-plan restore should run before Cargo and save should run after Cargo: {log}"
     );
 
-    let plan_path = zccache_cache_dir
+    let plan_path = zccache_session_dir
         .join("plans")
         .join("last-rust-artifact-plan.pb");
     let plan_bytes = fs::read(&plan_path).expect("read generated rust plan");
@@ -259,12 +259,14 @@ fn cargo_front_door_recovers_from_stale_zccache_daemon_start() {
 #[test]
 fn cargo_front_door_removes_stale_zccache_daemon_lock_before_retry() {
     let cache_root = unique_temp_dir("cargo-stale-zccache-daemon-lock");
+    let zccache_session_dir = cache_root.join("cache").join("zccache");
     let log_path = cache_root.join("tool.log");
     let stale_marker = cache_root.join("stale-zccache-lock");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("ZCCACHE_CACHE_DIR", &zccache_session_dir)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -297,9 +299,8 @@ fn cargo_front_door_removes_stale_zccache_daemon_lock_before_retry() {
             && log.contains("zccache session-end test-session"),
         "recovered build should still exercise the normal managed zccache path: {log}"
     );
-    let zccache_cache_dir = discovered_private_zccache_cache_dir(&cache_root);
     assert!(
-        !zccache_cache_dir.join("daemon.lock").exists(),
+        !zccache_session_dir.join("daemon.lock").exists(),
         "soldr should remove stale zccache daemon.lock before retrying start"
     );
 }
