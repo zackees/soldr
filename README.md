@@ -20,11 +20,10 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 
 ## Performance
 
-| [view page](https://zackees.github.io/soldr/) | [json](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json) | [view branch](https://github.com/zackees/soldr/tree/benchmark-stats) |
-|---|---|---|
-
 [![soldr vs sccache vs bare cargo - Rust workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-only.jpg)](https://zackees.github.io/soldr/)
 [![soldr vs sccache vs bare cargo - Rust+C workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg)](https://zackees.github.io/soldr/)
+
+*[performance details](https://zackees.github.io/soldr/)*
 
 Cold builds are a wash; warm and cross-worktree share are where soldr's wrapper architecture pays off. Full historical trend + interactive view: [zackees.github.io/soldr](https://zackees.github.io/soldr/). For the swatinem/rust-cache comparison (GHA target-dir caching, a different layer) see [PERF.md](PERF.md#readme-comparison-bars-issue-785).
 
