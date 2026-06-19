@@ -789,6 +789,12 @@ Example JSON output (`schema_version: 1`):
   "drift": true,
   "missing_components": ["clippy"],
   "missing_targets": [],
+  "soldr_debug_info": {
+    "binary_path": "C:\\Users\\user\\.soldr\\bin\\soldr.exe",
+    "debug_info_found": 1,
+    "debug_info_expected": 1,
+    "symbol_path": "C:\\Users\\user\\.soldr\\bin"
+  },
   "defender_probe": {
     "verdict": "scanned",
     "probed_path": "C:\\Users\\user\\.soldr\\cache",

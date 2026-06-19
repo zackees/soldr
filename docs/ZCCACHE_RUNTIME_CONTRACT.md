@@ -7,9 +7,11 @@ The contract fixes these cross-runtime expectations:
 
 - Release archives are `.tar.zst` bundles containing `soldr`, `zccache`,
   `zccache-daemon`, `zccache-fp`, `crgx`, `cargo-chef`, and `manifest.json`.
+  Windows archives also carry soldr's matching PDB sidecar (`soldr.pdb` or
+  `soldr_cli.pdb`) so crash dumps can resolve file/line frames.
 - `manifest.json` is the authoritative per-archive descriptor for schema
   version, archive format, soldr target, zccache target, bundled binary names,
-  and per-binary `sha256` values.
+  soldr debug-info sidecars, and per-file `sha256` values.
 - Setup-soldr and npm install must stage the same zccache trio and export
   `SOLDR_ZCCACHE_LOCAL_DIR` only when that trio is present.
 - Setup-soldr and npm must use the same local crgx env var:

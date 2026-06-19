@@ -7,6 +7,7 @@ use crate::defender_probe::{self, DefenderProbeState, DefenderVerdict, SCANNED_T
 use crate::fetch::{ZccacheBinarySummary, ZccacheSource};
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
 use serde::Serialize;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
@@ -57,6 +58,10 @@ struct DoctorOutput {
     /// `true` when the active resolution is the pinned install (i.e.
     /// the managed path is superseded for the next `soldr cargo ...`).
     pinned_zccache_active: bool,
+    /// Debug-info sidecar state for the running soldr binary. On
+    /// Windows this points at the matching PDB directory for dump
+    /// symbolication.
+    soldr_debug_info: DoctorSoldrDebugInfo,
     /// Defender real-time-scan probe state for the cache directory
     /// (issue #357). `None` on non-Windows platforms.
     defender_probe: Option<DoctorDefenderProbe>,
@@ -170,6 +175,14 @@ struct DoctorPinnedZccache {
     managed_version: &'static str,
 }
 
+#[derive(Serialize, Clone)]
+struct DoctorSoldrDebugInfo {
+    binary_path: String,
+    debug_info_found: usize,
+    debug_info_expected: usize,
+    symbol_path: String,
+}
+
 /// Implementation of `soldr doctor`. Read-only — never invokes
 /// `rustup component add` / `target add` / `toolchain install`.
 pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32, SoldrError> {
@@ -178,6 +191,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
     let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
     let manifest_present = manifest_path.exists();
     let bundle = collect_zccache_bundle()?;
+    let soldr_debug_info = collect_soldr_debug_info();
     let defender = collect_defender_probe(refresh_defender_probe);
     let cook = collect_cook_stats();
 
@@ -197,6 +211,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
                 managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
                 pinned_zccache: bundle.pinned_doctor.clone(),
                 pinned_zccache_active: bundle.pinned_active,
+                soldr_debug_info: soldr_debug_info.clone(),
                 defender_probe: defender_for_json(defender.as_ref()),
                 cook: cook.clone(),
             };
@@ -207,6 +222,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
                 manifest_path.display()
             );
             print_zccache_sections(&bundle);
+            print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
                 print_cook_section(c);
@@ -218,6 +234,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
                 workspace_root.display()
             );
             print_zccache_sections(&bundle);
+            print_soldr_debug_info_human(&soldr_debug_info);
             print_defender_probe_human(defender.as_ref());
             if let Some(c) = cook.as_ref() {
                 print_cook_section(c);
@@ -290,6 +307,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
             managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
             pinned_zccache: bundle.pinned_doctor.clone(),
             pinned_zccache_active: bundle.pinned_active,
+            soldr_debug_info: soldr_debug_info.clone(),
             defender_probe: defender_for_json(defender.as_ref()),
             cook: cook.clone(),
         };
@@ -305,6 +323,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
             &missing_targets,
             drift,
             &bundle,
+            &soldr_debug_info,
             defender.as_ref(),
             cook.as_ref(),
         );
@@ -379,6 +398,23 @@ fn collect_cook_stats() -> Option<DoctorCookStats> {
         cache_dir_bytes: bytes,
         cache_dir: cook_dir.display().to_string(),
     })
+}
+
+fn collect_soldr_debug_info() -> DoctorSoldrDebugInfo {
+    let binary_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("soldr"));
+    let symbol_path = binary_path
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let (debug_info_found, debug_info_expected) =
+        crate::fetch::zccache::count_debug_info_sidecars(&[binary_path.as_path()]);
+
+    DoctorSoldrDebugInfo {
+        binary_path: binary_path.display().to_string(),
+        debug_info_found,
+        debug_info_expected,
+        symbol_path: symbol_path.display().to_string(),
+    }
 }
 
 /// Format a byte count for the doctor human output. Matches the
@@ -626,6 +662,22 @@ fn print_zccache_sections(bundle: &ZccacheDoctorBundle) {
     print_managed_zccache_human(&bundle.managed, bundle.pinned_active);
 }
 
+fn print_soldr_debug_info_human(summary: &DoctorSoldrDebugInfo) {
+    println!();
+    println!("soldr debug info:");
+    println!("  binary:        {}", summary.binary_path);
+    let pdb_hint = if summary.debug_info_found == 0 {
+        "no PDB present; build soldr with `[profile.release] debug = \"line-tables-only\"` or set CARGO_PROFILE_*_DEBUG=line-tables-only"
+    } else {
+        "complete"
+    };
+    println!(
+        "  pdbs found:    {}/{} ({})",
+        summary.debug_info_found, summary.debug_info_expected, pdb_hint
+    );
+    println!("  symbol path:   {}", summary.symbol_path);
+}
+
 fn print_pinned_zccache_human(
     summary: &ZccacheBinarySummary,
     sidecar: &crate::fetch::PinnedSidecar,
@@ -766,6 +818,7 @@ fn print_doctor_human(
     missing_targets: &[String],
     drift: bool,
     bundle: &ZccacheDoctorBundle,
+    soldr_debug_info: &DoctorSoldrDebugInfo,
     defender: Option<&DefenderProbeOutcome>,
     cook: Option<&DoctorCookStats>,
 ) {
@@ -825,6 +878,7 @@ fn print_doctor_human(
     }
 
     print_zccache_sections(bundle);
+    print_soldr_debug_info_human(soldr_debug_info);
     print_defender_probe_human(defender);
     if let Some(c) = cook {
         print_cook_section(c);

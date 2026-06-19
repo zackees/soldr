@@ -24,6 +24,7 @@ from zccache_contract import (  # noqa: E402
     ZCCACHE_BUNDLED_BINARIES,
     ZCCACHE_LOCAL_DIR_ENV,
     locate_extracted_file,
+    soldr_debug_info_entries,
     validate_release_manifest,
 )
 
@@ -227,6 +228,9 @@ def main() -> None:
             binary_path.chmod(
                 binary_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
             )
+        for entry in soldr_debug_info_entries(manifest):
+            debug_src = _locate_binary(extract_dir, str(entry["name"]))
+            shutil.copy2(debug_src, install_dir / str(entry["name"]))
 
         # Stage the bundled zccache trio next to soldr so the install
         # dir works as a self-contained SOLDR_ZCCACHE_LOCAL_DIR.

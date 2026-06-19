@@ -36,6 +36,18 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
         (root / name).write_bytes(payload)
 
     suffix = ".exe" if windows else ""
+    soldr_debug_info: list[dict[str, str]] = []
+    if windows:
+        pdb_name = "soldr.pdb"
+        payloads[pdb_name] = b"soldr pdb\n"
+        (root / pdb_name).write_bytes(payloads[pdb_name])
+        soldr_debug_info.append(
+            {
+                "name": pdb_name,
+                "sha256": _sha256(payloads[pdb_name]),
+                "format": "pdb",
+            }
+        )
     return {
         "schema_version": 3,
         "soldr": {
@@ -43,6 +55,7 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
             "target": "x86_64-unknown-linux-gnu",
             "binary": f"soldr{suffix}",
             "sha256": _sha256(payloads[f"soldr{suffix}"]),
+            "debug_info": soldr_debug_info,
             "commit_sha": "abc123",
         },
         "zccache": {
@@ -117,6 +130,49 @@ def test_python_contract_validates_release_manifest_sha256s(tmp_path: Path) -> N
         )
 
 
+def test_python_contract_validates_windows_soldr_pdb_sha256(tmp_path: Path) -> None:
+    module = _load_py_contract()
+    manifest = _write_manifest_fixture(tmp_path, windows=True)
+    manifest["soldr"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["zccache"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["crgx"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["cargo_chef"]["target"] = "x86_64-pc-windows-msvc"
+
+    module.validate_release_manifest(
+        manifest,
+        soldr_target="x86_64-pc-windows-msvc",
+        windows=True,
+        extract_dir=tmp_path,
+    )
+
+    manifest["soldr"]["debug_info"][0]["sha256"] = "0" * 64
+    with pytest.raises(RuntimeError, match="soldr.pdb"):
+        module.validate_release_manifest(
+            manifest,
+            soldr_target="x86_64-pc-windows-msvc",
+            windows=True,
+            extract_dir=tmp_path,
+        )
+
+
+def test_python_contract_requires_windows_soldr_pdb(tmp_path: Path) -> None:
+    module = _load_py_contract()
+    manifest = _write_manifest_fixture(tmp_path, windows=True)
+    manifest["soldr"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["zccache"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["crgx"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["cargo_chef"]["target"] = "x86_64-pc-windows-msvc"
+    manifest["soldr"]["debug_info"] = []
+
+    with pytest.raises(RuntimeError, match="missing soldr debug_info PDB"):
+        module.validate_release_manifest(
+            manifest,
+            soldr_target="x86_64-pc-windows-msvc",
+            windows=True,
+            extract_dir=tmp_path,
+        )
+
+
 def test_python_action_helpers_import_contract_constants() -> None:
     module = _load_py_contract()
     ensure_spec = importlib.util.spec_from_file_location(
@@ -144,6 +200,8 @@ def test_release_workflow_and_docs_reference_contract_layout() -> None:
 
     assert '"schema_version": 3' in release_workflow
     assert '"format": "tar.zst"' in release_workflow
+    assert '"debug_info": ${soldr_debug_info_json}' in release_workflow
+    assert "CARGO_PROFILE_RELEASE_DEBUG" in release_workflow
     for base in contract["release_archive"]["required_binaries"]:
         assert base in release_workflow
         assert base in npm_docs
