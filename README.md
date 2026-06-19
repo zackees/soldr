@@ -23,9 +23,10 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 | [view page](https://zackees.github.io/soldr/) | [json](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json) | [view branch](https://github.com/zackees/soldr/tree/benchmark-stats) |
 |---|---|---|
 
-[![soldr local-build canary trend](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png)](https://zackees.github.io/soldr/)
+[![soldr vs sccache vs bare cargo - Rust workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-only.jpg)](https://zackees.github.io/soldr/)
+[![soldr vs sccache vs bare cargo - Rust+C workload](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg)](https://zackees.github.io/soldr/)
 
-The image is regenerated on every push to `main` by [`.github/workflows/benchmark-stats.yml`](.github/workflows/benchmark-stats.yml). Canary set and methodology: [PERF.md § Per-commit benchmark stats](PERF.md#per-commit-benchmark-stats-issue-768).
+Cold builds are a wash; warm and cross-worktree share are where soldr's wrapper architecture pays off. Full historical trend + interactive view: [zackees.github.io/soldr](https://zackees.github.io/soldr/). For the swatinem/rust-cache comparison (GHA target-dir caching, a different layer) see [PERF.md](PERF.md#readme-comparison-bars-issue-785).
 
 **Instant tools. Instant builds. One command.**
 
