@@ -5,11 +5,11 @@
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::startup_profile::WrapperProfile;
-use crate::zccache_lifecycle::ZCCACHE_DAEMON_NAMESPACE_ENV_VAR;
 #[cfg(not(unix))]
 use crate::zccache_lifecycle::{
     session_start_args, stderr_indicates_unknown_session, ZccacheLifecycle,
     ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
+    ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
 };
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
 
@@ -236,12 +236,16 @@ fn run_wrapper_through_zccache(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        ensure_private_zccache_daemon_before_exec(zccache)?;
-        // TODO(#265): once exec() replaces this process there is nowhere to
-        // observe zccache's stderr or retry on "unknown session:". The
-        // Windows branch below performs that defensive retry. A Unix port
-        // would need to spawn-with-piped-stderr instead of exec, while still
-        // forwarding the cargo jobserver FDs (see issue #265 for context).
+        // Issue #761: the recovery helper that #747 added here
+        // (`ensure_private_zccache_daemon_before_exec`) probed the
+        // wrong daemon (bare `zccache status` / `zccache start`,
+        // which target the default daemon rather than the inherited
+        // private namespace) and returned Ok(()) without restoring
+        // anything. Net effect was zero recovery, but the function's
+        // mere presence didn't break warm builds — it's just absent
+        // value. Removing it restores the pre-#747 path until a
+        // private-daemon-aware recovery lands. See #761 for the
+        // tracking discussion.
         let err = command.exec();
         Err(SoldrError::Other(format!(
             "failed to exec zccache at {}: {err}",
@@ -253,72 +257,6 @@ fn run_wrapper_through_zccache(
     {
         run_wrapper_through_zccache_windows(raw_args, zccache)
     }
-}
-
-#[cfg(unix)]
-fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Result<(), SoldrError> {
-    let Some(daemon_name) = inherited_private_daemon_name() else {
-        return Ok(());
-    };
-
-    let status = zccache_status(zccache)?;
-    if status.status.success() {
-        return Ok(());
-    }
-    if !zccache_daemon_unavailable(&status.stderr) {
-        return Ok(());
-    }
-
-    eprintln!(
-        "soldr: zccache private daemon {daemon_name} unavailable before rustc exec; restarting"
-    );
-    let start = zccache_command_output(zccache, &["start"])?;
-    if !start.status.success() {
-        return Err(SoldrError::Other(format!(
-            "zccache start failed while recovering private daemon {daemon_name}: {}",
-            String::from_utf8_lossy(&start.stderr).trim()
-        )));
-    }
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let status = zccache_status(zccache)?;
-        if status.status.success() {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(SoldrError::Other(format!(
-                "zccache private daemon {daemon_name} did not become available after restart: {}",
-                String::from_utf8_lossy(&status.stderr).trim()
-            )));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
-#[cfg(unix)]
-fn zccache_status(zccache: &std::path::Path) -> Result<std::process::Output, SoldrError> {
-    zccache_command_output(zccache, &["status"])
-}
-
-#[cfg(unix)]
-fn zccache_command_output(
-    zccache: &std::path::Path,
-    args: &[&str],
-) -> Result<std::process::Output, SoldrError> {
-    let mut command = std::process::Command::new(zccache);
-    command.args(args);
-    suppress_windows_console_window(&mut command);
-    Ok(command.output()?)
-}
-
-#[cfg(unix)]
-fn zccache_daemon_unavailable(stderr: &[u8]) -> bool {
-    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    stderr.contains("cannot connect to daemon")
-        || stderr.contains("no such file or directory")
-        || stderr.contains("lost connection to daemon")
-        || stderr.contains("not accepting connections")
 }
 
 /// Windows-only wrapper invocation: spawn zccache with its stderr piped so we
@@ -455,6 +393,7 @@ fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, Sol
     })
 }
 
+#[cfg(not(unix))]
 fn inherited_private_daemon_name() -> Option<String> {
     std::env::var(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR)
         .ok()
