@@ -3,7 +3,7 @@
 soldr has two performance workflows:
 
 1. **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix") — the regression-gate workflow. Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
-2. **`.github/workflows/benchmark-stats.yml`** (issue #768) — per-commit trend publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
+2. **`.github/workflows/benchmark-stats.yml`** (issues #768 and #785) — per-commit trend and README comparison publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, measures bare cargo vs sccache vs soldr comparison bars, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
 
 For the perf-matrix per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md). For the benchmark-stats canary set + discovery URLs, see the **Per-commit benchmark stats** section near the end of this file.
 
@@ -194,6 +194,45 @@ The manifest points at:
 | `cargo-check-medium-cross-verb` | build → check; pins #758 / [zccache#776](https://github.com/zackees/zccache/issues/776) | 1500 |
 | `touch-no-change-medium-warm` | source mtimes bumped, content unchanged; expect 100% hits | 1500 |
 | `worktree-share-medium-warm` | second fixture extraction, same `SOLDR_CACHE_DIR` | 1500 |
+
+## README comparison bars (issue #785)
+
+The README uses `benchmark-rust-only.png` and `benchmark-rust-c.png` for an at-a-glance bare cargo vs sccache vs soldr comparison. The historical trend PNG remains published as `benchmark-trend.png`, but it is for the Pages deep-dive rather than the README value proposition.
+
+### Workloads
+
+| Benchmark | Fixture | Why |
+|---|---|---|
+| `rust-only` | this `soldr` repository | Real Rust workspace with a meaningful dependency graph; it keeps the headline chart self-contained and current. |
+| `rust-c` | `perf/fixtures/sqlite-link` | Small Rust+C fixture that exercises `cc-rs` / `build.rs` native compilation without adding an external checkout. |
+
+### Tools
+
+| Tool | Command layer | Cache layer |
+|---|---|---|
+| `bare` | `cargo build --release --locked` | None. Universal baseline. |
+| `sccache` | `RUSTC_WRAPPER=sccache cargo build --release --locked` | The common Rust `RUSTC_WRAPPER` alternative. The workflow pins the Ubuntu package and records `sccache --version` in `latest.json#metadata.sccache_version`. |
+| `soldr` | `soldr cargo build --release --locked` | soldr-managed zccache with soldr's wrapper and path-remap defaults. |
+
+`swatinem/rust-cache` is intentionally not a bar. It caches `target/` between GitHub Actions jobs, which is a different layer from a compiler wrapper. `cargo-chef` and linker choices such as `mold` are also different layers, so they are not included in the wrapper comparison.
+
+### Scenarios
+
+| Scenario | What it measures | Samples |
+|---|---|---|
+| `cold` | Fresh source checkout, fresh target dir, and fresh cache. This should usually be a wash, and it sets honest expectations. | Median of 3 per tool/workload cell. |
+| `warm` | Populate the tool cache, run `cargo clean`, then time the rebuild in the same workspace. | Single sample. |
+| `worktree-share` | Build workspace A to populate the cache, then time a sibling workspace B at the same commit. This highlights soldr's `ZCCACHE_PATH_REMAP=auto` parent-child share story. | Single sample. |
+
+### Published data shape
+
+`bench/run_comparison.sh` writes `benchmark-output/comparison.json`; `bench/assemble_benchmark_stats.sh` copies the meaningful parts into `latest.json`:
+
+- `latest.json#metadata.sccache_version` records the pinned sccache binary version alongside soldr and rustc.
+- `latest.json#comparison.scenarios` and `latest.json#comparison.tools` describe chart ordering.
+- `latest.json#results` contains one row per `(benchmark, scenario, tool)` with `command`, `wall_ms`, `mode`, `fixture`, and display labels.
+
+The Pages view renders interactive Chart.js bars from `latest.json#results` above the historical trend charts. The static README PNGs are rendered from the same comparison JSON by `bench/render_comparison_bars.py`.
 
 ### Branch shape
 

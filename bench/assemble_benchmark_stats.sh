@@ -4,6 +4,7 @@
 #
 # Inputs:
 #   ./benchmark-output/canaries.json   (produced by run_canaries.sh)
+#   ./benchmark-output/comparison.json (produced by run_comparison.sh)
 #   ./bench/index.html                 (static Chart.js page)
 #   ENV REPO_OWNER REPO_NAME REPO_FULL GIT_SHA RUN_URL
 #
@@ -26,6 +27,7 @@ HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HERE}/.." && pwd)"
 
 IN_FILE="${REPO_ROOT}/benchmark-output/canaries.json"
+COMPARISON_FILE="${REPO_ROOT}/benchmark-output/comparison.json"
 OUT_DIR="${REPO_ROOT}/benchmark-stats"
 RAW_BASE="https://raw.githubusercontent.com/${REPO_FULL}/benchmark-stats"
 PAGES_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}/"
@@ -35,6 +37,11 @@ mkdir -p "${OUT_DIR}"
 
 if [[ ! -f "${IN_FILE}" ]]; then
     echo "assemble: ${IN_FILE} not found; did run_canaries.sh complete?" >&2
+    exit 1
+fi
+
+if [[ ! -f "${COMPARISON_FILE}" ]]; then
+    echo "assemble: ${COMPARISON_FILE} not found; did run_comparison.sh complete?" >&2
     exit 1
 fi
 
@@ -83,6 +90,7 @@ jq -n \
     --arg repository "${REPO_FULL}" \
     --arg run_url "${RUN_URL}" \
     --slurpfile canaries_doc "${IN_FILE}" \
+    --slurpfile comparison_doc "${COMPARISON_FILE}" \
     '{
         schema_version: 1,
         metadata: {
@@ -93,9 +101,15 @@ jq -n \
             run_url: $run_url,
             fixture: "medium",
             soldr_version: $canaries_doc[0].soldr_version,
-            rustc_version: $canaries_doc[0].rustc_version
+            rustc_version: $canaries_doc[0].rustc_version,
+            sccache_version: $comparison_doc[0].sccache_version
         },
-        canaries: $canaries_doc[0].wall_ms
+        canaries: $canaries_doc[0].wall_ms,
+        comparison: {
+            scenarios: $comparison_doc[0].scenarios,
+            tools: $comparison_doc[0].tools
+        },
+        results: $comparison_doc[0].results
     }' >"${OUT_DIR}/latest.json"
 
 echo "assemble: wrote latest.json" >&2
@@ -145,9 +159,19 @@ jq -n \
                 url: $pages_url,
                 content_type: "text/html"
             },
-            readme_image: {
-                description: "Static PNG of the canary trend; embedded in repo README.md and updated on every main-merge (#771).",
+            trend_image: {
+                description: "Static PNG of the canary trend; retained for the Pages historical deep-dive.",
                 url: ($raw_base + "/benchmark-trend.png"),
+                content_type: "image/png"
+            },
+            comparison_rust: {
+                description: "Bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
+                url: ($raw_base + "/benchmark-rust-only.png"),
+                content_type: "image/png"
+            },
+            comparison_rust_c: {
+                description: "Bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
+                url: ($raw_base + "/benchmark-rust-c.png"),
                 content_type: "image/png"
             }
         },

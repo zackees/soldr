@@ -88,10 +88,18 @@
         <a href="manifest.json">manifest.json</a>
         <a href="latest.json">latest.json</a>
         <a href="history.jsonl">history.jsonl</a>
+        <a href="benchmark-rust-only.png">benchmark-rust-only.png</a>
+        <a href="benchmark-rust-c.png">benchmark-rust-c.png</a>
         <a href="benchmark-trend.png">benchmark-trend.png</a>
         <a href="https://github.com/zackees/soldr/blob/main/PERF.md#per-commit-benchmark-stats-issue-768">methodology (PERF.md)</a>
     </nav>
     <div class="meta" id="header-meta">Loading…</div>
+
+    <h2>Latest comparison - Rust workload</h2>
+    <div class="chart-wrap"><canvas id="comparison-rust-only"></canvas></div>
+
+    <h2>Latest comparison - Rust+C workload</h2>
+    <div class="chart-wrap"><canvas id="comparison-rust-c"></canvas></div>
 
     <h2>Latest run — canaries vs theoretical</h2>
     <div class="summary" id="summary">Loading…</div>
@@ -120,6 +128,12 @@
         'cargo-check-medium-cross-verb':        '#f57c00',
         'touch-no-change-medium-warm':          '#7b1fa2',
         'worktree-share-medium-warm':           '#00838f',
+    };
+
+    const TOOL_COLORS = {
+        bare: '#d32f2f',
+        sccache: '#1976d2',
+        soldr: '#2da44e',
     };
 
     async function fetchJson(path) {
@@ -228,6 +242,87 @@
         });
     }
 
+    function renderComparisonChart(canvasId, latest, benchmark) {
+        const canvas = document.getElementById(canvasId);
+        const rows = (latest && latest.results || []).filter(row => row.benchmark === benchmark);
+        if (rows.length === 0) {
+            canvas.replaceWith(Object.assign(document.createElement('div'), {
+                className: 'empty',
+                textContent: 'No comparison rows yet.',
+            }));
+            return null;
+        }
+
+        const scenarioDefs = latest.comparison && latest.comparison.scenarios || [];
+        const toolDefs = latest.comparison && latest.comparison.tools || [];
+        const scenarios = scenarioDefs.map(item => item.key);
+        const tools = toolDefs.map(item => item.key);
+        const scenarioLabels = Object.fromEntries(scenarioDefs.map(item => [item.key, item.label]));
+        const toolLabels = Object.fromEntries(toolDefs.map(item => [item.key, item.label]));
+        const byKey = new Map(rows.map(row => [`${row.scenario_key}:${row.tool}`, row]));
+
+        const datasets = tools.map(tool => ({
+            label: toolLabels[tool] || tool,
+            data: scenarios.map(scenario => {
+                const row = byKey.get(`${scenario}:${tool}`);
+                return row && typeof row.wall_ms === 'number' && row.wall_ms > 0 ? row.wall_ms : null;
+            }),
+            backgroundColor: TOOL_COLORS[tool] || '#656d76',
+            borderColor: TOOL_COLORS[tool] || '#656d76',
+            borderWidth: 1,
+        }));
+
+        return new Chart(canvas.getContext('2d'), {
+            type: 'bar',
+            data: {
+                labels: scenarios.map(key => scenarioLabels[key] || key),
+                datasets,
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'index', intersect: false },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'scenario' },
+                    },
+                    y: {
+                        type: 'logarithmic',
+                        title: { display: true, text: 'wall-time (ms, log scale)' },
+                    },
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { boxWidth: 12, font: { size: 11 } },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: (item) => {
+                                const scenario = scenarios[item.dataIndex];
+                                const tool = tools[item.datasetIndex];
+                                const row = byKey.get(`${scenario}:${tool}`);
+                                if (!row) return `${item.dataset.label}: no data`;
+                                return `${item.dataset.label}: ${row.wall_ms.toLocaleString()} ms - ${row.command}`;
+                            },
+                            afterBody: (items) => {
+                                if (!items.length) return '';
+                                const scenario = scenarios[items[0].dataIndex];
+                                const sccache = byKey.get(`${scenario}:sccache`);
+                                const soldr = byKey.get(`${scenario}:soldr`);
+                                if (!sccache || !soldr || !sccache.wall_ms || !soldr.wall_ms) return '';
+                                const ratio = sccache.wall_ms / soldr.wall_ms;
+                                if (ratio >= 1) return `soldr vs sccache: ${ratio.toFixed(ratio >= 10 ? 0 : 1)}x faster`;
+                                return `soldr vs sccache: ${(1 / ratio).toFixed(1)}x slower`;
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
     function renderSummary(latest, manifestCanaries) {
         const root = document.getElementById('summary');
         root.innerHTML = '';
@@ -260,11 +355,13 @@
         const runUrl = latest && latest.metadata && latest.metadata.run_url;
         const soldr = latest && latest.metadata && latest.metadata.soldr_version;
         const rustc = latest && latest.metadata && latest.metadata.rustc_version;
+        const sccache = latest && latest.metadata && latest.metadata.sccache_version;
         const parts = [
             `Last run: <code>${shortSha(sha)}</code> at ${generatedAt}`,
         ];
         if (runUrl) parts.push(`<a href="${runUrl}" target="_blank" rel="noopener">workflow run</a>`);
         if (soldr) parts.push(`<code>${soldr}</code>`);
+        if (sccache) parts.push(`<code>${sccache}</code>`);
         if (rustc) parts.push(`<code>${rustc}</code>`);
         document.getElementById('header-meta').innerHTML = parts.join(' · ');
     }
@@ -279,6 +376,10 @@
             ``,
             `# Slim per-commit history (rolling ${manifest.artifacts.history.max_lines} lines)`,
             `curl ${manifest.artifacts.history.url}`,
+            ``,
+            `# README comparison PNGs`,
+            `curl ${manifest.artifacts.comparison_rust.url}`,
+            `curl ${manifest.artifacts.comparison_rust_c.url}`,
         ];
         document.getElementById('how-to-fetch').textContent = lines.join('\n');
     }
@@ -299,6 +400,8 @@
 
         const canaryNames = Object.keys(manifest.canaries);
         renderHeader(manifest, latest);
+        renderComparisonChart('comparison-rust-only', latest, 'rust-only');
+        renderComparisonChart('comparison-rust-c', latest, 'rust-c');
         renderSummary(latest, manifest.canaries);
         renderHowToFetch(manifest);
 
