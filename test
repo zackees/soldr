@@ -19,8 +19,8 @@ fi
 run_step "Build workspace" "${CARGO[@]}" build --workspace --locked
 run_step "Run library tests" "${CARGO[@]}" test --workspace --lib --locked
 run_step "Run CLI smoke tests" "${CARGO[@]}" test -p soldr-cli --tests --locked
-run_step "Run fetch integration test" "${CARGO[@]}" test -p soldr-fetch --test fetch_crgx --locked
-run_step "Run install-zccache integration test" "${CARGO[@]}" test -p soldr-fetch --test install_zccache --locked
+run_step "Run fetch integration test" "${CARGO[@]}" test -p soldr-cli --test fetch_crgx --locked
+run_step "Run install-zccache integration test" "${CARGO[@]}" test -p soldr-cli --test lib_install_zccache --locked
 run_step "Run Python wrapper tests" uv run pytest -n auto tests -v --durations=0
 
 printf '\nPipeline complete.\n'
