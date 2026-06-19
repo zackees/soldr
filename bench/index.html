@@ -24,6 +24,17 @@
             line-height: 1.5;
         }
         h1 { margin: 0 0 4px 0; font-size: 24px; }
+        nav.top-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            margin: 8px 0 16px 0;
+            padding: 8px 12px;
+            background: #f6f8fa;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 13px;
+        }
         h2 { margin: 32px 0 12px 0; font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
         .meta { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
         .meta code { background: #f6f8fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
@@ -72,6 +83,14 @@
 </head>
 <body>
     <h1>soldr benchmark stats</h1>
+    <nav class="top-links" aria-label="Data sources">
+        <a href="https://github.com/zackees/soldr/tree/benchmark-stats">View branch (raw data)</a>
+        <a href="manifest.json">manifest.json</a>
+        <a href="latest.json">latest.json</a>
+        <a href="history.jsonl">history.jsonl</a>
+        <a href="benchmark-trend.png">benchmark-trend.png</a>
+        <a href="https://github.com/zackees/soldr/blob/main/PERF.md#per-commit-benchmark-stats-issue-768">methodology (PERF.md)</a>
+    </nav>
     <div class="meta" id="header-meta">Loading…</div>
 
     <h2>Latest run — canaries vs theoretical</h2>
