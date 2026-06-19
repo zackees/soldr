@@ -261,7 +261,16 @@ fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Resul
         return Ok(());
     };
 
-    let status = zccache_status(zccache)?;
+    // Issue #761: status/start probes here MUST target the same private
+    // daemon namespace the wrapper is about to exec into. Bare
+    // `zccache status` / `zccache start` talk to the *default* daemon —
+    // independent state. If the inherited private daemon is gone and the
+    // recovery starts the default one, the post-exec wrapper still finds
+    // no matching private daemon and serves no cache, which surfaces as
+    // 0% hits across every warm scenario in the perf matrix.
+    let private_args = ["--private-daemon", "--daemon-name", daemon_name.as_str()];
+
+    let status = zccache_private_status(zccache, &private_args)?;
     if status.status.success() {
         return Ok(());
     }
@@ -272,7 +281,9 @@ fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Resul
     eprintln!(
         "soldr: zccache private daemon {daemon_name} unavailable before rustc exec; restarting"
     );
-    let start = zccache_command_output(zccache, &["start"])?;
+    let mut start_args: Vec<&str> = vec!["start"];
+    start_args.extend_from_slice(&private_args);
+    let start = zccache_command_output(zccache, &start_args)?;
     if !start.status.success() {
         return Err(SoldrError::Other(format!(
             "zccache start failed while recovering private daemon {daemon_name}: {}",
@@ -282,7 +293,7 @@ fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Resul
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let status = zccache_status(zccache)?;
+        let status = zccache_private_status(zccache, &private_args)?;
         if status.status.success() {
             return Ok(());
         }
@@ -297,8 +308,13 @@ fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Resul
 }
 
 #[cfg(unix)]
-fn zccache_status(zccache: &std::path::Path) -> Result<std::process::Output, SoldrError> {
-    zccache_command_output(zccache, &["status"])
+fn zccache_private_status(
+    zccache: &std::path::Path,
+    private_args: &[&str],
+) -> Result<std::process::Output, SoldrError> {
+    let mut args: Vec<&str> = vec!["status"];
+    args.extend_from_slice(private_args);
+    zccache_command_output(zccache, &args)
 }
 
 #[cfg(unix)]
