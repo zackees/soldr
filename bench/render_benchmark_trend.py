@@ -77,7 +77,10 @@ def render_trend(rows):
     x = list(range(len(rows)))  # commit index; oldest on left, newest on right
     fig, ax = plt.subplots(figsize=(8, 4.5))
     for name in canary_names:
-        ys = [row.get("canaries", {}).get(name) for row in rows]
+        # 0 ms means the canary failed (run_canaries.sh's defensive
+        # fallback). Map to None so it shows as a gap on the log axis
+        # rather than as a matplotlib log-error / misleading floor.
+        ys = [(row.get("canaries", {}).get(name) or None) for row in rows]
         ax.plot(
             x,
             ys,

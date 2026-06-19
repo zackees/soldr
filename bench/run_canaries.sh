@@ -7,22 +7,21 @@
 # Canary sequence is chosen so each measurement starts from a known
 # state. Total wall ~100s on a quiet Linux runner.
 #
+# Defensive: every canary runs with `set +e` around it via the
+# `measure()` helper. A canary failure logs stderr to the workflow
+# log and records 0 ms so the publish step still runs and the README
+# image link resolves with whatever data we have. The PNG renderer
+# treats 0 ms as a missing data point.
+#
 # Output schema (canaries.json):
 #   {
-#     "wall_ms": {
-#       "cargo-build-medium-cold": <int>,
-#       "cargo-build-medium-warm": <int>,
-#       "cargo-build-medium-from-warm-zccache": <int>,
-#       "cargo-check-medium-cross-verb": <int>,
-#       "touch-no-change-medium-warm": <int>,
-#       "worktree-share-medium-warm": <int>
-#     },
-#     "ran_at": "ISO-8601 UTC",
-#     "soldr_version": "<output of `soldr --version`>",
-#     "rustc_version": "<output of `rustc --version`>"
+#     "wall_ms": { "<canary-name>": <int>, ... },
+#     "ran_at":         "ISO-8601 UTC",
+#     "soldr_version":  "<output of soldr --version>",
+#     "rustc_version":  "<output of rustc --version>"
 #   }
 
-set -euo pipefail
+set -uo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${HERE}/.." && pwd)"
@@ -33,8 +32,8 @@ trap 'rm -rf "${WORK_DIR}"' EXIT
 
 mkdir -p "${OUT_DIR}"
 
-# Single private cache for the whole canary sweep. Every canary writes to
-# the same daemon so warm-cache measurements are meaningful.
+# Single private cache for the whole canary sweep. Every canary writes
+# to the same daemon so warm-cache measurements are meaningful.
 export SOLDR_CACHE_DIR="${WORK_DIR}/cache"
 mkdir -p "${SOLDR_CACHE_DIR}"
 
@@ -53,43 +52,63 @@ elapsed_ms() {
     echo "$(( end - start ))"
 }
 
+# measure NAME CMD...
+# Runs CMD with stderr passed through to the workflow log, recording
+# the wall time. On failure: log a one-line marker and record 0 ms
+# so the rest of the canary sweep continues and the publish proceeds.
+measure() {
+    local name="$1"
+    shift
+    local t0 rc
+    echo "::group::canary $name" >&2
+    echo "+ $*" >&2
+    t0="$(now_ms)"
+    set +e
+    "$@"
+    rc=$?
+    set -e
+    local elapsed
+    elapsed="$(elapsed_ms "${t0}")"
+    if (( rc == 0 )); then
+        echo "canary $name: ok (${elapsed} ms)" >&2
+        echo "::endgroup::" >&2
+        echo "${elapsed}"
+    else
+        echo "canary $name: FAILED (rc=${rc}, ${elapsed} ms) — recording 0" >&2
+        echo "::endgroup::" >&2
+        echo "0"
+    fi
+}
+
 # --- Canary 1: cargo-build-medium-cold --------------------------------
 # Fresh fixture, fresh cache. Wall time = the maximum-cost baseline.
 
 cd "${PROJECT_A}"
-t0="$(now_ms)"
-soldr cargo build --release >/dev/null 2>&1
-ms_cold="$(elapsed_ms "${t0}")"
+ms_cold="$(measure cargo-build-medium-cold soldr cargo build --release)"
 
 # --- Canary 2: cargo-build-medium-warm --------------------------------
 # Immediate repeat. target/ intact, nothing to rebuild. Wall time =
 # cargo's freshness fast-path.
 
-t0="$(now_ms)"
-soldr cargo build --release >/dev/null 2>&1
-ms_warm="$(elapsed_ms "${t0}")"
+ms_warm="$(measure cargo-build-medium-warm soldr cargo build --release)"
 
 # --- Canary 4: cargo-check-medium-cross-verb --------------------------
 # Run check AFTER warm build but BEFORE any other state change. This
 # pins #758 / zccache#776 — today every unit re-emits metadata because
 # the rustc --emit flag differs from what build used.
 
-t0="$(now_ms)"
-soldr cargo check --release >/dev/null 2>&1
-ms_check_cross_verb="$(elapsed_ms "${t0}")"
+ms_check_cross_verb="$(measure cargo-check-medium-cross-verb soldr cargo check --release)"
 
 # --- Canary 5: touch-no-change-medium-warm ----------------------------
 # Bump mtimes on every source file (content unchanged), wipe target/,
 # rebuild. Cargo must invoke rustc; zccache should hit on every unit
 # because the content hash is unchanged.
 
-find "${PROJECT_A}" -name '*.rs' -exec touch {} +
-find "${PROJECT_A}" -name 'Cargo.toml' -exec touch {} +
-find "${PROJECT_A}" -name 'Cargo.lock' -exec touch {} +
-cargo clean >/dev/null 2>&1
-t0="$(now_ms)"
-soldr cargo build --release >/dev/null 2>&1
-ms_touch="$(elapsed_ms "${t0}")"
+find "${PROJECT_A}" -name '*.rs' -exec touch {} + || true
+find "${PROJECT_A}" -name 'Cargo.toml' -exec touch {} + || true
+find "${PROJECT_A}" -name 'Cargo.lock' -exec touch {} + || true
+cargo clean || true
+ms_touch="$(measure touch-no-change-medium-warm soldr cargo build --release)"
 
 # --- Canary 3: cargo-build-medium-from-warm-zccache -------------------
 # cargo clean only (no mtime bump). Cargo recompiles from scratch;
@@ -97,10 +116,8 @@ ms_touch="$(elapsed_ms "${t0}")"
 # cargo's fingerprint reason for invoking rustc is different here
 # (cleaned target/ vs. dirty mtimes).
 
-cargo clean >/dev/null 2>&1
-t0="$(now_ms)"
-soldr cargo build --release >/dev/null 2>&1
-ms_from_warm="$(elapsed_ms "${t0}")"
+cargo clean || true
+ms_from_warm="$(measure cargo-build-medium-from-warm-zccache soldr cargo build --release)"
 
 # --- Canary 6: worktree-share-medium-warm -----------------------------
 # Second extraction of the SAME fixture into a sibling dir, same
@@ -108,12 +125,10 @@ ms_from_warm="$(elapsed_ms "${t0}")"
 
 FIX_B="${WORK_DIR}/medium-B"
 mkdir -p "${FIX_B}"
-bash "${REPO_ROOT}/perf/lib/extract.sh" medium "${FIX_B}"
+bash "${REPO_ROOT}/perf/lib/extract.sh" medium "${FIX_B}" || true
 PROJECT_B="${FIX_B}/medium"
 cd "${PROJECT_B}"
-t0="$(now_ms)"
-soldr cargo build --release >/dev/null 2>&1
-ms_worktree_share="$(elapsed_ms "${t0}")"
+ms_worktree_share="$(measure worktree-share-medium-warm soldr cargo build --release)"
 
 # --- Emit -------------------------------------------------------------
 
