@@ -197,7 +197,7 @@ The manifest points at:
 
 ## README comparison bars (issue #785)
 
-The README uses `benchmark-rust-only.png` and `benchmark-rust-c.png` for an at-a-glance bare cargo vs sccache vs soldr comparison. The historical trend PNG remains published as `benchmark-trend.png`, but it is for the Pages deep-dive rather than the README value proposition.
+The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a-glance bare cargo vs sccache vs soldr comparison. The images intentionally match zccache's dark README benchmark style. The historical trend PNG remains published as `benchmark-trend.png`, but it is for the Pages deep-dive rather than the README value proposition.
 
 ### Workloads
 
@@ -232,7 +232,7 @@ The README uses `benchmark-rust-only.png` and `benchmark-rust-c.png` for an at-a
 - `latest.json#comparison.scenarios` and `latest.json#comparison.tools` describe chart ordering.
 - `latest.json#results` contains one row per `(benchmark, scenario, tool)` with `command`, `wall_ms`, `mode`, `fixture`, and display labels.
 
-The Pages view renders interactive Chart.js bars from `latest.json#results` above the historical trend charts. The static README PNGs are rendered from the same comparison JSON by `bench/render_comparison_bars.py`.
+The Pages view renders interactive Chart.js bars from `latest.json#results` above the historical trend charts. The static README JPGs are rendered from the same comparison JSON by `bench/render_comparison_bars.py`.
 
 ### Branch shape
 

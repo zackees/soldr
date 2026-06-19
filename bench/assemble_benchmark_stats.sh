@@ -165,14 +165,14 @@ jq -n \
                 content_type: "image/png"
             },
             comparison_rust: {
-                description: "Bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
-                url: ($raw_base + "/benchmark-rust-only.png"),
-                content_type: "image/png"
+                description: "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
+                url: ($raw_base + "/benchmark-rust-only.jpg"),
+                content_type: "image/jpeg"
             },
             comparison_rust_c: {
-                description: "Bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
-                url: ($raw_base + "/benchmark-rust-c.png"),
-                content_type: "image/png"
+                description: "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
+                url: ($raw_base + "/benchmark-rust-c.jpg"),
+                content_type: "image/jpeg"
             }
         },
         canaries: {
