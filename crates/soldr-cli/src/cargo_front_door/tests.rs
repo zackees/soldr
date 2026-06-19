@@ -70,6 +70,77 @@ fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
 }
 
 #[test]
+fn fresh_workspace_env_guard_removes_and_restores_soldr_workspace_state() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _zccache = EnvVarGuard::set(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
+    let _target_bundle = EnvVarGuard::set(crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR, "/old/bundle");
+    let _setup = EnvVarGuard::set("SETUP_SOLDR_WORKSPACE", "/old/workspace");
+    let _cache_dir = EnvVarGuard::set("SOLDR_CACHE_DIR", "/intentional/cache");
+
+    {
+        let _guard = FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(false);
+
+        assert!(std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_none());
+        assert!(std::env::var_os(crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR).is_none());
+        assert!(std::env::var_os("SETUP_SOLDR_WORKSPACE").is_none());
+        assert_eq!(
+            std::env::var_os("SOLDR_CACHE_DIR"),
+            Some(OsString::from("/intentional/cache"))
+        );
+    }
+
+    assert_eq!(
+        std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR),
+        Some(OsString::from("/old/zccache"))
+    );
+    assert_eq!(
+        std::env::var_os(crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR),
+        Some(OsString::from("/old/bundle"))
+    );
+    assert_eq!(
+        std::env::var_os("SETUP_SOLDR_WORKSPACE"),
+        Some(OsString::from("/old/workspace"))
+    );
+}
+
+#[test]
+fn trusted_workspace_env_guard_leaves_inherited_soldr_state_available() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _zccache = EnvVarGuard::set(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
+
+    let _guard = FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(true);
+
+    assert_eq!(
+        std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR),
+        Some(OsString::from("/old/zccache"))
+    );
+}
+
+#[test]
+fn child_cargo_scrubs_inherited_soldr_workspace_state() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _setup = EnvVarGuard::set("SETUP_SOLDR_WORKSPACE", "/old/workspace");
+    let mut command = std::process::Command::new("cargo");
+    command.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, "/old/zccache");
+    command.env(crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR, "/old/bundle");
+
+    scrub_inherited_soldr_workspace_env_for_child_cargo(&mut command);
+
+    assert_eq!(
+        command_env_override(&command, crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR),
+        Some(None)
+    );
+    assert_eq!(
+        command_env_override(&command, crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR),
+        Some(None)
+    );
+    assert_eq!(
+        command_env_override(&command, "SETUP_SOLDR_WORKSPACE"),
+        Some(None)
+    );
+}
+
+#[test]
 fn low_disk_warning_formats_yellow_below_threshold() {
     let message = low_disk_warning_for_free_bytes(1536 * 1024 * 1024, true)
         .expect("expected low-disk warning below threshold");

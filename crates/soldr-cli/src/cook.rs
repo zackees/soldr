@@ -364,9 +364,13 @@ pub(crate) async fn run_cook(
     // Phase 1: prepare. Cheap, deterministic, reads only the manifest tree.
     if !parsed.cook_only {
         let prepare_args = build_chef_prepare_args(&ctx);
-        let code =
-            cargo_front_door::run_cargo_front_door(&prepare_args, cache_enabled, zccache_source)
-                .await?;
+        let code = cargo_front_door::run_cargo_front_door(
+            &prepare_args,
+            cache_enabled,
+            zccache_source,
+            false,
+        )
+        .await?;
         if code != 0 {
             return Ok(code);
         }
@@ -434,7 +438,8 @@ pub(crate) async fn run_cook(
     // project. Output lands in `target/`.
     let cook_args = build_chef_cook_args(&ctx, &parsed);
     let cook_result =
-        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, zccache_source).await;
+        cargo_front_door::run_cargo_front_door(&cook_args, cache_enabled, zccache_source, false)
+            .await;
 
     // Restore the project to its pre-cook state regardless of how cook exited,
     // so the tree is pristine for every subsequent build step (#566).

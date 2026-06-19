@@ -197,7 +197,7 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
 }
 
 #[test]
-fn managed_zccache_honors_explicit_cache_dir_override() {
+fn managed_zccache_honors_explicit_cache_dir_override_when_trusted() {
     let cache_root = unique_temp_dir("cargo-explicit-zccache-dir");
     let user_zccache_dir = cache_root.join("user-zccache");
     let log_path = cache_root.join("tool.log");
@@ -206,6 +206,7 @@ fn managed_zccache_honors_explicit_cache_dir_override() {
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("ZCCACHE_CACHE_DIR", &user_zccache_dir)
+        .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)

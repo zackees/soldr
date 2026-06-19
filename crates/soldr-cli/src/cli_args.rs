@@ -73,6 +73,14 @@ pub(crate) struct Cli {
     /// Disable soldr's compilation cache for this run
     #[arg(long)]
     pub(crate) no_cache: bool,
+    /// Trust inherited soldr/zccache workspace environment for cargo runs
+    #[arg(
+        long,
+        help = "Trust inherited soldr/zccache workspace env for cargo runs",
+        long_help = "Trust inherited soldr/zccache workspace environment for cargo runs.\n\n\
+By default, `soldr cargo ...` resolves a fresh soldr workspace context from the current cwd/manifest while preserving normal OS, Cargo, Rust, proxy, cert, and CI environment. This flag is an advanced escape hatch for CI/action workflows that intentionally inject soldr/zccache workspace state."
+    )]
+    pub(crate) trust_inherited_soldr_env: bool,
     #[arg(
         long,
         value_enum,

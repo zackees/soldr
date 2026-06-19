@@ -29,6 +29,7 @@ use crate::zccache::{
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
 use crate::{apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, ZccacheSourceArg};
+use std::ffi::OsString;
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -97,6 +98,73 @@ pub(crate) const NO_GC_TARGET_ENV_VAR: &str = "SOLDR_NO_GC_TARGET";
 
 const TEST_FORCE_WORKSPACE_TRAMPOLINE_ENV_VAR: &str = "SOLDR_TEST_FORCE_WORKSPACE_TRAMPOLINE";
 
+const INHERITED_SOLDR_WORKSPACE_ENV_VARS: &[&str] = &[
+    crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
+    crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+    crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
+    crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
+    crate::TARGET_CACHE_MODE_ENV_VAR,
+    "SOLDR_TARGET_CACHE_DIR",
+    crate::TARGET_CACHE_BUNDLE_DIR_ENV_VAR,
+    crate::TARGET_CACHE_PROFILE_ENV_VAR,
+    crate::TARGET_CACHE_BACKEND_ENV_VAR,
+    crate::TARGET_CACHE_TAR_THREADS_ENV_VAR,
+    "SOLDR_TARGET_CACHE_COMPRESS",
+    "SOLDR_TARGET_CACHE_COMPRESS_LEVEL",
+    "SOLDR_BUILD_CACHE_MODE",
+];
+
+struct EnvRestore {
+    key: OsString,
+    previous: Option<OsString>,
+}
+
+struct FreshSoldrWorkspaceEnvGuard {
+    entries: Vec<EnvRestore>,
+}
+
+impl FreshSoldrWorkspaceEnvGuard {
+    fn apply_unless_trusted(trust_inherited_soldr_env: bool) -> Self {
+        if trust_inherited_soldr_env {
+            return Self {
+                entries: Vec::new(),
+            };
+        }
+
+        let mut keys: Vec<OsString> = INHERITED_SOLDR_WORKSPACE_ENV_VARS
+            .iter()
+            .map(OsString::from)
+            .collect();
+        keys.extend(
+            std::env::vars_os()
+                .map(|(key, _)| key)
+                .filter(|key| key.to_string_lossy().starts_with("SETUP_SOLDR_")),
+        );
+        keys.sort();
+        keys.dedup();
+
+        let mut entries = Vec::new();
+        for key in keys {
+            let previous = std::env::var_os(&key);
+            if previous.is_some() {
+                std::env::remove_var(&key);
+                entries.push(EnvRestore { key, previous });
+            }
+        }
+        Self { entries }
+    }
+}
+
+impl Drop for FreshSoldrWorkspaceEnvGuard {
+    fn drop(&mut self) {
+        for entry in self.entries.iter().rev() {
+            if let Some(value) = &entry.previous {
+                std::env::set_var(&entry.key, value);
+            }
+        }
+    }
+}
+
 /// Outcome of stripping the `--no-gc-target*` flags from a cargo arg
 /// vector. Mirrors the env-var fallback so callers can union all
 /// inputs into a single before/after decision.
@@ -118,6 +186,16 @@ impl GcTargetOptOut {
 
 fn env_disables_target_gc() -> bool {
     std::env::var_os(NO_GC_TARGET_ENV_VAR)
+        .map(|v| {
+            let s = v.to_string_lossy();
+            let t = s.trim();
+            !t.is_empty() && !t.eq_ignore_ascii_case("0") && !t.eq_ignore_ascii_case("false")
+        })
+        .unwrap_or(false)
+}
+
+fn env_flag_truthy(key: &str) -> bool {
+    std::env::var_os(key)
         .map(|v| {
             let s = v.to_string_lossy();
             let t = s.trim();
@@ -191,16 +269,34 @@ fn scrub_soldr_cache_lifecycle_env_for_child_cargo(command: &mut std::process::C
     command.env_remove(SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR);
 }
 
+fn scrub_inherited_soldr_workspace_env_for_child_cargo(command: &mut std::process::Command) {
+    for key in INHERITED_SOLDR_WORKSPACE_ENV_VARS {
+        command.env_remove(key);
+    }
+    for key in std::env::vars_os()
+        .map(|(key, _)| key)
+        .filter(|key| key.to_string_lossy().starts_with("SETUP_SOLDR_"))
+    {
+        command.env_remove(key);
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
     zccache_source: ZccacheSourceArg,
+    trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     if cargo_args_use_reserved_no_cache(args) {
         return Err(SoldrError::Other(
             "`--no-cache` must appear before `cargo`, as in `soldr --no-cache cargo build`".into(),
         ));
     }
+
+    let trust_inherited_soldr_env =
+        trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
+    let _fresh_workspace_env =
+        FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(trust_inherited_soldr_env);
 
     let cache_lifecycle = cache_lifecycle_from_env()?;
     let command_lifetime_shutdown_timeout = if cache_lifecycle == CacheLifecycle::Command {
@@ -294,6 +390,9 @@ pub(crate) async fn run_cargo_front_door(
     // process. Letting cargo inherit them leaks daemon lifecycle policy
     // into build scripts and test binaries that may spawn nested soldr.
     scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
+    if !trust_inherited_soldr_env {
+        scrub_inherited_soldr_workspace_env_for_child_cargo(&mut command);
+    }
     // soldr cargo is the top of the invocation tree, so any inherited
     // MAKEFLAGS/CARGO_MAKEFLAGS points at jobserver fds that aren't open in
     // our process. Stripping them lets cargo start a fresh jobserver instead

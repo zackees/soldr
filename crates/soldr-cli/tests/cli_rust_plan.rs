@@ -78,6 +78,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
+        .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TARGET_CACHE_MODE", "thin")
         .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
         // setup-soldr exports SOLDR_TARGET_CACHE_PROFILE=thin-v1 today; this
@@ -181,6 +182,7 @@ fn cargo_front_door_warns_when_rust_plan_restore_is_partial() {
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .env("SOLDR_TEST_CARGO_METADATA_PATH", &metadata_path)
+        .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TARGET_CACHE_MODE", "thin")
         .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &plan_cache)
         .env("SOLDR_TEST_RUST_PLAN_STALE", "1")
@@ -267,6 +269,7 @@ fn cargo_front_door_removes_stale_zccache_daemon_lock_before_retry() {
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("ZCCACHE_CACHE_DIR", &zccache_session_dir)
+        .env("SOLDR_TRUST_INHERITED_ENV", "1")
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
