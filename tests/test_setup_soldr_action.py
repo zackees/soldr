@@ -161,6 +161,17 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
+def test_build_and_test_uploads_windows_pdb_artifacts() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "CARGO_PROFILE_DEV_DEBUG=line-tables-only" in workflow
+    assert "CARGO_PROFILE_TEST_DEBUG=line-tables-only" in workflow
+    assert "Upload Windows test PDBs on failure" in workflow
+    assert "target/${{ inputs.target }}/debug/**/*.pdb" in workflow
+
+
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:
     module = _load_module()
     workspace = tmp_path / "workspace"

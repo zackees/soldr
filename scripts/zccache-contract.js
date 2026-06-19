@@ -57,6 +57,13 @@ function collectManifestBinaries(manifest) {
   return binaries;
 }
 
+function soldrDebugInfoEntries(manifest) {
+  const entries = manifest.soldr && Array.isArray(manifest.soldr.debug_info)
+    ? manifest.soldr.debug_info
+    : [];
+  return entries.filter((entry) => entry && entry.name && entry.sha256);
+}
+
 function validateReleaseManifest(manifest, options) {
   const { soldrTarget, platform = process.platform, findFile } = options;
   if (!Number.isInteger(manifest.schema_version) || manifest.schema_version < MANIFEST_MIN_SCHEMA_VERSION) {
@@ -95,6 +102,28 @@ function validateReleaseManifest(manifest, options) {
       throw new Error(`release manifest sha256 mismatch for ${name}: expected ${expectedSha}, got ${actualSha}`);
     }
   }
+
+  const debugInfo = soldrDebugInfoEntries(manifest);
+  if (platform === "win32" && debugInfo.length === 0) {
+    throw new Error("release manifest is missing soldr debug_info PDB entry");
+  }
+  for (const entry of debugInfo) {
+    if (entry.format !== "pdb") {
+      throw new Error(`unsupported soldr debug_info format for ${entry.name}: ${entry.format}`);
+    }
+    if (!/\.pdb$/i.test(entry.name)) {
+      throw new Error(`soldr debug_info entry must name a .pdb file: ${entry.name}`);
+    }
+    const expectedSha = String(entry.sha256).toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(expectedSha)) {
+      throw new Error(`release manifest sha256 for ${entry.name} is not lowercase hex`);
+    }
+    const filePath = findFile(entry.name);
+    const actualSha = sha256File(filePath);
+    if (actualSha !== expectedSha) {
+      throw new Error(`release manifest sha256 mismatch for ${entry.name}: expected ${expectedSha}, got ${actualSha}`);
+    }
+  }
 }
 
 module.exports = {
@@ -108,6 +137,7 @@ module.exports = {
   ZCCACHE_BUNDLED_BINARIES,
   binaryName,
   releaseBinaryNames,
+  soldrDebugInfoEntries,
   validateReleaseManifest,
   zccacheTargetForSoldrTarget,
 };

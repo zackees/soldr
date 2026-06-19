@@ -260,6 +260,8 @@ jobs:
           shared-key: release-${{ matrix.target }}
 
       - name: Build release binary
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
         run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
 
       - name: Install zstd
@@ -368,6 +370,25 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
              "dist/package/${{ matrix.binary }}"
           chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
+          case "${{ matrix.target }}" in
+            *-pc-windows-msvc)
+              pdb_src=""
+              for candidate in \
+                "target/${{ matrix.target }}/release/soldr.pdb" \
+                "target/${{ matrix.target }}/release/soldr_cli.pdb"; do
+                if [ -f "$candidate" ]; then
+                  pdb_src="$candidate"
+                  break
+                fi
+              done
+              if [ -z "$pdb_src" ]; then
+                echo "expected a soldr PDB sidecar next to ${{ matrix.binary }}; observed release dir:" >&2
+                ls -la "target/${{ matrix.target }}/release" >&2 || true
+                exit 1
+              fi
+              cp "$pdb_src" "dist/package/$(basename "$pdb_src")"
+              ;;
+          esac
           ls -la dist/package/
 
       - name: Build crgx from pinned source
@@ -524,6 +545,18 @@ jobs:
           }
 
           soldr_sha=$(sha256_of "dist/package/soldr${suffix}")
+          soldr_debug_info_json="[]"
+          if [ -n "$suffix" ]; then
+            soldr_pdb=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) -print -quit)
+            if [ -z "$soldr_pdb" ]; then
+              echo "missing soldr PDB sidecar in dist/package for Windows release" >&2
+              ls -la dist/package >&2
+              exit 1
+            fi
+            soldr_pdb_name=$(basename "$soldr_pdb")
+            soldr_pdb_sha=$(sha256_of "$soldr_pdb")
+            soldr_debug_info_json=$(printf '[{ "name": "%s", "sha256": "%s", "format": "pdb" }]' "$soldr_pdb_name" "$soldr_pdb_sha")
+          fi
           zccache_sha=$(sha256_of "dist/package/zccache${suffix}")
           zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")
           zccache_fp_sha=$(sha256_of "dist/package/zccache-fp${suffix}")
@@ -542,6 +575,7 @@ jobs:
               "target": "${soldr_target}",
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
+              "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
             },
             "zccache": {
@@ -730,7 +764,7 @@ jobs:
           # Every archive must ship the 6 expected binaries (soldr,
           # zccache, zccache-daemon, zccache-fp, crgx, cargo-chef) with their
           # platform extension, plus a manifest.json describing the
-          # bundle.
+          # bundle. Windows archives must also ship soldr's PDB sidecar.
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
           for required in \
@@ -744,6 +778,12 @@ jobs:
             test -f "$extract/$required" \
               || { echo "missing $required in $archive" >&2; exit 1; }
           done
+          if [ -n "$suffix" ]; then
+            if ! find "$extract" -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) | grep -q .; then
+              echo "missing soldr PDB sidecar in $archive" >&2
+              exit 1
+            fi
+          fi
           echo "--- extracted manifest.json ---"
           cat "$extract/manifest.json"
 

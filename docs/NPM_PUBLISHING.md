@@ -89,22 +89,26 @@ Do not publish an npm version until the matching GitHub Release has these files:
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
 Each archive is a `.tar.zst` at zstd compression level 19 and bundles
-six binaries plus a `manifest.json` at the archive root:
+six binaries plus a `manifest.json` at the archive root. Windows
+archives also include soldr's matching PDB sidecar:
 
 - `soldr` (or `soldr.exe`) — the soldr CLI itself.
 - `zccache`, `zccache-daemon`, `zccache-fp` — the matching-target
   zccache trio (Linux gnu archives carry the musl zccache because
   zccache ships musl-only on Linux upstream; statically linked, runs
   on glibc).
+- `soldr.pdb` or `soldr_cli.pdb` - Windows-only soldr debug symbols
+  recorded under `soldr.debug_info` in `manifest.json`.
 - `crgx` (or `crgx.exe`) - the matching-target crgx binary.
 - `cargo-chef` (or `cargo-chef.exe`) - the pinned cargo-chef binary used
   by `soldr cook`.
 - `manifest.json` - schema_version 3 descriptor with soldr / zccache /
-  crgx / cargo-chef versions, target triples, per-binary sha256s, and archive format.
+  crgx / cargo-chef versions, target triples, soldr debug-info sidecars,
+  per-file sha256s, and archive format.
   The expected archive layout is versioned in
   `contracts/zccache-runtime.v1.json`.
 
 The npm install wrapper validates `manifest.json`, unpacks all six binaries
-into `bin/native/`, and `bin/soldr.js` exports `SOLDR_ZCCACHE_LOCAL_DIR`,
+plus any soldr debug-info sidecars into `bin/native/`, and `bin/soldr.js` exports `SOLDR_ZCCACHE_LOCAL_DIR`,
 `SOLDR_CRGX_LOCAL_DIR`, and `SOLDR_CARGO_CHEF_LOCAL_DIR` to that dir before
 spawning soldr, so the bundled tools are picked up automatically.

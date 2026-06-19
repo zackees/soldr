@@ -84,6 +84,22 @@ def _manifest_binaries(manifest: dict[str, Any]) -> dict[str, str]:
     return binaries
 
 
+def soldr_debug_info_entries(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    soldr = manifest.get("soldr", {})
+    if not isinstance(soldr, dict):
+        return []
+    entries = soldr.get("debug_info", [])
+    if not isinstance(entries, list):
+        return []
+    return [
+        entry
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("name"), str)
+        and isinstance(entry.get("sha256"), str)
+    ]
+
+
 def validate_release_manifest(
     manifest: dict[str, Any],
     *,
@@ -127,6 +143,26 @@ def validate_release_manifest(
             raise RuntimeError(f"release manifest sha256 for {name} is not lowercase hex")
         binary_path = locate_extracted_file(extract_dir, name)
         actual_sha = _sha256_file(binary_path)
+        if actual_sha != expected_sha:
+            raise RuntimeError(
+                f"release manifest sha256 mismatch for {name}: expected {expected_sha}, got {actual_sha}"
+            )
+
+    debug_info = soldr_debug_info_entries(manifest)
+    if windows and not debug_info:
+        raise RuntimeError("release manifest is missing soldr debug_info PDB entry")
+    for entry in debug_info:
+        name = str(entry["name"])
+        if entry.get("format") != "pdb":
+            raise RuntimeError(
+                f"unsupported soldr debug_info format for {name}: {entry.get('format')}"
+            )
+        if not name.lower().endswith(".pdb"):
+            raise RuntimeError(f"soldr debug_info entry must name a .pdb file: {name}")
+        expected_sha = str(entry["sha256"]).lower()
+        if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
+            raise RuntimeError(f"release manifest sha256 for {name} is not lowercase hex")
+        actual_sha = _sha256_file(locate_extracted_file(extract_dir, name))
         if actual_sha != expected_sha:
             raise RuntimeError(
                 f"release manifest sha256 mismatch for {name}: expected {expected_sha}, got {actual_sha}"

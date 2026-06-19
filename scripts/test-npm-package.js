@@ -135,6 +135,14 @@ assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, [
 ]);
 assert.strictEqual(zccacheContract.CRGX_BUNDLED_BINARY, "crgx");
 assert.strictEqual(zccacheContract.CARGO_CHEF_BUNDLED_BINARY, "cargo-chef");
+assert.deepStrictEqual(
+  zccacheContract.soldrDebugInfoEntries({
+    soldr: {
+      debug_info: [{ name: "soldr.pdb", sha256: "0".repeat(64), format: "pdb" }],
+    },
+  }),
+  [{ name: "soldr.pdb", sha256: "0".repeat(64), format: "pdb" }],
+);
 assert.ok(
   fs.existsSync(path.join(root, "contracts", "zccache-integration-guardrails.v1.json")),
   "npm package must include the zccache integration guardrail contract",

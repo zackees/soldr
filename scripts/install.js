@@ -284,6 +284,13 @@ async function install() {
         fs.chmodSync(dst, 0o755);
       }
     }
+    for (const entry of zccacheContract.soldrDebugInfoEntries(manifest)) {
+      const src = findExtractedBinary(extractDir, entry.name);
+      if (!src) {
+        throw new Error(`release archive ${filename} did not contain ${entry.name}`);
+      }
+      fs.copyFileSync(src, path.join(nativeDir, entry.name));
+    }
 
     // Drop manifest.json alongside the binaries so downstream tooling
     // (and humans reading `bin/native/`) can introspect provenance —

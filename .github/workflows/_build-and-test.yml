@@ -92,6 +92,13 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: "--target ${{ inputs.target }}"
 
+      - name: Enable Windows line-table debug symbols
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "CARGO_PROFILE_DEV_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "CARGO_PROFILE_TEST_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Restore checkout after soldr-cook
         shell: pwsh
         run: git restore --worktree -- .
@@ -227,6 +234,16 @@ jobs:
             $timer.Elapsed.TotalSeconds
           ))
           exit $exitCode
+
+      - name: Upload Windows test PDBs on failure
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-test-pdbs-${{ inputs.target }}
+          path: |
+            target/${{ inputs.target }}/debug/**/*.pdb
+            target/debug/**/*.pdb
+          if-no-files-found: warn
 
       - name: Stop isolated test cache
         if: always()
