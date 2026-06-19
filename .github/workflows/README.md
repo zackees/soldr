@@ -9,6 +9,8 @@ GitHub Actions workflow definitions.
 
 Normal build/test workflows use `zackees/setup-soldr` for Rust build acceleration, excluding `release-auto.yml`. Jobs that build soldr before running soldr self-tests or bootstrap tests stop the setup-soldr builder daemon before the test phase, run the test phase with a fresh `SOLDR_CACHE_DIR` / `ZCCACHE_CACHE_DIR`, and request `SOLDR_CACHE_LIFECYCLE=command` for the isolated test cache when supported by soldr.
 
+Docs-only changes should not trigger expensive build, lint, benchmark, or setup-soldr dogfood workflows. When a workflow needs to ignore Markdown, include both `*.md` and `**/*.md`; the root-only pattern does not cover files under `docs/`, `perf/`, or other subdirectories.
+
 Exceptions:
 
 - **release-auto.yml** remains conservative and keeps its existing release artifact build path.

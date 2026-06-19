@@ -9,6 +9,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
 
 concurrency:
   # Only one publish at a time per ref; cancel a stale in-flight when a

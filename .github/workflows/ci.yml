@@ -13,6 +13,7 @@ on:
       - '*'
     paths-ignore:
       - '*.md'
+      - '**/*.md'
 
 permissions:
   contents: read
