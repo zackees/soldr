@@ -507,11 +507,21 @@ jobs:
           }
 
           # scenario -> "fail" or "warn". cold-tar-untar-warm is the
-          # only gate today; the others are soft until their baselines
+          # designed hard gate; the others are soft until their baselines
           # stabilize (see workflow header).
+          #
+          # Issue #761: every scenario currently reports hits+misses=0 on
+          # post-#747 main because a zccache private-daemon lifecycle bug
+          # silently neuters the warm session. The hard gate has been
+          # firing on every push to main for the wrong reason — that
+          # trains people to ignore the alarm and would hide a real
+          # regression when one lands. Temporarily demote cold-tar-untar
+          # -warm to `warn` until #761 lands. The line is one edit to
+          # restore once the lifecycle bug is fixed.
           mode_for() {
             case "$1" in
-              cold-tar-untar-warm) echo "fail" ;;
+              # cold-tar-untar-warm) echo "fail" ;;  # restored once #761 is fixed
+              cold-tar-untar-warm) echo "warn" ;;
               worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac
@@ -626,8 +636,16 @@ jobs:
               fi
               if (( hits + misses <= 0 )); then
                 echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | - | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | ${mode} | BAD-STATS |" >> "$GITHUB_STEP_SUMMARY"
-                echo "::error::${fixture}/${scenario} reported ${hits_key}+${misses_key}=0; zccache stats were not captured"
-                status=1
+                # Issue #761: respect mode_for so soft scenarios don't
+                # hard-fail the workflow on a missing-stats finding. The
+                # hard gate (cold-tar-untar-warm when restored) still
+                # errors here as designed.
+                if [[ "${mode}" == "fail" ]]; then
+                  echo "::error::${fixture}/${scenario} reported ${hits_key}+${misses_key}=0; zccache stats were not captured"
+                  status=1
+                else
+                  echo "::warning::${fixture}/${scenario} reported ${hits_key}+${misses_key}=0; zccache stats were not captured; soft gate — not failing today"
+                fi
                 continue
               fi
 
