@@ -4,7 +4,7 @@
 //! `#[path]` so `main.rs` stays comfortably under the 1000-LOC ceiling.
 
 use super::*;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::ffi::{OsStr, OsString};
 use std::sync::Mutex;
 
@@ -158,6 +158,63 @@ fn cli_parses_zccache_flag_values() {
 
     let invalid = Cli::try_parse_from(["soldr", "--zccache=bogus", "cargo", "build"]);
     assert!(invalid.is_err(), "unknown zccache source must fail clap");
+}
+
+#[test]
+fn root_help_groups_commands_and_keeps_lines_short() {
+    let help = Cli::command().render_help().to_string();
+
+    let common = help.find("Common commands:").unwrap();
+    let less_common = help.find("Less common toolchain commands:").unwrap();
+    let cache = help.find("soldr cache & build:").unwrap();
+    let ops = help.find("soldr ops & infrastructure:").unwrap();
+    assert!(
+        common < less_common && less_common < cache && cache < ops,
+        "command groups should render in familiarity order:\n{help}"
+    );
+
+    assert!(help.contains("  cargo                  Run cargo through soldr"));
+    assert!(help.contains("  cook                   Prebuild dependencies"));
+    assert!(help.contains("Examples:\n  soldr cargo build --release"));
+    assert!(
+        !help.contains("\nCommands:\n"),
+        "flat command list returned:\n{help}"
+    );
+    assert!(
+        !help.contains("\n  version"),
+        "version subcommand should be hidden from the index:\n{help}"
+    );
+
+    let long_lines: Vec<_> = help.lines().filter(|line| line.len() > 80).collect();
+    assert!(
+        long_lines.is_empty(),
+        "root help lines should fit 80 columns: {long_lines:?}\n{help}"
+    );
+}
+
+#[test]
+fn long_root_help_expands_intro_and_zccache_details() {
+    let help = Cli::command().render_long_help().to_string();
+
+    assert!(help.contains("soldr wraps cargo and the rustup toolchain"));
+    assert!(help.contains("Pick the zccache binary backing the compilation cache."));
+    assert!(help.contains("`managed` (default) fetches the pinned release"));
+    assert!(help.contains("`system` uses the `zccache` on PATH"));
+}
+
+#[test]
+fn verbose_command_details_live_on_subcommand_help() {
+    let root = Cli::command().render_help().to_string();
+    assert!(!root.contains("https://static.rust-lang.org/rustup/dist"));
+    assert!(!root.contains("SOLDR_NO_BOOTSTRAP"));
+
+    let mut cmd = Cli::command();
+    let bootstrap = cmd
+        .find_subcommand_mut("bootstrap")
+        .expect("bootstrap subcommand should exist");
+    let help = bootstrap.render_long_help().to_string();
+    assert!(help.contains("https://static.rust-lang.org/rustup/dist"));
+    assert!(help.contains("SOLDR_NO_BOOTSTRAP"));
 }
 
 #[test]
