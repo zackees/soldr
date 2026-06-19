@@ -49,7 +49,8 @@ Behavior:
 - Fetch a pinned managed `zccache` release when caching is enabled
 - Set `RUSTC_WRAPPER` to the current soldr binary
 - Pass the managed `zccache` binary path into wrapper mode through the environment
-- Start a per-build zccache session under Soldr's owned zccache cache root
+- Start a per-build zccache session while leaving zccache's cache/session
+  location at its normal default unless the caller sets `ZCCACHE_CACHE_DIR`
 - Delegate to Cargo with the exact flags the user passed
 
 Current cache-control behavior:
@@ -59,7 +60,9 @@ Current cache-control behavior:
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
 - `soldr --zccache=system cargo ...` uses the `zccache` already on PATH instead of fetching the pinned managed release. The `zccache-daemon` and `zccache-fp` sibling binaries must live in the same directory as `zccache`. `--zccache=managed` (the default) restores the managed-fetch behavior.
 - zccache integration currently targets Rust builds through the cargo front door
-- managed zccache artifacts and daemon state live under Soldr's cache root through `ZCCACHE_CACHE_DIR`
+- managed zccache session logs, journals, and reports live under Soldr's cache
+  root; zccache cache and daemon state use zccache's normal default location
+  unless the caller sets `ZCCACHE_CACHE_DIR`
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins
 
 This is the normal build entry point.
@@ -861,10 +864,9 @@ The global scope covers:
 - `~/.soldr/bench`
 - `~/.soldr/runtime`
 - `~/.soldr/state.redb`
-- The resolved zccache cache directory (`~/.soldr/cache/zccache`).
-  When `ZCCACHE_CACHE_DIR` is set outside soldr's default, the
-  resolved path is excluded explicitly and a warning suggests
-  unsetting the override.
+- Soldr's managed zccache session/report directory (`~/.soldr/cache/zccache`).
+  When `ZCCACHE_CACHE_DIR` is set, that caller-selected zccache cache root is
+  excluded explicitly.
 
 The project scope covers `<workspace_root>/target/`, where
 `<workspace_root>` is the nearest ancestor of the current directory
@@ -1284,7 +1286,8 @@ Commands:
 | `SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS` | Maximum seconds to wait for command-lifetime zccache shutdown confirmation after `zccache stop`. | `30` |
 | `SOLDR_RELOCATED_EXE` | Internal recursion guard set after Windows self-relocation | unset |
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
-| `ZCCACHE_CACHE_DIR` | zccache cache-root override set by soldr for managed zccache commands | `~/.soldr/cache/zccache` |
+| `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
+| `ZCCACHE_CACHE_DIR` | Explicit caller override for zccache's cache root; soldr does not set it for default managed zccache builds | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `ZCCACHE_PATH_REMAP` | zccache path-remap mode. soldr seeds `auto` on the child cargo for managed-zccache builds so multiple git worktrees of the same repo share cache hits (issue #352, Tier L1.x). Caller-supplied values are preserved. Requires a real `.git/` checkout — tarball/zip checkouts silently fall back to no remap. | unset (soldr injects `auto`) |
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
@@ -1307,16 +1310,16 @@ Commands:
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of its managed zccache. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
 
-When soldr manages zccache itself, a caller-provided `ZCCACHE_CACHE_DIR` must match the cache root derived from `SOLDR_CACHE_DIR`; conflicting values are rejected. Custom wrapper modes leave caller-provided wrapper environment alone — when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves, soldr forwards their value rather than overriding it.
+When soldr manages zccache itself, it does not set `ZCCACHE_CACHE_DIR` by default; zccache uses its normal effective cache root and daemon/session behavior. A caller-provided `ZCCACHE_CACHE_DIR` is forwarded as an explicit zccache override. Custom wrapper modes leave caller-provided wrapper environment alone — when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves, soldr forwards their value rather than overriding it.
 
 `soldr cargo ...` only starts the managed build cache for compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`, `clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and `cargo --version` pass through without starting zccache.
 
 Set `SOLDR_CACHE_LIFECYCLE=command` for self-build jobs that use soldr only as
 the builder and then run tests against zccache or soldr itself. The command
 lifetime mode finalizes zccache session stats first, then runs `zccache stop`
-against soldr's scoped `ZCCACHE_CACHE_DIR` and waits until `zccache status`
-reports that daemon is gone. It does not kill unrelated zccache daemons rooted
-at other cache directories.
+against zccache's active daemon and waits until `zccache status` reports that
+daemon is gone. If `ZCCACHE_CACHE_DIR` was explicitly set, shutdown uses that
+cache root; otherwise it uses zccache's normal default daemon.
 
 On Windows, soldr may copy the running `soldr.exe` into `SOLDR_CACHE_DIR/runtime/soldr-self/<version-and-hash>/soldr.exe` and re-run the command from that relocated copy before build orchestration starts. This keeps disposable worktree builds from repeatedly using the worktree-local `soldr.exe` as `RUSTC_WRAPPER`. The trampoline sets `SOLDR_RELOCATED_EXE=1` and `SOLDR_ORIGINAL_EXE=<original path>` as a recursion guard and preserves argv, inherited environment, stdio, and exit status. Stale relocated copies are purged by a best-effort runtime GC step that runs periodically and skips copies that cannot be removed because they are still locked.
 

@@ -60,6 +60,7 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
     let session = ZccacheBuildSession {
         binary_path: "zccache".into(),
         cache_dir: root.join("cache"),
+        cache_dir_env: true,
         session_id: "session-1".to_string(),
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),
@@ -256,6 +257,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
     let session = ZccacheBuildSession {
         binary_path: "zccache".into(),
         cache_dir: root.join("cache"),
+        cache_dir_env: true,
         session_id: "session-thinv2".to_string(),
         session_log_path: root.join("cache/logs/last-session.log"),
         journal_path: root.join("cache/logs/last-session.jsonl"),

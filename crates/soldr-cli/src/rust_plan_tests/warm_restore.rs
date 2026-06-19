@@ -341,6 +341,7 @@ fn warm_restore_test_context(
         zccache_binary: root.join("zccache"),
         cache_dir: root.join("cache"),
         zccache_daemon_cache_dir: root.join("daemon"),
+        zccache_daemon_cache_dir_env: true,
         zccache_daemon_name: None,
         session_id: "session-test".to_string(),
         journal_path: root.join("journal"),

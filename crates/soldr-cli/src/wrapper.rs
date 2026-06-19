@@ -412,7 +412,7 @@ fn run_wrapper_through_zccache_windows(
 }
 
 /// Run `zccache session-start --stats --log <path> --journal <path>` against
-/// the cache dir the wrapper invocation inherits from cargo, and return the
+/// the session directory the wrapper invocation inherits from cargo, and return the
 /// parsed session id. Mirrors the args used by `prepare_zccache_build`.
 ///
 /// Used by the Windows wrapper retry path (issue #265): when the daemon
@@ -420,32 +420,34 @@ fn run_wrapper_through_zccache_windows(
 /// allocates a replacement before retrying the wrapper invocation once.
 #[cfg(not(unix))]
 fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, SoldrError> {
-    let cache_dir = std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
+    let session_dir = std::env::var_os(crate::zccache::SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR)
         .map(std::path::PathBuf::from)
         .ok_or_else(|| {
             SoldrError::Other(format!(
                 "{} is not set in the wrapper environment; cannot allocate replacement zccache session",
-                crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR
+                crate::zccache::SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR
             ))
         })?;
+    let cache_dir_env = std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_some();
 
-    let session_log_path = crate::cache_lib::session_log_path(&cache_dir);
-    let journal_path = crate::cache_lib::session_journal_path(&cache_dir);
-    let session_stats_path = crate::cache_lib::session_stats_path(&cache_dir);
+    let session_log_path = crate::cache_lib::session_log_path(&session_dir);
+    let journal_path = crate::cache_lib::session_journal_path(&session_dir);
+    let session_stats_path = crate::cache_lib::session_stats_path(&session_dir);
     let options = ZccacheSessionStartOptions {
         id: None,
         session_log_path,
         journal_path,
         session_stats_path,
     };
-    let mut lifecycle = ZccacheLifecycle::new(zccache, &cache_dir);
+    let mut lifecycle =
+        ZccacheLifecycle::new(zccache, &session_dir).with_cache_dir_env(cache_dir_env);
     if let Some(daemon_name) = inherited_private_daemon_name() {
         let private = ZccachePrivateDaemonConfig::new(daemon_name)
             .with_owner_pid(std::process::id())
             .with_private_env(inherited_private_zccache_env());
         lifecycle = lifecycle.with_private_daemon(private);
     }
-    let args = session_start_args(&options, &cache_dir, lifecycle.private_daemon());
+    let args = session_start_args(&options, &session_dir, lifecycle.private_daemon());
     let session_json = lifecycle.run_strings(&args)?;
     crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
         SoldrError::Other(format!(

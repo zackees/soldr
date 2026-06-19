@@ -148,6 +148,7 @@ fn run_soldr_wrapper(label: &str, mode: Option<&str>) -> RetryRun {
     cmd.env("SOLDR_CACHE_ENABLED", "1");
     cmd.env("SOLDR_CACHE_DIR", &cache_root_path);
     cmd.env("SOLDR_TEST_ZCCACHE_BIN", &stub);
+    cmd.env("SOLDR_ZCCACHE_SESSION_DIR", &zccache_cache_dir);
     cmd.env("ZCCACHE_CACHE_DIR", &zccache_cache_dir);
     cmd.env("SOLDR_MANAGED_ZCCACHE_CACHE_DIR", &zccache_cache_dir);
     cmd.env("ZCCACHE_SESSION_ID", "initial-session-from-test");

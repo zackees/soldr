@@ -111,6 +111,7 @@ pub(crate) struct RustArtifactPlanContext {
     pub(crate) zccache_binary: std::path::PathBuf,
     pub(crate) cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir: std::path::PathBuf,
+    pub(crate) zccache_daemon_cache_dir_env: bool,
     pub(crate) zccache_daemon_name: Option<String>,
     pub(crate) session_id: String,
     pub(crate) journal_path: std::path::PathBuf,
@@ -183,6 +184,7 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
         zccache_binary: session.binary_path.clone(),
         cache_dir: rust_artifact_plan_cache_dir(session)?,
         zccache_daemon_cache_dir: session.cache_dir.clone(),
+        zccache_daemon_cache_dir_env: session.cache_dir_env,
         zccache_daemon_name: session
             .private_daemon
             .as_ref()
@@ -792,6 +794,7 @@ pub(crate) fn run_zccache_rust_plan(
         &plan.zccache_binary,
         &args,
         &plan.zccache_daemon_cache_dir,
+        plan.zccache_daemon_cache_dir_env,
         plan.zccache_daemon_name.as_deref(),
     )?;
     let stdout = output.stdout.trim();

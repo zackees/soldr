@@ -197,32 +197,34 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
 }
 
 #[test]
-fn managed_zccache_rejects_conflicting_cache_dir_override() {
-    let cache_root = unique_temp_dir("cargo-conflicting-zccache-dir");
+fn managed_zccache_honors_explicit_cache_dir_override() {
+    let cache_root = unique_temp_dir("cargo-explicit-zccache-dir");
+    let user_zccache_dir = cache_root.join("user-zccache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let output = isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("ZCCACHE_CACHE_DIR", cache_root.join("user-zccache"))
+        .env("ZCCACHE_CACHE_DIR", &user_zccache_dir)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
         .env("SOLDR_TEST_RUSTC_BIN", &rustc)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
-        .expect("failed to run soldr cargo build with conflicting ZCCACHE_CACHE_DIR");
+        .expect("failed to run soldr cargo build with explicit ZCCACHE_CACHE_DIR");
 
     assert!(
-        !output.status.success(),
-        "conflicting ZCCACHE_CACHE_DIR should fail"
+        output.status.success(),
+        "explicit ZCCACHE_CACHE_DIR should be forwarded to zccache\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert!(
-        stderr.contains("ZCCACHE_CACHE_DIR is managed by soldr"),
-        "expected explicit override guidance: {stderr}"
-    );
-    assert!(
-        !log_path.exists(),
-        "zccache should not start after a conflicting cache-dir override"
+        path_display_variants(&user_zccache_dir)
+            .iter()
+            .any(|path| log.contains(&format!("zccache_dir={path}"))
+                && log.contains(&format!("cache_dir={path}"))),
+        "explicit ZCCACHE_CACHE_DIR should reach cargo and zccache commands: {log}"
     );
 }
 
@@ -254,19 +256,12 @@ fn nested_soldr_ignores_inherited_managed_zccache_cache_dir() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    let child_zccache_dir = discovered_private_zccache_cache_dir(&child_cache_root);
-    assert!(
-        path_display_variants(&child_zccache_dir)
-            .iter()
-            .any(|path| log.contains(&format!("zccache_dir={path}"))
-                && log.contains(&format!("cache_dir={path}"))),
-        "nested soldr should replace the inherited managed zccache dir with its own cache root: {log}"
-    );
     assert!(
         !path_display_variants(&parent_zccache_dir)
             .iter()
-            .any(|path| log.contains(&format!("cache_dir={path}"))),
-        "nested soldr should not reuse the parent managed zccache dir: {log}"
+            .any(|path| log.contains(&format!("zccache_dir={path}"))
+                || log.contains(&format!("cache_dir={path}"))),
+        "nested soldr should ignore inherited soldr-managed ZCCACHE_CACHE_DIR: {log}"
     );
 }
 
