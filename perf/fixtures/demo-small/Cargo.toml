@@ -1,0 +1,26 @@
+[package]
+name = "bench-demo-small"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+# Intentionally tiny workload for the cache-mode benchmark
+# (see .github/workflows/bench-cache-modes.yml). The deps are picked to:
+#   - hit the cargo registry (network → registry cache test)
+#   - pull a handful of generic-heavy crates (rustc work → build/zccache test)
+#   - keep cold build < ~60 s on a hosted runner so the matrix fits in time
+#
+# Bump these only if the bench needs more compile mass; do NOT add a feature
+# that requires native toolchains (clang, cmake) — the bench is libc-only.
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+[[bin]]
+name = "demo-small"
+path = "src/main.rs"

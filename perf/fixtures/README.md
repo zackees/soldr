@@ -7,6 +7,13 @@ needed to unpack one.
 
 ## Current fixtures
 
+### `demo-small`
+
+Small Rust-only workload copied from `zackees/setup-soldr`'s
+`scripts/bench-workloads/demo-small`. It hits the registry and a
+few derive/generic-heavy crates while staying intentionally small enough
+for README benchmark publishing on every main merge.
+
 ### `medium`
 
 Single binary crate depending on serde + derive, tokio
@@ -32,6 +39,13 @@ artifacts, this row goes red before `medium` does.
 
 Requires a C compiler on the worker. CI workers `apt-get install gcc`
 on demand; local builds rely on whatever cc-rs already finds.
+
+### `sqlite-native`
+
+Small Rust+C workload copied from `zackees/setup-soldr`'s
+`benchmarks/sqlite-native`. It links bundled SQLite through
+`libsqlite3-sys`, preserving a native C/build-script signal for README
+comparison images without paying the larger `sqlite-link` fixture cost.
 
 ## Regenerating tarballs
 
