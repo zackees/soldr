@@ -11,6 +11,7 @@ OUT_DIR="${REPO_ROOT}/benchmark-output"
 WORK_DIR="$(mktemp -d)"
 WORKTREES_TO_REMOVE=()
 CREATED_PROJECT=""
+COMPARISON_BUILD_TIMEOUT_SECONDS="${COMPARISON_BUILD_TIMEOUT_SECONDS:-60}"
 trap 'for wt in "${WORKTREES_TO_REMOVE[@]:-}"; do git -C "${REPO_ROOT}" worktree remove --force "$wt" >/dev/null 2>&1 || true; done; rm -rf "${WORK_DIR}"' EXIT
 
 mkdir -p "${OUT_DIR}"
@@ -117,6 +118,16 @@ command_text() {
     esac
 }
 
+run_with_timeout() {
+    local seconds="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=15s --preserve-status "${seconds}s" "$@"
+    else
+        "$@"
+    fi
+}
+
 run_build() {
     local tool="$1"
     local project="$2"
@@ -124,15 +135,15 @@ run_build() {
     local target_dir="$4"
     case "${tool}" in
         bare)
-            (cd "${project}" && CARGO_TARGET_DIR="${target_dir}" cargo build --release --locked)
+            (cd "${project}" && CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release --locked)
             ;;
         sccache)
             mkdir -p "${cache_dir}"
-            (cd "${project}" && SCCACHE_DIR="${cache_dir}" RUSTC_WRAPPER=sccache CARGO_TARGET_DIR="${target_dir}" cargo build --release --locked)
+            (cd "${project}" && SCCACHE_DIR="${cache_dir}" RUSTC_WRAPPER=sccache CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" cargo build --release --locked)
             ;;
         soldr)
             mkdir -p "${cache_dir}"
-            (cd "${project}" && SOLDR_CACHE_DIR="${cache_dir}" CARGO_TARGET_DIR="${target_dir}" soldr cargo build --release --locked)
+            (cd "${project}" && SOLDR_CACHE_DIR="${cache_dir}" CARGO_TARGET_DIR="${target_dir}" run_with_timeout "${COMPARISON_BUILD_TIMEOUT_SECONDS}" soldr cargo build --release --locked)
             ;;
         *)
             echo "unknown tool: ${tool}" >&2
@@ -153,7 +164,7 @@ measure_cold() {
     local fixture="$2"
     local tool="$3"
     local samples=()
-    for idx in 1 2 3; do
+    for idx in 1; do
         local cell="${WORK_DIR}/${benchmark}/cold/${tool}/${idx}"
         local project cache target ms
         make_fixture_project "${fixture}" "${cell}/src"
@@ -202,8 +213,8 @@ RESULTS_JSONL="${WORK_DIR}/comparison-results.jsonl"
 : >"${RESULTS_JSONL}"
 
 declare -A FIXTURES=(
-    ["rust-only"]="soldr"
-    ["rust-c"]="sqlite-link"
+    ["rust-only"]="demo-small"
+    ["rust-c"]="sqlite-native"
 )
 
 for benchmark in rust-only rust-c; do
@@ -213,7 +224,7 @@ for benchmark in rust-only rust-c; do
         command="$(command_text "${tool}")"
 
         ms="$(measure_cold "${benchmark}" "${fixture}" "${tool}")"
-        append_result "${benchmark}" "${fixture}" "cold" "Cold build" "cold" "${tool}" "${label}" "${command}" "${ms}" "median-of-3"
+        append_result "${benchmark}" "${fixture}" "cold" "Cold build" "cold" "${tool}" "${label}" "${command}" "${ms}" "single-sample"
 
         ms="$(measure_warm "${benchmark}" "${fixture}" "${tool}")"
         append_result "${benchmark}" "${fixture}" "warm" "Warm rebuild (same workspace)" "warm" "${tool}" "${label}" "${command}" "${ms}" "single-sample"
@@ -240,7 +251,7 @@ jq -s \
         sccache_version: $sccache_version,
         schema_version: 1,
         scenarios: [
-            {key: "cold", label: "Cold build", samples: 3},
+            {key: "cold", label: "Cold build", samples: 1},
             {key: "warm", label: "Warm rebuild (same workspace)", samples: 1},
             {key: "worktree-share", label: "Agent worktree / parent-child share", samples: 1}
         ],

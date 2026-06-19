@@ -3,7 +3,7 @@
 soldr has two performance workflows:
 
 1. **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix") — the regression-gate workflow. Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
-2. **`.github/workflows/benchmark-stats.yml`** (issues #768 and #785) — per-commit trend and README comparison publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, measures bare cargo vs sccache vs soldr comparison bars, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
+2. **`.github/workflows/benchmark-stats.yml`** (issues #768 and #785) — per-commit trend and README comparison publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, measures bare cargo vs sccache vs soldr comparison bars against small setup-soldr-derived fixtures, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
 
 For the perf-matrix per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md). For the benchmark-stats canary set + discovery URLs, see the **Per-commit benchmark stats** section near the end of this file.
 
@@ -203,8 +203,8 @@ The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a
 
 | Benchmark | Fixture | Why |
 |---|---|---|
-| `rust-only` | this `soldr` repository | Real Rust workspace with a meaningful dependency graph; it keeps the headline chart self-contained and current. |
-| `rust-c` | `perf/fixtures/sqlite-link` | Small Rust+C fixture that exercises `cc-rs` / `build.rs` native compilation without adding an external checkout. |
+| `rust-only` | `perf/fixtures/demo-small` | setup-soldr's small registry/dependency workload. It gives README-facing cache signal without making every main merge rebuild the full soldr workspace. |
+| `rust-c` | `perf/fixtures/sqlite-native` | setup-soldr's native SQLite workload. It keeps the C/build-script surface covered while staying much smaller than the full `sqlite-link` perf fixture. |
 
 ### Tools
 
@@ -220,9 +220,11 @@ The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a
 
 | Scenario | What it measures | Samples |
 |---|---|---|
-| `cold` | Fresh source checkout, fresh target dir, and fresh cache. This should usually be a wash, and it sets honest expectations. | Median of 3 per tool/workload cell. |
+| `cold` | Fresh source checkout, fresh target dir, and fresh cache. This should usually be a wash, and it sets honest expectations. | Single sample. |
 | `warm` | Populate the tool cache, run `cargo clean`, then time the rebuild in the same workspace. | Single sample. |
 | `worktree-share` | Build workspace A to populate the cache, then time a sibling workspace B at the same commit. This highlights soldr's `ZCCACHE_PATH_REMAP=auto` parent-child share story. | Single sample. |
+
+Each comparison build is bounded by `COMPARISON_BUILD_TIMEOUT_SECONDS` (default: 60). A timed-out cell records `0` and lets the publisher complete so a stuck native compile cannot pin the README workflow for hours.
 
 ### Published data shape
 
