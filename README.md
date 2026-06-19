@@ -20,9 +20,12 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 
 ## Performance
 
-[![soldr local-build canary trend](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png)](https://github.com/zackees/soldr/tree/benchmark-stats)
+| [view page](https://zackees.github.io/soldr/) | [json](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json) | [view branch](https://github.com/zackees/soldr/tree/benchmark-stats) |
+|---|---|---|
 
-The image is regenerated on every push to `main` by [`.github/workflows/benchmark-stats.yml`](.github/workflows/benchmark-stats.yml). Full data + an interactive Chart.js view are published in the [`benchmark-stats` branch](https://github.com/zackees/soldr/tree/benchmark-stats) and at [zackees.github.io/soldr](https://zackees.github.io/soldr/). The AI-discoverable discovery index is at [`manifest.json`](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json). Canary set and methodology: [PERF.md § Per-commit benchmark stats](PERF.md#per-commit-benchmark-stats-issue-768).
+[![soldr local-build canary trend](https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png)](https://zackees.github.io/soldr/)
+
+The image is regenerated on every push to `main` by [`.github/workflows/benchmark-stats.yml`](.github/workflows/benchmark-stats.yml). Canary set and methodology: [PERF.md § Per-commit benchmark stats](PERF.md#per-commit-benchmark-stats-issue-768).
 
 **Instant tools. Instant builds. One command.**
 
