@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-06-19T20:06:20Z",
+  "git_sha": "7c9e4fae58df03466afda9347c7aa0e08705b2c7",
+  "branch": "benchmark-stats",
+  "repository": "zackees/soldr",
+  "artifacts": {
+    "manifest": {
+      "description": "This file. Discovery index. Regenerated on every push.",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json",
+      "content_type": "application/json",
+      "schema_version": 1
+    },
+    "latest": {
+      "description": "Rich snapshot of the most-recent main-merge benchmark run.",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/latest.json",
+      "content_type": "application/json",
+      "schema_version": 1
+    },
+    "history": {
+      "description": "Slim rolling history of soldr-only canary timings. One JSONL line per main-commit.",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/history.jsonl",
+      "content_type": "application/x-ndjson",
+      "schema_version": 1,
+      "max_lines": 1000,
+      "line_schema": {
+        "ts": "ISO-8601 UTC timestamp of the run",
+        "sha": "git sha of the main-commit being measured",
+        "canaries": "object mapping canary name -> wall-time milliseconds"
+      }
+    },
+    "index_html": {
+      "description": "Human-facing rendered view with Chart.js interactive graphs.",
+      "url": "https://zackees.github.io/soldr/",
+      "content_type": "text/html"
+    },
+    "readme_image": {
+      "description": "Static PNG of the canary trend; embedded in repo README.md and updated on every main-merge (#771).",
+      "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-trend.png",
+      "content_type": "image/png"
+    }
+  },
+  "canaries": {
+    "cargo-build-medium-cold": {
+      "description": "Cold full compile of perf/fixtures/medium",
+      "theoretical_ms": 60000
+    },
+    "cargo-build-medium-warm": {
+      "description": "Immediate repeat of warm build (cargo freshness fast-path)",
+      "theoretical_ms": 500
+    },
+    "cargo-build-medium-from-warm-zccache": {
+      "description": "cargo clean + rebuild from warm zccache; 100% hits expected",
+      "theoretical_ms": 10000
+    },
+    "cargo-check-medium-cross-verb": {
+      "description": "build -> check; pins #758 / zccache#776 cross-verb cache-key regression",
+      "theoretical_ms": 1500
+    },
+    "touch-no-change-medium-warm": {
+      "description": "Touch all source mtimes; content unchanged; 100% hits expected",
+      "theoretical_ms": 1500
+    },
+    "worktree-share-medium-warm": {
+      "description": "Cross-worktree path-remap reuse",
+      "theoretical_ms": 1500
+    }
+  },
+  "references": {
+    "perf_matrix_workflow": "https://github.com/zackees/soldr/blob/main/.github/workflows/perf-matrix.yml",
+    "benchmark_stats_workflow": "https://github.com/zackees/soldr/blob/main/.github/workflows/benchmark-stats.yml",
+    "perf_matrix_doc": "https://github.com/zackees/soldr/blob/main/PERF.md",
+    "meta_tracking_issue": "https://github.com/zackees/soldr/issues/757"
+  }
+}

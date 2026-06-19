@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>soldr benchmark stats</title>
+    <style>
+        :root {
+            --bg: #ffffff;
+            --fg: #1f2328;
+            --muted: #656d76;
+            --border: #d0d7de;
+            --good: #2da44e;
+            --warn: #d29922;
+            --bad: #d1242f;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--fg);
+            margin: 0;
+            padding: 24px;
+            line-height: 1.5;
+        }
+        h1 { margin: 0 0 4px 0; font-size: 24px; }
+        nav.top-links {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 14px;
+            margin: 8px 0 16px 0;
+            padding: 8px 12px;
+            background: #f6f8fa;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            font-size: 13px;
+        }
+        h2 { margin: 32px 0 12px 0; font-size: 18px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+        .meta { color: var(--muted); font-size: 14px; margin-bottom: 8px; }
+        .meta code { background: #f6f8fa; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+        .summary { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+        .summary-bar {
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px 12px;
+            min-width: 220px;
+            background: #f6f8fa;
+        }
+        .summary-bar .name { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, monospace; }
+        .summary-bar .value { font-size: 18px; font-weight: 600; margin-top: 2px; }
+        .summary-bar .ratio { font-size: 12px; color: var(--muted); }
+        .summary-bar.good .value { color: var(--good); }
+        .summary-bar.warn .value { color: var(--warn); }
+        .summary-bar.bad .value { color: var(--bad); }
+        .chart-wrap { position: relative; height: 420px; margin: 8px 0 24px 0; }
+        .empty {
+            border: 1px dashed var(--border);
+            border-radius: 4px;
+            padding: 24px;
+            color: var(--muted);
+            text-align: center;
+        }
+        details {
+            margin: 24px 0;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 8px 12px;
+            background: #f6f8fa;
+        }
+        details summary { cursor: pointer; font-weight: 600; }
+        pre {
+            background: #ffffff;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 12px;
+            overflow-x: auto;
+            font-size: 12px;
+            margin: 8px 0 0 0;
+        }
+        a { color: #0969da; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <h1>soldr benchmark stats</h1>
+    <nav class="top-links" aria-label="Data sources">
+        <a href="https://github.com/zackees/soldr/tree/benchmark-stats">View branch (raw data)</a>
+        <a href="manifest.json">manifest.json</a>
+        <a href="latest.json">latest.json</a>
+        <a href="history.jsonl">history.jsonl</a>
+        <a href="benchmark-trend.png">benchmark-trend.png</a>
+        <a href="https://github.com/zackees/soldr/blob/main/PERF.md#per-commit-benchmark-stats-issue-768">methodology (PERF.md)</a>
+    </nav>
+    <div class="meta" id="header-meta">Loading…</div>
+
+    <h2>Latest run — canaries vs theoretical</h2>
+    <div class="summary" id="summary">Loading…</div>
+
+    <h2>Last 50 main-commits (dense)</h2>
+    <div class="chart-wrap"><canvas id="chart-recent"></canvas></div>
+
+    <h2>Last 1000 main-commits (sparse, every-Nth sample)</h2>
+    <div class="chart-wrap"><canvas id="chart-sparse"></canvas></div>
+
+    <details>
+        <summary>How to fetch this data programmatically</summary>
+        <p>Every artifact URL is listed inside <code>manifest.json</code>. Discovery starts there:</p>
+        <pre id="how-to-fetch">Loading manifest…</pre>
+    </details>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script>
+    'use strict';
+
+    // Stable color palette per canary so colors don't shift between runs.
+    const CANARY_COLORS = {
+        'cargo-build-medium-cold':              '#d32f2f',
+        'cargo-build-medium-warm':              '#1976d2',
+        'cargo-build-medium-from-warm-zccache': '#388e3c',
+        'cargo-check-medium-cross-verb':        '#f57c00',
+        'touch-no-change-medium-warm':          '#7b1fa2',
+        'worktree-share-medium-warm':           '#00838f',
+    };
+
+    async function fetchJson(path) {
+        const r = await fetch(path, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`fetch ${path}: HTTP ${r.status}`);
+        return r.json();
+    }
+
+    async function fetchJsonl(path) {
+        const r = await fetch(path, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`fetch ${path}: HTTP ${r.status}`);
+        const text = await r.text();
+        return text.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .map(line => JSON.parse(line));
+    }
+
+    function shortSha(sha) {
+        return (sha || '').slice(0, 7);
+    }
+
+    // Every-Nth downsample: always include first + last; pick ~targetCount
+    // total samples evenly across the input.
+    function downsampleEveryNth(rows, targetCount) {
+        if (rows.length <= targetCount) return rows.slice();
+        const out = [];
+        const step = (rows.length - 1) / (targetCount - 1);
+        for (let i = 0; i < targetCount; i++) {
+            const idx = Math.round(i * step);
+            out.push(rows[idx]);
+        }
+        // Ensure last entry is included (rounding can drop it).
+        if (out[out.length - 1] !== rows[rows.length - 1]) {
+            out[out.length - 1] = rows[rows.length - 1];
+        }
+        return out;
+    }
+
+    // Build Chart.js datasets from an array of history rows.
+    function buildDatasets(rows, canaryNames) {
+        return canaryNames.map(name => ({
+            label: name,
+            data: rows.map(row => {
+                const ms = row.canaries && row.canaries[name];
+                return (typeof ms === 'number') ? ms : null;
+            }),
+            borderColor: CANARY_COLORS[name] || '#888',
+            backgroundColor: CANARY_COLORS[name] || '#888',
+            tension: 0.15,
+            spanGaps: true,
+            pointRadius: 2,
+            borderWidth: 1.5,
+        }));
+    }
+
+    function renderChart(canvasId, rows, canaryNames, manifestCanaries) {
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        const labels = rows.map(r => shortSha(r.sha));
+        const datasets = buildDatasets(rows, canaryNames);
+
+        return new Chart(ctx, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'nearest', intersect: false },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'commit (oldest left → newest right)' },
+                        ticks: { autoSkip: true, maxTicksLimit: 16, font: { family: 'ui-monospace, monospace', size: 10 } },
+                    },
+                    y: {
+                        type: 'logarithmic',
+                        title: { display: true, text: 'wall-time (ms, log scale)' },
+                    },
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { boxWidth: 12, font: { size: 11 } },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: (items) => {
+                                const idx = items[0].dataIndex;
+                                const row = rows[idx];
+                                return `${shortSha(row.sha)} — ${row.ts || ''}`;
+                            },
+                            label: (item) => {
+                                const name = item.dataset.label;
+                                const ms = item.parsed.y;
+                                const theoretical = manifestCanaries[name] && manifestCanaries[name].theoretical_ms;
+                                if (typeof theoretical === 'number' && theoretical > 0) {
+                                    const ratio = (ms / theoretical).toFixed(2);
+                                    return `${name}: ${ms} ms (${ratio}× theoretical ${theoretical} ms)`;
+                                }
+                                return `${name}: ${ms} ms`;
+                            },
+                        },
+                    },
+                },
+            },
+        });
+    }
+
+    function renderSummary(latest, manifestCanaries) {
+        const root = document.getElementById('summary');
+        root.innerHTML = '';
+        const names = Object.keys(manifestCanaries);
+        for (const name of names) {
+            const ms = latest && latest.canaries && latest.canaries[name];
+            const theoretical = manifestCanaries[name] && manifestCanaries[name].theoretical_ms;
+            const bar = document.createElement('div');
+            bar.className = 'summary-bar';
+            let ratioStr = '';
+            if (typeof ms === 'number' && typeof theoretical === 'number' && theoretical > 0) {
+                const ratio = ms / theoretical;
+                ratioStr = `${ratio.toFixed(2)}× theoretical (${theoretical} ms)`;
+                if (ratio <= 1.5) bar.classList.add('good');
+                else if (ratio <= 3) bar.classList.add('warn');
+                else bar.classList.add('bad');
+            }
+            bar.innerHTML = `
+                <div class="name">${name}</div>
+                <div class="value">${(typeof ms === 'number') ? ms.toLocaleString() + ' ms' : '—'}</div>
+                <div class="ratio">${ratioStr}</div>
+            `;
+            root.appendChild(bar);
+        }
+    }
+
+    function renderHeader(manifest, latest) {
+        const generatedAt = (latest && latest.metadata && latest.metadata.generated_at) || manifest.generated_at || '—';
+        const sha = (latest && latest.metadata && latest.metadata.git_sha) || manifest.git_sha || '';
+        const runUrl = latest && latest.metadata && latest.metadata.run_url;
+        const soldr = latest && latest.metadata && latest.metadata.soldr_version;
+        const rustc = latest && latest.metadata && latest.metadata.rustc_version;
+        const parts = [
+            `Last run: <code>${shortSha(sha)}</code> at ${generatedAt}`,
+        ];
+        if (runUrl) parts.push(`<a href="${runUrl}" target="_blank" rel="noopener">workflow run</a>`);
+        if (soldr) parts.push(`<code>${soldr}</code>`);
+        if (rustc) parts.push(`<code>${rustc}</code>`);
+        document.getElementById('header-meta').innerHTML = parts.join(' · ');
+    }
+
+    function renderHowToFetch(manifest) {
+        const lines = [
+            `# Always start here — the discovery index`,
+            `curl ${manifest.artifacts.manifest.url}`,
+            ``,
+            `# Rich snapshot of the latest run`,
+            `curl ${manifest.artifacts.latest.url}`,
+            ``,
+            `# Slim per-commit history (rolling ${manifest.artifacts.history.max_lines} lines)`,
+            `curl ${manifest.artifacts.history.url}`,
+        ];
+        document.getElementById('how-to-fetch').textContent = lines.join('\n');
+    }
+
+    async function main() {
+        let manifest, latest, history;
+        try {
+            [manifest, latest, history] = await Promise.all([
+                fetchJson('manifest.json'),
+                fetchJson('latest.json'),
+                fetchJsonl('history.jsonl'),
+            ]);
+        } catch (err) {
+            document.getElementById('header-meta').textContent = `Failed to load data: ${err.message}`;
+            document.getElementById('summary').innerHTML = `<div class="empty">No data — first run hasn't published yet, or fetch failed.</div>`;
+            return;
+        }
+
+        const canaryNames = Object.keys(manifest.canaries);
+        renderHeader(manifest, latest);
+        renderSummary(latest, manifest.canaries);
+        renderHowToFetch(manifest);
+
+        if (history.length === 0) {
+            document.getElementById('chart-recent').replaceWith(Object.assign(document.createElement('div'), {
+                className: 'empty', textContent: 'No history rows yet.',
+            }));
+            document.getElementById('chart-sparse').replaceWith(Object.assign(document.createElement('div'), {
+                className: 'empty', textContent: 'No history rows yet.',
+            }));
+            return;
+        }
+
+        const recent = history.slice(-50);
+        renderChart('chart-recent', recent, canaryNames, manifest.canaries);
+
+        // For the sparse view, downsample anything bigger than 50 to ~50 points.
+        const sparse = (history.length <= 50) ? history.slice() : downsampleEveryNth(history, 50);
+        renderChart('chart-sparse', sparse, canaryNames, manifest.canaries);
+    }
+
+    main();
+    </script>
+</body>
+</html>
