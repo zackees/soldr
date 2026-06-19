@@ -19,6 +19,10 @@ permissions:
 
 env:
   RUST_BACKTRACE: "1"
+  # Direct CI jobs may resolve managed zccache from zackees/zccache.
+  # Use soldr's explicit opt-in token env for authenticated release
+  # metadata requests without weakening generic cross-repo GITHUB_TOKEN use.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   lint:

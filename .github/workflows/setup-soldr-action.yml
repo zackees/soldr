@@ -39,6 +39,12 @@ jobs:
   smoke:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
+    env:
+      # Managed zccache is fetched from zackees/zccache, which is a
+      # cross-repo GitHub Releases lookup from this workflow. Use soldr's
+      # explicit opt-in token env so release metadata requests are
+      # authenticated without weakening the generic GITHUB_TOKEN guard.
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -166,16 +172,6 @@ jobs:
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
-          # Network-touching tests (e.g. `fetch_crgx_and_run`) hit the
-          # GitHub Releases API. Without a token the rate limit is
-          # 60/hr per runner IP and gets exhausted quickly when several
-          # workflows run on the same shared macOS / Linux pool.
-          # Authenticating bumps the limit to 5000/hr and turns the
-          # flake into a non-issue. Pair the env var with the inner
-          # retry budget in fetch_repo_binary_with_paths (#432) — the
-          # token covers rate-limit class failures, the retry covers
-          # transient release-propagation 404s.
-          SOLDR_GITHUB_TOKEN: ${{ github.token }}
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
           $timer = [Diagnostics.Stopwatch]::StartNew()
