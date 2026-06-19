@@ -1,8 +1,11 @@
 # PERF.md — testing soldr performance
 
-soldr has one performance workflow: **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix"). Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
+soldr has two performance workflows:
 
-For the per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md).
+1. **`.github/workflows/perf-matrix.yml`** (the "Perf Matrix") — the regression-gate workflow. Push to a branch with a recognized name and the matrix runs the right cells automatically — no manual `workflow_dispatch` needed.
+2. **`.github/workflows/benchmark-stats.yml`** (issue #768) — per-commit trend publishing. Runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, and force-publishes to the `benchmark-stats` branch + GitHub Pages.
+
+For the perf-matrix per-scenario design rationale (what each cell proves), see [`perf/README.md`](perf/README.md). For the benchmark-stats canary set + discovery URLs, see the **Per-commit benchmark stats** section near the end of this file.
 
 ## How it triggers
 
@@ -158,3 +161,50 @@ bash perf/scenarios/cold-tar-untar-warm/run.sh /tmp/perf-medium/medium
 ```
 
 The scripts are POSIX bash and do not require any GHA-only env vars; `measure::append_summary_md` is a no-op when `$GITHUB_STEP_SUMMARY` is unset.
+
+## Per-commit benchmark stats (issue #768)
+
+The Perf Matrix above is the **regression gate** — it runs on perf-iteration branches and hard-fails if `cold-tar-untar-warm` drops below 3× speedup. It does NOT publish a permanent record.
+
+A complementary workflow, `benchmark-stats.yml`, publishes a permanent **per-main-commit canary record** for trend tracking. It runs on every push to `main`, measures 6 canaries against `perf/fixtures/medium`, and force-publishes the results to the `benchmark-stats` branch + GitHub Pages.
+
+### Discovery URLs
+
+Every artifact's URL is listed inside `manifest.json`. Start there:
+
+```
+https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/manifest.json
+```
+
+The manifest points at:
+
+| Artifact | URL pattern |
+|---|---|
+| Rich snapshot of latest run | `https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/latest.json` |
+| Slim rolling history (1000 lines) | `https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/history.jsonl` |
+| Human-facing Chart.js page | `https://zackees.github.io/soldr/` |
+
+### Canary set
+
+| Canary | What it measures | Theoretical (ms) |
+|---|---|---|
+| `cargo-build-medium-cold` | full cold compile of `perf/fixtures/medium` | 60000 |
+| `cargo-build-medium-warm` | immediate repeat (cargo freshness fast-path) | 500 |
+| `cargo-build-medium-from-warm-zccache` | `cargo clean` + rebuild from warm zccache | 10000 |
+| `cargo-check-medium-cross-verb` | build → check; pins #758 / [zccache#776](https://github.com/zackees/zccache/issues/776) | 1500 |
+| `touch-no-change-medium-warm` | source mtimes bumped, content unchanged; expect 100% hits | 1500 |
+| `worktree-share-medium-warm` | second fixture extraction, same `SOLDR_CACHE_DIR` | 1500 |
+
+### Branch shape
+
+The `benchmark-stats` branch is **not orphan** — it carries a rolling 50 commits of git history (shallow-clone-then-force-push pattern in `bench/publish_benchmark_stats.sh`). Older commits become unreferenced and GitHub garbage-collects them.
+
+The slim `history.jsonl` file (one line per commit) accumulates to **1000 lines** total before the oldest entry is dropped. So the data carries far longer-running trends than git's 50-commit window.
+
+### Workflow files
+
+- `.github/workflows/benchmark-stats.yml` — the workflow
+- `bench/run_canaries.sh` — runs the 6 canaries
+- `bench/assemble_benchmark_stats.sh` — fetches prior history, writes `manifest.json` + `latest.json` + `history.jsonl` + `index.html`
+- `bench/publish_benchmark_stats.sh` — shallow-clone + force-push to `benchmark-stats`
+- `bench/index.html` — Chart.js page template (copied verbatim into the publish dir)

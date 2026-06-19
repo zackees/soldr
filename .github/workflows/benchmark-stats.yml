@@ -1,0 +1,99 @@
+name: Benchmark Stats
+
+# Publish soldr's canary timings to the `benchmark-stats` branch + GitHub
+# Pages on every main-commit. Spec: issue #768. Inspired by
+# zackees/zccache@benchmark-stats; deviates: push-triggered (not cron),
+# per-commit slim history (not stateless), Chart.js graphs (not static).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  # Only one publish at a time per ref; cancel a stale in-flight when a
+  # newer main-merge arrives.
+  group: benchmark-stats-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  benchmark:
+    name: Generate + publish benchmark stats
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          path: soldr
+
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        env:
+          ACTION_WORKSPACE: ${{ github.workspace }}/soldr
+        with:
+          toolchain: 1.94.1
+          cache: true
+          zccache-seed-strict: true
+
+      - name: Run canary benchmarks
+        working-directory: soldr
+        run: bash bench/run_canaries.sh
+
+      - name: Assemble publish dir
+        working-directory: soldr
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL: ${{ github.repository }}
+          GIT_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash bench/assemble_benchmark_stats.sh
+
+      - name: Publish to benchmark-stats branch
+        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        working-directory: soldr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_FULL: ${{ github.repository }}
+          GIT_SHA: ${{ github.sha }}
+        run: bash bench/publish_benchmark_stats.sh
+
+      - name: Configure Pages
+        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: ${{ success() && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: soldr/benchmark-stats
+
+      - name: Upload canary output as workflow artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: benchmark-stats-${{ github.sha }}
+          path: soldr/benchmark-stats
+          if-no-files-found: warn
+          retention-days: 14
+
+  deploy-pages:
+    name: Deploy benchmark page
+    needs: benchmark
+    if: ${{ needs.benchmark.result == 'success' && github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
