@@ -57,6 +57,7 @@ on:
           - cold-tar-untar-warm
           - worktree-share
           - touch-no-change
+          - build-then-check
       # The `debug` input was removed: verbose tracing + raw RSS CSV
       # retention is now always on. The downstream consumer sets
       # SOLDR_DEBUG=1 unconditionally.
@@ -147,11 +148,12 @@ jobs:
                 esac
                 # Scenario token
                 case "${ts}" in
-                  all)      scen="all" ;;
-                  cold)     scen="cold-tar-untar-warm" ;;
-                  worktree) scen="worktree-share" ;;
-                  touch)    scen="touch-no-change" ;;
-                  *)        bad=1 ;;
+                  all)       scen="all" ;;
+                  cold)      scen="cold-tar-untar-warm" ;;
+                  worktree)  scen="worktree-share" ;;
+                  touch)     scen="touch-no-change" ;;
+                  crossverb) scen="build-then-check" ;;
+                  *)         bad=1 ;;
                 esac
                 if [[ -n "${rest}" || "${bad}" == "1" ]]; then
                   echo "::notice::Branch '${REF_NAME}' does not match perf/<plat>-<fix>-<scen>; running full sweep. See PERF.md."
@@ -307,7 +309,7 @@ jobs:
           # are not selected are filtered out of the per-cell loop
           # below, so a cell with zero selected scenarios still skips
           # the rest of the steps but does not consume bench-time.
-          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change"
+          ALL_SCENARIOS="cold-tar-untar-warm worktree-share touch-no-change build-then-check"
           selected_scenarios=""
           for s in ${ALL_SCENARIOS}; do
             if in_subset "${REQ_SCENARIOS}" "${s}"; then
@@ -510,7 +512,7 @@ jobs:
           mode_for() {
             case "$1" in
               cold-tar-untar-warm) echo "fail" ;;
-              worktree-share|touch-no-change) echo "warn" ;;
+              worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac
           }
@@ -564,7 +566,7 @@ jobs:
               continue
             fi
 
-            for scenario in cold-tar-untar-warm worktree-share touch-no-change; do
+            for scenario in cold-tar-untar-warm worktree-share touch-no-change build-then-check; do
               if ! in_subset "${REQ_SCENARIOS}" "${scenario}"; then
                 echo "scenario ${scenario} not selected by dispatch input; skipping"
                 continue

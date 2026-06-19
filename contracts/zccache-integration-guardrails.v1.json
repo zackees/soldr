@@ -291,6 +291,22 @@
       ]
     },
     {
+      "id": "perf-build-then-check",
+      "axis": "performance",
+      "gate": "report-only",
+      "covers": [
+        "cross-verb cache reuse (build -> check)",
+        "rustc --emit canonicalization canary"
+      ],
+      "test_files": [
+        ".github/workflows/perf-matrix.yml",
+        "perf/scenarios/build-then-check/run.sh"
+      ],
+      "validation_command_ids": [
+        "perf-matrix-worktree-touch"
+      ]
+    },
+    {
       "id": "native-cc-cache",
       "axis": "native C/C++ cache",
       "gate": "hard",

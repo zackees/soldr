@@ -30,13 +30,14 @@ Branch syntax: **`perf/<plat>-<fix>-<scen>`** with one short token per axis. `al
 | Scenario | `cold` | `cold-tar-untar-warm` |
 | Scenario | `worktree` | `worktree-share` |
 | Scenario | `touch` | `touch-no-change` |
+| Scenario | `crossverb` | `build-then-check` |
 | any axis | `all` | wildcard — run every value on this axis |
 
 Short tokens keep the branch name unambiguous (the real names contain hyphens that would collide with the axis separator).
 
 ### Full scope table
 
-48 hierarchical patterns plus two full-sweep aliases. Anything not in this table (e.g., a developer iteration branch like `perf/cluster-hierarchical-skip`) falls back to a full sweep and emits a `::notice::` so the run is still useful.
+Hierarchical patterns plus two full-sweep aliases. The tables below enumerate `cold` / `worktree` / `touch` for compactness; the `crossverb` scenario follows the same shape — substitute it for the trailing scenario token in any pattern (e.g. `perf/linux-medium-crossverb` is the single cell linux × medium × build-then-check). Anything not in this table (e.g., a developer iteration branch like `perf/cluster-hierarchical-skip`) falls back to a full sweep and emits a `::notice::` so the run is still useful.
 
 #### Aliases — full ride
 
@@ -120,6 +121,7 @@ Short tokens keep the branch name unambiguous (the real names contain hyphens th
 - **Iterating on cache hit-rate fixes that only affect sqlite builds** → `perf/linux-sqlite-cold` (fastest signal: one cell, the hard gate scenario).
 - **Tuning archive fidelity** → `perf/all-all-cold` (sweep cold-tar-untar-warm across everything; fixture variation matters).
 - **Worktree path-remap change** → `perf/linux-all-worktree` (every fixture on linux, worktree scenario only).
+- **Cross-verb cache canonicalization (e.g. `--emit=metadata` ↔ `--emit=metadata,link`)** → `perf/linux-medium-crossverb` (single cell that pins the build→check asymmetry from #758).
 - **Just experimenting / unsure** → `perf/all` or `main` — full sweep; the workflow handles the volume.
 - **Personal feature branch like `perf/wip/foo`** → falls through to full sweep with an `::notice::`. Fine for one-off runs; rename to a canonical pattern when you know what axis you're working on.
 
@@ -128,6 +130,7 @@ Short tokens keep the branch name unambiguous (the real names contain hyphens th
 - **`cold-tar-untar-warm` < 3x** (cold/warm ratio in the Evaluate step) → **fails the workflow**. Hard gate.
 - **`worktree-share` < 3x** → emits `::warning::`, doesn't fail. Soft gate today; promotes to hard once the baseline stabilizes.
 - **`touch-no-change` < 3x** → same as worktree-share, soft today.
+- **`build-then-check` < 3x** → soft warning. The "warm" step is `cargo check` after a warm `cargo build` (same source, same profile); today it returns 0% hits because zccache's cache key splits on the rustc `--emit` flag, so the ratio is close to the threshold. Promotes to hard once zccache canonicalizes `--emit=metadata` against `--emit=metadata,link` keys. Tracks #758.
 
 Threshold lives on the `evaluate` matrix row (`min_speedup: "3.0"`).
 

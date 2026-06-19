@@ -25,6 +25,7 @@ matrix cell in this cluster pins a single failure mode:
 | `cold-tar-untar-warm` | cache archive fidelity (tar/untar round-trip)       |
 | `worktree-share`      | `ZCCACHE_PATH_REMAP=auto` injection (issue #352)    |
 | `touch-no-change`     | mtime/content-hash robustness (soldr save/load #377) |
+| `build-then-check`    | cross-verb cache reuse — `--emit=metadata` vs `--emit=metadata,link` (issue #758) |
 
 ## How a worker measures
 
