@@ -34,6 +34,11 @@ tempfile = "3"
 zip = "2"
 flate2 = "1"
 tar = "0.4"
+# .tar.xz support — cargo-zigbuild and other rust-cross prebuilts ship
+# their per-triple binary tarballs in xz, not gzip. Without this, soldr
+# falls through to the "raw binary" branch in fetch::archive and writes
+# the compressed tarball bytes to disk as the binary (#809).
+xz2 = "0.1"
 toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
