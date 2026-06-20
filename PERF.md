@@ -197,7 +197,7 @@ The manifest points at:
 
 ## README comparison bars (issue #785)
 
-The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a-glance bare cargo vs sccache vs soldr comparison. The images intentionally match zccache's dark README benchmark style. The historical trend PNG remains published as `benchmark-trend.png`, but it is for the Pages deep-dive rather than the README value proposition.
+The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a-glance bare cargo vs sccache vs soldr comparison. The images intentionally match zccache's dark README benchmark style: each row draws the cold timing as the back bar and overlays the warm timing in front, normalized to the per-section cold maximum. The historical trend PNG remains published as `benchmark-trend.png`, but it is for the Pages deep-dive rather than the README value proposition.
 
 ### Workloads
 
@@ -223,6 +223,8 @@ The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a
 | `cold` | Fresh source checkout, fresh target dir, and fresh cache. This should usually be a wash, and it sets honest expectations. | Single sample. |
 | `warm` | Populate the tool cache, run `cargo clean`, then time the rebuild in the same workspace. | Single sample. |
 | `worktree-share` | Build workspace A to populate the cache, then time a sibling workspace B at the same commit. This highlights soldr's `ZCCACHE_PATH_REMAP=auto` parent-child share story. | Single sample. |
+
+The static README renderer combines these rows into two overlay sections: `cold` + `warm`, and `cold` + `worktree-share`. That follows zccache's cold-back/warm-front bar treatment and keeps the image compact.
 
 Each comparison build is bounded by `COMPARISON_BUILD_TIMEOUT_SECONDS` (default: 60). A timed-out cell records `0` and lets the publisher complete so a stuck native compile cannot pin the README workflow for hours.
 
