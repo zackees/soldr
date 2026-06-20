@@ -372,6 +372,8 @@ jobs:
           chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
           case "${{ matrix.target }}" in
             *-pc-windows-msvc)
+              # Windows MSVC always emits a `.pdb` next to the binary
+              # under the default release profile. Required (#782).
               pdb_src=""
               for candidate in \
                 "target/${{ matrix.target }}/release/soldr.pdb" \
@@ -387,6 +389,39 @@ jobs:
                 exit 1
               fi
               cp "$pdb_src" "dist/package/$(basename "$pdb_src")"
+              ;;
+            *-unknown-linux-*)
+              # Linux split DWARF: only present when the release
+              # profile sets `split-debuginfo = "packed"`. The default
+              # Rust release profile DOES NOT, so a missing `.dwp` is
+              # non-fatal — we stage it opportunistically. Issue #786:
+              # generalize debug-sidecar packaging beyond Windows. The
+              # manifest writer below records whatever ends up in
+              # `dist/package/` under `soldr.debug_info`.
+              for candidate in \
+                "target/${{ matrix.target }}/release/soldr.dwp" \
+                "target/${{ matrix.target }}/release/soldr_cli.dwp"; do
+                if [ -f "$candidate" ]; then
+                  cp "$candidate" "dist/package/$(basename "$candidate")"
+                  echo "staged Linux split-DWARF sidecar: $(basename "$candidate")"
+                  break
+                fi
+              done
+              ;;
+            *-apple-darwin)
+              # macOS dSYM bundle: only present when the release
+              # profile sets `split-debuginfo = "packed"`. The bundle
+              # is a directory tree, NOT a single file — `cp -R`
+              # preserves it. Missing bundle is non-fatal (#786).
+              for candidate in \
+                "target/${{ matrix.target }}/release/soldr.dSYM" \
+                "target/${{ matrix.target }}/release/soldr_cli.dSYM"; do
+                if [ -d "$candidate" ]; then
+                  cp -R "$candidate" "dist/package/$(basename "$candidate")"
+                  echo "staged macOS dSYM sidecar bundle: $(basename "$candidate")"
+                  break
+                fi
+              done
               ;;
           esac
           ls -la dist/package/
@@ -545,7 +580,21 @@ jobs:
           }
 
           soldr_sha=$(sha256_of "dist/package/soldr${suffix}")
-          soldr_debug_info_json="[]"
+          # Build `soldr.debug_info` from every sidecar staged above
+          # (issue #786). Windows .pdb is REQUIRED — its absence fails
+          # the build. Linux .dwp / macOS .dSYM are OPTIONAL — the
+          # default Rust release profile doesn't emit them, so a
+          # missing sidecar is silent and the array stays empty. Format
+          # tags MUST match the constants in
+          # `crates/soldr-cli/src/release_sidecar.rs::DebugSidecarFormat::as_manifest_str`.
+          soldr_debug_info_entries=()
+          add_sidecar_entry() {
+            local path="$1" format="$2"
+            local name sha
+            name=$(basename "$path")
+            sha=$(sha256_of "$path")
+            soldr_debug_info_entries+=("{ \"name\": \"${name}\", \"sha256\": \"${sha}\", \"format\": \"${format}\" }")
+          }
           if [ -n "$suffix" ]; then
             soldr_pdb=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.pdb' -o -name 'soldr_cli.pdb' \) -print -quit)
             if [ -z "$soldr_pdb" ]; then
@@ -553,9 +602,31 @@ jobs:
               ls -la dist/package >&2
               exit 1
             fi
-            soldr_pdb_name=$(basename "$soldr_pdb")
-            soldr_pdb_sha=$(sha256_of "$soldr_pdb")
-            soldr_debug_info_json=$(printf '[{ "name": "%s", "sha256": "%s", "format": "pdb" }]' "$soldr_pdb_name" "$soldr_pdb_sha")
+            add_sidecar_entry "$soldr_pdb" "pdb"
+          fi
+          soldr_dwp=$(find dist/package -maxdepth 1 -type f \( -name 'soldr.dwp' -o -name 'soldr_cli.dwp' \) -print -quit)
+          if [ -n "$soldr_dwp" ]; then
+            add_sidecar_entry "$soldr_dwp" "dwp"
+          fi
+          # macOS dSYM is a directory; sha256 it as a tarball of its
+          # contents so consumers can verify the whole bundle in one
+          # check. The bundle layout itself is preserved on disk.
+          # Pipe through whichever sha256 binary is available — the
+          # `sha256_of` helper above takes a path arg, not stdin.
+          soldr_dsym=$(find dist/package -maxdepth 1 -type d \( -name 'soldr.dSYM' -o -name 'soldr_cli.dSYM' \) -print -quit)
+          if [ -n "$soldr_dsym" ]; then
+            dsym_name=$(basename "$soldr_dsym")
+            if command -v sha256sum >/dev/null 2>&1; then
+              dsym_sha=$(tar -cf - -C "$(dirname "$soldr_dsym")" "$dsym_name" | sha256sum | awk '{print $1}')
+            else
+              dsym_sha=$(tar -cf - -C "$(dirname "$soldr_dsym")" "$dsym_name" | shasum -a 256 | awk '{print $1}')
+            fi
+            soldr_debug_info_entries+=("{ \"name\": \"${dsym_name}\", \"sha256\": \"${dsym_sha}\", \"format\": \"dsym\" }")
+          fi
+          if [ ${#soldr_debug_info_entries[@]} -eq 0 ]; then
+            soldr_debug_info_json="[]"
+          else
+            soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
           fi
           zccache_sha=$(sha256_of "dist/package/zccache${suffix}")
           zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")

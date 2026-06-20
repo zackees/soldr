@@ -29,6 +29,7 @@ mod native_cc;
 mod optimize;
 mod optimize_detect;
 mod optimize_windows;
+mod release_sidecar;
 mod rust_plan;
 mod save_load;
 mod self_relocate;

@@ -19,6 +19,7 @@ pub mod core;
 pub mod daemon;
 pub mod defender;
 pub mod fetch;
+pub mod release_sidecar;
 pub mod self_relocate;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under
