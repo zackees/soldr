@@ -117,6 +117,17 @@ pub struct LoadArgs {
 }
 
 pub fn run_save(args: SaveArgs) -> i32 {
+    let args = match apply_private_session_cache_dir_default(
+        args,
+        crate::zccache::private_session_requested(),
+        || std::env::current_dir(),
+    ) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("soldr save: {err}");
+            return 1;
+        }
+    };
     if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
         let Some(cache_dir) = args.cache_dir.as_deref() else {
             eprintln!("soldr save: --delta-from-manifest requires --cache-dir");
@@ -210,6 +221,17 @@ pub fn run_save(args: SaveArgs) -> i32 {
 }
 
 pub fn run_load(args: LoadArgs) -> i32 {
+    let args = match apply_private_session_cache_dir_default_load(
+        args,
+        crate::zccache::private_session_requested(),
+        || std::env::current_dir(),
+    ) {
+        Ok(args) => args,
+        Err(err) => {
+            eprintln!("soldr load: {err}");
+            return 1;
+        }
+    };
     let env_profile = std::env::var("SOLDR_PROFILE_EXTRACT")
         .ok()
         .map(|v| !v.is_empty() && v != "0")
@@ -267,4 +289,146 @@ pub fn run_load(args: LoadArgs) -> i32 {
         );
     }
     0
+}
+
+/// If `private_requested` and `--cache-dir` is omitted, default the
+/// save side to `<cwd>/.zccache`. Mtimes-only mode is unaffected: the
+/// `cache_dir` must stay `None` in that mode and the save side already
+/// rejects the combination, so we leave it alone.
+///
+/// `cwd_provider` lets tests inject a synthetic working directory
+/// without mutating the global process env.
+fn apply_private_session_cache_dir_default<F>(
+    mut args: SaveArgs,
+    private_requested: bool,
+    cwd_provider: F,
+) -> Result<SaveArgs, String>
+where
+    F: FnOnce() -> std::io::Result<PathBuf>,
+{
+    if args.cache_dir.is_none() && !args.mtimes_only && private_requested {
+        let cwd = cwd_provider().map_err(|e| format!("current_dir: {e}"))?;
+        args.cache_dir = Some(cwd.join(crate::zccache::PRIVATE_SESSION_CACHE_DIR_NAME));
+    }
+    Ok(args)
+}
+
+fn apply_private_session_cache_dir_default_load<F>(
+    mut args: LoadArgs,
+    private_requested: bool,
+    cwd_provider: F,
+) -> Result<LoadArgs, String>
+where
+    F: FnOnce() -> std::io::Result<PathBuf>,
+{
+    if args.cache_dir.is_none() && !args.mtimes_only && private_requested {
+        let cwd = cwd_provider().map_err(|e| format!("current_dir: {e}"))?;
+        args.cache_dir = Some(cwd.join(crate::zccache::PRIVATE_SESSION_CACHE_DIR_NAME));
+    }
+    Ok(args)
+}
+
+#[cfg(test)]
+mod private_session_default_tests {
+    use super::*;
+
+    fn fake_cwd() -> std::io::Result<PathBuf> {
+        Ok(PathBuf::from("/fake/cwd"))
+    }
+
+    fn base_save_args() -> SaveArgs {
+        SaveArgs {
+            cache_dir: None,
+            workspace: None,
+            out: PathBuf::from("/out.tar.zst"),
+            zstd_level: DEFAULT_ZSTD_LEVEL,
+            threads: None,
+            json: false,
+            mtimes_only: false,
+            delta_from_manifest: None,
+        }
+    }
+
+    fn base_load_args() -> LoadArgs {
+        LoadArgs {
+            archive: PathBuf::from("/in.tar.zst"),
+            cache_dir: None,
+            workspace: None,
+            threads: None,
+            json: false,
+            mtimes_only: false,
+            manifest_out: None,
+            profile_extract: false,
+            auto_defender_exclude: false,
+        }
+    }
+
+    crate::timed_test!(save_default_routes_to_cwd_dot_zccache_when_private, {
+        let args = apply_private_session_cache_dir_default(base_save_args(), true, fake_cwd)
+            .expect("apply default");
+        assert_eq!(
+            args.cache_dir.as_deref(),
+            Some(std::path::Path::new("/fake/cwd/.zccache")),
+        );
+    });
+
+    crate::timed_test!(save_default_no_op_when_private_off, {
+        let args = apply_private_session_cache_dir_default(base_save_args(), false, fake_cwd)
+            .expect("apply default");
+        assert!(
+            args.cache_dir.is_none(),
+            "without the env var, --cache-dir must remain user-controlled",
+        );
+    });
+
+    crate::timed_test!(save_default_preserves_explicit_cache_dir, {
+        let mut args = base_save_args();
+        args.cache_dir = Some(PathBuf::from("/user/explicit"));
+        let args = apply_private_session_cache_dir_default(args, true, fake_cwd)
+            .expect("apply default");
+        assert_eq!(
+            args.cache_dir.as_deref(),
+            Some(std::path::Path::new("/user/explicit")),
+            "explicit --cache-dir always wins over the private-session default",
+        );
+    });
+
+    crate::timed_test!(save_default_no_op_in_mtimes_only_mode, {
+        let mut args = base_save_args();
+        args.mtimes_only = true;
+        let args = apply_private_session_cache_dir_default(args, true, fake_cwd)
+            .expect("apply default");
+        assert!(
+            args.cache_dir.is_none(),
+            "mtimes-only forbids --cache-dir; default must not inject one",
+        );
+    });
+
+    crate::timed_test!(load_default_routes_to_cwd_dot_zccache_when_private, {
+        let args = apply_private_session_cache_dir_default_load(base_load_args(), true, fake_cwd)
+            .expect("apply default");
+        assert_eq!(
+            args.cache_dir.as_deref(),
+            Some(std::path::Path::new("/fake/cwd/.zccache")),
+        );
+    });
+
+    crate::timed_test!(load_default_preserves_explicit_cache_dir, {
+        let mut args = base_load_args();
+        args.cache_dir = Some(PathBuf::from("/user/explicit"));
+        let args = apply_private_session_cache_dir_default_load(args, true, fake_cwd)
+            .expect("apply default");
+        assert_eq!(
+            args.cache_dir.as_deref(),
+            Some(std::path::Path::new("/user/explicit")),
+        );
+    });
+
+    crate::timed_test!(load_default_no_op_in_mtimes_only_mode, {
+        let mut args = base_load_args();
+        args.mtimes_only = true;
+        let args = apply_private_session_cache_dir_default_load(args, true, fake_cwd)
+            .expect("apply default");
+        assert!(args.cache_dir.is_none());
+    });
 }
