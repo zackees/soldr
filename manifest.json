@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-20T00:32:19Z",
-  "git_sha": "25638a80b50d0f4dffb279a15e74b229533347d1",
+  "generated_at": "2026-06-20T02:30:32Z",
+  "git_sha": "25daa151b1eb11ff0bc4dbea597540b90dc5f894",
   "branch": "benchmark-stats",
   "repository": "zackees/soldr",
   "artifacts": {
@@ -18,15 +18,16 @@
       "schema_version": 1
     },
     "history": {
-      "description": "Slim rolling history of soldr-only canary timings. One JSONL line per main-commit.",
+      "description": "Slim rolling history of soldr canary timings and README comparison cache/timing rows. One JSONL line per main-commit.",
       "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/history.jsonl",
       "content_type": "application/x-ndjson",
-      "schema_version": 1,
+      "schema_version": 2,
       "max_lines": 1000,
       "line_schema": {
         "ts": "ISO-8601 UTC timestamp of the run",
         "sha": "git sha of the main-commit being measured",
-        "canaries": "object mapping canary name -> wall-time milliseconds"
+        "canaries": "object mapping canary name -> wall-time milliseconds",
+        "comparison": "array of compact README comparison rows: benchmark, fixture, scenario_key, tool, wall_ms, cache_bytes"
       }
     },
     "index_html": {
@@ -45,7 +46,7 @@
       "content_type": "image/jpeg"
     },
     "comparison_rust_c": {
-      "description": "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-native). Cold bars are drawn behind warm overlays.",
+      "description": "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (rust-native). Cold bars are drawn behind warm overlays.",
       "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg",
       "content_type": "image/jpeg"
     }
