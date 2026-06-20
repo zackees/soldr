@@ -42,6 +42,19 @@ elapsed_ms() {
     echo "$(( end - start ))"
 }
 
+dir_size_bytes() {
+    local path="$1"
+    if [[ ! -d "${path}" ]]; then
+        echo 0
+        return
+    fi
+    if du -sb "${path}" >/dev/null 2>&1; then
+        du -sb "${path}" | awk '{print $1}'
+    else
+        find "${path}" -type f -printf '%s\n' 2>/dev/null | awk '{sum += $1} END {print sum + 0}'
+    fi
+}
+
 json_escape() {
     jq -Rn --arg v "$1" '$v'
 }
@@ -56,10 +69,11 @@ append_result() {
     local tool_label="$7"
     local command_text="$8"
     local wall_ms="$9"
-    local project_path="${10}"
+    local cache_bytes="${10}"
+    local project_path="${11}"
 
     cat >>"${RESULTS_JSONL}" <<EOF
-{"benchmark":$(json_escape "$benchmark"),"fixture":$(json_escape "$fixture"),"scenario_key":$(json_escape "$scenario_key"),"scenario":$(json_escape "$scenario"),"mode":$(json_escape "$mode"),"tool":$(json_escape "$tool"),"tool_label":$(json_escape "$tool_label"),"command":$(json_escape "$command_text"),"wall_ms":${wall_ms},"project_path":$(json_escape "$project_path")}
+{"benchmark":$(json_escape "$benchmark"),"fixture":$(json_escape "$fixture"),"scenario_key":$(json_escape "$scenario_key"),"scenario":$(json_escape "$scenario"),"mode":$(json_escape "$mode"),"tool":$(json_escape "$tool"),"tool_label":$(json_escape "$tool_label"),"command":$(json_escape "$command_text"),"wall_ms":${wall_ms},"cache_bytes":${cache_bytes},"cache_scope":$(json_escape "tool-isolated-after-measured-run"),"project_path":$(json_escape "$project_path")}
 EOF
 }
 
@@ -175,6 +189,7 @@ measure_cold() {
     local fixture="$2"
     local tool="$3"
     local samples=()
+    local cache_bytes=0
     for idx in 1; do
         local cell="${WORK_DIR}/${benchmark}/cold/${tool}/${idx}"
         local project cache target ms
@@ -184,8 +199,9 @@ measure_cold() {
         target="${cell}/target"
         ms="$(measure_command "${benchmark} cold ${tool} sample ${idx}" run_build "${tool}" "${project}" "${cache}" "${target}")"
         samples+=("${ms}")
+        cache_bytes="$(dir_size_bytes "${cache}")"
     done
-    median_ms "${samples[@]}"
+    printf '%s %s\n' "$(median_ms "${samples[@]}")" "${cache_bytes}"
 }
 
 measure_warm() {
@@ -200,7 +216,9 @@ measure_warm() {
     target="${cell}/target"
     run_logged "${benchmark} warm ${tool} populate" run_build "${tool}" "${project}" "${cache}" "${target}"
     clean_project "${project}" "${target}"
-    measure_command "${benchmark} warm ${tool}" run_build "${tool}" "${project}" "${cache}" "${target}"
+    local ms
+    ms="$(measure_command "${benchmark} warm ${tool}" run_build "${tool}" "${project}" "${cache}" "${target}")"
+    printf '%s %s\n' "${ms}" "$(dir_size_bytes "${cache}")"
 }
 
 measure_worktree_share() {
@@ -217,7 +235,9 @@ measure_worktree_share() {
     target_a="${cell}/target-a"
     target_b="${cell}/target-b"
     run_logged "${benchmark} worktree-share ${tool} populate A" run_build "${tool}" "${project_a}" "${cache}" "${target_a}"
-    measure_command "${benchmark} worktree-share ${tool} build B" run_build "${tool}" "${project_b}" "${cache}" "${target_b}"
+    local ms
+    ms="$(measure_command "${benchmark} worktree-share ${tool} build B" run_build "${tool}" "${project_b}" "${cache}" "${target_b}")"
+    printf '%s %s\n' "${ms}" "$(dir_size_bytes "${cache}")"
 }
 
 RESULTS_JSONL="${WORK_DIR}/comparison-results.jsonl"
@@ -225,7 +245,7 @@ RESULTS_JSONL="${WORK_DIR}/comparison-results.jsonl"
 
 declare -A FIXTURES=(
     ["rust-only"]="demo-small"
-    ["rust-c"]="sqlite-native"
+    ["rust-c"]="rust-native"
 )
 
 for benchmark in rust-only rust-c; do
@@ -234,14 +254,14 @@ for benchmark in rust-only rust-c; do
         label="$(tool_label "${tool}")"
         command="$(command_text "${tool}")"
 
-        ms="$(measure_cold "${benchmark}" "${fixture}" "${tool}")"
-        append_result "${benchmark}" "${fixture}" "cold" "Cold build" "cold" "${tool}" "${label}" "${command}" "${ms}" "single-sample"
+        read -r ms cache_bytes < <(measure_cold "${benchmark}" "${fixture}" "${tool}")
+        append_result "${benchmark}" "${fixture}" "cold" "Cold build" "cold" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
 
-        ms="$(measure_warm "${benchmark}" "${fixture}" "${tool}")"
-        append_result "${benchmark}" "${fixture}" "warm" "Warm rebuild (same workspace)" "warm" "${tool}" "${label}" "${command}" "${ms}" "single-sample"
+        read -r ms cache_bytes < <(measure_warm "${benchmark}" "${fixture}" "${tool}")
+        append_result "${benchmark}" "${fixture}" "warm" "Warm rebuild (same workspace)" "warm" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
 
-        ms="$(measure_worktree_share "${benchmark}" "${fixture}" "${tool}")"
-        append_result "${benchmark}" "${fixture}" "worktree-share" "Agent worktree / parent-child share" "worktree-share" "${tool}" "${label}" "${command}" "${ms}" "single-sample"
+        read -r ms cache_bytes < <(measure_worktree_share "${benchmark}" "${fixture}" "${tool}")
+        append_result "${benchmark}" "${fixture}" "worktree-share" "Agent worktree / parent-child share" "worktree-share" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
     done
 done
 
@@ -260,7 +280,7 @@ jq -s \
         soldr_version: $soldr_version,
         rustc_version: $rustc_version,
         sccache_version: $sccache_version,
-        schema_version: 1,
+        schema_version: 2,
         scenarios: [
             {key: "cold", label: "Cold build", samples: 1},
             {key: "warm", label: "Warm rebuild (same workspace)", samples: 1},

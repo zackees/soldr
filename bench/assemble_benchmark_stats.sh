@@ -54,7 +54,23 @@ NEW_LINE="$(
         --arg ts "${RAN_AT}" \
         --arg sha "${GIT_SHA}" \
         --slurpfile canaries_doc "${IN_FILE}" \
-        '{ts: $ts, sha: $sha, canaries: $canaries_doc[0].wall_ms}'
+        --slurpfile comparison_doc "${COMPARISON_FILE}" \
+        '{
+            ts: $ts,
+            sha: $sha,
+            canaries: $canaries_doc[0].wall_ms,
+            comparison: [
+                $comparison_doc[0].results[]
+                | {
+                    benchmark,
+                    fixture,
+                    scenario_key,
+                    tool,
+                    wall_ms,
+                    cache_bytes
+                }
+            ]
+        }'
 )"
 
 # --- Fetch prior history.jsonl (404-tolerant) ------------------------
@@ -92,7 +108,7 @@ jq -n \
     --slurpfile canaries_doc "${IN_FILE}" \
     --slurpfile comparison_doc "${COMPARISON_FILE}" \
     '{
-        schema_version: 1,
+        schema_version: 2,
         metadata: {
             generated_at: $generated_at,
             git_sha: $git_sha,
@@ -143,15 +159,16 @@ jq -n \
                 schema_version: 1
             },
             history: {
-                description: "Slim rolling history of soldr-only canary timings. One JSONL line per main-commit.",
+                description: "Slim rolling history of soldr canary timings and README comparison cache/timing rows. One JSONL line per main-commit.",
                 url: ($raw_base + "/history.jsonl"),
                 content_type: "application/x-ndjson",
-                schema_version: 1,
+                schema_version: 2,
                 max_lines: $history_max,
                 line_schema: {
                     ts: "ISO-8601 UTC timestamp of the run",
                     sha: "git sha of the main-commit being measured",
-                    canaries: "object mapping canary name -> wall-time milliseconds"
+                    canaries: "object mapping canary name -> wall-time milliseconds",
+                    comparison: "array of compact README comparison rows: benchmark, fixture, scenario_key, tool, wall_ms, cache_bytes"
                 }
             },
             index_html: {
@@ -170,7 +187,7 @@ jq -n \
                 content_type: "image/jpeg"
             },
             comparison_rust_c: {
-                description: "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-native). Cold bars are drawn behind warm overlays.",
+                description: "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (rust-native). Cold bars are drawn behind warm overlays.",
                 url: ($raw_base + "/benchmark-rust-c.jpg"),
                 content_type: "image/jpeg"
             }

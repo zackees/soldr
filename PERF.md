@@ -204,7 +204,7 @@ The README uses `benchmark-rust-only.jpg` and `benchmark-rust-c.jpg` for an at-a
 | Benchmark | Fixture | Why |
 |---|---|---|
 | `rust-only` | `perf/fixtures/demo-small` | setup-soldr's small registry/dependency workload. It gives README-facing cache signal without making every main merge rebuild the full soldr workspace. |
-| `rust-c` | `perf/fixtures/sqlite-native` | setup-soldr's native SQLite workload. It keeps the C/build-script surface covered while staying much smaller than the full `sqlite-link` perf fixture. |
+| `rust-c` | `perf/fixtures/rust-native` | Small Rust-heavy workload with serde/clap/thiserror plus a `cc` build script that compiles bundled C. It keeps native build-script coverage without turning the README chart into a mostly-C SQLite benchmark. |
 
 ### Tools
 
@@ -234,9 +234,9 @@ Each comparison build is bounded by `COMPARISON_BUILD_TIMEOUT_SECONDS` (default:
 
 - `latest.json#metadata.sccache_version` records the pinned sccache binary version alongside soldr and rustc.
 - `latest.json#comparison.scenarios` and `latest.json#comparison.tools` describe chart ordering.
-- `latest.json#results` contains one row per `(benchmark, scenario, tool)` with `command`, `wall_ms`, `mode`, `fixture`, and display labels.
+- `latest.json#results` contains one row per `(benchmark, scenario, tool)` with `command`, `wall_ms`, `cache_bytes`, `mode`, `fixture`, and display labels. Bare cargo rows report `0` cache bytes.
 
-The Pages view renders interactive Chart.js bars from `latest.json#results` above the historical trend charts. The static README JPGs are rendered from the same comparison JSON by `bench/render_comparison_bars.py`.
+The Pages view renders interactive Chart.js bars from `latest.json#results` above the historical trend charts and trends cache footprint from `history.jsonl`. The static README JPGs are rendered from the same comparison JSON by `bench/render_comparison_bars.py`.
 
 ### Branch shape
 

@@ -107,6 +107,9 @@
     <h2>Last 50 main-commits (dense)</h2>
     <div class="chart-wrap"><canvas id="chart-recent"></canvas></div>
 
+    <h2>Last 50 README comparison cache sizes</h2>
+    <div class="chart-wrap"><canvas id="chart-cache-recent"></canvas></div>
+
     <h2>Last 1000 main-commits (sparse, every-Nth sample)</h2>
     <div class="chart-wrap"><canvas id="chart-sparse"></canvas></div>
 
@@ -154,6 +157,19 @@
 
     function shortSha(sha) {
         return (sha || '').slice(0, 7);
+    }
+
+    function formatBytes(value) {
+        if (typeof value !== 'number' || value < 0) return 'n/a';
+        const units = ['B', 'KiB', 'MiB', 'GiB'];
+        let amount = value;
+        let unit = units[0];
+        for (unit of units) {
+            if (amount < 1024 || unit === units[units.length - 1]) break;
+            amount /= 1024;
+        }
+        if (unit === 'B') return `${Math.round(amount)} B`;
+        return `${amount < 10 ? amount.toFixed(1) : amount.toFixed(0)} ${unit}`;
     }
 
     // Every-Nth downsample: always include first + last; pick ~targetCount
@@ -242,6 +258,69 @@
         });
     }
 
+    function renderCacheHistoryChart(canvasId, rows) {
+        const ctx = document.getElementById(canvasId).getContext('2d');
+        const labels = rows.map(r => shortSha(r.sha));
+        const keys = [];
+        for (const row of rows) {
+            for (const item of row.comparison || []) {
+                const key = `${item.benchmark}/${item.scenario_key}/${item.tool}`;
+                if (!keys.includes(key)) keys.push(key);
+            }
+        }
+        const colors = ['#2da44e', '#1976d2', '#d32f2f', '#7b1fa2', '#f57c00', '#00838f', '#57606a'];
+        const datasets = keys.map((key, idx) => ({
+            label: key,
+            data: rows.map(row => {
+                const item = (row.comparison || []).find(entry => `${entry.benchmark}/${entry.scenario_key}/${entry.tool}` === key);
+                return item && typeof item.cache_bytes === 'number' ? item.cache_bytes / (1024 * 1024) : null;
+            }),
+            borderColor: colors[idx % colors.length],
+            backgroundColor: colors[idx % colors.length],
+            tension: 0.15,
+            spanGaps: true,
+            pointRadius: 2,
+            borderWidth: 1.5,
+        }));
+
+        return new Chart(ctx, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                interaction: { mode: 'nearest', intersect: false },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'commit (oldest left â†’ newest right)' },
+                        ticks: { autoSkip: true, maxTicksLimit: 16, font: { family: 'ui-monospace, monospace', size: 10 } },
+                    },
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'cache size (MiB)' },
+                    },
+                },
+                plugins: {
+                    legend: {
+                        position: 'top',
+                        labels: { boxWidth: 12, font: { size: 10 } },
+                    },
+                    tooltip: {
+                        callbacks: {
+                            title: (items) => {
+                                const idx = items[0].dataIndex;
+                                const row = rows[idx];
+                                return `${shortSha(row.sha)} â€” ${row.ts || ''}`;
+                            },
+                            label: (item) => `${item.dataset.label}: ${formatBytes(item.parsed.y * 1024 * 1024)}`,
+                        },
+                    },
+                },
+            },
+        });
+    }
+
     function renderComparisonChart(canvasId, latest, benchmark) {
         const canvas = document.getElementById(canvasId);
         const rows = (latest && latest.results || []).filter(row => row.benchmark === benchmark);
@@ -304,7 +383,7 @@
                                 const tool = tools[item.datasetIndex];
                                 const row = byKey.get(`${scenario}:${tool}`);
                                 if (!row) return `${item.dataset.label}: no data`;
-                                return `${item.dataset.label}: ${row.wall_ms.toLocaleString()} ms - ${row.command}`;
+                                return `${item.dataset.label}: ${row.wall_ms.toLocaleString()} ms, cache ${formatBytes(row.cache_bytes)} - ${row.command}`;
                             },
                             afterBody: (items) => {
                                 if (!items.length) return '';
@@ -409,6 +488,9 @@
             document.getElementById('chart-recent').replaceWith(Object.assign(document.createElement('div'), {
                 className: 'empty', textContent: 'No history rows yet.',
             }));
+            document.getElementById('chart-cache-recent').replaceWith(Object.assign(document.createElement('div'), {
+                className: 'empty', textContent: 'No history rows yet.',
+            }));
             document.getElementById('chart-sparse').replaceWith(Object.assign(document.createElement('div'), {
                 className: 'empty', textContent: 'No history rows yet.',
             }));
@@ -417,6 +499,13 @@
 
         const recent = history.slice(-50);
         renderChart('chart-recent', recent, canaryNames, manifest.canaries);
+        if (recent.some(row => Array.isArray(row.comparison) && row.comparison.length > 0)) {
+            renderCacheHistoryChart('chart-cache-recent', recent);
+        } else {
+            document.getElementById('chart-cache-recent').replaceWith(Object.assign(document.createElement('div'), {
+                className: 'empty', textContent: 'No cache history rows yet.',
+            }));
+        }
 
         // For the sparse view, downsample anything bigger than 50 to ~50 points.
         const sparse = (history.length <= 50) ? history.slice() : downsampleEveryNth(history, 50);
