@@ -169,6 +169,7 @@ timed_test!(
             .args(["cargo", "build", "--locked"])
             .env("SOLDR_TEST_CARGO_METADATA_PATH", &fixture.metadata_path)
             .env("SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER", &down_marker)
+            .env("SOLDR_TRUST_INHERITED_ENV", "1")
             .env("SOLDR_TARGET_CACHE_MODE", "thin")
             .env("SOLDR_TARGET_CACHE_BUNDLE_DIR", &fixture.plan_cache)
             .env("SOLDR_CACHE_LIFECYCLE", "command")
