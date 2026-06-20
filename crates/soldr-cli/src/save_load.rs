@@ -384,8 +384,8 @@ mod private_session_default_tests {
     crate::timed_test!(save_default_preserves_explicit_cache_dir, {
         let mut args = base_save_args();
         args.cache_dir = Some(PathBuf::from("/user/explicit"));
-        let args = apply_private_session_cache_dir_default(args, true, fake_cwd)
-            .expect("apply default");
+        let args =
+            apply_private_session_cache_dir_default(args, true, fake_cwd).expect("apply default");
         assert_eq!(
             args.cache_dir.as_deref(),
             Some(std::path::Path::new("/user/explicit")),
@@ -396,8 +396,8 @@ mod private_session_default_tests {
     crate::timed_test!(save_default_no_op_in_mtimes_only_mode, {
         let mut args = base_save_args();
         args.mtimes_only = true;
-        let args = apply_private_session_cache_dir_default(args, true, fake_cwd)
-            .expect("apply default");
+        let args =
+            apply_private_session_cache_dir_default(args, true, fake_cwd).expect("apply default");
         assert!(
             args.cache_dir.is_none(),
             "mtimes-only forbids --cache-dir; default must not inject one",
