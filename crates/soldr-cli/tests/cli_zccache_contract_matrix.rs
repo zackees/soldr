@@ -256,6 +256,133 @@ timed_test!(
     }
 );
 
+// Issue #752 regression: when the front door routes the managed zccache
+// cache directory to a non-default location (today via SOLDR_ZCCACHE_PRIVATE=1
+// → <cwd>/.zccache; tomorrow via any other private-session opt-in), the SAME
+// cache root must cross all three boundaries or the daemon endpoint resolved
+// by `session-start` diverges from the endpoint the wrapper's exec()'d zccache
+// looks up. PR #751 was the canonical bad direction: it removed `--cache-dir`
+// from session-start, the adjacent unit test was updated to expect the
+// omission, focused tests passed, and CI on Linux/macOS bootstrap blew up
+// with `cannot connect to daemon at /tmp/zccache-…-daemon-soldr-dev-….sock`.
+// The unit-level fix in `session_start_args` isn't enough on its own — the
+// regression lived in the cross-process contract, so the test has to live
+// there too.
+timed_test!(
+    private_session_endpoint_contract_crosses_session_args_cargo_env_and_wrapper,
+    Duration::from_secs(120),
+    {
+        // Reuses the same `path_display_variants` machinery as the
+        // matrix test above, so the same Windows 8.3 short-name caveat
+        // applies — see #692. Skip on Windows for the same reason.
+        if cfg!(target_os = "windows") {
+            eprintln!(
+                "skipping private_session_endpoint_contract on Windows: \
+                 8.3 short-name path mismatch in `path_display_variants` \
+                 (see #692)"
+            );
+            return;
+        }
+        let fixture = seed_contract_fixture("zccache-private-endpoint");
+
+        // SOLDR_ZCCACHE_PRIVATE=1 routes the managed cache dir to
+        // <cwd>/.zccache. `current_dir` in `soldr_with_fake_toolchain`
+        // points at `fixture.workspace`, so that's where soldr should
+        // place every reference to the cache root.
+        let expected_cache_dir = fixture.workspace.join(".zccache");
+
+        let output = soldr_with_fake_toolchain(&fixture)
+            .args(["cargo", "build", "--locked"])
+            .env("SOLDR_TEST_CARGO_METADATA_PATH", &fixture.metadata_path)
+            .env("SOLDR_ZCCACHE_PRIVATE", "1")
+            // Critical: do NOT let an inherited ZCCACHE_CACHE_DIR
+            // pre-empt the private-session default — that would test
+            // the explicit-override path instead of the contract we
+            // care about for #752.
+            .env_remove("ZCCACHE_CACHE_DIR")
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .output()
+            .expect("run soldr cargo build with SOLDR_ZCCACHE_PRIVATE=1");
+
+        assert!(
+            output.status.success(),
+            "private-session build failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&fixture.log_path).expect("read fake tool log");
+
+        // Boundary 1: `zccache session-start` must run with
+        // ZCCACHE_CACHE_DIR=<expected> in its env (the current flow
+        // communicates the cache root via env rather than the
+        // `--cache-dir` arg; the arg is reserved for the legacy
+        // private-daemon path that #761 restored). The fake zccache
+        // script echoes `cache_dir=${ZCCACHE_CACHE_DIR}` on every
+        // command, so this assertion is what catches the divergence
+        // PR #751 introduced — if the cache_dir_env flag is dropped
+        // here, session-start opens a daemon in the default tmp
+        // namespace while the cargo child below still asks the
+        // wrapper to use the soldr-managed cache root.
+        assert!(
+            path_display_variants(&expected_cache_dir)
+                .iter()
+                .any(|variant| log
+                    .contains(&format!("zccache session-start cache_dir={variant}"))),
+            "session-start must inherit ZCCACHE_CACHE_DIR=<{}> so the daemon \
+             endpoint matches the cargo child's cache root (regression for \
+             PR #751; see #752)\n{log}",
+            expected_cache_dir.display(),
+        );
+
+        // Boundary 2: the cargo child must see
+        // ZCCACHE_CACHE_DIR=<expected>. RustcWrapperPlan::apply_to_command
+        // sets it when `cache_dir_env == true`. If this drifts, the
+        // wrapper exec()s into zccache with whatever default cache dir
+        // the environment had — which is what blew up bootstrap CI in
+        // PR #751.
+        assert!(
+            path_display_variants(&expected_cache_dir)
+                .iter()
+                .any(|variant| log.contains(&format!("zccache_dir={variant}"))),
+            "cargo wrapper child must receive ZCCACHE_CACHE_DIR=<{}> so \
+             the rustc wrapper exec()s into zccache with the SAME endpoint \
+             session-start just opened (#752)\n{log}",
+            expected_cache_dir.display(),
+        );
+
+        // Boundary 3: the wrapper's invocation of zccache itself must
+        // report the same cache_dir. The fake zccache logs the
+        // inherited ZCCACHE_CACHE_DIR on every command, so this
+        // closes the loop end-to-end: session-start → cargo env →
+        // wrapper exec → zccache.
+        assert!(
+            path_display_variants(&expected_cache_dir)
+                .iter()
+                .any(|variant| log
+                    .contains(&format!("zccache wrapper cache_dir={variant}"))),
+            "wrapper invocation of zccache must inherit cache_dir=<{}> from \
+             the cargo child env so the daemon endpoint matches what \
+             session-start opened (#752)\n{log}",
+            expected_cache_dir.display(),
+        );
+
+        // Today the SOLDR_ZCCACHE_PRIVATE=1 path doesn't bring back the
+        // soldr-private daemon namespace from before #772 — it uses the
+        // default daemon with a local cache root. Lock that current
+        // contract: if a future change re-introduces `--private-daemon`
+        // here, the corresponding daemon_namespace consistency check
+        // belongs next to this test, not buried in `session_start_args`.
+        assert!(
+            !log.contains("--private-daemon"),
+            "SOLDR_ZCCACHE_PRIVATE=1 currently uses the default daemon with a \
+             local cache root, not a private daemon namespace. If you are \
+             re-introducing private daemons, add the daemon_namespace \
+             cross-process contract assertions to this test too (#752):\n{log}",
+        );
+    }
+);
+
 timed_test!(
     disabled_and_non_build_paths_skip_managed_zccache,
     Duration::from_secs(120),
