@@ -177,9 +177,69 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
     let triple = match compile_time_host_os()? {
         Os::Windows => format!("{arch}-pc-windows-msvc"),
         Os::MacOs => format!("{arch}-apple-darwin"),
-        Os::Linux => format!("{arch}-unknown-linux-gnu"),
+        Os::Linux => match detect_linux_libc() {
+            Env::Musl => format!("{arch}-unknown-linux-musl"),
+            _ => format!("{arch}-unknown-linux-gnu"),
+        },
     };
     Ok(triple)
+}
+
+/// Pick the Linux libc to encode in the fallback target triple when no
+/// explicit override and no runtime `rustc` are available. Without this
+/// detection, soldr defaults to `*-unknown-linux-gnu` and downloads
+/// glibc-linked prebuilt assets (cargo-nextest, etc.) that fail to
+/// `execve()` on a musl host with the misleading `os error 2`. Issue #806.
+///
+/// Resolution order:
+/// 1. **Compile-time**: if soldr itself was built for musl
+///    (`cfg!(target_env = "musl")`), the host has to be musl-compatible
+///    or soldr could not have started — pick Musl, skip the probes.
+/// 2. **`ldd --version`**: POSIX, available on every glibc host and
+///    most musl distributions (Alpine ships it as a busybox shim).
+///    Musl's stderr line includes the word `musl`.
+/// 3. **Filesystem probe**: `/lib/ld-musl-<arch>.so.1` is the musl
+///    dynamic linker's well-known path; its presence is dispositive
+///    on minimal Alpine images that strip `ldd`.
+/// 4. **Default**: glibc. Most Linux distributions ship glibc — only
+///    musl distros need the override.
+pub(crate) fn detect_linux_libc() -> Env {
+    if cfg!(target_env = "musl") {
+        return Env::Musl;
+    }
+    if probe_ldd_reports_musl() {
+        return Env::Musl;
+    }
+    if probe_musl_dynamic_linker_present() {
+        return Env::Musl;
+    }
+    Env::Gnu
+}
+
+fn probe_ldd_reports_musl() -> bool {
+    let Ok(output) = std::process::Command::new("ldd").arg("--version").output() else {
+        return false;
+    };
+    // glibc writes its version banner to stdout; musl writes to stderr
+    // and exits non-zero. Check both, ignore the exit status.
+    ldd_output_mentions_musl(&output.stdout) || ldd_output_mentions_musl(&output.stderr)
+}
+
+fn ldd_output_mentions_musl(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .ok()
+        .is_some_and(|s| s.to_ascii_lowercase().contains("musl"))
+}
+
+fn probe_musl_dynamic_linker_present() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/lib/ld-musl-x86_64.so.1",
+        "/lib/ld-musl-aarch64.so.1",
+        "/lib/ld-musl-armhf.so.1",
+        "/lib/ld-musl-arm.so.1",
+        "/lib/ld-musl-i386.so.1",
+    ];
+    CANDIDATES.iter().any(|p| Path::new(p).exists())
 }
 
 #[cfg(test)]
@@ -238,5 +298,77 @@ mod tests {
             "aarch64"
         };
         assert_eq!(target.triple(), format!("{expected_arch}-pc-windows-msvc"));
+    }
+
+    // -----------------------------------------------------------------
+    // Linux libc detection for prebuilt asset routing (issue #806).
+    //
+    // The pure helpers `ldd_output_mentions_musl` are exercised
+    // platform-independently; the end-to-end `detect_linux_libc()` /
+    // `TargetTriple::detect()` invariants are gated on the host the
+    // test binary was built for so only the right CI lane asserts each
+    // one. The musl-gated test below is what catches the original bug:
+    // on a musl host (Alpine docker harness from
+    // `zackees/running-process#514`), soldr's fallback triple must
+    // resolve to `*-unknown-linux-musl` so cargo-nextest et al. are
+    // downloaded as musl ELFs.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn ldd_output_recognizes_musl_banner_from_alpine() {
+        // Alpine 3.20 / musl 1.2.5 stderr banner, captured verbatim.
+        let stderr = b"musl libc (x86_64)\nVersion 1.2.5\nDynamic Program Loader\nUsage: ldd [options] [--] pathname\n";
+        assert!(ldd_output_mentions_musl(stderr));
+    }
+
+    #[test]
+    fn ldd_output_recognizes_glibc_banner_as_not_musl() {
+        // Ubuntu 24.04 glibc stdout banner, captured verbatim.
+        let stdout = b"ldd (Ubuntu GLIBC 2.39-0ubuntu8.3) 2.39\nCopyright (C) 2024 Free Software Foundation, Inc.\n";
+        assert!(!ldd_output_mentions_musl(stdout));
+    }
+
+    #[test]
+    fn ldd_output_handles_non_utf8_safely() {
+        // Defensive: a corrupted ldd output must not panic or report musl.
+        let garbled = b"\xff\xfe\xfd not valid utf-8 \xff";
+        assert!(!ldd_output_mentions_musl(garbled));
+    }
+
+    /// linux-musl only: when soldr itself is built for musl, the
+    /// fallback target triple MUST resolve to `*-unknown-linux-musl`
+    /// so the prebuilt-asset matcher in `fetch::github::match_asset`
+    /// picks the musl variant of cargo-nextest et al. Without this
+    /// the Alpine docker harness from `zackees/running-process#514`
+    /// hits the `os error 2` execve failure described in #806.
+    #[cfg(all(target_os = "linux", target_env = "musl"))]
+    #[test]
+    fn musl_host_resolves_to_musl_target_triple() {
+        // Pure helper: compile-time short-circuit must kick in.
+        assert_eq!(detect_linux_libc(), Env::Musl);
+
+        // End-to-end: detection in an empty dir (no explicit override,
+        // no .cargo/config, no rust-toolchain.toml). The fallback path
+        // is what the Alpine docker repro hits — there's no rustc on
+        // PATH yet because the user just downloaded soldr.
+        let dir = tempfile::tempdir().unwrap();
+        // Wipe RUSTUP_TOOLCHAIN/PATH-driven probes by pointing at the
+        // temp dir, which has no .cargo/.rustup so detect_runtime_rustc
+        // is short-circuited unless the runner happens to have a global
+        // rustc installed. If a global rustc IS present, that's fine —
+        // it would itself be a musl rustc on a musl host, so the answer
+        // is still musl.
+        let target = TargetTriple::detect_in_dir(dir.path()).unwrap();
+        assert_eq!(
+            target.env,
+            Env::Musl,
+            "musl host produced non-musl target triple {} — cargo-nextest fetch would download a glibc ELF that fails execve with os error 2 (#806)",
+            target.triple(),
+        );
+        assert!(
+            target.triple().ends_with("-unknown-linux-musl"),
+            "expected *-unknown-linux-musl, got {}",
+            target.triple(),
+        );
     }
 }
