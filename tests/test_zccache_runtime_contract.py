@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
-PY_CONTRACT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
+PY_CONTRACT_PATH = (
+    REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
+)
 
 
 def _load_py_contract():
@@ -85,7 +86,9 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
         },
         "archive": {
             "format": module.ARCHIVE_EXT,
-            "compression_level": module.CONTRACT["release_archive"]["compression_level"],
+            "compression_level": module.CONTRACT["release_archive"][
+                "compression_level"
+            ],
         },
         "built_at": "2026-05-27T00:00:00Z",
     }
@@ -192,11 +195,13 @@ def test_python_action_helpers_import_contract_constants() -> None:
 
 def test_release_workflow_and_docs_reference_contract_layout() -> None:
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    release_workflow = (REPO_ROOT / ".github" / "workflows" / "release-auto.yml").read_text(
+    release_workflow = (
+        REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
+    ).read_text(encoding="utf-8")
+    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
+    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(
         encoding="utf-8"
     )
-    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(encoding="utf-8")
 
     assert '"schema_version": 3' in release_workflow
     assert '"format": "tar.zst"' in release_workflow

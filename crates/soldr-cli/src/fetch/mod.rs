@@ -121,6 +121,19 @@ pub const ZCCACHE_LOCAL_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_LOCAL_DIR";
 /// bundled binary is not available.
 pub const MANAGED_CRGX_VERSION: &str = "0.1.0";
 
+/// Pinned `maturin` release used by both the `soldr maturin <args>`
+/// CLI dispatch and the PEP 517 build backend in `src/soldr/__init__.py`.
+/// Surfaced via `lookup_by_crate("maturin").pinned_version` so every
+/// resolution path lands on the same upstream version — keeping the
+/// Python+Rust packaging behavior reproducible across machines.
+///
+/// Lockstep bookkeeping (per CLAUDE.md "Bumping managed_zccache_version"):
+/// when bumping, also update `contracts/zccache-runtime.v1.json`'s
+/// `maturin.managed_version`; the
+/// `zccache_runtime_contract_matches_rust_constants` test asserts they
+/// match and panics with a directive message if they drift.
+pub const MANAGED_MATURIN_VERSION: &str = "1.14.1";
+
 /// Override the runtime crgx resolution: when set, soldr uses the
 /// `crgx` (or `crgx.exe`) binary in this directory ahead of any
 /// GitHub-Releases / crates.io fetch. The npm shim (`bin/soldr.js`)

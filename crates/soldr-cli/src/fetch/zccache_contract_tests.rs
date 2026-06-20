@@ -1,7 +1,7 @@
 use super::{
     CARGO_CHEF_LOCAL_DIR_ENV_VAR, CARGO_CHEF_PINNED_VERSION, CRGX_LOCAL_DIR_ENV_VAR,
-    MANAGED_CRGX_VERSION, MANAGED_ZCCACHE_PACKAGES, MANAGED_ZCCACHE_VERSION,
-    ZCCACHE_LOCAL_DIR_ENV_VAR,
+    MANAGED_CRGX_VERSION, MANAGED_MATURIN_VERSION, MANAGED_ZCCACHE_PACKAGES,
+    MANAGED_ZCCACHE_VERSION, ZCCACHE_LOCAL_DIR_ENV_VAR,
 };
 
 // When this test fails, the contributor most likely bumped only one
@@ -63,6 +63,14 @@ crate::timed_test!(zccache_runtime_contract_matches_rust_constants, {
          but CARGO_CHEF_LOCAL_DIR_ENV_VAR in crates/soldr-cli/src/fetch/mod.rs says {:?}. {DRIFT_HINT}",
         contract["cargo_chef"]["local_dir_env"].as_str(),
         CARGO_CHEF_LOCAL_DIR_ENV_VAR,
+    );
+    assert_eq!(
+        contract["maturin"]["managed_version"].as_str(),
+        Some(MANAGED_MATURIN_VERSION),
+        "maturin.managed_version drift: contracts/zccache-runtime.v1.json says {:?} \
+         but MANAGED_MATURIN_VERSION in crates/soldr-cli/src/fetch/mod.rs says {:?}. {DRIFT_HINT}",
+        contract["maturin"]["managed_version"].as_str(),
+        MANAGED_MATURIN_VERSION,
     );
 
     let contract_zccache_bins: Vec<&str> = contract["zccache"]["required_binaries"]

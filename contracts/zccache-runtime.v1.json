@@ -44,6 +44,13 @@
     ],
     "manifest_block": "cargo_chef"
   },
+  "maturin": {
+    "managed_version": "1.14.1",
+    "required_binaries": [
+      "maturin"
+    ],
+    "manifest_block": "maturin"
+  },
   "setup_action": {
     "cache_root_env": "SOLDR_CACHE_DIR",
     "native_cache_env": "SOLDR_NATIVE_CACHE",

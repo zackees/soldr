@@ -5,7 +5,6 @@ import argparse
 import shutil
 from pathlib import Path
 
-
 HELPER_SCRIPT_PATHS = (
     Path(".github/actions/setup-soldr/resolve_setup.py"),
     Path(".github/actions/setup-soldr/ensure_rust_toolchain.py"),
@@ -212,7 +211,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Export the standalone public setup-soldr action bundle."
     )
     parser.add_argument(
-        "destination", help="Directory to materialize as the future public action repository."
+        "destination",
+        help="Directory to materialize as the future public action repository.",
     )
     parser.add_argument(
         "--source-root",
@@ -224,7 +224,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    destination = export_setup_soldr_bundle(Path(args.source_root), Path(args.destination))
+    destination = export_setup_soldr_bundle(
+        Path(args.source_root), Path(args.destination)
+    )
     print(f"Exported setup-soldr bundle to {destination}")
     return 0
 

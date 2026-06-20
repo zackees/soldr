@@ -328,8 +328,7 @@ timed_test!(
         assert!(
             path_display_variants(&expected_cache_dir)
                 .iter()
-                .any(|variant| log
-                    .contains(&format!("zccache session-start cache_dir={variant}"))),
+                .any(|variant| log.contains(&format!("zccache session-start cache_dir={variant}"))),
             "session-start must inherit ZCCACHE_CACHE_DIR=<{}> so the daemon \
              endpoint matches the cargo child's cache root (regression for \
              PR #751; see #752)\n{log}",
@@ -360,8 +359,7 @@ timed_test!(
         assert!(
             path_display_variants(&expected_cache_dir)
                 .iter()
-                .any(|variant| log
-                    .contains(&format!("zccache wrapper cache_dir={variant}"))),
+                .any(|variant| log.contains(&format!("zccache wrapper cache_dir={variant}"))),
             "wrapper invocation of zccache must inherit cache_dir=<{}> from \
              the cargo child env so the daemon endpoint matches what \
              session-start opened (#752)\n{log}",

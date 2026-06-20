@@ -35,7 +35,6 @@ from pathlib import Path
 
 import pytest
 
-
 ACT_IMAGE = "catthehacker/ubuntu:act-24.04"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -119,7 +118,9 @@ def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
         "/soldr/bin/rustup --version",
     ]
 
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=600, check=False
+    )
     assert result.returncode == 0, (
         f"docker run failed (exit {result.returncode})\n"
         f"stdout:\n{result.stdout}\n"
@@ -129,4 +130,6 @@ def test_soldr_bootstrap_installs_rustup_on_act_image(tmp_path: Path) -> None:
     assert '"already_installed": false' in result.stdout, (
         "expected first-run install report; stdout was:\n" + result.stdout
     )
-    assert "rustup" in result.stdout, "expected `rustup --version` output to mention rustup"
+    assert (
+        "rustup" in result.stdout
+    ), "expected `rustup --version` output to mention rustup"

@@ -4,9 +4,10 @@ import importlib.util
 import os
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "install_tool_shims.py"
+SCRIPT_PATH = (
+    REPO_ROOT / ".github" / "actions" / "setup-soldr" / "install_tool_shims.py"
+)
 
 
 def _load_module():
@@ -40,9 +41,7 @@ def test_tool_env_name_sanitizes_tool_names() -> None:
     assert module.tool_env_name("clippy-driver") == "SOLDR_REAL_CLIPPY_DRIVER"
 
 
-def test_main_writes_cargo_shim_and_real_tool_env(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_main_writes_cargo_shim_and_real_tool_env(tmp_path: Path, monkeypatch) -> None:
     module = _load_module()
     github_env = tmp_path / "github.env"
     github_path = tmp_path / "github.path"
