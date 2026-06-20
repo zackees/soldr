@@ -28,6 +28,39 @@ pub(crate) const SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR: &str =
     "SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME";
 pub(crate) const SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_SESSION_DIR";
 
+/// Opt-in: when set to a truthy value (`1`, `true`, `yes`, `on`), route
+/// the managed zccache cache directory to `<cwd>/.zccache` instead of
+/// the shared soldr-managed cache root, and default `soldr save`/`soldr
+/// load` `--cache-dir` to the same path. Lets a build's artifacts be
+/// captured and shipped without polluting the shared cache. Issue #802.
+pub(crate) const SOLDR_ZCCACHE_PRIVATE_ENV_VAR: &str = "SOLDR_ZCCACHE_PRIVATE";
+
+/// Directory name used under the cwd when `SOLDR_ZCCACHE_PRIVATE` is on.
+pub(crate) const PRIVATE_SESSION_CACHE_DIR_NAME: &str = ".zccache";
+
+/// Parse `SOLDR_ZCCACHE_PRIVATE` truthiness. Truthy: `1`, `true`,
+/// `yes`, `on` (case-insensitive, trimmed). Anything else (including
+/// `0`, `false`, empty, unset) is falsy.
+pub(crate) fn parse_private_session_flag(value: Option<&str>) -> bool {
+    let Some(trimmed) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+        return false;
+    };
+    matches!(
+        trimmed.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// True when `SOLDR_ZCCACHE_PRIVATE` resolves truthy in the current env.
+pub(crate) fn private_session_requested() -> bool {
+    parse_private_session_flag(std::env::var(SOLDR_ZCCACHE_PRIVATE_ENV_VAR).ok().as_deref())
+}
+
+/// `<cwd>/.zccache`. The well-known cache directory for private sessions.
+pub(crate) fn private_session_cache_dir() -> Result<std::path::PathBuf, SoldrError> {
+    Ok(std::env::current_dir()?.join(PRIVATE_SESSION_CACHE_DIR_NAME))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheLifecycle {
     Job,
@@ -406,8 +439,20 @@ async fn prepare_zccache_build(
             .map(|path| normalize_path_for_compare(&path))
             .transpose()?
             .filter(|path| inherited_soldr_managed_dir.as_ref() != Some(path));
-    let cache_dir_env = explicit_zccache_cache_dir.is_some();
-    let zccache_dir = explicit_zccache_cache_dir.unwrap_or(zccache_base_dir);
+    // Private session opt-in (`SOLDR_ZCCACHE_PRIVATE`): when the user has
+    // not set ZCCACHE_CACHE_DIR explicitly, route the cache directory to
+    // `<cwd>/.zccache` so build artifacts stay local to the workspace
+    // and don't pollute the shared soldr-managed cache. The user can
+    // still override by setting ZCCACHE_CACHE_DIR — explicit wins.
+    let private_override = if explicit_zccache_cache_dir.is_none() && private_session_requested() {
+        Some(normalize_path_for_compare(&private_session_cache_dir()?)?)
+    } else {
+        None
+    };
+    let cache_dir_env = explicit_zccache_cache_dir.is_some() || private_override.is_some();
+    let zccache_dir = explicit_zccache_cache_dir
+        .or(private_override)
+        .unwrap_or(zccache_base_dir);
     std::fs::create_dir_all(&zccache_dir)?;
     std::fs::create_dir_all(zccache_dir.join("logs"))?;
 
@@ -1322,6 +1367,56 @@ mod tests {
                 std::path::Path::new("/ignored/cache"),
             ),
             "team_dev_soldr"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // Private-session opt-in (`SOLDR_ZCCACHE_PRIVATE`). Routes the
+    // managed zccache cache directory to `<cwd>/.zccache` so build
+    // artifacts can be tar'd and shipped without polluting the shared
+    // soldr-managed cache.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn private_session_flag_truthy_values() {
+        for v in ["1", "true", "yes", "on", "TRUE", "Yes", "ON", " 1 ", " true "] {
+            assert!(
+                parse_private_session_flag(Some(v)),
+                "expected {v:?} to parse truthy",
+            );
+        }
+    }
+
+    #[test]
+    fn private_session_flag_falsy_values() {
+        for v in [
+            "0", "false", "no", "off", "FALSE", "No", "OFF", "", "   ", "maybe", "2",
+        ] {
+            assert!(
+                !parse_private_session_flag(Some(v)),
+                "expected {v:?} to parse falsy",
+            );
+        }
+        assert!(
+            !parse_private_session_flag(None),
+            "unset env should be falsy",
+        );
+    }
+
+    #[test]
+    fn private_session_cache_dir_is_dot_zccache_under_cwd() {
+        let cwd = std::env::current_dir().expect("cwd");
+        let resolved = private_session_cache_dir().expect("private dir");
+        assert_eq!(resolved, cwd.join(PRIVATE_SESSION_CACHE_DIR_NAME));
+        assert!(
+            resolved.is_absolute(),
+            "private session cache dir must be absolute: {}",
+            resolved.display(),
+        );
+        assert_eq!(
+            resolved.file_name().and_then(|s| s.to_str()),
+            Some(".zccache"),
+            "private session cache dir tail must be `.zccache`",
         );
     }
 
