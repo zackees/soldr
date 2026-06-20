@@ -120,7 +120,7 @@ pub fn run_save(args: SaveArgs) -> i32 {
     let args = match apply_private_session_cache_dir_default(
         args,
         crate::zccache::private_session_requested(),
-        || std::env::current_dir(),
+        std::env::current_dir,
     ) {
         Ok(args) => args,
         Err(err) => {
@@ -224,7 +224,7 @@ pub fn run_load(args: LoadArgs) -> i32 {
     let args = match apply_private_session_cache_dir_default_load(
         args,
         crate::zccache::private_session_requested(),
-        || std::env::current_dir(),
+        std::env::current_dir,
     ) {
         Ok(args) => args,
         Err(err) => {

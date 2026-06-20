@@ -3,11 +3,10 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 
-import pytest
-
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "ensure_rust_toolchain.py"
+SCRIPT_PATH = (
+    REPO_ROOT / ".github" / "actions" / "setup-soldr" / "ensure_rust_toolchain.py"
+)
 
 
 def _load_module():
@@ -59,7 +58,9 @@ def test_main_bootstraps_rustup_when_missing_and_exports_rustup_toolchain(
             "rustc": "C:/tools/rustc.exe",
         }.get(name)
 
-    monkeypatch.setattr(module, "download_rustup_init", lambda _: "C:/tools/rustup-init.exe")
+    monkeypatch.setattr(
+        module, "download_rustup_init", lambda _: "C:/tools/rustup-init.exe"
+    )
     monkeypatch.setattr(module.shutil, "which", fake_which)
 
     def fake_run(command):
