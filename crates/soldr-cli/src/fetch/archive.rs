@@ -76,6 +76,13 @@ pub(super) async fn download_and_extract(
         extract_zip(&bytes, &tool_dir, &desired_binaries)?;
     } else if url.ends_with(".tar.gz") || url.ends_with(".tgz") {
         extract_tar_gz(&bytes, &tool_dir, &desired_binaries)?;
+    } else if url.ends_with(".tar.xz") || url.ends_with(".txz") {
+        // cargo-zigbuild and other rust-cross prebuilts ship their
+        // per-triple binary tarballs in xz. Without this branch the
+        // fall-through "raw binary" path below wrote the compressed
+        // tarball bytes to disk as the binary, producing the shell
+        // syntax error described in #809.
+        extract_tar_xz(&bytes, &tool_dir, &desired_binaries)?;
     } else {
         // Assume raw binary.
         if desired_binaries.len() != 1 {
@@ -145,7 +152,24 @@ fn extract_zip(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<
 fn extract_tar_gz(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
     let reader = std::io::Cursor::new(data);
     let gz = flate2::read::GzDecoder::new(reader);
-    let mut archive = tar::Archive::new(gz);
+    extract_tar(gz, dest_dir, binary_names)
+}
+
+fn extract_tar_xz(data: &[u8], dest_dir: &Path, binary_names: &[String]) -> Result<(), SoldrError> {
+    let reader = std::io::Cursor::new(data);
+    let xz = xz2::read::XzDecoder::new(reader);
+    extract_tar(xz, dest_dir, binary_names)
+}
+
+/// Walk a `tar::Archive` over any reader and copy entries whose file
+/// name matches one of `binary_names` into `dest_dir`. Shared between
+/// the `.tar.gz` and `.tar.xz` extract paths.
+fn extract_tar<R: std::io::Read>(
+    reader: R,
+    dest_dir: &Path,
+    binary_names: &[String],
+) -> Result<(), SoldrError> {
+    let mut archive = tar::Archive::new(reader);
     let mut found = std::collections::BTreeSet::new();
 
     for entry in archive
@@ -190,4 +214,86 @@ fn ensure_all_binaries_found(
             missing.join(", ")
         )))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Build a tarball whose single binary entry mirrors cargo-zigbuild's
+    /// per-triple layout: `cargo-zigbuild-<triple>/cargo-zigbuild` with
+    /// recognizable ELF-ish magic bytes as the payload.
+    fn build_tarball(binary_name: &str, payload: &[u8]) -> Vec<u8> {
+        let mut tar_bytes = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_bytes);
+            let entry_path = format!("cargo-zigbuild-x86_64-unknown-linux-gnu/{binary_name}");
+            let mut header = tar::Header::new_gnu();
+            header.set_size(payload.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, &entry_path, payload)
+                .expect("append");
+            builder.finish().expect("finish");
+        }
+        tar_bytes
+    }
+
+    fn xz_compress(data: &[u8]) -> Vec<u8> {
+        let mut compressor = xz2::write::XzEncoder::new(Vec::new(), 6);
+        compressor.write_all(data).expect("write");
+        compressor.finish().expect("finish")
+    }
+
+    // Regression guard for #809. cargo-zigbuild's binary tarball is
+    // `.tar.xz`; before this fix soldr fell through to the "raw binary"
+    // branch and wrote the compressed bytes verbatim to the binary
+    // path, producing a file the shell tried to parse as a script.
+    crate::timed_test!(extract_tar_xz_finds_binary_in_per_triple_dir_layout, {
+        let dest = tempfile::tempdir().expect("tempdir");
+        let payload = b"\x7fELF\x02\x01\x01\x00 fake cargo-zigbuild binary payload";
+        let tarball = build_tarball("cargo-zigbuild", payload);
+        let xz = xz_compress(&tarball);
+
+        let desired = vec!["cargo-zigbuild".to_string()];
+        extract_tar_xz(&xz, dest.path(), &desired).expect("extract tar.xz");
+
+        let installed = dest.path().join("cargo-zigbuild");
+        assert!(
+            installed.exists(),
+            "extract_tar_xz failed to write cargo-zigbuild into dest dir",
+        );
+        let contents = std::fs::read(&installed).expect("read installed");
+        assert_eq!(
+            contents.as_slice(),
+            payload,
+            "installed bytes must be the inner ELF payload, not the compressed tarball — the #809 symptom is the binary path containing the tar.xz bytes verbatim",
+        );
+        assert_ne!(
+            &contents[0..4],
+            b"\xfd7zX",
+            "regression: writing the .tar.xz magic bytes as the binary is exactly the #809 bug",
+        );
+    });
+
+    // The cargo-zigbuild URL convention is what soldr's
+    // `download_and_extract` dispatches on. If a future URL ends in
+    // `.txz` instead of `.tar.xz` the same path must trigger.
+    crate::timed_test!(tar_xz_url_suffix_recognized_for_dispatch, {
+        // This is a documentation test for the dispatch table in
+        // `download_and_extract` — keep the suffix list aligned with the
+        // url.ends_with(...) branches above.
+        for url in [
+            "https://example.invalid/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz",
+            "https://example.invalid/cargo-zigbuild-x86_64-unknown-linux-musl.tar.xz",
+            "https://example.invalid/some-tool.txz",
+        ] {
+            assert!(
+                url.ends_with(".tar.xz") || url.ends_with(".txz"),
+                "tar.xz dispatch suffix coverage missed {url}",
+            );
+        }
+    });
 }
