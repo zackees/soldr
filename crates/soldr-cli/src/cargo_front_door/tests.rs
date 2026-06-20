@@ -503,3 +503,140 @@ fn suggest_cargo_subcommand_typo_returns_none_for_unrelated_input() {
         None,
     );
 }
+
+// Issue #816: SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS env-var handling.
+// The bool guard parses truthy / falsy values consistently with the
+// pattern other soldr env vars use.
+
+#[test]
+fn force_managed_cargo_subcommands_defaults_to_false_when_unset() {
+    // Serialize on the env mutex used elsewhere in this file so we don't
+    // race against other env-touching tests in the same binary.
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+    // SAFETY: the test acquires ENV_LOCK to serialize against any other
+    // test that mutates process env.
+    unsafe {
+        std::env::remove_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+    }
+    assert!(!force_managed_cargo_subcommands());
+    if let Some(value) = prev {
+        unsafe {
+            std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, value);
+        }
+    }
+}
+
+#[test]
+fn force_managed_cargo_subcommands_parses_falsey_strings_as_false() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+    for falsey in ["", " ", "0", "false", "no", "off", "  off  "] {
+        unsafe {
+            std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, falsey);
+        }
+        assert!(
+            !force_managed_cargo_subcommands(),
+            "value {falsey:?} should parse as false",
+        );
+    }
+    match prev {
+        Some(value) => unsafe {
+            std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, value);
+        },
+        None => unsafe {
+            std::env::remove_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+        },
+    }
+}
+
+#[test]
+fn force_managed_cargo_subcommands_parses_truthy_strings_as_true() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let prev = std::env::var_os(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+    for truthy in ["1", "true", "yes", "on", "anything-else"] {
+        unsafe {
+            std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, truthy);
+        }
+        assert!(
+            force_managed_cargo_subcommands(),
+            "value {truthy:?} should parse as true",
+        );
+    }
+    match prev {
+        Some(value) => unsafe {
+            std::env::set_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR, value);
+        },
+        None => unsafe {
+            std::env::remove_var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR);
+        },
+    }
+}
+
+#[test]
+fn find_on_path_locates_executable_in_a_path_dir() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let exe_name = if cfg!(windows) {
+        "soldr-test-find-on-path-fixture.exe"
+    } else {
+        "soldr-test-find-on-path-fixture"
+    };
+    let exe_path = dir.path().join(exe_name);
+    std::fs::write(&exe_path, b"#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&exe_path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&exe_path, perms).unwrap();
+    }
+
+    let prev_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut new_path = std::ffi::OsString::from(dir.path());
+    if !prev_path.is_empty() {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        new_path.push(sep);
+        new_path.push(&prev_path);
+    }
+    unsafe {
+        std::env::set_var("PATH", &new_path);
+    }
+
+    // The probe name is intentionally unsuffixed on both platforms — on
+    // Windows the PATHEXT sweep in find_on_path picks up the `.exe`.
+    let resolved = find_on_path("soldr-test-find-on-path-fixture");
+    unsafe {
+        std::env::set_var("PATH", &prev_path);
+    }
+
+    let resolved_path = resolved.expect("fixture must be found on PATH");
+    assert!(
+        resolved_path.is_file(),
+        "resolved path {resolved_path:?} must exist",
+    );
+    assert!(
+        resolved_path
+            .parent()
+            .map(|p| p == dir.path())
+            .unwrap_or(false),
+        "resolved path {resolved_path:?} must live under the fixture dir {:?}",
+        dir.path(),
+    );
+}
+
+#[test]
+fn find_on_path_returns_none_when_missing() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let prev_path = std::env::var_os("PATH").unwrap_or_default();
+    let new_path: std::ffi::OsString = dir.path().into();
+    unsafe {
+        std::env::set_var("PATH", &new_path);
+    }
+    let resolved = find_on_path("definitely-not-on-path-soldr-test-816");
+    unsafe {
+        std::env::set_var("PATH", &prev_path);
+    }
+    assert_eq!(resolved, None);
+}

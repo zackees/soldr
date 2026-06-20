@@ -810,6 +810,53 @@ fn suggest_cargo_subcommand_typo(sub: &str) -> Option<String> {
     crate::fuzzy_match::suggest_close_match(sub, &known).map(|s| s.to_string())
 }
 
+/// Env var name for the PATH-first override (issue #816). Reads as truthy
+/// when set to any value except an empty string or `0`/`false`/`no`.
+pub(crate) const FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR: &str =
+    "SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS";
+
+fn force_managed_cargo_subcommands() -> bool {
+    match std::env::var(FORCE_MANAGED_CARGO_SUBCOMMANDS_ENV_VAR) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            !matches!(trimmed, "" | "0" | "false" | "no" | "off")
+        }
+        Err(_) => false,
+    }
+}
+
+/// Walk `$PATH` looking for an executable named `tool`. Mirrors the
+/// hand-rolled lookup in `core::toolchain_resolve::path_bin_dir` —
+/// duplicated rather than re-exported to keep the cargo-front-door
+/// independent of `core::toolchain_resolve`'s internals. On Windows the
+/// `PATHEXT` suffix sweep matches what the toolchain resolver does so
+/// `cargo-zigbuild.exe` is found even when the caller typed `cargo-zigbuild`.
+fn find_on_path(tool: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(tool);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            if std::path::Path::new(tool).extension().is_some() {
+                continue;
+            }
+            let pathext = std::env::var_os("PATHEXT")
+                .and_then(|value| value.into_string().ok())
+                .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+            for suffix in pathext.split(';').map(str::trim).filter(|s| !s.is_empty()) {
+                let suffixed = dir.join(format!("{tool}{suffix}"));
+                if suffixed.is_file() {
+                    return Some(suffixed);
+                }
+            }
+        }
+    }
+    None
+}
+
 async fn ensure_known_subcommand_tool(
     args: &[String],
     paths: &SoldrPaths,
@@ -830,6 +877,31 @@ async fn ensure_known_subcommand_tool(
         }
         return Ok(Vec::new());
     };
+
+    // Issue #816: if `cargo-<sub>` is already on PATH, defer to it instead
+    // of running the managed fetch. This matches the discipline
+    // `ensure_rustup_available` uses for rustup and avoids two failure modes:
+    //   1. The managed fetcher writing an unrunnable artifact (the original
+    //      #816 / #810 cargo-zigbuild bug, now fixed by xz2 extraction —
+    //      but PATH-first is a structural belt-and-suspenders).
+    //   2. Bypassing a user who deliberately installed a specific version
+    //      via `cargo install <name> --locked` or their distro package
+    //      manager. cargo's own external-subcommand dispatch will find the
+    //      PATH binary; soldr returning Ok(empty) here leaves that path
+    //      open without prepending its own bin dir.
+    // Escape hatch: SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 forces the
+    // managed fetch even when PATH has the tool — useful for CI runs that
+    // want byte-identical pinned binaries.
+    if !force_managed_cargo_subcommands() {
+        let exe_name = format!("cargo-{sub}");
+        if let Some(path) = find_on_path(&exe_name) {
+            eprintln!(
+                "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
+                path.display()
+            );
+            return Ok(Vec::new());
+        }
+    }
 
     let version = spec
         .pinned_version
