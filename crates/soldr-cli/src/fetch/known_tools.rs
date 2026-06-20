@@ -210,6 +210,22 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         tag_prefix: None,
         pinned_version: None,
     },
+    // `maturin` powers Python+Rust packaging. Two consumers:
+    // 1. `soldr maturin <args>` — direct CLI dispatch for users running
+    //    `soldr maturin develop` / `soldr maturin build` etc.
+    // 2. The PEP 517 build backend in `src/soldr/__init__.py` — when a
+    //    downstream pyproject sets `build-backend = "soldr"`, the shim
+    //    shells out to `soldr maturin pep517 <hook>` for each PEP 517
+    //    entry point. Pinning the version keeps the build backend's
+    //    behavior reproducible across machines and CI runs.
+    ToolSpec {
+        crate_name: "maturin",
+        cargo_subcommand: None,
+        binary_name: "maturin",
+        repo: Some(("PyO3", "maturin")),
+        tag_prefix: None,
+        pinned_version: Some(super::MANAGED_MATURIN_VERSION),
+    },
     // Mindshare top-level tools (issue #598 child). Invoked as
     // `soldr bacon`, `soldr just`, `soldr typos`.
     // `bacon` — https://github.com/Canop/bacon. Tags are `vX.Y.Z`.
@@ -413,12 +429,29 @@ mod tests {
             "wasm-pack",
             "trunk",
             "sccache",
+            "maturin",
         ] {
             let spec = lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));
             assert_eq!(spec.cargo_subcommand, None);
             assert!(spec.repo.is_some());
         }
+    }
+
+    #[test]
+    fn maturin_is_registered_and_pinned_to_managed_version() {
+        // The PEP 517 build backend in src/soldr/__init__.py shells out
+        // to `soldr maturin pep517 <hook>`. If the registry entry drifts
+        // away from MANAGED_MATURIN_VERSION the backend's behavior
+        // changes silently across machines; the pin keeps it reproducible.
+        let spec = lookup_by_crate("maturin").expect("maturin must be registered");
+        assert_eq!(spec.cargo_subcommand, None);
+        assert_eq!(spec.binary_name, "maturin");
+        assert_eq!(spec.repo, Some(("PyO3", "maturin")));
+        assert_eq!(
+            spec.pinned_version,
+            Some(super::super::MANAGED_MATURIN_VERSION)
+        );
     }
 
     #[test]
