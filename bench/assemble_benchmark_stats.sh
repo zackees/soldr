@@ -165,12 +165,12 @@ jq -n \
                 content_type: "image/png"
             },
             comparison_rust: {
-                description: "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
+                description: "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a pure-Rust workload. Cold bars are drawn behind warm overlays. Embedded in README.",
                 url: ($raw_base + "/benchmark-rust-only.jpg"),
                 content_type: "image/jpeg"
             },
             comparison_rust_c: {
-                description: "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
+                description: "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-native). Cold bars are drawn behind warm overlays.",
                 url: ($raw_base + "/benchmark-rust-c.jpg"),
                 content_type: "image/jpeg"
             }
