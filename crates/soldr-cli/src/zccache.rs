@@ -1379,7 +1379,9 @@ mod tests {
 
     #[test]
     fn private_session_flag_truthy_values() {
-        for v in ["1", "true", "yes", "on", "TRUE", "Yes", "ON", " 1 ", " true "] {
+        for v in [
+            "1", "true", "yes", "on", "TRUE", "Yes", "ON", " 1 ", " true ",
+        ] {
             assert!(
                 parse_private_session_flag(Some(v)),
                 "expected {v:?} to parse truthy",
