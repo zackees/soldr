@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARDRAILS_PATH = REPO_ROOT / "contracts" / "zccache-integration-guardrails.v1.json"
 DOCS_PATH = REPO_ROOT / "docs" / "ZCCACHE_INTEGRATION_GUARDRAILS.md"
@@ -75,7 +74,9 @@ def test_guardrail_test_files_exist() -> None:
     for guardrail in contract["guardrails"]:
         for rel_path in guardrail["test_files"]:
             path = REPO_ROOT / rel_path
-            assert path.exists(), f"{guardrail['id']} references missing path: {rel_path}"
+            assert (
+                path.exists()
+            ), f"{guardrail['id']} references missing path: {rel_path}"
 
 
 def test_guardrail_docs_cover_every_id_and_command() -> None:

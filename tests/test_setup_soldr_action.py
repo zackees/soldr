@@ -6,7 +6,6 @@ import json
 import re
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "resolve_setup.py"
 
@@ -162,9 +161,9 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
 
 
 def test_build_and_test_uploads_windows_pdb_artifacts() -> None:
-    workflow = (
-        REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml"
-    ).read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "CARGO_PROFILE_DEV_DEBUG=line-tables-only" in workflow
     assert "CARGO_PROFILE_TEST_DEBUG=line-tables-only" in workflow
