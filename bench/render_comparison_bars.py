@@ -33,7 +33,7 @@ BENCHMARKS = {
     },
     "rust-c": {
         "title": "soldr Rust+C benchmarks",
-        "subtitle": "sqlite-native fixture",
+        "subtitle": "rust-native fixture",
         "output": "benchmark-rust-c.jpg",
     },
 }
@@ -110,6 +110,23 @@ def seconds_label(ms: Any) -> str:
     return f"{seconds:.3f}s"
 
 
+def bytes_label(value: Any) -> str:
+    if not isinstance(value, (int, float)) or value < 0:
+        return "n/a"
+    units = ("B", "KiB", "MiB", "GiB")
+    amount = float(value)
+    unit = units[0]
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            break
+        amount /= 1024
+    if unit == "B":
+        return f"{int(amount)} B"
+    if amount < 10:
+        return f"{amount:.1f} {unit}"
+    return f"{amount:.0f} {unit}"
+
+
 def overlay_speedup_label(
     rows_by_key: dict[tuple[str, str, str], dict[str, Any]],
     benchmark: str,
@@ -164,7 +181,7 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     margin = 20
     header_h = 116
     legend_h = 48
-    section_h = 210
+    section_h = 240
     section_gap = 16
     footer_h = 50
     height = header_h + legend_h + (section_h + section_gap) * len(OVERLAY_SECTIONS) - section_gap + footer_h
@@ -326,7 +343,14 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
                     else "#6e7681"
                 ),
             )
-            row_y += 44
+            cache_value = rows_by_key.get((benchmark, section["warm_key"], tool), {}).get("cache_bytes")
+            draw.text(
+                xy(bar_x1 + 12, row_y + 42),
+                f"cache {bytes_label(cache_value)}",
+                font=small_font,
+                fill=hex_rgb("#8b949e"),
+            )
+            row_y += 54
 
         draw.line(
             (xy(chart_x + 16, y + section_h - 1), xy(chart_x + chart_w - 16, y + section_h - 1)),

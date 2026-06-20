@@ -47,6 +47,14 @@ Small Rust+C workload copied from `zackees/setup-soldr`'s
 `libsqlite3-sys`, preserving a native C/build-script signal for README
 comparison images without paying the larger `sqlite-link` fixture cost.
 
+### `rust-native`
+
+Small README-facing Rust+C workload with Rust derive/generic-heavy
+dependencies plus a `build.rs`/`cc` step that compiles a bundled C checksum
+file. This keeps the native build-script surface visible while making the
+Rust+C comparison primarily a Rust compilation benchmark instead of mostly
+SQLite C compilation.
+
 ## Regenerating tarballs
 
 ```bash
