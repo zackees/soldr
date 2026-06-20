@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-19T23:26:22Z",
-  "git_sha": "0e2936f58c8196ae49df830bf1a24385974cfaa0",
+  "generated_at": "2026-06-20T00:32:19Z",
+  "git_sha": "25638a80b50d0f4dffb279a15e74b229533347d1",
   "branch": "benchmark-stats",
   "repository": "zackees/soldr",
   "artifacts": {
@@ -40,12 +40,12 @@
       "content_type": "image/png"
     },
     "comparison_rust": {
-      "description": "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a pure-Rust workload (soldr itself). Embedded in README.",
+      "description": "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a pure-Rust workload. Cold bars are drawn behind warm overlays. Embedded in README.",
       "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-only.jpg",
       "content_type": "image/jpeg"
     },
     "comparison_rust_c": {
-      "description": "Dark zccache-style bar chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-link).",
+      "description": "Dark zccache-style overlay chart: bare cargo vs sccache vs soldr on a Rust+C workload (sqlite-native). Cold bars are drawn behind warm overlays.",
       "url": "https://raw.githubusercontent.com/zackees/soldr/benchmark-stats/benchmark-rust-c.jpg",
       "content_type": "image/jpeg"
     }
