@@ -1,32 +1,2167 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "name": "cargo-chef",
   "owner": "LukeMathWalker",
   "repo": "cargo-chef",
-  "version": "0.1.73",
-  "tag": "v0.1.73",
-  "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.73",
-  "published_at": "2025-10-03T08:46:51Z",
-  "assets": {
-    "cargo-chef-aarch64-unknown-linux-gnu.tar.gz": {
-      "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-aarch64-unknown-linux-gnu.tar.gz",
-      "size": 2062588,
-      "content_type": "application/x-gtar"
+  "latest": "v0.1.77",
+  "pinned": "v0.1.73",
+  "tracked_tags": [
+    "v0.1.77",
+    "v0.1.76",
+    "v0.1.75",
+    "v0.1.73",
+    "v0.1.72",
+    "v0.1.71",
+    "v0.1.70",
+    "v0.1.69",
+    "v0.1.68",
+    "v0.1.67",
+    "v0.1.66",
+    "v0.1.65",
+    "v0.1.64",
+    "v0.1.63",
+    "v0.1.62",
+    "v0.1.61",
+    "v0.1.60",
+    "v0.1.59",
+    "v0.1.58",
+    "v0.1.57",
+    "v0.1.56",
+    "v0.1.55",
+    "v0.1.54",
+    "v0.1.53",
+    "v0.1.52",
+    "v0.1.51",
+    "v0.1.50",
+    "v0.1.49",
+    "v0.1.48",
+    "v0.1.47",
+    "v0.1.46",
+    "v0.1.45",
+    "v0.1.44",
+    "v0.1.43",
+    "v0.1.42",
+    "v0.1.41",
+    "v0.1.40",
+    "v0.1.39",
+    "v0.1.38",
+    "v0.1.37",
+    "v0.1.36",
+    "v0.1.35",
+    "v0.1.34",
+    "v0.1.33",
+    "v0.1.32",
+    "v0.1.31",
+    "v0.1.30",
+    "v0.1.29",
+    "v0.1.28",
+    "v0.1.27"
+  ],
+  "releases": {
+    "v0.1.77": {
+      "tag": "v0.1.77",
+      "version": "0.1.77",
+      "name": "0.1.77 - 2026-03-03",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-03-03T14:17:33Z",
+      "published_at": "2026-03-03T14:20:06Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.77",
+      "assets": {
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-aarch64-unknown-linux-gnu.tar.xz",
+          "size": 1483328,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T14:20:04Z",
+          "updated_at": "2026-03-03T14:20:04Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:04Z",
+          "updated_at": "2026-03-03T14:20:04Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-aarch64-unknown-linux-musl.tar.xz",
+          "size": 1507764,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T14:20:04Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256",
+          "size": 112,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:04Z",
+          "updated_at": "2026-03-03T14:20:04Z"
+        },
+        "cargo-chef-installer.sh": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-installer.sh",
+          "size": 54000,
+          "content_type": "application/x-shellscript",
+          "created_at": "2026-03-03T14:20:04Z",
+          "updated_at": "2026-03-03T14:20:04Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-x86_64-unknown-linux-gnu.tar.xz",
+          "size": 1636924,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 110,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-x86_64-unknown-linux-musl.tar.xz",
+          "size": 1709776,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "dist-manifest.json": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/dist-manifest.json",
+          "size": 16675,
+          "content_type": "application/json",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "sha256.sum": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/sha256.sum",
+          "size": 521,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "source.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/source.tar.gz",
+          "size": 55057,
+          "content_type": "application/x-gtar",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        },
+        "source.tar.gz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.77/source.tar.gz.sha256",
+          "size": 81,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T14:20:05Z",
+          "updated_at": "2026-03-03T14:20:05Z"
+        }
+      }
     },
-    "cargo-chef-x86_64-apple-darwin.tar.gz": {
-      "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-apple-darwin.tar.gz",
-      "size": 2039012,
-      "content_type": "application/x-gtar"
+    "v0.1.76": {
+      "tag": "v0.1.76",
+      "version": "0.1.76",
+      "name": "0.1.76 - 2026-03-03",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-03-03T12:50:33Z",
+      "published_at": "2026-03-03T12:52:59Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.76",
+      "assets": {
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-aarch64-unknown-linux-gnu.tar.xz",
+          "size": 1482248,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:57Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-aarch64-unknown-linux-musl.tar.xz",
+          "size": 1506136,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T12:52:57Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256",
+          "size": 112,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-installer.sh": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-installer.sh",
+          "size": 54000,
+          "content_type": "application/x-shellscript",
+          "created_at": "2026-03-03T12:52:57Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-x86_64-unknown-linux-gnu.tar.xz",
+          "size": 1635828,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 110,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-x86_64-unknown-linux-musl.tar.xz",
+          "size": 1709164,
+          "content_type": "application/x-xz",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "dist-manifest.json": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/dist-manifest.json",
+          "size": 17553,
+          "content_type": "application/json",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:58Z"
+        },
+        "sha256.sum": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/sha256.sum",
+          "size": 521,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:59Z"
+        },
+        "source.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/source.tar.gz",
+          "size": 54581,
+          "content_type": "application/x-gtar",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:59Z"
+        },
+        "source.tar.gz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.76/source.tar.gz.sha256",
+          "size": 81,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-03-03T12:52:58Z",
+          "updated_at": "2026-03-03T12:52:59Z"
+        }
+      }
     },
-    "cargo-chef-x86_64-pc-windows-msvc.zip": {
-      "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-pc-windows-msvc.zip",
-      "size": 1735430,
-      "content_type": "application/zip"
+    "v0.1.75": {
+      "tag": "v0.1.75",
+      "version": "0.1.75",
+      "name": "0.1.75 - 2026-02-28",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2026-02-28T10:19:53Z",
+      "published_at": "2026-02-28T10:22:21Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.75",
+      "assets": {
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-aarch64-unknown-linux-gnu.tar.xz",
+          "size": 1326676,
+          "content_type": "application/x-xz",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-aarch64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-aarch64-unknown-linux-musl.tar.xz",
+          "size": 1352240,
+          "content_type": "application/x-xz",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-aarch64-unknown-linux-musl.tar.xz.sha256",
+          "size": 112,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-installer.sh": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-installer.sh",
+          "size": 54000,
+          "content_type": "application/x-shellscript",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-x86_64-unknown-linux-gnu.tar.xz",
+          "size": 1471716,
+          "content_type": "application/x-xz",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-x86_64-unknown-linux-gnu.tar.xz.sha256",
+          "size": 110,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-x86_64-unknown-linux-musl.tar.xz",
+          "size": 1538060,
+          "content_type": "application/x-xz",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/cargo-chef-x86_64-unknown-linux-musl.tar.xz.sha256",
+          "size": 111,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "dist-manifest.json": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/dist-manifest.json",
+          "size": 17197,
+          "content_type": "application/json",
+          "created_at": "2026-02-28T10:22:20Z",
+          "updated_at": "2026-02-28T10:22:20Z"
+        },
+        "sha256.sum": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/sha256.sum",
+          "size": 521,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:21Z",
+          "updated_at": "2026-02-28T10:22:21Z"
+        },
+        "source.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/source.tar.gz",
+          "size": 50474,
+          "content_type": "application/x-gtar",
+          "created_at": "2026-02-28T10:22:21Z",
+          "updated_at": "2026-02-28T10:22:21Z"
+        },
+        "source.tar.gz.sha256": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.75/source.tar.gz.sha256",
+          "size": 81,
+          "content_type": "application/octet-stream",
+          "created_at": "2026-02-28T10:22:21Z",
+          "updated_at": "2026-02-28T10:22:21Z"
+        }
+      }
     },
-    "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
-      "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
-      "size": 2244225,
-      "content_type": "application/x-gtar"
+    "v0.1.73": {
+      "tag": "v0.1.73",
+      "version": "0.1.73",
+      "name": "v0.1.73",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2025-10-03T08:46:28Z",
+      "published_at": "2025-10-03T08:46:51Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.73",
+      "assets": {
+        "cargo-chef-aarch64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-aarch64-unknown-linux-gnu.tar.gz",
+          "size": 2062588,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-10-03T08:51:23Z",
+          "updated_at": "2025-10-03T08:51:24Z"
+        },
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2039012,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-10-03T08:48:57Z",
+          "updated_at": "2025-10-03T08:48:58Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1735430,
+          "content_type": "application/zip",
+          "created_at": "2025-10-03T08:48:58Z",
+          "updated_at": "2025-10-03T08:48:58Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.73/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2244225,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-10-03T08:48:59Z",
+          "updated_at": "2025-10-03T08:48:59Z"
+        }
+      }
+    },
+    "v0.1.72": {
+      "tag": "v0.1.72",
+      "version": "0.1.72",
+      "name": "v0.1.72",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2025-07-01T05:46:01Z",
+      "published_at": "2025-07-01T05:47:05Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.72",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.72/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2061878,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-07-01T06:00:12Z",
+          "updated_at": "2025-07-01T06:00:13Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.72/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1755242,
+          "content_type": "application/zip",
+          "created_at": "2025-07-01T06:01:58Z",
+          "updated_at": "2025-07-01T06:01:59Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.72/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2269976,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-07-01T06:01:44Z",
+          "updated_at": "2025-07-01T06:01:45Z"
+        }
+      }
+    },
+    "v0.1.71": {
+      "tag": "v0.1.71",
+      "version": "0.1.71",
+      "name": "v0.1.71",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2025-01-28T20:04:20Z",
+      "published_at": "2025-01-28T20:21:04Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.71",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2089027,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-28T20:22:34Z",
+          "updated_at": "2025-01-28T20:22:34Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1779404,
+          "content_type": "application/zip",
+          "created_at": "2025-01-28T20:25:28Z",
+          "updated_at": "2025-01-28T20:25:29Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2254768,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-28T20:26:29Z",
+          "updated_at": "2025-01-28T20:26:29Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.71/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2311608,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-28T20:28:17Z",
+          "updated_at": "2025-01-28T20:28:18Z"
+        }
+      }
+    },
+    "v0.1.70": {
+      "tag": "v0.1.70",
+      "version": "0.1.70",
+      "name": "v0.1.70",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2025-01-13T09:52:28Z",
+      "published_at": "2025-01-13T09:57:02Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.70",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.70/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2045037,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-13T09:58:14Z",
+          "updated_at": "2025-01-13T09:58:15Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.70/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1756350,
+          "content_type": "application/zip",
+          "created_at": "2025-01-13T09:59:48Z",
+          "updated_at": "2025-01-13T09:59:49Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.70/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2225197,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-13T09:57:55Z",
+          "updated_at": "2025-01-13T09:57:55Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.70/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2280970,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-13T09:59:01Z",
+          "updated_at": "2025-01-13T09:59:01Z"
+        }
+      }
+    },
+    "v0.1.69": {
+      "tag": "v0.1.69",
+      "version": "0.1.69",
+      "name": "v0.1.69",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2025-01-12T10:56:07Z",
+      "published_at": "2025-01-12T11:27:10Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.69",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.69/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2043975,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-12T11:29:53Z",
+          "updated_at": "2025-01-12T11:29:53Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.69/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1759202,
+          "content_type": "application/zip",
+          "created_at": "2025-01-12T11:30:19Z",
+          "updated_at": "2025-01-12T11:30:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.69/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2224848,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-12T11:29:32Z",
+          "updated_at": "2025-01-12T11:29:32Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.69/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2280755,
+          "content_type": "application/x-gtar",
+          "created_at": "2025-01-12T11:59:28Z",
+          "updated_at": "2025-01-12T11:59:28Z"
+        }
+      }
+    },
+    "v0.1.68": {
+      "tag": "v0.1.68",
+      "version": "0.1.68",
+      "name": "v0.1.68",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-09-23T09:37:17Z",
+      "published_at": "2024-09-23T09:53:23Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.68",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.68/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2023311,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-09-23T09:56:22Z",
+          "updated_at": "2024-09-23T09:56:23Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.68/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1749999,
+          "content_type": "application/zip",
+          "created_at": "2024-09-23T09:58:20Z",
+          "updated_at": "2024-09-23T09:58:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.68/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2205744,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-09-23T09:55:50Z",
+          "updated_at": "2024-09-23T09:55:50Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.68/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2266042,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-09-23T09:57:48Z",
+          "updated_at": "2024-09-23T09:57:48Z"
+        }
+      }
+    },
+    "v0.1.67": {
+      "tag": "v0.1.67",
+      "version": "0.1.67",
+      "name": "v0.1.67",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-05-22T05:58:46Z",
+      "published_at": "2024-05-22T05:59:00Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.67",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.67/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 2018735,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-05-22T06:01:21Z",
+          "updated_at": "2024-05-22T06:01:22Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.67/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1722907,
+          "content_type": "application/zip",
+          "created_at": "2024-05-22T06:20:20Z",
+          "updated_at": "2024-05-22T06:20:21Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.67/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2207606,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-05-22T06:00:16Z",
+          "updated_at": "2024-05-22T06:00:16Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.67/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2262751,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-05-22T06:33:28Z",
+          "updated_at": "2024-05-22T06:33:28Z"
+        }
+      }
+    },
+    "v0.1.66": {
+      "tag": "v0.1.66",
+      "version": "0.1.66",
+      "name": "v0.1.66",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-03-10T17:19:59Z",
+      "published_at": "2024-03-10T17:52:23Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.66",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.66/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1986079,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-03-10T17:53:55Z",
+          "updated_at": "2024-03-10T17:53:56Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.66/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1701762,
+          "content_type": "application/zip",
+          "created_at": "2024-03-10T17:55:37Z",
+          "updated_at": "2024-03-10T17:55:37Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.66/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 2177350,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-03-10T17:53:32Z",
+          "updated_at": "2024-03-10T17:53:32Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.66/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 2233765,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-03-10T17:55:09Z",
+          "updated_at": "2024-03-10T17:55:10Z"
+        }
+      }
+    },
+    "v0.1.65": {
+      "tag": "v0.1.65",
+      "version": "0.1.65",
+      "name": "v0.1.65",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-02-29T14:24:13Z",
+      "published_at": "2024-02-29T14:57:29Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.65",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.65/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1757922,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-29T14:59:15Z",
+          "updated_at": "2024-02-29T14:59:20Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.65/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1698952,
+          "content_type": "application/zip",
+          "created_at": "2024-02-29T15:00:15Z",
+          "updated_at": "2024-02-29T15:00:15Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.65/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1883817,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-29T14:58:53Z",
+          "updated_at": "2024-02-29T14:58:54Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.65/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1936586,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-29T14:59:55Z",
+          "updated_at": "2024-02-29T14:59:56Z"
+        }
+      }
+    },
+    "v0.1.64": {
+      "tag": "v0.1.64",
+      "version": "0.1.64",
+      "name": "v0.1.64",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-02-27T08:21:49Z",
+      "published_at": "2024-02-27T09:27:37Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.64",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.64/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1757871,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-27T09:29:23Z",
+          "updated_at": "2024-02-27T09:29:24Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.64/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1700533,
+          "content_type": "application/zip",
+          "created_at": "2024-02-27T09:45:09Z",
+          "updated_at": "2024-02-27T09:45:10Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.64/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1883144,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-27T09:29:00Z",
+          "updated_at": "2024-02-27T09:29:00Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.64/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1935111,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-27T10:06:02Z",
+          "updated_at": "2024-02-27T10:06:03Z"
+        }
+      }
+    },
+    "v0.1.63": {
+      "tag": "v0.1.63",
+      "version": "0.1.63",
+      "name": "v0.1.63",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2024-02-11T15:58:08Z",
+      "published_at": "2024-02-11T16:29:42Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.63",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.63/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1749716,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-11T16:34:57Z",
+          "updated_at": "2024-02-11T16:34:57Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.63/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1710553,
+          "content_type": "application/zip",
+          "created_at": "2024-02-11T16:32:32Z",
+          "updated_at": "2024-02-11T16:32:32Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.63/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1880005,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-11T16:31:05Z",
+          "updated_at": "2024-02-11T16:31:06Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.63/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1930330,
+          "content_type": "application/x-gtar",
+          "created_at": "2024-02-11T17:06:38Z",
+          "updated_at": "2024-02-11T17:06:39Z"
+        }
+      }
+    },
+    "v0.1.62": {
+      "tag": "v0.1.62",
+      "version": "0.1.62",
+      "name": "v0.1.62",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-07-26T19:15:25Z",
+      "published_at": "2023-07-26T19:15:44Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.62",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.62/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1430104,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-07-26T19:20:04Z",
+          "updated_at": "2023-07-26T19:20:05Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.62/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1429170,
+          "content_type": "application/zip",
+          "created_at": "2023-07-26T19:45:57Z",
+          "updated_at": "2023-07-26T19:45:57Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.62/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1573660,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-07-26T19:45:47Z",
+          "updated_at": "2023-07-26T19:45:47Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.62/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1623878,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-07-26T20:08:42Z",
+          "updated_at": "2023-07-26T20:08:43Z"
+        }
+      }
+    },
+    "v0.1.61": {
+      "tag": "v0.1.61",
+      "version": "0.1.61",
+      "name": "v0.1.61",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-05-23T10:14:52Z",
+      "published_at": "2023-05-23T11:05:40Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.61",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.61/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1450190,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-23T12:13:03Z",
+          "updated_at": "2023-05-23T12:13:03Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.61/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1445178,
+          "content_type": "application/zip",
+          "created_at": "2023-05-23T12:08:28Z",
+          "updated_at": "2023-05-23T12:08:29Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.61/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1590313,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-23T12:11:32Z",
+          "updated_at": "2023-05-23T12:11:32Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.61/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1634592,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-23T12:13:58Z",
+          "updated_at": "2023-05-23T12:13:58Z"
+        }
+      }
+    },
+    "v0.1.60": {
+      "tag": "v0.1.60",
+      "version": "0.1.60",
+      "name": "v0.1.60",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-05-20T11:04:29Z",
+      "published_at": "2023-05-20T11:56:01Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.60",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.60/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1443365,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-20T12:01:33Z",
+          "updated_at": "2023-05-20T12:01:34Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.60/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1440413,
+          "content_type": "application/zip",
+          "created_at": "2023-05-20T12:03:16Z",
+          "updated_at": "2023-05-20T12:03:16Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.60/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1584239,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-20T11:59:51Z",
+          "updated_at": "2023-05-20T11:59:52Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.60/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1628706,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-05-20T12:03:27Z",
+          "updated_at": "2023-05-20T12:03:28Z"
+        }
+      }
+    },
+    "v0.1.59": {
+      "tag": "v0.1.59",
+      "version": "0.1.59",
+      "name": "v0.1.59",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-21T15:34:27Z",
+      "published_at": "2023-04-21T16:24:41Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.59",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.59/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1438149,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-21T16:30:31Z",
+          "updated_at": "2023-04-21T16:30:32Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.59/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1433334,
+          "content_type": "application/zip",
+          "created_at": "2023-04-21T16:33:03Z",
+          "updated_at": "2023-04-21T16:33:04Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.59/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1574622,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-21T16:29:20Z",
+          "updated_at": "2023-04-21T16:29:20Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.59/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1620263,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-21T16:31:37Z",
+          "updated_at": "2023-04-21T16:31:38Z"
+        }
+      }
+    },
+    "v0.1.58": {
+      "tag": "v0.1.58",
+      "version": "0.1.58",
+      "name": "v0.1.58",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-20T16:29:52Z",
+      "published_at": "2023-04-20T17:21:41Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.58",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.58/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1438142,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-20T17:25:46Z",
+          "updated_at": "2023-04-20T17:25:47Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.58/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1432795,
+          "content_type": "application/zip",
+          "created_at": "2023-04-20T17:26:23Z",
+          "updated_at": "2023-04-20T17:26:24Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.58/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1574892,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-20T17:24:45Z",
+          "updated_at": "2023-04-20T17:24:45Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.58/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1619909,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-20T17:27:42Z",
+          "updated_at": "2023-04-20T17:27:42Z"
+        }
+      }
+    },
+    "v0.1.57": {
+      "tag": "v0.1.57",
+      "version": "0.1.57",
+      "name": "v0.1.57",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-19T08:00:20Z",
+      "published_at": "2023-04-19T08:52:21Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.57",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.57/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1438069,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-19T08:55:31Z",
+          "updated_at": "2023-04-19T08:55:32Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.57/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1432402,
+          "content_type": "application/zip",
+          "created_at": "2023-04-19T08:57:20Z",
+          "updated_at": "2023-04-19T08:57:21Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.57/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1574973,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-19T08:54:41Z",
+          "updated_at": "2023-04-19T08:54:41Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.57/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1619871,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-19T08:57:14Z",
+          "updated_at": "2023-04-19T08:57:15Z"
+        }
+      }
+    },
+    "v0.1.56": {
+      "tag": "v0.1.56",
+      "version": "0.1.56",
+      "name": "v0.1.56",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-17T08:53:48Z",
+      "published_at": "2023-04-17T09:40:56Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.56",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.56/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1438565,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-17T09:46:52Z",
+          "updated_at": "2023-04-17T09:46:52Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.56/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1434337,
+          "content_type": "application/zip",
+          "created_at": "2023-04-17T09:47:15Z",
+          "updated_at": "2023-04-17T09:47:16Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.56/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1574293,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-17T09:43:46Z",
+          "updated_at": "2023-04-17T09:43:46Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.56/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1620047,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-17T09:47:13Z",
+          "updated_at": "2023-04-17T09:47:13Z"
+        }
+      }
+    },
+    "v0.1.55": {
+      "tag": "v0.1.55",
+      "version": "0.1.55",
+      "name": "v0.1.55",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-15T08:34:10Z",
+      "published_at": "2023-04-15T09:23:26Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.55",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.55/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1349154,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-15T09:30:25Z",
+          "updated_at": "2023-04-15T09:30:25Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.55/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1339474,
+          "content_type": "application/zip",
+          "created_at": "2023-04-15T09:31:05Z",
+          "updated_at": "2023-04-15T09:31:05Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.55/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1481091,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-15T09:29:23Z",
+          "updated_at": "2023-04-15T09:29:24Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.55/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1526939,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-15T09:32:25Z",
+          "updated_at": "2023-04-15T09:32:25Z"
+        }
+      }
+    },
+    "v0.1.54": {
+      "tag": "v0.1.54",
+      "version": "0.1.54",
+      "name": "v0.1.54",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-04-06T07:50:42Z",
+      "published_at": "2023-04-06T08:35:11Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.54",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.54/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1348806,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-06T08:40:41Z",
+          "updated_at": "2023-04-06T08:40:41Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.54/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1339420,
+          "content_type": "application/zip",
+          "created_at": "2023-04-06T09:35:30Z",
+          "updated_at": "2023-04-06T09:35:30Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.54/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1480965,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-06T09:34:40Z",
+          "updated_at": "2023-04-06T09:34:41Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.54/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1527087,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-04-06T09:38:11Z",
+          "updated_at": "2023-04-06T09:38:12Z"
+        }
+      }
+    },
+    "v0.1.53": {
+      "tag": "v0.1.53",
+      "version": "0.1.53",
+      "name": "v0.1.53",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-03-31T20:32:17Z",
+      "published_at": "2023-03-31T21:17:46Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.53",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.53/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1375392,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-31T21:24:35Z",
+          "updated_at": "2023-03-31T21:24:35Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.53/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1319040,
+          "content_type": "application/zip",
+          "created_at": "2023-03-31T21:27:25Z",
+          "updated_at": "2023-03-31T21:27:25Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.53/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1491799,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-31T21:23:36Z",
+          "updated_at": "2023-03-31T21:23:36Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.53/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1535352,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-31T21:25:45Z",
+          "updated_at": "2023-03-31T21:25:45Z"
+        }
+      }
+    },
+    "v0.1.52": {
+      "tag": "v0.1.52",
+      "version": "0.1.52",
+      "name": "v0.1.52",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-03-19T11:20:24Z",
+      "published_at": "2023-03-19T12:05:00Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.52",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.52/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1369106,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-19T12:17:59Z",
+          "updated_at": "2023-03-19T12:17:59Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.52/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1319483,
+          "content_type": "application/zip",
+          "created_at": "2023-03-19T12:20:47Z",
+          "updated_at": "2023-03-19T12:20:48Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.52/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1490940,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-19T12:17:12Z",
+          "updated_at": "2023-03-19T12:17:13Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.52/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1536851,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-03-19T12:19:31Z",
+          "updated_at": "2023-03-19T12:19:32Z"
+        }
+      }
+    },
+    "v0.1.51": {
+      "tag": "v0.1.51",
+      "version": "0.1.51",
+      "name": "v0.1.51",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2023-01-05T06:47:00Z",
+      "published_at": "2023-01-05T06:49:03Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.51",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.51/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1364905,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-01-05T07:22:27Z",
+          "updated_at": "2023-01-05T07:22:28Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.51/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1319030,
+          "content_type": "application/zip",
+          "created_at": "2023-01-05T07:23:56Z",
+          "updated_at": "2023-01-05T07:23:57Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.51/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1480596,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-01-05T07:22:48Z",
+          "updated_at": "2023-01-05T07:22:49Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.51/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1524043,
+          "content_type": "application/x-gtar",
+          "created_at": "2023-01-05T07:26:52Z",
+          "updated_at": "2023-01-05T07:26:52Z"
+        }
+      }
+    },
+    "v0.1.50": {
+      "tag": "v0.1.50",
+      "version": "0.1.50",
+      "name": "v0.1.50",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-12-13T08:22:57Z",
+      "published_at": "2022-12-13T08:26:16Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.50",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.50/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1363377,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-13T09:10:42Z",
+          "updated_at": "2022-12-13T09:10:42Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.50/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1323555,
+          "content_type": "application/zip",
+          "created_at": "2022-12-13T09:11:07Z",
+          "updated_at": "2022-12-13T09:11:07Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.50/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1479202,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-13T09:10:52Z",
+          "updated_at": "2022-12-13T09:10:53Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.50/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1523926,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-13T09:12:21Z",
+          "updated_at": "2022-12-13T09:12:22Z"
+        }
+      }
+    },
+    "v0.1.49": {
+      "tag": "v0.1.49",
+      "version": "0.1.49",
+      "name": "v0.1.49",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-12-11T19:45:11Z",
+      "published_at": "2022-12-11T19:47:17Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.49",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.49/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1361644,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-11T19:54:46Z",
+          "updated_at": "2022-12-11T19:54:46Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.49/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1328108,
+          "content_type": "application/zip",
+          "created_at": "2022-12-11T19:54:44Z",
+          "updated_at": "2022-12-11T19:54:44Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.49/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1478294,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-11T19:53:56Z",
+          "updated_at": "2022-12-11T19:53:57Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.49/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1523095,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-11T19:55:13Z",
+          "updated_at": "2022-12-11T19:55:13Z"
+        }
+      }
+    },
+    "v0.1.48": {
+      "tag": "v0.1.48",
+      "version": "0.1.48",
+      "name": "v0.1.48",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-12-07T08:43:24Z",
+      "published_at": "2022-12-07T08:47:22Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.48",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.48/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1360513,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-07T09:26:24Z",
+          "updated_at": "2022-12-07T09:26:24Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.48/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1326408,
+          "content_type": "application/zip",
+          "created_at": "2022-12-07T09:22:43Z",
+          "updated_at": "2022-12-07T09:22:44Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.48/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1477827,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-07T09:22:33Z",
+          "updated_at": "2022-12-07T09:22:33Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.48/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1521289,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-12-07T09:27:52Z",
+          "updated_at": "2022-12-07T09:27:52Z"
+        }
+      }
+    },
+    "v0.1.47": {
+      "tag": "v0.1.47",
+      "version": "0.1.47",
+      "name": "v0.1.47",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-11-16T09:28:47Z",
+      "published_at": "2022-11-16T09:53:48Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.47",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.47/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1359447,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-11-16T10:13:51Z",
+          "updated_at": "2022-11-16T10:13:51Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.47/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1312265,
+          "content_type": "application/zip",
+          "created_at": "2022-11-16T10:14:45Z",
+          "updated_at": "2022-11-16T10:14:46Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.47/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1484292,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-11-16T10:13:04Z",
+          "updated_at": "2022-11-16T10:13:05Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.47/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1529195,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-11-16T10:15:46Z",
+          "updated_at": "2022-11-16T10:15:46Z"
+        }
+      }
+    },
+    "v0.1.46": {
+      "tag": "v0.1.46",
+      "version": "0.1.46",
+      "name": "v0.1.46",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-10-22T18:23:04Z",
+      "published_at": "2022-10-22T18:25:52Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.46",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.46/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1358367,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-22T18:52:27Z",
+          "updated_at": "2022-10-22T18:52:28Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.46/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1311358,
+          "content_type": "application/zip",
+          "created_at": "2022-10-22T18:52:36Z",
+          "updated_at": "2022-10-22T18:52:36Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.46/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1482537,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-22T18:51:49Z",
+          "updated_at": "2022-10-22T18:51:50Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.46/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1527169,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-22T18:53:54Z",
+          "updated_at": "2022-10-22T18:53:54Z"
+        }
+      }
+    },
+    "v0.1.45": {
+      "tag": "v0.1.45",
+      "version": "0.1.45",
+      "name": "v0.1.45",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-10-01T12:12:07Z",
+      "published_at": "2022-10-01T12:51:38Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.45",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.45/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1353616,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-01T12:57:19Z",
+          "updated_at": "2022-10-01T12:57:20Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.45/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1310154,
+          "content_type": "application/zip",
+          "created_at": "2022-10-01T12:57:43Z",
+          "updated_at": "2022-10-01T12:57:43Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.45/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1478875,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-01T12:55:17Z",
+          "updated_at": "2022-10-01T12:55:17Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.45/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1524402,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-10-01T12:57:17Z",
+          "updated_at": "2022-10-01T12:57:17Z"
+        }
+      }
+    },
+    "v0.1.44": {
+      "tag": "v0.1.44",
+      "version": "0.1.44",
+      "name": "v0.1.44",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-09-23T16:39:01Z",
+      "published_at": "2022-09-23T18:42:09Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.44",
+      "assets": {
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.44/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1308657,
+          "content_type": "application/zip",
+          "created_at": "2022-09-23T21:17:28Z",
+          "updated_at": "2022-09-23T21:17:29Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.44/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1476112,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T21:12:42Z",
+          "updated_at": "2022-09-23T21:12:42Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.44/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1521131,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T21:18:59Z",
+          "updated_at": "2022-09-23T21:18:59Z"
+        }
+      }
+    },
+    "v0.1.43": {
+      "tag": "v0.1.43",
+      "version": "0.1.43",
+      "name": "v0.1.43",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-09-23T16:29:16Z",
+      "published_at": "2022-09-23T18:40:01Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.43",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.43/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1351652,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T20:22:09Z",
+          "updated_at": "2022-09-23T20:22:09Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.43/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1311555,
+          "content_type": "application/zip",
+          "created_at": "2022-09-23T20:22:54Z",
+          "updated_at": "2022-09-23T20:22:55Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.43/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1474466,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T20:17:22Z",
+          "updated_at": "2022-09-23T20:17:22Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.43/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1520645,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T20:27:22Z",
+          "updated_at": "2022-09-23T20:27:22Z"
+        }
+      }
+    },
+    "v0.1.42": {
+      "tag": "v0.1.42",
+      "version": "0.1.42",
+      "name": "v0.1.42",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-09-23T15:27:41Z",
+      "published_at": "2022-09-23T15:57:09Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.42",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.42/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1314438,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T17:42:44Z",
+          "updated_at": "2022-09-23T17:42:44Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.42/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1268068,
+          "content_type": "application/zip",
+          "created_at": "2022-09-23T17:42:38Z",
+          "updated_at": "2022-09-23T17:42:39Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.42/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1433860,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T17:42:37Z",
+          "updated_at": "2022-09-23T17:42:38Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.42/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1479955,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-09-23T17:45:42Z",
+          "updated_at": "2022-09-23T17:45:43Z"
+        }
+      }
+    },
+    "v0.1.41": {
+      "tag": "v0.1.41",
+      "version": "0.1.41",
+      "name": "v0.1.41",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-08-24T14:13:31Z",
+      "published_at": "2022-08-24T14:49:21Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.41",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.41/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1314065,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-24T14:57:34Z",
+          "updated_at": "2022-08-24T14:57:34Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.41/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1267207,
+          "content_type": "application/zip",
+          "created_at": "2022-08-24T14:59:56Z",
+          "updated_at": "2022-08-24T14:59:57Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.41/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1434111,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-24T14:56:53Z",
+          "updated_at": "2022-08-24T14:56:54Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.41/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1479622,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-24T15:00:06Z",
+          "updated_at": "2022-08-24T15:00:06Z"
+        }
+      }
+    },
+    "v0.1.40": {
+      "tag": "v0.1.40",
+      "version": "0.1.40",
+      "name": "v0.1.40",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-08-22T09:26:39Z",
+      "published_at": "2022-08-22T09:59:27Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.40",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.40/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1313596,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-22T10:05:33Z",
+          "updated_at": "2022-08-22T10:05:33Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.40/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1268166,
+          "content_type": "application/zip",
+          "created_at": "2022-08-22T10:09:10Z",
+          "updated_at": "2022-08-22T10:09:11Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.40/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1434674,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-22T10:03:54Z",
+          "updated_at": "2022-08-22T10:03:54Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.40/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1479243,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-22T10:07:41Z",
+          "updated_at": "2022-08-22T10:07:42Z"
+        }
+      }
+    },
+    "v0.1.39": {
+      "tag": "v0.1.39",
+      "version": "0.1.39",
+      "name": "v0.1.39",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-08-01T12:30:57Z",
+      "published_at": "2022-08-01T13:02:26Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.39",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.39/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1298133,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-01T14:03:28Z",
+          "updated_at": "2022-08-01T14:03:29Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.39/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1261561,
+          "content_type": "application/zip",
+          "created_at": "2022-08-01T14:00:56Z",
+          "updated_at": "2022-08-01T14:00:57Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.39/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1422824,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-01T14:00:11Z",
+          "updated_at": "2022-08-01T14:00:12Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.39/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1466980,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-08-01T14:02:09Z",
+          "updated_at": "2022-08-01T14:02:10Z"
+        }
+      }
+    },
+    "v0.1.38": {
+      "tag": "v0.1.38",
+      "version": "0.1.38",
+      "name": "v0.1.38",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-07-15T14:10:18Z",
+      "published_at": "2022-07-15T14:12:54Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.38",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.38/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1296976,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-15T14:41:10Z",
+          "updated_at": "2022-07-15T14:41:11Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.38/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1260797,
+          "content_type": "application/zip",
+          "created_at": "2022-07-15T14:41:16Z",
+          "updated_at": "2022-07-15T14:41:16Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.38/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1421533,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-15T14:41:18Z",
+          "updated_at": "2022-07-15T14:41:18Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.38/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1464328,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-15T14:43:35Z",
+          "updated_at": "2022-07-15T14:43:36Z"
+        }
+      }
+    },
+    "v0.1.37": {
+      "tag": "v0.1.37",
+      "version": "0.1.37",
+      "name": "v0.1.37",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-07-04T14:57:42Z",
+      "published_at": "2022-07-04T15:23:55Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.37",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.37/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1304661,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-04T15:41:55Z",
+          "updated_at": "2022-07-04T15:41:56Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.37/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1255510,
+          "content_type": "application/zip",
+          "created_at": "2022-07-04T15:41:09Z",
+          "updated_at": "2022-07-04T15:41:10Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.37/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1429298,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-04T15:38:09Z",
+          "updated_at": "2022-07-04T15:38:09Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.37/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1476817,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-07-04T15:41:27Z",
+          "updated_at": "2022-07-04T15:41:28Z"
+        }
+      }
+    },
+    "v0.1.36": {
+      "tag": "v0.1.36",
+      "version": "0.1.36",
+      "name": "v0.1.36",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-06-26T15:37:42Z",
+      "published_at": "2022-06-26T15:55:27Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.36",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.36/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1273040,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-06-26T16:44:55Z",
+          "updated_at": "2022-06-26T16:44:56Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.36/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1222519,
+          "content_type": "application/zip",
+          "created_at": "2022-06-26T16:48:34Z",
+          "updated_at": "2022-06-26T16:48:35Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.36/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1397730,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-06-26T16:47:16Z",
+          "updated_at": "2022-06-26T16:47:17Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.36/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1443696,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-06-26T16:49:15Z",
+          "updated_at": "2022-06-26T16:49:15Z"
+        }
+      }
+    },
+    "v0.1.35": {
+      "tag": "v0.1.35",
+      "version": "0.1.35",
+      "name": "v0.1.35",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-03-22T22:47:47Z",
+      "published_at": "2022-03-22T23:21:01Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.35",
+      "assets": {
+        "cargo-chef-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.35/cargo-chef-x86_64-apple-darwin.tar.gz",
+          "size": 1252418,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-03-23T00:16:47Z",
+          "updated_at": "2022-03-23T00:16:48Z"
+        },
+        "cargo-chef-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.35/cargo-chef-x86_64-pc-windows-msvc.zip",
+          "size": 1235585,
+          "content_type": "application/zip",
+          "created_at": "2022-03-23T00:17:20Z",
+          "updated_at": "2022-03-23T00:17:21Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.35/cargo-chef-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1367317,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-03-23T00:15:53Z",
+          "updated_at": "2022-03-23T00:15:53Z"
+        },
+        "cargo-chef-x86_64-unknown-linux-musl.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.35/cargo-chef-x86_64-unknown-linux-musl.tar.gz",
+          "size": 1364398,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-03-23T00:17:46Z",
+          "updated_at": "2022-03-23T00:17:47Z"
+        }
+      }
+    },
+    "v0.1.34": {
+      "tag": "v0.1.34",
+      "version": "0.1.34",
+      "name": "v0.1.34",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2022-02-27T11:51:43Z",
+      "published_at": "2022-02-27T12:21:10Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.34",
+      "assets": {
+        "cargo-chef-v0.1.34-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.34/cargo-chef-v0.1.34-x86_64-apple-darwin.tar.gz",
+          "size": 1260441,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-02-27T12:24:19Z",
+          "updated_at": "2022-02-27T12:24:20Z"
+        },
+        "cargo-chef-v0.1.34-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.34/cargo-chef-v0.1.34-x86_64-pc-windows-msvc.zip",
+          "size": 1221249,
+          "content_type": "application/zip",
+          "created_at": "2022-02-27T12:29:11Z",
+          "updated_at": "2022-02-27T12:29:11Z"
+        },
+        "cargo-chef-v0.1.34-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.34/cargo-chef-v0.1.34-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1365768,
+          "content_type": "application/x-gtar",
+          "created_at": "2022-02-27T12:23:38Z",
+          "updated_at": "2022-02-27T12:23:39Z"
+        }
+      }
+    },
+    "v0.1.33": {
+      "tag": "v0.1.33",
+      "version": "0.1.33",
+      "name": "v0.1.33",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-11-24T10:00:37Z",
+      "published_at": "2021-11-24T10:38:38Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.33",
+      "assets": {
+        "cargo-chef-v0.1.33-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.33/cargo-chef-v0.1.33-x86_64-apple-darwin.tar.gz",
+          "size": 1247249,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-11-24T10:41:43Z",
+          "updated_at": "2021-11-24T10:41:43Z"
+        },
+        "cargo-chef-v0.1.33-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.33/cargo-chef-v0.1.33-x86_64-pc-windows-msvc.zip",
+          "size": 1203622,
+          "content_type": "application/zip",
+          "created_at": "2021-11-24T10:43:27Z",
+          "updated_at": "2021-11-24T10:43:27Z"
+        },
+        "cargo-chef-v0.1.33-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.33/cargo-chef-v0.1.33-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1350785,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-11-24T10:41:18Z",
+          "updated_at": "2021-11-24T10:41:19Z"
+        }
+      }
+    },
+    "v0.1.32": {
+      "tag": "v0.1.32",
+      "version": "0.1.32",
+      "name": "v0.1.32",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-11-13T16:46:10Z",
+      "published_at": "2021-11-13T16:46:28Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.32",
+      "assets": {
+        "cargo-chef-v0.1.32-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.32/cargo-chef-v0.1.32-x86_64-apple-darwin.tar.gz",
+          "size": 1247307,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-11-13T16:49:03Z",
+          "updated_at": "2021-11-13T16:49:04Z"
+        },
+        "cargo-chef-v0.1.32-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.32/cargo-chef-v0.1.32-x86_64-pc-windows-msvc.zip",
+          "size": 1204679,
+          "content_type": "application/zip",
+          "created_at": "2021-11-13T16:50:39Z",
+          "updated_at": "2021-11-13T16:50:40Z"
+        },
+        "cargo-chef-v0.1.32-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.32/cargo-chef-v0.1.32-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1349474,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-11-13T16:49:01Z",
+          "updated_at": "2021-11-13T16:49:01Z"
+        }
+      }
+    },
+    "v0.1.31": {
+      "tag": "v0.1.31",
+      "version": "0.1.31",
+      "name": "v0.1.31",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-09-04T16:21:21Z",
+      "published_at": "2021-09-04T16:24:38Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.31",
+      "assets": {
+        "cargo-chef-v0.1.31-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.31/cargo-chef-v0.1.31-x86_64-apple-darwin.tar.gz",
+          "size": 1219892,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-04T16:27:15Z",
+          "updated_at": "2021-09-04T16:27:15Z"
+        },
+        "cargo-chef-v0.1.31-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.31/cargo-chef-v0.1.31-x86_64-pc-windows-msvc.zip",
+          "size": 1194924,
+          "content_type": "application/zip",
+          "created_at": "2021-09-04T16:28:39Z",
+          "updated_at": "2021-09-04T16:28:39Z"
+        },
+        "cargo-chef-v0.1.31-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.31/cargo-chef-v0.1.31-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1314891,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-04T16:26:58Z",
+          "updated_at": "2021-09-04T16:26:58Z"
+        }
+      }
+    },
+    "v0.1.30": {
+      "tag": "v0.1.30",
+      "version": "0.1.30",
+      "name": "v0.1.30",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-09-03T15:50:23Z",
+      "published_at": "2021-09-03T15:56:43Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.30",
+      "assets": {
+        "cargo-chef-v0.1.30-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.30/cargo-chef-v0.1.30-x86_64-apple-darwin.tar.gz",
+          "size": 1220776,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-03T15:59:21Z",
+          "updated_at": "2021-09-03T15:59:22Z"
+        },
+        "cargo-chef-v0.1.30-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.30/cargo-chef-v0.1.30-x86_64-pc-windows-msvc.zip",
+          "size": 1196660,
+          "content_type": "application/zip",
+          "created_at": "2021-09-03T16:01:11Z",
+          "updated_at": "2021-09-03T16:01:11Z"
+        },
+        "cargo-chef-v0.1.30-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.30/cargo-chef-v0.1.30-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1316103,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-03T15:59:22Z",
+          "updated_at": "2021-09-03T15:59:23Z"
+        }
+      }
+    },
+    "v0.1.29": {
+      "tag": "v0.1.29",
+      "version": "0.1.29",
+      "name": "v0.1.29",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-09-02T20:51:53Z",
+      "published_at": "2021-09-02T20:52:11Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.29",
+      "assets": {
+        "cargo-chef-v0.1.29-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.29/cargo-chef-v0.1.29-x86_64-apple-darwin.tar.gz",
+          "size": 1217044,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-02T20:54:42Z",
+          "updated_at": "2021-09-02T20:54:42Z"
+        },
+        "cargo-chef-v0.1.29-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.29/cargo-chef-v0.1.29-x86_64-pc-windows-msvc.zip",
+          "size": 1192078,
+          "content_type": "application/zip",
+          "created_at": "2021-09-02T20:56:29Z",
+          "updated_at": "2021-09-02T20:56:29Z"
+        },
+        "cargo-chef-v0.1.29-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.29/cargo-chef-v0.1.29-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1312275,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-09-02T20:54:46Z",
+          "updated_at": "2021-09-02T20:54:46Z"
+        }
+      }
+    },
+    "v0.1.28": {
+      "tag": "v0.1.28",
+      "version": "0.1.28",
+      "name": "v0.1.28",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-08-29T11:00:55Z",
+      "published_at": "2021-08-29T11:01:11Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.28",
+      "assets": {
+        "cargo-chef-v0.1.28-x86_64-apple-darwin.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.28/cargo-chef-v0.1.28-x86_64-apple-darwin.tar.gz",
+          "size": 1220781,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-08-29T11:03:40Z",
+          "updated_at": "2021-08-29T11:03:41Z"
+        },
+        "cargo-chef-v0.1.28-x86_64-pc-windows-msvc.zip": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.28/cargo-chef-v0.1.28-x86_64-pc-windows-msvc.zip",
+          "size": 1176678,
+          "content_type": "application/zip",
+          "created_at": "2021-08-29T11:04:45Z",
+          "updated_at": "2021-08-29T11:04:45Z"
+        },
+        "cargo-chef-v0.1.28-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.28/cargo-chef-v0.1.28-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1312178,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-08-29T11:03:46Z",
+          "updated_at": "2021-08-29T11:03:46Z"
+        }
+      }
+    },
+    "v0.1.27": {
+      "tag": "v0.1.27",
+      "version": "0.1.27",
+      "name": "v0.1.27",
+      "draft": false,
+      "prerelease": false,
+      "created_at": "2021-08-29T10:38:49Z",
+      "published_at": "2021-08-29T10:39:39Z",
+      "release_html_url": "https://github.com/LukeMathWalker/cargo-chef/releases/tag/v0.1.27",
+      "assets": {
+        "cargo-chef-v0.1.27-x86_64-unknown-linux-gnu.tar.gz": {
+          "url": "https://github.com/LukeMathWalker/cargo-chef/releases/download/v0.1.27/cargo-chef-v0.1.27-x86_64-unknown-linux-gnu.tar.gz",
+          "size": 1313471,
+          "content_type": "application/x-gtar",
+          "created_at": "2021-08-29T10:42:05Z",
+          "updated_at": "2021-08-29T10:42:05Z"
+        }
+      }
     }
   }
 }
