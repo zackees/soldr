@@ -7,6 +7,7 @@
 
 use clap::Parser;
 
+mod archive_cmd;
 mod binaries;
 mod bootstrap;
 mod cache;
@@ -341,6 +342,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Load(args) => {
             std::process::exit(save_load::run_load(args));
+        }
+        Commands::Archive { target, output } => {
+            archive_cmd::run(target, output)?;
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
