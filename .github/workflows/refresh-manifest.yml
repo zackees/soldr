@@ -8,7 +8,10 @@ name: Refresh release manifest
 #   1) checks out `main` (for the script) AND `manifest` (where the
 #      tree lives) into separate worktrees
 #   2) runs build_manifest.py against the manifest checkout
-#   3) commits + pushes if anything changed (no-op when upstream
+#   3) runs build_asset_index.py against the same checkout to emit a
+#      flat, sha-bearing `asset-index.json` consumed by
+#      `crates/soldr-cli/src/fetch/manifest_lookup.rs` (issue #868)
+#   4) commits + pushes if anything changed (no-op when upstream
 #      hasn't shipped — write_if_changed gates per-tool files; an
 #      empty diff means an empty `git commit` is skipped entirely)
 #
@@ -61,6 +64,21 @@ jobs:
           python3 main/.github/scripts/build_manifest.py \
               --output-dir manifest \
               --repo-root main
+
+      - name: Build asset-index.json (sha-bearing flat index)
+        # Consumed by crates/soldr-cli/src/fetch/manifest_lookup.rs at
+        # runtime — flat array of (owner, repo, tag, asset, url, sha256)
+        # rows. Vendored deps/ files contribute on-disk shas; GitHub
+        # releases contribute shas only when the release ships a
+        # SHA256SUMS asset (every zackees/zccache release does; most
+        # third-party releases don't, and those silently degrade to a
+        # cache-miss + live-API lookup at runtime).
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 main/.github/scripts/build_asset_index.py \
+              --manifest-checkout manifest \
+              --output manifest/asset-index.json
 
       - name: Commit + push if anything changed
         shell: bash
