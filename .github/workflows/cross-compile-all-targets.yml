@@ -366,17 +366,46 @@ jobs:
         run: |
           set -euo pipefail
           tool="cargo-${{ matrix.tool }}"
-          # Runner host is always linux-x86_64 — the cargo subcommand
-          # itself is a host binary; it drives cargo which then cross-
-          # compiles to ${{ matrix.target }}.
-          asset="${tool}-x86_64-unknown-linux-gnu.tar.xz"
           dest_dir="${RUNNER_TEMP}/cross-bin"
           mkdir -p "$dest_dir"
-          .github/scripts/fetch_manifest_asset.sh \
-              "$tool" latest "$asset" "/tmp/${asset}"
-          # cargo-zigbuild / cargo-xwin tar.xz use a per-triple subdir;
-          # --strip-components=1 lands the binary directly in dest_dir.
-          tar -xJf "/tmp/${asset}" -C "$dest_dir" --strip-components=1
+          # The runner host is always linux-x86_64 — the cargo
+          # subcommand itself is a host binary that drives cargo, which
+          # then cross-compiles to ${{ matrix.target }}.
+          #
+          # cargo-zigbuild and cargo-xwin ship asset names with
+          # DIFFERENT shapes:
+          #   zigbuild: cargo-zigbuild-<TRIPLE>.tar.xz          (dash + .tar.xz)
+          #             tarball nests under <TRIPLE>/cargo-zigbuild
+          #   xwin:     cargo-xwin-v<VER>.<TRIPLE>.tar.gz       (period + .tar.gz)
+          #             tarball is flat; cargo-xwin sits at the root
+          # AND cargo-xwin only publishes linux-musl builds (the musl
+          # static binary runs fine on glibc runners), so for that lane
+          # the host triple is x86_64-unknown-linux-musl, not -gnu.
+          case "${{ matrix.tool }}" in
+            zigbuild)
+              asset="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
+              .github/scripts/fetch_manifest_asset.sh \
+                  "$tool" latest "$asset" "/tmp/${asset}"
+              tar -xJf "/tmp/${asset}" -C "$dest_dir" --strip-components=1
+              ;;
+            xwin)
+              # Resolve the latest tag once so we can plug it into the
+              # version-bearing asset filename. One curl + one jq.
+              xwin_tag=$(curl --fail --location --silent --show-error \
+                  --retry 6 --retry-delay 5 --retry-all-errors \
+                  https://raw.githubusercontent.com/zackees/soldr/manifest/cargo-xwin/manifest.json \
+                  | jq -er '.latest')
+              asset="cargo-xwin-${xwin_tag}.x86_64-unknown-linux-musl.tar.gz"
+              .github/scripts/fetch_manifest_asset.sh \
+                  "$tool" "$xwin_tag" "$asset" "/tmp/${asset}"
+              # Flat layout — single binary at the root, no --strip.
+              tar -xzf "/tmp/${asset}" -C "$dest_dir"
+              ;;
+            *)
+              echo "unknown matrix.tool: ${{ matrix.tool }}" >&2
+              exit 1
+              ;;
+          esac
           chmod +x "$dest_dir/$tool"
           echo "$dest_dir" >> "$GITHUB_PATH"
           "$dest_dir/$tool" --version || true
