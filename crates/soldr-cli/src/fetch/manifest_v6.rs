@@ -367,9 +367,12 @@ mod tests {
     crate::timed_test!(embedded_blob_decompresses, {
         let m = embedded_manifest().expect("embedded blob must parse");
         assert_eq!(m.schema_version, ManifestV6::SCHEMA_VERSION);
-        // For this phase the embed is intentionally the empty envelope.
-        // The follow-up sub-issue publishes the real snapshot.
-        assert!(m.is_empty());
+        // As of issue #873 the build script materializes the embed at
+        // compile time from the live asset-index, so the production
+        // build ships a populated blob. Offline / `SOLDR_SKIP_EMBED_REFRESH`
+        // builds can legitimately produce the empty envelope, so we
+        // accept either — the only invariant is "parses + matches the
+        // expected schema version".
     });
 
     crate::timed_test!(embedded_blob_size_is_under_budget, {

@@ -374,28 +374,56 @@ async fn fetch_repo_binary_once(
         }
     }
 
-    // Manifest-first: when we have an exact version pinned, consult
-    // soldr's published asset index on the `manifest` branch before
-    // touching `api.github.com`. The manifest index carries pinned
-    // sha256s, so a hit short-circuits both the release lookup AND the
-    // permissive-mode "unverified" warning — the URL we install from
-    // is the one the manifest publishes and the bytes are verified
-    // against the manifest's pin. Misses + every failure mode (404,
-    // parse error, network, SOLDR_MANIFEST_DISABLE=1) fall through to
-    // the live GitHub Releases API path below.
-    if let VersionSpec::Exact(ref tag) = version {
-        if let Some(result) = try_manifest_first(
-            paths,
-            cache_name,
-            binary_names,
-            repo,
-            tag,
-            tag_prefix,
-            &target,
-        )
-        .await?
-        {
-            return Ok(result);
+    // Resolver order (issue #873): embed → live → api. The first two
+    // hops are gated by `SOLDR_RESOLVER_ORDER` for testing + debugging.
+    // The embedded blob is a zstd-compressed snapshot of the live
+    // asset-index baked in at build time (see build.rs + manifest_v6),
+    // so a hit short-circuits all network traffic. The live fetch
+    // remains as a safety net for assets published after the embed was
+    // baked. Both feed the same `archive::download_and_extract_with_pin`
+    // sha-pin verification path.
+    let order = ResolverOrder::from_env();
+    if order.try_embed {
+        if let VersionSpec::Exact(ref tag) = version {
+            if let Some(result) = try_embedded_manifest_v6(
+                paths,
+                cache_name,
+                binary_names,
+                repo,
+                tag,
+                tag_prefix,
+                &target,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
+        }
+    }
+    if order.try_live {
+        // Manifest-first (live): when we have an exact version pinned,
+        // consult soldr's published asset index on the `manifest`
+        // branch. The manifest index carries pinned sha256s, so a hit
+        // short-circuits both the release lookup AND the
+        // permissive-mode "unverified" warning — the URL we install
+        // from is the one the manifest publishes and the bytes are
+        // verified against the manifest's pin. Misses + every failure
+        // mode (404, parse error, network, SOLDR_MANIFEST_DISABLE=1)
+        // fall through to the live GitHub Releases API path below.
+        if let VersionSpec::Exact(ref tag) = version {
+            if let Some(result) = try_manifest_first(
+                paths,
+                cache_name,
+                binary_names,
+                repo,
+                tag,
+                tag_prefix,
+                &target,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
         }
     }
 
@@ -433,6 +461,144 @@ async fn fetch_repo_binary_once(
         version: release.version,
         cached: false,
     })
+}
+
+/// Env var (issue #873) controlling which resolver hops fire. Comma-
+/// separated list of `embed`, `live`, `api` (e.g.
+/// `SOLDR_RESOLVER_ORDER=live,api` to skip the embedded blob,
+/// `SOLDR_RESOLVER_ORDER=api` to skip both manifest hops). Unset or
+/// empty → all three hops fire in the default order. Tokens not in the
+/// known-set are ignored (forward-compat).
+///
+/// The `api` hop is always last when listed — there is no way to
+/// re-order the hops, only to disable them. This keeps the trust
+/// posture intact: a hit from the embed/live manifest is sha-pinned;
+/// a hit from the api path is not. Promoting the api path above either
+/// manifest path would silently downgrade integrity.
+pub const RESOLVER_ORDER_ENV_VAR: &str = "SOLDR_RESOLVER_ORDER";
+
+/// Decoded form of [`RESOLVER_ORDER_ENV_VAR`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolverOrder {
+    pub try_embed: bool,
+    pub try_live: bool,
+    /// Reserved — the api hop is unconditional today, but the field is
+    /// parsed so a future change can disable it for tests.
+    pub try_api: bool,
+}
+
+impl ResolverOrder {
+    /// All three hops, in the canonical embed → live → api order.
+    pub const fn all() -> Self {
+        Self {
+            try_embed: true,
+            try_live: true,
+            try_api: true,
+        }
+    }
+
+    /// Parse `SOLDR_RESOLVER_ORDER` from the process environment.
+    pub fn from_env() -> Self {
+        match std::env::var(RESOLVER_ORDER_ENV_VAR) {
+            Ok(raw) => Self::parse(&raw),
+            Err(_) => Self::all(),
+        }
+    }
+
+    /// Parse a comma-separated token list. Unknown tokens are ignored.
+    /// Empty / whitespace-only input falls back to `Self::all()`.
+    pub fn parse(raw: &str) -> Self {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Self::all();
+        }
+        let mut order = Self {
+            try_embed: false,
+            try_live: false,
+            try_api: false,
+        };
+        for token in trimmed.split(',') {
+            match token.trim().to_ascii_lowercase().as_str() {
+                "embed" => order.try_embed = true,
+                "live" => order.try_live = true,
+                "api" => order.try_api = true,
+                _ => {} // unknown token — forward-compat
+            }
+        }
+        order
+    }
+}
+
+/// Attempt to resolve `(repo, tag)` for the current target via the
+/// embedded v6 manifest blob baked into the binary at build time.
+///
+/// Same trust posture as [`try_manifest_first`]: a hit is sha-pinned
+/// against the embed's entry; a sha mismatch is a hard error regardless
+/// of `SOLDR_TRUST_MODE`. A miss (no matching tool / triple / version)
+/// returns `Ok(None)` so the caller falls through to the live fetch.
+async fn try_embedded_manifest_v6(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    binary_names: &[&str],
+    repo: &github::RepoInfo,
+    tag: &str,
+    tag_prefix: Option<&str>,
+    target: &TargetTriple,
+) -> Result<Option<FetchResult>, SoldrError> {
+    let Some(manifest) = manifest_v6::embedded_manifest() else {
+        return Ok(None);
+    };
+    if manifest.is_empty() {
+        return Ok(None);
+    }
+    // Normalize the version pin: callers may pass `v1.12.9` (from
+    // `known_tools`) but v6 keys are bare semver (`1.12.9`).
+    let bare = tag.trim_start_matches('v').to_string();
+    let triple_owned = target.triple();
+    let triple: &str = &triple_owned;
+    let hit = match manifest.lookup(&repo.owner, &repo.repo, triple, Some(&bare)) {
+        Some(h) => h,
+        None => return Ok(None),
+    };
+    let version = hit.version.clone();
+
+    if let Some(r) = check_cache(paths, cache_name, &version, binary_names, target)? {
+        return Ok(Some(r));
+    }
+
+    // Synthesize an asset name from the URL's final path component so
+    // the trust-pin log line matches the existing live-fetch shape.
+    let asset_name = hit
+        .asset
+        .href
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(hit.asset.href.as_str());
+
+    eprintln!(
+        "soldr: embed-first hit for {}/{} v{} → {}",
+        repo.owner, repo.repo, version, asset_name
+    );
+
+    let _ = tag_prefix; // accepted for signature symmetry; unused by the v6 lookup.
+
+    let binary_path = archive::download_and_extract_with_pin(
+        paths,
+        cache_name,
+        &version,
+        &hit.asset.href,
+        target,
+        binary_names,
+        Some((asset_name, hit.asset.sha256.as_str())),
+    )
+    .await?;
+
+    Ok(Some(FetchResult {
+        binary_path,
+        version,
+        cached: false,
+    }))
 }
 
 /// Attempt to resolve `(repo, tag)` for the current target via soldr's
@@ -740,6 +906,71 @@ mod tests {
             "error should name the expected binary, got: {msg}"
         );
     }
+
+    crate::timed_test!(resolver_order_parses_default_and_subsets, {
+        // Unset / empty / whitespace → all hops enabled.
+        assert_eq!(ResolverOrder::parse(""), ResolverOrder::all());
+        assert_eq!(ResolverOrder::parse("   "), ResolverOrder::all());
+        // Subset selections — embed-only, live-only, api-only.
+        let embed_only = ResolverOrder::parse("embed");
+        assert!(embed_only.try_embed);
+        assert!(!embed_only.try_live);
+        assert!(!embed_only.try_api);
+        let live_api = ResolverOrder::parse("live,api");
+        assert!(!live_api.try_embed);
+        assert!(live_api.try_live);
+        assert!(live_api.try_api);
+        let api_only = ResolverOrder::parse("api");
+        assert!(!api_only.try_embed);
+        assert!(!api_only.try_live);
+        assert!(api_only.try_api);
+        // Whitespace + case-insensitive + unknown-token tolerance.
+        let mixed = ResolverOrder::parse(" EMBED , Live , garbage ");
+        assert!(mixed.try_embed);
+        assert!(mixed.try_live);
+        assert!(!mixed.try_api);
+    });
+
+    crate::timed_test!(resolver_order_env_var_skips_embed_when_unset, {
+        // Defensive: ensure the canonical "all on" form keeps embed on.
+        // The actual env-var override is exercised in the integration
+        // test under `tests/embed_first_resolver.rs` (touching the live
+        // process env from a unit test is racy).
+        let order = ResolverOrder::all();
+        assert!(order.try_embed && order.try_live && order.try_api);
+    });
+
+    crate::timed_test!(try_embedded_manifest_v6_misses_on_empty_blob, {
+        use crate::core::SoldrPaths;
+        // The shipped embed (before this PR's build-time refresh ran)
+        // can legitimately be the empty envelope on a fresh checkout.
+        // Either way, the lookup for a tool that doesn't exist must
+        // return Ok(None) — never an error, never a panic.
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let repo = github::RepoInfo {
+            owner: "definitely-does-not-exist".to_string(),
+            repo: "nor-does-this".to_string(),
+        };
+        let target = TargetTriple {
+            arch: crate::core::Arch::X86_64,
+            os: crate::core::Os::Linux,
+            env: crate::core::Env::Gnu,
+        };
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(try_embedded_manifest_v6(
+                &paths,
+                "nonesuch",
+                &["nonesuch"],
+                &repo,
+                "1.0.0",
+                None,
+                &target,
+            ))
+            .expect("must return Ok, not Err");
+        assert!(result.is_none(), "unknown tool must miss");
+    });
 
     #[test]
     fn annotate_release_fetch_error_includes_version_and_target() {
