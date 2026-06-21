@@ -335,15 +335,13 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
-      # LLVM toolchain stays — cargo-xwin shells out to clang-cl + lld-link
-      # at link time and soldr doesn't fetch system C/C++ toolchains.
-      # zigbuild lanes don't need it.
-      - name: Install LLVM toolchain (clang/lld) for xwin
-        if: matrix.tool == 'xwin'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld llvm
+      # LLVM toolchain (clang-cl / lld-link / llvm-lib) is auto-bootstrapped
+      # by soldr's cargo front door for *-pc-windows-msvc xwin lanes — see
+      # `fetch::ensure_llvm_toolchain` + `prepare_xwin_env` in
+      # `crates/soldr-cli/src/cargo_front_door/mod.rs`. The previous
+      # `sudo apt-get install clang lld llvm` step was removed in #857
+      # (sub of meta #853) once that auto-bootstrap proved sufficient
+      # in PR #864.
 
       # Download the bootstrap soldr from stage 1 and put it on PATH.
       # Replaces the earlier `pip install soldr` step — every cross job
@@ -466,25 +464,15 @@ jobs:
         id: build
         env:
           CARGO_TARGET_DIR: target
-          # cc-rs env overrides for the xwin lanes. soldr's cargo front
-          # door also injects these (see compute_subcommand_env_overrides
-          # in cargo_front_door/mod.rs), but the debug trace from
-          # run 27898887800 confirmed the soldr-side injection isn't
-          # surviving to ring's build.rs — cargo or cargo-xwin
-          # apparently scrubs/overrides them on the inner cargo
-          # subprocess. Setting at workflow level scopes the env to the
-          # runner process so EVERY nested child inherits them.
-          # Without this, ring's build.rs picks the GNU `clang` driver
-          # (which doesn't understand cargo-xwin's `/imsvc` flags) and
-          # the cross-compile fails. Both triples are listed because
-          # the matrix runs both windows-x64-msvc and windows-arm64-msvc;
-          # the unused triple's env vars are harmless to non-matching lanes.
-          CC_aarch64_pc_windows_msvc:  clang-cl
-          CXX_aarch64_pc_windows_msvc: clang-cl
-          AR_aarch64_pc_windows_msvc:  llvm-lib
-          CC_x86_64_pc_windows_msvc:   clang-cl
-          CXX_x86_64_pc_windows_msvc:  clang-cl
-          AR_x86_64_pc_windows_msvc:   llvm-lib
+          # cc-rs env overrides for the xwin lanes (CC_/CXX_/AR_/LD_<triple>)
+          # are now injected automatically by soldr's cargo front door for
+          # *-pc-windows-msvc xwin lanes — see `prepare_xwin_env` +
+          # `compute_subcommand_env_overrides` in
+          # `crates/soldr-cli/src/cargo_front_door/mod.rs`. PR #864 ships
+          # the soldr-managed LLVM toolchain so absolute paths are set on
+          # the child cargo, and #857 (this PR, sub of meta #853) drops
+          # the workflow-level hedge that previously hard-coded
+          # `CC_<triple>=clang-cl` etc.
         run: |
           set -euo pipefail
           log=stats/${{ matrix.friendly }}.log
