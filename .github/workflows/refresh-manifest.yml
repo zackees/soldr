@@ -1,0 +1,79 @@
+name: Refresh release manifest
+
+# Nightly refresh of the `manifest` branch (orphan, hosts a public
+# JSON catalogue of third-party tool releases under
+# `https://raw.githubusercontent.com/zackees/soldr/manifest/...`).
+#
+# The job:
+#   1) checks out `main` (for the script) AND `manifest` (where the
+#      tree lives) into separate worktrees
+#   2) runs build_manifest.py against the manifest checkout
+#   3) commits + pushes if anything changed (no-op when upstream
+#      hasn't shipped — write_if_changed gates per-tool files; an
+#      empty diff means an empty `git commit` is skipped entirely)
+#
+# Triggered nightly + manually. Authenticated via `secrets.GITHUB_TOKEN`
+# so the API quota is the 5000 req/hour authenticated bucket, not the
+# 60 req/hour anonymous one.
+
+on:
+  schedule:
+    # 06:30 UTC every day — late enough that any upstream release that
+    # shipped during US business hours (≤ ~02:00 UTC) is captured in
+    # the same calendar day's refresh.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-manifest
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout main (script source)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          path: main
+
+      - name: Checkout manifest branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: manifest
+          path: manifest
+
+      - name: Show python version (pre-installed on ubuntu-24.04)
+        shell: bash
+        run: python3 --version
+
+      - name: Run build_manifest.py against the manifest checkout
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 main/.github/scripts/build_manifest.py \
+              --output-dir manifest \
+              --repo-root main
+
+      - name: Commit + push if anything changed
+        shell: bash
+        working-directory: manifest
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no upstream changes; manifest branch unchanged"
+            exit 0
+          fi
+          git status --short
+          git commit -m "manifest: nightly refresh ($(date -u +%Y-%m-%d))"
+          git push origin manifest
