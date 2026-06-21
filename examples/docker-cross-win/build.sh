@@ -27,7 +27,10 @@
 
 set -euo pipefail
 
-target="x86_64-pc-windows-gnu"
+# Default: the canonical Microsoft ABI for Windows desktop x64.
+# Matches soldr's "MSVC on Windows always" design rule (CLAUDE.md).
+# The GNU and gnullvm lanes remain selectable via --target.
+target="x86_64-pc-windows-msvc"
 skip_host_check=0
 while [ $# -gt 0 ]; do
     case "$1" in

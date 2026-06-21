@@ -11,24 +11,31 @@
 
 FROM messense/cargo-zigbuild:0.20.0
 
-# Three Windows targets covered by this image:
-#   - x86_64-pc-windows-gnu        (zigbuild)  — traditional GNU; runs
-#                                                 on any Windows x64
-#                                                 install, no extra DLLs.
-#   - aarch64-pc-windows-msvc      (xwin)      — official MSVC ABI for
+# Four Windows targets covered by this image:
+#   - x86_64-pc-windows-msvc       (xwin)      — DEFAULT. The canonical
+#                                                 Microsoft ABI for
+#                                                 Windows desktop x64.
+#                                                 Matches the
+#                                                 "MSVC on Windows always"
+#                                                 soldr design rule.
+#   - aarch64-pc-windows-msvc      (xwin)      — Official MSVC ABI for
 #                                                 Windows ARM64. Native
 #                                                 Windows tooling and
 #                                                 most third-party DLLs
 #                                                 use this ABI.
-#   - aarch64-pc-windows-gnullvm   (zigbuild)  — same gnullvm family as
-#                                                 the x86_64 GNU target,
-#                                                 but Windows ARM64.
-#                                                 Free with the zigbuild
-#                                                 image, no MSVC SDK
-#                                                 download required.
+#   - x86_64-pc-windows-gnu        (zigbuild)  — Traditional GNU; runs
+#                                                 on any Windows x64
+#                                                 install, no extra DLLs.
+#                                                 Useful when MSVC
+#                                                 licensing is a concern.
+#   - aarch64-pc-windows-gnullvm   (zigbuild)  — gnullvm family for
+#                                                 Windows ARM64; free
+#                                                 with the zigbuild image,
+#                                                 no MSVC SDK download.
 RUN rustup target add \
-    x86_64-pc-windows-gnu \
+    x86_64-pc-windows-msvc \
     aarch64-pc-windows-msvc \
+    x86_64-pc-windows-gnu \
     aarch64-pc-windows-gnullvm
 
 # clang + lld-link for cargo-xwin's MSVC linking path. Without these,
@@ -49,8 +56,9 @@ WORKDIR /work
 
 # Generic entrypoint — build.sh dispatches to `cargo zigbuild ...` or
 # `cargo xwin build ...` based on the target triple. The CMD here is
-# the default no-args invocation that produces the x86_64 lane's
+# the default no-args invocation that produces the x86_64-msvc lane's
 # binary so `docker run <image>` on its own still does something
-# useful.
+# useful — MSVC is the canonical Windows ABI per soldr's
+# "MSVC on Windows always" design rule.
 ENTRYPOINT ["cargo"]
-CMD ["zigbuild", "--target", "x86_64-pc-windows-gnu", "--release"]
+CMD ["xwin", "build", "--target", "x86_64-pc-windows-msvc", "--release"]

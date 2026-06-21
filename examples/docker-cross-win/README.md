@@ -3,19 +3,20 @@
 End-to-end proof that a Rust binary cross-compiled inside a **Linux**
 Docker container runs cleanly on a **Windows** host — no Windows build
 environment required on the developer / CI machine. The example covers
-three Windows targets from a single image:
+four Windows targets from a single image:
 
 | Target triple | ABI | Cross-link tool | Notes |
 |---|---|---|---|
-| `x86_64-pc-windows-gnu` | GNU | `cargo-zigbuild` | Default. Statically links, runs anywhere. |
-| `aarch64-pc-windows-msvc` | **MSVC** | `cargo-xwin` | Official Microsoft ABI for Windows ARM64. |
-| `aarch64-pc-windows-gnullvm` | gnullvm | `cargo-zigbuild` | Alternate Windows ARM64 ABI, free with the zigbuild image. |
+| **`x86_64-pc-windows-msvc`** | **MSVC** | `cargo-xwin` | **Default.** The canonical Microsoft ABI for Windows desktop x64. Matches soldr's "MSVC on Windows always" design rule. |
+| `aarch64-pc-windows-msvc` | MSVC | `cargo-xwin` | Official MSVC ABI for Windows ARM64. |
+| `x86_64-pc-windows-gnu` | GNU | `cargo-zigbuild` | Traditional GNU; useful when MSVC licensing is a concern. |
+| `aarch64-pc-windows-gnullvm` | gnullvm | `cargo-zigbuild` | Alternate Windows ARM64 ABI, free with the zigbuild image (no MSVC SDK). |
 
 ## What this directory contains
 
 | | |
 |---|---|
-| `Dockerfile` | `messense/cargo-zigbuild` base + 3 rustup targets + `cargo-xwin` for MSVC |
+| `Dockerfile` | `messense/cargo-zigbuild` base + 4 rustup targets + `cargo-xwin` for MSVC |
 | `crate/` | Tiny Rust source: prints a recognizable signature and exits 0 |
 | `build.sh` | One-command orchestrator: build image, cross-compile, copy `.exe` out, verify PE arch, smoke-test |
 | `out/<target>/` | Host-side landing zone for the cross-compiled `.exe` (gitignored) |
@@ -26,13 +27,16 @@ three Windows targets from a single image:
 From a host with Docker installed:
 
 ```sh
-# Default: Windows x64 (GNU)
+# Default: Windows x64, MSVC ABI (the canonical one)
 ./examples/docker-cross-win/build.sh
 
-# Windows ARM64, MSVC ABI (the official one)
+# Windows ARM64, MSVC ABI
 ./examples/docker-cross-win/build.sh --target aarch64-pc-windows-msvc
 
-# Windows ARM64, gnullvm ABI (no MSVC SDK needed)
+# Windows x64, GNU ABI (no MSVC SDK download)
+./examples/docker-cross-win/build.sh --target x86_64-pc-windows-gnu
+
+# Windows ARM64, gnullvm ABI (no MSVC SDK download)
 ./examples/docker-cross-win/build.sh --target aarch64-pc-windows-gnullvm
 ```
 
@@ -71,7 +75,6 @@ The same toolset is what `zackees/setup-soldr`'s `cross-bootstrap.ts` uses on CI
 
 ## What it does NOT cover
 
-- **`x86_64-pc-windows-msvc`**: cargo-xwin handles this triple the same way it handles `aarch64-pc-windows-msvc`. Just add it to the Dockerfile's `rustup target add` line and the script's case statement. Left out of the default to keep the demonstration narrow.
 - **`i686-pc-windows-{gnu,gnullvm,msvc}` (32-bit Windows x86)**: same recipe works with the matching `rustup target add`. The script's PE-arch check already knows the right `file(1)` label (`Intel 80386`).
 
 ## Pinning notes
