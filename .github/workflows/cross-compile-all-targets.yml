@@ -95,18 +95,22 @@ jobs:
           # picks that up via PATH. Smoke-test it.
           python3 -m ziglang version
 
-      - name: Install cargo-zigbuild
-        if: matrix.tool == 'zigbuild'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install --locked cargo-zigbuild
-
-      # For windows-msvc cross-compile we need cargo-xwin and the LLVM
-      # toolchain (clang-cl + lld-link). cargo-xwin downloads the
-      # Microsoft Windows SDK on first invocation (~700 MB), so this
-      # job's runtime is ~6–10 min longer than the zigbuild lanes the
-      # first time it runs in a fresh runner image.
+      # Issue #831 — cargo-zigbuild and cargo-xwin are NOT installed
+      # here. soldr's cargo front door bootstraps them on first
+      # `soldr cargo zigbuild` / `soldr cargo xwin build` from the
+      # `known_tools` registry (entries: cargo-zigbuild →
+      # rust-cross/cargo-zigbuild GH releases; cargo-xwin →
+      # rust-cross/cargo-xwin). The earlier revision of this workflow
+      # ran `cargo install --locked cargo-zigbuild` and that triggered
+      # a rustfmt-preview component install which conflicted with the
+      # runner image's pre-installed bin/cargo-fmt — see #832. Letting
+      # soldr bootstrap sidesteps the conflict and uses the version
+      # the registry pins, not whatever crates.io serves at HEAD.
+      #
+      # The LLVM toolchain (clang-cl + lld-link) IS still needed for
+      # the xwin lanes because cargo-xwin shells out to them at link
+      # time. soldr doesn't fetch system C/C++ toolchains. This step
+      # stays.
       - name: Install LLVM toolchain (clang/lld) for xwin
         if: matrix.tool == 'xwin'
         shell: bash
@@ -114,13 +118,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang lld llvm
-
-      - name: Install cargo-xwin
-        if: matrix.tool == 'xwin'
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo install --locked cargo-xwin
 
       # Soldr drives the cargo invocation so zccache sits in
       # RUSTC_WRAPPER for every rustc call. With #825 merged, this is
