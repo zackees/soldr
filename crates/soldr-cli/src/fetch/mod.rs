@@ -42,6 +42,7 @@ pub mod archive;
 pub mod github;
 pub mod llvm;
 pub mod manifest_lookup;
+pub mod manifest_v6;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
@@ -52,6 +53,10 @@ pub use llvm::{ensure_llvm_toolchain, MANAGED_LLVM_VERSION};
 pub use manifest_lookup::{
     ManifestEntry, ManifestIndex, DEFAULT_MANIFEST_URL, MANIFEST_DISABLE_ENV_VAR,
     MANIFEST_FETCH_TIMEOUT, MANIFEST_URL_ENV_VAR,
+};
+pub use manifest_v6::{
+    embedded_manifest, embedded_manifest_bytes, is_stable_version_tag, ManifestV6, V6Asset, V6Hit,
+    V6Leaf,
 };
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 

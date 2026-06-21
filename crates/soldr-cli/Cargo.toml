@@ -52,6 +52,12 @@ filetime = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 
+# `build.rs` compresses `embed/manifest.json` into the OUT_DIR-resident
+# `manifest.json.zst` that `src/fetch/manifest_v6.rs` includes via
+# `include_bytes!`. See the build script's docstring for context.
+[build-dependencies]
+zstd = { workspace = true }
+
 [features]
 # Internal feature flag that enables test-only fixture binaries (e.g.
 # `fake-zccache-265-stub`). Off by default so neither the maturin wheel,

@@ -348,6 +348,35 @@ mod tests {
         assert!(check(Some("anything-else")));
     });
 
+    // Back-compat guard for issue #861: after schema v6 lands beside
+    // the flat-array shape this module owns, an old flat manifest
+    // body must keep parsing through `ManifestIndex::from_json`. This
+    // proves the dispatch isn't accidentally captured by the new v6
+    // parser — the two shapes are disjoint on the wire (`entries: []`
+    // vs. `schema_version: 6, tools: {...}`) and must stay so.
+    crate::timed_test!(flat_schema_v5_still_parses_for_back_compat, {
+        let flat = r#"{
+            "entries": [
+                {
+                    "owner": "zackees",
+                    "repo": "zccache",
+                    "tag": "1.12.9",
+                    "asset": "zccache-x86_64-pc-windows-msvc.zip",
+                    "url": "https://example.com/zccache.zip",
+                    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
+            ]
+        }"#;
+        let idx = ManifestIndex::from_json(flat).expect("flat parse ok");
+        assert_eq!(idx.entries.len(), 1);
+        // And the v6 parser must reject this same flat body, proving
+        // the two are routed disjointly.
+        assert!(
+            super::super::manifest_v6::ManifestV6::from_json(flat).is_none(),
+            "v6 parser must reject the flat-array shape"
+        );
+    });
+
     crate::timed_test!(resolve_url_returns_default_when_env_unset, {
         // We can't unset env vars safely in unit tests under parallel
         // execution, but we can assert the default is the published
