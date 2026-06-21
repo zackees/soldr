@@ -446,11 +446,25 @@ pub(crate) async fn run_cargo_front_door(
     }
 
     // Apply subcommand-derived env overrides (e.g. CC_<triple>=clang-cl
-    // for `cargo xwin build --target *-pc-windows-msvc`). Honor a
-    // caller-set value — don't clobber if the user already exported
-    // their own CC / CXX / AR.
-    for (key, value) in &subcommand_env_overrides {
-        if std::env::var_os(key).is_none() {
+    // for `cargo xwin build --target *-pc-windows-msvc`). FORCE
+    // override — even if a caller (or cargo-xwin's inner re-invoke,
+    // or a runner image) has set these, we want clang-cl. Without
+    // this, ring's build.rs picks `clang` (which doesn't understand
+    // `/imsvc`) and the cross-compile fails.
+    if !subcommand_env_overrides.is_empty() {
+        eprintln!(
+            "soldr: cargo subcommand env injection ({} vars):",
+            subcommand_env_overrides.len(),
+        );
+        for (key, value) in &subcommand_env_overrides {
+            let inherited = std::env::var_os(key);
+            eprintln!(
+                "soldr:   {key}={value} (was {})",
+                inherited
+                    .as_deref()
+                    .map(|v| v.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "<unset>".to_string()),
+            );
             command.env(key, value);
         }
     }
