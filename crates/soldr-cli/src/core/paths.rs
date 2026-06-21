@@ -146,6 +146,45 @@ pub struct SoldrConfig {
     /// #579).
     #[serde(default)]
     pub cook: CookConfig,
+    /// Per-tool optional manifest pins (issue #861). Keyed by tool name
+    /// (`zccache`, `crgx`, `cargo-zigbuild`, ...). When a key is
+    /// present, the v6 manifest resolver fetches that exact version
+    /// instead of the leaf's `latest`. Missing keys = track `latest`.
+    ///
+    /// ```toml
+    /// [pins]
+    /// zccache = "1.12.5"
+    /// crgx    = "0.1.0"
+    /// ```
+    #[serde(default)]
+    pub pins: PinsConfig,
+}
+
+/// `pins` section of `config.toml` (issue #861).
+///
+/// A flat `tool -> version` table that the v6 manifest resolver
+/// consults before falling back to the leaf's `latest`. Stored
+/// case-sensitively; soldr's tool keys are lowercased by convention.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct PinsConfig {
+    pub tools: std::collections::HashMap<String, String>,
+}
+
+impl PinsConfig {
+    /// Look up the pinned version for `tool`, returning `None` when
+    /// the tool is not pinned (track `latest`) or the pin is empty.
+    pub fn pin_for(&self, tool: &str) -> Option<&str> {
+        match self.tools.get(tool) {
+            Some(v) if !v.is_empty() => Some(v.as_str()),
+            _ => None,
+        }
+    }
+
+    /// True when no pins are declared.
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
 }
 
 /// `cook` section of `config.toml` (issue #578).
@@ -437,6 +476,36 @@ min_age_secs = 7200
     fn missing_auto_gc_section_uses_defaults() {
         let cfg: SoldrConfig = toml::from_str("").unwrap();
         assert_eq!(cfg.auto_gc, AutoGcConfig::default());
+    }
+
+    #[test]
+    fn pins_section_parses_tool_versions() {
+        let toml_text = r#"
+[pins]
+zccache = "1.12.5"
+crgx    = "0.1.0"
+"#;
+        let cfg: SoldrConfig = toml::from_str(toml_text).unwrap();
+        assert_eq!(cfg.pins.pin_for("zccache"), Some("1.12.5"));
+        assert_eq!(cfg.pins.pin_for("crgx"), Some("0.1.0"));
+        assert_eq!(cfg.pins.pin_for("unpinned-tool"), None);
+    }
+
+    #[test]
+    fn pins_empty_pin_string_is_treated_as_unpinned() {
+        let toml_text = r#"
+[pins]
+zccache = ""
+"#;
+        let cfg: SoldrConfig = toml::from_str(toml_text).unwrap();
+        assert_eq!(cfg.pins.pin_for("zccache"), None);
+    }
+
+    #[test]
+    fn missing_pins_section_uses_defaults() {
+        let cfg: SoldrConfig = toml::from_str("").unwrap();
+        assert!(cfg.pins.is_empty());
+        assert_eq!(cfg.pins.pin_for("zccache"), None);
     }
 
     #[test]

@@ -19,8 +19,8 @@ mod toolchain_manifest;
 mod toolchain_resolve;
 
 pub use paths::{
-    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, SoldrConfig,
-    SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR,
+    resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, PinsConfig,
+    SoldrConfig, SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR,
 };
 pub use target_triple::{Arch, Env, Os, TargetTriple};
 pub use toolchain_manifest::{
