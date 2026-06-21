@@ -949,6 +949,8 @@ async fn ensure_known_subcommand_tool(
     // Escape hatch: SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 forces the
     // managed fetch even when PATH has the tool — useful for CI runs that
     // want byte-identical pinned binaries.
+    let mut extra_bin_dirs: Vec<std::path::PathBuf> = Vec::new();
+
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
         if let Some(path) = find_on_path(&exe_name) {
@@ -956,7 +958,12 @@ async fn ensure_known_subcommand_tool(
                 "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
                 path.display()
             );
-            return Ok(Vec::new());
+            // Even when cargo-zigbuild is provided by the host, it
+            // still shells out to `zig`. Run the transitive bootstrap
+            // before returning so the deferred-on-PATH branch doesn't
+            // silently regress.
+            append_subcommand_transitive_bin_dirs(sub, paths, &mut extra_bin_dirs).await?;
+            return Ok(extra_bin_dirs);
         }
     }
 
@@ -987,7 +994,29 @@ async fn ensure_known_subcommand_tool(
             ))
         })?
         .to_path_buf();
-    Ok(vec![dir])
+    extra_bin_dirs.push(dir);
+    append_subcommand_transitive_bin_dirs(sub, paths, &mut extra_bin_dirs).await?;
+    Ok(extra_bin_dirs)
+}
+
+/// Resolve transitive runtime dependencies for `cargo-<sub>` and append
+/// their bin directories to `extra_bin_dirs`.
+///
+/// Today the only registered transitive bootstrap is `zig` for
+/// `cargo-zigbuild`. cargo-zigbuild shells out to a `zig` binary to do
+/// the cross-link step; without this, `soldr cargo zigbuild ...` on a
+/// fresh runner explodes with `Error: Failed to find zig` even though
+/// soldr happily fetched cargo-zigbuild itself.
+async fn append_subcommand_transitive_bin_dirs(
+    sub: &str,
+    paths: &SoldrPaths,
+    extra_bin_dirs: &mut Vec<std::path::PathBuf>,
+) -> Result<(), SoldrError> {
+    if sub == "zigbuild" {
+        let zig_dir = crate::fetch::ensure_zig(paths).await?;
+        extra_bin_dirs.push(zig_dir);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

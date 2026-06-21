@@ -42,6 +42,9 @@ pub mod github;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
+pub mod zig;
+
+pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 
 #[cfg(test)]
 mod zccache_contract_tests;
