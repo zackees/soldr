@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 5,
   "tools": {
     "cargo-chef": {
       "path": "cargo-chef/manifest.json",
