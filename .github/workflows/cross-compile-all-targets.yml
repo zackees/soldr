@@ -438,7 +438,14 @@ jobs:
           sudo mkdir -p /opt
           sudo tar --use-compress-program='zstd -d' \
               -xf /tmp/apple-sdk.tar.zst -C /opt
-          ls -la /opt/MacOSX11.3.sdk/System/Library/Frameworks/ | head -5
+          # Sanity check: assert the two frameworks ring/sysinfo need
+          # actually exist. Avoid `ls | head` — `head` closes the pipe
+          # early, `ls` gets SIGPIPE, `set -o pipefail` propagates a
+          # non-zero exit that silently breaks the entire build right
+          # after a successful extract.
+          test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/IOKit.framework
+          test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/CoreFoundation.framework
+          echo "Apple SDK extracted: IOKit + CoreFoundation frameworks present"
 
       # (cargo-xwin v0.23.0 doesn't expose a `download` subcommand —
       # the previous "Pre-download MSVC CRT" step was bogus and broke
