@@ -102,7 +102,10 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
 }
 
 fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
-    matches!(
+    // Cargo built-in verbs that compile, test, or document — intrinsic
+    // cacheability. These all engage rustc directly and the wrapper bytes
+    // are useful.
+    if matches!(
         subcommand,
         "b" | "build"
             | "c"
@@ -118,14 +121,32 @@ fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
             | "clippy"
             | "fix"
             | "install"
-            | "nextest"
-            // cargo-chef (powering `soldr cook`, issue #359): the outer
-            // process orchestrates an inner `cargo build` against a stub
-            // project. Treat `chef` as cacheable so RUSTC_WRAPPER, the
-            // soldr-managed toolchain homes, and ZCCACHE_PATH_REMAP all
-            // propagate to that inner build.
-            | "chef"
-    )
+    ) {
+        return true;
+    }
+
+    // Managed cargo-<sub> ecosystem tool (#824): consult the registry to
+    // decide whether the tool's outer invocation will spawn an inner
+    // cargo build (or otherwise transitively engage rustc) that benefits
+    // from `RUSTC_WRAPPER=zccache` propagation.
+    //
+    // Before #824 this slot was an ad-hoc whitelist of "nextest" + "chef"
+    // and grew on demand whenever a user noticed missing caching. The
+    // result was the wrong altitude: `cargo zigbuild`, `cargo xwin`,
+    // `cargo llvm-cov`, `cargo semver-checks`, `cargo binstall` (Compile
+    // strategy fallback), `cargo udeps`, and `cargo expand` all silently
+    // bypassed zccache because they were missing from the list. Pushing
+    // the decision into the `known_tools` registry — alongside the
+    // (owner, repo) and binary_name for each tool — keeps the data
+    // co-located so a new tool's `wraps_inner_cargo_build` flag is set
+    // once when it's registered and never drifts. Static-analysis-only
+    // tools (`deny`, `audit`, `machete`) keep the flag false.
+    //
+    // `watch` is intentionally NOT covered here: `cargo watch -x build`'s
+    // inner subcommand is parsed out of the argv by
+    // `cargo_watch_inner_is_cacheable` in the cacheable-args composer
+    // above, so the outer `watch` itself stays non-cacheable.
+    crate::fetch::wraps_inner_cargo_build(subcommand)
 }
 
 /// Scan a `cargo watch ...` arg list for `-x` / `--exec` / `-s` / `--shell`
