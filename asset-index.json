@@ -6,7 +6,7 @@
       "repo": "messense/cargo-zigbuild",
       "tag": "MacOSX11.3",
       "asset": "sdk.tar.zstd",
-      "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
       "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56"
     },
     {
@@ -14,7 +14,7 @@
       "repo": "soldr",
       "tag": "manifest",
       "asset": "deps/mac/manifest.json",
-      "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/manifest.json",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/manifest.json",
       "sha256": "dd681becd5668eb29a598456eaf4277edd60e923b2ed283b8af78567a37734e8"
     },
     {
