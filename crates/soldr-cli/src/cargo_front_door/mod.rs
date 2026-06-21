@@ -34,6 +34,7 @@ use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod cache_plan;
+mod clang_cl_shim;
 mod component_install;
 pub(crate) mod cook_hydrate;
 mod disk;
@@ -978,7 +979,7 @@ async fn ensure_known_subcommand_tool(
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
             // silently regress.
-            append_subcommand_transitive_bin_dirs(sub, paths, &mut extra_bin_dirs).await?;
+            append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs).await?;
             return Ok(extra_bin_dirs);
         }
     }
@@ -1011,7 +1012,7 @@ async fn ensure_known_subcommand_tool(
         })?
         .to_path_buf();
     extra_bin_dirs.push(dir);
-    append_subcommand_transitive_bin_dirs(sub, paths, &mut extra_bin_dirs).await?;
+    append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs).await?;
     Ok(extra_bin_dirs)
 }
 
@@ -1025,12 +1026,28 @@ async fn ensure_known_subcommand_tool(
 /// soldr happily fetched cargo-zigbuild itself.
 async fn append_subcommand_transitive_bin_dirs(
     sub: &str,
+    args: &[String],
     paths: &SoldrPaths,
     extra_bin_dirs: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), SoldrError> {
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
         extra_bin_dirs.push(zig_dir);
+    }
+    // `soldr cargo xwin build --target *-pc-windows-msvc` needs a
+    // `clang` shim that forces `--driver-mode=cl`. ring's build.rs
+    // hard-codes `c.compiler("clang")` for the aarch64 target which
+    // overrides cc-rs's env-driven compiler choice (so just setting
+    // CC_<triple>=clang-cl doesn't help). Putting our shim on PATH
+    // wins ring's `clang` PATH lookup. See `clang_cl_shim` for the
+    // full rationale.
+    if sub == "xwin" {
+        if let Some(triple) = extract_target_arg(args) {
+            if triple.ends_with("-pc-windows-msvc") {
+                let shim_dir = clang_cl_shim::ensure_clang_cl_shim(paths)?;
+                extra_bin_dirs.push(shim_dir);
+            }
+        }
     }
     Ok(())
 }
