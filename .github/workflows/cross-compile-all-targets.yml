@@ -157,7 +157,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/soldr dist/package/soldr
           chmod +x dist/package/soldr
 
-      - name: Fetch matched zccache release for linux-x86
+      - name: Fetch matched zccache release for linux-x86 (from manifest branch)
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
@@ -165,9 +165,8 @@ jobs:
           # Linux gnu rides the musl zccache (statically linked, runs on glibc).
           zccache_target=x86_64-unknown-linux-musl
           asset="zccache-v${zccache_version}-${zccache_target}.tar.gz"
-          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
-          curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
-            --output "/tmp/${asset}" "${url}"
+          .github/scripts/fetch_manifest_asset.sh \
+              zccache "${zccache_version}" "${asset}" "/tmp/${asset}"
           tar -xzf "/tmp/${asset}" -C dist/zccache-stage
           for b in zccache zccache-daemon zccache-fp; do
             src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
@@ -356,6 +355,32 @@ jobs:
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
+      # Pre-fetch cargo-zigbuild (zigbuild lanes) or cargo-xwin (xwin
+      # lanes) from the public manifest branch and put it on PATH BEFORE
+      # invoking soldr cargo. soldr's cargo front door has a PATH-first
+      # deferral branch (issue #816) that short-circuits its own GitHub
+      # API call when it finds the binary already on PATH — that's how
+      # the parallel matrix avoids fanning out unauthenticated API
+      # requests against the same /releases/latest endpoint and 403-ing.
+      - name: Pre-fetch cargo-${{ matrix.tool }} from manifest -> PATH
+        run: |
+          set -euo pipefail
+          tool="cargo-${{ matrix.tool }}"
+          # Runner host is always linux-x86_64 — the cargo subcommand
+          # itself is a host binary; it drives cargo which then cross-
+          # compiles to ${{ matrix.target }}.
+          asset="${tool}-x86_64-unknown-linux-gnu.tar.xz"
+          dest_dir="${RUNNER_TEMP}/cross-bin"
+          mkdir -p "$dest_dir"
+          .github/scripts/fetch_manifest_asset.sh \
+              "$tool" latest "$asset" "/tmp/${asset}"
+          # cargo-zigbuild / cargo-xwin tar.xz use a per-triple subdir;
+          # --strip-components=1 lands the binary directly in dest_dir.
+          tar -xJf "/tmp/${asset}" -C "$dest_dir" --strip-components=1
+          chmod +x "$dest_dir/$tool"
+          echo "$dest_dir" >> "$GITHUB_PATH"
+          "$dest_dir/$tool" --version || true
+
       - name: Verify zstd present
         run: zstd --version | head -n1
 
@@ -428,7 +453,7 @@ jobs:
           }
           EOF
 
-      - name: Fetch matched zccache release
+      - name: Fetch matched zccache release (from manifest branch)
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
@@ -445,9 +470,8 @@ jobs:
             *) echo "no zccache mapping" >&2; exit 1 ;;
           esac
           asset="zccache-v${zccache_version}-${zccache_target}.${ext}"
-          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
-          curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
-            --output "/tmp/${asset}" "${url}"
+          .github/scripts/fetch_manifest_asset.sh \
+              zccache "${zccache_version}" "${asset}" "/tmp/${asset}"
           case "$ext" in
             tar.gz) tar -xzf "/tmp/${asset}" -C dist/zccache-stage ;;
             zip)    sudo apt-get install -y --no-install-recommends unzip
