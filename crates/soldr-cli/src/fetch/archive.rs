@@ -17,6 +17,26 @@ pub(super) async fn download_and_extract(
     target: &TargetTriple,
     binary_names: &[&str],
 ) -> Result<PathBuf, SoldrError> {
+    download_and_extract_with_pin(paths, cache_name, version, url, target, binary_names, None).await
+}
+
+/// Same as [`download_and_extract`] but takes an optional `manifest_pin`
+/// argument of `(asset_name, expected_sha256)`. When provided, the
+/// computed sha256 of the downloaded bytes MUST equal the expected pin
+/// or the function returns an error — this is the manifest-first trust
+/// invariant (see `manifest_lookup` module docs). The pin overrides
+/// every other source of integrity policy (the env-var checksum store
+/// and `SOLDR_TRUST_MODE` are not consulted when a manifest pin is
+/// supplied because the manifest pin is strictly stronger).
+pub(super) async fn download_and_extract_with_pin(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    version: &str,
+    url: &str,
+    target: &TargetTriple,
+    binary_names: &[&str],
+    manifest_pin: Option<(&str, &str)>,
+) -> Result<PathBuf, SoldrError> {
     let client = http_client()?;
 
     let resp = client
@@ -45,20 +65,34 @@ pub(super) async fn download_and_extract(
         .filter(|s| !s.is_empty())
         .unwrap_or(url);
     let digest = trust::sha256_of(&bytes);
-    let store = trust::PinnedChecksumStore::from_env()?;
-    let mode = trust::TrustMode::from_env();
-    match trust::verify_download(cache_name, version, asset_name, &digest, &store, mode)? {
-        trust::VerifyOutcome::Verified { sha256 } => {
-            eprintln!(
-                "soldr: trust: verified {cache_name} v{version} {asset_name} sha256={sha256}"
-            );
+
+    if let Some((pinned_asset, expected_sha)) = manifest_pin {
+        let expected = expected_sha.trim().to_ascii_lowercase();
+        let actual = digest.to_ascii_lowercase();
+        if expected != actual {
+            return Err(SoldrError::Other(format!(
+                "manifest-first: pinned sha256 mismatch for {cache_name} v{version} asset {pinned_asset}\n  expected: {expected}\n  actual:   {actual}\n  source:   {url}",
+            )));
         }
-        trust::VerifyOutcome::Unverified { sha256 } => {
-            eprintln!(
-                "soldr: trust: unverified {cache_name} v{version} {asset_name} sha256={sha256} (set {} to pin; run with {}=strict to require pins)",
-                trust::CHECKSUMS_FILE_ENV_VAR,
-                trust::TRUST_MODE_ENV_VAR
-            );
+        eprintln!(
+            "soldr: trust: manifest-verified {cache_name} v{version} {pinned_asset} sha256={actual}"
+        );
+    } else {
+        let store = trust::PinnedChecksumStore::from_env()?;
+        let mode = trust::TrustMode::from_env();
+        match trust::verify_download(cache_name, version, asset_name, &digest, &store, mode)? {
+            trust::VerifyOutcome::Verified { sha256 } => {
+                eprintln!(
+                    "soldr: trust: verified {cache_name} v{version} {asset_name} sha256={sha256}"
+                );
+            }
+            trust::VerifyOutcome::Unverified { sha256 } => {
+                eprintln!(
+                    "soldr: trust: unverified {cache_name} v{version} {asset_name} sha256={sha256} (set {} to pin; run with {}=strict to require pins)",
+                    trust::CHECKSUMS_FILE_ENV_VAR,
+                    trust::TRUST_MODE_ENV_VAR
+                );
+            }
         }
     }
 

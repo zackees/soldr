@@ -41,6 +41,7 @@ pub mod apple_sdk;
 pub mod archive;
 pub mod github;
 pub mod llvm;
+pub mod manifest_lookup;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
@@ -48,6 +49,10 @@ pub mod zig;
 
 pub use apple_sdk::{ensure_apple_sdk, MANAGED_APPLE_SDK_VERSION};
 pub use llvm::{ensure_llvm_toolchain, MANAGED_LLVM_VERSION};
+pub use manifest_lookup::{
+    ManifestEntry, ManifestIndex, DEFAULT_MANIFEST_URL, MANIFEST_DISABLE_ENV_VAR,
+    MANIFEST_FETCH_TIMEOUT, MANIFEST_URL_ENV_VAR,
+};
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 
 #[cfg(test)]
@@ -364,6 +369,31 @@ async fn fetch_repo_binary_once(
         }
     }
 
+    // Manifest-first: when we have an exact version pinned, consult
+    // soldr's published asset index on the `manifest` branch before
+    // touching `api.github.com`. The manifest index carries pinned
+    // sha256s, so a hit short-circuits both the release lookup AND the
+    // permissive-mode "unverified" warning — the URL we install from
+    // is the one the manifest publishes and the bytes are verified
+    // against the manifest's pin. Misses + every failure mode (404,
+    // parse error, network, SOLDR_MANIFEST_DISABLE=1) fall through to
+    // the live GitHub Releases API path below.
+    if let VersionSpec::Exact(ref tag) = version {
+        if let Some(result) = try_manifest_first(
+            paths,
+            cache_name,
+            binary_names,
+            repo,
+            tag,
+            tag_prefix,
+            &target,
+        )
+        .await?
+        {
+            return Ok(result);
+        }
+    }
+
     let release = github::fetch_release(repo, version, tag_prefix)
         .await
         .map_err(|err| annotate_release_fetch_error(err, repo, version, &target))?;
@@ -398,6 +428,114 @@ async fn fetch_repo_binary_once(
         version: release.version,
         cached: false,
     })
+}
+
+/// Attempt to resolve `(repo, tag)` for the current target via soldr's
+/// published asset index on the `manifest` branch.
+///
+/// Returns:
+///   * `Ok(Some(FetchResult))` — manifest hit, sha256 verified,
+///     download + extract succeeded. The caller short-circuits.
+///   * `Ok(None)` — manifest miss (no matching entry, manifest empty,
+///     manifest disabled, parse failure, network failure). The caller
+///     falls through to the live GitHub Releases API.
+///   * `Err(_)` — manifest hit but sha256 verification or download
+///     failed. This is a hard error — falling back to the live API
+///     would mask a tampered manifest entry. Same trust posture as
+///     `apple_sdk` / `zig`.
+async fn try_manifest_first(
+    paths: &SoldrPaths,
+    cache_name: &str,
+    binary_names: &[&str],
+    repo: &github::RepoInfo,
+    tag: &str,
+    tag_prefix: Option<&str>,
+    target: &TargetTriple,
+) -> Result<Option<FetchResult>, SoldrError> {
+    let manifest = manifest_lookup::get_or_fetch().await;
+    let candidates = manifest.lookup_release(&repo.owner, &repo.repo, tag);
+    // Tag normalization: known_tools may resolve a tag prefix like
+    // `cargo-audit/v0.21.0`, so try the bare tag first and the
+    // composed tag if nothing matched. Mirrors the candidate-tag
+    // expansion `github::fetch_release` does over the live API.
+    let candidates_fallback;
+    let candidates = if candidates.is_empty() {
+        let prefixed = match tag_prefix {
+            Some(prefix) => format!("{prefix}{}", tag.trim_start_matches('v')),
+            None => return Ok(None),
+        };
+        candidates_fallback = manifest.lookup_release(&repo.owner, &repo.repo, &prefixed);
+        if candidates_fallback.is_empty() {
+            return Ok(None);
+        }
+        candidates_fallback.to_vec()
+    } else {
+        candidates
+    };
+
+    // The asset matcher reuses the existing platform-keyword scoring
+    // logic. We synthesize a one-off `AssetInfo` list from the manifest
+    // entries and let `match_asset` pick the best fit for our target.
+    let asset_infos: Vec<github::AssetInfo> = candidates
+        .iter()
+        .map(|entry| github::AssetInfo {
+            name: entry.asset.clone(),
+            download_url: entry.url.clone(),
+        })
+        .collect();
+    let asset = match github::match_asset(&asset_infos, target) {
+        Ok(asset) => asset,
+        Err(_) => return Ok(None),
+    };
+    let matched_entry = candidates
+        .iter()
+        .find(|e| e.asset == asset.name && e.url == asset.download_url)
+        .copied()
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "manifest-first: matched asset {} but could not find its entry",
+                asset.name
+            ))
+        })?;
+
+    // Tag → version conversion: trim a leading `v` and any monorepo
+    // prefix the asset is filed under, to match the layout the live
+    // path uses for `~/.soldr/bin/<name>-<version>/`.
+    let version = match tag_prefix {
+        Some(prefix) => matched_entry
+            .tag
+            .strip_prefix(prefix)
+            .unwrap_or(&matched_entry.tag),
+        None => matched_entry.tag.as_str(),
+    }
+    .trim_start_matches('v')
+    .to_string();
+
+    if let Some(r) = check_cache(paths, cache_name, &version, binary_names, target)? {
+        return Ok(Some(r));
+    }
+
+    eprintln!(
+        "soldr: manifest-first hit for {}/{} {} → {}",
+        repo.owner, repo.repo, matched_entry.tag, matched_entry.asset
+    );
+
+    let binary_path = archive::download_and_extract_with_pin(
+        paths,
+        cache_name,
+        &version,
+        &matched_entry.url,
+        target,
+        binary_names,
+        Some((&matched_entry.asset, &matched_entry.sha256)),
+    )
+    .await?;
+
+    Ok(Some(FetchResult {
+        binary_path,
+        version,
+        cached: false,
+    }))
 }
 
 fn annotate_release_fetch_error(
