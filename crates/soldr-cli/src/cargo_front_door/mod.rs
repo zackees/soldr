@@ -381,6 +381,12 @@ pub(crate) async fn run_cargo_front_door(
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
     // PATH so cargo's subcommand dispatch finds it.
     let extra_bin_dirs = ensure_known_subcommand_tool(args, &paths).await?;
+    // Compute env-var overrides keyed off the subcommand + its
+    // --target argument. Today this fixes ring's build.rs on
+    // `cargo xwin build --target *-pc-windows-msvc` by routing cc-rs
+    // to `clang-cl` instead of the GNU-flavoured `clang`. See
+    // `compute_subcommand_env_overrides` for the full rule set.
+    let subcommand_env_overrides = compute_subcommand_env_overrides(args);
 
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
@@ -436,6 +442,16 @@ pub(crate) async fn run_cargo_front_door(
                     command.env("RUSTUP_TOOLCHAIN", channel);
                 }
             }
+        }
+    }
+
+    // Apply subcommand-derived env overrides (e.g. CC_<triple>=clang-cl
+    // for `cargo xwin build --target *-pc-windows-msvc`). Honor a
+    // caller-set value — don't clobber if the user already exported
+    // their own CC / CXX / AR.
+    for (key, value) in &subcommand_env_overrides {
+        if std::env::var_os(key).is_none() {
+            command.env(key, value);
         }
     }
 
@@ -1017,6 +1033,84 @@ async fn append_subcommand_transitive_bin_dirs(
         extra_bin_dirs.push(zig_dir);
     }
     Ok(())
+}
+
+/// Compute environment-variable overrides for the child cargo invocation
+/// based on the subcommand and its `--target` argument.
+///
+/// The only rule today: `cargo xwin build --target <triple>` for any
+/// `<triple>` ending in `-pc-windows-msvc` injects
+///
+///   CC_<triple-underscored>  = clang-cl
+///   CXX_<triple-underscored> = clang-cl
+///   AR_<triple-underscored>  = llvm-lib
+///
+/// Why: cc-rs (used by ring, blake3, and other C-FFI crates) detects
+/// `target=*-pc-windows-msvc` and formats include flags MSVC-style
+/// (`/imsvc <path>`). But cc-rs's default driver for that triple,
+/// when `cl.exe` isn't on PATH (typical on Linux cross-compile hosts),
+/// is the GNU-flavoured `clang` driver — which interprets `/imsvc`
+/// as a literal filename. The result is the build.rs error
+///   `clang: error: no such file or directory: '/imsvc'`
+/// observed when cross-compiling soldr to windows-arm64 via cargo-xwin
+/// on a linux runner.
+///
+/// The fix is to tell cc-rs to use `clang-cl` (clang's MSVC-compatible
+/// driver) explicitly. cc-rs reads `CC_<triple-underscored>` ahead of
+/// its default heuristic; setting it routes ring's assembly compilation
+/// to the right driver and the build succeeds.
+///
+/// The caller's existing `CC_*` / `CXX_*` / `AR_*` env vars take
+/// precedence (the apply loop checks `std::env::var_os` first); this
+/// hook only fills in the gaps.
+fn compute_subcommand_env_overrides(args: &[String]) -> Vec<(String, String)> {
+    let Some(sub) = first_cargo_subcommand(args) else {
+        return Vec::new();
+    };
+    if sub != "xwin" {
+        return Vec::new();
+    }
+    // Verify the inner verb is `build` / `test` / etc. (anything cc-rs
+    // would invoke a build script for). cargo-xwin's other verbs
+    // (`download`, `pre-download`) don't compile anything.
+    let mut after_sub = args.iter().skip_while(|a| a.as_str() != sub);
+    after_sub.next(); // consume the matched `xwin`
+    let needs_cc = matches!(
+        after_sub.clone().next().map(String::as_str),
+        Some("build" | "test" | "check" | "run" | "bench" | "doc" | "clippy" | "rustc"),
+    );
+    if !needs_cc {
+        return Vec::new();
+    }
+    let Some(triple) = extract_target_arg(args) else {
+        return Vec::new();
+    };
+    if !triple.ends_with("-pc-windows-msvc") {
+        return Vec::new();
+    }
+    let suffix = triple.replace('-', "_");
+    vec![
+        (format!("CC_{suffix}"), "clang-cl".to_string()),
+        (format!("CXX_{suffix}"), "clang-cl".to_string()),
+        (format!("AR_{suffix}"), "llvm-lib".to_string()),
+    ]
+}
+
+/// Find the value of `--target <triple>` or `--target=<triple>` in a
+/// cargo arg vector. Returns `None` if the arg isn't present. Used by
+/// `compute_subcommand_env_overrides` to decide whether to inject
+/// MSVC-target cc-rs env vars.
+fn extract_target_arg(args: &[String]) -> Option<&str> {
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--target" {
+            return it.next().map(String::as_str);
+        }
+        if let Some(rest) = a.strip_prefix("--target=") {
+            return Some(rest);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
