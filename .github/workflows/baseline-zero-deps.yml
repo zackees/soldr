@@ -1,0 +1,250 @@
+name: Baseline Zero-Deps Docker
+
+# Acceptance test for meta #853 (sub-issue #860).
+#
+# Proves soldr is a genuine full bootstrapper: a Docker image with NO
+# pre-installed build toolchain (no clang, no lld, no zig, no llvm, no
+# rustup, no build-essential) can still do `soldr cargo zigbuild
+# --target *-apple-darwin` and `soldr cargo xwin build --target
+# aarch64-pc-windows-msvc` purely because soldr fetches everything it
+# needs.
+#
+# Two variants run in parallel: debian:bookworm-slim (glibc) and
+# alpine:3.20 (musl) — glibc and musl have very different prebuilt-
+# binary compatibility edges, so both must pass for the bootstrap
+# story to be honest.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths-ignore:
+      - "*.md"
+      - "**/*.md"
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "*.md"
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+# `fast-build` PR label suppression (from #863). The label is a no-op on
+# push events because the pull_request payload is null there.
+jobs:
+  build-soldr:
+    name: Build soldr for ${{ matrix.target }}
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            target: x86_64-unknown-linux-gnu
+          - libc: musl
+            target: x86_64-unknown-linux-musl
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        with:
+          cache: true
+          cache-key-suffix: baseline-zero-deps-${{ matrix.target }}-v1
+
+      - name: Build soldr-cli via soldr cargo zigbuild
+        shell: bash
+        run: |
+          set -euo pipefail
+          # zigbuild fetches its own zig + linker via soldr — we want the
+          # same code path the rest of the workflow exercises.
+          soldr cargo zigbuild --release --package soldr-cli --target "${{ matrix.target }}"
+
+      - name: Stage soldr binary for upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          src="target/${{ matrix.target }}/release/soldr"
+          if [ ! -x "$src" ]; then
+            echo "expected soldr binary at $src but it is missing or not executable" >&2
+            ls -l "target/${{ matrix.target }}/release" || true
+            exit 1
+          fi
+          cp "$src" "staging/soldr"
+          file staging/soldr || true
+          ./staging/soldr --version
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: soldr-${{ matrix.libc }}
+          path: staging/soldr
+          if-no-files-found: error
+          retention-days: 7
+
+  docker-baseline:
+    name: Bootstrap test (${{ matrix.libc }})
+    needs: build-soldr
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - libc: glibc
+            target: x86_64-unknown-linux-gnu
+            dockerfile: .github/docker/baseline-glibc/Dockerfile
+            context: .github/docker/baseline-glibc
+            image_tag: soldr-baseline-glibc:test
+            native_target: x86_64-unknown-linux-gnu
+          - libc: musl
+            target: x86_64-unknown-linux-musl
+            dockerfile: .github/docker/baseline-musl/Dockerfile
+            context: .github/docker/baseline-musl
+            image_tag: soldr-baseline-musl:test
+            native_target: x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Download soldr binary from build-soldr stage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: soldr-${{ matrix.libc }}
+          path: ${{ matrix.context }}
+
+      - name: Verify staged soldr binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l "${{ matrix.context }}"
+          test -f "${{ matrix.context }}/soldr"
+          chmod +x "${{ matrix.context }}/soldr"
+          file "${{ matrix.context }}/soldr" || true
+
+      - name: Build baseline docker image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --pull \
+            --tag "${{ matrix.image_tag }}" \
+            --file "${{ matrix.dockerfile }}" \
+            "${{ matrix.context }}"
+
+      - name: Exercise 1 — soldr version smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm "${{ matrix.image_tag }}" soldr version
+
+      - name: Exercise 2 — native cargo build from zero
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Proves the rustup + zccache bootstrap works end-to-end inside
+          # a zero-deps image. soldr must fetch its own rustc/cargo and
+          # its own zccache.
+          set +e
+          docker run --rm \
+            --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            "${{ matrix.image_tag }}" \
+            bash -eux -c '
+              soldr cargo init --name hello /tmp/hello
+              cd /tmp/hello
+              echo "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr cargo build --target ${{ matrix.native_target }}
+              ls -l target/${{ matrix.native_target }}/debug/hello
+              ./target/${{ matrix.native_target }}/debug/hello
+            ' 2> exercise2.stderr | tee exercise2.stdout
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Exercise 2 failed (${{ matrix.libc }})::native cargo build from zero failed (exit $status)"
+            echo "--- captured stderr ---"
+            cat exercise2.stderr || true
+            echo "--- captured stdout ---"
+            cat exercise2.stdout || true
+            exit "$status"
+          fi
+
+      - name: Exercise 3 — cargo zigbuild for aarch64-apple-darwin
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Proves Apple SDK auto-fetch (#862) + zig auto-fetch (#841)
+          # work together from a zero-deps image.
+          set +e
+          docker run --rm \
+            --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            "${{ matrix.image_tag }}" \
+            bash -eux -c '
+              soldr cargo init --name hellomac /tmp/hellomac
+              cd /tmp/hellomac
+              echo "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr cargo zigbuild --target aarch64-apple-darwin
+              ls -l target/aarch64-apple-darwin/debug/hellomac
+            ' 2> exercise3.stderr | tee exercise3.stdout
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Exercise 3 failed (${{ matrix.libc }})::cargo zigbuild aarch64-apple-darwin failed (exit $status)"
+            echo "--- captured stderr ---"
+            cat exercise3.stderr || true
+            echo "--- captured stdout ---"
+            cat exercise3.stdout || true
+            exit "$status"
+          fi
+
+      - name: Exercise 4 — cargo xwin build for x86_64-pc-windows-msvc
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Proves LLVM auto-fetch (#864) + cargo-xwin auto-fetch work
+          # together from a zero-deps image.
+          set +e
+          docker run --rm \
+            --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            "${{ matrix.image_tag }}" \
+            bash -eux -c '
+              soldr cargo init --name hellowin /tmp/hellowin
+              cd /tmp/hellowin
+              echo "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr cargo xwin build --target x86_64-pc-windows-msvc
+              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe
+            ' 2> exercise4.stderr | tee exercise4.stdout
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=Exercise 4 failed (${{ matrix.libc }})::cargo xwin build x86_64-pc-windows-msvc failed (exit $status)"
+            echo "--- captured stderr ---"
+            cat exercise4.stderr || true
+            echo "--- captured stdout ---"
+            cat exercise4.stdout || true
+            exit "$status"
+          fi
+
+      - name: Summary
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          {
+            echo "### Baseline Zero-Deps (${{ matrix.libc }})"
+            echo
+            echo "- Base image: ${{ matrix.libc == 'glibc' && 'debian:bookworm-slim' || 'alpine:3.20' }}"
+            echo "- Pre-installed build tools: **none**"
+            echo "- Exercises:"
+            echo "  - soldr version"
+            echo "  - soldr cargo build --target ${{ matrix.native_target }}"
+            echo "  - soldr cargo zigbuild --target aarch64-apple-darwin"
+            echo "  - soldr cargo xwin build --target x86_64-pc-windows-msvc"
+          } >> "$GITHUB_STEP_SUMMARY"
