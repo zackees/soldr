@@ -688,3 +688,127 @@ fn find_on_path_returns_none_when_missing() {
     }
     assert_eq!(resolved, None);
 }
+
+// ---------------------------------------------------------------------------
+// compute_subcommand_env_overrides — fixes ring's build.rs picking the
+// GNU clang driver instead of clang-cl when cross-compiling to
+// *-pc-windows-msvc via cargo-xwin.
+// ---------------------------------------------------------------------------
+
+fn argvec(s: &str) -> Vec<String> {
+    s.split_whitespace().map(String::from).collect()
+}
+
+#[test]
+fn extract_target_arg_handles_space_separated_form() {
+    assert_eq!(
+        extract_target_arg(&argvec(
+            "xwin build --release --target aarch64-pc-windows-msvc"
+        )),
+        Some("aarch64-pc-windows-msvc"),
+    );
+}
+
+#[test]
+fn extract_target_arg_handles_equals_form() {
+    assert_eq!(
+        extract_target_arg(&argvec(
+            "xwin build --release --target=x86_64-pc-windows-msvc"
+        )),
+        Some("x86_64-pc-windows-msvc"),
+    );
+}
+
+#[test]
+fn extract_target_arg_returns_none_when_absent() {
+    assert_eq!(extract_target_arg(&argvec("xwin build --release")), None);
+}
+
+#[test]
+fn xwin_arm64_msvc_target_injects_cc_clang_cl_env() {
+    let env = compute_subcommand_env_overrides(&argvec(
+        "xwin build --release --target aarch64-pc-windows-msvc",
+    ));
+    let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+    assert_eq!(
+        map.get("CC_aarch64_pc_windows_msvc").map(String::as_str),
+        Some("clang-cl"),
+    );
+    assert_eq!(
+        map.get("CXX_aarch64_pc_windows_msvc").map(String::as_str),
+        Some("clang-cl"),
+    );
+    assert_eq!(
+        map.get("AR_aarch64_pc_windows_msvc").map(String::as_str),
+        Some("llvm-lib"),
+    );
+}
+
+#[test]
+fn xwin_x64_msvc_target_injects_underscored_triple_keys() {
+    let env = compute_subcommand_env_overrides(&argvec(
+        "xwin build --target x86_64-pc-windows-msvc --release",
+    ));
+    let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+    assert_eq!(
+        map.get("CC_x86_64_pc_windows_msvc").map(String::as_str),
+        Some("clang-cl"),
+    );
+}
+
+#[test]
+fn zigbuild_does_not_inject_cc_overrides_even_for_msvc_target() {
+    // cargo-zigbuild also builds for windows-msvc but uses zig as the
+    // linker — cc-rs's clang / clang-cl distinction is xwin-specific.
+    let env = compute_subcommand_env_overrides(&argvec(
+        "zigbuild --target x86_64-pc-windows-msvc --release",
+    ));
+    assert!(
+        env.is_empty(),
+        "zigbuild lane shouldn't inject xwin env: {env:?}"
+    );
+}
+
+#[test]
+fn xwin_with_non_msvc_target_does_not_inject_anything() {
+    let env =
+        compute_subcommand_env_overrides(&argvec("xwin build --target x86_64-unknown-linux-gnu"));
+    assert!(
+        env.is_empty(),
+        "non-msvc target shouldn't inject xwin env: {env:?}"
+    );
+}
+
+#[test]
+fn xwin_without_target_does_not_inject_anything() {
+    // The injection is keyed on an explicit triple (so we can name the
+    // env vars); skip when no triple is in the args.
+    let env = compute_subcommand_env_overrides(&argvec("xwin build --release"));
+    assert!(
+        env.is_empty(),
+        "no --target shouldn't inject xwin env: {env:?}"
+    );
+}
+
+#[test]
+fn xwin_download_subverb_does_not_inject() {
+    // `cargo xwin download` only fetches the MSVC SDK; cc-rs never
+    // runs, so no env injection is needed.
+    let env =
+        compute_subcommand_env_overrides(&argvec("xwin download --target aarch64-pc-windows-msvc"));
+    assert!(
+        env.is_empty(),
+        "xwin download shouldn't inject env: {env:?}"
+    );
+}
+
+#[test]
+fn non_xwin_subcommand_does_not_inject_anything() {
+    let env = compute_subcommand_env_overrides(&argvec(
+        "build --target x86_64-pc-windows-msvc --release",
+    ));
+    assert!(
+        env.is_empty(),
+        "bare cargo build shouldn't inject xwin env: {env:?}"
+    );
+}
