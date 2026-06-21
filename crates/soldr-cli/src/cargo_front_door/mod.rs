@@ -1101,11 +1101,69 @@ async fn append_subcommand_transitive_bin_dirs(
     // CC_<triple>=clang-cl doesn't help). Putting our shim on PATH
     // wins ring's `clang` PATH lookup. See `clang_cl_shim` for the
     // full rationale.
+    //
+    // In addition, the same lane needs a real LLVM toolchain on PATH
+    // — clang-cl / lld-link / llvm-lib — for cargo-xwin's link step
+    // to succeed on a stock Linux runner that doesn't have `apt install
+    // llvm clang lld` baked in. soldr fetches the toolchain from
+    // `zackees/clang-tool-chain-bins` (closes #855, sub of meta #853)
+    // and prepends its `bin/` to PATH alongside the clang shim. Env
+    // overrides for CC_<triple> / CXX_<triple> / AR_<triple> / LD_<triple>
+    // are set to absolute paths inside the fetched bin dir so cc-rs
+    // and rustc can find the right driver even if PATH ordering shifts.
+    //
+    // On hosts not in the managed LLVM matrix (today: macOS), we log
+    // and skip — those hosts ship Apple's `clang` via Xcode, and the
+    // xwin lane is not a primary mac flow. Workflow-side YAML hedges
+    // (apt-installed llvm/clang/lld) remain in place; sub-issue #857
+    // removes them once this auto-bootstrap proves out across the
+    // matrix.
     if sub == "xwin" {
         if let Some(triple) = extract_target_arg(args) {
             if triple.ends_with("-pc-windows-msvc") {
                 let shim_dir = clang_cl_shim::ensure_clang_cl_shim(paths)?;
                 extra_bin_dirs.push(shim_dir);
+
+                match crate::fetch::ensure_llvm_toolchain(paths).await {
+                    Ok(llvm_bin_dir) => {
+                        let ext = std::env::consts::EXE_SUFFIX;
+                        let clang_cl = llvm_bin_dir.join(format!("clang-cl{ext}"));
+                        let llvm_lib = llvm_bin_dir.join(format!("llvm-lib{ext}"));
+                        let lld_link = llvm_bin_dir.join(format!("lld-link{ext}"));
+                        let suffix = triple.replace('-', "_");
+                        // Don't clobber caller-set values — escape hatch
+                        // for users who pinned their own LLVM build.
+                        // Note: `compute_subcommand_env_overrides` sets
+                        // bare names (`clang-cl` / `llvm-lib`) for the
+                        // same triple; the absolute paths we set here
+                        // win because they're pushed into `extra_env`
+                        // and applied AFTER the env loop checks
+                        // `var_os().is_none()` (transitive env applies
+                        // unconditionally — see the apply loop below).
+                        // To avoid that double-set racing, gate on
+                        // `var_os` here too: the bare-name fallback
+                        // still hits PATH which now contains the
+                        // LLVM bin dir.
+                        for (key, val) in [
+                            (format!("CC_{suffix}"), &clang_cl),
+                            (format!("CXX_{suffix}"), &clang_cl),
+                            (format!("AR_{suffix}"), &llvm_lib),
+                            (format!("LD_{suffix}"), &lld_link),
+                        ] {
+                            if std::env::var_os(&key).is_none() {
+                                extra_env.push((key, val.to_string_lossy().into_owned()));
+                            }
+                        }
+                        extra_bin_dirs.push(llvm_bin_dir);
+                    }
+                    Err(SoldrError::UnsupportedPlatform(msg)) => {
+                        eprintln!(
+                            "soldr: skipping managed LLVM bootstrap: {msg}; \
+                             falling back to system clang/lld-link/llvm-lib on PATH"
+                        );
+                    }
+                    Err(err) => return Err(err),
+                }
             }
         }
     }

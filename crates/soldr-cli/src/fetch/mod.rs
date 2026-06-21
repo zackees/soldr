@@ -40,12 +40,14 @@ pub use rustup_init::{
 pub mod apple_sdk;
 pub mod archive;
 pub mod github;
+pub mod llvm;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
 pub mod zig;
 
 pub use apple_sdk::{ensure_apple_sdk, MANAGED_APPLE_SDK_VERSION};
+pub use llvm::{ensure_llvm_toolchain, MANAGED_LLVM_VERSION};
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 
 #[cfg(test)]
