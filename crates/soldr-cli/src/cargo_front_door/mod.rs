@@ -400,6 +400,45 @@ pub(crate) async fn run_cargo_front_door(
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
+
+    // Issue #836 (sub of #835): pin the rust toolchain explicitly via
+    // RUSTUP_TOOLCHAIN so rustup does NOT consult `rust-toolchain.toml`
+    // on the cargo side and try to install the manifest's declared
+    // `components = [...]` automatically.
+    //
+    // Why this matters in CI: many runner images (the GitHub-hosted
+    // ubuntu-* lineage especially) ship a pre-existing `bin/cargo-fmt`
+    // that conflicts with rustup's `rustfmt-preview` component install,
+    // producing the well-known
+    //
+    //     error: failed to install component:
+    //       'rustfmt-preview-x86_64-unknown-linux-gnu',
+    //       detected conflict: 'bin/cargo-fmt'
+    //
+    // which kills the build before cargo even starts compiling. The
+    // soldr bootstrap is supposed to short-circuit this — soldr itself
+    // already knows the manifest channel (via
+    // `read_rust_toolchain_manifest`), so passing it explicitly to
+    // rustup with `RUSTUP_TOOLCHAIN` skips the manifest read on the
+    // child cargo, and with it the entire auto-component-install path.
+    //
+    // Honor an explicit caller-set RUSTUP_TOOLCHAIN (don't clobber).
+    // For users who genuinely need rustfmt / clippy at build time,
+    // `soldr cargo fmt` / `clippy` still self-install via
+    // `component_install::maybe_install_component_for_subcommand`.
+    if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
+        let manifest_dir =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        if let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) {
+            if let Some(channel) = manifest.channel {
+                let channel = channel.trim();
+                if !channel.is_empty() {
+                    command.env("RUSTUP_TOOLCHAIN", channel);
+                }
+            }
+        }
+    }
+
     let build_like_cargo = cargo_args_are_cacheable(args);
     // Issue #824 follow-up: always engage RUSTC_WRAPPER + the zccache
     // session when caching is enabled, regardless of whether the cargo
