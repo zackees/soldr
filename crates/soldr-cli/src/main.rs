@@ -10,6 +10,7 @@ use clap::Parser;
 mod archive_cmd;
 mod binaries;
 mod bootstrap;
+mod build_from_source_cmd;
 mod cache;
 mod cache_lib;
 mod cargo_diagnostics;
@@ -345,6 +346,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Archive { target, output } => {
             archive_cmd::run(target, output)?;
+        }
+        Commands::BuildFromSource {
+            tool,
+            target,
+            version,
+        } => {
+            build_from_source_cmd::run(&tool, target, version)?;
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;

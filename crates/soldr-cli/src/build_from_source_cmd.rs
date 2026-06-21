@@ -1,0 +1,480 @@
+//! `soldr build-from-source <tool> --target <triple>` — source-build a
+//! whitelisted soldr-managed tool (today: `crgx`, `cargo-chef`) for an
+//! arbitrary Rust target triple and deposit the resulting binary into
+//! `~/.soldr/bin/<tool>-from-source/<version>/<triple>/<tool>[.exe]`
+//! with a sha256 sidecar.
+//!
+//! Sub-issue #859 of meta #853. Motivation: the release pipeline already
+//! source-builds these tools in some lanes via inline shell because
+//! upstream does not always ship prebuilt binaries for every target
+//! (notably `aarch64-apple-darwin` for cargo-chef per CLAUDE.md). This
+//! command lifts that shell into a first-class soldr verb so any
+//! developer can locally produce a cross-compiled tool binary with:
+//!
+//! ```text
+//! soldr build-from-source crgx --target aarch64-apple-darwin
+//! soldr build-from-source cargo-chef --target aarch64-apple-darwin
+//! ```
+//!
+//! Modelled on `fetch::install_zccache::install_zccache_from_source` for
+//! the retry budget, staging dir handling, and sha256 sidecar shape.
+//!
+//! ## Hard rules
+//!
+//! - **Whitelisted tools only.** Anything outside the whitelist errors
+//!   with a directive listing the supported names. This keeps the verb
+//!   focused on tools soldr actually bundles — generic `cargo install`
+//!   passthrough belongs in `soldr cargo install`, not here.
+//! - **Direct cargo invocation.** Resolves cargo via
+//!   `binaries::resolve_toolchain_binary("cargo")` so the spawn bypasses
+//!   `RUSTC_WRAPPER` injection. If this verb routed through soldr's own
+//!   wrapper machinery the inner `cargo install` would re-enter soldr's
+//!   cache logic recursively — see `crates/soldr-cli/src/toolchain.rs`'s
+//!   `cargo_install_plugin` for the same pattern.
+//! - **Default version comes from the registry.** `version: None`
+//!   resolves through `known_tools::lookup_by_crate(tool).pinned_version`
+//!   so the default matches what every other soldr resolution path uses
+//!   for that crate. An explicit `--version` wins.
+
+use std::path::{Path, PathBuf};
+
+use crate::binaries::resolve_toolchain_binary;
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
+use crate::fetch::known_tools;
+use crate::fetch::MANAGED_ZCCACHE_INSTALL_ATTEMPTS;
+
+/// Tools `soldr build-from-source <tool>` accepts. Kept tiny on purpose
+/// (see module doc): generic crate source-build belongs in
+/// `soldr cargo install`. New entries must be soldr-bundled tools where
+/// upstream's release coverage misses a target soldr depends on.
+pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef"];
+
+/// Initial back-off between failed `cargo install` retries. Mirrors
+/// `MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF`'s 10s baseline so callers
+/// don't see one retry budget here that disagrees with the rest of
+/// soldr. Re-declared instead of imported so the cargo-chef / crgx
+/// source-build path stays decoupled from zccache's constants.
+const RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Directory under `SoldrPaths::bin` where source-built binaries land.
+/// The full layout is
+/// `<bin>/<tool>-from-source/<version>/<triple>/<tool>[.exe]` — keeps
+/// per-(tool, version, triple) installs side-by-side so a host can
+/// carry both an `x86_64-unknown-linux-gnu` build and an
+/// `aarch64-apple-darwin` build at the same version without one
+/// stomping the other.
+pub const FROM_SOURCE_SUBDIR_SUFFIX: &str = "-from-source";
+
+/// Plan computed by [`resolve_plan`]. Materialising this struct never
+/// touches the network and never invokes cargo — it just resolves the
+/// host / target / version inputs. Production code chains [`run`] which
+/// calls [`execute_plan`] to actually source-build; tests exercise
+/// [`resolve_plan`] in isolation to verify the dispatch / resolution
+/// path without a real install.
+#[derive(Debug, Clone)]
+pub struct BuildPlan {
+    /// Canonical tool name (matches `known_tools` `crate_name`).
+    pub tool: String,
+    /// Resolved Rust target triple, e.g. `aarch64-apple-darwin`.
+    pub target: String,
+    /// Resolved upstream version without the leading `v`.
+    pub version: String,
+    /// Destination directory the cargo install root rolls into:
+    /// `<bin>/<tool>-from-source/<version>/<triple>/`.
+    pub install_dir: PathBuf,
+    /// Final binary path (`<install_dir>/<tool>[.exe]`).
+    pub final_binary: PathBuf,
+}
+
+/// Top-level CLI dispatch. Wired from `Commands::BuildFromSource` in
+/// `main.rs`.
+pub fn run(tool: &str, target: Option<String>, version: Option<String>) -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let plan = resolve_plan(tool, target, version, &paths)?;
+    let report = execute_plan(&plan)?;
+    println!(
+        "soldr build-from-source: wrote {} (sha256 {})",
+        report.binary.display(),
+        report.sha256,
+    );
+    Ok(())
+}
+
+/// Resolve the input triple into a [`BuildPlan`] without touching the
+/// network or invoking cargo. Exposed for unit tests so the dispatch +
+/// version-defaulting path is exercised without a real install.
+pub fn resolve_plan(
+    tool: &str,
+    target: Option<String>,
+    version: Option<String>,
+    paths: &SoldrPaths,
+) -> Result<BuildPlan, SoldrError> {
+    if !SUPPORTED_TOOLS.contains(&tool) {
+        return Err(SoldrError::Other(unsupported_tool_message(tool)));
+    }
+
+    let triple = match target {
+        Some(t) => {
+            // Validate the triple shape via `from_triple`. We only need
+            // the triple string downstream, but rejecting garbage early
+            // produces a clearer error than what cargo would emit.
+            let parsed = TargetTriple::from_triple(&t)?;
+            parsed.triple()
+        }
+        None => TargetTriple::detect()?.triple(),
+    };
+
+    let version = match version {
+        Some(v) if !v.trim().is_empty() => v.trim().trim_start_matches('v').to_string(),
+        _ => default_version_for(tool)?.to_string(),
+    };
+
+    let install_dir = paths
+        .bin
+        .join(format!("{tool}{FROM_SOURCE_SUBDIR_SUFFIX}"))
+        .join(&version)
+        .join(&triple);
+    let binary_name = format!("{tool}{}", binary_ext_for_triple(&triple));
+    let final_binary = install_dir.join(&binary_name);
+
+    Ok(BuildPlan {
+        tool: tool.to_string(),
+        target: triple,
+        version,
+        install_dir,
+        final_binary,
+    })
+}
+
+/// Source-build result returned to [`run`] for printing.
+#[derive(Debug, Clone)]
+pub struct BuildReport {
+    pub binary: PathBuf,
+    pub sha256: String,
+    pub sidecar: PathBuf,
+}
+
+/// Actually invoke `cargo install <tool>@<version> --target <triple>
+/// --root <staging>` and move the resulting binary into the per-(tool,
+/// version, triple) install dir. Bypasses `RUSTC_WRAPPER` injection by
+/// resolving cargo through [`resolve_toolchain_binary`] directly.
+pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
+    // Honour the same retry budget the managed zccache path uses so
+    // transient crates.io / registry hiccups don't spuriously fail the
+    // source-build verb.
+    let cargo = resolve_toolchain_binary("cargo")?;
+    let parent = plan.install_dir.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "build-from-source: install dir has no parent: {}",
+            plan.install_dir.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let staging = tempfile::tempdir_in(parent).map_err(|e| {
+        SoldrError::Other(format!(
+            "build-from-source: failed to create staging dir under {}: {e}",
+            parent.display()
+        ))
+    })?;
+    let staging_root = staging.path().to_path_buf();
+    let staging_bin = staging_root.join("bin");
+
+    // Mirror zccache_install: prepend the staging bin to PATH so cargo
+    // doesn't emit the "be sure to add `<root>/bin` to your PATH"
+    // warning that's noise for our staging-then-move pipeline.
+    let staging_path_env = match std::env::var_os("PATH") {
+        Some(existing) => {
+            let mut dirs: Vec<PathBuf> = vec![staging_bin.clone()];
+            dirs.extend(std::env::split_paths(&existing));
+            std::env::join_paths(dirs).map_err(|e| {
+                SoldrError::Other(format!(
+                    "build-from-source: failed to extend PATH for cargo install: {e}"
+                ))
+            })?
+        }
+        None => staging_bin.clone().into_os_string(),
+    };
+
+    let mut backoff = RETRY_INITIAL_BACKOFF;
+    let mut attempt = 1u32;
+    loop {
+        let mut command = std::process::Command::new(&cargo);
+        command
+            .arg("install")
+            .arg(format!("{}@{}", plan.tool, plan.version))
+            .arg("--target")
+            .arg(&plan.target)
+            .arg("--locked")
+            .arg("--root")
+            .arg(&staging_root)
+            .arg("--force")
+            .env("PATH", &staging_path_env)
+            // Strip stale jobserver env so the nested cargo doesn't try
+            // to attach to fds it cannot see (see soldr #283).
+            .env_remove("MAKEFLAGS")
+            .env_remove("CARGO_MAKEFLAGS")
+            // Belt-and-suspenders: explicitly clear RUSTC_WRAPPER so an
+            // accidentally-inherited soldr wrapper doesn't re-enter the
+            // cache layer during the source build.
+            .env_remove("RUSTC_WRAPPER");
+        suppress_windows_console_window(&mut command);
+
+        let status = command.status().map_err(|e| {
+            SoldrError::Other(format!(
+                "build-from-source: failed to invoke cargo install for {}@{} (target {}): {e}",
+                plan.tool, plan.version, plan.target,
+            ))
+        })?;
+
+        if status.success() {
+            break;
+        }
+        if attempt >= MANAGED_ZCCACHE_INSTALL_ATTEMPTS {
+            return Err(SoldrError::Other(format!(
+                "build-from-source: cargo install {}@{} --target {} failed with status {status}",
+                plan.tool, plan.version, plan.target,
+            )));
+        }
+        eprintln!(
+            "soldr build-from-source: cargo install {}@{} --target {} failed (attempt {attempt}/{}); retrying in {:?}",
+            plan.tool, plan.version, plan.target, MANAGED_ZCCACHE_INSTALL_ATTEMPTS, backoff,
+        );
+        std::thread::sleep(backoff);
+        backoff = backoff.saturating_mul(2);
+        attempt += 1;
+    }
+
+    let binary_name = format!("{}{}", plan.tool, binary_ext_for_triple(&plan.target));
+    let installed = staging_bin.join(&binary_name);
+    if !installed.is_file() {
+        return Err(SoldrError::Other(format!(
+            "build-from-source: cargo install completed but {} not produced (staging: {})",
+            installed.display(),
+            staging_root.display(),
+        )));
+    }
+
+    // Wipe any prior install at this (tool, version, triple) so a
+    // re-run is idempotent and doesn't leave a stale sidecar behind.
+    if plan.install_dir.exists() {
+        std::fs::remove_dir_all(&plan.install_dir)?;
+    }
+    std::fs::create_dir_all(&plan.install_dir)?;
+    std::fs::copy(&installed, &plan.final_binary).map_err(|e| {
+        SoldrError::Other(format!(
+            "build-from-source: failed to move {} -> {}: {e}",
+            installed.display(),
+            plan.final_binary.display(),
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&plan.final_binary)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&plan.final_binary, perms)?;
+    }
+
+    let sha256 = sha256_of_file(&plan.final_binary)?;
+    let sidecar = plan.final_binary.with_extension("sha256");
+    std::fs::write(&sidecar, format!("{sha256}  {binary_name}\n"))?;
+
+    drop(staging);
+    Ok(BuildReport {
+        binary: plan.final_binary.clone(),
+        sha256,
+        sidecar,
+    })
+}
+
+fn unsupported_tool_message(tool: &str) -> String {
+    let supported = SUPPORTED_TOOLS.join(", ");
+    format!(
+        "build-from-source: tool `{tool}` is not supported. Supported tools: {supported}. \
+         Use `soldr cargo install <crate>` for generic source builds."
+    )
+}
+
+fn default_version_for(tool: &str) -> Result<&'static str, SoldrError> {
+    let spec = known_tools::lookup_by_crate(tool).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "build-from-source: tool `{tool}` is in the supported list but not registered in known_tools — this is a soldr bug",
+        ))
+    })?;
+    spec.pinned_version.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "build-from-source: tool `{tool}` has no pinned_version in known_tools; pass --version explicitly",
+        ))
+    })
+}
+
+fn binary_ext_for_triple(triple: &str) -> &'static str {
+    if triple.contains("-pc-windows-") {
+        ".exe"
+    } else {
+        ""
+    }
+}
+
+fn sha256_of_file(path: &Path) -> Result<String, SoldrError> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| SoldrError::Other(format!("open {}: {e}", path.display())))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher)
+        .map_err(|e| SoldrError::Other(format!("hash {}: {e}", path.display())))?;
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(64);
+    for byte in digest.iter() {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    Ok(hex)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fetch::known_tools::{lookup_by_crate, CARGO_CHEF_PINNED_VERSION};
+    use crate::fetch::MANAGED_CRGX_VERSION;
+
+    fn synthetic_paths(tmp: &Path) -> SoldrPaths {
+        let root = tmp.join("soldr-home");
+        std::fs::create_dir_all(&root).unwrap();
+        let paths = SoldrPaths::with_root(root);
+        std::fs::create_dir_all(&paths.bin).unwrap();
+        paths
+    }
+
+    crate::timed_test!(unsupported_tool_errors_with_directive, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+        let err = resolve_plan(
+            "cargo-foo",
+            Some("x86_64-unknown-linux-gnu".to_string()),
+            None,
+            &paths,
+        )
+        .expect_err("unsupported tool must error");
+        let msg = format!("{err}");
+        assert!(msg.contains("crgx"), "directive must list crgx, got: {msg}");
+        assert!(
+            msg.contains("cargo-chef"),
+            "directive must list cargo-chef, got: {msg}"
+        );
+        assert!(
+            msg.contains("cargo-foo"),
+            "directive must mention the bad input, got: {msg}"
+        );
+    });
+
+    crate::timed_test!(default_target_resolves_to_host, {
+        // `target: None` must not panic and must produce a non-empty
+        // triple matching the auto-detected host. We don't assert the
+        // exact triple since the test harness host varies across CI
+        // matrices, but the result should round-trip through
+        // `TargetTriple::from_triple` (i.e. be a real triple).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+        let plan = resolve_plan("crgx", None, None, &paths).expect("resolve must succeed");
+        let host = TargetTriple::detect().expect("host detect").triple();
+        assert_eq!(plan.target, host, "default target must equal detected host");
+        // Roundtrip validates the triple shape.
+        TargetTriple::from_triple(&plan.target).expect("triple is well-formed");
+        // install_dir must be under bin/<tool>-from-source/<version>/<triple>/
+        let expected_parent = paths
+            .bin
+            .join(format!("crgx{FROM_SOURCE_SUBDIR_SUFFIX}"))
+            .join(&plan.version)
+            .join(&plan.target);
+        assert_eq!(plan.install_dir, expected_parent);
+    });
+
+    crate::timed_test!(version_defaults_to_known_tools_pinned, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+
+        let crgx = resolve_plan(
+            "crgx",
+            Some("x86_64-unknown-linux-gnu".to_string()),
+            None,
+            &paths,
+        )
+        .expect("crgx resolve");
+        assert_eq!(
+            crgx.version, MANAGED_CRGX_VERSION,
+            "crgx default version must come from MANAGED_CRGX_VERSION via known_tools",
+        );
+        assert_eq!(
+            lookup_by_crate("crgx")
+                .and_then(|spec| spec.pinned_version)
+                .map(str::to_string),
+            Some(crgx.version.clone()),
+            "known_tools::lookup_by_crate must agree with resolve_plan",
+        );
+
+        let chef = resolve_plan(
+            "cargo-chef",
+            Some("aarch64-apple-darwin".to_string()),
+            None,
+            &paths,
+        )
+        .expect("cargo-chef resolve");
+        assert_eq!(
+            chef.version, CARGO_CHEF_PINNED_VERSION,
+            "cargo-chef default version must match the registry pin",
+        );
+        // Explicit --version still wins.
+        let explicit = resolve_plan(
+            "cargo-chef",
+            Some("aarch64-apple-darwin".to_string()),
+            Some("0.1.99".to_string()),
+            &paths,
+        )
+        .expect("cargo-chef explicit version");
+        assert_eq!(explicit.version, "0.1.99");
+        // A leading `v` is stripped so callers can pass either form.
+        let v_prefixed = resolve_plan(
+            "cargo-chef",
+            Some("aarch64-apple-darwin".to_string()),
+            Some("v0.1.42".to_string()),
+            &paths,
+        )
+        .expect("cargo-chef v-prefixed version");
+        assert_eq!(v_prefixed.version, "0.1.42");
+    });
+
+    crate::timed_test!(windows_triple_uses_exe_suffix, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+        let plan = resolve_plan(
+            "crgx",
+            Some("x86_64-pc-windows-msvc".to_string()),
+            None,
+            &paths,
+        )
+        .expect("resolve");
+        assert!(
+            plan.final_binary
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| n.ends_with(".exe"))
+                .unwrap_or(false),
+            "windows triple must produce a .exe binary path, got: {}",
+            plan.final_binary.display(),
+        );
+    });
+
+    crate::timed_test!(invalid_triple_rejected_at_parse_time, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let paths = synthetic_paths(tmp.path());
+        let err = resolve_plan("crgx", Some("not-a-real-triple".to_string()), None, &paths)
+            .expect_err("bogus triple must error");
+        let msg = format!("{err}");
+        assert!(
+            msg.to_lowercase().contains("triple") || msg.to_lowercase().contains("target"),
+            "error should mention target/triple, got: {msg}",
+        );
+    });
+}
