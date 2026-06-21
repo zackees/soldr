@@ -58,6 +58,7 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "src/cache_lib/strip_target.rs",
     "src/cache_lib/target_registry.rs",
     "src/cargo_diagnostics.rs",
+    "src/cargo_front_door/clang_cl_shim.rs",
     "src/cargo_front_door/tests.rs",
     "src/cook_tests.rs",
     "src/core/mod.rs",
