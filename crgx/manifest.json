@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name": "crgx",
   "owner": "yfedoseev",
   "repo": "crgx",
@@ -18,6 +18,38 @@
       "created_at": "2026-03-01T07:44:37Z",
       "published_at": "2026-03-01T07:47:52Z",
       "release_html_url": "https://github.com/yfedoseev/crgx/releases/tag/v0.1.0",
+      "platforms": {
+        "darwin-arm64": {
+          "filename": "crgx-macos-aarch64-0.1.0.tar.gz",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-macos-aarch64-0.1.0.tar.gz",
+          "size": 1723816
+        },
+        "darwin-x64": {
+          "filename": "crgx-macos-x86_64-0.1.0.tar.gz",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-macos-x86_64-0.1.0.tar.gz",
+          "size": 1872427
+        },
+        "linux-arm64": {
+          "filename": "crgx-linux-aarch64-0.1.0.tar.gz",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-linux-aarch64-0.1.0.tar.gz",
+          "size": 1891997
+        },
+        "linux-x64": {
+          "filename": "crgx-linux-x86_64-0.1.0.tar.gz",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-linux-x86_64-0.1.0.tar.gz",
+          "size": 1971123
+        },
+        "linux-x64-musl": {
+          "filename": "crgx-linux-x86_64-musl-0.1.0.tar.gz",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-linux-x86_64-musl-0.1.0.tar.gz",
+          "size": 2067482
+        },
+        "windows-x64-msvc": {
+          "filename": "crgx-windows-x86_64-0.1.0.zip",
+          "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-windows-x86_64-0.1.0.zip",
+          "size": 1685362
+        }
+      },
       "assets": {
         "crgx-linux-aarch64-0.1.0.tar.gz": {
           "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-linux-aarch64-0.1.0.tar.gz",

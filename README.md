@@ -23,12 +23,12 @@ quota burned out fast and the workflow 403-ed.
 
 The manifest branch breaks that:
 
-1. A nightly workflow on `main` (`.github/workflows/refresh-manifest.yml`)
-   runs `.github/scripts/build_manifest.py`, which queries the GitHub API
-   **once per tool** (authenticated, 5000 req/hour, `per_page=100`) and writes
-   the resolved `browser_download_url` for every asset into the per-tool files
-   here. New releases get **merged into** the existing file — older tags are
-   preserved as a permanent archive.
+1. A nightly workflow on `main` (`.github/workflows/refresh-manifest.yml`) runs
+   `.github/scripts/build_manifest.py`, which queries the GitHub API **once per
+   tool** (authenticated, 5000 req/hour, `per_page=100`) and writes the resolved
+   `browser_download_url` for every asset into the per-tool files here. New
+   releases get **merged into** the existing file — older tags are preserved
+   as a permanent archive.
 2. The workflow commits any diff back to this branch.
 3. Consumer workflows fetch from
    `https://raw.githubusercontent.com/zackees/soldr/manifest/<path>` — that
@@ -38,29 +38,67 @@ Per-tool files only change when upstream actually publishes something new (the
 script uses content equality, not timestamps). `git log` here is the source of
 truth for "when did this tool's release set last change."
 
-## Getting the latest release for a tool (dead simple)
+## Getting an asset by platform (dead simple, schema v3)
+
+Each release carries a normalized `platforms` map keyed by
+`<os>-<arch>[-<extra>]`. Consumers ask for the host they care about — no need
+to deal with each upstream tool's idiosyncratic asset filename quirks.
 
 ```python
 import json, urllib.request
-manifest = json.loads(urllib.request.urlopen(
+m = json.loads(urllib.request.urlopen(
     "https://raw.githubusercontent.com/zackees/soldr/manifest/zccache/manifest.json"
 ).read())
 
-latest_tag = manifest["latest"]               # always set
-release    = manifest["releases"][latest_tag]  # full release entry
-url        = release["assets"]["zccache-v1.12.9-x86_64-unknown-linux-musl.tar.gz"]["url"]
+latest_tag = m["latest"]                       # e.g. "1.12.9"
+release    = m["releases"][latest_tag]
+platform   = release["platforms"]["linux-x64-musl"]
+url        = platform["url"]                   # public CDN download URL
+filename   = platform["filename"]              # original upstream asset name
 ```
 
-No sort, no semver parsing, no special-case logic — `latest` always points at
-the newest release on file.
+Or in jq for shell:
+
+```sh
+jq -er '.releases[.latest].platforms["linux-x64-musl"].url' zccache/manifest.json
+```
+
+## Platform key shape
+
+```
+os    ∈ { linux, darwin, windows }
+arch  ∈ { x64, arm64, universal2 }         # 32-bit lanes are not surfaced
+extra ∈ { gnu, musl, msvc, gnullvm, … }    # only when meaningful
+```
+
+Examples seen across tracked tools:
+
+| Key | Meaning |
+|---|---|
+| `linux-x64-gnu` | Standard Linux x64 glibc build |
+| `linux-x64-musl` | Linux x64 musl (static; runs on glibc hosts too) |
+| `linux-arm64-gnu` | Linux aarch64 glibc |
+| `linux-arm64-musl` | Linux aarch64 musl |
+| `darwin-x64` | macOS x86_64 |
+| `darwin-arm64` | macOS Apple Silicon |
+| `darwin-universal2` | macOS fat binary (cargo-xwin / some tools) |
+| `windows-x64-msvc` | Windows x64, official MSVC ABI |
+| `windows-arm64-msvc` | Windows ARM64, official MSVC ABI |
+| `windows-x64-gnu` | Windows x64, GNU ABI |
+| `windows-arm64-gnullvm` | Windows ARM64, gnullvm ABI |
+
+Modern arch names (`x64` not `x86_64`; `arm64` not `aarch64`) match the
+npm/Node.js convention. **32-bit binaries (i686 / armv7) are not surfaced** —
+every modern process is 64-bit, the schema doesn't need to fragment to track
+them.
 
 ## Schema
 
-Top-level (`/manifest.json`) — index only, no asset URLs:
+Top-level (`/manifest.json`) — index, no asset URLs:
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "tools": {
     "<tool-name>": {
       "path":         "<tool-name>/manifest.json",
@@ -78,27 +116,32 @@ Per-tool (`<tool-name>/manifest.json`):
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "name":           "zccache",
   "owner":          "zackees",
   "repo":           "zccache",
-  "latest":         "1.12.9",        // == tracked_tags[0]
-  "pinned":         "1.12.9",        // soldr's MANAGED_<TOOL>_VERSION (or null)
+  "latest":         "1.12.9",
+  "pinned":         "1.12.9",
   "tracked_tags":   ["1.12.9", "1.12.8", "..."],
   "releases": {
     "1.12.9": {
       "tag":              "1.12.9",
       "version":          "1.12.9",
-      "name":             "v1.12.9",
-      "draft":            false,
-      "prerelease":       false,
-      "created_at":       "...",
       "published_at":     "...",
-      "release_html_url": "https://github.com/.../releases/tag/1.12.9",
+      "release_html_url": "...",
+      "platforms": {
+        "linux-x64-musl": {
+          "filename": "zccache-v1.12.9-x86_64-unknown-linux-musl.tar.gz",
+          "url":      "https://github.com/.../releases/download/1.12.9/...",
+          "size":     12345678
+        },
+        "darwin-arm64":      { "filename": "...", "url": "...", "size": 0 },
+        "windows-x64-msvc":  { "filename": "...", "url": "...", "size": 0 }
+      },
       "assets": {
-        "<asset-filename>": {
-          "url":          "https://github.com/.../releases/download/<tag>/<filename>",
-          "size":         12345678,
+        "<original-upstream-filename>": {
+          "url":          "...",
+          "size":         0,
           "content_type": "application/x-gtar",
           "created_at":   "...",
           "updated_at":   "..."
@@ -109,17 +152,21 @@ Per-tool (`<tool-name>/manifest.json`):
 }
 ```
 
-`releases` is ordered by `published_at` **descending** (newest first), so the
-first entry's tag matches `latest`.
+`platforms` is the consumer-friendly normalized view. `assets` is the raw
+upstream filename-keyed view, kept for backward compatibility and for cases
+where consumers want the original filename or per-asset content-type.
 
 ## Ordering
 
-GitHub's `/releases?per_page=100` already returns releases sorted by
-`published_at` descending. The script trusts that ordering — there is **no
-client-side semver parsing**. When merging fresh API results with the existing
-file (preserving releases that fell off the API's per_page window), the merged
-dict is rebuilt by sorting on `published_at`, which is the same field GitHub
-uses, so the result mirrors GitHub's authoritative ordering.
+`releases` is ordered by `published_at` descending (newest first). GitHub's
+`/releases?per_page=100` already returns them in that order; the merge logic
+preserves it. No client-side semver parsing.
+
+## Debug / symbol artifacts
+
+Files whose names contain `-debug`, `.debug`, `-sym`, or `.pdb` are tracked
+in `assets` but NOT surfaced in `platforms`. Debug variants aren't the
+canonical platform binary for consumer downloads.
 
 ## Manual refresh
 
