@@ -24,6 +24,15 @@ name: Cross-compile soldr (bootstrap + all targets, single linux-x86_64 runner f
 # `cargo build -p soldr-cli` is the single source of truth for what
 # the cross jobs use.
 #
+# Every `run:` step's stdout/stderr flows through
+# `.github/scripts/ts_step.py` via the `defaults.run.shell` wrapper at
+# `.github/scripts/run_with_ts.sh`. The wrapper prefixes each line with
+# seconds-since-step-start (e.g. `   0.01 Compiling soldr-cli`),
+# preserving ANSI color codes so cargo's coloring still renders on the
+# GHA UI. Every build step additionally emits a structured banner via
+# `print_build_banner.sh` so the profile / target / tool / manifest
+# show up before cargo starts compiling.
+#
 # Trigger: workflow_dispatch only.
 
 on:
@@ -32,6 +41,16 @@ on:
 permissions:
   contents: read
 
+# Force colored output even though tools see a pipe downstream. Cargo
+# already honors CARGO_TERM_COLOR; FORCE_COLOR / CLICOLOR_FORCE / PY_COLORS
+# cover most of the rest. Set workflow-wide so every step that respects
+# any of them stays colorful when its stdout flows through ts_step.py.
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+  CLICOLOR_FORCE: "1"
+  PY_COLORS: "1"
+
 jobs:
   bootstrap-and-linux-x86:
     name: bootstrap + linux-x86
@@ -39,6 +58,13 @@ jobs:
     timeout-minutes: 60
     outputs:
       version: ${{ steps.read_version.outputs.version }}
+    defaults:
+      run:
+        # Every `run:` step in this job goes through the timestamper.
+        # `{0}` is replaced by GHA with the path to the temp script
+        # holding the step body. Keep matching `defaults.run.shell` on
+        # the other jobs in lockstep.
+        shell: bash .github/scripts/run_with_ts.sh {0}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -50,7 +76,6 @@ jobs:
 
       - name: Read version from Cargo.toml
         id: read_version
-        shell: bash
         run: |
           set -euo pipefail
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
@@ -62,7 +87,6 @@ jobs:
           echo "Workspace version: $version"
 
       - name: Verify zstd present
-        shell: bash
         run: zstd --version | head -n1
 
       # Bare cargo here — soldr isn't built yet. This is the ONLY job
@@ -70,15 +94,20 @@ jobs:
       # Once the binary at target/x86_64-unknown-linux-gnu/release/soldr
       # exists, the rest of this job (and every downstream cross job)
       # drives cargo via that soldr.
-      - name: Build soldr (bare cargo bootstrap)
+      - name: Build soldr — --release x86_64-unknown-linux-gnu (bare cargo bootstrap)
         env:
           # The bootstrap build deliberately doesn't engage zccache —
           # the binary it produces is the thing that engages zccache
           # for everything downstream. No chicken-and-egg.
           RUSTC_WRAPPER: ""
-        shell: bash
         run: |
           set -euo pipefail
+          .github/scripts/print_build_banner.sh \
+              "soldr-cli (in-tree)" \
+              release \
+              x86_64-unknown-linux-gnu \
+              "cargo (bare bootstrap, RUSTC_WRAPPER unset)" \
+              "$(pwd)/Cargo.toml"
           cargo build \
             --package soldr-cli \
             --release \
@@ -88,7 +117,6 @@ jobs:
           file target/x86_64-unknown-linux-gnu/release/soldr
 
       - name: Stage bootstrap-soldr artifact
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist/bootstrap
@@ -110,7 +138,6 @@ jobs:
           compression-level: 0
 
       - name: Put bootstrap soldr on PATH
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/soldr-bin"
@@ -120,20 +147,17 @@ jobs:
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
       - name: Stage layout for linux-x86 archive
-        shell: bash
         run: mkdir -p dist/package dist/zccache-stage stats
 
       # The linux-x86 soldr binary is the same one we just bootstrapped.
       # No second build needed.
       - name: Stage soldr binary for linux-x86 archive
-        shell: bash
         run: |
           set -euo pipefail
           cp target/x86_64-unknown-linux-gnu/release/soldr dist/package/soldr
           chmod +x dist/package/soldr
 
       - name: Fetch matched zccache release for linux-x86
-        shell: bash
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
@@ -156,8 +180,7 @@ jobs:
             chmod +x "dist/package/${b}"
           done
 
-      - name: Cross-build crgx from pinned source (linux-x86)
-        shell: bash
+      - name: Build crgx — --release x86_64-unknown-linux-gnu (soldr cargo)
         run: |
           set -euo pipefail
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
@@ -167,6 +190,12 @@ jobs:
           git clone --depth 1 --branch "v${crgx_version}" \
             https://github.com/yfedoseev/crgx.git "$work_dir"
           echo "CRGX_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
+          .github/scripts/print_build_banner.sh \
+              "crgx v${crgx_version}" \
+              release \
+              x86_64-unknown-linux-gnu \
+              "soldr cargo build" \
+              "$work_dir/Cargo.toml"
           soldr cargo build \
             --release \
             --manifest-path "$work_dir/Cargo.toml" \
@@ -175,8 +204,7 @@ jobs:
           cp "$work_dir/target/x86_64-unknown-linux-gnu/release/crgx" "dist/package/crgx"
           chmod +x "dist/package/crgx"
 
-      - name: Cross-build cargo-chef from pinned source (linux-x86)
-        shell: bash
+      - name: Build cargo-chef — --release x86_64-unknown-linux-gnu (soldr cargo)
         run: |
           set -euo pipefail
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
@@ -186,6 +214,12 @@ jobs:
           git clone --depth 1 --branch "v${cargo_chef_version}" \
             https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
           echo "CARGO_CHEF_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
+          .github/scripts/print_build_banner.sh \
+              "cargo-chef v${cargo_chef_version}" \
+              release \
+              x86_64-unknown-linux-gnu \
+              "soldr cargo build" \
+              "$work_dir/Cargo.toml"
           soldr cargo build \
             --release \
             --manifest-path "$work_dir/Cargo.toml" \
@@ -196,7 +230,6 @@ jobs:
           chmod +x "dist/package/cargo-chef"
 
       - name: Write linux-x86 manifest.json + package
-        shell: bash
         run: |
           set -euo pipefail
           version="${{ steps.read_version.outputs.version }}"
@@ -246,10 +279,13 @@ jobs:
           compression-level: 0
 
   cross-compile:
-    name: ${{ matrix.friendly }}
+    name: ${{ matrix.friendly }} (--release ${{ matrix.target }})
     needs: bootstrap-and-linux-x86
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash .github/scripts/run_with_ts.sh {0}
     strategy:
       fail-fast: false
       matrix:
@@ -297,7 +333,6 @@ jobs:
       # zigbuild lanes don't need it.
       - name: Install LLVM toolchain (clang/lld) for xwin
         if: matrix.tool == 'xwin'
-        shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -313,7 +348,6 @@ jobs:
           path: dist/
 
       - name: Install bootstrap soldr on PATH
-        shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/soldr-bin"
@@ -323,32 +357,24 @@ jobs:
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
       - name: Verify zstd present
-        shell: bash
         run: zstd --version | head -n1
 
       - name: Stage layout
-        shell: bash
         run: mkdir -p dist/package dist/zccache-stage stats
 
-      - name: Cross-compile soldr → ${{ matrix.target }}
+      - name: Cross-compile soldr — --release ${{ matrix.target }} (${{ matrix.tool }})
         id: build
-        shell: bash
         env:
           CARGO_TARGET_DIR: target
         run: |
           set -euo pipefail
           log=stats/${{ matrix.friendly }}.log
-          {
-            echo "=== cross-compile lane ==="
-            echo "friendly: ${{ matrix.friendly }}"
-            echo "target:   ${{ matrix.target }}"
-            echo "tool:     ${{ matrix.tool }}"
-            echo "host:     $(uname -srm)"
-            echo "rustc:    $(rustc --version)"
-            echo "soldr:    $(soldr --version)"
-            echo "started:  $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-            echo
-          } > "$log"
+          .github/scripts/print_build_banner.sh \
+              "soldr-cli (in-tree)" \
+              release \
+              "${{ matrix.target }}" \
+              "soldr cargo ${{ matrix.tool }} build" \
+              "$(pwd)/Cargo.toml" | tee -a "$log"
 
           t_start_ns=$(date +%s%N)
           if [ "${{ matrix.tool }}" = "xwin" ]; then
@@ -370,7 +396,6 @@ jobs:
           echo "duration_ms=$duration_ms" >> "$GITHUB_OUTPUT"
 
       - name: Capture per-target stats
-        shell: bash
         run: |
           set -euo pipefail
           log=stats/${{ matrix.friendly }}.log
@@ -389,6 +414,7 @@ jobs:
             "friendly":          "${{ matrix.friendly }}",
             "target":            "${{ matrix.target }}",
             "tool":              "${{ matrix.tool }}",
+            "profile":           "release",
             "wall_clock_ms":     ${{ steps.build.outputs.duration_ms }},
             "zccache": {
               "compilations":    ${comp:-null},
@@ -403,7 +429,6 @@ jobs:
           EOF
 
       - name: Fetch matched zccache release
-        shell: bash
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
@@ -441,7 +466,6 @@ jobs:
           done
 
       - name: Stage soldr binary + sidecars
-        shell: bash
         run: |
           set -euo pipefail
           suffix="${{ matrix.exe_suffix }}"
@@ -464,8 +488,7 @@ jobs:
             done
           fi
 
-      - name: Cross-build crgx
-        shell: bash
+      - name: Build crgx — --release ${{ matrix.target }} (${{ matrix.tool }})
         run: |
           set -euo pipefail
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
@@ -475,6 +498,12 @@ jobs:
           git clone --depth 1 --branch "v${crgx_version}" \
             https://github.com/yfedoseev/crgx.git "$work_dir"
           echo "CRGX_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
+          .github/scripts/print_build_banner.sh \
+              "crgx v${crgx_version}" \
+              release \
+              "${{ matrix.target }}" \
+              "soldr cargo ${{ matrix.tool }} build" \
+              "$work_dir/Cargo.toml"
           if [ "${{ matrix.tool }}" = "xwin" ]; then
             soldr cargo xwin build \
               --release \
@@ -493,8 +522,7 @@ jobs:
           cp "$built" "dist/package/crgx${suffix}"
           chmod +x "dist/package/crgx${suffix}" || true
 
-      - name: Cross-build cargo-chef
-        shell: bash
+      - name: Build cargo-chef — --release ${{ matrix.target }} (${{ matrix.tool }})
         run: |
           set -euo pipefail
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
@@ -504,6 +532,12 @@ jobs:
           git clone --depth 1 --branch "v${cargo_chef_version}" \
             https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
           echo "CARGO_CHEF_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
+          .github/scripts/print_build_banner.sh \
+              "cargo-chef v${cargo_chef_version}" \
+              release \
+              "${{ matrix.target }}" \
+              "soldr cargo ${{ matrix.tool }} build" \
+              "$work_dir/Cargo.toml"
           if [ "${{ matrix.tool }}" = "xwin" ]; then
             soldr cargo xwin build \
               --release \
@@ -525,7 +559,6 @@ jobs:
           chmod +x "dist/package/cargo-chef${suffix}" || true
 
       - name: Write manifest.json + package
-        shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.bootstrap-and-linux-x86.outputs.version }}"
@@ -572,7 +605,7 @@ jobs:
             "crgx": { "version": "${crgx_version}", "target": "${{ matrix.target }}", "binary": "crgx${suffix}", "sha256": "${crgx_sha}", "source_commit": "${CRGX_SOURCE_COMMIT:-unknown}" },
             "cargo_chef": { "version": "${cargo_chef_version}", "target": "${{ matrix.target }}", "binary": "cargo-chef${suffix}", "sha256": "${cargo_chef_sha}", "source_commit": "${CARGO_CHEF_SOURCE_COMMIT:-unknown}" },
             "archive": { "format": "tar.zst", "compression_level": 19 },
-            "cross_compile": { "host_target": "x86_64-unknown-linux-gnu", "tool": "${{ matrix.tool }}", "driver": "in-tree soldr (bootstrapped from same workflow)" },
+            "cross_compile": { "host_target": "x86_64-unknown-linux-gnu", "tool": "${{ matrix.tool }}", "driver": "in-tree soldr (bootstrapped from same workflow)", "profile": "release" },
             "built_at": "${built_at}"
           }
           EOF
@@ -604,7 +637,15 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    defaults:
+      run:
+        # `summary` checks out the repo solely so the timestamper helper
+        # at `.github/scripts/run_with_ts.sh` is available — otherwise
+        # the shell directive would fail.
+        shell: bash .github/scripts/run_with_ts.sh {0}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
       - name: Download all stats
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -613,7 +654,6 @@ jobs:
           merge-multiple: true
 
       - name: Build summary.json + job-summary table
-        shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -633,15 +673,16 @@ jobs:
             echo
             echo "Bootstrap soldr: in-tree, built fresh by stage 1 (\`bootstrap-and-linux-x86\`)."
             echo
-            echo "| Friendly | Target | Tool | Wall (ms) | comp / hits / misses / nc / err | Hit rate | zccache dur (ms) |"
-            echo "|---|---|---|---:|---|---:|---:|"
+            echo "| Friendly | Target | Tool | Profile | Wall (ms) | comp / hits / misses / nc / err | Hit rate | zccache dur (ms) |"
+            echo "|---|---|---|---|---:|---|---:|---:|"
             for f in stats/*.json; do
               python3 - "$f" <<'PY'
           import json, sys
           d = json.load(open(sys.argv[1]))
           zc = d.get("zccache", {}) or {}
+          profile = d.get("profile", "release")
           row = (
-            f"| {d['friendly']} | `{d['target']}` | {d['tool']} | "
+            f"| {d['friendly']} | `{d['target']}` | {d['tool']} | {profile} | "
             f"{d.get('wall_clock_ms','n/a')} | "
             f"{zc.get('compilations')}/{zc.get('hits')}/{zc.get('misses')}/"
             f"{zc.get('non_cacheable')}/{zc.get('errors')} | "
