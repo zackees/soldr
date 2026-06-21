@@ -446,6 +446,16 @@ jobs:
           test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/IOKit.framework
           test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/CoreFoundation.framework
           echo "Apple SDK extracted: IOKit + CoreFoundation frameworks present"
+          # cargo-zigbuild's auto-SDK-discovery is a feature of the
+          # messense docker image (which sets SDKROOT in its
+          # container env), NOT of upstream cargo-zigbuild. Without
+          # SDKROOT exported here, zig's MachO linker doesn't add any
+          # framework search paths and link fails with
+          #   `error: unable to find framework 'IOKit'. searched paths:  none`
+          # even though the SDK is physically at /opt/MacOSX11.3.sdk.
+          # Propagate to subsequent steps via $GITHUB_ENV so the cargo
+          # zigbuild step inherits it.
+          echo "SDKROOT=/opt/MacOSX11.3.sdk" >> "$GITHUB_ENV"
 
       # (cargo-xwin v0.23.0 doesn't expose a `download` subcommand —
       # the previous "Pre-download MSVC CRT" step was bogus and broke
