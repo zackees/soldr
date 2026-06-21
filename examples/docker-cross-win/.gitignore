@@ -1,3 +1,4 @@
 crate/target/
 crate/Cargo.lock
 out/
+.xwin-cache/
