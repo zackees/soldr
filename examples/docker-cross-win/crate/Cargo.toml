@@ -1,0 +1,19 @@
+[package]
+name = "docker-cross-win-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Tiny crate used by examples/docker-cross-win to prove a Linux Docker container can cross-compile a Rust binary for Windows."
+
+# Keep the dep set empty so the cross-compile demo is a pure proof that
+# rustc + zig + the windows-gnu sysroot produce a working PE. Adding deps
+# here would mostly test the registry — not the cross-compile path.
+[dependencies]
+
+# Match soldr's release profile shape so the produced .exe is small.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
