@@ -440,15 +440,10 @@ jobs:
               -xf /tmp/apple-sdk.tar.zst -C /opt
           ls -la /opt/MacOSX11.3.sdk/System/Library/Frameworks/ | head -5
 
-      # Pre-download the MSVC CRT + Windows SDK via cargo-xwin so the
-      # subsequent build doesn't race the network on first compile.
-      # The download itself isn't expensive but doing it explicitly
-      # gives a clean diagnostic if it fails.
-      - name: Pre-download MSVC CRT (xwin lanes)
-        if: matrix.tool == 'xwin'
-        run: |
-          set -euo pipefail
-          soldr cargo xwin download --target "${{ matrix.target }}"
+      # (cargo-xwin v0.23.0 doesn't expose a `download` subcommand —
+      # the previous "Pre-download MSVC CRT" step was bogus and broke
+      # every xwin lane. The SDK is downloaded automatically on first
+      # `cargo xwin build` instead.)
 
       - name: Cross-compile soldr — --release ${{ matrix.target }} (${{ matrix.tool }})
         id: build
