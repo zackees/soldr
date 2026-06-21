@@ -14,6 +14,21 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
+  # pull_request triggers exist so the `fast-build` label gate below
+  # has a `github.event.pull_request.labels` payload to inspect. On a
+  # label-only event (`labeled` / `unlabeled`) GHA re-runs the
+  # workflow, which lets contributors flip a PR between "fast" and
+  # "full" CI by toggling the label.
+  #
+  # NOTE: pushes to main always run the full sweep — the gate's
+  # `contains(...)` check evaluates to `false` on push events because
+  # `github.event.pull_request` is null, so the `!contains(...)`
+  # condition is `true` and the heavy mac/win jobs proceed.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+    paths-ignore:
+      - '*.md'
+      - '**/*.md'
 
 permissions:
   contents: read
@@ -80,7 +95,12 @@ jobs:
   build-macos-x64:
     name: macOS x64
     needs: lint
-    if: github.ref_name == 'main'
+    # main-only AND not gated by the `fast-build` PR label. The label
+    # check is a no-op on push events (pull_request payload is null),
+    # so the main-branch sweep is unaffected.
+    if: >-
+      github.ref_name == 'main'
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: macos-15-intel
@@ -90,7 +110,9 @@ jobs:
   build-windows-x64:
     name: Windows x64
     needs: lint
-    if: github.ref_name == 'main'
+    if: >-
+      github.ref_name == 'main'
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: windows-2025
@@ -108,7 +130,9 @@ jobs:
     # runs the unit + cli + fetch test sweep.
     name: Windows ARM64
     needs: lint
-    if: github.ref_name == 'main'
+    if: >-
+      github.ref_name == 'main'
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
     uses: ./.github/workflows/_build-and-test.yml
     with:
       runner: windows-11-arm
@@ -117,6 +141,8 @@ jobs:
       cache_key: ci-windows-arm64
       install_components: rustfmt, clippy
 
+  # Linux glibc/musl e2e jobs always run — they are the proof of life
+  # and are cheap. The `fast-build` label only suppresses mac/win.
   e2e-linux-x64:
     name: build
     uses: ./.github/workflows/_bootstrap-e2e.yml
@@ -159,7 +185,11 @@ jobs:
 
   e2e-macos-x64:
     name: build
-    if: github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release'
+    # Original gate: only run on PRs or pushes to main / release.
+    # Added: skip when the `fast-build` PR label is present.
+    if: >-
+      (github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release')
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: macos-15-intel
@@ -170,6 +200,7 @@ jobs:
 
   e2e-macos-arm64:
     name: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: macos-15
@@ -180,6 +211,7 @@ jobs:
 
   e2e-windows-x64:
     name: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-2025
@@ -190,6 +222,7 @@ jobs:
 
   e2e-windows-arm64:
     name: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_bootstrap-e2e.yml
     with:
       runner: windows-11-arm

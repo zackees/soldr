@@ -1,0 +1,107 @@
+name: _Cross-build mac (linux-host zigbuild)
+
+# Reusable workflow: cross-compile soldr-cli for a macOS target on a
+# linux-x86 runner via `soldr cargo zigbuild`. Uploads the produced
+# binary as an artifact so a downstream macOS runner can smoke-test it.
+#
+# Replaces the per-platform "build-on-macos" pattern (slow, expensive
+# runners) with a two-stage flow: this job does the heavy compile on
+# cheap linux iron, the companion `_test-mac-prebuilt.yml` job
+# downloads the artifact and verifies the binary boots on an actual
+# macOS runner. The zigbuild path is already proven green by
+# `cross-compile-all-targets.yml` (run 27903313389+).
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        # Either `aarch64-apple-darwin` or `x86_64-apple-darwin`.
+        required: true
+        type: string
+      artifact_name:
+        # Name under which the built soldr binary is uploaded. The
+        # downstream `_test-mac-prebuilt.yml` consumer must use the
+        # same name.
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+  CLICOLOR_FORCE: "1"
+
+jobs:
+  build:
+    name: cross-build ${{ inputs.target }} (linux host, zigbuild)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source_ref }}
+
+      - name: Install Rust toolchain + ${{ inputs.target }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+
+      # Bootstrap soldr from this checkout. cross-compile-all-targets.yml
+      # uses the same bare-cargo bootstrap; replicating here keeps the
+      # standalone mac build workflows self-contained (no inter-workflow
+      # artifact passing for the bootstrap binary itself).
+      - name: Bootstrap soldr (bare cargo, linux-x86)
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          cargo build \
+            --package soldr-cli \
+            --release \
+            --locked \
+            --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+
+      - name: Show soldr version
+        run: soldr --version
+
+      - name: Cross-compile soldr-cli for ${{ inputs.target }} (zigbuild)
+        env:
+          CARGO_TARGET_DIR: target
+        run: |
+          set -euo pipefail
+          soldr cargo zigbuild \
+            --package soldr-cli \
+            --release \
+            --locked \
+            --target "${{ inputs.target }}"
+          ls -la "target/${{ inputs.target }}/release/soldr"
+          file "target/${{ inputs.target }}/release/soldr"
+
+      - name: Stage artifact tarball
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ inputs.target }}/release/soldr" "dist/soldr"
+          chmod +x dist/soldr
+          tar -czf "dist/${{ inputs.artifact_name }}.tar.gz" -C dist soldr
+          sha256sum "dist/${{ inputs.artifact_name }}.tar.gz" | awk '{print "sha256: " $1}'
+
+      - name: Upload prebuilt soldr (${{ inputs.target }})
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/${{ inputs.artifact_name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
