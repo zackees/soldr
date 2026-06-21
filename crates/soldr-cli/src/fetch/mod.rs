@@ -37,6 +37,7 @@ pub use rustup_init::{
     BootstrapReport, NO_BOOTSTRAP_ENV_VAR, RUSTUP_INIT_TRIPLE_ENV_VAR, RUSTUP_INIT_URL_ENV_VAR,
 };
 
+pub mod apple_sdk;
 pub mod archive;
 pub mod github;
 pub mod zccache;
@@ -44,6 +45,7 @@ pub mod zccache_install;
 pub mod zccache_runtime;
 pub mod zig;
 
+pub use apple_sdk::{ensure_apple_sdk, MANAGED_APPLE_SDK_VERSION};
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
 
 #[cfg(test)]

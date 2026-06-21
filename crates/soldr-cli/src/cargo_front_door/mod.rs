@@ -380,8 +380,11 @@ pub(crate) async fn run_cargo_front_door(
 
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
-    // PATH so cargo's subcommand dispatch finds it.
-    let extra_bin_dirs = ensure_known_subcommand_tool(args, &paths).await?;
+    // PATH so cargo's subcommand dispatch finds it. Also collect transitive
+    // bootstrap env (e.g. SDKROOT for `cargo zigbuild --target *-apple-darwin`).
+    let subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+    let extra_bin_dirs = subcommand_tool_bootstrap.bin_dirs;
+    let transitive_env_overrides = subcommand_tool_bootstrap.env;
     // Compute env-var overrides keyed off the subcommand + its
     // --target argument. Today this fixes ring's build.rs on
     // `cargo xwin build --target *-pc-windows-msvc` by routing cc-rs
@@ -454,6 +457,14 @@ pub(crate) async fn run_cargo_front_door(
         if std::env::var_os(key).is_none() {
             command.env(key, value);
         }
+    }
+    // Apply transitive-bootstrap env overrides (e.g. SDKROOT for
+    // `cargo zigbuild --target *-apple-darwin`). These come from
+    // `ensure_known_subcommand_tool` which calls into ensure_apple_sdk
+    // / ensure_zig / etc. The functions themselves already gate on
+    // `var_os` being unset before pushing, so just apply them.
+    for (key, value) in &transitive_env_overrides {
+        command.env(key, value);
     }
 
     let build_like_cargo = cargo_args_are_cacheable(args);
@@ -931,25 +942,38 @@ fn find_on_path(tool: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Result of subcommand tool resolution: PATH-prepended bin dirs +
+/// env-var overrides for the child cargo invocation.
+pub(crate) struct SubcommandToolBootstrap {
+    pub bin_dirs: Vec<std::path::PathBuf>,
+    pub env: Vec<(String, String)>,
+}
+
 async fn ensure_known_subcommand_tool(
     args: &[String],
     paths: &SoldrPaths,
-) -> Result<Vec<std::path::PathBuf>, SoldrError> {
+) -> Result<SubcommandToolBootstrap, SoldrError> {
     let Some(sub) = first_cargo_subcommand(args) else {
-        return Ok(Vec::new());
+        return Ok(SubcommandToolBootstrap {
+            bin_dirs: Vec::new(),
+            env: Vec::new(),
+        });
     };
     let Some(spec) = crate::fetch::lookup_by_cargo_subcommand(sub) else {
         // Issue #412: when the typed subcommand isn't in
         // `known_tools` but LOOKS like a typo of one that IS, drop a
-        // "did you mean?" hint on stderr. We still return Ok(empty)
-        // so the underlying cargo invocation continues as today —
-        // the suggestion is advisory and cargo's own external-command
+        // "did you mean?" hint on stderr. We still return empty so the
+        // underlying cargo invocation continues as today — the
+        // suggestion is advisory and cargo's own external-command
         // dispatch may still find the tool on PATH.
         if let Some(suggestion) = suggest_cargo_subcommand_typo(sub) {
             eprintln!("soldr: '{sub}' is not a cargo subcommand soldr ships a prebuilt for.");
             eprintln!("soldr: did you mean: cargo {suggestion}?");
         }
-        return Ok(Vec::new());
+        return Ok(SubcommandToolBootstrap {
+            bin_dirs: Vec::new(),
+            env: Vec::new(),
+        });
     };
 
     // Issue #816: if `cargo-<sub>` is already on PATH, defer to it instead
@@ -967,6 +991,7 @@ async fn ensure_known_subcommand_tool(
     // managed fetch even when PATH has the tool — useful for CI runs that
     // want byte-identical pinned binaries.
     let mut extra_bin_dirs: Vec<std::path::PathBuf> = Vec::new();
+    let mut extra_env: Vec<(String, String)> = Vec::new();
 
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
@@ -979,8 +1004,18 @@ async fn ensure_known_subcommand_tool(
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
             // silently regress.
-            append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs).await?;
-            return Ok(extra_bin_dirs);
+            append_subcommand_transitive_bin_dirs(
+                sub,
+                args,
+                paths,
+                &mut extra_bin_dirs,
+                &mut extra_env,
+            )
+            .await?;
+            return Ok(SubcommandToolBootstrap {
+                bin_dirs: extra_bin_dirs,
+                env: extra_env,
+            });
         }
     }
 
@@ -1012,27 +1047,52 @@ async fn ensure_known_subcommand_tool(
         })?
         .to_path_buf();
     extra_bin_dirs.push(dir);
-    append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs).await?;
-    Ok(extra_bin_dirs)
+    append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs, &mut extra_env)
+        .await?;
+    Ok(SubcommandToolBootstrap {
+        bin_dirs: extra_bin_dirs,
+        env: extra_env,
+    })
 }
 
 /// Resolve transitive runtime dependencies for `cargo-<sub>` and append
-/// their bin directories to `extra_bin_dirs`.
+/// their bin directories to `extra_bin_dirs` (PATH-prepended on the
+/// child cargo) and any required env overrides to `extra_env`.
 ///
-/// Today the only registered transitive bootstrap is `zig` for
-/// `cargo-zigbuild`. cargo-zigbuild shells out to a `zig` binary to do
-/// the cross-link step; without this, `soldr cargo zigbuild ...` on a
-/// fresh runner explodes with `Error: Failed to find zig` even though
-/// soldr happily fetched cargo-zigbuild itself.
+/// Registered bootstraps:
+///   - `cargo zigbuild` → ensure `zig` is on PATH (PR #841).
+///   - `cargo zigbuild --target *-apple-darwin` → ensure Apple SDK on
+///     disk + set `SDKROOT` env (issue #854).
+///   - `cargo xwin build --target *-pc-windows-msvc` → ensure `clang`
+///     shim on PATH that forces `--driver-mode=cl` (PR #849).
 async fn append_subcommand_transitive_bin_dirs(
     sub: &str,
     args: &[String],
     paths: &SoldrPaths,
     extra_bin_dirs: &mut Vec<std::path::PathBuf>,
+    extra_env: &mut Vec<(String, String)>,
 ) -> Result<(), SoldrError> {
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
         extra_bin_dirs.push(zig_dir);
+        // `soldr cargo zigbuild --target *-apple-darwin` needs the
+        // Apple SDK on disk + `SDKROOT` exported so cargo-zigbuild's
+        // mach-O linker can resolve `-framework IOKit` / etc.
+        // Without this, every Rust dep with an Apple-framework
+        // dependency (ring, sysinfo, dirs, …) fails to link.
+        if let Some(triple) = extract_target_arg(args) {
+            if triple.ends_with("-apple-darwin") {
+                let sdk_dir = crate::fetch::ensure_apple_sdk(paths).await?;
+                // Don't clobber a caller-set SDKROOT — escape hatch
+                // for users with their own Xcode SDK or a custom one.
+                if std::env::var_os("SDKROOT").is_none() {
+                    extra_env.push((
+                        "SDKROOT".to_string(),
+                        sdk_dir.to_string_lossy().into_owned(),
+                    ));
+                }
+            }
+        }
     }
     // `soldr cargo xwin build --target *-pc-windows-msvc` needs a
     // `clang` shim that forces `--driver-mode=cl`. ring's build.rs
