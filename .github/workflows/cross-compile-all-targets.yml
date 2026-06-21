@@ -24,6 +24,20 @@ name: Cross-compile soldr (bootstrap + all targets, single linux-x86_64 runner f
 # `cargo build -p soldr-cli` is the single source of truth for what
 # the cross jobs use.
 #
+# GitHub API rate-limit avoidance (`release-manifest`):
+#   Stage 1 also runs `.github/scripts/build_release_manifest.py` once,
+#   which hits the GitHub Releases API (authenticated via the workflow's
+#   $GITHUB_TOKEN — 5000 req/hour limit) for zccache + crgx + cargo-chef
+#   + cargo-zigbuild + cargo-xwin and writes every asset's public
+#   `browser_download_url` to `release-manifest.json`. That manifest is
+#   uploaded as an artifact (consumed by Stage 2 lanes) AND saved to
+#   actions/cache keyed on the UTC date, so re-runs within the same day
+#   skip the API round trip entirely. Stage 2 lanes then curl from those
+#   pre-resolved public URLs (CDN-backed, NOT API-rate-limited) and
+#   pre-extract cargo-zigbuild / cargo-xwin onto PATH so soldr's own
+#   fetch dispatcher defers to the PATH binary without calling the
+#   unauthenticated GitHub API itself.
+#
 # Trigger: workflow_dispatch only.
 
 on:
@@ -64,6 +78,69 @@ jobs:
       - name: Verify zstd present
         shell: bash
         run: zstd --version | head -n1
+
+      # Pre-compute today's release manifest cache key so the cache
+      # restore step can hit on UTC-date granularity. `step.outputs.key`
+      # is consumed by both the cache step and the upload-artifact
+      # naming downstream.
+      - name: Compute release-manifest cache key
+        id: manifest_key
+        shell: bash
+        run: |
+          set -euo pipefail
+          today=$(date -u +%Y-%m-%d)
+          # Schema version bump if build_release_manifest.py changes shape.
+          echo "key=release-manifest-v1-${today}" >> "$GITHUB_OUTPUT"
+          echo "Cache key: release-manifest-v1-${today}"
+
+      - name: Restore release-manifest cache
+        id: manifest_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: release-manifest.json
+          key: ${{ steps.manifest_key.outputs.key }}
+
+      # On cache miss, query GitHub Releases (authenticated, 5000 rq/hr)
+      # for every third-party tool used by the cross-compile lanes and
+      # write `release-manifest.json` mapping each tool/asset to its
+      # public `browser_download_url`. Stage 2 lanes consume the manifest
+      # via artifact download and curl those URLs directly — no API
+      # calls fan out across the matrix.
+      - name: Build release-manifest.json (on cache miss)
+        if: steps.manifest_cache.outputs.cache-hit != 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/build_release_manifest.py release-manifest.json
+          echo "--- manifest summary ---"
+          python3 -c "
+          import json
+          m = json.load(open('release-manifest.json'))
+          for name, t in m['tools'].items():
+              print(f'  {name}: tag={t[\"tag\"]} assets={len(t[\"assets\"])}')
+          "
+
+      - name: Show release-manifest cache status
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.manifest_cache.outputs.cache-hit }}" = "true" ]; then
+            echo "release-manifest cache HIT — skipped GitHub API"
+          else
+            echo "release-manifest cache MISS — generated fresh, saved under key ${{ steps.manifest_key.outputs.key }}"
+          fi
+          ls -la release-manifest.json
+
+      - name: Upload release-manifest artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-manifest
+          path: release-manifest.json
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
       # Bare cargo here — soldr isn't built yet. This is the ONLY job
       # in the workflow that runs cargo without going through soldr.
@@ -132,7 +209,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/soldr dist/package/soldr
           chmod +x dist/package/soldr
 
-      - name: Fetch matched zccache release for linux-x86
+      - name: Fetch matched zccache release for linux-x86 (from manifest)
         shell: bash
         run: |
           set -euo pipefail
@@ -141,7 +218,11 @@ jobs:
           # Linux gnu rides the musl zccache (statically linked, runs on glibc).
           zccache_target=x86_64-unknown-linux-musl
           asset="zccache-v${zccache_version}-${zccache_target}.tar.gz"
-          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
+          # Lookup URL from the prefetched manifest instead of hitting the
+          # GitHub API again. `jq -e` exits non-zero if the path is null,
+          # so a missing asset fails the step loudly.
+          url=$(jq -er --arg a "$asset" '.tools.zccache.assets[$a].url' release-manifest.json)
+          echo "manifest URL: ${url}"
           curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
             --output "/tmp/${asset}" "${url}"
           tar -xzf "/tmp/${asset}" -C dist/zccache-stage
@@ -322,6 +403,53 @@ jobs:
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
+      # Download the prefetched release-manifest from Stage 1. The lane
+      # uses `jq` over this JSON to look up direct download URLs for
+      # zccache + cargo-zigbuild + cargo-xwin, avoiding the soldr
+      # binary's unauthenticated GitHub API calls (60 req/hr per IP)
+      # that were 403-ing across the parallel matrix.
+      - name: Download release-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-manifest
+          path: .
+
+      # Pre-fetch cargo-zigbuild (zigbuild lanes) or cargo-xwin (xwin
+      # lanes) from the manifest's public URL and put it on PATH BEFORE
+      # invoking soldr cargo. The soldr front door's PATH-first deferral
+      # branch then short-circuits its own GitHub API call (issue #816),
+      # so the matrix doesn't fan out 7× unauthenticated API requests
+      # to the same /releases/latest endpoint.
+      - name: Pre-fetch cargo subcommand binary (manifest → PATH)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The runner host is linux-x86_64 — cargo subcommand binaries
+          # themselves are host binaries (they drive cargo, which then
+          # cross-compiles to ${{ matrix.target }}). So we always grab
+          # the x86_64-unknown-linux-gnu asset regardless of the lane's
+          # target triple.
+          tool="cargo-${{ matrix.tool }}"
+          host_triple="x86_64-unknown-linux-gnu"
+          asset="${tool}-${host_triple}.tar.xz"
+          url=$(jq -er --arg t "$tool" --arg a "$asset" \
+            '.tools[$t].assets[$a].url' release-manifest.json)
+          version=$(jq -r --arg t "$tool" '.tools[$t].version' release-manifest.json)
+          echo "Pre-fetching ${tool} v${version} from manifest"
+          echo "  URL: ${url}"
+          dest_dir="${RUNNER_TEMP}/cross-bin"
+          mkdir -p "$dest_dir"
+          curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
+            --output "/tmp/${asset}" "${url}"
+          # cargo-zigbuild / cargo-xwin tar.xz archives use the per-triple
+          # layout `<asset-stem>/<binary>`. Extract directly into dest_dir
+          # with --strip-components=1 so we end up with $dest_dir/cargo-<tool>.
+          tar -xJf "/tmp/${asset}" -C "$dest_dir" --strip-components=1
+          chmod +x "$dest_dir/$tool"
+          echo "$dest_dir" >> "$GITHUB_PATH"
+          ls -la "$dest_dir/$tool"
+          "$dest_dir/$tool" --version || true
+
       - name: Verify zstd present
         shell: bash
         run: zstd --version | head -n1
@@ -402,7 +530,7 @@ jobs:
           }
           EOF
 
-      - name: Fetch matched zccache release
+      - name: Fetch matched zccache release (from manifest)
         shell: bash
         run: |
           set -euo pipefail
@@ -420,7 +548,10 @@ jobs:
             *) echo "no zccache mapping" >&2; exit 1 ;;
           esac
           asset="zccache-v${zccache_version}-${zccache_target}.${ext}"
-          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
+          # Lookup URL from the prefetched manifest instead of hitting
+          # the GitHub API directly across the matrix.
+          url=$(jq -er --arg a "$asset" '.tools.zccache.assets[$a].url' release-manifest.json)
+          echo "manifest URL: ${url}"
           curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
             --output "/tmp/${asset}" "${url}"
           case "$ext" in
