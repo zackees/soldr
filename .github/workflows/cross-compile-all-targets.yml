@@ -70,14 +70,14 @@ jobs:
             exe_suffix: ".exe"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       # Pin the Rust toolchain to the same version release-auto.yml uses.
       # We add the matrix target on top so cargo has the standard library
       # for it. cargo-zigbuild and cargo-xwin both rely on this — neither
       # provides its own sysroot for the target.
       - name: Install Rust toolchain + target
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.94.1
           targets: ${{ matrix.target }}
@@ -533,7 +533,7 @@ jobs:
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
 
       - name: Upload archive artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: soldr-${{ matrix.friendly }}
           path: dist/soldr-*-${{ matrix.target }}.tar.zst
@@ -542,7 +542,7 @@ jobs:
           compression-level: 0  # already zstd-compressed
 
       - name: Upload per-target stats
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: stats-${{ matrix.friendly }}
           path: |
@@ -559,7 +559,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Download all stats
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: stats-*
           path: stats
@@ -611,7 +611,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload summary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: cross-compile-summary
           path: summary.json
