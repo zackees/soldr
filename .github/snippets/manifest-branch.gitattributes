@@ -1,0 +1,11 @@
+# Copy this file to the ROOT of the `manifest` branch as `.gitattributes`
+# after running .github/scripts/lfs_migrate_manifest_branch.sh.
+#
+# This declaration ensures future commits to deps/** continue to land
+# in Git LFS without anyone needing to remember.
+#
+# See docs/MANIFEST_LFS_MIGRATION.md for the full owner runbook.
+deps/**/*.tar.zst filter=lfs diff=lfs merge=lfs -text
+deps/**/*.tar.xz  filter=lfs diff=lfs merge=lfs -text
+deps/**/*.zip     filter=lfs diff=lfs merge=lfs -text
+deps/**/*.tar.gz  filter=lfs diff=lfs merge=lfs -text
