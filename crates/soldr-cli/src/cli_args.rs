@@ -206,6 +206,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "update-zccache", // alias of `install-zccache`
     "save",
     "load",
+    "archive",
     "daemon",
     "shims",
 ];
@@ -373,6 +374,20 @@ pub(crate) enum Commands {
         long_about = "Restore an archive produced by `soldr save`: unpack the cache to the destination directory and replay each source-file mtime, but only when the current file's size and BLAKE3 hash still match the snapshot so soldr cannot underbuild after a real source change."
     )]
     Load(save_load::LoadArgs),
+
+    /// Bundle the built soldr binary + managed sidecars into a deployable .tar.zst
+    #[command(
+        long_about = "Bundle a previously-built `soldr` release binary together with its managed-tool sidecars (zccache trio + bundled crgx/cargo-chef when cached) into a single `.tar.zst` archive that can be dropped onto a CI runner and unpacked.\n\nThis is the in-tree counterpart to the multi-step packaging the release workflow performs in `.github/workflows/release-auto.yml`. The release pipeline still owns its own staging step today; `soldr archive` is the local/developer-facing path that produces an equivalent archive layout without leaving the host.\n\nResolution:\n  * `--target` defaults to the auto-detected host triple.\n  * The soldr binary is expected at `target/<triple>/release/soldr[.exe]`. If missing, the command errors with a directive to run `soldr cargo build --release --target <triple>` first.\n  * Sidecars are pulled from the same managed cache `soldr cargo ...` populates (`~/.soldr/bin/zccache-<version>/`, etc.). Missing required sidecars (the zccache trio) are a hard error; missing optional sidecars (crgx, cargo-chef) are silently skipped.\n\nThe output is a flat `.tar.zst` (zstd level 19) — every entry sits at the archive root."
+    )]
+    Archive {
+        /// Target triple to bundle for. Defaults to the auto-detected
+        /// host triple.
+        #[arg(long, value_name = "TRIPLE")]
+        target: Option<String>,
+        /// Destination archive path. Suggest the `.tar.zst` suffix.
+        #[arg(long, value_name = "FILE")]
+        output: std::path::PathBuf,
+    },
 
     /// Manage the long-lived soldr-daemon process
     Daemon {
