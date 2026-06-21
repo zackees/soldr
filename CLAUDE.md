@@ -169,6 +169,10 @@ If upstream is ahead, open a bump PR per the lockstep instructions above. Do not
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
 - `README.md` — User-facing motivation and prior art comparison
 
+## GitHub Actions workflow conventions
+
+- **Non-trivial logic in workflows belongs in `.github/scripts/*.py`, NOT inline YAML.** The `cross-compile-all-targets.yml` workflow used to inline curl + jq chains for every release-asset lookup, which (a) couples the workflow tightly to GitHub Actions' shell wrapper, (b) is hard to unit-test, (c) duplicates parsing logic between lanes, and (d) makes the YAML unreadable. The current pattern is: write a small Python script under `.github/scripts/` that takes CLI args, expose it with `python3 .github/scripts/<name>.py ...` from the YAML, and keep the YAML to orchestration only (matrix, env, artifact upload/download). Examples: `build_manifest.py`, `tool_query.py`, `print_build_banner.sh`, `ts_step.py`, `run_with_ts.sh`. The scripts have docstrings + smoke-runnable from a developer's shell, so debugging doesn't require pushing a branch.
+
 ## Dogfooding
 
 The repo builds itself through soldr so every contributor populates and hits the same cache.
