@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "tools": {
+    "cargo-chef": {
+      "path": "cargo-chef/manifest.json",
+      "version": "0.1.73",
+      "tag": "v0.1.73",
+      "owner": "LukeMathWalker",
+      "repo": "cargo-chef",
+      "asset_count": 4
+    },
+    "cargo-xwin": {
+      "path": "cargo-xwin/manifest.json",
+      "version": "0.23.0",
+      "tag": "v0.23.0",
+      "owner": "rust-cross",
+      "repo": "cargo-xwin",
+      "asset_count": 13
+    },
+    "cargo-zigbuild": {
+      "path": "cargo-zigbuild/manifest.json",
+      "version": "0.23.0",
+      "tag": "v0.23.0",
+      "owner": "rust-cross",
+      "repo": "cargo-zigbuild",
+      "asset_count": 20
+    },
+    "crgx": {
+      "path": "crgx/manifest.json",
+      "version": "0.1.0",
+      "tag": "v0.1.0",
+      "owner": "yfedoseev",
+      "repo": "crgx",
+      "asset_count": 6
+    },
+    "zccache": {
+      "path": "zccache/manifest.json",
+      "version": "1.12.9",
+      "tag": "1.12.9",
+      "owner": "zackees",
+      "repo": "zccache",
+      "asset_count": 15
+    }
+  }
+}

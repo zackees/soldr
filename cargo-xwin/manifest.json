@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "name": "cargo-xwin",
+  "owner": "rust-cross",
+  "repo": "cargo-xwin",
+  "version": "0.23.0",
+  "tag": "v0.23.0",
+  "release_html_url": "https://github.com/rust-cross/cargo-xwin/releases/tag/v0.23.0",
+  "published_at": "2026-06-16T15:06:43Z",
+  "assets": {
+    "cargo-xwin-v0.23.0.aarch64-unknown-linux-musl.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.aarch64-unknown-linux-musl.tar.gz",
+      "size": 3604961,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.aarch64-unknown-linux-musl.tar.gz.sha256": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.aarch64-unknown-linux-musl.tar.gz.sha256",
+      "size": 119,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.armv7-unknown-linux-musleabi.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.armv7-unknown-linux-musleabi.tar.gz",
+      "size": 3484999,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.armv7-unknown-linux-musleabi.tar.gz.sha256": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.armv7-unknown-linux-musleabi.tar.gz.sha256",
+      "size": 121,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.armv7-unknown-linux-musleabihf.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.armv7-unknown-linux-musleabihf.tar.gz",
+      "size": 3504810,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.armv7-unknown-linux-musleabihf.tar.gz.sha256": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.armv7-unknown-linux-musleabihf.tar.gz.sha256",
+      "size": 123,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.i686-unknown-linux-musl.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.i686-unknown-linux-musl.tar.gz",
+      "size": 3556543,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.i686-unknown-linux-musl.tar.gz.sha256": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.i686-unknown-linux-musl.tar.gz.sha256",
+      "size": 116,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.universal2-apple-darwin.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.universal2-apple-darwin.tar.gz",
+      "size": 6943459,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.windows-x64.zip": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.windows-x64.zip",
+      "size": 3378452,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.windows-x86.zip": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.windows-x86.zip",
+      "size": 2903610,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.x86_64-unknown-linux-musl.tar.gz": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.x86_64-unknown-linux-musl.tar.gz",
+      "size": 3831263,
+      "content_type": "binary/octet-stream"
+    },
+    "cargo-xwin-v0.23.0.x86_64-unknown-linux-musl.tar.gz.sha256": {
+      "url": "https://github.com/rust-cross/cargo-xwin/releases/download/v0.23.0/cargo-xwin-v0.23.0.x86_64-unknown-linux-musl.tar.gz.sha256",
+      "size": 118,
+      "content_type": "binary/octet-stream"
+    }
+  }
+}
