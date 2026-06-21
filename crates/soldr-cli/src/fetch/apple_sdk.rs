@@ -41,13 +41,15 @@ pub const MANAGED_APPLE_SDK_VERSION: &str = "11.3";
 /// discovery expects).
 pub const MANAGED_APPLE_SDK_DIRNAME: &str = "MacOSX11.3.sdk";
 
-/// URL of the SDK blob on soldr's `manifest` branch. Public CDN
-/// (`raw.githubusercontent.com`) — NOT subject to the GitHub API rate
-/// limit. The blob was extracted once from `messense/cargo-zigbuild:0.20.0`
-/// and pushed under `deps/mac/sdk.tar.zstd` (see manifest branch
-/// README for the recipe).
+/// URL of the SDK blob on soldr's `manifest` branch. Uses
+/// `media.githubusercontent.com/media/` — the LFS-aware CDN endpoint
+/// that follows LFS pointer files to the actual binary content (works
+/// for both LFS-tracked and regular blobs, matching the pattern from
+/// `zackees/clang-tool-chain-bins`). NOT subject to the GitHub API
+/// rate limit. The blob was extracted once from
+/// `messense/cargo-zigbuild:0.20.0` and pushed under `deps/mac/sdk.tar.zstd`.
 pub const MANAGED_APPLE_SDK_URL: &str =
-    "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd";
+    "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd";
 
 /// SHA-256 of the SDK blob. Hard-coded for integrity verification on
 /// every fetch. Bump alongside `MANAGED_APPLE_SDK_VERSION` when the

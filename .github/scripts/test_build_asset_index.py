@@ -187,7 +187,7 @@ class BuildAssetIndexTest(unittest.TestCase):
             self.assertEqual(entry["sha256"], expected_sha)
             self.assertEqual(
                 entry["url"],
-                "https://raw.githubusercontent.com/zackees/soldr/manifest/"
+                "https://media.githubusercontent.com/media/zackees/soldr/manifest/"
                 "deps/foo/bar.tar.zst",
             )
             self.assertEqual(len(entry["sha256"]), 64)

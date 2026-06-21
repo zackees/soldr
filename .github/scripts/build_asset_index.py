@@ -195,12 +195,17 @@ def _entry_sort_key(entry: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def _raw_url_for_deps(repo_owner: str, repo_name: str, rel_posix: str) -> str:
-    """Build the ``raw.githubusercontent.com`` URL the vendored asset
-    is served from. Mirrors how the existing ``deps/mac/manifest.json``
-    spells the URLs (``raw.githubusercontent.com/<owner>/<repo>/manifest/...``)
-    so the resolver gets one stable URL form for every vendored row.
+    """Build the LFS-aware CDN URL the vendored asset is served from.
+
+    Uses ``media.githubusercontent.com/media/`` rather than
+    ``raw.githubusercontent.com``: the ``/media/`` endpoint follows
+    Git-LFS pointer files to the actual binary blob (and falls back
+    transparently to the raw content for non-LFS files). This matches
+    the URL pattern used by ``zackees/clang-tool-chain-bins`` and lets
+    the soldr ``manifest`` branch migrate to LFS without breaking the
+    resolver — same URL form works for both pre- and post-LFS state.
     """
-    return f"https://raw.githubusercontent.com/{repo_owner}/{repo_name}/manifest/{rel_posix}"
+    return f"https://media.githubusercontent.com/media/{repo_owner}/{repo_name}/manifest/{rel_posix}"
 
 
 def collect_deps_entries(
