@@ -207,6 +207,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "save",
     "load",
     "archive",
+    "build-from-source",
     "daemon",
     "shims",
 ];
@@ -387,6 +388,26 @@ pub(crate) enum Commands {
         /// Destination archive path. Suggest the `.tar.zst` suffix.
         #[arg(long, value_name = "FILE")]
         output: std::path::PathBuf,
+    },
+
+    /// Cross-compile a soldr-bundled tool (crgx, cargo-chef) for a target triple
+    #[command(
+        name = "build-from-source",
+        long_about = "Source-build a whitelisted soldr-managed tool (today: `crgx`, `cargo-chef`) for an arbitrary Rust target triple and deposit the resulting binary into `~/.soldr/bin/<tool>-from-source/<version>/<triple>/<tool>[.exe]` with a sha256 sidecar.\n\nMotivation (sub-issue #859 of meta #853): the release pipeline already source-builds these tools in some lanes because upstream does not always ship prebuilt binaries for every target — notably `aarch64-apple-darwin` for cargo-chef. This verb lifts that ad-hoc shell into a first-class soldr command:\n\n  soldr build-from-source crgx --target aarch64-apple-darwin\n  soldr build-from-source cargo-chef --target aarch64-apple-darwin\n\nResolution:\n  * `--target` defaults to the auto-detected host triple.\n  * `--version` defaults to the registry pin in `known_tools::lookup_by_crate(<tool>).pinned_version`.\n  * The build invokes `cargo install <tool>@<version> --target <triple> --root <staging> --locked --force` via the directly-resolved cargo binary, bypassing soldr's `RUSTC_WRAPPER` injection. This is the same direct-cargo pattern `soldr toolchain prepare` uses for plugin installs.\n\nOutputs:\n  * The installed binary lands at `~/.soldr/bin/<tool>-from-source/<version>/<triple>/<tool>[.exe]`.\n  * A sibling `<tool>.sha256` sidecar records the binary's sha256 in `<hash>  <name>` format compatible with `sha256sum -c`."
+    )]
+    BuildFromSource {
+        /// Whitelisted tool name. Supported today: `crgx`, `cargo-chef`.
+        #[arg(value_name = "TOOL")]
+        tool: String,
+        /// Target triple to build for. Defaults to the auto-detected
+        /// host triple.
+        #[arg(long, value_name = "TRIPLE")]
+        target: Option<String>,
+        /// Crate version to install (without the leading `v`). Defaults
+        /// to the registry pin (`known_tools::lookup_by_crate(<tool>).
+        /// pinned_version`).
+        #[arg(long, value_name = "VERSION")]
+        version: Option<String>,
     },
 
     /// Manage the long-lived soldr-daemon process
