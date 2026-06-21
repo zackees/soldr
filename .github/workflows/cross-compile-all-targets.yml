@@ -421,6 +421,20 @@ jobs:
         id: build
         env:
           CARGO_TARGET_DIR: target
+          # Belt-and-suspenders: also set the cc-rs env vars at workflow
+          # level for both windows-msvc triples. soldr already injects
+          # these on its child cargo (see compute_subcommand_env_overrides
+          # in cargo_front_door/mod.rs), but the trace from
+          # run 27898887800 showed soldr's injection isn't surviving to
+          # ring's build.rs — cargo-xwin or some intermediate process
+          # scrubs them. Setting at workflow level means every nested
+          # process inherits these regardless of who clears env later.
+          CC_aarch64_pc_windows_msvc:  clang-cl
+          CXX_aarch64_pc_windows_msvc: clang-cl
+          AR_aarch64_pc_windows_msvc:  llvm-lib
+          CC_x86_64_pc_windows_msvc:   clang-cl
+          CXX_x86_64_pc_windows_msvc:  clang-cl
+          AR_x86_64_pc_windows_msvc:   llvm-lib
         run: |
           set -euo pipefail
           log=stats/${{ matrix.friendly }}.log
@@ -433,6 +447,9 @@ jobs:
 
           t_start_ns=$(date +%s%N)
           if [ "${{ matrix.tool }}" = "xwin" ]; then
+            echo "=== xwin env probe ==="
+            env | grep -E "^(CC|CXX|AR)_(aarch64|x86_64)_pc_windows_msvc=" || echo "(none set)"
+            echo "======================"
             soldr cargo xwin build \
               --package soldr-cli \
               --release \
