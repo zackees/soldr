@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "zccache",
+  "owner": "zackees",
+  "repo": "zccache",
+  "version": "1.12.9",
+  "tag": "1.12.9",
+  "release_html_url": "https://github.com/zackees/zccache/releases/tag/1.12.9",
+  "published_at": "2026-06-20T01:16:39Z",
+  "assets": {
+    "SHA256SUMS": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/SHA256SUMS",
+      "size": 1636,
+      "content_type": "application/octet-stream"
+    },
+    "install.ps1": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/install.ps1",
+      "size": 5074,
+      "content_type": "application/octet-stream"
+    },
+    "install.sh": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/install.sh",
+      "size": 6126,
+      "content_type": "application/x-sh"
+    },
+    "zccache-v1.12.9-aarch64-apple-darwin-debug.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-apple-darwin-debug.tar.gz",
+      "size": 27315510,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-aarch64-apple-darwin.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-apple-darwin.tar.gz",
+      "size": 8627370,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-aarch64-pc-windows-msvc-debug.zip": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-pc-windows-msvc-debug.zip",
+      "size": 32621364,
+      "content_type": "application/zip"
+    },
+    "zccache-v1.12.9-aarch64-pc-windows-msvc.zip": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-pc-windows-msvc.zip",
+      "size": 8879257,
+      "content_type": "application/zip"
+    },
+    "zccache-v1.12.9-aarch64-unknown-linux-musl-debug.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-unknown-linux-musl-debug.tar.gz",
+      "size": 30422272,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-aarch64-unknown-linux-musl.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-aarch64-unknown-linux-musl.tar.gz",
+      "size": 10934372,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-x86_64-apple-darwin-debug.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-apple-darwin-debug.tar.gz",
+      "size": 28701503,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-x86_64-apple-darwin.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-apple-darwin.tar.gz",
+      "size": 8946985,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-x86_64-pc-windows-msvc-debug.zip": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-pc-windows-msvc-debug.zip",
+      "size": 34115093,
+      "content_type": "application/zip"
+    },
+    "zccache-v1.12.9-x86_64-pc-windows-msvc.zip": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-pc-windows-msvc.zip",
+      "size": 9817063,
+      "content_type": "application/zip"
+    },
+    "zccache-v1.12.9-x86_64-unknown-linux-musl-debug.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-unknown-linux-musl-debug.tar.gz",
+      "size": 31058338,
+      "content_type": "application/gzip"
+    },
+    "zccache-v1.12.9-x86_64-unknown-linux-musl.tar.gz": {
+      "url": "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-v1.12.9-x86_64-unknown-linux-musl.tar.gz",
+      "size": 11354382,
+      "content_type": "application/gzip"
+    }
+  }
+}
