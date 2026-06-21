@@ -57,13 +57,28 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TOP_LEVEL_FILENAME = "manifest.json"
 PER_TOOL_FILENAME = "manifest.json"
-# Schema 2 (vs the bootstrap commit's schema 1): per-tool files carry a
-# `releases` map keyed by tag instead of a single flat release. The
-# nightly refresh MERGES the newly-fetched release into that map rather
-# than replacing the file — older tags stay around so a CI workflow
-# that pinned an older soldr can still resolve its assets from the
-# manifest. See README.md on the `manifest` branch for the rationale.
-SCHEMA_VERSION = 2
+# Schema 5 (vs v4): per-tool manifests are a FLAT JSON ARRAY of
+# self-describing release dicts. No outer metadata wrapper. First
+# element is always the latest release (array sorted by
+# `published_at` descending). Each dict carries the tool name, owner,
+# repo, tag, version, dates, plus a normalized `platforms` map and
+# the raw upstream `assets` map.
+#
+# Consumer recipes:
+#
+#     # latest URL for a host
+#     jq -r '.[0].platforms["linux-x64-musl"].url' zccache/manifest.json
+#
+#     # specific tag's URL
+#     jq -r '.[] | select(.tag == "1.12.9") | .platforms["linux-x64-musl"].url' zccache/manifest.json
+#
+#     # grep-friendly — every entry is self-describing
+#     grep -l '"tool": "zccache"' */manifest.json
+#
+# The top-level `/manifest.json` index is still a DICT (it's an index,
+# not a release list); it carries `schema_version` and per-tool
+# pointers + summary metadata.
+SCHEMA_VERSION = 5
 
 
 def read_constant(path: Path, name: str) -> str:
@@ -118,29 +133,172 @@ def list_releases(owner: str, repo: str, token: str | None) -> list[dict[str, An
     return gh_request(url, token)
 
 
-def build_release_entry(release: dict[str, Any]) -> dict[str, Any]:
+def derive_platform_key(filename: str) -> str | None:
+    """Map an upstream asset filename to a normalized `<os>-<arch>[-<extra>]`
+    key, or None if the filename clearly isn't a runnable platform binary
+    (sha256 sums, installers, source tarballs, dist manifests, etc.).
+
+    The key shape uses modern short arch names (npm/Node.js convention):
+      os    ∈ { linux, darwin, windows }
+      arch  ∈ { x64, arm64, armv7, i686, universal2 }
+      extra ∈ { gnu, musl, musleabi, musleabihf, msvc, gnullvm }  (optional)
+
+    `extra` is only included when it's a meaningful disambiguator —
+    e.g. `linux-x64-gnu` vs `linux-x64-musl`, or `windows-arm64-msvc`
+    vs `windows-arm64-gnullvm`. `darwin-*` and Windows tools that ship
+    only one ABI default the extra appropriately.
+
+    Examples (rust-target-triple style and abbreviated style both work):
+      x86_64-unknown-linux-gnu        → linux-x64-gnu
+      x86_64-unknown-linux-musl       → linux-x64-musl
+      aarch64-pc-windows-msvc         → windows-arm64-msvc
+      x86_64-apple-darwin             → darwin-x64
+      aarch64-apple-darwin            → darwin-arm64
+      windows-x64                     → windows-x64-msvc   (xwin's shape)
+      windows-x86                     → windows-i686-msvc  (xwin's shape)
+      universal2-apple-darwin         → darwin-universal2
+    """
+    name = filename.lower()
+
+    # Drop obvious non-binary artifacts up front. Anything not a tarball
+    # or zip-style archive is skipped.
+    if not (
+        name.endswith(".tar.gz")
+        or name.endswith(".tgz")
+        or name.endswith(".tar.xz")
+        or name.endswith(".txz")
+        or name.endswith(".tar.bz2")
+        or name.endswith(".zip")
+    ):
+        return None
+    if "source" in name or "dist-manifest" in name or "installer" in name:
+        return None
+    # Debug / symbol packages aren't the canonical platform binary for
+    # consumer use — zccache ships an `*-debug.tar.gz` next to every
+    # platform asset, which would otherwise win the platform-key
+    # contest alphabetically. The release's raw `assets` dict still
+    # carries these by their full filename.
+    if "-debug" in name or ".debug" in name or "-sym" in name or ".pdb" in name:
+        return None
+
+    # OS detection. `apple-darwin` and `macos` both map to darwin.
+    if "apple-darwin" in name or "-macos-" in name or ".macos." in name:
+        os_key = "darwin"
+    elif "windows" in name:
+        os_key = "windows"
+    elif "linux" in name:
+        os_key = "linux"
+    else:
+        return None
+
+    # Arch detection — modern short names only. 32-bit lanes are
+    # intentionally dropped: every modern process is 64-bit, the
+    # manifest shouldn't fragment its schema to surface i686 / armv7
+    # binaries that nobody runs in production anymore.
+    if "universal2" in name:
+        # Apple's fat binary — covers both darwin-x64 and darwin-arm64.
+        # Kept because cargo-xwin and some other tools ship this format
+        # and consumers may not have an architecture-specific build to
+        # fall back on.
+        arch = "universal2"
+    elif "x86_64" in name or "windows-x64" in name or "amd64" in name:
+        arch = "x64"
+    elif "aarch64" in name or "arm64" in name:
+        arch = "arm64"
+    else:
+        # i686 / armv7 / armhf / 32-bit anything: not surfaced.
+        return None
+
+    # ABI / extra. We surface this whenever it's a meaningful
+    # disambiguator. For windows tools that ship only an MSVC variant
+    # (e.g. cargo-xwin's `windows-x64.zip`), assume MSVC — that's the
+    # mainstream Windows ABI per soldr's "MSVC on Windows always" rule.
+    extra: str | None = None
+    if "musleabihf" in name:
+        extra = "musleabihf"
+    elif "musleabi" in name:
+        extra = "musleabi"
+    elif "musl" in name:
+        extra = "musl"
+    elif "gnullvm" in name:
+        extra = "gnullvm"
+    elif "-gnu" in name or ".gnu." in name:
+        extra = "gnu"
+    elif "msvc" in name:
+        extra = "msvc"
+    elif os_key == "windows":
+        # Windows tools that ship a single un-suffixed Windows variant
+        # (cargo-xwin's `windows-x64.zip` / `windows-x86.zip`) are MSVC
+        # — Microsoft's mainstream Windows ABI.
+        extra = "msvc"
+
+    if extra is not None:
+        return f"{os_key}-{arch}-{extra}"
+    return f"{os_key}-{arch}"
+
+
+def build_release_entry(
+    release: dict[str, Any],
+    *,
+    tool: str | None = None,
+    owner: str | None = None,
+    repo: str | None = None,
+) -> dict[str, Any]:
     """Render one release into the `releases[<tag>]` shape stored in
     the per-tool manifest. Captures every date field GitHub provides
     so consumers don't need a second API call to learn "when did this
     release ship?" or "when was this asset re-uploaded?"
     Asset names are sorted alphabetically inside each release so the
     diff stays deterministic between refreshes.
+
+    `platforms` is a sibling dict keyed by normalized
+    `<os>-<arch>[-<extra>]` strings. Consumers query that instead of
+    parsing per-tool filename quirks: every release's host-x86_64
+    Linux binary lives under `platforms["linux-x86_64-gnu"]` (or
+    `linux-x86_64-musl` for tools that only ship musl).
     """
     resolved_tag: str = release["tag_name"]
     version = resolved_tag[1:] if resolved_tag.startswith("v") else resolved_tag
     assets: dict[str, dict[str, Any]] = {}
+    platforms: dict[str, dict[str, Any]] = {}
     for asset in release.get("assets", []):
+        asset_name = asset["name"]
         # `browser_download_url` is the public CDN-backed URL — does
         # NOT count against the consumer's API rate limit. That's the
         # whole point of centralising the lookup here.
-        assets[asset["name"]] = {
+        entry = {
             "url": asset["browser_download_url"],
             "size": asset.get("size"),
             "content_type": asset.get("content_type"),
             "created_at": asset.get("created_at"),
             "updated_at": asset.get("updated_at"),
         }
-    return {
+        assets[asset_name] = entry
+        platform_key = derive_platform_key(asset_name)
+        if platform_key is not None:
+            # If two assets normalize to the same key (rare but
+            # possible — e.g. accidentally re-uploaded variants), the
+            # alphabetically-first asset name wins (sorted iteration
+            # happens after this loop). That makes the choice
+            # deterministic across runs.
+            platforms.setdefault(
+                platform_key,
+                {
+                    "filename": asset_name,
+                    "url": entry["url"],
+                    "size": entry["size"],
+                },
+            )
+    entry: dict[str, Any] = {}
+    # Self-description fields come first so a human or grep sees
+    # tool/tag immediately.
+    if tool is not None:
+        entry["tool"] = tool
+    if owner is not None:
+        entry["owner"] = owner
+    if repo is not None:
+        entry["repo"] = repo
+    entry.update({
         "tag": resolved_tag,
         "version": version,
         "name": release.get("name"),
@@ -149,88 +307,108 @@ def build_release_entry(release: dict[str, Any]) -> dict[str, Any]:
         "created_at": release.get("created_at"),
         "published_at": release.get("published_at"),
         "release_html_url": release.get("html_url"),
+        "platforms": dict(sorted(platforms.items())),
         "assets": dict(sorted(assets.items())),
-    }
+    })
+    return entry
 
 
-def load_existing_per_tool(path: Path) -> dict[str, Any] | None:
-    """Read a previously-written per-tool manifest, if present.
+def load_existing_per_tool(path: Path) -> list[dict[str, Any]]:
+    """Read a previously-written per-tool manifest as a list of release
+    entries. Handles every schema we've shipped:
 
-    Returns the parsed JSON dict on success, None if the file is
-    missing or unreadable. Failures are tolerated (the merge logic
-    treats them as "start fresh"); the next write will normalise the
-    file.
+      v5 (current): a flat JSON array — return it as-is.
+      v4:           dict with version tags as top-level keys + `latest`
+                    duplicate — extract the version-keyed entries.
+      v3 / v2:      dict with `releases:` wrapper — extract the inner map.
+
+    Failures (missing file, parse error) return an empty list so the
+    merge logic treats them as "start fresh".
     """
     if not path.is_file():
-        return None
+        return []
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        parsed = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return None
+        return []
+    if isinstance(parsed, list):
+        # v5 — already a list of release dicts.
+        return [e for e in parsed if isinstance(e, dict) and "tag" in e]
+    if not isinstance(parsed, dict):
+        return []
+    # v3 / v2 — releases nested under `releases:`.
+    nested = parsed.get("releases")
+    if isinstance(nested, dict):
+        return [e for e in nested.values() if isinstance(e, dict) and "tag" in e]
+    # v4 — version tags at the top level alongside metadata. Skip the
+    # `latest` duplicate (it gets regenerated from the newest entry).
+    legacy_metadata = {"schema_version", "name", "owner", "repo",
+                       "pinned", "tracked_tags", "latest"}
+    entries: list[dict[str, Any]] = []
+    for key, value in parsed.items():
+        if key in legacy_metadata:
+            continue
+        if isinstance(value, dict) and "tag" in value and "platforms" in value:
+            entries.append(value)
+    return entries
 
 
-def build_merged_tool_manifest(
+def build_merged_tool_releases(
     name: str,
     owner: str,
     repo: str,
     pinned_tag: str | None,
     token: str | None,
-    existing: dict[str, Any] | None,
-) -> dict[str, Any]:
+    existing: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], str | None]:
     """Fetch up to 100 releases and merge them into the existing
     per-tool manifest. Entries the API just returned overwrite their
     counterparts on file; entries that aren't in the API window are
-    preserved from the prior file (this is the "merged not chopped"
-    property — older historical releases stick around).
+    preserved from the prior file (the "merged not chopped" property —
+    older historical releases stick around).
 
-    Ordering: every release we store carries `published_at`. The
-    merged dict is rebuilt in `published_at` DESCENDING order, so the
-    first key is always the newest. That makes `manifest["latest"]`
-    a trivial dictionary lookup with no client-side sort algorithm —
-    GitHub already did the ordering work; we just preserve it.
+    Returns `(entries, latest_tag)` where `entries` is the sorted list
+    (newest-first by published_at) ready to be JSON-dumped as the
+    per-tool manifest's flat array. `latest_tag` is the first entry's
+    tag (or None if no releases at all).
     """
     print(f"listing releases for {name} ({owner}/{repo})...", file=sys.stderr)
     fetched = list_releases(owner, repo, token)
 
-    # Start from existing releases (preserves older entries that have
-    # fallen off the per_page=100 API window), then overwrite each
-    # with what we just fetched.
-    merged: dict[str, dict[str, Any]] = {}
-    if existing is not None:
-        for tag, entry in (existing.get("releases") or {}).items():
-            merged[tag] = entry
+    # Start from prior entries (preserves older releases that fell off
+    # the per_page=100 API window), keyed by tag for overwrite. Each
+    # prior entry was previously written with tool/owner/repo, but we
+    # re-normalize all of them so a schema bump or a tool rename
+    # propagates consistently.
+    by_tag: dict[str, dict[str, Any]] = {}
+    for prior in existing:
+        prior_tag = prior.get("tag")
+        if prior_tag:
+            # Re-inject tool/owner/repo in case they were missing on a
+            # legacy entry.
+            prior.setdefault("tool", name)
+            prior.setdefault("owner", owner)
+            prior.setdefault("repo", repo)
+            by_tag[prior_tag] = prior
     for release in fetched:
-        entry = build_release_entry(release)
-        merged[entry["tag"]] = entry
+        entry = build_release_entry(release, tool=name, owner=owner, repo=repo)
+        by_tag[entry["tag"]] = entry
 
-    # Sort by `published_at` descending so the on-disk JSON reads
-    # newest-first and `tracked_tags[0]` is the newest release. Entries
-    # missing `published_at` (defensive — shouldn't happen with the
-    # GitHub API) sink to the bottom.
-    def _key(item: tuple[str, dict[str, Any]]) -> tuple[int, str, str]:
-        tag, entry = item
+    def _key(entry: dict[str, Any]) -> tuple[int, str, str]:
         published = entry.get("published_at") or ""
-        # Tier 1 = has published_at; tier 0 = missing (sinks below).
-        return (1 if published else 0, published, tag)
+        return (1 if published else 0, published, entry.get("tag") or "")
 
-    ordered = dict(sorted(merged.items(), key=_key, reverse=True))
-    tracked = list(ordered.keys())
-
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "name": name,
-        "owner": owner,
-        "repo": repo,
-        # `latest` always names the newest release we know about, so:
-        #   url = manifest['releases'][manifest['latest']]['assets'][<asset-name>]['url']
-        # If this tool has a soldr-side pin, `pinned` records it so
-        # consumers can resolve the pinned tag's assets just as cheaply:
-        #   url = manifest['releases'][manifest['pinned']]['assets'][...]
-        "latest": tracked[0] if tracked else None,
-        "pinned": pinned_tag,
-        "tracked_tags": tracked,
-        "releases": ordered,
-    }
+    ordered = sorted(by_tag.values(), key=_key, reverse=True)
+    latest_tag = ordered[0]["tag"] if ordered else None
+    # `pinned_tag` is captured by the caller into the top-level index;
+    # we don't have to embed it in every entry, but stash it on the
+    # release entry that matches the pin so a single-file consumer can
+    # find the pinned release with a one-line filter:
+    #     jq '.[] | select(.is_pinned)' zccache/manifest.json
+    if pinned_tag is not None:
+        for entry in ordered:
+            entry["is_pinned"] = (entry.get("tag") == pinned_tag)
+    return ordered, latest_tag
 
 
 def write_if_changed(path: Path, new_content: str) -> bool:
@@ -296,22 +474,23 @@ def main() -> int:
         tool_dir = output_dir / name
         tool_path = tool_dir / PER_TOOL_FILENAME
         existing = load_existing_per_tool(tool_path)
-        manifest = build_merged_tool_manifest(
+        entries, latest_tag = build_merged_tool_releases(
             name, owner, repo, pinned_tag, token, existing
         )
         per_tool_index[name] = {
             "path": f"{name}/{PER_TOOL_FILENAME}",
-            "owner": manifest["owner"],
-            "repo": manifest["repo"],
-            "latest": manifest["latest"],
-            "pinned": manifest["pinned"],
-            "tracked_tags": manifest["tracked_tags"],
+            "owner": owner,
+            "repo": repo,
+            "latest": latest_tag,
+            "pinned": pinned_tag,
+            "tracked_tags": [e.get("tag") for e in entries if e.get("tag")],
         }
-        per_tool_payload = json.dumps(manifest, indent=2, sort_keys=False) + "\n"
+        # Per-tool file is the flat array directly — no outer wrapper.
+        per_tool_payload = json.dumps(entries, indent=2) + "\n"
         if write_if_changed(tool_path, per_tool_payload):
             print(
-                f"  wrote {tool_path} (latest={manifest['latest']}, "
-                f"{len(manifest['tracked_tags'])} tags total)",
+                f"  wrote {tool_path} (latest={latest_tag}, "
+                f"{len(entries)} tags total)",
                 file=sys.stderr,
             )
             changed_count += 1

@@ -162,12 +162,20 @@ jobs:
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
-          # Linux gnu rides the musl zccache (statically linked, runs on glibc).
-          zccache_target=x86_64-unknown-linux-musl
-          asset="zccache-v${zccache_version}-${zccache_target}.tar.gz"
-          .github/scripts/fetch_manifest_asset.sh \
-              zccache "${zccache_version}" "${asset}" "/tmp/${asset}"
-          tar -xzf "/tmp/${asset}" -C dist/zccache-stage
+          # zccache ships musl-only for Linux x64 (static; runs on
+          # glibc). One tool_query.py call resolves both the URL and
+          # the version pinning.
+          asset_url=$(python3 .github/scripts/tool_query.py \
+              --platform linux --arch x86 --extra musl \
+              --version "$zccache_version" \
+              zccache)
+          asset_filename=$(basename "$asset_url")
+          echo "manifest: zccache $zccache_version linux-x64-musl"
+          echo "         $asset_url"
+          curl --fail --location \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${asset_filename}" "$asset_url"
+          tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
           for b in zccache zccache-daemon zccache-fp; do
             src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
             if [ -z "$src" ]; then
@@ -368,44 +376,37 @@ jobs:
           tool="cargo-${{ matrix.tool }}"
           dest_dir="${RUNNER_TEMP}/cross-bin"
           mkdir -p "$dest_dir"
-          # The runner host is always linux-x86_64 — the cargo
-          # subcommand itself is a host binary that drives cargo, which
-          # then cross-compiles to ${{ matrix.target }}.
-          #
-          # cargo-zigbuild and cargo-xwin ship asset names with
-          # DIFFERENT shapes:
-          #   zigbuild: cargo-zigbuild-<TRIPLE>.tar.xz          (dash + .tar.xz)
-          #             tarball nests under <TRIPLE>/cargo-zigbuild
-          #   xwin:     cargo-xwin-v<VER>.<TRIPLE>.tar.gz       (period + .tar.gz)
-          #             tarball is flat; cargo-xwin sits at the root
-          # AND cargo-xwin only publishes linux-musl builds (the musl
-          # static binary runs fine on glibc runners), so for that lane
-          # the host triple is x86_64-unknown-linux-musl, not -gnu.
-          case "${{ matrix.tool }}" in
-            zigbuild)
-              asset="cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz"
-              .github/scripts/fetch_manifest_asset.sh \
-                  "$tool" latest "$asset" "/tmp/${asset}"
-              tar -xJf "/tmp/${asset}" -C "$dest_dir" --strip-components=1
-              ;;
-            xwin)
-              # Resolve the latest tag once so we can plug it into the
-              # version-bearing asset filename. One curl + one jq.
-              xwin_tag=$(curl --fail --location --silent --show-error \
-                  --retry 6 --retry-delay 5 --retry-all-errors \
-                  https://raw.githubusercontent.com/zackees/soldr/manifest/cargo-xwin/manifest.json \
-                  | jq -er '.latest')
-              asset="cargo-xwin-${xwin_tag}.x86_64-unknown-linux-musl.tar.gz"
-              .github/scripts/fetch_manifest_asset.sh \
-                  "$tool" "$xwin_tag" "$asset" "/tmp/${asset}"
-              # Flat layout — single binary at the root, no --strip.
-              tar -xzf "/tmp/${asset}" -C "$dest_dir"
-              ;;
-            *)
-              echo "unknown matrix.tool: ${{ matrix.tool }}" >&2
+          # The runner host is linux-x64. tool_query.py walks the
+          # manifest branch's normalized `platforms` map and prints
+          # the public download URL. Try gnu first, fall back to musl
+          # (cargo-xwin ships musl-only for x64); both fallbacks
+          # invoke the same Python script so no per-tool YAML logic.
+          asset_url=$(
+              python3 .github/scripts/tool_query.py \
+                  --platform linux --arch x86 --extra gnu "$tool" \
+              || python3 .github/scripts/tool_query.py \
+                  --platform linux --arch x86 --extra musl "$tool"
+          )
+          asset_filename=$(basename "$asset_url")
+          echo "manifest: $tool host-asset $asset_filename"
+          echo "         $asset_url"
+          curl --fail --location \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${asset_filename}" "$asset_url"
+          # Tarball layout differs across tools (flat vs per-triple
+          # subdir). `tar -a` auto-detects the compression; `find` then
+          # locates `cargo-<tool>` regardless of where in the tree it
+          # ended up — no tool-specific layout knowledge required.
+          extract_tmp=$(mktemp -d)
+          tar -xaf "/tmp/${asset_filename}" -C "$extract_tmp"
+          binary_src=$(find "$extract_tmp" -type f -name "$tool" -print -quit)
+          if [ -z "$binary_src" ]; then
+              echo "could not find $tool inside extracted $asset_filename" >&2
+              find "$extract_tmp" -maxdepth 3 -print >&2
               exit 1
-              ;;
-          esac
+          fi
+          cp "$binary_src" "$dest_dir/$tool"
+          rm -rf "$extract_tmp"
           chmod +x "$dest_dir/$tool"
           echo "$dest_dir" >> "$GITHUB_PATH"
           "$dest_dir/$tool" --version || true
@@ -487,24 +488,30 @@ jobs:
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          # Map the rust target triple → tool_query.py CLI args. zccache
+          # ships linux as musl-only (static, glibc-compatible).
           case "${{ matrix.target }}" in
-            x86_64-unknown-linux-*)
-              zccache_target=x86_64-unknown-linux-musl; ext=tar.gz ;;
-            aarch64-unknown-linux-*)
-              zccache_target=aarch64-unknown-linux-musl; ext=tar.gz ;;
-            x86_64-apple-darwin|aarch64-apple-darwin)
-              zccache_target="${{ matrix.target }}"; ext=tar.gz ;;
-            x86_64-pc-windows-msvc|aarch64-pc-windows-msvc)
-              zccache_target="${{ matrix.target }}"; ext=zip ;;
-            *) echo "no zccache mapping" >&2; exit 1 ;;
+            x86_64-unknown-linux-*)   q="--platform linux   --arch x86 --extra musl" ;;
+            aarch64-unknown-linux-*)  q="--platform linux   --arch arm --extra musl" ;;
+            x86_64-apple-darwin)      q="--platform mac     --arch x86" ;;
+            aarch64-apple-darwin)     q="--platform mac     --arch arm" ;;
+            x86_64-pc-windows-msvc)   q="--platform windows --arch x86 --extra msvc" ;;
+            aarch64-pc-windows-msvc)  q="--platform windows --arch arm --extra msvc" ;;
+            *) echo "no zccache platform mapping for ${{ matrix.target }}" >&2; exit 1 ;;
           esac
-          asset="zccache-v${zccache_version}-${zccache_target}.${ext}"
-          .github/scripts/fetch_manifest_asset.sh \
-              zccache "${zccache_version}" "${asset}" "/tmp/${asset}"
-          case "$ext" in
-            tar.gz) tar -xzf "/tmp/${asset}" -C dist/zccache-stage ;;
-            zip)    sudo apt-get install -y --no-install-recommends unzip
-                    unzip -oq "/tmp/${asset}" -d dist/zccache-stage ;;
+          asset_url=$(python3 .github/scripts/tool_query.py \
+              $q --version "$zccache_version" zccache)
+          asset_filename=$(basename "$asset_url")
+          echo "manifest: zccache $zccache_version ${{ matrix.target }}"
+          echo "         $asset_url"
+          curl --fail --location \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${asset_filename}" "$asset_url"
+          case "$asset_filename" in
+            *.tar.gz)  tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage ;;
+            *.zip)     sudo apt-get install -y --no-install-recommends unzip
+                       unzip -oq "/tmp/${asset_filename}" -d dist/zccache-stage ;;
+            *) echo "unknown archive format for $asset_filename" >&2; exit 1 ;;
           esac
           suffix="${{ matrix.exe_suffix }}"
           for b in zccache zccache-daemon zccache-fp; do
