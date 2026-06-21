@@ -27,14 +27,25 @@ pub struct ToolSpec {
     /// `cargo-chef` stopped publishing Windows/macOS archives after v0.1.73).
     pub pinned_version: Option<&'static str>,
     /// True when the outer `cargo <sub>` invocation will spawn an inner
-    /// cargo build (or otherwise transitively engage rustc) that benefits
-    /// from `RUSTC_WRAPPER=zccache` propagation. Issue #824. Consumed by
-    /// `cargo_front_door::subcommand::is_cacheable_cargo_subcommand`.
+    /// cargo build (or otherwise touch `target/` in a way that benefits
+    /// from soldr's build-side hooks). Issue #824. Consumed by
+    /// `cargo_front_door::subcommand::is_cacheable_cargo_subcommand`,
+    /// which in turn gates the cook-hydrate / disk-watchdog / target-
+    /// memo hooks.
+    ///
+    /// Note: this flag NO LONGER controls `RUSTC_WRAPPER=zccache`
+    /// injection. The front door always sets `RUSTC_WRAPPER` when
+    /// caching is enabled, regardless of the subcommand, so zccache
+    /// observes every rustc call — even from build scripts spawned by
+    /// `cargo metadata`, third-party plugins not registered here, etc.
+    /// zccache's own "non-cacheable" classifier handles the read-only
+    /// / non-hashable cases. This flag's role is narrower: "should the
+    /// build-side hooks engage?", not "should we cache?".
     ///
     /// Static-analysis tools (`cargo-deny`, `cargo-audit`, `cargo-machete`)
-    /// set this to `false` so soldr doesn't pay the
-    /// zccache-session-start/stop tax for a read-only graph scan. Build /
-    /// link wrappers (`cargo-zigbuild`, `cargo-xwin`, `cargo-llvm-cov`,
+    /// set this to `false` so soldr doesn't run cook hydrate or disk
+    /// watchdog probes when there's no build coming. Build/link wrappers
+    /// (`cargo-zigbuild`, `cargo-xwin`, `cargo-llvm-cov`,
     /// `cargo-semver-checks`, `cargo-binstall` via its `Compile`
     /// fallback, `cargo-udeps`, `cargo-expand`, `cargo-chef`,
     /// `cargo-nextest`) set this to `true`. `cargo-watch` is `false`

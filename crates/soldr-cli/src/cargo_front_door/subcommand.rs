@@ -102,9 +102,29 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
 }
 
 fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
+    // Naming note (issue #824 follow-up): this predicate no longer
+    // controls the `RUSTC_WRAPPER=zccache` injection. The front door
+    // now sets that env var on EVERY `soldr cargo ...` invocation when
+    // caching is enabled, so zccache observes every rustc call (caching
+    // the cacheable ones and passing through the rest). This predicate
+    // exists to gate the OTHER per-build hooks that only make sense when
+    // cargo is going to compile and touch `target/`:
+    //
+    //   - `cook_hydrate::maybe_hydrate` (cross-repo target/ pre-flight)
+    //   - `profile_debug::maybe_apply_cargo_profile_debug_default`
+    //   - `disk::maybe_emit_low_disk_warning`
+    //   - `gc::disk::check_disk_or_warn_or_block` (host-volume watchdog)
+    //   - target-registry memoization for the wrapper hot path (#440)
+    //
+    // None of those care about non-compiling cargo verbs like `metadata`
+    // / `search` / `clean`, or about static-analysis cargo-* tools like
+    // `deny` / `audit` / `machete`. So we still classify here. The name
+    // is preserved for diff continuity with #824 even though "cacheable"
+    // now means "engages the build-side hooks", not "controls
+    // RUSTC_WRAPPER".
+
     // Cargo built-in verbs that compile, test, or document — intrinsic
-    // cacheability. These all engage rustc directly and the wrapper bytes
-    // are useful.
+    // build-side hook engagement.
     if matches!(
         subcommand,
         "b" | "build"
@@ -125,22 +145,10 @@ fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
         return true;
     }
 
-    // Managed cargo-<sub> ecosystem tool (#824): consult the registry to
-    // decide whether the tool's outer invocation will spawn an inner
-    // cargo build (or otherwise transitively engage rustc) that benefits
-    // from `RUSTC_WRAPPER=zccache` propagation.
-    //
-    // Before #824 this slot was an ad-hoc whitelist of "nextest" + "chef"
-    // and grew on demand whenever a user noticed missing caching. The
-    // result was the wrong altitude: `cargo zigbuild`, `cargo xwin`,
-    // `cargo llvm-cov`, `cargo semver-checks`, `cargo binstall` (Compile
-    // strategy fallback), `cargo udeps`, and `cargo expand` all silently
-    // bypassed zccache because they were missing from the list. Pushing
-    // the decision into the `known_tools` registry — alongside the
-    // (owner, repo) and binary_name for each tool — keeps the data
-    // co-located so a new tool's `wraps_inner_cargo_build` flag is set
-    // once when it's registered and never drifts. Static-analysis-only
-    // tools (`deny`, `audit`, `machete`) keep the flag false.
+    // Managed cargo-<sub> ecosystem tool — consult the registry. The
+    // `wraps_inner_cargo_build` flag is now the policy data: tools whose
+    // outer invocation will spawn an inner cargo build (or otherwise
+    // engage target/) should engage the build-side hooks too.
     //
     // `watch` is intentionally NOT covered here: `cargo watch -x build`'s
     // inner subcommand is parsed out of the argv by
