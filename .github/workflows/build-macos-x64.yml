@@ -1,5 +1,9 @@
 name: Build macOS x64
 
+# Dual-machine layout (refs #853): see `build-macos-arm64.yml` for
+# rationale. Compile happens on linux/zigbuild; only the smoke test
+# burns macOS minutes.
+
 on:
   push:
     branches:
@@ -14,10 +18,17 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+  cross-build:
+    uses: ./.github/workflows/_cross-build-mac.yml
+    with:
+      target: x86_64-apple-darwin
+      artifact_name: soldr-macos-x64-prebuilt
+      source_ref: ${{ github.sha }}
+
+  smoke-on-mac:
+    needs: cross-build
+    uses: ./.github/workflows/_test-mac-prebuilt.yml
     with:
       runner: macos-15-intel
       target: x86_64-apple-darwin
-      binary_name: soldr
-      source_ref: ${{ github.sha }}
+      artifact_name: soldr-macos-x64-prebuilt
