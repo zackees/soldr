@@ -411,6 +411,54 @@ def build_merged_tool_releases(
     return ordered, latest_tag
 
 
+def preserve_vendored_top_level_entries(
+    output_dir: Path,
+    per_tool_index: dict[str, dict[str, Any]],
+) -> None:
+    """Re-add vendored / non-GitHub-Releases entries from the EXISTING
+    root manifest.json into the in-progress index so the nightly
+    refresh doesn't wipe them.
+
+    The Apple SDK (manifest branch's `deps/mac/manifest.json`, indexed
+    as `apple-sdk` at the top level) is the canonical example —
+    populated by a manual procedure (extracted from
+    messense/cargo-zigbuild:0.20.0) and committed once, but invisible
+    to `build_merged_tool_releases` because it doesn't come from a
+    GitHub release.
+
+    Strategy: walk the OLD top-level manifest.json (if present), keep
+    every entry whose `path` exists on disk and isn't already in the
+    fresh index. Entries that reference a now-missing file get
+    silently dropped (the per-tool file was hand-deleted, so the
+    index pointer is stale).
+    """
+    top_path = output_dir / TOP_LEVEL_FILENAME
+    if not top_path.is_file():
+        return
+    try:
+        existing = json.loads(top_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    existing_tools = existing.get("tools") or {}
+    for name, entry in existing_tools.items():
+        if name in per_tool_index:
+            continue
+        path_ref = entry.get("path")
+        if not path_ref:
+            continue
+        if not (output_dir / path_ref).is_file():
+            print(
+                f"  dropping stale vendored entry: {name} -> {path_ref} (file missing)",
+                file=sys.stderr,
+            )
+            continue
+        per_tool_index[name] = entry
+        print(
+            f"  preserving vendored entry: {name} -> {path_ref}",
+            file=sys.stderr,
+        )
+
+
 def write_if_changed(path: Path, new_content: str) -> bool:
     """Write `new_content` to `path` only if it differs from current.
 
@@ -496,6 +544,13 @@ def main() -> int:
             changed_count += 1
         else:
             print(f"  unchanged {tool_path}", file=sys.stderr)
+
+    # Preserve vendored / non-GitHub-Releases entries (e.g. the Apple
+    # SDK at deps/mac/manifest.json) that this script doesn't know how
+    # to regenerate but which already exist on the manifest branch.
+    # Without this, the nightly refresh wipes them from the top-level
+    # index every run.
+    preserve_vendored_top_level_entries(output_dir, per_tool_index)
 
     top_manifest = {
         "schema_version": SCHEMA_VERSION,
