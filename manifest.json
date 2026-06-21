@@ -1,6 +1,17 @@
 {
   "schema_version": 5,
   "tools": {
+    "apple-sdk": {
+      "path": "deps/mac/manifest.json",
+      "kind": "vendored-sdk",
+      "owner": "vendored",
+      "repo": "messense/cargo-zigbuild",
+      "latest": "MacOSX11.3",
+      "pinned": "MacOSX11.3",
+      "tracked_tags": [
+        "MacOSX11.3"
+      ]
+    },
     "cargo-chef": {
       "path": "cargo-chef/manifest.json",
       "owner": "LukeMathWalker",

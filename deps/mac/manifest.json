@@ -1,0 +1,42 @@
+[
+  {
+    "tool": "apple-sdk",
+    "kind": "vendored-sdk",
+    "owner": "vendored",
+    "repo": "messense/cargo-zigbuild",
+    "tag": "MacOSX11.3",
+    "version": "11.3",
+    "name": "Apple macOS SDK 11.3 (cross-compile)",
+    "source_image": "messense/cargo-zigbuild:0.20.0",
+    "source_path_in_image": "/opt/MacOSX11.3.sdk",
+    "is_pinned": true,
+    "platforms": {
+      "darwin-x64": {
+        "filename": "sdk.tar.zstd",
+        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "size": 52644445,
+        "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
+        "archive": "tar.zst",
+        "compression_level": 19,
+        "extract_layout": "MacOSX11.3.sdk/"
+      },
+      "darwin-arm64": {
+        "filename": "sdk.tar.zstd",
+        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "size": 52644445,
+        "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
+        "archive": "tar.zst",
+        "compression_level": 19,
+        "extract_layout": "MacOSX11.3.sdk/"
+      }
+    },
+    "assets": {
+      "sdk.tar.zstd": {
+        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "size": 52644445,
+        "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
+        "content_type": "application/zstd"
+      }
+    }
+  }
+]
