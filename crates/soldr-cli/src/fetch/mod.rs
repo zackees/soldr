@@ -7,8 +7,8 @@
 pub mod known_tools;
 
 pub use known_tools::{
-    known_cargo_subcommands, lookup_by_cargo_subcommand, lookup_by_crate, ToolSpec,
-    CARGO_CHEF_PINNED_VERSION, KNOWN_TOOLS,
+    known_cargo_subcommands, lookup_by_cargo_subcommand, lookup_by_crate, wraps_inner_cargo_build,
+    ToolSpec, CARGO_CHEF_PINNED_VERSION, KNOWN_TOOLS,
 };
 
 pub mod trust;

@@ -26,6 +26,35 @@ pub struct ToolSpec {
     /// drifted away from the platform coverage soldr depends on (e.g.
     /// `cargo-chef` stopped publishing Windows/macOS archives after v0.1.73).
     pub pinned_version: Option<&'static str>,
+    /// True when the outer `cargo <sub>` invocation will spawn an inner
+    /// cargo build (or otherwise touch `target/` in a way that benefits
+    /// from soldr's build-side hooks). Issue #824. Consumed by
+    /// `cargo_front_door::subcommand::is_cacheable_cargo_subcommand`,
+    /// which in turn gates the cook-hydrate / disk-watchdog / target-
+    /// memo hooks.
+    ///
+    /// Note: this flag NO LONGER controls `RUSTC_WRAPPER=zccache`
+    /// injection. The front door always sets `RUSTC_WRAPPER` when
+    /// caching is enabled, regardless of the subcommand, so zccache
+    /// observes every rustc call — even from build scripts spawned by
+    /// `cargo metadata`, third-party plugins not registered here, etc.
+    /// zccache's own "non-cacheable" classifier handles the read-only
+    /// / non-hashable cases. This flag's role is narrower: "should the
+    /// build-side hooks engage?", not "should we cache?".
+    ///
+    /// Static-analysis tools (`cargo-deny`, `cargo-audit`, `cargo-machete`)
+    /// set this to `false` so soldr doesn't run cook hydrate or disk
+    /// watchdog probes when there's no build coming. Build/link wrappers
+    /// (`cargo-zigbuild`, `cargo-xwin`, `cargo-llvm-cov`,
+    /// `cargo-semver-checks`, `cargo-binstall` via its `Compile`
+    /// fallback, `cargo-udeps`, `cargo-expand`, `cargo-chef`,
+    /// `cargo-nextest`) set this to `true`. `cargo-watch` is `false`
+    /// here because its inner subcommand (`watch -x build`) is parsed
+    /// out by `cargo_watch_inner_is_cacheable`.
+    ///
+    /// Tools without a `cargo_subcommand` mapping never consult this
+    /// flag — they're top-level dispatches outside the cargo front door.
+    pub wraps_inner_cargo_build: bool,
 }
 
 pub const KNOWN_TOOLS: &[ToolSpec] = &[
@@ -37,6 +66,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("nextest-rs", "nextest")),
         tag_prefix: Some("cargo-nextest-"),
         pinned_version: None,
+        wraps_inner_cargo_build: true, // runs `cargo test`
     },
     ToolSpec {
         crate_name: "cargo-deny",
@@ -45,6 +75,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("EmbarkStudios", "cargo-deny")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false, // dep-graph linter
     },
     ToolSpec {
         crate_name: "cargo-audit",
@@ -53,6 +84,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("rustsec", "rustsec")),
         tag_prefix: Some("cargo-audit/"),
         pinned_version: None,
+        wraps_inner_cargo_build: false, // Cargo.lock scan against RustSec DB
     },
     ToolSpec {
         crate_name: "cargo-llvm-cov",
@@ -61,6 +93,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("taiki-e", "cargo-llvm-cov")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: true, // runs `cargo test`/`build` + chains RUSTC_WRAPPER
     },
     // Phase 3 — dev ergonomics.
     ToolSpec {
@@ -70,6 +103,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("est31", "cargo-udeps")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: true, // embeds cargo crate; inherits RUSTC_WRAPPER from parent env
     },
     ToolSpec {
         crate_name: "cargo-semver-checks",
@@ -78,6 +112,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("obi1kenobi", "cargo-semver-checks")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: true, // runs `cargo doc` for baseline + current
     },
     ToolSpec {
         crate_name: "cargo-expand",
@@ -86,6 +121,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("dtolnay", "cargo-expand")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: true, // calls `cargo rustc` which engages RUSTC_WRAPPER
     },
     ToolSpec {
         crate_name: "cargo-watch",
@@ -94,6 +130,9 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("watchexec", "cargo-watch")),
         tag_prefix: None,
         pinned_version: None,
+        // false here: the outer `watch` subcommand isn't itself cacheable;
+        // its inner -x <subcommand> is parsed by cargo_watch_inner_is_cacheable.
+        wraps_inner_cargo_build: false,
     },
     // `cargo-chef` powers the `soldr cook` content-addressable dep-prebuild
     // (issue #359). Pinned to v0.1.73, then source-built into soldr release
@@ -106,6 +145,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("LukeMathWalker", "cargo-chef")),
         tag_prefix: None,
         pinned_version: Some(CARGO_CHEF_PINNED_VERSION),
+        wraps_inner_cargo_build: true, // runs `cargo build` for the stub project
     },
     // Phase 4 — build + docs. None of these are cargo subcommands — they are
     // top-level tools invoked as `soldr cross ...`, `soldr mdbook ...`, etc.
@@ -116,6 +156,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("cross-rs", "cross")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false, // top-level dispatch; not a cargo subcommand
     },
     ToolSpec {
         crate_name: "mdbook",
@@ -124,6 +165,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("rust-lang", "mdBook")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     ToolSpec {
         crate_name: "cbindgen",
@@ -132,6 +174,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("mozilla", "cbindgen")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // Cross-compile front-ends (issue #598 child). Both are explicitly
     // documented in `docs/CROSS_COMPILE.md` as the recommended Rust ↔
@@ -146,6 +189,11 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("rust-cross", "cargo-zigbuild")),
         tag_prefix: None,
         pinned_version: None,
+        // Issue #824: this is the lane the bug was filed against.
+        // cargo-zigbuild wraps `cargo build` with zig as the linker;
+        // without RUSTC_WRAPPER set on the outer cargo, the inner
+        // build runs uncached and consumers pay full cold-build cost.
+        wraps_inner_cargo_build: true,
     },
     ToolSpec {
         crate_name: "cargo-xwin",
@@ -154,6 +202,10 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("rust-cross", "cargo-xwin")),
         tag_prefix: None,
         pinned_version: None,
+        // Same shape as zigbuild — wraps an inner `cargo build` with a
+        // custom linker. Without RUSTC_WRAPPER inherited from the outer
+        // cargo, the inner build runs uncached.
+        wraps_inner_cargo_build: true,
     },
     // Mindshare cargo subcommands (issue #598 child). Both ship pre-built
     // GitHub Releases assets for the targets soldr cares about.
@@ -169,6 +221,11 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("cargo-bins", "cargo-binstall")),
         tag_prefix: None,
         pinned_version: None,
+        // Default install strategies are `[CrateMetaData, QuickInstall,
+        // Compile]`. The Compile fallback shells out to `cargo install`
+        // for crates without a matching prebuilt — so RUSTC_WRAPPER on
+        // the outer process pays off on that fallback path.
+        wraps_inner_cargo_build: true,
     },
     // `cargo-machete` — https://github.com/bnjbvr/cargo-machete.
     // Tags are `vX.Y.Z`; asset names embed the version
@@ -184,6 +241,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("bnjbvr", "cargo-machete")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false, // filesystem + regex scan, no compilation
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     ToolSpec {
@@ -193,6 +251,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("rustwasm", "wasm-pack")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     ToolSpec {
         crate_name: "trunk",
@@ -201,6 +260,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("trunk-rs", "trunk")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     ToolSpec {
         crate_name: "sccache",
@@ -209,6 +269,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("mozilla", "sccache")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // `maturin` powers Python+Rust packaging. Two consumers:
     // 1. `soldr maturin <args>` — direct CLI dispatch for users running
@@ -225,6 +286,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("PyO3", "maturin")),
         tag_prefix: None,
         pinned_version: Some(super::MANAGED_MATURIN_VERSION),
+        wraps_inner_cargo_build: false,
     },
     // Mindshare top-level tools (issue #598 child). Invoked as
     // `soldr bacon`, `soldr just`, `soldr typos`.
@@ -241,6 +303,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("Canop", "bacon")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // `just` — https://github.com/casey/just. Tags are bare
     // `X.Y.Z` (no `v` prefix). Asset names embed the version
@@ -256,6 +319,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("casey", "just")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // `typos` — https://github.com/crate-ci/typos (the `typos-cli`
     // crate). Tags are `vX.Y.Z`; asset names embed the version
@@ -271,6 +335,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("crate-ci", "typos")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // Self-trampoline: `soldr --as <version>` fetches this entry so an older
     // soldr binary can handle the rest of the invocation.
@@ -281,6 +346,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("zackees", "soldr")),
         tag_prefix: None,
         pinned_version: None,
+        wraps_inner_cargo_build: false,
     },
     // `crgx` is bundled into the combined soldr release archive
     // (release-auto.yml source-builds it from a pinned crgx tag), so
@@ -297,6 +363,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         repo: Some(("yfedoseev", "crgx")),
         tag_prefix: None,
         pinned_version: Some(super::MANAGED_CRGX_VERSION),
+        wraps_inner_cargo_build: false,
     },
 ];
 
@@ -310,6 +377,23 @@ pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {
 
 pub fn lookup_by_cargo_subcommand(sub: &str) -> Option<&'static ToolSpec> {
     KNOWN_TOOLS.iter().find(|t| t.cargo_subcommand == Some(sub))
+}
+
+/// Issue #824: true when the cargo subcommand `sub` belongs to a known
+/// managed tool whose outer invocation will spawn an inner cargo build
+/// (or otherwise transitively engage rustc) that benefits from
+/// `RUSTC_WRAPPER=zccache` propagation.
+///
+/// Consumed by `cargo_front_door::subcommand::is_cacheable_cargo_subcommand`
+/// to decide whether to set up the zccache session for a given
+/// `soldr cargo <sub>` invocation. Returns `false` for unknown
+/// subcommands (cargo built-ins and external tools soldr doesn't manage)
+/// and for known static-analysis tools (`deny`, `audit`, `machete`,
+/// `watch`) that don't transitively run rustc.
+pub fn wraps_inner_cargo_build(sub: &str) -> bool {
+    lookup_by_cargo_subcommand(sub)
+        .map(|t| t.wraps_inner_cargo_build)
+        .unwrap_or(false)
 }
 
 /// Every cargo subcommand soldr knows how to fetch a prebuilt binary

@@ -253,6 +253,54 @@ fn cargo_args_are_not_cacheable_for_direct_clean() {
 }
 
 #[test]
+fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
+    // Issue #824 raised against `cargo zigbuild` specifically, but the
+    // sub-agent audit of the known_tools registry surfaced six others
+    // that have the same shape: outer cargo invocation spawns (or is)
+    // an inner cargo build / test / doc whose rustc invocations need
+    // RUSTC_WRAPPER to be present in the env. This test pins the
+    // expected classification so a future "add a tool, forget to set
+    // wraps_inner_cargo_build" regression breaks the build.
+    //
+    // Source of truth: each ToolSpec's `wraps_inner_cargo_build` field
+    // and the per-entry comment justifying the value. This test asserts
+    // that classification flows all the way through the front-door
+    // cacheable predicate.
+    for sub in [
+        "nextest",       // runs `cargo test`
+        "llvm-cov",      // runs `cargo test`/`build`; chains RUSTC_WRAPPER itself
+        "udeps",         // embeds cargo crate; inherits parent env
+        "semver-checks", // runs `cargo doc` for baseline + current
+        "expand",        // calls `cargo rustc` directly
+        "chef",          // runs `cargo build` for the stub project
+        "zigbuild",      // the #824 repro — wraps `cargo build` with zig linker
+        "xwin",          // wraps `cargo build` with the msvc-on-linux toolchain
+        "binstall",      // Compile-strategy fallback shells `cargo install`
+    ] {
+        assert!(
+            cargo_args_are_cacheable(&argv(&[sub])),
+            "subcommand {sub:?} must classify as cacheable so RUSTC_WRAPPER \
+             propagates to its inner cargo (registry says \
+             wraps_inner_cargo_build=true)",
+        );
+    }
+}
+
+#[test]
+fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
+    // The three static-analysis tools in the registry don't spawn
+    // rustc at all; engaging zccache would pay the session-start/stop
+    // tax for zero hit value.
+    for sub in ["deny", "audit", "machete"] {
+        assert!(
+            !cargo_args_are_cacheable(&argv(&[sub])),
+            "subcommand {sub:?} must classify as non-cacheable (registry \
+             says wraps_inner_cargo_build=false)",
+        );
+    }
+}
+
+#[test]
 fn cargo_args_are_cacheable_for_watch_with_short_exec_single_token() {
     assert!(cargo_args_are_cacheable(&argv(&["watch", "-x", "build"])));
 }

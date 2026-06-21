@@ -401,7 +401,25 @@ pub(crate) async fn run_cargo_front_door(
     command.env_remove("CARGO_MAKEFLAGS");
     command.env("RUSTC", &rustc);
     let build_like_cargo = cargo_args_are_cacheable(args);
-    let cache_enabled_for_cargo = cache_enabled && build_like_cargo;
+    // Issue #824 follow-up: always engage RUSTC_WRAPPER + the zccache
+    // session when caching is enabled, regardless of whether the cargo
+    // subcommand is in our known-compiling set. The previous policy
+    // (`cache_enabled && build_like_cargo`) silently dropped rustc
+    // observations whenever soldr's classifier said "this subcommand
+    // doesn't compile" — but build scripts, third-party cargo subcommand
+    // plugins not yet in `known_tools`, and even some normally-non-
+    // compiling verbs *can* re-shell to rustc through paths we don't
+    // model. We always want zccache to see the call, then have zccache
+    // itself decide whether to cache or pass through (its "non-cacheable"
+    // classifier already handles read-only / non-hashable inputs).
+    //
+    // The trade-off is a small session-start/stop overhead (~hundreds of
+    // ms) for cargo subcommands that don't end up spawning rustc — but
+    // the observability win is "no rustc call goes unrecorded". The other
+    // hooks (cook hydrate, disk watchdog, target-registry memo) still
+    // gate on `build_like_cargo` because those have nothing to do with
+    // rustc wrapping — they care about whether `target/` will be touched.
+    let cache_enabled_for_cargo = cache_enabled;
 
     // Issue #597: auto-install rustup components for `soldr cargo {fmt,
     // clippy,miri}` when they're missing. Best-effort and silent on
