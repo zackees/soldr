@@ -1,0 +1,185 @@
+name: _Bootstrap e2e on macOS (prebuilt)
+
+# Reusable workflow: download a soldr binary cross-built on linux
+# (via `_cross-build-mac.yml`), check out the third-party fixture, and
+# drive a real cargo build through that prebuilt soldr — all on a
+# macOS runner.
+#
+# Replaces the "build soldr on macOS + run e2e on macOS" pattern with
+# a two-stage flow: linux+zigbuild does the heavy compile (~10x cheaper
+# in runner minutes and ~3-5x faster wall-clock), this job downloads
+# the binary and runs the actual end-to-end test (cargo build of a
+# third-party fixture *through* soldr) on real darwin hardware.
+#
+# The build phase running on linux is the same bytes the release ships
+# (cross-compile-all-targets.yml proves the zigbuild output works in
+# practice for every release tarball), so the only thing we lose by
+# building on linux is the native-build sanity check — which is also
+# what the standalone build-macos-x64.yml / build-macos-arm64.yml
+# smoke-on-mac jobs already cover.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        # Must be a macos-* runner — the whole point of this workflow is
+        # to exercise the cross-built binary on real darwin hardware.
+        required: true
+        type: string
+      target:
+        # Either `aarch64-apple-darwin` or `x86_64-apple-darwin`.
+        required: true
+        type: string
+      artifact_name:
+        # Must match the `artifact_name` input passed to the upstream
+        # `_cross-build-mac.yml` job that produced this artifact.
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      third_party_repo:
+        required: false
+        type: string
+        default: "zackees/soldr"
+      third_party_ref:
+        required: false
+        type: string
+        default: "0c8daefe4a4ac526b491fade590b32636340dce1"
+      third_party_path:
+        required: false
+        type: string
+        default: "third_party/bootstrap-fixture"
+      third_party_build_dir:
+        required: false
+        type: string
+        default: "crates/soldr-cli/tests/fixtures/windows-msvc-default"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: bootstrap-e2e ${{ inputs.target }} (prebuilt)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    env:
+      # Managed zccache is fetched from zackees/zccache, which is a
+      # cross-repo GitHub Releases lookup from this workflow. Use soldr's
+      # explicit opt-in token env so release metadata requests are
+      # authenticated without weakening the generic GITHUB_TOKEN guard.
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      # Check out soldr only to get the third-party-fixture spec —
+      # we don't build anything from this checkout, the build phase
+      # already happened on the upstream linux+zigbuild job.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: soldr
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: ${{ inputs.third_party_repo }}
+          ref: ${{ inputs.third_party_ref }}
+          path: ${{ inputs.third_party_path }}
+
+      # The mac runner needs a Rust toolchain to actually build the
+      # third-party fixture. The cross-built soldr drives that build;
+      # rustc + cargo come from rustup.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+
+      - name: Download cross-built soldr
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/
+
+      - name: Extract prebuilt soldr
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          tar -xzf "dist/${{ inputs.artifact_name }}.tar.gz" -C "$RUNNER_TEMP/soldr-bin"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+          file "$RUNNER_TEMP/soldr-bin/soldr"
+
+      - name: Show soldr version
+        shell: bash
+        run: soldr --version
+
+      # The actual e2e harness: drive a real `cargo build` against the
+      # third-party fixture through the cross-built soldr binary on
+      # native darwin hardware. This is the test the build/test split
+      # was designed to preserve — exercising the binary on the same
+      # OS it'll run on for users.
+      - name: Resolve third-party toolchain
+        id: third_party_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_root="${GITHUB_WORKSPACE}/${{ inputs.third_party_path }}"
+          for candidate in \
+              "${checkout_root}/${{ inputs.third_party_build_dir }}/rust-toolchain.toml" \
+              "${checkout_root}/rust-toolchain.toml"; do
+            if [[ -f "${candidate}" ]]; then
+              toolchain_file="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${toolchain_file:-}" ]]; then
+            echo "channel=repo-default" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "${toolchain_file}" | head -n1)
+          if [[ -z "${channel}" ]]; then
+            echo "failed to resolve third-party Rust toolchain from ${toolchain_file}" >&2
+            exit 1
+          fi
+          rustup toolchain install "${channel}" --profile minimal
+          rustup target add --toolchain "${channel}" "${{ inputs.target }}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build third-party app through soldr
+        shell: bash
+        working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}/target-${{ inputs.target }}
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
+        run: |
+          set -euo pipefail
+          echo "Using isolated bootstrap SOLDR_CACHE_DIR=${SOLDR_CACHE_DIR}"
+          echo "Using isolated bootstrap ZCCACHE_CACHE_DIR=${ZCCACHE_CACHE_DIR}"
+          start=$(date +%s)
+          soldr cargo build --locked --target "${{ inputs.target }}"
+          end=$(date +%s)
+          elapsed=$((end - start))
+          printf -- '- **%s / Bootstrap third-party build (prebuilt)**: %ds\n' \
+              "${{ inputs.target }}" "${elapsed}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Show shared soldr cache status
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
+        run: soldr cache
+
+      - name: Stop isolated bootstrap cache
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/bootstrap-e2e-${{ inputs.target }}/cache/zccache
+        run: soldr cache shutdown --shutdown-timeout-seconds 30
