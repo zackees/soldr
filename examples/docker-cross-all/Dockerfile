@@ -58,10 +58,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=soldr-builder /soldr-src/target/release/soldr /usr/local/bin/soldr
 RUN soldr --version
 
-# Bootstrap rustup + the pinned channel. `soldr bootstrap` is
-# idempotent so re-running on a cache invalidation is safe.
-ENV CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup
-ENV PATH=/opt/cargo/bin:$PATH
+# Bootstrap rustup + the pinned channel. `soldr bootstrap` installs
+# `rustup` into `~/.soldr/bin/` (soldr's managed bin dir). Putting
+# that on PATH lets `soldr prepare`'s `rustup target add` call
+# succeed — without it the rustup-not-found warning fires for every
+# triple and only the host's rustup target gets added. See follow-up
+# zackees/soldr#927 — soldr prepare should resolve rustup via
+# `resolve_toolchain_binary` instead of bare PATH lookup.
+ENV PATH=/root/.soldr/bin:$PATH
 RUN soldr bootstrap
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN cd /tmp && soldr toolchain install
