@@ -77,6 +77,28 @@ url = "2"
 # managed wheel nor the cargo-install path needs a system libsqlite3.
 rusqlite = { version = "0.32", features = ["bundled"] }
 
+# Release profile size optimization (#920). soldr ships as a template
+# binary that every CI consumer downloads via setup-soldr / actions/
+# cache@v4 / cross-build-artifact passing — leaner binary = faster
+# CI cycles for every consumer. The cargo defaults (`strip = "none"`,
+# `lto = false`, `codegen-units = 16`) leave ~50% on the table for a
+# pure-CLI binary that doesn't need user-side debuggability. Numbers:
+# pre-change shipped 16.3 MB uncompressed for soldr v0.7.59.
+[profile.release]
+# Drop symbol table + debuginfo from the shipped binary. Biggest
+# single contributor to size (~30–50%). For deep debugging via
+# `SOLDR_ZCCACHE_LOCAL_DIR` the user builds locally without this
+# profile anyway; the managed-zccache debug-symbol path is a
+# separate sibling file (`.pdb` / `.dwp` / `.dSYM`).
+strip = "symbols"
+# Cross-crate inlining + dead-code elimination. `thin` is the
+# sweet spot — meaningful size win with manageable compile-time
+# cost (~10–30% slower clean release builds; incremental is fine).
+lto = "thin"
+# Single codegen unit unlocks the last bit of optimization. Slows
+# clean builds further; release-only, so acceptable.
+codegen-units = 1
+
 [workspace.lints.rust]
 unused_mut = "deny"
 

@@ -1,0 +1,153 @@
+name: _Run e2e on windows (prebuilt)
+
+# Reusable workflow: download a soldr.exe cross-built on linux
+# (via `_cross-build-windows.yml`), check out the third-party fixture,
+# and drive a real cargo build through that prebuilt soldr — all on
+# a windows runner.
+#
+# Mirror of `_e2e-mac-prebuilt.yml` for the windows-msvc family. The
+# build phase moved to ubuntu-24.04+xwin (~10x cheaper minutes); this
+# job downloads the artifact and exercises the binary's end-to-end
+# behavior on real windows hardware. ONE windows runner per arch —
+# setup/teardown paid exactly once.
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        # Must be a windows-* runner — the whole point is to exercise
+        # the cross-built binary on real windows hardware.
+        required: true
+        type: string
+      target:
+        # Either `aarch64-pc-windows-msvc` or `x86_64-pc-windows-msvc`.
+        required: true
+        type: string
+      artifact_name:
+        # Must match the `artifact_name` input passed to the upstream
+        # `_cross-build-windows.yml` job that produced this artifact.
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      third_party_repo:
+        required: false
+        type: string
+        default: "zackees/soldr"
+      third_party_ref:
+        required: false
+        type: string
+        default: "0c8daefe4a4ac526b491fade590b32636340dce1"
+      third_party_path:
+        required: false
+        type: string
+        default: "third_party/bootstrap-fixture"
+      third_party_build_dir:
+        required: false
+        type: string
+        default: "crates/soldr-cli/tests/fixtures/windows-msvc-default"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e ${{ inputs.target }} (prebuilt)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: soldr
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: ${{ inputs.third_party_repo }}
+          ref: ${{ inputs.third_party_ref }}
+          path: ${{ inputs.third_party_path }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+
+      - name: Download cross-built soldr.exe
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/
+
+      - name: Extract prebuilt soldr.exe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $binDir = Join-Path $env:RUNNER_TEMP "soldr-bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          tar -xzf "dist/${{ inputs.artifact_name }}.tar.gz" -C $binDir
+          if (-not (Test-Path (Join-Path $binDir "soldr.exe"))) {
+            throw "soldr.exe not present after extraction"
+          }
+          Add-Content -Path $env:GITHUB_PATH -Value $binDir
+
+      - name: Show soldr version
+        shell: pwsh
+        run: soldr --version
+
+      - name: Resolve third-party toolchain
+        id: third_party_toolchain
+        shell: pwsh
+        run: |
+          $checkoutRoot = Join-Path $env:GITHUB_WORKSPACE "${{ inputs.third_party_path }}"
+          $candidates = @(
+            (Join-Path $checkoutRoot "${{ inputs.third_party_build_dir }}/rust-toolchain.toml"),
+            (Join-Path $checkoutRoot "rust-toolchain.toml")
+          )
+          $toolchainFile = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $toolchainFile) {
+            "channel=repo-default" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+          $channelLine = Select-String -Path $toolchainFile -Pattern '^channel = "(.*)"$' | Select-Object -First 1
+          if (-not $channelLine) {
+            throw "failed to resolve third-party Rust toolchain from $toolchainFile"
+          }
+          $channel = $channelLine.Matches[0].Groups[1].Value
+          rustup toolchain install $channel --profile minimal
+          rustup target add --toolchain $channel "${{ inputs.target }}"
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build third-party app through soldr
+        shell: pwsh
+        working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}/target-${{ inputs.target }}
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}/cache/zccache
+        run: |
+          $timer = [Diagnostics.Stopwatch]::StartNew()
+          soldr cargo build --locked --target "${{ inputs.target }}"
+          $exitCode = $LASTEXITCODE
+          $timer.Stop()
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
+            [Globalization.CultureInfo]::InvariantCulture,
+            "- **${{ inputs.target }} / Bootstrap third-party build (prebuilt)**: {0:F3}s",
+            $timer.Elapsed.TotalSeconds
+          ))
+          exit $exitCode
+
+      - name: Stop isolated bootstrap cache
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}/cache/zccache
+        run: soldr cache shutdown --shutdown-timeout-seconds 30

@@ -92,58 +92,20 @@ jobs:
       target: x86_64-unknown-linux-gnu
       shared_key: build-linux-x64
 
-  build-macos-x64:
-    name: macOS x64
-    needs: lint
-    # Mac unit-test sweep stays here for now: nextest archive
-    # cross-compile from linux is parked (cc-rs needs persistent
-    # zig-cc wrappers across the zigbuild → nextest step boundary
-    # — separate effort). The companion e2e-macos-x64 lane below
-    # already does the linux-build + mac-run split for the
-    # bootstrap fixture; this job covers the unit + cli + fetch
-    # tests that the split can't host yet.
-    if: >-
-      github.ref_name == 'main'
-      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      runner: macos-15-intel
-      target: x86_64-apple-darwin
-      shared_key: build-macos-x64
+  # build-macos-x64 removed. The unit-test sweep for darwin runs on
+  # linux x86 (same Rust code, target-independent logic) via
+  # `build-linux-x64`; the `e2e-macos-x64` lane below covers
+  # darwin-runtime behavior via the cross-built binary; the
+  # standalone `build-macos-x64.yml` push:main smoke is the
+  # native-runtime guard. One mac runner per arch — goal of the
+  # consolidation pass.
 
-  build-windows-x64:
-    name: Windows x64
-    needs: lint
-    if: >-
-      github.ref_name == 'main'
-      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      runner: windows-2025
-      target: x86_64-pc-windows-msvc
-      shared_key: windows-x86_64-msvc
-      cache_key: ci-windows-x64
-      install_components: rustfmt, clippy
-      verify_windows_msys_default_msvc: true
-
-  build-windows-arm64:
-    # Preserves the cargo-test coverage that the standalone
-    # build-windows-arm64.yml provided before it was deleted in
-    # favour of this template + materializer pattern. The
-    # equivalent e2e-windows-arm64 job below only builds; this one
-    # runs the unit + cli + fetch test sweep.
-    name: Windows ARM64
-    needs: lint
-    if: >-
-      github.ref_name == 'main'
-      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      runner: windows-11-arm
-      target: aarch64-pc-windows-msvc
-      shared_key: windows-aarch64-msvc
-      cache_key: ci-windows-arm64
-      install_components: rustfmt, clippy
+  # build-windows-{x64,arm64} removed. The unit-test sweep for
+  # windows runs on linux x86 via `build-linux-x64` (target-
+  # independent logic); the `e2e-windows-{x64,arm64}` lanes below
+  # cover windows-runtime behavior via the cross-built binary
+  # downloaded onto the windows runner. ONE windows runner per
+  # arch — goal of the consolidation pass.
 
   # Linux glibc/musl e2e jobs always run — they are the proof of life
   # and are cheap. The `fast-build` label only suppresses mac/win.
@@ -157,34 +119,63 @@ jobs:
       save_cache: ${{ github.event_name == 'push' }}
       source_ref: ${{ github.sha }}
 
+  # Non-x86 linux e2e lanes split: cross-build on linux-x86 via
+  # zigbuild → e2e on the target-arch linux runner. Same shape as
+  # the mac/windows lanes above. x86_64-musl is included even though
+  # the runner is also ubuntu-24.04 — the cross-compile step still
+  # avoids a per-job zigbuild bootstrap on the e2e runner.
+  e2e-linux-arm64-build:
+    name: cross-build aarch64-unknown-linux-gnu (linux-x86 host)
+    uses: ./.github/workflows/_cross-build-linux.yml
+    with:
+      target: aarch64-unknown-linux-gnu
+      artifact_name: soldr-ci-e2e-linux-arm64
+      source_ref: ${{ github.sha }}
+
   e2e-linux-arm64:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    needs: e2e-linux-arm64-build
+    uses: ./.github/workflows/_e2e-linux-prebuilt.yml
     with:
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-gnu
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-linux-arm64
+      source_ref: ${{ github.sha }}
+
+  e2e-linux-x64-musl-build:
+    name: cross-build x86_64-unknown-linux-musl (linux-x86 host)
+    uses: ./.github/workflows/_cross-build-linux.yml
+    with:
+      target: x86_64-unknown-linux-musl
+      artifact_name: soldr-ci-e2e-linux-x64-musl
       source_ref: ${{ github.sha }}
 
   e2e-linux-x64-musl:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    needs: e2e-linux-x64-musl-build
+    uses: ./.github/workflows/_e2e-linux-prebuilt.yml
     with:
       runner: ubuntu-24.04
       target: x86_64-unknown-linux-musl
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-linux-x64-musl
+      source_ref: ${{ github.sha }}
+
+  e2e-linux-arm64-musl-build:
+    name: cross-build aarch64-unknown-linux-musl (linux-x86 host)
+    uses: ./.github/workflows/_cross-build-linux.yml
+    with:
+      target: aarch64-unknown-linux-musl
+      artifact_name: soldr-ci-e2e-linux-arm64-musl
       source_ref: ${{ github.sha }}
 
   e2e-linux-arm64-musl:
     name: build
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    needs: e2e-linux-arm64-musl-build
+    uses: ./.github/workflows/_e2e-linux-prebuilt.yml
     with:
       runner: ubuntu-24.04-arm
       target: aarch64-unknown-linux-musl
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-linux-arm64-musl
       source_ref: ${{ github.sha }}
 
   # macOS test lanes split into two phases:
@@ -253,24 +244,44 @@ jobs:
       source_ref: ${{ github.sha }}
       run_unit_tests: true
 
+  # Windows e2e lanes split: linux+xwin cross-build → windows-run.
+  # Same shape as the mac lanes above.
+  e2e-windows-x64-build:
+    name: cross-build x86_64-pc-windows-msvc (linux host)
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    uses: ./.github/workflows/_cross-build-windows.yml
+    with:
+      target: x86_64-pc-windows-msvc
+      artifact_name: soldr-ci-e2e-windows-x64
+      source_ref: ${{ github.sha }}
+
   e2e-windows-x64:
     name: build
+    needs: e2e-windows-x64-build
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_e2e-windows-prebuilt.yml
     with:
       runner: windows-2025
       target: x86_64-pc-windows-msvc
-      binary_name: soldr.exe
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-windows-x64
+      source_ref: ${{ github.sha }}
+
+  e2e-windows-arm64-build:
+    name: cross-build aarch64-pc-windows-msvc (linux host)
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    uses: ./.github/workflows/_cross-build-windows.yml
+    with:
+      target: aarch64-pc-windows-msvc
+      artifact_name: soldr-ci-e2e-windows-arm64
       source_ref: ${{ github.sha }}
 
   e2e-windows-arm64:
     name: build
+    needs: e2e-windows-arm64-build
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_e2e-windows-prebuilt.yml
     with:
       runner: windows-11-arm
       target: aarch64-pc-windows-msvc
-      binary_name: soldr.exe
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-windows-arm64
       source_ref: ${{ github.sha }}
