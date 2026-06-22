@@ -1,0 +1,180 @@
+name: _Run e2e on linux (prebuilt)
+
+# Reusable workflow: download a soldr binary cross-built on linux-x86
+# (via `_cross-build-linux.yml`), check out the third-party fixture,
+# and drive a real cargo build through that prebuilt soldr — all on
+# a same-arch linux runner.
+#
+# Mirror of `_e2e-mac-prebuilt.yml` for the linux-{gnu,musl} family
+# (excluding x86_64-unknown-linux-gnu which is the host arch and uses
+# direct `_bootstrap-e2e.yml` without the split).
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        # Either `ubuntu-24.04` (for x86_64-musl) or `ubuntu-24.04-arm`
+        # (for aarch64-{gnu,musl}). Must match the target arch — the
+        # whole point is to exercise the binary on real hardware.
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      third_party_repo:
+        required: false
+        type: string
+        default: "zackees/soldr"
+      third_party_ref:
+        required: false
+        type: string
+        default: "0c8daefe4a4ac526b491fade590b32636340dce1"
+      third_party_path:
+        required: false
+        type: string
+        default: "third_party/bootstrap-fixture"
+      third_party_build_dir:
+        required: false
+        type: string
+        default: "crates/soldr-cli/tests/fixtures/windows-msvc-default"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e ${{ inputs.target }} (prebuilt)
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    env:
+      # Musl targets need musl-tools for cc-rs invocations on the e2e
+      # fixture (third-party project may have C deps). Mirrors the
+      # install step in `_bootstrap-e2e.yml`.
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CXX_x86_64_unknown_linux_musl: musl-g++
+      CC_aarch64_unknown_linux_musl: musl-gcc
+      CXX_aarch64_unknown_linux_musl: musl-g++
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source_ref }}
+          path: soldr
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          repository: ${{ inputs.third_party_repo }}
+          ref: ${{ inputs.third_party_ref }}
+          path: ${{ inputs.third_party_path }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+
+      - name: Install musl tools
+        if: contains(inputs.target, 'musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          attempts=0
+          max_attempts=3
+          until sudo apt-get update; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get update failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+          attempts=0
+          until sudo apt-get install -y --no-install-recommends musl-tools; do
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "apt-get install musl-tools failed after $max_attempts attempts" >&2
+              exit 1
+            fi
+            sleep $((attempts * 3))
+          done
+
+      - name: Download cross-built soldr
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/
+
+      - name: Extract prebuilt soldr
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          tar -xzf "dist/${{ inputs.artifact_name }}.tar.gz" -C "$RUNNER_TEMP/soldr-bin"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+          file "$RUNNER_TEMP/soldr-bin/soldr"
+
+      - name: Show soldr version
+        shell: bash
+        run: soldr --version
+
+      - name: Resolve third-party toolchain
+        id: third_party_toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          checkout_root="${GITHUB_WORKSPACE}/${{ inputs.third_party_path }}"
+          for candidate in \
+              "${checkout_root}/${{ inputs.third_party_build_dir }}/rust-toolchain.toml" \
+              "${checkout_root}/rust-toolchain.toml"; do
+            if [[ -f "${candidate}" ]]; then
+              toolchain_file="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${toolchain_file:-}" ]]; then
+            echo "channel=repo-default" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "${toolchain_file}" | head -n1)
+          if [[ -z "${channel}" ]]; then
+            echo "failed to resolve third-party Rust toolchain from ${toolchain_file}" >&2
+            exit 1
+          fi
+          rustup toolchain install "${channel}" --profile minimal
+          rustup target add --toolchain "${channel}" "${{ inputs.target }}"
+          echo "channel=${channel}" >> "${GITHUB_OUTPUT}"
+
+      - name: Build third-party app through soldr
+        shell: bash
+        working-directory: ${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/${{ inputs.third_party_path }}/${{ inputs.third_party_build_dir }}/target-${{ inputs.target }}
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}/cache/zccache
+        run: |
+          set -euo pipefail
+          start=$(date +%s)
+          soldr cargo build --locked --target "${{ inputs.target }}"
+          end=$(date +%s)
+          printf -- '- **%s / Bootstrap third-party build (prebuilt)**: %ds\n' \
+              "${{ inputs.target }}" "$((end - start))" \
+              >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Stop isolated bootstrap cache
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}/cache/zccache
+        run: soldr cache shutdown --shutdown-timeout-seconds 30
