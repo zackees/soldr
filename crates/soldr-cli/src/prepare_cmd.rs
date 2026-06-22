@@ -172,6 +172,12 @@ pub async fn run(
     let paths = SoldrPaths::new()?;
     let github_env_path = github_env.as_deref();
 
+    // Classify the triple up front so the dispatch below + the
+    // post-restore audit + any future per-target cache namespacing all
+    // share the same source of truth. Unknown triples ERROR here
+    // instead of silently falling through to a no-op.
+    let attrs = classify_target(&target)?;
+
     eprintln!("soldr prepare: target={target}");
 
     // `--restore`: extract a previously-saved archive of soldr-managed
@@ -197,7 +203,7 @@ pub async fn run(
         // useful and the dispatch fills any remaining gaps. The
         // present/missing summary lets consumers see exactly which
         // pieces survived.
-        let report = validate_restore_state(&target, &paths)?;
+        let report = expected_state_paths(&attrs, &paths)?;
         emit_restore_report(&report);
     }
 
@@ -206,43 +212,42 @@ pub async fn run(
         eprintln!("soldr prepare: warning: rustup target add failed: {e}");
     }
 
-    if target.ends_with("-pc-windows-msvc") {
-        // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
-        // toolchain (for clang/lld-link), and the MSVC CRT cache.
-        eprintln!("soldr prepare: dispatch=xwin");
-        let llvm_dir = match ensure_llvm_toolchain(&paths).await {
-            Ok(p) => p,
-            Err(SoldrError::UnsupportedPlatform(m)) => {
-                eprintln!("soldr prepare: LLVM auto-bootstrap not supported on host: {m}");
-                PathBuf::new()
+    match attrs.os {
+        TargetOs::Windows => {
+            // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
+            // toolchain (for clang/lld-link), and the MSVC CRT cache.
+            eprintln!("soldr prepare: dispatch=xwin");
+            let llvm_dir = match ensure_llvm_toolchain(&paths).await {
+                Ok(p) => p,
+                Err(SoldrError::UnsupportedPlatform(m)) => {
+                    eprintln!("soldr prepare: LLVM auto-bootstrap not supported on host: {m}");
+                    PathBuf::new()
+                }
+                Err(e) => return Err(e),
+            };
+            if !llvm_dir.as_os_str().is_empty() {
+                eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
             }
-            Err(e) => return Err(e),
-        };
-        if !llvm_dir.as_os_str().is_empty() {
-            eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
+            ensure_xwin_cache().await?;
         }
-        ensure_xwin_cache().await?;
-    } else if target.ends_with("-apple-darwin") {
-        // Darwin cross-compile path: needs zig + Apple SDK; export SDKROOT.
-        eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk");
-        let zig_dir = ensure_zig(&paths).await?;
-        eprintln!("soldr prepare: zig at {}", zig_dir.display());
-        let sdk = ensure_apple_sdk(&paths).await?;
-        eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
-        let sdk_str = sdk.to_string_lossy();
-        println!("SDKROOT={sdk_str}");
-        append_env(github_env_path, "SDKROOT", &sdk_str)?;
-    } else if target.contains("-unknown-linux-") {
-        // Linux cross-compile via zigbuild (musl always, gnu when
-        // host != target arch).
-        eprintln!("soldr prepare: dispatch=zigbuild");
-        let zig_dir = ensure_zig(&paths).await?;
-        eprintln!("soldr prepare: zig at {}", zig_dir.display());
-    } else {
-        eprintln!(
-            "soldr prepare: target {target} has no cross-compile bootstrap recipe; \
-             rustup target add only"
-        );
+        TargetOs::Darwin => {
+            // Darwin cross-compile path: needs zig + Apple SDK; export SDKROOT.
+            eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk");
+            let zig_dir = ensure_zig(&paths).await?;
+            eprintln!("soldr prepare: zig at {}", zig_dir.display());
+            let sdk = ensure_apple_sdk(&paths).await?;
+            eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
+            let sdk_str = sdk.to_string_lossy();
+            println!("SDKROOT={sdk_str}");
+            append_env(github_env_path, "SDKROOT", &sdk_str)?;
+        }
+        TargetOs::Linux => {
+            // Linux cross-compile via zigbuild (musl always, gnu when
+            // host != target arch).
+            eprintln!("soldr prepare: dispatch=zigbuild");
+            let zig_dir = ensure_zig(&paths).await?;
+            eprintln!("soldr prepare: zig at {}", zig_dir.display());
+        }
     }
 
     // `--save`: capture the prepared state into a tar.zst that callers
@@ -267,6 +272,120 @@ struct RestoreEntry {
     present: bool,
 }
 
+/// CPU architecture tag in a Rust target triple. Restricted to the
+/// arches soldr's cross-compile bootstrap supports; anything else
+/// causes `classify_target` to ERROR rather than falling through
+/// to a no-op dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetArch {
+    X86_64,
+    Aarch64,
+}
+
+/// OS family in a Rust target triple. Limited to the cross-compile
+/// destinations soldr supports today.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetOs {
+    Windows,
+    Darwin,
+    Linux,
+}
+
+/// ABI suffix in a Rust target triple. `None` for darwin (no ABI
+/// suffix in apple triples). `Msvc`/`Gnu`/`Musl` for the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetAbi {
+    Msvc,
+    Gnu,
+    Musl,
+}
+
+/// Result of classifying a Rust target triple into the soldr
+/// bootstrap dispatch attributes. Replaces the ad-hoc
+/// `target.ends_with("...")` checks with a single source-of-truth
+/// classifier — every consumer (the dispatch in `run()`, the
+/// restore-audit's `expected_state_paths`, future per-target cache
+/// namespacing) reads off the same struct.
+///
+/// `classify_target` ERRORs on unknown triples rather than silently
+/// returning an empty attribute set, so a typo in CI YAML surfaces
+/// loudly instead of pretending the prepare succeeded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetAttrs {
+    /// The canonical triple as supplied.
+    pub triple: String,
+    pub arch: TargetArch,
+    pub os: TargetOs,
+    pub abi: Option<TargetAbi>,
+    /// Needs `cargo-zigbuild` (and zig on PATH). True for cross-
+    /// compile to darwin or to a non-host linux flavor.
+    pub needs_zig: bool,
+    /// Needs the vendored MSVC CRT + Windows SDK cache extracted to
+    /// `~/.cache/cargo-xwin/`. True for `*-pc-windows-msvc`.
+    pub needs_xwin_cache: bool,
+    /// Needs the soldr-managed LLVM toolchain (clang / lld-link /
+    /// llvm-lib). True for `*-pc-windows-msvc` (cargo-xwin uses it).
+    pub needs_llvm_toolchain: bool,
+    /// Needs the vendored Apple SDK (IOKit/CoreFoundation/...).
+    /// True for `*-apple-darwin`.
+    pub needs_apple_sdk: bool,
+}
+
+/// Classify a Rust target triple into a `TargetAttrs`. Pattern is
+/// the standard `<arch>-<vendor>-<os>[-<abi>]` triple structure
+/// LLVM uses; `vendor` is ignored (always `pc`, `apple`, or
+/// `unknown` for the targets we care about). Returns an error for
+/// any triple soldr's bootstrap doesn't know how to prepare — a
+/// typo in CI surfaces as a hard failure instead of a silent
+/// no-op.
+pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
+    // Tokenize on `-`. Accept `<arch>-<vendor>-<os>` (3 parts, darwin)
+    // and `<arch>-<vendor>-<os>-<abi>` (4 parts, windows/linux).
+    let parts: Vec<&str> = triple.split('-').collect();
+    if parts.len() < 3 || parts.len() > 4 {
+        return Err(SoldrError::Other(format!(
+            "soldr prepare: unrecognized target triple shape: `{triple}` \
+             (expected `<arch>-<vendor>-<os>[-<abi>]`)"
+        )));
+    }
+    let arch = match parts[0] {
+        "x86_64" => TargetArch::X86_64,
+        "aarch64" => TargetArch::Aarch64,
+        other => {
+            return Err(SoldrError::Other(format!(
+                "soldr prepare: unsupported arch `{other}` in triple `{triple}` \
+                 (supported: x86_64, aarch64)"
+            )));
+        }
+    };
+    // parts[1] is vendor (`pc`, `apple`, `unknown`) — accepted as-is.
+    let os_str = parts[2];
+    let abi_str = parts.get(3).copied();
+    let (os, abi) = match (os_str, abi_str) {
+        ("windows", Some("msvc")) => (TargetOs::Windows, Some(TargetAbi::Msvc)),
+        ("darwin", None) => (TargetOs::Darwin, None),
+        ("linux", Some("gnu")) => (TargetOs::Linux, Some(TargetAbi::Gnu)),
+        ("linux", Some("musl")) => (TargetOs::Linux, Some(TargetAbi::Musl)),
+        _ => {
+            return Err(SoldrError::Other(format!(
+                "soldr prepare: unsupported os/abi combination `{os_str}{}` in triple `{triple}` \
+                 (supported: windows-msvc, darwin, linux-gnu, linux-musl)",
+                abi_str.map(|a| format!("-{a}")).unwrap_or_default()
+            )));
+        }
+    };
+    Ok(TargetAttrs {
+        triple: triple.to_string(),
+        arch,
+        os,
+        abi,
+        needs_zig: matches!(os, TargetOs::Darwin | TargetOs::Linux),
+        needs_xwin_cache: matches!(os, TargetOs::Windows),
+        needs_llvm_toolchain: matches!(os, TargetOs::Windows),
+        needs_apple_sdk: matches!(os, TargetOs::Darwin),
+    })
+}
+
 /// List the on-disk paths that `prepare --target <triple>` is
 /// expected to populate. Used after `--restore` to surface a
 /// present/missing summary; the dispatch below downloads anything
@@ -275,13 +394,15 @@ struct RestoreEntry {
 /// Paths are version-pinned where possible (e.g. zig 0.13.0, LLVM
 /// 21.1.5) so a stale archive that's missing the current pin is
 /// reported as "missing" even if an older version exists on disk.
-fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreEntry>, SoldrError> {
+fn expected_state_paths(
+    attrs: &TargetAttrs,
+    paths: &SoldrPaths,
+) -> Result<Vec<RestoreEntry>, SoldrError> {
     let mut entries = Vec::new();
-    let zig_dir = paths
-        .bin
-        .join(format!("zig-{}", crate::fetch::MANAGED_ZIG_VERSION));
-    let zig_needed = target.ends_with("-apple-darwin") || target.contains("-unknown-linux-");
-    if zig_needed {
+    if attrs.needs_zig {
+        let zig_dir = paths
+            .bin
+            .join(format!("zig-{}", crate::fetch::MANAGED_ZIG_VERSION));
         let present = zig_dir.join(".complete").is_file() || zig_dir.is_dir();
         entries.push(RestoreEntry {
             label: format!("zig {}", crate::fetch::MANAGED_ZIG_VERSION),
@@ -289,7 +410,7 @@ fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreE
             present,
         });
     }
-    if target.ends_with("-pc-windows-msvc") {
+    if attrs.needs_llvm_toolchain {
         let llvm_dir = paths
             .bin
             .join(format!("llvm-{}", crate::fetch::MANAGED_LLVM_VERSION));
@@ -298,6 +419,8 @@ fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreE
             present: llvm_dir.is_dir(),
             path: llvm_dir,
         });
+    }
+    if attrs.needs_xwin_cache {
         let xwin = xwin_cache_root()?.join("xwin");
         entries.push(RestoreEntry {
             label: "xwin MSVC CRT + Windows SDK".to_string(),
@@ -306,7 +429,7 @@ fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreE
             path: xwin,
         });
     }
-    if target.ends_with("-apple-darwin") {
+    if attrs.needs_apple_sdk {
         let sdk = paths
             .bin
             .join("apple-sdk")
@@ -318,13 +441,6 @@ fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreE
         });
     }
     Ok(entries)
-}
-
-fn validate_restore_state(
-    target: &str,
-    paths: &SoldrPaths,
-) -> Result<Vec<RestoreEntry>, SoldrError> {
-    expected_state_paths(target, paths)
 }
 
 fn emit_restore_report(entries: &[RestoreEntry]) {
@@ -507,5 +623,71 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(classify_target_windows_msvc, {
+        let attrs = classify_target("x86_64-pc-windows-msvc").expect("classify");
+        assert_eq!(attrs.arch, TargetArch::X86_64);
+        assert_eq!(attrs.os, TargetOs::Windows);
+        assert_eq!(attrs.abi, Some(TargetAbi::Msvc));
+        assert!(attrs.needs_xwin_cache);
+        assert!(attrs.needs_llvm_toolchain);
+        assert!(!attrs.needs_zig);
+        assert!(!attrs.needs_apple_sdk);
+
+        let arm = classify_target("aarch64-pc-windows-msvc").expect("classify arm");
+        assert_eq!(arm.arch, TargetArch::Aarch64);
+        assert_eq!(arm.os, TargetOs::Windows);
+    });
+
+    crate::timed_test!(classify_target_apple_darwin, {
+        let attrs = classify_target("aarch64-apple-darwin").expect("classify");
+        assert_eq!(attrs.arch, TargetArch::Aarch64);
+        assert_eq!(attrs.os, TargetOs::Darwin);
+        assert_eq!(attrs.abi, None);
+        assert!(attrs.needs_zig);
+        assert!(attrs.needs_apple_sdk);
+        assert!(!attrs.needs_xwin_cache);
+        assert!(!attrs.needs_llvm_toolchain);
+
+        let intel = classify_target("x86_64-apple-darwin").expect("classify intel");
+        assert_eq!(intel.arch, TargetArch::X86_64);
+    });
+
+    crate::timed_test!(classify_target_linux_gnu_and_musl, {
+        let gnu = classify_target("x86_64-unknown-linux-gnu").expect("classify gnu");
+        assert_eq!(gnu.os, TargetOs::Linux);
+        assert_eq!(gnu.abi, Some(TargetAbi::Gnu));
+        assert!(gnu.needs_zig);
+        assert!(!gnu.needs_xwin_cache);
+        assert!(!gnu.needs_apple_sdk);
+
+        let musl = classify_target("aarch64-unknown-linux-musl").expect("classify musl");
+        assert_eq!(musl.os, TargetOs::Linux);
+        assert_eq!(musl.abi, Some(TargetAbi::Musl));
+    });
+
+    crate::timed_test!(classify_target_rejects_unknown_arch, {
+        let err = classify_target("riscv64-unknown-linux-gnu").expect_err("riscv unsupported");
+        assert!(err.to_string().contains("unsupported arch"));
+    });
+
+    crate::timed_test!(classify_target_rejects_unknown_os, {
+        let err = classify_target("x86_64-unknown-freebsd").expect_err("freebsd unsupported");
+        assert!(err.to_string().contains("unsupported os/abi"));
+    });
+
+    crate::timed_test!(classify_target_rejects_malformed_triple, {
+        let err = classify_target("x86_64").expect_err("too few parts");
+        assert!(err.to_string().contains("unrecognized target triple shape"));
+        let err = classify_target("a-b-c-d-e").expect_err("too many parts");
+        assert!(err.to_string().contains("unrecognized target triple shape"));
+    });
+
+    crate::timed_test!(classify_target_rejects_windows_gnu_abi, {
+        // soldr supports MSVC only on Windows; gnu (mingw) is not in
+        // scope so the classifier rejects it.
+        let err = classify_target("x86_64-pc-windows-gnu").expect_err("gnu abi on windows");
+        assert!(err.to_string().contains("unsupported os/abi"));
     });
 }
