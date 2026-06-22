@@ -1,14 +1,19 @@
-# One-image linux x86 cross-compile for all 8 targets in
-# [workspace.metadata.soldr].targets.
+# One-image linux x86 cross-compile for the full soldr target matrix.
 #
 # Image layers:
 #   1. debian + base build tools
-#   2. soldr (via pip — official maturin-built linux x86_64 wheel)
+#   2. soldr (via pipx — official maturin-built linux x86_64 wheel)
 #   3. soldr bootstrap → rustup install
-#   4. soldr toolchain install → pin to 1.94.1
-#   5. soldr prepare --target all → bake in zig, LLVM, Apple SDK,
-#      xwin MSVC CRT cache, every rustup target. ~1.5 GiB but every
-#      subsequent `docker run` skips the warm-up entirely.
+#   4. soldr toolchain install → pin to rust 1.94.1
+#   5. soldr prepare --target <comma-separated-list> → bake in zig,
+#      LLVM, Apple SDK, xwin MSVC CRT cache, every rustup target.
+#      ~1.5 GiB but every subsequent `docker run` skips the warm-up.
+#
+# At image-build time no source volume is mounted, so `--target all`
+# (which reads `[workspace.metadata.soldr].targets` from a workspace
+# `Cargo.toml`) can't be used. The explicit comma-separated list form
+# ships in soldr PR #925 — bumping `SOLDR_VERSION` to a release that
+# includes #925 is what unblocks this Dockerfile.
 #
 # Replaces the per-OS GH Actions matrix with one local-docker step.
 # See examples/docker-cross-all/README.md for the rationale.
@@ -38,12 +43,13 @@ RUN soldr bootstrap
 COPY rust-toolchain.toml /tmp/rust-toolchain.toml
 RUN cd /tmp && soldr toolchain install
 
-# Prepare the cross-compile toolchain for every target declared under
-# [workspace.metadata.soldr].targets in this image's seed Cargo.toml.
-# Bakes zig, LLVM, Apple SDK, xwin CRT, and `rustup target add` for
-# all 8 triples into the image. `docker run` arrives warm.
-COPY seed/Cargo.toml /tmp/Cargo.toml
-RUN cd /tmp && soldr prepare --target all
+# Prepare the cross-compile toolchain for every target in one shot.
+# Keep this list in sync with the root `[workspace.metadata.soldr]`
+# entry of soldr's own Cargo.toml — the explicit comma-separated form
+# is used here because there is no Cargo.toml mounted yet at image-
+# build time. Requires soldr PR #925.
+RUN soldr prepare --target \
+x86_64-pc-windows-msvc,aarch64-pc-windows-msvc,x86_64-apple-darwin,aarch64-apple-darwin,x86_64-unknown-linux-gnu,aarch64-unknown-linux-gnu,x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
 
 # Workdir is bind-mounted by the host build.sh.
 WORKDIR /work

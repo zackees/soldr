@@ -25,10 +25,13 @@ goes straight to `cargo build`:
 2. **rustup + pinned channel** — `soldr bootstrap` then `soldr
    toolchain install` against the included `rust-toolchain.toml`.
 3. **Every cross-compile asset for every target** — `soldr prepare
-   --target all` reading the seed `Cargo.toml` that mirrors the root
-   workspace's `[workspace.metadata.soldr].targets`. This pulls zig,
-   LLVM, the Apple SDK, the xwin MSVC CRT cache, and runs `rustup
-   target add` for all 8 triples.
+   --target <comma-separated-list>` with the 8 triples hard-coded into
+   the Dockerfile. The comma-separated form is used because at image-
+   build time no source volume is mounted, so `--target all` (which
+   reads `[workspace.metadata.soldr].targets` from a `Cargo.toml`)
+   can't see the workspace yet. This pulls zig, LLVM, the Apple SDK,
+   the xwin MSVC CRT cache, and runs `rustup target add` for all 8
+   triples. Requires soldr [PR #925](https://github.com/zackees/soldr/pull/925).
 
 The resulting image is ~1.5 GiB but every subsequent `docker run`
 arrives warm.
@@ -71,9 +74,8 @@ matrix the CI lanes exercise, with one runner instead of N.
 
 | | |
 |---|---|
-| `Dockerfile` | Debian slim + soldr + rustup + `soldr prepare --target all` |
+| `Dockerfile` | Debian slim + soldr + rustup + `soldr prepare --target <list>` |
 | `rust-toolchain.toml` | Channel pin used by `soldr toolchain install` inside the image |
-| `seed/Cargo.toml` | Bake-time manifest carrying the `[workspace.metadata.soldr].targets` list |
 | `crate/` | Tiny Rust source — prints `OK target_os=… target_arch=…` |
 | `build.sh` | Host orchestrator — builds image, loops targets, reports sizes |
 | `out/<target>/` | Host-side landing zone per triple (gitignored) |
