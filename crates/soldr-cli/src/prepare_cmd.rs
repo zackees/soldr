@@ -34,11 +34,17 @@ use crate::fetch::{ensure_apple_sdk, ensure_llvm_toolchain, ensure_zig};
 /// extracts into `~/.cache/cargo-xwin/xwin/{crt,sdk}` so subsequent
 /// `cargo xwin build` invocations skip the live Microsoft download.
 pub const XWIN_CACHE_URL: &str =
-    "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22/xwin-cache.tar.zst";
+    "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22b/xwin-cache.tar.zst";
 
 /// Pinned sha256 of the xwin cache tar.zst. Mismatch is a hard error.
+/// `2026-06-22b`: re-vendored to preserve cargo-xwin's case-sensitive
+/// symlinks (`windows.h` → `Windows.h`, etc.) that the prior tarball
+/// dropped when packaged from a Windows-host-mounted docker volume.
+/// Without those symlinks Linux CI's clang-cl can't find lowercased
+/// includes — every Windows lane failed with "windows.h: file not
+/// found" in run 27931497526. See #901.
 pub const XWIN_CACHE_SHA256: &str =
-    "33c04d8026d99dab4d66f39ddbd93d75f64c68063d4ba58e5450626524bf348d";
+    "957a51e5738d1352c18bd14caa664a88099e2f4e78afaf94f911f0cb925745fa";
 
 /// Append `KEY=VALUE` to the file at `path` (creating it if needed).
 /// No-op when `path` is `None`. Used so callers running under GitHub
