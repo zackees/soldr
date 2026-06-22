@@ -1,0 +1,14 @@
+[package]
+name = "docker-cross-all-demo"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "docker-cross-all-demo"
+path = "src/main.rs"
+
+[profile.release]
+strip = "symbols"
+codegen-units = 1
+lto = "thin"
