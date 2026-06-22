@@ -31,6 +31,7 @@ mod native_cc;
 mod optimize;
 mod optimize_detect;
 mod optimize_windows;
+mod prepare_cmd;
 mod release_sidecar;
 mod rust_plan;
 mod save_load;
@@ -346,6 +347,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Archive { target, output } => {
             archive_cmd::run(target, output)?;
+        }
+        Commands::Prepare { target, github_env } => {
+            prepare_cmd::run(target, github_env).await?;
         }
         Commands::BuildFromSource {
             tool,

@@ -384,72 +384,17 @@ jobs:
       - name: Stage layout
         run: mkdir -p dist/package dist/zccache-stage stats
 
-      # Apple SDK lives on the manifest branch (deps/mac/sdk.tar.zstd,
-      # extracted once from messense/cargo-zigbuild:0.20.0). Without
-      # this, every darwin lane fails at link time with
-      # `error: unable to find framework 'IOKit'. searched paths: none`
-      # because cargo-zigbuild has no Apple SDK on a vanilla
-      # ubuntu-24.04 runner. Drop the SDK at /opt/MacOSX11.3.sdk so
-      # cargo-zigbuild's auto-SDK discovery picks it up — no SDKROOT
-      # env var needed.
-      - name: Download Apple SDK for darwin cross-compile
-        if: contains(matrix.target, 'apple-darwin')
-        run: |
-          set -euo pipefail
-          sdk_url=$(python3 .github/scripts/tool_query.py \
-              --platform mac --arch x86 apple-sdk)
-          echo "Apple SDK URL: $sdk_url"
-          curl --fail --location \
-              --retry 6 --retry-delay 5 --retry-all-errors \
-              --output /tmp/apple-sdk.tar.zst "$sdk_url"
-          sudo mkdir -p /opt
-          sudo tar --use-compress-program='zstd -d' \
-              -xf /tmp/apple-sdk.tar.zst -C /opt
-          # Sanity check: assert the two frameworks ring/sysinfo need
-          # actually exist. Avoid `ls | head` — `head` closes the pipe
-          # early, `ls` gets SIGPIPE, `set -o pipefail` propagates a
-          # non-zero exit that silently breaks the entire build right
-          # after a successful extract.
-          test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/IOKit.framework
-          test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/CoreFoundation.framework
-          echo "Apple SDK extracted: IOKit + CoreFoundation frameworks present"
-          # cargo-zigbuild's auto-SDK-discovery is a feature of the
-          # messense docker image (which sets SDKROOT in its
-          # container env), NOT of upstream cargo-zigbuild. Without
-          # SDKROOT exported here, zig's MachO linker doesn't add any
-          # framework search paths and link fails with
-          #   `error: unable to find framework 'IOKit'. searched paths:  none`
-          # even though the SDK is physically at /opt/MacOSX11.3.sdk.
-          # Propagate to subsequent steps via $GITHUB_ENV so the cargo
-          # zigbuild step inherits it.
-          echo "SDKROOT=/opt/MacOSX11.3.sdk" >> "$GITHUB_ENV"
-
-      # Pre-fetch the vendored cargo-xwin MSVC CRT + Windows SDK cache
-      # from the manifest branch. cargo-xwin's first `build` invocation
-      # otherwise downloads ~1.1 GiB live from Microsoft, costing
-      # ~15m22s per Windows lane (observed in run 27926041886).
-      # Extract under ~/.cache/cargo-xwin/ so the layout matches what
-      # cargo-xwin expects (~/.cache/cargo-xwin/xwin/{crt,sdk}). LFS-aware
-      # media URL — works regardless of LFS pointer state on the raw URL.
-      - name: Pre-fetch cargo-xwin MSVC CRT + SDK cache (from manifest branch)
-        if: matrix.tool == 'xwin'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.cache/cargo-xwin"
-          url="https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22/xwin-cache.tar.zst"
-          archive="/tmp/xwin-cache.tar.zst"
-          echo "Fetching $url"
-          curl --fail --location \
-              --retry 6 --retry-delay 5 --retry-all-errors \
-              --output "$archive" "$url"
-          ls -lh "$archive"
-          tar --use-compress-program='zstd -d' -xf "$archive" -C "$HOME/.cache/cargo-xwin"
-          echo "Cache layout:"
-          find "$HOME/.cache/cargo-xwin/xwin" -maxdepth 2 -type d | head -20
-          echo "Sanity: assert MSVC CRT include dir exists"
-          test -d "$HOME/.cache/cargo-xwin/xwin/crt/include"
-          test -d "$HOME/.cache/cargo-xwin/xwin/sdk/include"
+      # ONE step replaces what used to be "Download Apple SDK for darwin
+      # cross-compile" + "Pre-fetch cargo-xwin MSVC CRT + SDK cache" +
+      # any future per-target bootstrap. `soldr prepare --target X`
+      # dispatches on the triple to fetch the right vendored assets
+      # from the manifest branch (Apple SDK for darwin, xwin cache for
+      # windows-msvc, etc.) and writes any env vars (SDKROOT) into
+      # $GITHUB_ENV. Composite action keeps the workflow YAML clean.
+      - name: Preparing Cross Compile Toolchain
+        uses: ./.github/actions/prepare-cross-toolchain
+        with:
+          target: ${{ matrix.target }}
 
       - name: Cross-compile soldr — --release ${{ matrix.target }} (${{ matrix.tool }})
         id: build
