@@ -15,6 +15,7 @@ mod cache;
 mod cache_lib;
 mod cargo_diagnostics;
 mod cargo_front_door;
+mod cargo_metadata_soldr;
 mod cli_args;
 mod cook;
 mod core;
@@ -354,7 +355,45 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             save,
             restore,
         } => {
-            prepare_cmd::run(target, github_env, save, restore).await?;
+            // `--target all` expands to every triple declared in
+            // `[workspace.metadata.soldr].targets`; any other value is
+            // passed through to a single-triple `prepare_cmd::run`. See
+            // zackees/soldr#914 for the resolution semantics.
+            let targets: Vec<String> = if target == "all" {
+                cargo_metadata_soldr::resolve_all_targets()?
+            } else {
+                vec![target]
+            };
+            // Per-triple errors are collected so a single bad target in
+            // a multi-target run doesn't hide later failures. The whole
+            // command still exits non-zero if any iteration failed.
+            let mut failures: Vec<(String, String)> = Vec::new();
+            for triple in &targets {
+                eprintln!("soldr prepare: ===== target {triple} =====");
+                if let Err(e) = prepare_cmd::run(
+                    triple.clone(),
+                    github_env.clone(),
+                    save.clone(),
+                    restore.clone(),
+                )
+                .await
+                {
+                    eprintln!("soldr prepare: target {triple} failed: {e}");
+                    failures.push((triple.clone(), e.to_string()));
+                }
+            }
+            if !failures.is_empty() {
+                let summary = failures
+                    .iter()
+                    .map(|(t, e)| format!("  {t}: {e}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return Err(SoldrError::Other(format!(
+                    "soldr prepare: {} of {} target(s) failed:\n{summary}",
+                    failures.len(),
+                    targets.len()
+                )));
+            }
         }
         Commands::BuildFromSource {
             tool,

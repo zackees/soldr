@@ -15,6 +15,7 @@
 #![allow(dead_code)]
 
 pub mod cache_lib;
+pub mod cargo_metadata_soldr;
 pub mod core;
 pub mod daemon;
 pub mod defender;

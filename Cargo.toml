@@ -17,6 +17,22 @@ license = "BSD-3-Clause"
 repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 
+[workspace.metadata.soldr]
+# Shipping matrix consumed by `soldr prepare --target all` (RFC #914).
+# Cargo ignores `[workspace.metadata.*]` — this is the blessed way to
+# attach tool-specific config to a manifest. Kept in sync with the
+# `cross-compile-all-targets.yml` workflow matrix.
+targets = [
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
 [workspace.dependencies]
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

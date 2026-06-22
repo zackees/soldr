@@ -890,6 +890,31 @@ mod tests {
         assert_eq!(attrs.abi, Some(TargetAbi::Msvc));
     });
 
+    crate::timed_test!(soldr_workspace_metadata_dogfood, {
+        // Regression guard: soldr's own workspace `Cargo.toml`
+        // declares `[workspace.metadata.soldr].targets` (RFC #914).
+        // Every entry must classify cleanly via the fuzzy classifier
+        // — typos in soldr's own manifest fail at test time, not
+        // mid-CI when `soldr prepare --target all` blows up.
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("workspace parent of crate dir")
+            .parent()
+            .expect("workspace root")
+            .join("Cargo.toml");
+        assert!(manifest.is_file(), "workspace manifest at {manifest:?}");
+        let meta = crate::cargo_metadata_soldr::read_soldr_metadata(&manifest)
+            .expect("parse soldr Cargo.toml");
+        assert!(
+            !meta.targets.is_empty(),
+            "soldr's own [workspace.metadata.soldr].targets is empty — regression"
+        );
+        for triple in &meta.targets {
+            classify_target(triple)
+                .unwrap_or_else(|e| panic!("triple `{triple}` in soldr Cargo.toml: {e}"));
+        }
+    });
+
     // ---- Corpus test ----
     //
     // `triple_corpus.txt` is the canonical `rustc --print target-list`
