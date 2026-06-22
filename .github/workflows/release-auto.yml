@@ -196,14 +196,22 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             binary: soldr
-          # mac + windows native runners temporarily removed — mac runners
-          # have been blocking the release pipeline for ~2 hours. linux-only
-          # cross-compile lanes (cargo-zigbuild for darwin, cargo-xwin for
-          # windows-msvc) are tracked as a follow-up. Until they ship, mac
-          # + windows PyPI/npm consumers stay on whatever version
-          # last successfully published (currently 0.7.57). The standalone
-          # tarballs for those targets in the GitHub Release for 0.7.57
-          # also remain valid.
+          - name: macOS x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            binary: soldr
+          - name: macOS ARM64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            binary: soldr
+          - name: Windows x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            binary: soldr.exe
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            binary: soldr.exe
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -1015,10 +1023,9 @@ jobs:
           # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
           pypi_version="${PYPI_VERSION#v}"
           # Expected wheel count == number of non-musl matrix rows in the
-          # `build` job (the musl rows skip wheel build by design). With
-          # mac + windows temporarily stripped this is the 2 linux-gnu
-          # rows. Bump back up when those lanes return.
-          expected=2
+          # `build` job (the musl rows skip wheel build by design). 6 = 2
+          # linux-gnu + 2 darwin + 2 windows-msvc.
+          expected=6
           deadline=$(( $(date +%s) + 300 ))
           while :; do
             count="$(curl -fsSL "https://pypi.org/pypi/soldr/${pypi_version}/json" \
