@@ -1,0 +1,323 @@
+name: Refresh tool prebuilts (crgx, cargo-chef)
+
+# Nightly + on-demand workflow that backfills the `manifest` branch
+# with cross-compiled prebuilts of soldr-bundled tools whose upstream
+# release coverage misses some of the target triples soldr's cross-
+# compile pipeline cares about.
+#
+# Why this exists: `cross-compile-all-targets.yml` used to source-build
+# `crgx` and `cargo-chef` on every matrix cell (60s + 42s of warm wall
+# time per Windows-MSVC lane, more on cold caches). Most of those
+# rebuilds re-emit byte-identical binaries for pinned tool versions.
+# This workflow lifts the source-build into a periodic job that drops
+# the result on the `manifest` branch as a vendored prebuilt, so the
+# downstream cross-compile workflow can fetch instead of compile.
+#
+# Matrix scope: every (tool, target) the cross-compile workflow needs.
+# Per cell:
+#   1. Resolve the pinned tool version from the soldr source tree.
+#   2. Probe the manifest branch for an existing prebuilt at
+#      `deps/<triple>/<tool>/<version>/<tool>-<version>-<triple>.tar.zst`
+#      (LFS-tracked). Skip if already vendored.
+#   3. Otherwise `pip install soldr`, then
+#      `soldr build-from-source <tool> --target <triple>`, package as
+#      tar.zst, and upload as a per-cell artifact.
+#
+# A second job downloads all the artifacts, checks out the manifest
+# branch into a worktree, drops each artifact into
+# `deps/<triple>/<tool>/<version>/`, regenerates `asset-index.json`
+# via `build_asset_index.py`, updates each per-tool `<tool>/manifest.json`
+# with `platforms` entries pointing at the vendored URL, then commits
+# and pushes (with `git lfs push` for the new binary blobs).
+#
+# Triggered nightly + manually.
+
+on:
+  schedule:
+    # 04:00 UTC — runs before `refresh-manifest.yml` (06:30 UTC) so a
+    # newly-vendored prebuilt is picked up by that workflow's
+    # asset-index regeneration in the same calendar day.
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-tool-prebuilts
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+  CLICOLOR_FORCE: "1"
+
+jobs:
+  build-prebuilts:
+    name: ${{ matrix.tool }} / ${{ matrix.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: [crgx, cargo-chef]
+        target:
+          - x86_64-pc-windows-msvc
+          - aarch64-pc-windows-msvc
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    outputs:
+      # Stash per-cell metadata so the commit job can produce a
+      # combined manifest.json delta. Outputs land under
+      # `needs.build-prebuilts.outputs.<key>` but matrix outputs are
+      # awkward — we use artifacts instead, see "Stage prebuilt
+      # artifact" below.
+      dummy: "unused"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Resolve pinned tool version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.tool }}" = "crgx" ]; then
+            ver=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
+              crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          else
+            ver=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
+              crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+          fi
+          if [ -z "$ver" ]; then
+            echo "could not resolve version for ${{ matrix.tool }}" >&2
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          archive_name="${{ matrix.tool }}-${ver}-${{ matrix.target }}.tar.zst"
+          deps_path="deps/${{ matrix.target }}/${{ matrix.tool }}/${ver}/${archive_name}"
+          echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
+          echo "deps_path=$deps_path" >> "$GITHUB_OUTPUT"
+          echo "${{ matrix.tool }} version: $ver"
+          echo "expected deps path:   $deps_path"
+
+      - name: Probe manifest branch for existing prebuilt
+        id: probe
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          deps_path="${{ steps.version.outputs.deps_path }}"
+          # `gh api ... --silent` exits 0 on 200, non-zero on 404. We
+          # want to set `skip=true` ONLY on a successful 200 (entry
+          # already vendored). Any other failure (network, 5xx) falls
+          # through to a fresh build — the downstream commit job
+          # rewrites manifest.json idempotently so duplicate work is
+          # harmless.
+          if gh api "repos/${{ github.repository }}/contents/${deps_path}?ref=manifest" \
+              --silent 2>/dev/null; then
+            echo "manifest branch already vendors $deps_path; skipping build"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no existing prebuilt at $deps_path; will build"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Rust toolchain + target
+        if: steps.probe.outputs.skip != 'true'
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      - name: Set up Python (for pip install soldr)
+        if: steps.probe.outputs.skip != 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install soldr from PyPI
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # pip install the latest soldr from PyPI — it carries the
+          # `build-from-source` verb introduced in 0.7.57 (#869).
+          pip install --upgrade soldr
+          soldr --version
+
+      - name: Build prebuilt via soldr build-from-source
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          tool="${{ matrix.tool }}"
+          soldr build-from-source "$tool" --target "$target" --version "$version"
+          # Verify the binary landed where we expect.
+          install_dir="$HOME/.soldr/bin/${tool}-from-source/${version}/${target}"
+          case "$target" in
+            *-pc-windows-*) suffix=".exe" ;;
+            *)              suffix=""    ;;
+          esac
+          binary="${install_dir}/${tool}${suffix}"
+          if [ ! -f "$binary" ]; then
+            echo "expected binary not found at $binary" >&2
+            find "$HOME/.soldr/bin/${tool}-from-source" -type f >&2 || true
+            exit 1
+          fi
+          ls -la "$binary"
+
+      - name: Stage prebuilt as tar.zst
+        if: steps.probe.outputs.skip != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          target="${{ matrix.target }}"
+          tool="${{ matrix.tool }}"
+          archive_name="${{ steps.version.outputs.archive_name }}"
+          case "$target" in
+            *-pc-windows-*) suffix=".exe" ;;
+            *)              suffix=""    ;;
+          esac
+          install_dir="$HOME/.soldr/bin/${tool}-from-source/${version}/${target}"
+          binary="${install_dir}/${tool}${suffix}"
+          stage=$(mktemp -d)
+          # Wrap the bare binary (no parent dirs) — matches the
+          # extraction-side `tar -xaf .. | find -name <tool>` pattern
+          # used by the consumer workflow.
+          cp "$binary" "$stage/${tool}${suffix}"
+          tar -cf - -C "$stage" "${tool}${suffix}" | zstd -19 -T0 -o "$stage/$archive_name"
+          ls -la "$stage/$archive_name"
+          sha256sum "$stage/$archive_name" | awk '{print "sha256: " $1}'
+          # Stash the archive plus a tiny metadata json so the commit
+          # job can populate manifest.json platforms entries.
+          mkdir -p dist
+          cp "$stage/$archive_name" "dist/$archive_name"
+          size=$(stat -c '%s' "dist/$archive_name")
+          sha=$(sha256sum "dist/$archive_name" | awk '{print $1}')
+          cat > "dist/${archive_name}.meta.json" <<EOF
+          {
+            "tool": "${tool}",
+            "version": "${version}",
+            "target": "${target}",
+            "archive": "${archive_name}",
+            "size": ${size},
+            "sha256": "${sha}",
+            "deps_path": "${{ steps.version.outputs.deps_path }}"
+          }
+          EOF
+
+      - name: Upload prebuilt artifact
+        if: steps.probe.outputs.skip != 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: prebuilt-${{ matrix.tool }}-${{ matrix.target }}
+          path: |
+            dist/${{ steps.version.outputs.archive_name }}
+            dist/${{ steps.version.outputs.archive_name }}.meta.json
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  commit-to-manifest:
+    name: Commit new prebuilts to manifest branch
+    needs: build-prebuilts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # Always run even if some matrix cells failed — partial coverage is
+    # still better than nothing, and the asset-index regen is
+    # idempotent. Each cell's success/failure is independent.
+    if: always()
+    steps:
+      - name: Checkout main (for scripts)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: main
+          path: main
+
+      - name: Checkout manifest branch (LFS-aware)
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: manifest
+          path: manifest
+          lfs: true
+
+      - name: Download all prebuilt artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: prebuilt-*
+          path: prebuilts
+          merge-multiple: true
+
+      - name: Drop prebuilts into deps/ + patch per-tool manifest.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          metas=(prebuilts/*.meta.json)
+          if [ ${#metas[@]} -eq 0 ]; then
+            echo "no new prebuilt artifacts downloaded; nothing to do"
+            exit 0
+          fi
+          python3 main/.github/scripts/install_prebuilts.py \
+              --prebuilts-dir prebuilts \
+              --manifest-checkout manifest
+
+      - name: Rebuild asset-index.json
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Always regenerate — install_prebuilts.py may have added
+          # entries under deps/, and asset-index sha-attributes the
+          # on-disk bytes.
+          python3 main/.github/scripts/build_asset_index.py \
+              --manifest-checkout manifest \
+              --output manifest/asset-index.json
+
+      - name: Commit + push to manifest branch
+        shell: bash
+        working-directory: manifest
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # `git lfs install` is implicit when the repo has LFS tracking
+          # configured, but make it explicit for clarity.
+          git lfs install --local
+          git add -A
+          if git diff --cached --quiet; then
+            echo "no new prebuilts to commit; manifest branch unchanged"
+            exit 0
+          fi
+          git status --short
+          tools_summary=$(python3 -c "
+          import json, glob
+          metas = sorted(glob.glob('../prebuilts/*.meta.json'))
+          lines = []
+          for path in metas:
+              with open(path) as fh:
+                  d = json.load(fh)
+              lines.append(f\"  - {d['tool']} {d['version']} {d['target']}\")
+          print('\n'.join(lines))
+          " 2>/dev/null || true)
+          msg="manifest: refresh tool prebuilts ($(date -u +%Y-%m-%d))"
+          if [ -n "$tools_summary" ]; then
+            msg="${msg}
+
+          Added/refreshed:
+          ${tools_summary}"
+          fi
+          git commit -m "$msg"
+          # LFS push first so the binary blobs are uploaded to the LFS
+          # store before the pointer commit lands on the remote.
+          git lfs push --all origin manifest
+          git push origin manifest
