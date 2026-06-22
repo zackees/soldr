@@ -1,0 +1,132 @@
+[
+  {
+    "tool": "python",
+    "owner": "astral-sh",
+    "repo": "python-build-standalone",
+    "tag": "20260610",
+    "version": "3.13.14",
+    "name": "cpython-3.13.14+20260610",
+    "draft": false,
+    "prerelease": false,
+    "created_at": "2026-06-11T05:42:30Z",
+    "published_at": "2026-06-11T05:42:30Z",
+    "release_html_url": "https://github.com/astral-sh/python-build-standalone/releases/tag/20260610",
+    "platforms": {
+      "windows-x64-msvc": {
+        "filename": "cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "size": 47123990,
+        "sha256": "9a77f87ec431f16e79fc7e90d9115edf187d18b64100b6f6c27189f419fd79be"
+      },
+      "windows-arm64-msvc": {
+        "filename": "cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+        "size": 43805508,
+        "sha256": "7146b88d4b8fcd2f7154f516dee051b0891536bf48a1c2fe625a540c7bc06be6"
+      },
+      "darwin-x64": {
+        "filename": "cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+        "size": 25032612,
+        "sha256": "592d3d807a493e4e21dbc972f81d1b2ece6381a7e687bcf0da68555a1282d49a"
+      },
+      "darwin-arm64": {
+        "filename": "cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+        "size": 25281944,
+        "sha256": "0e255968ed96255df59b6bc9504545260c11de3171e48f7640668d88154945ba"
+      },
+      "linux-x64-gnu": {
+        "filename": "cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+        "size": 119009873,
+        "sha256": "31ebbb024fecb446d7f25a5b59ca1d4955597ca3f5b4b76f55b30a8987eb61c9"
+      },
+      "linux-arm64-gnu": {
+        "filename": "cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+        "size": 90226359,
+        "sha256": "fe5b366ecf26fe565113b195a03ea18d7030f2dab691c0bed41cf19318100be2"
+      },
+      "linux-x64-musl": {
+        "filename": "cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+        "size": 105460599,
+        "sha256": "14ff3ae99951784204ea2528d0b1c8442c7c6f1e78ab27e5ea05cfd9a0b27ced"
+      },
+      "linux-arm64-musl": {
+        "filename": "cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+        "size": 105246873,
+        "sha256": "ad0388569f1f7904eaacb7b29926542925d23d38b65ba652876ae9c3c03ab55d"
+      }
+    },
+    "assets": {
+      "cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+        "size": 47123990,
+        "sha256": "9a77f87ec431f16e79fc7e90d9115edf187d18b64100b6f6c27189f419fd79be",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+        "size": 43805508,
+        "sha256": "7146b88d4b8fcd2f7154f516dee051b0891536bf48a1c2fe625a540c7bc06be6",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+        "size": 25032612,
+        "sha256": "592d3d807a493e4e21dbc972f81d1b2ece6381a7e687bcf0da68555a1282d49a",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+        "size": 25281944,
+        "sha256": "0e255968ed96255df59b6bc9504545260c11de3171e48f7640668d88154945ba",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+        "size": 119009873,
+        "sha256": "31ebbb024fecb446d7f25a5b59ca1d4955597ca3f5b4b76f55b30a8987eb61c9",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+        "size": 90226359,
+        "sha256": "fe5b366ecf26fe565113b195a03ea18d7030f2dab691c0bed41cf19318100be2",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+        "size": 105460599,
+        "sha256": "14ff3ae99951784204ea2528d0b1c8442c7c6f1e78ab27e5ea05cfd9a0b27ced",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      },
+      "cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz": {
+        "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+        "size": 105246873,
+        "sha256": "ad0388569f1f7904eaacb7b29926542925d23d38b65ba652876ae9c3c03ab55d",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-11T05:42:30Z",
+        "updated_at": "2026-06-11T05:42:30Z"
+      }
+    },
+    "notes": "install_only tarball -- extract for Python.h headers, libpython3.x.so/dylib, and python3.lib on Windows. Sourced from astral-sh/python-build-standalone. Use for PyO3 cross-compile (PYO3_CROSS_LIB_DIR -> install/lib for non-Windows; install/libs for Windows MSVC) and direct C extension builds. See zackees/soldr#931, #932, #933."
+  }
+]

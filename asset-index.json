@@ -2744,6 +2744,102 @@
       "asset": "zccache-v1.4.0-x86_64-unknown-linux-musl.tar.gz",
       "url": "https://github.com/zackees/zccache/releases/download/v1.4.0/zccache-v1.4.0-x86_64-unknown-linux-musl.tar.gz",
       "sha256": "e2d6a0dec2e95ec7af02d54ced1546b7d014f1e7c0b61015f88f04aa5dc4e294"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "9a77f87ec431f16e79fc7e90d9115edf187d18b64100b6f6c27189f419fd79be"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "7146b88d4b8fcd2f7154f516dee051b0891536bf48a1c2fe625a540c7bc06be6"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+      "sha256": "592d3d807a493e4e21dbc972f81d1b2ece6381a7e687bcf0da68555a1282d49a"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "0e255968ed96255df59b6bc9504545260c11de3171e48f7640668d88154945ba"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "31ebbb024fecb446d7f25a5b59ca1d4955597ca3f5b4b76f55b30a8987eb61c9"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "fe5b366ecf26fe565113b195a03ea18d7030f2dab691c0bed41cf19318100be2"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+      "sha256": "14ff3ae99951784204ea2528d0b1c8442c7c6f1e78ab27e5ea05cfd9a0b27ced"
+    },
+    {
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "tag": "20260610",
+      "asset": "cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+      "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+      "sha256": "ad0388569f1f7904eaacb7b29926542925d23d38b65ba652876ae9c3c03ab55d"
+    },
+    {
+      "owner": "nodejs",
+      "repo": "node",
+      "tag": "v22.23.0",
+      "asset": "win-x64/node.lib",
+      "url": "https://nodejs.org/dist/v22.23.0/win-x64/node.lib",
+      "sha256": "ac15f1e9d7c8279353723a77f6319967f1a41c06026521094a8234c2e6fbe052"
+    },
+    {
+      "owner": "nodejs",
+      "repo": "node",
+      "tag": "v22.23.0",
+      "asset": "win-arm64/node.lib",
+      "url": "https://nodejs.org/dist/v22.23.0/win-arm64/node.lib",
+      "sha256": "e56e62f4a7ae6643a40db01f09072e8a93ccbe73be8abff927b793344691d6b7"
+    },
+    {
+      "owner": "nodejs",
+      "repo": "node",
+      "tag": "v22.23.0",
+      "asset": "win-x86/node.lib",
+      "url": "https://nodejs.org/dist/v22.23.0/win-x86/node.lib",
+      "sha256": "66949ba371a159f5e3626f6ce960f85ab6bcdd237eafcdfbc11d1377a2767652"
+    },
+    {
+      "owner": "nodejs",
+      "repo": "node",
+      "tag": "v22.23.0",
+      "asset": "node-v22.23.0-headers.tar.gz",
+      "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-headers.tar.gz",
+      "sha256": "ac07673009b92d70f3d842df28204e92785234bae6b4d5785f63fbca8408fc69"
     }
   ]
 }

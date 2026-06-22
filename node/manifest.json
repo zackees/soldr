@@ -1,0 +1,74 @@
+[
+  {
+    "tool": "node",
+    "owner": "nodejs",
+    "repo": "node",
+    "tag": "v22.23.0",
+    "version": "22.23.0",
+    "name": "v22.23.0",
+    "draft": false,
+    "prerelease": false,
+    "created_at": "2026-06-18T04:37:21Z",
+    "published_at": "2026-06-18T04:37:21Z",
+    "release_html_url": "https://github.com/nodejs/node/releases/tag/v22.23.0",
+    "platforms": {
+      "windows-x64-msvc": {
+        "filename": "node.lib",
+        "filename_full": "win-x64/node.lib",
+        "url": "https://nodejs.org/dist/v22.23.0/win-x64/node.lib",
+        "size": 2790574,
+        "sha256": "ac15f1e9d7c8279353723a77f6319967f1a41c06026521094a8234c2e6fbe052"
+      },
+      "windows-arm64-msvc": {
+        "filename": "node.lib",
+        "filename_full": "win-arm64/node.lib",
+        "url": "https://nodejs.org/dist/v22.23.0/win-arm64/node.lib",
+        "size": 2790226,
+        "sha256": "e56e62f4a7ae6643a40db01f09072e8a93ccbe73be8abff927b793344691d6b7"
+      },
+      "windows-x86-msvc": {
+        "filename": "node.lib",
+        "filename_full": "win-x86/node.lib",
+        "url": "https://nodejs.org/dist/v22.23.0/win-x86/node.lib",
+        "size": 2795474,
+        "sha256": "66949ba371a159f5e3626f6ce960f85ab6bcdd237eafcdfbc11d1377a2767652"
+      }
+    },
+    "assets": {
+      "win-x64/node.lib": {
+        "url": "https://nodejs.org/dist/v22.23.0/win-x64/node.lib",
+        "size": 2790574,
+        "sha256": "ac15f1e9d7c8279353723a77f6319967f1a41c06026521094a8234c2e6fbe052",
+        "content_type": "application/octet-stream",
+        "created_at": "2026-06-18T04:37:21Z",
+        "updated_at": "2026-06-18T04:37:21Z"
+      },
+      "win-arm64/node.lib": {
+        "url": "https://nodejs.org/dist/v22.23.0/win-arm64/node.lib",
+        "size": 2790226,
+        "sha256": "e56e62f4a7ae6643a40db01f09072e8a93ccbe73be8abff927b793344691d6b7",
+        "content_type": "application/octet-stream",
+        "created_at": "2026-06-18T04:37:21Z",
+        "updated_at": "2026-06-18T04:37:21Z"
+      },
+      "win-x86/node.lib": {
+        "url": "https://nodejs.org/dist/v22.23.0/win-x86/node.lib",
+        "size": 2795474,
+        "sha256": "66949ba371a159f5e3626f6ce960f85ab6bcdd237eafcdfbc11d1377a2767652",
+        "content_type": "application/octet-stream",
+        "created_at": "2026-06-18T04:37:21Z",
+        "updated_at": "2026-06-18T04:37:21Z"
+      },
+      "node-v22.23.0-headers.tar.gz": {
+        "url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-headers.tar.gz",
+        "size": 9931828,
+        "sha256": "ac07673009b92d70f3d842df28204e92785234bae6b4d5785f63fbca8408fc69",
+        "content_type": "application/gzip",
+        "created_at": "2026-06-18T04:37:21Z",
+        "updated_at": "2026-06-18T04:37:21Z",
+        "notes": "Platform-agnostic headers (node.h, napi.h, etc.) for native addon builds."
+      }
+    },
+    "notes": "Windows node.lib import library (per arch) + platform-agnostic headers tarball. Sourced from official nodejs.org/dist/ (not GitHub Releases -- Node publishes win-<arch>/node.lib outside the GitHub release attachments). For Rust crates building Windows native addons (napi-rs, neon). See zackees/soldr#944."
+  }
+]
