@@ -57,17 +57,52 @@ fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<(), SoldrEr
     Ok(())
 }
 
-/// Extract the vendored xwin cache into `~/.cache/cargo-xwin/`. After
-/// extraction, the layout is `~/.cache/cargo-xwin/xwin/{crt,sdk}` —
-/// exactly what cargo-xwin checks on `build` to decide whether to
-/// invoke its live downloader.
-async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
+/// Resolve the xwin cache root cargo-xwin uses. cargo-xwin's default is
+/// `dirs::cache_dir().join("cargo-xwin")`. On Linux that resolves to
+/// `$XDG_CACHE_HOME/cargo-xwin` (when set) or `$HOME/.cache/cargo-xwin`.
+/// We mirror that here so the extraction lands at the exact path
+/// cargo-xwin will look in.
+fn xwin_cache_root() -> Result<PathBuf, SoldrError> {
     let home = crate::core::home_dir()?;
-    let cache_root = home.join(".cache").join("cargo-xwin");
-    let xwin_dir = cache_root.join("xwin");
-    let marker = xwin_dir.join("DONE");
+    #[cfg(target_os = "linux")]
+    let cache_base = match std::env::var_os("XDG_CACHE_HOME") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => home.join(".cache"),
+    };
+    #[cfg(target_os = "macos")]
+    let cache_base = home.join("Library").join("Caches");
+    #[cfg(target_os = "windows")]
+    let cache_base = match std::env::var_os("LOCALAPPDATA") {
+        Some(v) if !v.is_empty() => PathBuf::from(v),
+        _ => home.join("AppData").join("Local"),
+    };
+    Ok(cache_base.join("cargo-xwin"))
+}
 
-    if marker.is_file() && xwin_dir.join("crt").join("include").is_dir() {
+/// Extract the vendored xwin cache into the location cargo-xwin reads
+/// by default. After extraction the layout is
+/// `<cache>/xwin/{crt,sdk,DONE,...}`. The DONE file in the tarball was
+/// written by `cargo xwin cache xwin` itself when we pre-populated it
+/// — its first line lists the arches (`x86_64 aarch64`) and subsequent
+/// lines list every file downloaded. cargo-xwin reads that exact
+/// format to decide whether to skip the live download.
+///
+/// IMPORTANT: do NOT overwrite `<cache>/xwin/DONE` after extraction.
+/// The tarball already contains the correct cargo-xwin marker; writing
+/// anything else there (e.g. a sha256 hex string as we used to) makes
+/// cargo-xwin treat the first line as an unknown "arch", fail the
+/// arch-match check, and re-download MSVC CRT live (15min wasted).
+/// We use `.soldr-extracted` as a sibling marker for our own
+/// idempotence instead.
+async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
+    let cache_root = xwin_cache_root()?;
+    let xwin_dir = cache_root.join("xwin");
+    // Sibling marker for our own already-extracted check — must NOT
+    // be `DONE` (cargo-xwin owns that filename) and must NOT be inside
+    // `xwin/` if any file there is being checksummed by cargo-xwin.
+    let soldr_marker = cache_root.join(".soldr-xwin-extracted");
+
+    if soldr_marker.is_file() && xwin_dir.join("crt").join("include").is_dir() {
         eprintln!(
             "soldr prepare: xwin cache already present at {}",
             xwin_dir.display()
@@ -109,7 +144,10 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
     archive
         .unpack(&cache_root)
         .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
-    std::fs::write(&marker, XWIN_CACHE_SHA256)?;
+    // Drop our own marker SIBLING to xwin/, not inside it — see the
+    // doc comment above for why clobbering xwin/DONE was a 15-min CI
+    // regression.
+    std::fs::write(&soldr_marker, XWIN_CACHE_SHA256)?;
     eprintln!(
         "soldr prepare: extracted xwin cache to {} (size {} bytes)",
         xwin_dir.display(),
