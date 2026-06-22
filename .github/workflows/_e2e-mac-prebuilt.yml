@@ -1,22 +1,25 @@
-name: _Bootstrap e2e on macOS (prebuilt)
+name: _Run tests on macOS (prebuilt)
 
-# Reusable workflow: download a soldr binary cross-built on linux
-# (via `_cross-build-mac.yml`), check out the third-party fixture, and
-# drive a real cargo build through that prebuilt soldr — all on a
-# macOS runner.
+# Reusable workflow: download a soldr binary AND a nextest archive
+# cross-built on linux (via `_cross-build-mac.yml` with
+# `build_test_archive: true`), then on a real macOS runner:
 #
-# Replaces the "build soldr on macOS + run e2e on macOS" pattern with
-# a two-stage flow: linux+zigbuild does the heavy compile (~10x cheaper
-# in runner minutes and ~3-5x faster wall-clock), this job downloads
-# the binary and runs the actual end-to-end test (cargo build of a
-# third-party fixture *through* soldr) on real darwin hardware.
+#   1. Run the full workspace unit-test sweep via
+#      `cargo nextest run --archive-file` — zero source rebuild.
+#   2. Drive a real cargo build of the third-party fixture through
+#      the prebuilt soldr binary — the end-to-end harness.
+#
+# Both phases live in ONE mac runner: the consolidated test runner
+# the user asked for in the meta goal ("we cant do multiple runners
+# with setup/tear down, it's too costly, we must have do it all at
+# once with zero building of soldr itself"). Setup/teardown is paid
+# exactly once per arch.
 #
 # The build phase running on linux is the same bytes the release ships
 # (cross-compile-all-targets.yml proves the zigbuild output works in
 # practice for every release tarball), so the only thing we lose by
-# building on linux is the native-build sanity check — which is also
-# what the standalone build-macos-x64.yml / build-macos-arm64.yml
-# smoke-on-mac jobs already cover.
+# building on linux is the native-build sanity check — and the smoke
+# steps below cover that for the binary at runtime.
 
 on:
   workflow_call:
@@ -33,11 +36,22 @@ on:
       artifact_name:
         # Must match the `artifact_name` input passed to the upstream
         # `_cross-build-mac.yml` job that produced this artifact.
+        # The unit-test archive is downloaded from `<artifact_name>-tests`.
         required: true
         type: string
       source_ref:
         required: true
         type: string
+      run_unit_tests:
+        # When true, also download the nextest archive at
+        # `<artifact_name>-tests` and run `cargo nextest run
+        # --archive-file` against it. Requires the upstream
+        # `_cross-build-mac.yml` job to have been invoked with
+        # `build_test_archive: true`. Default true — the consolidated
+        # mac test runner wants both unit + e2e in one shot.
+        required: false
+        type: boolean
+        default: true
       third_party_repo:
         required: false
         type: string
@@ -114,11 +128,54 @@ jobs:
         shell: bash
         run: soldr --version
 
-      # The actual e2e harness: drive a real `cargo build` against the
-      # third-party fixture through the cross-built soldr binary on
-      # native darwin hardware. This is the test the build/test split
-      # was designed to preserve — exercising the binary on the same
-      # OS it'll run on for users.
+      # ---- Unit tests via cargo-nextest archive ----
+      #
+      # Download the test archive `_cross-build-mac.yml` produced when
+      # invoked with `build_test_archive: true`, then exercise the
+      # workspace's unit + cli + fetch tests via
+      # `cargo nextest run --archive-file` — no rebuild on mac.
+      - name: Download nextest archive
+        if: ${{ inputs.run_unit_tests }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.artifact_name }}-tests
+          path: dist/
+
+      - name: Install cargo-nextest
+        if: ${{ inputs.run_unit_tests }}
+        shell: bash
+        run: soldr cargo nextest --version
+
+      - name: Run unit tests via nextest archive
+        if: ${{ inputs.run_unit_tests }}
+        shell: bash
+        env:
+          # Quiet zccache for the prebuilt-binary invocation — tests
+          # don't need cross-build caching at this point.
+          SOLDR_CACHE_LIFECYCLE: command
+          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
+        run: |
+          set -euo pipefail
+          archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
+          ls -lah "$archive"
+          start=$(date +%s)
+          # `cargo nextest run --archive-file` extracts test binaries
+          # from the archive, then executes them in place. Workspace
+          # sources are NOT recompiled — the archive is self-contained.
+          soldr cargo nextest run \
+              --archive-file "$archive" \
+              --workspace-remap soldr
+          end=$(date +%s)
+          printf -- '- **%s / Unit tests (nextest archive)**: %ds\n' \
+              "${{ inputs.target }}" "$((end - start))" \
+              >> "${GITHUB_STEP_SUMMARY}"
+
+      # ---- E2E harness ----
+      #
+      # Drive a real `cargo build` against the third-party fixture
+      # through the cross-built soldr binary on native darwin hardware.
+      # This is the test the build/test split was designed to preserve —
+      # exercising the binary on the same OS it'll run on for users.
       - name: Resolve third-party toolchain
         id: third_party_toolchain
         shell: bash
