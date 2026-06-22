@@ -187,54 +187,23 @@ jobs:
             chmod +x "dist/package/${b}"
           done
 
-      - name: Build crgx — --release x86_64-unknown-linux-gnu (soldr cargo)
+      # crgx + cargo-chef were previously source-built here every run
+      # (~60s + ~42s of warm wall time). The
+      # `fetch_or_build_tool.sh` helper checks the public manifest
+      # branch for a prebuilt asset first and falls back to the
+      # source-build path only on a manifest miss. Prebuilts are
+      # produced by `refresh-tool-prebuilts.yml`.
+      - name: Fetch or build crgx — x86_64-unknown-linux-gnu
         run: |
           set -euo pipefail
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
-          work_dir="${RUNNER_TEMP}/crgx-build"
-          rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${crgx_version}" \
-            https://github.com/yfedoseev/crgx.git "$work_dir"
-          echo "CRGX_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
-          .github/scripts/print_build_banner.sh \
-              "crgx v${crgx_version}" \
-              release \
-              x86_64-unknown-linux-gnu \
-              "soldr cargo build" \
-              "$work_dir/Cargo.toml"
-          soldr cargo build \
-            --release \
-            --manifest-path "$work_dir/Cargo.toml" \
-            --target x86_64-unknown-linux-gnu \
-            --locked
-          cp "$work_dir/target/x86_64-unknown-linux-gnu/release/crgx" "dist/package/crgx"
-          chmod +x "dist/package/crgx"
+          .github/scripts/fetch_or_build_tool.sh \
+              crgx x86_64-unknown-linux-gnu zigbuild "" dist/package
 
-      - name: Build cargo-chef — --release x86_64-unknown-linux-gnu (soldr cargo)
+      - name: Fetch or build cargo-chef — x86_64-unknown-linux-gnu
         run: |
           set -euo pipefail
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
-          work_dir="${RUNNER_TEMP}/cargo-chef-build"
-          rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${cargo_chef_version}" \
-            https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
-          echo "CARGO_CHEF_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
-          .github/scripts/print_build_banner.sh \
-              "cargo-chef v${cargo_chef_version}" \
-              release \
-              x86_64-unknown-linux-gnu \
-              "soldr cargo build" \
-              "$work_dir/Cargo.toml"
-          soldr cargo build \
-            --release \
-            --manifest-path "$work_dir/Cargo.toml" \
-            --target x86_64-unknown-linux-gnu \
-            --locked \
-            --bin cargo-chef
-          cp "$work_dir/target/x86_64-unknown-linux-gnu/release/cargo-chef" "dist/package/cargo-chef"
-          chmod +x "dist/package/cargo-chef"
+          .github/scripts/fetch_or_build_tool.sh \
+              cargo-chef x86_64-unknown-linux-gnu zigbuild "" dist/package
 
       - name: Write linux-x86 manifest.json + package
         run: |
@@ -600,75 +569,24 @@ jobs:
             done
           fi
 
-      - name: Build crgx — --release ${{ matrix.target }} (${{ matrix.tool }})
+      # Same fetch-or-build pattern as the bootstrap job. The helper
+      # script first probes the manifest branch for a prebuilt asset
+      # for this (tool, target) and only falls back to a source build
+      # on a manifest miss. Prebuilts come from
+      # `refresh-tool-prebuilts.yml`.
+      - name: Fetch or build crgx — ${{ matrix.target }} (${{ matrix.tool }})
         run: |
           set -euo pipefail
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
-          work_dir="${RUNNER_TEMP}/crgx-build"
-          rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${crgx_version}" \
-            https://github.com/yfedoseev/crgx.git "$work_dir"
-          echo "CRGX_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
-          .github/scripts/print_build_banner.sh \
-              "crgx v${crgx_version}" \
-              release \
-              "${{ matrix.target }}" \
-              "soldr cargo ${{ matrix.tool }} build" \
-              "$work_dir/Cargo.toml"
-          if [ "${{ matrix.tool }}" = "xwin" ]; then
-            soldr cargo xwin build \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "${{ matrix.target }}" \
-              --locked
-          else
-            soldr cargo zigbuild \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "${{ matrix.target }}" \
-              --locked
-          fi
-          suffix="${{ matrix.exe_suffix }}"
-          built="$work_dir/target/${{ matrix.target }}/release/crgx${suffix}"
-          cp "$built" "dist/package/crgx${suffix}"
-          chmod +x "dist/package/crgx${suffix}" || true
+          .github/scripts/fetch_or_build_tool.sh \
+              crgx "${{ matrix.target }}" "${{ matrix.tool }}" \
+              "${{ matrix.exe_suffix }}" dist/package
 
-      - name: Build cargo-chef — --release ${{ matrix.target }} (${{ matrix.tool }})
+      - name: Fetch or build cargo-chef — ${{ matrix.target }} (${{ matrix.tool }})
         run: |
           set -euo pipefail
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
-          work_dir="${RUNNER_TEMP}/cargo-chef-build"
-          rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${cargo_chef_version}" \
-            https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
-          echo "CARGO_CHEF_SOURCE_COMMIT=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
-          .github/scripts/print_build_banner.sh \
-              "cargo-chef v${cargo_chef_version}" \
-              release \
-              "${{ matrix.target }}" \
-              "soldr cargo ${{ matrix.tool }} build" \
-              "$work_dir/Cargo.toml"
-          if [ "${{ matrix.tool }}" = "xwin" ]; then
-            soldr cargo xwin build \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "${{ matrix.target }}" \
-              --locked \
-              --bin cargo-chef
-          else
-            soldr cargo zigbuild \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "${{ matrix.target }}" \
-              --locked \
-              --bin cargo-chef
-          fi
-          suffix="${{ matrix.exe_suffix }}"
-          built="$work_dir/target/${{ matrix.target }}/release/cargo-chef${suffix}"
-          cp "$built" "dist/package/cargo-chef${suffix}"
-          chmod +x "dist/package/cargo-chef${suffix}" || true
+          .github/scripts/fetch_or_build_tool.sh \
+              cargo-chef "${{ matrix.target }}" "${{ matrix.tool }}" \
+              "${{ matrix.exe_suffix }}" dist/package
 
       - name: Write manifest.json + package
         run: |

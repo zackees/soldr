@@ -112,14 +112,23 @@ def find_release(per_tool: list[dict[str, Any]], requested: str) -> dict[str, An
 
     `requested == 'latest'` returns the first entry (the array is
     sorted by published_at desc). Otherwise we scan for an entry whose
-    tag matches.
+    ``tag`` or ``version`` matches — some manifests carry a
+    ``v``-prefixed tag (``v0.1.0``) and a bare ``version`` field
+    (``0.1.0``); accept either form so callers don't have to know
+    which convention each tool follows.
     """
     if not per_tool:
         raise SystemExit("per-tool manifest is empty")
     if requested in ("latest", ""):
         return per_tool[0]
+    bare = requested.lstrip("v")
+    v_prefixed = f"v{bare}"
     for entry in per_tool:
-        if entry.get("tag") == requested:
+        tag = entry.get("tag")
+        version = entry.get("version")
+        if tag in (requested, v_prefixed, bare):
+            return entry
+        if version in (requested, bare):
             return entry
     known = ", ".join(e.get("tag") or "?" for e in per_tool[:6])
     raise SystemExit(
