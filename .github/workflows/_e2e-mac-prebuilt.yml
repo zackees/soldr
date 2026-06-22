@@ -128,47 +128,11 @@ jobs:
         shell: bash
         run: soldr --version
 
-      # ---- Unit tests via cargo-nextest archive ----
-      #
-      # Download the test archive `_cross-build-mac.yml` produced when
-      # invoked with `build_test_archive: true`, then exercise the
-      # workspace's unit + cli + fetch tests via
-      # `cargo nextest run --archive-file` — no rebuild on mac.
-      - name: Download nextest archive
-        if: ${{ inputs.run_unit_tests }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: ${{ inputs.artifact_name }}-tests
-          path: dist/
-
-      - name: Install cargo-nextest
-        if: ${{ inputs.run_unit_tests }}
-        shell: bash
-        run: soldr cargo nextest --version
-
-      - name: Run unit tests via nextest archive
-        if: ${{ inputs.run_unit_tests }}
-        shell: bash
-        env:
-          # Quiet zccache for the prebuilt-binary invocation — tests
-          # don't need cross-build caching at this point.
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-        run: |
-          set -euo pipefail
-          archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
-          ls -lah "$archive"
-          start=$(date +%s)
-          # `cargo nextest run --archive-file` extracts test binaries
-          # from the archive, then executes them in place. Workspace
-          # sources are NOT recompiled — the archive is self-contained.
-          soldr cargo nextest run \
-              --archive-file "$archive" \
-              --workspace-remap soldr
-          end=$(date +%s)
-          printf -- '- **%s / Unit tests (nextest archive)**: %ds\n' \
-              "${{ inputs.target }}" "$((end - start))" \
-              >> "${GITHUB_STEP_SUMMARY}"
+      # `run_unit_tests` is accepted for downstream compat but
+      # currently a no-op — see `_cross-build-mac.yml`'s comment on
+      # the parked test archive. Unit tests on darwin still run via
+      # the standalone build-macos-x64.yml smoke + the ci.yml
+      # build-macos-x64 job (which builds + tests natively on mac).
 
       # ---- E2E harness ----
       #

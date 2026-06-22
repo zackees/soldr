@@ -123,45 +123,13 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      # ---- Optional: nextest archive for the consolidated mac test
-      # runner ----
-      #
-      # `cargo nextest archive --target <T>` cross-compiles every
-      # test binary in the workspace, packages them with their
-      # metadata into a self-contained `.tar.zst`, and (importantly)
-      # the resulting archive is portable to any matching-target
-      # machine. Downstream `_e2e-mac-prebuilt.yml` runs
-      # `cargo nextest run --archive-file <X>` to execute on real
-      # darwin hardware with zero source rebuild — exactly the
-      # "build on linux, run on target" goal of zackees/soldr#914.
-      - name: Cross-compile nextest archive for ${{ inputs.target }}
-        if: ${{ inputs.build_test_archive }}
-        env:
-          CARGO_TARGET_DIR: target
-        run: |
-          set -euo pipefail
-          # cargo nextest archive embeds the target triple + soldr's
-          # cargo metadata. The `--archive-file` path is the artifact
-          # the mac runner downloads.
-          # `cargo nextest archive` accepts `--release` as a unary
-          # flag (presence = release profile). Omitting it = the
-          # default `dev` profile, which is what we want for the
-          # CI unit-test sweep.
-          soldr cargo nextest archive \
-              --workspace \
-              --locked \
-              --target "${{ inputs.target }}" \
-              --archive-file "dist/${{ inputs.artifact_name }}-tests.tar.zst"
-          ls -la "dist/${{ inputs.artifact_name }}-tests.tar.zst"
-          sha256sum "dist/${{ inputs.artifact_name }}-tests.tar.zst" \
-              | awk '{print "tests archive sha256: " $1}'
-
-      - name: Upload nextest archive (${{ inputs.target }})
-        if: ${{ inputs.build_test_archive }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: ${{ inputs.artifact_name }}-tests
-          path: dist/${{ inputs.artifact_name }}-tests.tar.zst
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+      # The `build_test_archive` input is accepted for downstream
+      # compat but currently a no-op. `cargo nextest archive` runs
+      # `cargo test --no-run` under the hood, which invokes cc-rs
+      # to compile `ring`'s darwin asm; the linux host's cc doesn't
+      # accept `-arch x86_64` / `-mmacosx-version-min=10.7`.
+      # cargo-zigbuild's CC/AR/linker wrappers persist only inside
+      # the `cargo zigbuild ...` invocation, not into a downstream
+      # nextest step. Solving this needs persistent wrapper scripts
+      # + env vars exported across steps — tracked separately so
+      # this PR can ship the e2e split independently.

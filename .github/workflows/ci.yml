@@ -92,15 +92,24 @@ jobs:
       target: x86_64-unknown-linux-gnu
       shared_key: build-linux-x64
 
-  # build-macos-x64 (native build+test on macos-15-intel) removed:
-  # the consolidated `e2e-macos-x64` lane below now downloads a linux-
-  # cross-built nextest archive plus the prebuilt soldr binary and
-  # runs **both** the unit-test sweep AND the bootstrap e2e on ONE
-  # mac runner. Setup/teardown paid once per arch instead of twice.
-  # Coverage gained: unit tests on darwin still run; coverage lost
-  # is the native-build sanity check, which the linux+zigbuild lane
-  # plus the existing build-macos-x64.yml smoke workflow already
-  # cover.
+  build-macos-x64:
+    name: macOS x64
+    needs: lint
+    # Mac unit-test sweep stays here for now: nextest archive
+    # cross-compile from linux is parked (cc-rs needs persistent
+    # zig-cc wrappers across the zigbuild → nextest step boundary
+    # — separate effort). The companion e2e-macos-x64 lane below
+    # already does the linux-build + mac-run split for the
+    # bootstrap fixture; this job covers the unit + cli + fetch
+    # tests that the split can't host yet.
+    if: >-
+      github.ref_name == 'main'
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
+    uses: ./.github/workflows/_build-and-test.yml
+    with:
+      runner: macos-15-intel
+      target: x86_64-apple-darwin
+      shared_key: build-macos-x64
 
   build-windows-x64:
     name: Windows x64
