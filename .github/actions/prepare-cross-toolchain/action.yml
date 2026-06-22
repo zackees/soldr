@@ -22,6 +22,22 @@ inputs:
       workflow).
     required: false
     default: soldr
+  save:
+    description: |
+      Optional path. If set, `soldr prepare` writes a tar.zst archive
+      of the prepared state (zig + LLVM + Apple SDK + xwin cache) to
+      this file AFTER preparation completes. Plumb the same path into
+      `actions/cache@v4`'s save step so a sibling run with `restore:`
+      can skip the downloads.
+    required: false
+    default: ""
+  restore:
+    description: |
+      Optional path. If set and the file exists, `soldr prepare`
+      extracts it BEFORE running the normal prepare flow. Anything
+      still missing afterwards is downloaded normally.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -31,5 +47,12 @@ runs:
       run: |
         set -euo pipefail
         echo "::group::soldr prepare --target ${{ inputs.target }}"
-        "${{ inputs.soldr }}" prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"
+        args=( prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV" )
+        if [ -n "${{ inputs.restore }}" ] && [ -f "${{ inputs.restore }}" ]; then
+          args+=( --restore "${{ inputs.restore }}" )
+        fi
+        if [ -n "${{ inputs.save }}" ]; then
+          args+=( --save "${{ inputs.save }}" )
+        fi
+        "${{ inputs.soldr }}" "${args[@]}"
         echo "::endgroup::"
