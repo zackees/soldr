@@ -47,8 +47,14 @@ jobs:
         include:
           - name: Linux
             runner: ubuntu-24.04
-          - name: macOS
-            runner: macos-15
+          # macOS smoke removed: the setup-soldr action is host-OS
+          # agnostic at the YAML level (no `runs:` `shell` differences
+          # between linux and darwin), and runtime verification of the
+          # darwin soldr binary lives in build-macos-x64.yml /
+          # build-macos-arm64.yml, which download the cross-built
+          # artifact from cross-compile-all-targets.yml and exercise
+          # `soldr --version` / `soldr doctor` on real hardware. Two
+          # macOS-runner-minute charges for the same coverage was waste.
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

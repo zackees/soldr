@@ -92,20 +92,11 @@ jobs:
       target: x86_64-unknown-linux-gnu
       shared_key: build-linux-x64
 
-  build-macos-x64:
-    name: macOS x64
-    needs: lint
-    # main-only AND not gated by the `fast-build` PR label. The label
-    # check is a no-op on push events (pull_request payload is null),
-    # so the main-branch sweep is unaffected.
-    if: >-
-      github.ref_name == 'main'
-      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_build-and-test.yml
-    with:
-      runner: macos-15-intel
-      target: x86_64-apple-darwin
-      shared_key: build-macos-x64
+  # build-macos-x64 removed: cross-compile-all-targets.yml builds the
+  # darwin artifacts on linux+zigbuild; smoke-on-mac in
+  # build-macos-x64.yml verifies the cross-built binary runs on real
+  # hardware. Native macOS unit-test sweep was redundant given that
+  # coverage chain — see commit message for the analysis.
 
   build-windows-x64:
     name: Windows x64
@@ -183,31 +174,13 @@ jobs:
       save_cache: ${{ github.event_name == 'push' }}
       source_ref: ${{ github.sha }}
 
-  e2e-macos-x64:
-    name: build
-    # Original gate: only run on PRs or pushes to main / release.
-    # Added: skip when the `fast-build` PR label is present.
-    if: >-
-      (github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release')
-      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: macos-15-intel
-      target: x86_64-apple-darwin
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
-      source_ref: ${{ github.sha }}
-
-  e2e-macos-arm64:
-    name: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
-    uses: ./.github/workflows/_bootstrap-e2e.yml
-    with:
-      runner: macos-15
-      target: aarch64-apple-darwin
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
-      source_ref: ${{ github.sha }}
+  # e2e-macos-{x64,arm64} removed: the bootstrap-build phase moved to
+  # linux+zigbuild via cross-compile-all-targets.yml, and runtime
+  # verification of the cross-built darwin binary lives in
+  # build-macos-x64.yml + build-macos-arm64.yml (smoke-on-mac jobs
+  # that download the prebuilt artifact and run it). Maintaining a
+  # separate bootstrap+e2e lane on a paid macOS runner duplicated
+  # both halves without adding coverage.
 
   e2e-windows-x64:
     name: build
