@@ -54,29 +54,25 @@ env:
 
 jobs:
   build-prebuilts:
-    name: ${{ matrix.tool }} / ${{ matrix.target }}
+    name: ${{ matrix.tool }} / ${{ matrix.cell.target }}
+    # Always run on linux-x64 — we use cargo-zigbuild + cargo-xwin to
+    # cross-compile every cell. Matches the host the
+    # cross-compile-all-targets.yml workflow runs on.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         tool: [crgx, cargo-chef]
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-          - aarch64-unknown-linux-musl
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-    outputs:
-      # Stash per-cell metadata so the commit job can produce a
-      # combined manifest.json delta. Outputs land under
-      # `needs.build-prebuilts.outputs.<key>` but matrix outputs are
-      # awkward — we use artifacts instead, see "Stage prebuilt
-      # artifact" below.
-      dummy: "unused"
+        cell:
+          - { target: x86_64-pc-windows-msvc,    build_tool: xwin,     exe_suffix: ".exe" }
+          - { target: aarch64-pc-windows-msvc,   build_tool: xwin,     exe_suffix: ".exe" }
+          - { target: x86_64-unknown-linux-gnu,  build_tool: zigbuild, exe_suffix: "" }
+          - { target: aarch64-unknown-linux-gnu, build_tool: zigbuild, exe_suffix: "" }
+          - { target: x86_64-unknown-linux-musl, build_tool: zigbuild, exe_suffix: "" }
+          - { target: aarch64-unknown-linux-musl, build_tool: zigbuild, exe_suffix: "" }
+          - { target: x86_64-apple-darwin,       build_tool: zigbuild, exe_suffix: "" }
+          - { target: aarch64-apple-darwin,      build_tool: zigbuild, exe_suffix: "" }
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
@@ -88,19 +84,25 @@ jobs:
           if [ "${{ matrix.tool }}" = "crgx" ]; then
             ver=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
               crates/soldr-cli/src/fetch/mod.rs | head -n1)
+            upstream="https://github.com/yfedoseev/crgx.git"
+            cargo_extra=""
           else
             ver=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
               crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+            upstream="https://github.com/LukeMathWalker/cargo-chef.git"
+            cargo_extra="--bin cargo-chef"
           fi
           if [ -z "$ver" ]; then
             echo "could not resolve version for ${{ matrix.tool }}" >&2
             exit 1
           fi
-          echo "version=$ver" >> "$GITHUB_OUTPUT"
-          archive_name="${{ matrix.tool }}-${ver}-${{ matrix.target }}.tar.zst"
-          deps_path="deps/${{ matrix.target }}/${{ matrix.tool }}/${ver}/${archive_name}"
+          echo "version=$ver"          >> "$GITHUB_OUTPUT"
+          echo "upstream=$upstream"    >> "$GITHUB_OUTPUT"
+          echo "cargo_extra=$cargo_extra" >> "$GITHUB_OUTPUT"
+          archive_name="${{ matrix.tool }}-${ver}-${{ matrix.cell.target }}.tar.zst"
+          deps_path="deps/${{ matrix.cell.target }}/${{ matrix.tool }}/${ver}/${archive_name}"
           echo "archive_name=$archive_name" >> "$GITHUB_OUTPUT"
-          echo "deps_path=$deps_path" >> "$GITHUB_OUTPUT"
+          echo "deps_path=$deps_path"       >> "$GITHUB_OUTPUT"
           echo "${{ matrix.tool }} version: $ver"
           echo "expected deps path:   $deps_path"
 
@@ -132,7 +134,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.94.1
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.cell.target }}
 
       - name: Set up Python (for pip install soldr)
         if: steps.probe.outputs.skip != 'true'
@@ -145,35 +147,64 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # pip install the latest soldr from PyPI — it carries the
-          # `build-from-source` verb introduced in 0.7.57 (#869).
           pip install --upgrade soldr
           soldr --version
 
-      - name: Build prebuilt via soldr build-from-source
+      - name: Download Apple SDK (darwin lanes)
+        if: steps.probe.outputs.skip != 'true' && contains(matrix.cell.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_url=$(python3 .github/scripts/tool_query.py \
+              --platform mac --arch x86 apple-sdk)
+          echo "Apple SDK URL: $sdk_url"
+          curl --fail --location \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output /tmp/apple-sdk.tar.zst "$sdk_url"
+          sudo mkdir -p /opt
+          sudo tar --use-compress-program='zstd -d' \
+              -xf /tmp/apple-sdk.tar.zst -C /opt
+          test -d /opt/MacOSX11.3.sdk/System/Library/Frameworks/IOKit.framework
+          echo "SDKROOT=/opt/MacOSX11.3.sdk" >> "$GITHUB_ENV"
+
+      - name: Build prebuilt via soldr cargo ${{ matrix.cell.build_tool }}
         if: steps.probe.outputs.skip != 'true'
         shell: bash
         env:
-          RUSTC_WRAPPER: ""
+          CARGO_TARGET_DIR: target
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          target="${{ matrix.target }}"
+          target="${{ matrix.cell.target }}"
           tool="${{ matrix.tool }}"
-          soldr build-from-source "$tool" --target "$target" --version "$version"
-          # Verify the binary landed where we expect.
-          install_dir="$HOME/.soldr/bin/${tool}-from-source/${version}/${target}"
-          case "$target" in
-            *-pc-windows-*) suffix=".exe" ;;
-            *)              suffix=""    ;;
-          esac
-          binary="${install_dir}/${tool}${suffix}"
+          upstream="${{ steps.version.outputs.upstream }}"
+          cargo_extra="${{ steps.version.outputs.cargo_extra }}"
+          suffix="${{ matrix.cell.exe_suffix }}"
+          build_tool="${{ matrix.cell.build_tool }}"
+
+          work_dir="${RUNNER_TEMP}/${tool}-src"
+          rm -rf "$work_dir"
+          git clone --depth 1 --branch "v${version}" "$upstream" "$work_dir"
+          source_commit=$(git -C "$work_dir" rev-parse HEAD)
+          echo "source_commit=$source_commit" >> "$GITHUB_ENV"
+
+          # shellcheck disable=SC2086
+          soldr cargo "$build_tool" build \
+            --release \
+            --manifest-path "$work_dir/Cargo.toml" \
+            --target "$target" \
+            --locked $cargo_extra
+
+          binary="$work_dir/target/${target}/release/${tool}${suffix}"
           if [ ! -f "$binary" ]; then
-            echo "expected binary not found at $binary" >&2
-            find "$HOME/.soldr/bin/${tool}-from-source" -type f >&2 || true
+            echo "build completed but binary missing at $binary" >&2
+            find "$work_dir/target/${target}/release" -maxdepth 2 -type f >&2 || true
             exit 1
           fi
           ls -la "$binary"
+          # Re-export the binary path so subsequent steps see it
+          # without recomputing the work_dir.
+          echo "PREBUILT_BINARY=$binary" >> "$GITHUB_ENV"
 
       - name: Stage prebuilt as tar.zst
         if: steps.probe.outputs.skip != 'true'
@@ -181,15 +212,15 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          target="${{ matrix.target }}"
+          target="${{ matrix.cell.target }}"
           tool="${{ matrix.tool }}"
           archive_name="${{ steps.version.outputs.archive_name }}"
-          case "$target" in
-            *-pc-windows-*) suffix=".exe" ;;
-            *)              suffix=""    ;;
-          esac
-          install_dir="$HOME/.soldr/bin/${tool}-from-source/${version}/${target}"
-          binary="${install_dir}/${tool}${suffix}"
+          suffix="${{ matrix.cell.exe_suffix }}"
+          binary="${PREBUILT_BINARY:-}"
+          if [ -z "$binary" ] || [ ! -f "$binary" ]; then
+            echo "PREBUILT_BINARY not set or missing; build step did not emit one" >&2
+            exit 1
+          fi
           stage=$(mktemp -d)
           # Wrap the bare binary (no parent dirs) — matches the
           # extraction-side `tar -xaf .. | find -name <tool>` pattern
@@ -220,7 +251,7 @@ jobs:
         if: steps.probe.outputs.skip != 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: prebuilt-${{ matrix.tool }}-${{ matrix.target }}
+          name: prebuilt-${{ matrix.tool }}-${{ matrix.cell.target }}
           path: |
             dist/${{ steps.version.outputs.archive_name }}
             dist/${{ steps.version.outputs.archive_name }}.meta.json
