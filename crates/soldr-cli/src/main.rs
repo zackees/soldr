@@ -355,14 +355,20 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             save,
             restore,
         } => {
-            // `--target all` expands to every triple declared in
-            // `[workspace.metadata.soldr].targets`; any other value is
-            // passed through to a single-triple `prepare_cmd::run`. See
-            // zackees/soldr#914 for the resolution semantics.
-            let targets: Vec<String> = if target == "all" {
-                cargo_metadata_soldr::resolve_all_targets()?
-            } else {
-                vec![target]
+            // `--target` accepts three shapes — see
+            // `prepare_cmd::parse_target_arg` for the parser:
+            //   - `all`         → every triple under
+            //                     `[workspace.metadata.soldr].targets`
+            //                     (needs a workspace context — #914).
+            //   - `<a>,<b>,<c>` → an explicit comma-separated list.
+            //                     Useful for docker-image bake steps
+            //                     where no Cargo.toml is mounted yet.
+            //   - `<triple>`    → a single triple (legacy default).
+            let targets: Vec<String> = match prepare_cmd::parse_target_arg(&target)? {
+                prepare_cmd::ParsedTargetArg::All => {
+                    cargo_metadata_soldr::resolve_all_targets()?
+                }
+                prepare_cmd::ParsedTargetArg::Explicit(list) => list,
             };
             // Per-triple errors are collected so a single bad target in
             // a multi-target run doesn't hide later failures. The whole

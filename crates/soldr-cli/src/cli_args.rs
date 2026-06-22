@@ -397,12 +397,21 @@ pub(crate) enum Commands {
         long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure cargo-xwin + LLVM toolchain + extract the vendored xwin MSVC CRT cache from the soldr `manifest` branch into ~/.cache/cargo-xwin/ so `cargo xwin build` skips the live Microsoft download.\n  *-apple-darwin:     ensure cargo-zigbuild + zig + Apple SDK; print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set).\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
     )]
     Prepare {
-        /// Target triple to prepare the toolchain for. Pass the
-        /// literal `all` to prepare every triple declared under
-        /// `[workspace.metadata.soldr].targets` (or
-        /// `[package.metadata.soldr].targets`) in the nearest
-        /// `Cargo.toml`. See zackees/soldr#914.
-        #[arg(long, value_name = "TRIPLE|all")]
+        /// Target triple to prepare the toolchain for. Three shapes
+        /// are accepted:
+        ///
+        ///   * a single triple, e.g. `x86_64-pc-windows-msvc`;
+        ///   * a comma-separated list, e.g.
+        ///     `x86_64-pc-windows-msvc,aarch64-apple-darwin` —
+        ///     useful for docker-image bake steps where no workspace
+        ///     `Cargo.toml` is mounted yet;
+        ///   * the literal `all` — expands to every triple declared
+        ///     under `[workspace.metadata.soldr].targets` (or
+        ///     `[package.metadata.soldr].targets`) in the nearest
+        ///     `Cargo.toml`.
+        ///
+        /// See zackees/soldr#914.
+        #[arg(long, value_name = "TRIPLE[,TRIPLE...]|all")]
         target: String,
         /// Optional path to append `KEY=VALUE` env-var lines (e.g.
         /// `SDKROOT=<path>` for darwin lanes). When running under
