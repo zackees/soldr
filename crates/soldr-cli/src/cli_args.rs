@@ -207,6 +207,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "save",
     "load",
     "archive",
+    "prepare",
     "build-from-source",
     "daemon",
     "shims",
@@ -388,6 +389,22 @@ pub(crate) enum Commands {
         /// Destination archive path. Suggest the `.tar.zst` suffix.
         #[arg(long, value_name = "FILE")]
         output: std::path::PathBuf,
+    },
+
+    /// Prepare the cross-compile toolchain for a target triple
+    #[command(
+        name = "prepare",
+        long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure cargo-xwin + LLVM toolchain + extract the vendored xwin MSVC CRT cache from the soldr `manifest` branch into ~/.cache/cargo-xwin/ so `cargo xwin build` skips the live Microsoft download.\n  *-apple-darwin:     ensure cargo-zigbuild + zig + Apple SDK; print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set).\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
+    )]
+    Prepare {
+        /// Target triple to prepare the toolchain for.
+        #[arg(long, value_name = "TRIPLE")]
+        target: String,
+        /// Optional path to append `KEY=VALUE` env-var lines (e.g.
+        /// `SDKROOT=<path>` for darwin lanes). When running under
+        /// GitHub Actions, point at `$GITHUB_ENV`.
+        #[arg(long, value_name = "FILE")]
+        github_env: Option<std::path::PathBuf>,
     },
 
     /// Cross-compile a soldr-bundled tool (crgx, cargo-chef) for a target triple

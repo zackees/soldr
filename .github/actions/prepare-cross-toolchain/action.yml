@@ -1,0 +1,35 @@
+name: Preparing Cross Compile Toolchain
+description: |
+  Uniform cross-compile toolchain bootstrap. One step per matrix cell;
+  internally dispatches based on `target` triple via `soldr prepare`:
+    *-pc-windows-msvc → ensure cargo-xwin + LLVM + extract vendored
+      MSVC CRT cache to ~/.cache/cargo-xwin/ (no live MS download).
+    *-apple-darwin    → ensure cargo-zigbuild + zig + Apple SDK;
+      export SDKROOT into $GITHUB_ENV.
+    *-unknown-linux-* → ensure cargo-zigbuild + zig.
+  Collapses what used to be 3-4 separate workflow steps into one named
+  "Preparing Cross Compile Toolchain". Designed for
+  cross-compile-all-targets.yml + sibling workflows.
+
+inputs:
+  target:
+    description: "Rust target triple (e.g. x86_64-pc-windows-msvc)"
+    required: true
+  soldr:
+    description: |
+      Path to the `soldr` binary to invoke. Defaults to `soldr` on
+      $PATH (typically the bootstrap soldr installed earlier in the
+      workflow).
+    required: false
+    default: soldr
+
+runs:
+  using: composite
+  steps:
+    - name: Preparing Cross Compile Toolchain
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::group::soldr prepare --target ${{ inputs.target }}"
+        "${{ inputs.soldr }}" prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"
+        echo "::endgroup::"
