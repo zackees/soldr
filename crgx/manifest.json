@@ -13,14 +13,18 @@
     "release_html_url": "https://github.com/yfedoseev/crgx/releases/tag/v0.1.0",
     "platforms": {
       "darwin-arm64": {
-        "filename": "crgx-macos-aarch64-0.1.0.tar.gz",
-        "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-macos-aarch64-0.1.0.tar.gz",
-        "size": 1723816
+        "filename": "crgx-0.1.0-aarch64-apple-darwin.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-apple-darwin/crgx/0.1.0/crgx-0.1.0-aarch64-apple-darwin.tar.zst",
+        "size": 1441800,
+        "sha256": "00ebed8368e903ba96189f4b57bd8361988650448c755922c1188a3a8c1e1f85",
+        "archive": "tar.zst"
       },
       "darwin-x64": {
-        "filename": "crgx-macos-x86_64-0.1.0.tar.gz",
-        "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-macos-x86_64-0.1.0.tar.gz",
-        "size": 1872427
+        "filename": "crgx-0.1.0-x86_64-apple-darwin.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-apple-darwin/crgx/0.1.0/crgx-0.1.0-x86_64-apple-darwin.tar.zst",
+        "size": 1541258,
+        "sha256": "85c0d854558d7f06f709c7758380ce043f07bd99a1d44ed2d22dbcec81344e57",
+        "archive": "tar.zst"
       },
       "linux-arm64": {
         "filename": "crgx-linux-aarch64-0.1.0.tar.gz",
@@ -33,14 +37,39 @@
         "size": 1971123
       },
       "linux-x64-musl": {
-        "filename": "crgx-linux-x86_64-musl-0.1.0.tar.gz",
-        "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-linux-x86_64-musl-0.1.0.tar.gz",
-        "size": 2067482
+        "filename": "crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst",
+        "size": 1522295,
+        "sha256": "7b158b57003035c6b536f9e06756f74da67c62ee030ca29620aeb8166a9953fa",
+        "archive": "tar.zst"
       },
       "windows-x64-msvc": {
-        "filename": "crgx-windows-x86_64-0.1.0.zip",
-        "url": "https://github.com/yfedoseev/crgx/releases/download/v0.1.0/crgx-windows-x86_64-0.1.0.zip",
-        "size": 1685362
+        "filename": "crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/crgx/0.1.0/crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst",
+        "size": 1496209,
+        "sha256": "932cde7ab7b787a39fe89eada9c38178e0481f5428cf0260941d8c9e63927aae",
+        "archive": "tar.zst"
+      },
+      "linux-x64-gnu": {
+        "filename": "crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst",
+        "size": 1470140,
+        "sha256": "370cc24418de0195f04fd97f7240b71d78dcc2908e95fc1ff9a2531c171ae5e3",
+        "archive": "tar.zst"
+      },
+      "linux-arm64-gnu": {
+        "filename": "crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst",
+        "size": 1370947,
+        "sha256": "90fbf43e32f0c13d827b68cbb0b8bc72ac4071543253b6541f2d78d7e1c067f7",
+        "archive": "tar.zst"
+      },
+      "linux-arm64-musl": {
+        "filename": "crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst",
+        "size": 1401912,
+        "sha256": "dd776a10f1ac2996a8de0dee3be5195e358d210e68847bfdc1b6ad9f1160e21c",
+        "archive": "tar.zst"
       }
     },
     "assets": {
@@ -85,6 +114,48 @@
         "content_type": "application/zip",
         "created_at": "2026-03-01T07:47:51Z",
         "updated_at": "2026-03-01T07:47:52Z"
+      },
+      "crgx-0.1.0-x86_64-apple-darwin.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-apple-darwin/crgx/0.1.0/crgx-0.1.0-x86_64-apple-darwin.tar.zst",
+        "size": 1541258,
+        "sha256": "85c0d854558d7f06f709c7758380ce043f07bd99a1d44ed2d22dbcec81344e57",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-aarch64-apple-darwin.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-apple-darwin/crgx/0.1.0/crgx-0.1.0-aarch64-apple-darwin.tar.zst",
+        "size": 1441800,
+        "sha256": "00ebed8368e903ba96189f4b57bd8361988650448c755922c1188a3a8c1e1f85",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/crgx/0.1.0/crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst",
+        "size": 1496209,
+        "sha256": "932cde7ab7b787a39fe89eada9c38178e0481f5428cf0260941d8c9e63927aae",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst",
+        "size": 1470140,
+        "sha256": "370cc24418de0195f04fd97f7240b71d78dcc2908e95fc1ff9a2531c171ae5e3",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst",
+        "size": 1370947,
+        "sha256": "90fbf43e32f0c13d827b68cbb0b8bc72ac4071543253b6541f2d78d7e1c067f7",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst",
+        "size": 1522295,
+        "sha256": "7b158b57003035c6b536f9e06756f74da67c62ee030ca29620aeb8166a9953fa",
+        "content_type": "application/zstd"
+      },
+      "crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst": {
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst",
+        "size": 1401912,
+        "sha256": "dd776a10f1ac2996a8de0dee3be5195e358d210e68847bfdc1b6ad9f1160e21c",
+        "content_type": "application/zstd"
       }
     },
     "is_pinned": true
