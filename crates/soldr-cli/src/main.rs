@@ -348,8 +348,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Archive { target, output } => {
             archive_cmd::run(target, output)?;
         }
-        Commands::Prepare { target, github_env } => {
-            prepare_cmd::run(target, github_env).await?;
+        Commands::Prepare {
+            target,
+            github_env,
+            save,
+            restore,
+        } => {
+            prepare_cmd::run(target, github_env, save, restore).await?;
         }
         Commands::BuildFromSource {
             tool,

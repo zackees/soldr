@@ -163,11 +163,31 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
 }
 
 /// Top-level entry point for `soldr prepare --target <triple>`.
-pub async fn run(target: String, github_env: Option<PathBuf>) -> Result<(), SoldrError> {
+pub async fn run(
+    target: String,
+    github_env: Option<PathBuf>,
+    save: Option<PathBuf>,
+    restore: Option<PathBuf>,
+) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let github_env_path = github_env.as_deref();
 
     eprintln!("soldr prepare: target={target}");
+
+    // `--restore`: extract a previously-saved archive of soldr-managed
+    // prepare state (zig, LLVM, Apple SDK, xwin cache) BEFORE running
+    // the normal prepare flow. Anything still missing afterwards gets
+    // downloaded by the normal dispatch below. Restore failures are
+    // logged but non-fatal — partial cache hits still help.
+    if let Some(archive) = restore.as_deref() {
+        match restore_prepare_state(archive, &paths) {
+            Ok(()) => eprintln!("soldr prepare: restored state from {}", archive.display()),
+            Err(e) => eprintln!(
+                "soldr prepare: warning: restore from {} failed: {e}; will re-download as needed",
+                archive.display()
+            ),
+        }
+    }
 
     // Always add the rustup target (idempotent).
     if let Err(e) = rustup_add_target(&target) {
@@ -213,7 +233,130 @@ pub async fn run(target: String, github_env: Option<PathBuf>) -> Result<(), Sold
         );
     }
 
+    // `--save`: capture the prepared state into a tar.zst that callers
+    // can plug into `actions/cache@v4`'s save step. Subsequent CI runs
+    // pass the same path to `--restore` and skip the live downloads.
+    if let Some(archive) = save.as_deref() {
+        save_prepare_state(archive, &paths)?;
+        eprintln!("soldr prepare: saved state to {}", archive.display());
+    }
+
     eprintln!("soldr prepare: done");
+    Ok(())
+}
+
+/// Worker count for the zstd encoder. `std::thread::available_parallelism`
+/// is the most portable read of host parallelism; saturate to a sane
+/// upper bound so we don't spawn a hundred zstd workers on big runners.
+fn num_cpus_for_zstd() -> u32 {
+    std::thread::available_parallelism()
+        .map(|n| n.get().min(8) as u32)
+        .unwrap_or(4)
+}
+
+/// Glob-style listing of soldr-managed dirs that `prepare` populates.
+/// Captured by `--save`, restored by `--restore`. Paths are relative
+/// to the user's HOME dir so the archive is portable across runners
+/// that share the same host triple.
+///
+/// We pack ENTIRE versioned subdirs (e.g. `~/.soldr/bin/zig-0.13.0/`)
+/// rather than the parent `~/.soldr/bin/` so the archive doesn't
+/// accidentally pull in zccache binaries or anything unrelated.
+fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
+    let mut roots = Vec::new();
+    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>}
+    if let Ok(entries) = std::fs::read_dir(&paths.bin) {
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let n = name.to_string_lossy();
+            if n.starts_with("zig-") || n.starts_with("llvm-") || n == "apple-sdk" {
+                roots.push(entry.path());
+            }
+        }
+    }
+    // xwin cache (cargo-xwin's default location, mirrors `xwin_cache_root`).
+    let xwin_root = xwin_cache_root()?;
+    if xwin_root.is_dir() {
+        roots.push(xwin_root);
+    }
+    Ok(roots)
+}
+
+/// Pack the prepare-managed dirs into a tar.zst at `archive`. Paths
+/// inside the tar are RELATIVE to HOME so restore can extract them
+/// onto any runner that uses the same home layout.
+fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrError> {
+    let home = crate::core::home_dir()?;
+    let roots = prepare_state_roots(paths)?;
+    if roots.is_empty() {
+        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/xwin dirs found)");
+        return Ok(());
+    }
+
+    if let Some(parent) = archive.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = std::fs::File::create(archive)?;
+    // Level 12 + multi-thread: balances compression ratio and wall-clock.
+    // -19 (the manifest-branch durable archive setting) is ~10x slower
+    // single-threaded; -3 is fastest but bloats the archive. Multi-thread
+    // (`-T0` equivalent) lets level 12 finish in a fraction of -19's
+    // wall time while keeping the archive small enough to fit GHA's
+    // 10 GiB per-repo cache budget comfortably.
+    let mut encoder = zstd::stream::write::Encoder::new(file, 12)
+        .map_err(|e| SoldrError::Archive(format!("zstd encoder init: {e}")))?;
+    let _ = encoder.multithread(num_cpus_for_zstd());
+    let encoder = encoder.auto_finish();
+    let mut builder = tar::Builder::new(encoder);
+    builder.follow_symlinks(false);
+    for root in &roots {
+        let rel = match root.strip_prefix(&home) {
+            Ok(r) => r,
+            Err(_) => {
+                eprintln!(
+                    "soldr prepare: warning: {} is outside HOME ({}); skipping",
+                    root.display(),
+                    home.display()
+                );
+                continue;
+            }
+        };
+        eprintln!("soldr prepare: saving {}", rel.display());
+        // tar append can fail on Windows NTFS reparse points (junctions)
+        // that cargo-xwin creates locally; on Linux CI runners these
+        // are POSIX symlinks and tar handles them natively. Log + skip
+        // failures rather than aborting the whole save — partial
+        // archives still help the next restore.
+        if let Err(e) = builder.append_dir_all(rel, root) {
+            eprintln!(
+                "soldr prepare: warning: tar append {} failed: {e}; skipping",
+                rel.display()
+            );
+        }
+    }
+    builder
+        .finish()
+        .map_err(|e| SoldrError::Archive(format!("tar finish: {e}")))?;
+    Ok(())
+}
+
+/// Extract a previously-saved tar.zst back onto disk. Entries are
+/// resolved relative to HOME so the same archive replays across any
+/// runner that shares the home layout. Existing files are overwritten
+/// — the caller (`--restore`) treats partial / outdated archives as
+/// best-effort: anything still missing after restore is re-downloaded
+/// by the normal dispatch.
+fn restore_prepare_state(archive: &Path, _paths: &SoldrPaths) -> Result<(), SoldrError> {
+    let home = crate::core::home_dir()?;
+    let file = std::fs::File::open(archive)
+        .map_err(|e| SoldrError::Other(format!("open {}: {e}", archive.display())))?;
+    let zst = zstd::stream::read::Decoder::new(file)
+        .map_err(|e| SoldrError::Archive(format!("zstd decoder: {e}")))?;
+    let mut tarball = tar::Archive::new(zst);
+    std::fs::create_dir_all(&home)?;
+    tarball
+        .unpack(&home)
+        .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
     Ok(())
 }
 

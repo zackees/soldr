@@ -405,6 +405,18 @@ pub(crate) enum Commands {
         /// GitHub Actions, point at `$GITHUB_ENV`.
         #[arg(long, value_name = "FILE")]
         github_env: Option<std::path::PathBuf>,
+        /// Capture the prepared state (zig + LLVM + Apple SDK + xwin
+        /// cache) into a single `tar.zst` archive at this path after
+        /// preparation completes. Designed for `actions/cache@v4`'s
+        /// save step on GitHub Actions so subsequent runs can
+        /// `--restore` instead of re-downloading.
+        #[arg(long, value_name = "FILE")]
+        save: Option<std::path::PathBuf>,
+        /// Extract a previously-saved archive BEFORE running the
+        /// normal prepare flow. Anything still missing after restore
+        /// is downloaded normally — partial restores are non-fatal.
+        #[arg(long, value_name = "FILE")]
+        restore: Option<std::path::PathBuf>,
     },
 
     /// Cross-compile a soldr-bundled tool (crgx, cargo-chef) for a target triple
