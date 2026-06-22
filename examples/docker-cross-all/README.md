@@ -21,7 +21,7 @@ The Dockerfile bakes three layers worth of cross-compile state into
 one image, so a fresh `docker run` does **zero network fetches** and
 goes straight to `cargo build`:
 
-1. **soldr (PyPI wheel)** — `pip install soldr==<version>`.
+1. **soldr** — built from source against `SOLDR_GIT_REF` (default `main`) in a stage-1 builder, then `COPY --from=soldr-builder` into the runtime image. Avoids the PyPI release cadence — the example rides latest main.
 2. **rustup + pinned channel** — `soldr bootstrap` then `soldr
    toolchain install` against the included `rust-toolchain.toml`.
 3. **Every cross-compile asset for every target** — `soldr prepare
