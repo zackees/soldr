@@ -143,12 +143,15 @@ jobs:
           # cargo nextest archive embeds the target triple + soldr's
           # cargo metadata. The `--archive-file` path is the artifact
           # the mac runner downloads.
+          # `cargo nextest archive` accepts `--release` as a unary
+          # flag (presence = release profile). Omitting it = the
+          # default `dev` profile, which is what we want for the
+          # CI unit-test sweep.
           soldr cargo nextest archive \
               --workspace \
               --locked \
               --target "${{ inputs.target }}" \
-              --archive-file "dist/${{ inputs.artifact_name }}-tests.tar.zst" \
-              --release=false
+              --archive-file "dist/${{ inputs.artifact_name }}-tests.tar.zst"
           ls -la "dist/${{ inputs.artifact_name }}-tests.tar.zst"
           sha256sum "dist/${{ inputs.artifact_name }}-tests.tar.zst" \
               | awk '{print "tests archive sha256: " $1}'
