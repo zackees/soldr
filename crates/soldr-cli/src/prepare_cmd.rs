@@ -179,6 +179,12 @@ pub async fn run(
     // the normal prepare flow. Anything still missing afterwards gets
     // downloaded by the normal dispatch below. Restore failures are
     // logged but non-fatal — partial cache hits still help.
+    //
+    // After restore, walk the expected paths for `target` and emit a
+    // present/missing summary so consumers can see whether the cache
+    // covered everything or the dispatch will need to re-download
+    // pieces. Missing paths are NOT an error — they just trigger
+    // normal downloads via the dispatch below (#900 acceptance).
     if let Some(archive) = restore.as_deref() {
         match restore_prepare_state(archive, &paths) {
             Ok(()) => eprintln!("soldr prepare: restored state from {}", archive.display()),
@@ -187,6 +193,12 @@ pub async fn run(
                 archive.display()
             ),
         }
+        // Emit the audit even if restore raised — partial restores are
+        // useful and the dispatch fills any remaining gaps. The
+        // present/missing summary lets consumers see exactly which
+        // pieces survived.
+        let report = validate_restore_state(&target, &paths)?;
+        emit_restore_report(&report);
     }
 
     // Always add the rustup target (idempotent).
@@ -243,6 +255,102 @@ pub async fn run(
 
     eprintln!("soldr prepare: done");
     Ok(())
+}
+
+/// One row in the per-target post-restore validation report.
+/// `present` is true when the expected path exists on disk; the
+/// `path` field is the location consumers can grep for in logs.
+#[derive(Debug, Clone)]
+struct RestoreEntry {
+    label: String,
+    path: PathBuf,
+    present: bool,
+}
+
+/// List the on-disk paths that `prepare --target <triple>` is
+/// expected to populate. Used after `--restore` to surface a
+/// present/missing summary; the dispatch below downloads anything
+/// missing so the report is purely informational.
+///
+/// Paths are version-pinned where possible (e.g. zig 0.13.0, LLVM
+/// 21.1.5) so a stale archive that's missing the current pin is
+/// reported as "missing" even if an older version exists on disk.
+fn expected_state_paths(target: &str, paths: &SoldrPaths) -> Result<Vec<RestoreEntry>, SoldrError> {
+    let mut entries = Vec::new();
+    let zig_dir = paths
+        .bin
+        .join(format!("zig-{}", crate::fetch::MANAGED_ZIG_VERSION));
+    let zig_needed = target.ends_with("-apple-darwin") || target.contains("-unknown-linux-");
+    if zig_needed {
+        let present = zig_dir.join(".complete").is_file() || zig_dir.is_dir();
+        entries.push(RestoreEntry {
+            label: format!("zig {}", crate::fetch::MANAGED_ZIG_VERSION),
+            path: zig_dir,
+            present,
+        });
+    }
+    if target.ends_with("-pc-windows-msvc") {
+        let llvm_dir = paths
+            .bin
+            .join(format!("llvm-{}", crate::fetch::MANAGED_LLVM_VERSION));
+        entries.push(RestoreEntry {
+            label: format!("LLVM {}", crate::fetch::MANAGED_LLVM_VERSION),
+            present: llvm_dir.is_dir(),
+            path: llvm_dir,
+        });
+        let xwin = xwin_cache_root()?.join("xwin");
+        entries.push(RestoreEntry {
+            label: "xwin MSVC CRT + Windows SDK".to_string(),
+            present: xwin.join("crt").join("include").is_dir()
+                && xwin.join("sdk").join("include").is_dir(),
+            path: xwin,
+        });
+    }
+    if target.ends_with("-apple-darwin") {
+        let sdk = paths
+            .bin
+            .join("apple-sdk")
+            .join(crate::fetch::MANAGED_APPLE_SDK_VERSION);
+        entries.push(RestoreEntry {
+            label: format!("Apple SDK {}", crate::fetch::MANAGED_APPLE_SDK_VERSION),
+            present: sdk.join(".complete").is_file() || sdk.is_dir(),
+            path: sdk,
+        });
+    }
+    Ok(entries)
+}
+
+fn validate_restore_state(
+    target: &str,
+    paths: &SoldrPaths,
+) -> Result<Vec<RestoreEntry>, SoldrError> {
+    expected_state_paths(target, paths)
+}
+
+fn emit_restore_report(entries: &[RestoreEntry]) {
+    if entries.is_empty() {
+        eprintln!("soldr prepare: restore audit: target has no expected paths to check");
+        return;
+    }
+    let present = entries.iter().filter(|e| e.present).count();
+    let total = entries.len();
+    eprintln!("soldr prepare: restore audit: {present}/{total} expected entries present");
+    for entry in entries {
+        let mark = if entry.present { "✓" } else { "✗" };
+        eprintln!(
+            "  {mark} {label}  ({path})",
+            mark = mark,
+            label = entry.label,
+            path = entry.path.display()
+        );
+    }
+    if present < total {
+        eprintln!(
+            "soldr prepare: restore audit: {} missing entr{} will be downloaded by dispatch",
+            total - present,
+            if total - present == 1 { "y" } else { "ies" }
+        );
+    }
 }
 
 /// Worker count for the zstd encoder. `std::thread::available_parallelism`
