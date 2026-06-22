@@ -95,9 +95,13 @@ jobs:
   build-macos-x64:
     name: macOS x64
     needs: lint
-    # main-only AND not gated by the `fast-build` PR label. The label
-    # check is a no-op on push events (pull_request payload is null),
-    # so the main-branch sweep is unaffected.
+    # Mac unit-test sweep stays here for now: nextest archive
+    # cross-compile from linux is parked (cc-rs needs persistent
+    # zig-cc wrappers across the zigbuild → nextest step boundary
+    # — separate effort). The companion e2e-macos-x64 lane below
+    # already does the linux-build + mac-run split for the
+    # bootstrap fixture; this job covers the unit + cli + fetch
+    # tests that the split can't host yet.
     if: >-
       github.ref_name == 'main'
       && !contains(github.event.pull_request.labels.*.name, 'fast-build')
@@ -183,31 +187,71 @@ jobs:
       save_cache: ${{ github.event_name == 'push' }}
       source_ref: ${{ github.sha }}
 
-  e2e-macos-x64:
-    name: build
-    # Original gate: only run on PRs or pushes to main / release.
-    # Added: skip when the `fast-build` PR label is present.
+  # macOS test lanes split into two phases:
+  #
+  #   Linux x86 cross-build (cheap, multi-min):
+  #     - cross-compile soldr-cli for the target via zigbuild
+  #     - cross-compile a `cargo nextest archive` for the target
+  #     - upload both as artifacts
+  #
+  #   macOS test runner (single, expensive, all tests at once):
+  #     - download both artifacts
+  #     - run `cargo nextest run --archive-file` for unit tests
+  #     - run the third-party-fixture bootstrap build through the
+  #       prebuilt soldr (e2e harness)
+  #
+  # Zero soldr build happens on macOS. Setup/teardown of the macOS
+  # runner is paid exactly once per arch. This is the template
+  # pattern for migrating the other native-target test lanes
+  # (windows/linux-arm) later — same split applies (cross-build on
+  # linux, run on target).
+  e2e-macos-x64-build:
+    name: cross-build x86_64-apple-darwin (linux host)
     if: >-
       (github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release')
       && !contains(github.event.pull_request.labels.*.name, 'fast-build')
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_cross-build-mac.yml
+    with:
+      target: x86_64-apple-darwin
+      artifact_name: soldr-ci-e2e-macos-x64
+      source_ref: ${{ github.sha }}
+      build_test_archive: true
+
+  e2e-macos-x64:
+    name: build
+    needs: e2e-macos-x64-build
+    if: >-
+      (github.event_name != 'push' || github.ref_name == 'main' || github.ref_name == 'release')
+      && !contains(github.event.pull_request.labels.*.name, 'fast-build')
+    uses: ./.github/workflows/_e2e-mac-prebuilt.yml
     with:
       runner: macos-15-intel
       target: x86_64-apple-darwin
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-macos-x64
       source_ref: ${{ github.sha }}
+      run_unit_tests: true
+
+  e2e-macos-arm64-build:
+    name: cross-build aarch64-apple-darwin (linux host)
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    uses: ./.github/workflows/_cross-build-mac.yml
+    with:
+      target: aarch64-apple-darwin
+      artifact_name: soldr-ci-e2e-macos-arm64
+      source_ref: ${{ github.sha }}
+      build_test_archive: true
 
   e2e-macos-arm64:
     name: build
+    needs: e2e-macos-arm64-build
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
-    uses: ./.github/workflows/_bootstrap-e2e.yml
+    uses: ./.github/workflows/_e2e-mac-prebuilt.yml
     with:
       runner: macos-15
       target: aarch64-apple-darwin
-      binary_name: soldr
-      save_cache: ${{ github.event_name == 'push' }}
+      artifact_name: soldr-ci-e2e-macos-arm64
       source_ref: ${{ github.sha }}
+      run_unit_tests: true
 
   e2e-windows-x64:
     name: build
