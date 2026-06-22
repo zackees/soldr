@@ -331,13 +331,118 @@ pub struct TargetAttrs {
     pub needs_apple_sdk: bool,
 }
 
+/// Registry of known arch tokens. The classifier scores user input
+/// against every entry and picks the best match — so adding a new
+/// alias (e.g. `("x86_AMD", TargetArch::X86_64)`) automatically
+/// works without changing the matching logic. Order doesn't matter;
+/// scoring is symmetric.
+pub const KNOWN_ARCHES: &[(&str, TargetArch)] = &[
+    ("x86_64", TargetArch::X86_64),
+    ("aarch64", TargetArch::Aarch64),
+];
+
+/// Registry of known OS tokens. See `KNOWN_ARCHES`.
+pub const KNOWN_OSES: &[(&str, TargetOs)] = &[
+    ("windows", TargetOs::Windows),
+    ("darwin", TargetOs::Darwin),
+    ("linux", TargetOs::Linux),
+];
+
+/// Registry of known ABI tokens. See `KNOWN_ARCHES`.
+pub const KNOWN_ABIS: &[(&str, TargetAbi)] = &[
+    ("msvc", TargetAbi::Msvc),
+    ("gnu", TargetAbi::Gnu),
+    ("musl", TargetAbi::Musl),
+];
+
+/// Minimum fuzzy score (0.0–1.0) for a token to be accepted as a
+/// match. Exact matches score 1.0; case-insensitive exact 0.99; so
+/// any threshold below 0.99 still admits casing variation. Below
+/// 0.95 admits one-character extensions like `x86_64h` (Haswell+)
+/// silently routing to `x86_64` — confirmed against the rustc
+/// target list. The current value rejects every observed close-but-
+/// wrong arch in the corpus while still accepting case variation
+/// and any registered alias as an exact match.
+///
+/// Why not "exact match only"? The registry-of-aliases design (see
+/// `best_match`) explicitly wants a future `("x86_AMD",
+/// TargetArch::X86_64)` entry to work without re-coding the match
+/// arm. Fuzzy scoring with a high threshold gives us that property
+/// AND case-insensitivity in one knob.
+pub const FUZZY_MATCH_THRESHOLD: f64 = 0.95;
+
+/// Score `input` against `candidate` for fuzzy triple-component
+/// matching. Returns `1.0` for an exact match (case-insensitive
+/// 0.99), otherwise a blend of common-prefix ratio (50%) and
+/// Jaro-Winkler (50%) — prefix weighting matters because arch/os/abi
+/// tokens are short, so a shared "x86_" prefix carries more signal
+/// than character-level edit distance alone.
+///
+/// Example: `fuzzy_score("x86_AMD", "x86")` and `fuzzy_score(
+/// "x86_AMD", "x86_AMD")` both return non-zero, but the exact match
+/// scores higher (1.0 vs ~0.65). The user-driven design constraint
+/// is: when multiple registry entries match an input, the best one
+/// wins; the brittle `match input { "x86_64" => ... }` it replaces
+/// returned `Err` for every input that wasn't an exact key.
+pub fn fuzzy_score(input: &str, candidate: &str) -> f64 {
+    if input == candidate {
+        return 1.0;
+    }
+    let i = input.to_ascii_lowercase();
+    let c = candidate.to_ascii_lowercase();
+    if i == c {
+        return 0.99;
+    }
+    let common = i.bytes().zip(c.bytes()).take_while(|(a, b)| a == b).count();
+    let max_len = i.len().max(c.len()).max(1);
+    let prefix_score = common as f64 / max_len as f64;
+    let jw = strsim::jaro_winkler(&i, &c);
+    0.5 * prefix_score + 0.5 * jw
+}
+
+/// Find the best-matching registry entry for `input`. Returns the
+/// matched value plus the runner-up name + score (useful for error
+/// messages). Errors when the best score is below
+/// `FUZZY_MATCH_THRESHOLD` — the registry doesn't have a candidate
+/// close enough to commit to.
+pub fn best_match<T: Copy>(
+    input: &str,
+    registry: &[(&str, T)],
+    kind: &str,
+) -> Result<T, SoldrError> {
+    let mut best: Option<(&str, T, f64)> = None;
+    for (name, val) in registry {
+        let s = fuzzy_score(input, name);
+        let take = match best {
+            None => true,
+            Some((_, _, prev)) => s > prev,
+        };
+        if take {
+            best = Some((name, *val, s));
+        }
+    }
+    let (name, val, score) = best
+        .ok_or_else(|| SoldrError::Other(format!("soldr prepare: empty {kind} registry — bug")))?;
+    if score < FUZZY_MATCH_THRESHOLD {
+        let supported: Vec<&str> = registry.iter().map(|(n, _)| *n).collect();
+        return Err(SoldrError::Other(format!(
+            "soldr prepare: {kind} `{input}` did not match any known {kind} \
+             (closest: `{name}` score={score:.3}; supported: {})",
+            supported.join(", ")
+        )));
+    }
+    Ok(val)
+}
+
 /// Classify a Rust target triple into a `TargetAttrs`. Pattern is
 /// the standard `<arch>-<vendor>-<os>[-<abi>]` triple structure
 /// LLVM uses; `vendor` is ignored (always `pc`, `apple`, or
-/// `unknown` for the targets we care about). Returns an error for
-/// any triple soldr's bootstrap doesn't know how to prepare — a
-/// typo in CI surfaces as a hard failure instead of a silent
-/// no-op.
+/// `unknown` for the targets we care about). Each component is
+/// fuzzy-matched against its registry via `best_match`, so adding
+/// a new alias to e.g. `KNOWN_ARCHES` automatically extends the
+/// classifier without touching this function. Triples that don't
+/// score above `FUZZY_MATCH_THRESHOLD` against any registry entry
+/// surface as a hard error naming the closest candidate.
 pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
     // Tokenize on `-`. Accept `<arch>-<vendor>-<os>` (3 parts, darwin)
     // and `<arch>-<vendor>-<os>-<abi>` (4 parts, windows/linux).
@@ -348,32 +453,61 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
              (expected `<arch>-<vendor>-<os>[-<abi>]`)"
         )));
     }
-    let arch = match parts[0] {
-        "x86_64" => TargetArch::X86_64,
-        "aarch64" => TargetArch::Aarch64,
-        other => {
+    let arch = best_match(parts[0], KNOWN_ARCHES, "arch")?;
+    let vendor = parts[1];
+    let os = best_match(parts[2], KNOWN_OSES, "os")?;
+    // Vendor must match the canonical (os, vendor) pair soldr ships
+    // against. Without this check `x86_64-uwp-windows-msvc`,
+    // `x86_64-win7-windows-msvc`, `x86_64-unikraft-linux-musl`, and
+    // `x86_64-pc-linux-gnu` all get wrongly accepted because the
+    // classifier only looked at arch/os/abi. See the rustc target
+    // list — UWP, Windows 7, Unikraft, etc. are real targets we
+    // don't support.
+    let expected_vendor = match os {
+        TargetOs::Windows => "pc",
+        TargetOs::Darwin => "apple",
+        TargetOs::Linux => "unknown",
+    };
+    if !vendor.eq_ignore_ascii_case(expected_vendor) {
+        return Err(SoldrError::Other(format!(
+            "soldr prepare: triple `{triple}` has vendor `{vendor}`; \
+             expected `{expected_vendor}` for the {os:?} family"
+        )));
+    }
+    let abi = match parts.get(3) {
+        Some(s) => Some(best_match(s, KNOWN_ABIS, "abi")?),
+        None => None,
+    };
+    // Shape constraint: darwin has no ABI suffix, windows/linux require
+    // one. Reject mismatches here — fuzzy matching can't catch
+    // cross-component invariants.
+    match (os, abi) {
+        (TargetOs::Darwin, Some(_)) => {
             return Err(SoldrError::Other(format!(
-                "soldr prepare: unsupported arch `{other}` in triple `{triple}` \
-                 (supported: x86_64, aarch64)"
+                "soldr prepare: `*-apple-darwin` triples take no ABI suffix; got `{triple}`"
             )));
         }
-    };
-    // parts[1] is vendor (`pc`, `apple`, `unknown`) — accepted as-is.
-    let os_str = parts[2];
-    let abi_str = parts.get(3).copied();
-    let (os, abi) = match (os_str, abi_str) {
-        ("windows", Some("msvc")) => (TargetOs::Windows, Some(TargetAbi::Msvc)),
-        ("darwin", None) => (TargetOs::Darwin, None),
-        ("linux", Some("gnu")) => (TargetOs::Linux, Some(TargetAbi::Gnu)),
-        ("linux", Some("musl")) => (TargetOs::Linux, Some(TargetAbi::Musl)),
-        _ => {
+        (TargetOs::Windows, None) | (TargetOs::Linux, None) => {
             return Err(SoldrError::Other(format!(
-                "soldr prepare: unsupported os/abi combination `{os_str}{}` in triple `{triple}` \
-                 (supported: windows-msvc, darwin, linux-gnu, linux-musl)",
-                abi_str.map(|a| format!("-{a}")).unwrap_or_default()
+                "soldr prepare: `{}` triples require an ABI suffix; got `{triple}`",
+                match os {
+                    TargetOs::Windows => "windows",
+                    TargetOs::Linux => "linux",
+                    TargetOs::Darwin => unreachable!(),
+                }
             )));
         }
-    };
+        // Disallow windows-{gnu,musl} (soldr only ships MSVC) and
+        // linux-msvc (nonsense).
+        (TargetOs::Windows, Some(TargetAbi::Gnu | TargetAbi::Musl))
+        | (TargetOs::Linux, Some(TargetAbi::Msvc)) => {
+            return Err(SoldrError::Other(format!(
+                "soldr prepare: unsupported os/abi combination in `{triple}` \
+                 (supported: windows-msvc, darwin, linux-gnu, linux-musl)"
+            )));
+        }
+        _ => {}
+    }
     Ok(TargetAttrs {
         triple: triple.to_string(),
         arch,
@@ -669,12 +803,21 @@ mod tests {
 
     crate::timed_test!(classify_target_rejects_unknown_arch, {
         let err = classify_target("riscv64-unknown-linux-gnu").expect_err("riscv unsupported");
-        assert!(err.to_string().contains("unsupported arch"));
+        assert!(
+            err.to_string().contains("did not match any known arch"),
+            "msg: {err}"
+        );
     });
 
     crate::timed_test!(classify_target_rejects_unknown_os, {
+        // freebsd has no abi suffix so the triple is 3 parts; the os
+        // slot ("freebsd") doesn't score above threshold against any
+        // KNOWN_OSES entry.
         let err = classify_target("x86_64-unknown-freebsd").expect_err("freebsd unsupported");
-        assert!(err.to_string().contains("unsupported os/abi"));
+        assert!(
+            err.to_string().contains("did not match any known os"),
+            "msg: {err}"
+        );
     });
 
     crate::timed_test!(classify_target_rejects_malformed_triple, {
@@ -686,8 +829,174 @@ mod tests {
 
     crate::timed_test!(classify_target_rejects_windows_gnu_abi, {
         // soldr supports MSVC only on Windows; gnu (mingw) is not in
-        // scope so the classifier rejects it.
+        // scope so the classifier rejects it via the cross-component
+        // os/abi constraint after fuzzy matching the components.
         let err = classify_target("x86_64-pc-windows-gnu").expect_err("gnu abi on windows");
-        assert!(err.to_string().contains("unsupported os/abi"));
+        assert!(
+            err.to_string().contains("unsupported os/abi combination"),
+            "msg: {err}"
+        );
+    });
+
+    // ---- Fuzzy-matching behavior ----
+
+    crate::timed_test!(fuzzy_exact_match_scores_one, {
+        assert_eq!(fuzzy_score("x86_64", "x86_64"), 1.0);
+        assert_eq!(fuzzy_score("linux", "linux"), 1.0);
+        // Case-insensitive exact = 0.99 — still cleanly above threshold.
+        let case = fuzzy_score("LINUX", "linux");
+        assert!(
+            case > FUZZY_MATCH_THRESHOLD,
+            "case-insensitive score={case}"
+        );
+    });
+
+    crate::timed_test!(fuzzy_best_match_prefers_exact_over_prefix, {
+        // The user's example: input "x86_AMD"; registry has both "x86"
+        // and "x86_AMD". Exact must beat prefix.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum Tag {
+            Short,
+            AmdLong,
+        }
+        let registry: &[(&str, Tag)] = &[("x86", Tag::Short), ("x86_AMD", Tag::AmdLong)];
+        let picked = best_match("x86_AMD", registry, "test").expect("matches");
+        assert_eq!(picked, Tag::AmdLong);
+
+        // And the inverse: input "x86" picks the short entry.
+        let picked = best_match("x86", registry, "test").expect("matches");
+        assert_eq!(picked, Tag::Short);
+    });
+
+    crate::timed_test!(fuzzy_rejects_below_threshold, {
+        // "x86" against the real registry (only "x86_64", "aarch64")
+        // scores ~0.65 against x86_64 — below 0.85, so rejected. This
+        // is the safety property: typos and abbreviations don't
+        // silently route to the wrong target.
+        let err = best_match("x86", KNOWN_ARCHES, "arch").expect_err("rejected");
+        let msg = err.to_string();
+        assert!(msg.contains("did not match"), "msg: {msg}");
+        assert!(
+            msg.contains("x86_64"),
+            "must name closest candidate; got: {msg}"
+        );
+    });
+
+    crate::timed_test!(fuzzy_case_insensitive_classify, {
+        // Uppercase triple components classify the same as lowercase.
+        let attrs = classify_target("X86_64-PC-Windows-MSVC").expect("case-insensitive");
+        assert_eq!(attrs.arch, TargetArch::X86_64);
+        assert_eq!(attrs.os, TargetOs::Windows);
+        assert_eq!(attrs.abi, Some(TargetAbi::Msvc));
+    });
+
+    // ---- Corpus test ----
+    //
+    // `triple_corpus.txt` is the canonical `rustc --print target-list`
+    // (snapshot taken on 2026-06-22, 308 entries) augmented with
+    // extra real-world triples scraped from FastLED + zackees repos.
+    // The rustc list is *the* answer to "what are the common target
+    // triples across the Rust ecosystem" — every Rust toolchain
+    // recognizes exactly this set.
+    //
+    // For each triple we assert:
+    //   - If it's in soldr's supported subset ({x86_64, aarch64} ×
+    //     {pc-windows-msvc, apple-darwin, unknown-linux-gnu,
+    //     unknown-linux-musl}) → classify_target returns Ok with the
+    //     expected attrs.
+    //   - Otherwise → returns Err. This protects against the fuzzy
+    //     matcher silently routing some `wasm32-...` or
+    //     `riscv64gc-...` to one of the supported arms.
+
+    fn is_soldr_supported(triple: &str) -> bool {
+        matches!(
+            triple,
+            "x86_64-pc-windows-msvc"
+                | "aarch64-pc-windows-msvc"
+                | "x86_64-apple-darwin"
+                | "aarch64-apple-darwin"
+                | "x86_64-unknown-linux-gnu"
+                | "aarch64-unknown-linux-gnu"
+                | "x86_64-unknown-linux-musl"
+                | "aarch64-unknown-linux-musl"
+        )
+    }
+
+    crate::timed_test!(classifier_against_rustc_target_list, {
+        let corpus = include_str!("triple_corpus.txt");
+        let triples: Vec<&str> = corpus
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert!(
+            triples.len() >= 300,
+            "corpus shrunk unexpectedly: {} entries",
+            triples.len()
+        );
+
+        let mut supported_ok = 0;
+        let mut unsupported_rejected = 0;
+        let mut surprises: Vec<String> = Vec::new();
+
+        for triple in &triples {
+            let result = classify_target(triple);
+            let expected_ok = is_soldr_supported(triple);
+            match (expected_ok, &result) {
+                (true, Ok(attrs)) => {
+                    // Spot-check that the fuzzy matcher picked the
+                    // right enum variants, not just *some* variant.
+                    if triple.starts_with("x86_64-") {
+                        assert_eq!(attrs.arch, TargetArch::X86_64, "{triple}");
+                    } else {
+                        assert_eq!(attrs.arch, TargetArch::Aarch64, "{triple}");
+                    }
+                    if triple.contains("-windows-") {
+                        assert_eq!(attrs.os, TargetOs::Windows, "{triple}");
+                        assert_eq!(attrs.abi, Some(TargetAbi::Msvc), "{triple}");
+                    } else if triple.contains("-darwin") {
+                        assert_eq!(attrs.os, TargetOs::Darwin, "{triple}");
+                        assert_eq!(attrs.abi, None, "{triple}");
+                    } else if triple.ends_with("-gnu") {
+                        assert_eq!(attrs.os, TargetOs::Linux, "{triple}");
+                        assert_eq!(attrs.abi, Some(TargetAbi::Gnu), "{triple}");
+                    } else if triple.ends_with("-musl") {
+                        assert_eq!(attrs.os, TargetOs::Linux, "{triple}");
+                        assert_eq!(attrs.abi, Some(TargetAbi::Musl), "{triple}");
+                    }
+                    supported_ok += 1;
+                }
+                (false, Err(_)) => {
+                    unsupported_rejected += 1;
+                }
+                (true, Err(e)) => {
+                    surprises.push(format!("FALSE NEGATIVE `{triple}` → Err: {e}"));
+                }
+                (false, Ok(attrs)) => {
+                    surprises.push(format!(
+                        "FALSE POSITIVE `{triple}` → Ok({:?}/{:?}/{:?})",
+                        attrs.arch, attrs.os, attrs.abi
+                    ));
+                }
+            }
+        }
+
+        eprintln!(
+            "corpus: {} triples; {} soldr-supported classify Ok; {} unsupported correctly rejected",
+            triples.len(),
+            supported_ok,
+            unsupported_rejected
+        );
+        if !surprises.is_empty() {
+            for s in &surprises {
+                eprintln!("  {s}");
+            }
+            panic!("{} corpus surprise(s) — see stderr above", surprises.len());
+        }
+        // Sanity: confirm we actually exercised the supported set.
+        assert_eq!(
+            supported_ok, 8,
+            "expected all 8 soldr-supported triples to classify Ok"
+        );
     });
 }

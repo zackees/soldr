@@ -47,6 +47,11 @@ walkdir = "2"
 jwalk = "0.8"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
 filetime = "0.2"
+# Jaro-Winkler scoring for the target-triple classifier in
+# `src/prepare_cmd.rs`. Lets `classify_target` pick the best-match
+# token from a registry of known arches/oses/abis instead of doing
+# brittle exact-string matches that miss obvious aliases.
+strsim = "0.11"
 # Used by `core::git::normalize_origin_url` for canonicalizing git
 # remote URLs into the prefetch hint stored alongside cook artifacts
 # (issue #577).
