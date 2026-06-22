@@ -211,6 +211,78 @@
     },
     {
       "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/python/manifest.json",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/python/manifest.json",
+      "sha256": "dfc58e9c65bf9be633eaa21651529343b86d1ca6e0ecc98447f7aa186bf7ba4d"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-apple-darwin/python/3.13.14/cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-apple-darwin/python/3.13.14/cpython-3.13.14+20260610-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "0e255968ed96255df59b6bc9504545260c11de3171e48f7640668d88154945ba"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-pc-windows-msvc/python/3.13.14/cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/python/3.13.14/cpython-3.13.14+20260610-aarch64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "7146b88d4b8fcd2f7154f516dee051b0891536bf48a1c2fe625a540c7bc06be6"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-unknown-linux-gnu/python/3.13.14/cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-gnu/python/3.13.14/cpython-3.13.14+20260610-aarch64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "fe5b366ecf26fe565113b195a03ea18d7030f2dab691c0bed41cf19318100be2"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-unknown-linux-musl/python/3.13.14/cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-musl/python/3.13.14/cpython-3.13.14+20260610-aarch64-unknown-linux-musl-install_only.tar.gz",
+      "sha256": "ad0388569f1f7904eaacb7b29926542925d23d38b65ba652876ae9c3c03ab55d"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-apple-darwin/python/3.13.14/cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-apple-darwin/python/3.13.14/cpython-3.13.14+20260610-x86_64-apple-darwin-install_only.tar.gz",
+      "sha256": "592d3d807a493e4e21dbc972f81d1b2ece6381a7e687bcf0da68555a1282d49a"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-pc-windows-msvc/python/3.13.14/cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/python/3.13.14/cpython-3.13.14+20260610-x86_64-pc-windows-msvc-install_only.tar.gz",
+      "sha256": "9a77f87ec431f16e79fc7e90d9115edf187d18b64100b6f6c27189f419fd79be"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-unknown-linux-gnu/python/3.13.14/cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-gnu/python/3.13.14/cpython-3.13.14+20260610-x86_64-unknown-linux-gnu-install_only.tar.gz",
+      "sha256": "31ebbb024fecb446d7f25a5b59ca1d4955597ca3f5b4b76f55b30a8987eb61c9"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-unknown-linux-musl/python/3.13.14/cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-musl/python/3.13.14/cpython-3.13.14+20260610-x86_64-unknown-linux-musl-install_only.tar.gz",
+      "sha256": "14ff3ae99951784204ea2528d0b1c8442c7c6f1e78ab27e5ea05cfd9a0b27ced"
+    },
+    {
+      "owner": "zackees",
       "repo": "zccache",
       "tag": "1.10.0",
       "asset": "zccache-v1.10.0-aarch64-apple-darwin.tar.gz",

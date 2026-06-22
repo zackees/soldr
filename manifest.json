@@ -300,6 +300,17 @@
         "v20.20.2"
       ]
     },
+    "python-standalone-sdk": {
+      "path": "deps/python/manifest.json",
+      "kind": "vendored-sdk",
+      "owner": "astral-sh",
+      "repo": "python-build-standalone",
+      "latest": "20260610",
+      "pinned": "20260610",
+      "tracked_tags": [
+        "20260610"
+      ]
+    },
     "zccache": {
       "path": "zccache/manifest.json",
       "owner": "zackees",
