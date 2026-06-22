@@ -13,7 +13,7 @@
     "platforms": {
       "darwin-x64": {
         "filename": "sdk.tar.zstd",
-        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
         "size": 52644445,
         "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
         "archive": "tar.zst",
@@ -22,7 +22,7 @@
       },
       "darwin-arm64": {
         "filename": "sdk.tar.zstd",
-        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
         "size": 52644445,
         "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
         "archive": "tar.zst",
@@ -32,7 +32,7 @@
     },
     "assets": {
       "sdk.tar.zstd": {
-        "url": "https://raw.githubusercontent.com/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
+        "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
         "size": 52644445,
         "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56",
         "content_type": "application/zstd"
