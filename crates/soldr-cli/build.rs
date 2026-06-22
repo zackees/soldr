@@ -65,31 +65,16 @@ fn main() {
     println!("cargo::rerun-if-env-changed={SKIP_REFRESH_ENV_VAR}");
 
     // Step 1: best-effort refresh of embed/manifest.json from the live
-    // asset-index. Any failure logs a cargo:warning and proceeds with
-    // whatever's on disk.
+    // asset-index. Success is silent — no cargo:warning noise for the
+    // normal in-sync / refreshed / skip-via-env paths. Only a real
+    // refresh FAILURE keeps the warning, since that's the case a human
+    // might need to diagnose.
     if !skip_refresh_via_env() {
-        match refresh_embedded_manifest(&src) {
-            Ok(written) => {
-                if written {
-                    println!(
-                        "cargo:warning=soldr-cli: refreshed embed/manifest.json from {ASSET_INDEX_URL}"
-                    );
-                } else {
-                    println!(
-                        "cargo:warning=soldr-cli: embed/manifest.json already in sync with {ASSET_INDEX_URL}"
-                    );
-                }
-            }
-            Err(e) => {
-                println!(
-                    "cargo:warning=soldr-cli: embed manifest refresh failed ({e}); using on-disk copy"
-                );
-            }
+        if let Err(e) = refresh_embedded_manifest(&src) {
+            println!(
+                "cargo:warning=soldr-cli: embed manifest refresh failed ({e}); using on-disk copy"
+            );
         }
-    } else {
-        println!(
-            "cargo:warning=soldr-cli: {SKIP_REFRESH_ENV_VAR} set — skipping embed manifest refresh"
-        );
     }
 
     // Step 2: compress the (possibly refreshed) JSON into OUT_DIR. This
@@ -106,12 +91,9 @@ fn main() {
     let compressed = encoder.finish().expect("zstd compress finish");
 
     std::fs::write(&dst, &compressed).unwrap_or_else(|e| panic!("write {}: {e}", dst.display()));
-
-    println!(
-        "cargo:warning=soldr-cli: embedded manifest.json.zst built ({} bytes -> {} bytes)",
-        json_bytes.len(),
-        compressed.len()
-    );
+    // Intentionally silent on success — the size delta is interesting for
+    // one-off inspection but doesn't belong in every cargo build's
+    // warning surface.
 }
 
 fn skip_refresh_via_env() -> bool {
