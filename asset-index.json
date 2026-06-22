@@ -155,6 +155,62 @@
     },
     {
       "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/win/node/manifest.json",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/win/node/manifest.json",
+      "sha256": "389f60e465f19f2d60138370d4b6d4331c52f5e3245eab4bb26a3e42e573651f"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-pc-windows-msvc/node/20.20.2/node-20.20.2-aarch64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/20.20.2/node-20.20.2-aarch64-pc-windows-msvc.zip",
+      "sha256": "df9407e8cf26e58158351deed09b68de56ad60cc911834a1080307dea8a95562"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-pc-windows-msvc/node/22.23.0/node-22.23.0-aarch64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/22.23.0/node-22.23.0-aarch64-pc-windows-msvc.zip",
+      "sha256": "9691313ccf068a5b6d450c163ee3786dbda584f3ea8b238de5fdd21df306f4d4"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/aarch64-pc-windows-msvc/node/24.17.0/node-24.17.0-aarch64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/24.17.0/node-24.17.0-aarch64-pc-windows-msvc.zip",
+      "sha256": "bcc0697fd4ac9a7e64e8f8dc732569192458999029f4b8fdf31dca644ac5a2b6"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-pc-windows-msvc/node/20.20.2/node-20.20.2-x86_64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/20.20.2/node-20.20.2-x86_64-pc-windows-msvc.zip",
+      "sha256": "eff179fbc80146ad2f5dd485d6f94a527f372edd3377aca74311f42c41989bbd"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-pc-windows-msvc/node/22.23.0/node-22.23.0-x86_64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/22.23.0/node-22.23.0-x86_64-pc-windows-msvc.zip",
+      "sha256": "596733c1a36cee142d2f9e957c8a614a471ffe0697a2bf3dfbc4baf707ecc710"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/x86_64-pc-windows-msvc/node/24.17.0/node-24.17.0-x86_64-pc-windows-msvc.zip",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/24.17.0/node-24.17.0-x86_64-pc-windows-msvc.zip",
+      "sha256": "16e894b6237241b478a42a6f464a44ce68045e41490306db795be34f5576d7ef"
+    },
+    {
+      "owner": "zackees",
       "repo": "zccache",
       "tag": "1.10.0",
       "asset": "zccache-v1.10.0-aarch64-apple-darwin.tar.gz",

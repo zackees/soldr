@@ -1,0 +1,103 @@
+{
+  "schema_version": 5,
+  "name": "node-windows-sdk",
+  "kind": "vendored-sdk",
+  "owner": "nodejs",
+  "repo": "node",
+  "latest": "v24.17.0",
+  "pinned": null,
+  "tracked_tags": [
+    "v24.17.0",
+    "v22.23.0",
+    "v20.20.2"
+  ],
+  "description": "Windows MSVC Node.js import libraries plus official headers archives for native addon cross-compile.",
+  "source": "https://nodejs.org/dist/",
+  "packaging": {
+    "archive": "zip",
+    "layout": {
+      "lib": "lib/node.lib",
+      "headers": "headers/node-v<version>-headers.tar.gz"
+    }
+  },
+  "releases": {
+    "v24.17.0": {
+      "tag": "v24.17.0",
+      "version": "24.17.0",
+      "published_at": "2026-06-17",
+      "lts": "Krypton",
+      "platforms": {
+        "windows-x64-msvc": {
+          "filename": "node-24.17.0-x86_64-pc-windows-msvc.zip",
+          "asset": "deps/x86_64-pc-windows-msvc/node/24.17.0/node-24.17.0-x86_64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/24.17.0/node-24.17.0-x86_64-pc-windows-msvc.zip",
+          "size": 10356160,
+          "sha256": "16e894b6237241b478a42a6f464a44ce68045e41490306db795be34f5576d7ef",
+          "source_node_lib_url": "https://nodejs.org/dist/v24.17.0/win-x64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-headers.tar.gz"
+        },
+        "windows-arm64-msvc": {
+          "filename": "node-24.17.0-aarch64-pc-windows-msvc.zip",
+          "asset": "deps/aarch64-pc-windows-msvc/node/24.17.0/node-24.17.0-aarch64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/24.17.0/node-24.17.0-aarch64-pc-windows-msvc.zip",
+          "size": 10356115,
+          "sha256": "bcc0697fd4ac9a7e64e8f8dc732569192458999029f4b8fdf31dca644ac5a2b6",
+          "source_node_lib_url": "https://nodejs.org/dist/v24.17.0/win-arm64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v24.17.0/node-v24.17.0-headers.tar.gz"
+        }
+      }
+    },
+    "v22.23.0": {
+      "tag": "v22.23.0",
+      "version": "22.23.0",
+      "published_at": "2026-06-17",
+      "lts": "Jod",
+      "platforms": {
+        "windows-x64-msvc": {
+          "filename": "node-22.23.0-x86_64-pc-windows-msvc.zip",
+          "asset": "deps/x86_64-pc-windows-msvc/node/22.23.0/node-22.23.0-x86_64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/22.23.0/node-22.23.0-x86_64-pc-windows-msvc.zip",
+          "size": 10378744,
+          "sha256": "596733c1a36cee142d2f9e957c8a614a471ffe0697a2bf3dfbc4baf707ecc710",
+          "source_node_lib_url": "https://nodejs.org/dist/v22.23.0/win-x64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-headers.tar.gz"
+        },
+        "windows-arm64-msvc": {
+          "filename": "node-22.23.0-aarch64-pc-windows-msvc.zip",
+          "asset": "deps/aarch64-pc-windows-msvc/node/22.23.0/node-22.23.0-aarch64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/22.23.0/node-22.23.0-aarch64-pc-windows-msvc.zip",
+          "size": 10378629,
+          "sha256": "9691313ccf068a5b6d450c163ee3786dbda584f3ea8b238de5fdd21df306f4d4",
+          "source_node_lib_url": "https://nodejs.org/dist/v22.23.0/win-arm64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v22.23.0/node-v22.23.0-headers.tar.gz"
+        }
+      }
+    },
+    "v20.20.2": {
+      "tag": "v20.20.2",
+      "version": "20.20.2",
+      "published_at": "2026-03-24",
+      "lts": "Iron",
+      "platforms": {
+        "windows-x64-msvc": {
+          "filename": "node-20.20.2-x86_64-pc-windows-msvc.zip",
+          "asset": "deps/x86_64-pc-windows-msvc/node/20.20.2/node-20.20.2-x86_64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/node/20.20.2/node-20.20.2-x86_64-pc-windows-msvc.zip",
+          "size": 8888059,
+          "sha256": "eff179fbc80146ad2f5dd485d6f94a527f372edd3377aca74311f42c41989bbd",
+          "source_node_lib_url": "https://nodejs.org/dist/v20.20.2/win-x64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v20.20.2/node-v20.20.2-headers.tar.gz"
+        },
+        "windows-arm64-msvc": {
+          "filename": "node-20.20.2-aarch64-pc-windows-msvc.zip",
+          "asset": "deps/aarch64-pc-windows-msvc/node/20.20.2/node-20.20.2-aarch64-pc-windows-msvc.zip",
+          "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/node/20.20.2/node-20.20.2-aarch64-pc-windows-msvc.zip",
+          "size": 8887913,
+          "sha256": "df9407e8cf26e58158351deed09b68de56ad60cc911834a1080307dea8a95562",
+          "source_node_lib_url": "https://nodejs.org/dist/v20.20.2/win-arm64/node.lib",
+          "source_headers_url": "https://nodejs.org/dist/v20.20.2/node-v20.20.2-headers.tar.gz"
+        }
+      }
+    }
+  }
+}

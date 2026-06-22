@@ -287,6 +287,19 @@
         "v0.1.0"
       ]
     },
+    "node-windows-sdk": {
+      "path": "deps/win/node/manifest.json",
+      "kind": "vendored-sdk",
+      "owner": "nodejs",
+      "repo": "node",
+      "latest": "v24.17.0",
+      "pinned": null,
+      "tracked_tags": [
+        "v24.17.0",
+        "v22.23.0",
+        "v20.20.2"
+      ]
+    },
     "zccache": {
       "path": "zccache/manifest.json",
       "owner": "zackees",
