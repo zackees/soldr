@@ -7,7 +7,7 @@
       "tag": "MacOSX11.3",
       "asset": "sdk.tar.zstd",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd",
-      "sha256": "4393dabb919deb3bc180f52d3a2e9b279f7a5146f8db54630a98aef8e60976e1"
+      "sha256": "053ac5617f5e6afd5218bec4e871cc55a6a9ab2c0b1f2f77e336dbdd48eabe56"
     },
     {
       "owner": "zackees",
@@ -15,7 +15,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-apple-darwin/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-apple-darwin.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-apple-darwin/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-apple-darwin.tar.zst",
-      "sha256": "41eac6a17d48abc166c6b0d00a103b8a4d47fa82edd65e99da6772016e84d249"
+      "sha256": "965e7562b4d33d258d609e3264756ad33dc6e9e831b20da60841637c84a3ee12"
     },
     {
       "owner": "zackees",
@@ -23,7 +23,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-apple-darwin/crgx/0.1.0/crgx-0.1.0-aarch64-apple-darwin.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-apple-darwin/crgx/0.1.0/crgx-0.1.0-aarch64-apple-darwin.tar.zst",
-      "sha256": "26a95af0994de577848f76091b6336595ee722acb4bbd9ba39d76462f57893f8"
+      "sha256": "00ebed8368e903ba96189f4b57bd8361988650448c755922c1188a3a8c1e1f85"
     },
     {
       "owner": "zackees",
@@ -31,7 +31,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-pc-windows-msvc/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-pc-windows-msvc.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-pc-windows-msvc/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-pc-windows-msvc.tar.zst",
-      "sha256": "fa702d79d30b581238e27c9ee311f32ad17d007c15d065c170aacb90f55113d9"
+      "sha256": "86182063eb742637c4db51786dc9ff86b819aba33e6e27f58ce33ed9561c4332"
     },
     {
       "owner": "zackees",
@@ -39,7 +39,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-unknown-linux-gnu/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-unknown-linux-gnu.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-gnu/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-unknown-linux-gnu.tar.zst",
-      "sha256": "0b96a83ca9370313cc0a69a28ad4fd17141bc776b405c78e423e8adbebb8c6de"
+      "sha256": "05864a6db36847da758ed59084b4bd3e5d4079de04bee3a33b5e94790bb5dc5d"
     },
     {
       "owner": "zackees",
@@ -47,7 +47,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-gnu.tar.zst",
-      "sha256": "2abbdc3d53ba72479cbf1a5a876fa3bf422b97c7b8f9e98c62e70c099f94ec52"
+      "sha256": "90fbf43e32f0c13d827b68cbb0b8bc72ac4071543253b6541f2d78d7e1c067f7"
     },
     {
       "owner": "zackees",
@@ -55,7 +55,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-unknown-linux-musl/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-unknown-linux-musl.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-musl/cargo-chef/0.1.73/cargo-chef-0.1.73-aarch64-unknown-linux-musl.tar.zst",
-      "sha256": "8bdddebd5dc6270c4caa61d8dbc60daa17caac4a33a3367d2bb4537566ab9d67"
+      "sha256": "d52791101a4fd26e22cde89be7f28fa1b2e8ec256162fae14bb35bc2d1b9b0e4"
     },
     {
       "owner": "zackees",
@@ -63,7 +63,7 @@
       "tag": "manifest",
       "asset": "deps/aarch64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/aarch64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-aarch64-unknown-linux-musl.tar.zst",
-      "sha256": "d08c6fc83df06442d36314f23a46ffbe4b6cb20ed191890db14c0d4e6f426280"
+      "sha256": "dd776a10f1ac2996a8de0dee3be5195e358d210e68847bfdc1b6ad9f1160e21c"
     },
     {
       "owner": "zackees",
@@ -79,7 +79,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-apple-darwin/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-apple-darwin.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-apple-darwin/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-apple-darwin.tar.zst",
-      "sha256": "ac73aa957735eab44f9ac62e7eb2e33874988e5d13e18eb4086d1818ebda7229"
+      "sha256": "8a33f996ef5e99d74ef6ef238535e3ee25be8bd0021ed2b1b9e0d7d68daad0db"
     },
     {
       "owner": "zackees",
@@ -87,7 +87,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-apple-darwin/crgx/0.1.0/crgx-0.1.0-x86_64-apple-darwin.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-apple-darwin/crgx/0.1.0/crgx-0.1.0-x86_64-apple-darwin.tar.zst",
-      "sha256": "4e54bfff1d111fe2731968194b11ece7e5af90138e6454049ab3575226f85afb"
+      "sha256": "85c0d854558d7f06f709c7758380ce043f07bd99a1d44ed2d22dbcec81344e57"
     },
     {
       "owner": "zackees",
@@ -95,7 +95,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-pc-windows-msvc/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-pc-windows-msvc.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-pc-windows-msvc.tar.zst",
-      "sha256": "98a4d99bce3d2a1cbcbe417b16bb36acb03e1cbec2f4233c1b8cc7dfbc4543bd"
+      "sha256": "ff94e622f2802a7cfb29b6d3af935e917acd5cfbc560ddb80b1ed836c3b26d63"
     },
     {
       "owner": "zackees",
@@ -103,7 +103,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-pc-windows-msvc/crgx/0.1.0/crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-pc-windows-msvc/crgx/0.1.0/crgx-0.1.0-x86_64-pc-windows-msvc.tar.zst",
-      "sha256": "0de11a12dcaab153301268147a700aed054fd3223d196dcb405a128f15bd131f"
+      "sha256": "932cde7ab7b787a39fe89eada9c38178e0481f5428cf0260941d8c9e63927aae"
     },
     {
       "owner": "zackees",
@@ -111,7 +111,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-unknown-linux-gnu/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-unknown-linux-gnu.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-gnu/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-unknown-linux-gnu.tar.zst",
-      "sha256": "9d504c96844aca87df78d9065daff0fa5da46a1a36d82c26ca834d4cde639582"
+      "sha256": "9b40985f25286bc9933494d30c1628091711812cfe097c4eb7e8cecbccb700e4"
     },
     {
       "owner": "zackees",
@@ -119,7 +119,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-gnu/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-gnu.tar.zst",
-      "sha256": "ba3b9ce06fd84994bf7edf6b2c8f0fcb8f0544c4cc7430cf6c54cf0d3a87cd37"
+      "sha256": "370cc24418de0195f04fd97f7240b71d78dcc2908e95fc1ff9a2531c171ae5e3"
     },
     {
       "owner": "zackees",
@@ -127,7 +127,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-unknown-linux-musl/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-unknown-linux-musl.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-musl/cargo-chef/0.1.73/cargo-chef-0.1.73-x86_64-unknown-linux-musl.tar.zst",
-      "sha256": "86f4ac3259963840e7d3682085e77dca6774081cc67325c9be84075b39293304"
+      "sha256": "ab93fd8e1ee47058361680f92f6c3259b6eeccc9dea5c319965d56481e2278ab"
     },
     {
       "owner": "zackees",
@@ -135,7 +135,7 @@
       "tag": "manifest",
       "asset": "deps/x86_64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/x86_64-unknown-linux-musl/crgx/0.1.0/crgx-0.1.0-x86_64-unknown-linux-musl.tar.zst",
-      "sha256": "046de16a51a77368cf4f0b09786f455ba0dd1dedc6ee833bccfc1d64575f4d0e"
+      "sha256": "7b158b57003035c6b536f9e06756f74da67c62ee030ca29620aeb8166a9953fa"
     },
     {
       "owner": "zackees",
@@ -143,7 +143,15 @@
       "tag": "manifest",
       "asset": "deps/xwin-cache/2026-06-22/xwin-cache.tar.zst",
       "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22/xwin-cache.tar.zst",
-      "sha256": "6de11689e71c1075269247963534e7c03d57422cac96200415e491624458820f"
+      "sha256": "33c04d8026d99dab4d66f39ddbd93d75f64c68063d4ba58e5450626524bf348d"
+    },
+    {
+      "owner": "zackees",
+      "repo": "soldr",
+      "tag": "manifest",
+      "asset": "deps/xwin-cache/2026-06-22b/xwin-cache.tar.zst",
+      "url": "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22b/xwin-cache.tar.zst",
+      "sha256": "957a51e5738d1352c18bd14caa664a88099e2f4e78afaf94f911f0cb925745fa"
     },
     {
       "owner": "zackees",
