@@ -90,12 +90,41 @@ echo
 for t in "${selected_targets[@]}"; do
     echo "----------------------------------------------------------------------"
     echo "==> target: $t"
+
+    # Dispatch by target family — same shape `examples/docker-cross-win`
+    # uses, but covering all 8 triples in [workspace.metadata.soldr]:
+    #   - *-pc-windows-msvc      → soldr cargo xwin build (cargo-xwin)
+    #   - *-apple-darwin         → soldr cargo zigbuild   (cargo-zigbuild)
+    #   - *-unknown-linux-{gnu,musl} → soldr cargo zigbuild (cargo-zigbuild)
+    # cargo-xwin and cargo-zigbuild are auto-fetched on first use by
+    # the soldr cargo front door — the soldr prepare bake step has
+    # already populated their underlying assets (zig, xwin CRT cache,
+    # LLVM, Apple SDK).
+    case "$t" in
+        *-pc-windows-msvc)
+            cargo_args="xwin build --release --target $t"
+            ;;
+        *-apple-darwin|*-unknown-linux-gnu|*-unknown-linux-musl)
+            cargo_args="zigbuild --release --target $t"
+            ;;
+        *)
+            echo "ERROR: unsupported target family: $t" >&2
+            exit 64
+            ;;
+    esac
+
     start=$(date +%s)
-    docker run --rm --platform linux/amd64 \
+    # `MSYS_NO_PATHCONV=1` disables Git-for-Windows / MSYS automatic
+    # path translation. Without it, MSYS rewrites `-w /work` to
+    # `C:/Program Files/Git/work` on the way to Docker, which then
+    # fails to find the working directory inside the container.
+    # POSIX hosts ignore the env var, so it's safe to set
+    # unconditionally.
+    MSYS_NO_PATHCONV=1 docker run --rm --platform linux/amd64 \
         -v "$crate_dir:/work" \
         -w /work \
         "$img" \
-        -c "soldr cargo build --release --target $t"
+        -c "soldr cargo $cargo_args"
     elapsed=$(( $(date +%s) - start ))
 
     triple_release="$crate_dir/target/$t/release"
