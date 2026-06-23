@@ -8,9 +8,14 @@
 //! identifier consumers reach for must show up in this `mod.rs`.
 
 use std::ffi::OsStr;
+use std::io::Read;
 use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use thiserror::Error;
+use wait_timeout::ChildExt;
 
 pub mod git;
 mod paths;
@@ -34,6 +39,9 @@ pub use toolchain_resolve::{
 pub const CARGO_HOME_ENV_VAR: &str = "CARGO_HOME";
 pub const RUSTUP_HOME_ENV_VAR: &str = "RUSTUP_HOME";
 pub(crate) const RUSTUP_TOOLCHAIN_ENV_VAR: &str = "RUSTUP_TOOLCHAIN";
+const COMMAND_OUTPUT_TIMEOUT_ENV_VAR: &str = "SOLDR_COMMAND_OUTPUT_TIMEOUT_SECS";
+const DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS: u64 = 60;
+const KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -121,6 +129,98 @@ pub(crate) fn home_dir() -> Result<PathBuf, SoldrError> {
     Err(SoldrError::NoHomeDir)
 }
 
+pub(crate) fn command_output_with_timeout(
+    command: &mut Command,
+    context: &str,
+) -> Result<Output, SoldrError> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
+    let stdout_reader = child.stdout.take().map(read_pipe_async);
+    let stderr_reader = child.stderr.take().map(read_pipe_async);
+    let timeout = command_output_timeout();
+    let status = match child
+        .wait_timeout(timeout)
+        .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
+    {
+        Some(status) => status,
+        None => {
+            let kill_result = child.kill();
+            let reap_result =
+                child.wait_timeout(Duration::from_secs(KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "{context} timed out after {timeout_secs} seconds \
+                 (set {COMMAND_OUTPUT_TIMEOUT_ENV_VAR} to override)"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_COMMAND_OUTPUT_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            return Err(SoldrError::Other(message));
+        }
+    };
+
+    let stdout = join_pipe_reader(stdout_reader, context, "stdout")?;
+    let stderr = join_pipe_reader(stderr_reader, context, "stderr")?;
+
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn read_pipe_async<R>(mut pipe: R) -> JoinHandle<std::io::Result<Vec<u8>>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    })
+}
+
+fn join_pipe_reader(
+    reader: Option<JoinHandle<std::io::Result<Vec<u8>>>>,
+    context: &str,
+    pipe_name: &str,
+) -> Result<Vec<u8>, SoldrError> {
+    match reader {
+        Some(handle) => handle
+            .join()
+            .map_err(|_| SoldrError::Other(format!("{pipe_name} reader panicked for {context}")))?
+            .map_err(|err| {
+                SoldrError::Other(format!("failed to read {pipe_name} from {context}: {err}"))
+            }),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn command_output_timeout() -> Duration {
+    std::env::var(COMMAND_OUTPUT_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| command_output_timeout_from_str(&value))
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_COMMAND_OUTPUT_TIMEOUT_SECS))
+}
+
+fn command_output_timeout_from_str(value: &str) -> Option<Duration> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +228,15 @@ mod tests {
     #[test]
     fn test_version() {
         assert_eq!(version(), env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn command_output_timeout_parses_positive_values_only() {
+        assert_eq!(
+            command_output_timeout_from_str("7"),
+            Some(Duration::from_secs(7))
+        );
+        assert_eq!(command_output_timeout_from_str("0"), None);
+        assert_eq!(command_output_timeout_from_str("not-a-number"), None);
     }
 }

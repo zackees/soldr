@@ -7,7 +7,7 @@ use crate::cargo_front_door::{
     file_hash_or_missing, first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
     workspace_manifest_hashes, CargoProfileDebugDefault,
 };
-use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::core::{command_output_with_timeout, suppress_windows_console_window, SoldrError};
 use crate::zccache::{
     command_stderr, normalize_path_for_compare,
     run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
@@ -510,7 +510,7 @@ fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetad
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
 
-    let output = command.output()?;
+    let output = command_output_with_timeout(&mut command, "cargo metadata")?;
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
             "cargo metadata failed while preparing Rust artifact cache plan: {}",
@@ -594,7 +594,10 @@ fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrErr
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output()?;
+    let output = command_output_with_timeout(
+        &mut command,
+        &format!("{} {}", tool.display(), args.join(" ")),
+    )?;
     if !output.status.success() {
         return Err(SoldrError::Other(format!(
             "{} {} failed: {}",

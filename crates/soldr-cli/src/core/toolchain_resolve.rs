@@ -280,7 +280,11 @@ pub(super) fn detect_runtime_rustc_triple(start_dir: Option<&Path>) -> Option<St
     if let Some(start_dir) = start_dir {
         command.current_dir(start_dir);
     }
-    let output = command.args(["--print", "target-triple"]).output().ok()?;
+    let output = crate::core::command_output_with_timeout(
+        command.args(["--print", "target-triple"]),
+        "rustc --print target-triple",
+    )
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -304,7 +308,11 @@ fn resolve_runtime_rustc(start_dir: Option<&Path>) -> Option<PathBuf> {
     if let Some(start_dir) = start_dir {
         rustup.current_dir(start_dir);
     }
-    let rustup_output = rustup.args(["which", "rustc"]).output().ok()?;
+    let rustup_output = crate::core::command_output_with_timeout(
+        rustup.args(["which", "rustc"]),
+        "rustup which rustc",
+    )
+    .ok()?;
     if rustup_output.status.success() {
         let path = String::from_utf8_lossy(&rustup_output.stdout)
             .trim()
