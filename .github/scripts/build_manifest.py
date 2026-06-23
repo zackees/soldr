@@ -70,7 +70,7 @@ PER_TOOL_FILENAME = "manifest.json"
 #     jq -r '.[0].platforms["linux-x64-musl"].url' zccache/manifest.json
 #
 #     # specific tag's URL
-#     jq -r '.[] | select(.tag == "1.12.9") | .platforms["linux-x64-musl"].url' zccache/manifest.json
+#     jq -r '.[] | select(.tag == "1.12.10") | .platforms["linux-x64-musl"].url' zccache/manifest.json
 #
 #     # grep-friendly — every entry is self-describing
 #     grep -l '"tool": "zccache"' */manifest.json

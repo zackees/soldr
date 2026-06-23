@@ -18,7 +18,7 @@ CLI:
       --extra EXTRA         Optional ABI extra (gnu, musl, msvc, gnullvm).
                             When omitted, a per-OS preference order is
                             tried so the most-common variant wins.
-      --version VER         Release tag (e.g. `1.12.9`) or `latest`
+      --version VER         Release tag (e.g. `1.12.10`) or `latest`
                             (default).
 
 Output: ONE line, the URL. Exit non-zero if nothing matches.
@@ -164,7 +164,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--version", default="latest",
-        help="Release tag (e.g. `1.12.9`) or `latest` (default).",
+        help="Release tag (e.g. `1.12.10`) or `latest` (default).",
     )
     args = parser.parse_args()
 
