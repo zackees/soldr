@@ -146,6 +146,8 @@ pub const LOAD_WORKERS_ENV: &str = "SOLDR_LOAD_WORKERS";
 /// `current_num_threads()`), but documents the floor explicitly. Used by
 /// the parallel cache-file extractor in `load()`.
 pub const DEFAULT_LOAD_WORKERS: usize = 4;
+const REPLAY_WORKER_RECV_TIMEOUT: Duration = Duration::from_secs(60);
+const EXTRACT_WORKER_RECV_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Default zstd compression level — matches what setup-soldr's TS impl
 /// has been using (level 3 gives ~0.26 ratio on Rust artifact caches at
@@ -1167,9 +1169,12 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     // workspace, or first-run before manifest seen) run it inline
     // here for completeness.
     if let Some(rx) = replay_handle {
-        let outcomes = rx
-            .recv()
-            .map_err(|_| SaveLoadError::BareIo(std::io::Error::other("replay worker dropped")))?;
+        let outcomes = rx.recv_timeout(REPLAY_WORKER_RECV_TIMEOUT).map_err(|err| {
+            SaveLoadError::BareIo(std::io::Error::other(format!(
+                "replay worker did not finish within {}s: {err}",
+                REPLAY_WORKER_RECV_TIMEOUT.as_secs()
+            )))
+        })?;
         for o in outcomes {
             match o {
                 MtimeOutcome::Applied => report.mtimes_applied += 1,
@@ -1252,7 +1257,7 @@ impl ExtractDispatch {
                 loop {
                     let job = {
                         let guard = rx.lock().expect("extract rx mutex");
-                        match guard.recv() {
+                        match guard.recv_timeout(EXTRACT_WORKER_RECV_TIMEOUT) {
                             Ok(j) => j,
                             Err(_) => break,
                         }

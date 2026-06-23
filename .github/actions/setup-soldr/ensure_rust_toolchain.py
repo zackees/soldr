@@ -14,7 +14,7 @@ from urllib.request import urlopen
 
 
 def run(command: list[str]) -> None:
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, timeout=600)
 
 
 def append_github_env(name: str, value: str) -> None:
@@ -67,7 +67,7 @@ def download_rustup_init(destination_dir: Path) -> Path:
     url = rustup_init_url()
     temp_destination = destination.with_name(f"{destination.name}.tmp")
     try:
-        with urlopen(url) as response, open(temp_destination, "wb") as fh:
+        with urlopen(url, timeout=30) as response, open(temp_destination, "wb") as fh:
             shutil.copyfileobj(response, fh)
         temp_destination.replace(destination)
     except (OSError, URLError) as exc:

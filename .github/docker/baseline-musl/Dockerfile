@@ -16,7 +16,7 @@
 # host-libc-matching target triple specifically because of musl).
 FROM alpine:3.20
 
-RUN apk add --no-cache \
+RUN apk add --no-cache --network-timeout 30 \
         ca-certificates \
         curl \
         git \

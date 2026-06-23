@@ -40,7 +40,16 @@ RUN rustup target add \
 
 # clang + lld-link for cargo-xwin's MSVC linking path. Without these,
 # `cargo xwin build` fails at the link step.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        update \
+    && apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        install -y --no-install-recommends \
         clang lld llvm \
     && rm -rf /var/lib/apt/lists/*
 
@@ -50,7 +59,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # release. If you bump the cargo-zigbuild base tag, recompute the
 # matching cargo-xwin version with `cargo install cargo-xwin
 # --version <X>` — its readme calls out the rust version it needs.
-RUN cargo install --locked cargo-xwin@0.19.2
+RUN CARGO_NET_RETRY=5 CARGO_HTTP_TIMEOUT=30 cargo install --locked cargo-xwin@0.19.2
 
 WORKDIR /work
 

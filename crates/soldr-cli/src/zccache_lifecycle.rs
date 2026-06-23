@@ -11,9 +11,11 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
+use wait_timeout::ChildExt;
 
 pub(crate) const ZCCACHE_DAEMON_NAMESPACE_ENV_VAR: &str = "ZCCACHE_DAEMON_NAMESPACE";
 const ZCCACHE_DAEMON_LOCK_FILENAME: &str = "daemon.lock";
+const POST_KILL_REAP_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZccacheLifecycleState {
@@ -422,8 +424,24 @@ impl ZccacheLifecycle {
             }
         }
         if matches!(child.try_wait(), Ok(None)) {
-            let _ = child.kill();
-            let _ = child.wait();
+            child.kill().map_err(|err| {
+                SoldrError::Other(format!(
+                    "failed to kill timed-out zccache stop process: {err}"
+                ))
+            })?;
+            match child.wait_timeout(Duration::from_secs(POST_KILL_REAP_TIMEOUT_SECS)) {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return Err(SoldrError::Other(format!(
+                        "zccache stop process did not exit within {POST_KILL_REAP_TIMEOUT_SECS} seconds after kill"
+                    )));
+                }
+                Err(err) => {
+                    return Err(SoldrError::Other(format!(
+                        "failed to reap zccache stop process after kill: {err}"
+                    )));
+                }
+            }
         }
         self.state = ZccacheLifecycleState::Stopped;
         Ok(())
