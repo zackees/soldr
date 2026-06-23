@@ -21,6 +21,8 @@ SETUP_SOLDR_USE_RE = re.compile(r"\buses:\s*zackees/setup-soldr@([^\s#]+)")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 AUTOFIX_BRANCH_PREFIX = "ci/update-setup-soldr-v0"
 AUTOFIX_ISSUE_TITLE = "Update setup-soldr workflow pin to current @v0"
+GIT_LS_REMOTE_TIMEOUT_SECS = 300
+SUBPROCESS_TIMEOUT_SECS = 300
 
 
 def resolve_setup_soldr_v0_sha() -> str:
@@ -34,6 +36,7 @@ def resolve_setup_soldr_v0_sha() -> str:
             f"{SETUP_SOLDR_V0_REF}^{{}}",
         ],
         encoding="utf-8",
+        timeout=GIT_LS_REMOTE_TIMEOUT_SECS,
     )
     refs: dict[str, str] = {}
     for line in output.splitlines():
@@ -325,7 +328,7 @@ def github_api(
 
 
 def run(args: list[str], cwd: Path, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(args, cwd=cwd, check=check)
+    return subprocess.run(args, cwd=cwd, check=check, timeout=SUBPROCESS_TIMEOUT_SECS)
 
 
 def main() -> int:

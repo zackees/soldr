@@ -14,6 +14,7 @@ TOOL_GROUPS = {
     "all": ["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"],
 }
 DISABLED_VALUES = {"", "0", "false", "no", "none", "off"}
+RUSTUP_WHICH_TIMEOUT_SECS = 30
 
 
 def _write_env(name: str, value: str) -> None:
@@ -62,6 +63,7 @@ def resolve_tool(tool: str) -> str:
             check=False,
             capture_output=True,
             text=True,
+            timeout=RUSTUP_WHICH_TIMEOUT_SECS,
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip()
