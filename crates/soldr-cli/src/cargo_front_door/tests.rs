@@ -52,6 +52,30 @@ fn command_env_override(
 }
 
 #[test]
+fn cargo_wait_timeout_uses_positive_env_override_only() {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    {
+        let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "7");
+        assert_eq!(cargo_wait_timeout(), Duration::from_secs(7));
+    }
+
+    for value in ["0", "-1", "not-a-number"] {
+        let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, value);
+        assert_eq!(
+            cargo_wait_timeout(),
+            Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS)
+        );
+    }
+
+    let _guard = EnvVarGuard::remove(CARGO_WAIT_TIMEOUT_ENV_VAR);
+    assert_eq!(
+        cargo_wait_timeout(),
+        Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS)
+    );
+}
+
+#[test]
 fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
     let mut command = std::process::Command::new("cargo");
     command.env(SOLDR_CACHE_LIFECYCLE_ENV_VAR, "command");

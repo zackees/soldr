@@ -688,7 +688,7 @@ pub(crate) async fn run_cargo_front_door(
     // For clippy fall-through we need to TEE cargo's stdout/stderr so the
     // user sees diagnostics live AND we have a copy to store in the
     // sidecar for the next run. For build/check we don't need the output;
-    // just inherit fds via .status().
+    // just inherit fds while still enforcing the cargo wait timeout.
     //
     // We ALSO opt into capture when stderr is not a terminal (CI / Docker
     // / `soldr cargo build 2>file`) so the cargo_diagnostics scanner can
@@ -711,7 +711,7 @@ pub(crate) async fn run_cargo_front_door(
         let (status, captured) = run_command_capturing_diagnostic_tail(&mut command)?;
         (status, None, Some(captured))
     } else {
-        (command.status()?, None, None)
+        (run_command_inheriting_stdio(&mut command)?, None, None)
     };
     // Extract whatever stderr text we captured BEFORE the success
     // branch moves `clippy_capture` into `refresh_workspace_sidecar_after_cargo`.
@@ -855,6 +855,15 @@ fn run_command_capturing_clippy(
         exit_code: status.code().unwrap_or(1),
     };
     Ok((status, capture))
+}
+
+fn run_command_inheriting_stdio(
+    command: &mut std::process::Command,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
+    wait_for_cargo_child(&mut child, "cargo")
 }
 
 /// Run cargo with both streams tee'd to the user's stdout/stderr AND
