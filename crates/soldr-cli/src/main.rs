@@ -365,9 +365,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             //                     where no Cargo.toml is mounted yet.
             //   - `<triple>`    → a single triple (legacy default).
             let targets: Vec<String> = match prepare_cmd::parse_target_arg(&target)? {
-                prepare_cmd::ParsedTargetArg::All => {
-                    cargo_metadata_soldr::resolve_all_targets()?
-                }
+                prepare_cmd::ParsedTargetArg::All => cargo_metadata_soldr::resolve_all_targets()?,
                 prepare_cmd::ParsedTargetArg::Explicit(list) => list,
             };
             // Per-triple errors are collected so a single bad target in

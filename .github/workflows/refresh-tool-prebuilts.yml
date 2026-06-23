@@ -158,7 +158,7 @@ jobs:
           sdk_url=$(python3 .github/scripts/tool_query.py \
               --platform mac --arch x86 apple-sdk)
           echo "Apple SDK URL: $sdk_url"
-          curl --fail --location \
+          curl --fail --location --max-time 30 --connect-timeout 10 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output /tmp/apple-sdk.tar.zst "$sdk_url"
           sudo mkdir -p /opt
@@ -184,7 +184,7 @@ jobs:
 
           work_dir="${RUNNER_TEMP}/${tool}-src"
           rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${version}" "$upstream" "$work_dir"
+          timeout 300 git clone --depth 1 --branch "v${version}" "$upstream" "$work_dir"
           source_commit=$(git -C "$work_dir" rev-parse HEAD)
           echo "source_commit=$source_commit" >> "$GITHUB_ENV"
 

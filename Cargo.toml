@@ -61,6 +61,7 @@ rayon = "1"
 prost = "0.13"
 walkdir = "2"
 jwalk = "0.8"
+wait-timeout = "0.2"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
 filetime = "0.2"
 # Jaro-Winkler scoring for the target-triple classifier in

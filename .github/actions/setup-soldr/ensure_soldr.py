@@ -95,7 +95,7 @@ def _fetch_release(repo: str, version: str) -> dict[str, object]:
         _release_url(repo, version),
         headers=_request_headers(repo),
     )
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
 
 
@@ -103,7 +103,11 @@ def _installed_version(binary_path: Path) -> str | None:
     if not binary_path.exists():
         return None
 
-    output = subprocess.check_output([str(binary_path), "version", "--json"], text=True)
+    output = subprocess.check_output(
+        [str(binary_path), "version", "--json"],
+        text=True,
+        timeout=30,
+    )
     payload = json.loads(output)
     return str(payload["soldr_version"])
 
@@ -136,16 +140,29 @@ def _extract_archive(archive_path: Path, out_dir: Path) -> None:
         ["tar", "--use-compress-program=unzstd", "-xf", str(archive_path), "-C", str(out_dir)],
     )
     for cmd in attempts:
-        result = subprocess.run(cmd, check=False)
+        result = subprocess.run(cmd, check=False, timeout=120)
         if result.returncode == 0:
             return
     intermediate = archive_path.with_suffix(archive_path.suffix + ".tar")
-    subprocess.run(["zstd", "-d", "-o", str(intermediate), str(archive_path)], check=True)
-    subprocess.run(["tar", "-xf", str(intermediate), "-C", str(out_dir)], check=True)
+    subprocess.run(
+        ["zstd", "-d", "-o", str(intermediate), str(archive_path)],
+        check=True,
+        timeout=120,
+    )
+    subprocess.run(
+        ["tar", "-xf", str(intermediate), "-C", str(out_dir)],
+        check=True,
+        timeout=120,
+    )
     try:
         intermediate.unlink()
     except OSError:
         pass
+
+
+def _download_file(url: str, destination: Path) -> None:
+    with urllib.request.urlopen(url, timeout=120) as response, open(destination, "wb") as fh:
+        shutil.copyfileobj(response, fh)
 
 
 def _locate_binary(out_dir: Path, binary_name: str) -> Path:
@@ -209,7 +226,7 @@ def main() -> None:
         tmp_dir = Path(tmp)
         archive_path = tmp_dir / asset_name
         extract_dir = tmp_dir / "extract"
-        urllib.request.urlretrieve(download_url, archive_path)
+        _download_file(download_url, archive_path)
         _extract_archive(archive_path, extract_dir)
 
         manifest_path = _locate_binary(extract_dir, MANIFEST_NAME)

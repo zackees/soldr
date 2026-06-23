@@ -31,7 +31,8 @@ use crate::zccache::{
 use crate::{apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, ZccacheSourceArg};
 use std::ffi::OsString;
 use std::io::Write;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use wait_timeout::ChildExt;
 
 mod cache_plan;
 mod clang_cl_shim;
@@ -44,6 +45,10 @@ mod subcommand;
 mod target;
 
 use cache_plan::CargoCachePlan;
+
+const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
+const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
+const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
 
 // -- Re-exports for cross-module callers --
 //
@@ -77,6 +82,50 @@ fn generate_build_session_id() -> u64 {
     let high = ((nanos / 1_000_000) as u64) & 0xFFFF_FFFF;
     let low = ((nanos as u64) ^ (std::process::id() as u64)) & 0xFFFF_FFFF;
     (high << 32) | low
+}
+
+fn cargo_wait_timeout() -> Duration {
+    std::env::var(CARGO_WAIT_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS))
+}
+
+fn wait_for_cargo_child(
+    child: &mut std::process::Child,
+    context: &str,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let timeout = cargo_wait_timeout();
+    match child
+        .wait_timeout(timeout)
+        .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
+    {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result =
+                child.wait_timeout(Duration::from_secs(KILLED_CARGO_REAP_TIMEOUT_SECS));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "{context} timed out after {timeout_secs} seconds \
+                 (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_CARGO_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
 }
 
 fn current_unix_ms() -> i64 {
@@ -796,9 +845,7 @@ fn run_command_capturing_clippy(
         buf
     });
 
-    let status = child
-        .wait()
-        .map_err(|err| SoldrError::Other(format!("wait on cargo clippy failed: {err}")))?;
+    let status = wait_for_cargo_child(&mut child, "cargo clippy")?;
     let stdout = stdout_handle.join().unwrap_or_default();
     let stderr = stderr_handle.join().unwrap_or_default();
     let capture = RawClippyCapture {
@@ -849,9 +896,7 @@ fn run_command_capturing_diagnostic_tail(
         buf
     });
 
-    let status = child.wait().map_err(|err| {
-        SoldrError::Other(format!("wait on cargo diagnostic capture failed: {err}"))
-    })?;
+    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture")?;
     let bytes = stderr_handle.join().unwrap_or_default();
     let captured = String::from_utf8_lossy(&bytes).into_owned();
     Ok((status, captured))

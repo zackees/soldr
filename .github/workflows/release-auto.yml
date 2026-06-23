@@ -91,7 +91,7 @@ jobs:
             tag_exists=true
           fi
 
-          pypi_json="$(curl -fsSL https://pypi.org/pypi/soldr/json)"
+          pypi_json="$(curl -fsSL --max-time 30 --connect-timeout 10 https://pypi.org/pypi/soldr/json)"
           pypi_version="$(jq -r '.info.version // ""' <<< "$pypi_json")"
 
           if [[ -z "$pypi_version" || "$pypi_version" == "null" ]]; then
@@ -108,7 +108,7 @@ jobs:
           fi
 
           npm_package_uri="$(jq -rn --arg value "$npm_package_name" '$value | @uri')"
-          npm_json="$(curl -fsSL "https://registry.npmjs.org/${npm_package_uri}")"
+          npm_json="$(curl -fsSL --max-time 30 --connect-timeout 10 "https://registry.npmjs.org/${npm_package_uri}")"
           npm_has_version=false
           if jq -e --arg candidate "$cargo_version" '.versions[$candidate] != null' <<< "$npm_json" >/dev/null; then
             npm_has_version=true
@@ -456,7 +456,7 @@ jobs:
           # Pin to the exact tag — depth 1 keeps the clone small. The
           # tag → commit sha lookup is recorded in manifest.json below
           # so a re-build is exactly reproducible from the manifest.
-          git clone --depth 1 --branch "v${crgx_version}" \
+          timeout 300 git clone --depth 1 --branch "v${crgx_version}" \
             https://github.com/yfedoseev/crgx.git "$work_dir"
           crgx_commit=$(git -C "$work_dir" rev-parse HEAD)
           echo "crgx_commit=$crgx_commit"
@@ -508,7 +508,7 @@ jobs:
 
           work_dir="${RUNNER_TEMP}/cargo-chef-build"
           rm -rf "$work_dir"
-          git clone --depth 1 --branch "v${cargo_chef_version}" \
+          timeout 300 git clone --depth 1 --branch "v${cargo_chef_version}" \
             https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
           cargo_chef_commit=$(git -C "$work_dir" rev-parse HEAD)
           echo "cargo_chef_commit=$cargo_chef_commit"
@@ -1026,15 +1026,22 @@ jobs:
           # `build` job (the musl rows skip wheel build by design). 6 = 2
           # linux-gnu + 2 darwin + 2 windows-msvc.
           expected=6
-          deadline=$(( $(date +%s) + 300 ))
+          deadline=$(( $(date +%s) + 1800 ))
+          attempts=0
+          max_attempts=60
           while :; do
-            count="$(curl -fsSL "https://pypi.org/pypi/soldr/${pypi_version}/json" \
+            attempts=$((attempts + 1))
+            count="$(curl -fsSL --max-time 30 --connect-timeout 10 "https://pypi.org/pypi/soldr/${pypi_version}/json" \
               | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("urls",[])))' 2>/dev/null \
               || echo 0)"
             echo "PyPI reports ${count}/${expected} files for soldr==${pypi_version}"
             if [ "$count" -ge "$expected" ]; then
               echo "All ${expected} wheels visible on PyPI; verification complete."
               exit 0
+            fi
+            if [ "$attempts" -ge "$max_attempts" ]; then
+              echo "Timed out after ${max_attempts} attempts waiting for ${expected} wheels for soldr==${pypi_version}" >&2
+              exit 1
             fi
             if [ "$(date +%s)" -ge "$deadline" ]; then
               echo "Timed out waiting for ${expected} wheels for soldr==${pypi_version}" >&2

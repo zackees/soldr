@@ -21,11 +21,21 @@ use crate::daemon::protocol::{
 };
 use crate::daemon::wire;
 use std::io::{self, Read, Write};
+use std::time::Duration;
 
 const HEADER_BYTES: usize = 8;
+const ASYNC_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(30);
+const ASYNC_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 
 fn decode_error(e: WireDecodeError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
+}
+
+fn timed_out(operation: &str, duration: Duration) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("{operation} timed out after {}s", duration.as_secs()),
+    )
 }
 
 /// Abstracts over Request/Response so encode/read helpers don't have
@@ -104,9 +114,14 @@ where
     T: WireBody,
 {
     use tokio::io::AsyncWriteExt;
+    use tokio::time::timeout;
     let frame = encode_frame(msg)?;
-    w.write_all(&frame).await?;
-    w.flush().await?;
+    timeout(ASYNC_FRAME_WRITE_TIMEOUT, w.write_all(&frame))
+        .await
+        .map_err(|_| timed_out("daemon IPC frame write", ASYNC_FRAME_WRITE_TIMEOUT))??;
+    timeout(ASYNC_FRAME_WRITE_TIMEOUT, w.flush())
+        .await
+        .map_err(|_| timed_out("daemon IPC frame flush", ASYNC_FRAME_WRITE_TIMEOUT))??;
     Ok(())
 }
 
@@ -124,6 +139,7 @@ where
     T: WireBody,
 {
     use tokio::io::AsyncReadExt;
+    use tokio::time::timeout;
     if prefix.len() > HEADER_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -133,7 +149,12 @@ where
     let mut header = [0u8; HEADER_BYTES];
     header[..prefix.len()].copy_from_slice(prefix);
     if prefix.len() < HEADER_BYTES {
-        r.read_exact(&mut header[prefix.len()..]).await?;
+        timeout(
+            ASYNC_FRAME_READ_TIMEOUT,
+            r.read_exact(&mut header[prefix.len()..]),
+        )
+        .await
+        .map_err(|_| timed_out("daemon IPC frame header read", ASYNC_FRAME_READ_TIMEOUT))??;
     }
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
     let version = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
@@ -150,7 +171,9 @@ where
         ));
     }
     let mut body = vec![0u8; body_len as usize];
-    r.read_exact(&mut body).await?;
+    timeout(ASYNC_FRAME_READ_TIMEOUT, r.read_exact(&mut body))
+        .await
+        .map_err(|_| timed_out("daemon IPC frame body read", ASYNC_FRAME_READ_TIMEOUT))??;
     T::decode_wire(&body).map_err(decode_error)
 }
 

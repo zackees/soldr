@@ -34,6 +34,7 @@ const COOK_DRIFT_LIMIT: usize = 8;
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -315,9 +316,13 @@ where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncReadExt;
+    use tokio::time::timeout;
 
     let mut prefix = [0_u8; 5];
-    if stream.read_exact(&mut prefix).await.is_err() {
+    if !matches!(
+        timeout(HANDSHAKE_READ_TIMEOUT, stream.read_exact(&mut prefix)).await,
+        Ok(Ok(_))
+    ) {
         return Ok(());
     }
     if is_backend_handle_probe_prefix(&prefix) {

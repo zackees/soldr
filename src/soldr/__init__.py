@@ -35,7 +35,13 @@ def _prep_env() -> "dict[str, str]":
 
 def _maturin_pep517(subcommand: str, *args: str) -> None:
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
-    subprocess.check_call(cmd, env=_prep_env())
+    try:
+        subprocess.check_call(cmd, env=_prep_env(), timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "soldr maturin pep517 exceeded 600s; suspect zccache daemon wedge - "
+            "try `soldr status` to inspect."
+        ) from exc
 
 
 def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
