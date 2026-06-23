@@ -7,6 +7,9 @@ use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
 use crate::cache_lib::{daemon_sock_path, data_db_path};
 use crate::core::SoldrPaths;
 use crate::daemon::db;
+#[cfg(windows)]
+use crate::daemon::ipc::{read_frame_async, write_frame_async};
+#[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
 use crate::daemon::protocol::{BuildRecord, Request, Response, StatusInfo};
 use std::path::{Path, PathBuf};
@@ -47,17 +50,31 @@ impl From<std::io::Error> for ClientError {
 /// any reply. Used for `RecordTargetTouch`. The wrapper hot path calls
 /// this and ignores the result on the failure side.
 pub fn submit_fire_and_forget(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
-    let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
-    write_frame_sync(&mut stream, req)?;
-    Ok(())
+    #[cfg(windows)]
+    {
+        submit_fire_and_forget_windows(sock_path, req)
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, HOT_PATH_TIMEOUT)?;
+        write_frame_sync(&mut stream, req)?;
+        Ok(())
+    }
 }
 
 /// Submit `req`, wait for one `Response`, return it.
 pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
-    let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
-    write_frame_sync(&mut stream, req)?;
-    let resp: Response = read_frame_sync(&mut stream)?;
-    Ok(resp)
+    #[cfg(windows)]
+    {
+        submit_request_windows(sock_path, req)
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
+        write_frame_sync(&mut stream, req)?;
+        let resp: Response = read_frame_sync(&mut stream)?;
+        Ok(resp)
+    }
 }
 
 pub fn status(sock_path: &Path) -> Result<StatusInfo, ClientError> {
@@ -405,30 +422,86 @@ impl std::io::Write for UnixOrPipe {
 }
 
 #[cfg(windows)]
-fn connect(sock_path: &Path, _timeout: Duration) -> Result<UnixOrPipe, ClientError> {
-    use std::fs::OpenOptions;
-    let file = OpenOptions::new().read(true).write(true).open(sock_path)?;
-    Ok(UnixOrPipe(file))
+fn windows_timeout_error(operation: &str, timeout: Duration) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        format!("{operation} timed out after {}ms", timeout.as_millis()),
+    )
 }
 
 #[cfg(windows)]
-pub struct UnixOrPipe(std::fs::File);
+fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+}
 
 #[cfg(windows)]
-impl std::io::Read for UnixOrPipe {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        self.0.read(buf)
+fn run_windows_ipc<T, F>(operation: &'static str, timeout: Duration, f: F) -> Result<T, ClientError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("soldr-daemon-client".to_string())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(ClientError::Io)?;
+
+    match rx.recv_timeout(timeout) {
+        Ok(result) => result.map_err(ClientError::from),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            Err(ClientError::Io(windows_timeout_error(operation, timeout)))
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(ClientError::Io(
+            std::io::Error::other(format!("{operation} worker exited without a result")),
+        )),
     }
 }
 
 #[cfg(windows)]
-impl std::io::Write for UnixOrPipe {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.flush()
-    }
+fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use tokio::time::timeout;
+
+    let sock_path = sock_path.to_path_buf();
+    let req = req.clone();
+    run_windows_ipc("daemon IPC hot-path write", HOT_PATH_TIMEOUT, move || {
+        let runtime = windows_runtime()?;
+        runtime.block_on(async move {
+            let mut stream = ClientOptions::new().open(sock_path)?;
+            timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
+                .await
+                .map_err(|_| {
+                    windows_timeout_error("daemon IPC hot-path write", HOT_PATH_TIMEOUT)
+                })??;
+            Ok::<(), std::io::Error>(())
+        })
+    })
+}
+
+#[cfg(windows)]
+fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use tokio::time::timeout;
+
+    let sock_path = sock_path.to_path_buf();
+    let req = req.clone();
+    run_windows_ipc("daemon IPC request", REPLY_TIMEOUT, move || {
+        let runtime = windows_runtime()?;
+        runtime.block_on(async move {
+            let mut stream = ClientOptions::new().open(sock_path)?;
+            timeout(REPLY_TIMEOUT, async {
+                write_frame_async(&mut stream, &req).await?;
+                read_frame_async(&mut stream).await
+            })
+            .await
+            .map_err(|_| windows_timeout_error("daemon IPC request", REPLY_TIMEOUT))?
+        })
+    })
 }
 
 /// Returns the well-known socket path the wrapper should use. Centralized
