@@ -208,7 +208,7 @@ jobs:
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo init --name hello /tmp/hello
+              soldr cargo new --bin --name hello /tmp/hello
               cd /tmp/hello
               echo "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr cargo build --target ${{ matrix.native_target }}
@@ -237,7 +237,7 @@ jobs:
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo init --name hellomac /tmp/hellomac
+              soldr cargo new --bin --name hellomac /tmp/hellomac
               cd /tmp/hellomac
               echo "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr cargo zigbuild --target aarch64-apple-darwin
@@ -265,7 +265,7 @@ jobs:
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo init --name hellowin /tmp/hellowin
+              soldr cargo new --bin --name hellowin /tmp/hellowin
               cd /tmp/hellowin
               echo "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr cargo xwin build --target x86_64-pc-windows-msvc
