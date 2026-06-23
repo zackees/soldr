@@ -3,14 +3,20 @@
 //! summaries live in [`super::zccache`].
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
+use wait_timeout::ChildExt;
 
 use super::github::RepoInfo;
 use super::{
     FetchResult, MANAGED_ZCCACHE_INSTALL_ATTEMPTS, MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF,
     MANAGED_ZCCACHE_PACKAGES,
 };
+
+const ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_ZCCACHE_CARGO_INSTALL_TIMEOUT_SECS";
+const DEFAULT_ZCCACHE_CARGO_INSTALL_TIMEOUT_SECS: u64 = 45 * 60;
+const KILLED_ZCCACHE_CARGO_INSTALL_REAP_TIMEOUT_SECS: u64 = 5;
 
 pub async fn fetch_zccache_with_paths(paths: &SoldrPaths) -> Result<FetchResult, SoldrError> {
     super::zccache_runtime::ZccacheResolver::new(paths)?
@@ -159,11 +165,7 @@ pub(crate) fn install_zccache_from_crates_io(
                 .env_remove("MAKEFLAGS")
                 .env_remove("CARGO_MAKEFLAGS");
             suppress_windows_console_window(&mut command);
-            let install_status = command.status().map_err(|e| {
-                SoldrError::Other(format!(
-                    "failed to invoke cargo install for managed zccache package {package_name}: {e}"
-                ))
-            })?;
+            let install_status = run_zccache_cargo_install_attempt(&mut command, package_name)?;
 
             if install_status.success() {
                 break;
@@ -213,11 +215,66 @@ pub(crate) fn install_zccache_from_crates_io(
     Ok(cached_binary)
 }
 
+fn zccache_cargo_install_timeout() -> Duration {
+    std::env::var(ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_ZCCACHE_CARGO_INSTALL_TIMEOUT_SECS))
+}
+
+fn run_zccache_cargo_install_attempt(
+    command: &mut std::process::Command,
+    package_name: &str,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut child = command.spawn().map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to invoke cargo install for managed zccache package {package_name}: {e}"
+        ))
+    })?;
+    let timeout = zccache_cargo_install_timeout();
+    match child.wait_timeout(timeout).map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to wait for cargo install for managed zccache package {package_name}: {e}"
+        ))
+    })? {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result = child.wait_timeout(Duration::from_secs(
+                KILLED_ZCCACHE_CARGO_INSTALL_REAP_TIMEOUT_SECS,
+            ));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "cargo install for managed zccache package {package_name} timed out after {timeout_secs} seconds \
+                 (set {ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR} to override)"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_ZCCACHE_CARGO_INSTALL_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::{Arch, Env, Os};
+    use std::ffi::{OsStr, OsString};
     use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn windows_target() -> TargetTriple {
         TargetTriple {
@@ -241,6 +298,61 @@ mod tests {
         std::fs::write(&path, contents).unwrap();
         path
     }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    crate::timed_test!(
+        zccache_cargo_install_timeout_uses_positive_env_override_only,
+        {
+            let _lock = ENV_LOCK.lock().unwrap();
+
+            {
+                let _guard = EnvVarGuard::set(ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR, "13");
+                assert_eq!(zccache_cargo_install_timeout(), Duration::from_secs(13));
+            }
+
+            for value in ["0", "-1", "not-a-number"] {
+                let _guard = EnvVarGuard::set(ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR, value);
+                assert_eq!(
+                    zccache_cargo_install_timeout(),
+                    Duration::from_secs(DEFAULT_ZCCACHE_CARGO_INSTALL_TIMEOUT_SECS)
+                );
+            }
+
+            let _guard = EnvVarGuard::remove(ZCCACHE_CARGO_INSTALL_TIMEOUT_ENV_VAR);
+            assert_eq!(
+                zccache_cargo_install_timeout(),
+                Duration::from_secs(DEFAULT_ZCCACHE_CARGO_INSTALL_TIMEOUT_SECS)
+            );
+        }
+    );
 
     #[test]
     fn managed_zccache_cargo_install_fallback_only_handles_unavailable_release_errors() {
