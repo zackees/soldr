@@ -628,15 +628,38 @@ pub(crate) fn stop_zccache_after_command(
             Ok(())
         }
         crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut => {
-            Err(SoldrError::Other(format!(
-                "command-lifetime cache: zccache daemon did not exit within {}s",
+            eprintln!(
+                "soldr: command-lifetime cache: zccache daemon did not exit within {}s; continuing",
                 timeout.as_secs()
-            )))
+            );
+            Ok(())
         }
         crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed(err) => {
-            Err(SoldrError::Other(format!(
-                "command-lifetime cache: could not confirm zccache daemon exit: {err}"
-            )))
+            eprintln!(
+                "soldr: command-lifetime cache: could not confirm zccache daemon exit: {err}; continuing"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+fn command_lifetime_daemon_exit_poll_result(
+    result: crate::zccache_lifecycle::ZccacheDaemonExitPollResult,
+    timeout: std::time::Duration,
+) -> Result<(), SoldrError> {
+    match result {
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::Exited => Ok(()),
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut => {
+            eprintln!(
+                "command-lifetime cache: zccache daemon did not exit within {}s",
+                timeout.as_secs()
+            );
+            Ok(())
+        }
+        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed(err) => {
+            eprintln!("command-lifetime cache: could not confirm zccache daemon exit: {err}");
+            Ok(())
         }
     }
 }
@@ -1333,13 +1356,13 @@ mod tests {
             resolve_private_zccache_daemon_name(
                 None,
                 std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.11.20/zccache"),
+                std::path::Path::new("/tmp/cache-cold/bin/zccache-1.12.10/zccache"),
                 std::path::Path::new("/tmp/cache-cold/cache/zccache"),
             ),
             resolve_private_zccache_daemon_name(
                 None,
                 std::path::Path::new("/repo/target/debug/soldr"),
-                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.11.20/zccache"),
+                std::path::Path::new("/tmp/cache-warm/bin/zccache-1.12.10/zccache"),
                 std::path::Path::new("/tmp/cache-warm/cache/zccache"),
             ),
             "managed zccache binaries under different SOLDR_CACHE_DIR roots must hash by runtime identity, not absolute path",
@@ -1691,6 +1714,20 @@ mod tests {
                 "expected {value:?} to enable command-lifetime cache shutdown"
             );
         }
+    }
+
+    #[test]
+    fn command_lifetime_daemon_exit_timeout_is_non_fatal() {
+        assert!(command_lifetime_daemon_exit_poll_result(
+            crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut,
+            std::time::Duration::from_secs(30),
+        )
+        .is_ok());
+        assert!(command_lifetime_daemon_exit_poll_result(
+            crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed("gone".into()),
+            std::time::Duration::from_secs(30),
+        )
+        .is_ok());
     }
 
     #[test]

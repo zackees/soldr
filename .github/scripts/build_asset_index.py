@@ -15,8 +15,8 @@ deliberately FLAT shape — one row per ``(owner, repo, tag, asset)``::
         {
           "owner":  "zackees",
           "repo":   "zccache",
-          "tag":    "1.12.9",
-          "asset":  "zccache-v1.12.9-x86_64-pc-windows-msvc.zip",
+          "tag":    "1.12.10",
+          "asset":  "zccache-v1.12.10-x86_64-pc-windows-msvc.zip",
           "url":    "https://github.com/.../...zip",
           "sha256": "<64-char lowercase hex>"
         },

@@ -104,7 +104,7 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.9";
+pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.10";
 
 /// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
 /// state. Source of truth for `SoldrPaths::versioned_root` and
@@ -551,8 +551,8 @@ async fn try_embedded_manifest_v6(
     if manifest.is_empty() {
         return Ok(None);
     }
-    // Normalize the version pin: callers may pass `v1.12.9` (from
-    // `known_tools`) but v6 keys are bare semver (`1.12.9`).
+    // Normalize the version pin: callers may pass `v1.12.10` (from
+    // `known_tools`) but v6 keys are bare semver (`1.12.10`).
     let bare = tag.trim_start_matches('v').to_string();
     let triple_owned = target.triple();
     let triple: &str = &triple_owned;

@@ -720,6 +720,23 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 );
             }
 
+            if should_use_managed_zccache_external(&crate_name, &version) {
+                eprintln!("soldr: fetching managed zccache...");
+                let paths = SoldrPaths::new()?;
+                let result = fetch_active_zccache(&paths).await?;
+                if result.cached {
+                    eprintln!("soldr: using cached zccache v{}", result.version);
+                } else {
+                    eprintln!("soldr: downloaded zccache v{}", result.version);
+                }
+
+                let mut command = std::process::Command::new(&result.binary_path);
+                command.args(tool_args);
+                suppress_windows_console_window(&mut command);
+                let status = command.status()?;
+                std::process::exit(status.code().unwrap_or(1));
+            }
+
             // Issue #412: when the user typed a verb that LOOKS like
             // a typo or a renamed built-in (e.g. `update-zccacheee`,
             // `installzccache`), emit a "did you mean?" hint before
@@ -776,6 +793,10 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     }
 
     Ok(())
+}
+
+fn should_use_managed_zccache_external(crate_name: &str, version: &VersionSpec) -> bool {
+    crate_name == "zccache" && matches!(version, VersionSpec::Latest)
 }
 
 fn report_and_exit(error: SoldrError) -> i32 {

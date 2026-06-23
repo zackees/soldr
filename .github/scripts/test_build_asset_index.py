@@ -72,13 +72,13 @@ class ParseSha256SumsTest(unittest.TestCase):
             "0" * 64 + "  SHA256SUMS\n"
             + "1" * 64 + "  install.sh\n"
             + "2" * 64 + "  install.ps1\n"
-            + "3" * 64 + "  zccache-v1.12.9-x86_64-pc-windows-msvc-debug.zip\n"
-            + "4" * 64 + "  zccache-v1.12.9-x86_64-pc-windows-msvc.zip\n"
+            + "3" * 64 + "  zccache-v1.12.10-x86_64-pc-windows-msvc-debug.zip\n"
+            + "4" * 64 + "  zccache-v1.12.10-x86_64-pc-windows-msvc.zip\n"
         )
         parsed = bai.parse_sha256sums(text)
         self.assertEqual(
             set(parsed.keys()),
-            {"zccache-v1.12.9-x86_64-pc-windows-msvc.zip"},
+            {"zccache-v1.12.10-x86_64-pc-windows-msvc.zip"},
         )
 
     def test_rejects_malformed_lines(self) -> None:
