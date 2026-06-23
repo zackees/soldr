@@ -3,7 +3,8 @@
 # This image MUST NOT pre-install any build tool that soldr is meant to
 # fetch at runtime. The whole point of this acceptance test (issue #860,
 # meta #853) is to prove that a stripped image with only the absolute
-# minimum (CA roots, curl, git, pkg-config) can still successfully run:
+# minimum (CA roots, curl, git, pkg-config, runtime shared libs) can still
+# successfully run:
 #
 #   soldr cargo build --target x86_64-unknown-linux-gnu
 #   soldr cargo zigbuild --target aarch64-apple-darwin
@@ -25,6 +26,7 @@ RUN apt-get \
         ca-certificates \
         curl \
         git \
+        libxml2 \
         pkg-config \
         xz-utils \
     && rm -rf /var/lib/apt/lists/*

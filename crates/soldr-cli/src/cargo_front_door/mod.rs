@@ -1174,15 +1174,16 @@ async fn append_subcommand_transitive_bin_dirs(
     if sub == "xwin" {
         if let Some(triple) = extract_target_arg(args) {
             if triple.ends_with("-pc-windows-msvc") {
-                let shim_dir = clang_cl_shim::ensure_clang_cl_shim(paths)?;
-                extra_bin_dirs.push(shim_dir);
-
                 match crate::fetch::ensure_llvm_toolchain(paths).await {
                     Ok(llvm_bin_dir) => {
                         let ext = std::env::consts::EXE_SUFFIX;
+                        let clang = llvm_bin_dir.join(format!("clang{ext}"));
                         let clang_cl = llvm_bin_dir.join(format!("clang-cl{ext}"));
                         let llvm_lib = llvm_bin_dir.join(format!("llvm-lib{ext}"));
                         let lld_link = llvm_bin_dir.join(format!("lld-link{ext}"));
+                        let shim_dir =
+                            clang_cl_shim::ensure_clang_cl_shim_for_real_clang(paths, &clang)?;
+                        extra_bin_dirs.push(shim_dir);
                         let suffix = triple.replace('-', "_");
                         // Don't clobber caller-set values — escape hatch
                         // for users who pinned their own LLVM build.
@@ -1210,6 +1211,8 @@ async fn append_subcommand_transitive_bin_dirs(
                         extra_bin_dirs.push(llvm_bin_dir);
                     }
                     Err(SoldrError::UnsupportedPlatform(msg)) => {
+                        let shim_dir = clang_cl_shim::ensure_clang_cl_shim(paths)?;
+                        extra_bin_dirs.push(shim_dir);
                         eprintln!(
                             "soldr: skipping managed LLVM bootstrap: {msg}; \
                              falling back to system clang/lld-link/llvm-lib on PATH"

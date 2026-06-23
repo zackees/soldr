@@ -30,6 +30,11 @@
 //!   - `aarch64-unknown-linux-gnu`
 //!   - `x86_64-pc-windows-msvc`
 //!
+//! Linux musl hosts are intentionally not mapped to the glibc Linux
+//! archive. That binary can start under Alpine's `gcompat`, but `lld-link`
+//! currently requires glibc symbols such as `mallinfo2`; use a glibc host or
+//! provide `SOLDR_LLVM_DIR` until a musl LLVM archive exists.
+//!
 //! macOS hosts (Apple Silicon + Intel) are at a slightly newer LLVM
 //! release upstream (21.1.6 vs 21.1.5). Rather than pin two versions,
 //! the macOS case is **not** wired through managed fetch today — those
@@ -151,9 +156,17 @@ fn host_llvm_asset() -> Option<&'static LlvmAsset> {
 /// MSVC-vs-GNU env discrimination on Windows (only x86_64-msvc is
 /// supported today).
 fn host_triple_for_llvm() -> Option<&'static str> {
-    if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+    if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "gnu"
+    )) {
         Some("x86_64-unknown-linux-gnu")
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "gnu"
+    )) {
         Some("aarch64-unknown-linux-gnu")
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         Some("x86_64-pc-windows-msvc")
@@ -325,5 +338,13 @@ mod tests {
                 "{triple}: plat_arch must be non-empty",
             );
         }
+    });
+
+    #[cfg(all(target_os = "linux", target_env = "musl"))]
+    crate::timed_test!(musl_host_does_not_select_glibc_llvm_asset, {
+        assert!(
+            host_triple_for_llvm().is_none(),
+            "musl hosts must not select the glibc LLVM archive",
+        );
     });
 }

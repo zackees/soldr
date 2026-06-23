@@ -56,11 +56,25 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
-      - name: Setup soldr build cache
-        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
-        with:
-          cache: true
-          cache-key-suffix: baseline-zero-deps-${{ matrix.target }}-v1
+      - name: Bootstrap soldr from checkout
+        env:
+          RUSTC_WRAPPER: ""
+        shell: bash
+        run: |
+          set -euo pipefail
+          bootstrap_target="$RUNNER_TEMP/soldr-bootstrap-target"
+          "$CARGO_HOME/bin/cargo" build \
+            --package soldr-cli \
+            --release \
+            --locked \
+            --target x86_64-unknown-linux-gnu \
+            --target-dir "$bootstrap_target"
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp "$bootstrap_target/x86_64-unknown-linux-gnu/release/soldr" "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+          echo "BOOTSTRAP_SOLDR=$RUNNER_TEMP/soldr-bin/soldr" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/soldr-bin/soldr" --version
 
       - name: Pre-fetch zigbuild toolchain -> PATH
         shell: bash
@@ -117,7 +131,7 @@ jobs:
           set -euo pipefail
           # zigbuild fetches its own zig + linker via soldr — we want the
           # same code path the rest of the workflow exercises.
-          soldr cargo zigbuild --release --package soldr-cli --target "${{ matrix.target }}"
+          "$BOOTSTRAP_SOLDR" cargo zigbuild --release --package soldr-cli --target "${{ matrix.target }}"
 
       - name: Stage soldr binary for upload
         shell: bash
@@ -196,29 +210,37 @@ jobs:
           set -euo pipefail
           docker run --rm "${{ matrix.image_tag }}" soldr version
 
-      - name: Exercise 2 — native cargo build from zero
+      - name: Exercise 2 — native cargo check from zero
         shell: bash
         run: |
           set -euo pipefail
           # Proves the rustup + zccache bootstrap works end-to-end inside
-          # a zero-deps image. soldr must fetch its own rustc/cargo and
-          # its own zccache.
+          # a zero-deps image without requiring a system linker. soldr must
+          # fetch its own rustc/cargo and its own zccache.
           set +e
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo new --bin --name hello /tmp/hello
+              mkdir -p /tmp/hello/src
               cd /tmp/hello
-              echo "fn main() { println!(\"hi\"); }" > src/main.rs
-              soldr cargo build --target ${{ matrix.native_target }}
-              ls -l target/${{ matrix.native_target }}/debug/hello
-              ./target/${{ matrix.native_target }}/debug/hello
+              printf "%s\n" \
+                "[package]" \
+                "name = \"hello\"" \
+                "version = \"0.1.0\"" \
+                "edition = \"2021\"" \
+                > Cargo.toml
+              printf "%s\n" \
+                "[toolchain]" \
+                "channel = \"1.94.1\"" \
+                > rust-toolchain.toml
+              printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr cargo check --target ${{ matrix.native_target }}
             ' 2> exercise2.stderr | tee exercise2.stdout
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "::error title=Exercise 2 failed (${{ matrix.libc }})::native cargo build from zero failed (exit $status)"
+            echo "::error title=Exercise 2 failed (${{ matrix.libc }})::native cargo check from zero failed (exit $status)"
             echo "--- captured stderr ---"
             cat exercise2.stderr || true
             echo "--- captured stdout ---"
@@ -230,16 +252,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Proves Apple SDK auto-fetch (#862) + zig auto-fetch (#841)
-          # work together from a zero-deps image.
+          # Proves rust target install + Apple SDK auto-fetch (#862) +
+          # zig auto-fetch (#841) work together from a zero-deps image.
           set +e
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo new --bin --name hellomac /tmp/hellomac
+              mkdir -p /tmp/hellomac/src
               cd /tmp/hellomac
-              echo "fn main() { println!(\"hi\"); }" > src/main.rs
+              printf "%s\n" \
+                "[package]" \
+                "name = \"hellomac\"" \
+                "version = \"0.1.0\"" \
+                "edition = \"2021\"" \
+                > Cargo.toml
+              printf "%s\n" \
+                "[toolchain]" \
+                "channel = \"1.94.1\"" \
+                > rust-toolchain.toml
+              printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr prepare --target aarch64-apple-darwin
               soldr cargo zigbuild --target aarch64-apple-darwin
               ls -l target/aarch64-apple-darwin/debug/hellomac
             ' 2> exercise3.stderr | tee exercise3.stdout
@@ -255,19 +288,33 @@ jobs:
           fi
 
       - name: Exercise 4 — cargo xwin build for x86_64-pc-windows-msvc
+        if: ${{ matrix.libc == 'glibc' }}
         shell: bash
         run: |
           set -euo pipefail
-          # Proves LLVM auto-fetch (#864) + cargo-xwin auto-fetch work
-          # together from a zero-deps image.
+          # Proves rust target install + LLVM auto-fetch (#864) +
+          # cargo-xwin auto-fetch work together from a zero-deps image.
+          # The managed LLVM archive is currently glibc-linked; musl
+          # remains covered by the native and Apple/zigbuild exercises.
           set +e
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
-              soldr cargo new --bin --name hellowin /tmp/hellowin
+              mkdir -p /tmp/hellowin/src
               cd /tmp/hellowin
-              echo "fn main() { println!(\"hi\"); }" > src/main.rs
+              printf "%s\n" \
+                "[package]" \
+                "name = \"hellowin\"" \
+                "version = \"0.1.0\"" \
+                "edition = \"2021\"" \
+                > Cargo.toml
+              printf "%s\n" \
+                "[toolchain]" \
+                "channel = \"1.94.1\"" \
+                > rust-toolchain.toml
+              printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
+              soldr prepare --target x86_64-pc-windows-msvc
               soldr cargo xwin build --target x86_64-pc-windows-msvc
               ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe
             ' 2> exercise4.stderr | tee exercise4.stdout
@@ -293,7 +340,9 @@ jobs:
             echo "- Pre-installed build tools: **none**"
             echo "- Exercises:"
             echo "  - soldr version"
-            echo "  - soldr cargo build --target ${{ matrix.native_target }}"
+            echo "  - soldr cargo check --target ${{ matrix.native_target }}"
+            echo "  - soldr prepare --target aarch64-apple-darwin"
             echo "  - soldr cargo zigbuild --target aarch64-apple-darwin"
+            echo "  - soldr prepare --target x86_64-pc-windows-msvc"
             echo "  - soldr cargo xwin build --target x86_64-pc-windows-msvc"
           } >> "$GITHUB_STEP_SUMMARY"

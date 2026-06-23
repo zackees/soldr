@@ -760,8 +760,23 @@ fn restore_prepare_state(archive: &Path, _paths: &SoldrPaths) -> Result<(), Sold
 /// Run `rustup target add <triple>` for the active toolchain.
 /// Idempotent — already-installed targets are a no-op.
 fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
-    let status = std::process::Command::new("rustup")
-        .args(["target", "add", triple])
+    let paths = SoldrPaths::new()?;
+    let rustup = crate::binaries::rustup_binary();
+    let mut command = std::process::Command::new(rustup);
+    command.args(["target", "add", triple]);
+    if let Some(channel) = pinned_toolchain_channel()? {
+        command.args(["--toolchain", &channel]);
+    }
+    command.env(
+        crate::core::CARGO_HOME_ENV_VAR,
+        crate::fetch::managed_cargo_home(&paths),
+    );
+    command.env(
+        crate::core::RUSTUP_HOME_ENV_VAR,
+        crate::fetch::managed_rustup_home(&paths),
+    );
+    crate::core::suppress_windows_console_window(&mut command);
+    let status = command
         .status()
         .map_err(|e| SoldrError::Other(format!("rustup target add: {e}")))?;
     if !status.success() {
@@ -773,9 +788,70 @@ fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
     Ok(())
 }
 
+fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    Ok(crate::core::read_rust_toolchain_manifest(&workspace_root)?.channel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    struct CwdGuard {
+        previous: PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &Path) -> Self {
+            let previous = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(path).expect("chdir");
+            Self { previous }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.previous);
+        }
+    }
 
     crate::timed_test!(constants_are_well_formed, {
         assert!(XWIN_CACHE_URL.starts_with("https://"));
@@ -796,6 +872,135 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(rustup_add_target_uses_soldr_managed_rustup_state, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let soldr_root = tmp.path().join("soldr-root");
+        let log = tmp.path().join("rustup.log");
+        let fake_rustup = tmp.path().join(if cfg!(windows) {
+            "rustup.cmd"
+        } else {
+            "rustup"
+        });
+
+        #[cfg(windows)]
+        std::fs::write(
+            &fake_rustup,
+            "@echo off\r\n\
+             (\r\n\
+             echo args=%*\r\n\
+             echo CARGO_HOME=%CARGO_HOME%\r\n\
+             echo RUSTUP_HOME=%RUSTUP_HOME%\r\n\
+             ) > \"%SOLDR_RUSTUP_LOG%\"\r\n",
+        )
+        .expect("write fake rustup");
+
+        #[cfg(not(windows))]
+        {
+            std::fs::write(
+                &fake_rustup,
+                "#!/bin/sh\n\
+                 {\n\
+                   printf 'args=%s\\n' \"$*\"\n\
+                   printf 'CARGO_HOME=%s\\n' \"$CARGO_HOME\"\n\
+                   printf 'RUSTUP_HOME=%s\\n' \"$RUSTUP_HOME\"\n\
+                 } > \"$SOLDR_RUSTUP_LOG\"\n",
+            )
+            .expect("write fake rustup");
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_rustup)
+                .expect("metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_rustup, perms).expect("chmod");
+        }
+
+        let _rustup = EnvVarGuard::set(crate::TEST_RUSTUP_BIN_ENV_VAR, &fake_rustup);
+        let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &soldr_root);
+        let _log = EnvVarGuard::set("SOLDR_RUSTUP_LOG", &log);
+        let _cargo_home = EnvVarGuard::remove(crate::core::CARGO_HOME_ENV_VAR);
+        let _rustup_home = EnvVarGuard::remove(crate::core::RUSTUP_HOME_ENV_VAR);
+
+        rustup_add_target("aarch64-apple-darwin").expect("rustup target add");
+
+        let body = std::fs::read_to_string(&log).expect("read fake rustup log");
+        assert!(
+            body.contains("args=target add aarch64-apple-darwin"),
+            "fake rustup should receive target add args, got: {body}"
+        );
+        assert!(
+            body.contains(&format!(
+                "CARGO_HOME={}",
+                crate::fetch::managed_cargo_home(&SoldrPaths::with_root(soldr_root.clone()))
+                    .display()
+            )),
+            "fake rustup should receive managed CARGO_HOME, got: {body}"
+        );
+        assert!(
+            body.contains(&format!(
+                "RUSTUP_HOME={}",
+                crate::fetch::managed_rustup_home(&SoldrPaths::with_root(soldr_root)).display()
+            )),
+            "fake rustup should receive managed RUSTUP_HOME, got: {body}"
+        );
+    });
+
+    crate::timed_test!(rustup_add_target_scopes_to_pinned_toolchain_channel, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let soldr_root = tmp.path().join("soldr-root");
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).expect("project dir");
+        std::fs::write(
+            project.join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"1.94.1\"\n",
+        )
+        .expect("write toolchain");
+        let log = tmp.path().join("rustup.log");
+        let fake_rustup = tmp.path().join(if cfg!(windows) {
+            "rustup.cmd"
+        } else {
+            "rustup"
+        });
+
+        #[cfg(windows)]
+        std::fs::write(
+            &fake_rustup,
+            "@echo off\r\n\
+             echo args=%* > \"%SOLDR_RUSTUP_LOG%\"\r\n",
+        )
+        .expect("write fake rustup");
+
+        #[cfg(not(windows))]
+        {
+            std::fs::write(
+                &fake_rustup,
+                "#!/bin/sh\n\
+                 printf 'args=%s\\n' \"$*\" > \"$SOLDR_RUSTUP_LOG\"\n",
+            )
+            .expect("write fake rustup");
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_rustup)
+                .expect("metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_rustup, perms).expect("chmod");
+        }
+
+        let _cwd_guard = CwdGuard::enter(&project);
+        let _rustup = EnvVarGuard::set(crate::TEST_RUSTUP_BIN_ENV_VAR, &fake_rustup);
+        let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &soldr_root);
+        let _log = EnvVarGuard::set("SOLDR_RUSTUP_LOG", &log);
+
+        rustup_add_target("aarch64-apple-darwin").expect("rustup target add");
+
+        let body = std::fs::read_to_string(&log).expect("read fake rustup log");
+        assert!(
+            body.contains("args=target add aarch64-apple-darwin --toolchain 1.94.1"),
+            "fake rustup should receive pinned toolchain args, got: {body}"
+        );
     });
 
     crate::timed_test!(parse_target_arg_all_is_sentinel, {

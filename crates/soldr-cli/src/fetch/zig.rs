@@ -17,10 +17,12 @@
 //!      at `~/.soldr/bin/zig-<MANAGED_ZIG_VERSION>/`.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::github::http_client;
 use super::trust;
 
 /// Zig version that ships in soldr's managed bootstrap.
@@ -31,6 +33,8 @@ use super::trust;
 pub const MANAGED_ZIG_VERSION: &str = "0.13.0";
 
 const ZIG_ENV_VAR: &str = "ZIG";
+const ZIG_DOWNLOAD_ATTEMPTS: u32 = 4;
+const ZIG_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
 
 /// Ensure a zig binary is available for cargo-zigbuild. Returns the
 /// **directory** holding the binary so the caller can prepend it to
@@ -58,22 +62,7 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     let (asset, url) = zig_download_url(MANAGED_ZIG_VERSION)?;
     eprintln!("soldr: fetching zig v{MANAGED_ZIG_VERSION} ({asset})...");
 
-    let client = http_client()?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "zig download {url} failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let bytes = download_zig_asset(&url).await?;
 
     let digest = trust::sha256_of(&bytes);
     let store = trust::PinnedChecksumStore::from_env()?;
@@ -125,6 +114,115 @@ pub async fn ensure_zig(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| SoldrError::Other("zig binary has no parent directory".into()))
+}
+
+async fn download_zig_asset(url: &str) -> Result<Vec<u8>, SoldrError> {
+    let client = zig_http_client()?;
+    let mut attempt = 1;
+    let mut backoff = ZIG_DOWNLOAD_INITIAL_BACKOFF;
+    loop {
+        let result = download_zig_asset_once(&client, url).await;
+        match result {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) if attempt < ZIG_DOWNLOAD_ATTEMPTS => {
+                eprintln!(
+                    "soldr: transient error fetching zig (attempt {attempt}/{ZIG_DOWNLOAD_ATTEMPTS}): {err}; retrying in {:?}",
+                    backoff
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+                attempt += 1;
+            }
+            Err(err) => match download_zig_asset_with_curl(url) {
+                Ok(bytes) => return Ok(bytes),
+                Err(curl_err) => {
+                    return Err(SoldrError::Network(format!(
+                        "{err}; curl fallback also failed: {curl_err}"
+                    )));
+                }
+            },
+        }
+    }
+}
+
+fn zig_http_client() -> Result<reqwest::Client, SoldrError> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .http1_only()
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|e| SoldrError::Network(e.to_string()))
+}
+
+async fn download_zig_asset_once(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Vec<u8>, SoldrError> {
+    let resp = client
+        .get(url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "zig download {url} failed: HTTP {}",
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    Ok(bytes.to_vec())
+}
+
+fn download_zig_asset_with_curl(url: &str) -> Result<Vec<u8>, SoldrError> {
+    eprintln!("soldr: falling back to curl for zig download...");
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let out = std::env::temp_dir().join(format!(
+        "soldr-zig-download-{}-{nonce}.tmp",
+        std::process::id()
+    ));
+    let status = Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "600",
+            "--retry",
+            "6",
+            "--retry-delay",
+            "5",
+            "--retry-all-errors",
+            "--output",
+        ])
+        .arg(&out)
+        .arg(url)
+        .status()
+        .map_err(|err| SoldrError::Network(format!("failed to invoke curl: {err}")))?;
+    if !status.success() {
+        let _ = std::fs::remove_file(&out);
+        return Err(SoldrError::Network(format!(
+            "curl exited with status {status}"
+        )));
+    }
+    let bytes = std::fs::read(&out).map_err(|err| {
+        SoldrError::Network(format!(
+            "failed to read curl download {}: {err}",
+            out.display()
+        ))
+    });
+    let _ = std::fs::remove_file(&out);
+    bytes
 }
 
 fn zig_dir_from_env_var() -> Option<PathBuf> {
