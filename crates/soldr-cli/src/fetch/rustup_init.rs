@@ -290,6 +290,10 @@ pub fn rustup_init_host_triple() -> Result<String, SoldrError> {
         ("windows", "x86") => "i686-pc-windows-msvc".to_string(),
         ("macos", "x86_64") => "x86_64-apple-darwin".to_string(),
         ("macos", "aarch64") => "aarch64-apple-darwin".to_string(),
+        ("linux", "x86_64") if cfg!(target_env = "musl") => "x86_64-unknown-linux-musl".to_string(),
+        ("linux", "aarch64") if cfg!(target_env = "musl") => {
+            "aarch64-unknown-linux-musl".to_string()
+        }
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu".to_string(),
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu".to_string(),
         ("linux", "x86") => "i686-unknown-linux-gnu".to_string(),
@@ -435,10 +439,12 @@ mod tests {
         let _env_lock = test_env_lock();
         let _guard = EnvVarGuard::remove(RUSTUP_INIT_TRIPLE_ENV_VAR);
         if std::env::consts::OS == "linux" && std::env::consts::ARCH == "x86_64" {
-            assert_eq!(
-                rustup_init_host_triple().unwrap(),
+            let expected = if cfg!(target_env = "musl") {
+                "x86_64-unknown-linux-musl"
+            } else {
                 "x86_64-unknown-linux-gnu"
-            );
+            };
+            assert_eq!(rustup_init_host_triple().unwrap(), expected);
         }
     }
 

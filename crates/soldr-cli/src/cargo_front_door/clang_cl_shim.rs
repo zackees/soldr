@@ -49,6 +49,25 @@ pub fn ensure_clang_cl_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     std::fs::create_dir_all(&dir)?;
 
     let real_clang = discover_real_clang(&dir)?;
+    write_clang_cl_shim(&dir, &real_clang)
+}
+
+pub fn ensure_clang_cl_shim_for_real_clang(
+    paths: &SoldrPaths,
+    real_clang: &Path,
+) -> Result<PathBuf, SoldrError> {
+    if !real_clang.is_file() {
+        return Err(SoldrError::Other(format!(
+            "managed clang not found at {}",
+            real_clang.display()
+        )));
+    }
+    let dir = paths.bin.join(SHIM_DIR_BASENAME);
+    std::fs::create_dir_all(&dir)?;
+    write_clang_cl_shim(&dir, real_clang)
+}
+
+fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrError> {
     let shim_path = dir.join(if cfg!(windows) { "clang.cmd" } else { "clang" });
     let shim_body = render_shim_body(&real_clang);
 
@@ -64,7 +83,7 @@ pub fn ensure_clang_cl_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         }
     }
 
-    Ok(dir)
+    Ok(dir.to_path_buf())
 }
 
 fn render_shim_body(real_clang: &Path) -> String {

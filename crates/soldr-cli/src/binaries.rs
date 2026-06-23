@@ -160,6 +160,32 @@ fn windows_path_exts() -> Vec<String> {
 pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command) {
     let start_dir = std::env::current_dir().ok();
     crate::core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+    apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
+}
+
+fn apply_managed_toolchain_homes_if_available(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+) {
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    if std::env::var_os(crate::core::CARGO_HOME_ENV_VAR).is_none()
+        && find_ancestor_dir(start_dir, ".cargo").is_none()
+    {
+        let managed = crate::fetch::managed_cargo_home(&paths);
+        if managed.is_dir() {
+            command.env(crate::core::CARGO_HOME_ENV_VAR, managed);
+        }
+    }
+    if std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR).is_none()
+        && find_ancestor_dir(start_dir, ".rustup").is_none()
+    {
+        let managed = crate::fetch::managed_rustup_home(&paths);
+        if managed.is_dir() {
+            command.env(crate::core::RUSTUP_HOME_ENV_VAR, managed);
+        }
+    }
 }
 
 pub(crate) fn rustup_resolution_failure(tool: &str, stderr: &[u8]) -> SoldrError {
