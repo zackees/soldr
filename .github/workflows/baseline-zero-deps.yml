@@ -62,6 +62,55 @@ jobs:
           cache: true
           cache-key-suffix: baseline-zero-deps-${{ matrix.target }}-v1
 
+      - name: Pre-fetch zigbuild toolchain -> PATH
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest_dir="${RUNNER_TEMP}/cross-bin"
+          mkdir -p "$dest_dir"
+          asset_url=$(
+              python3 .github/scripts/tool_query.py \
+                  --platform linux --arch x86 --extra gnu cargo-zigbuild \
+              || python3 .github/scripts/tool_query.py \
+                  --platform linux --arch x86 --extra musl cargo-zigbuild
+          )
+          asset_filename=$(basename "$asset_url")
+          curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${asset_filename}" "$asset_url"
+          extract_tmp=$(mktemp -d)
+          tar -xaf "/tmp/${asset_filename}" -C "$extract_tmp"
+          binary_src=$(find "$extract_tmp" -type f -name cargo-zigbuild -print -quit)
+          if [ -z "$binary_src" ]; then
+            echo "cargo-zigbuild not found in $asset_filename" >&2
+            find "$extract_tmp" -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          cp "$binary_src" "$dest_dir/cargo-zigbuild"
+          chmod +x "$dest_dir/cargo-zigbuild"
+          zig_version="0.13.0"
+          zig_asset="zig-linux-x86_64-${zig_version}.tar.xz"
+          curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${zig_asset}" \
+              "https://ziglang.org/download/${zig_version}/${zig_asset}"
+          zig_extract_tmp=$(mktemp -d)
+          tar -xaf "/tmp/${zig_asset}" -C "$zig_extract_tmp"
+          zig_src=$(find "$zig_extract_tmp" -type f -name zig -print -quit)
+          if [ -z "$zig_src" ]; then
+            echo "zig not found in $zig_asset" >&2
+            find "$zig_extract_tmp" -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          zig_dir=$(dirname "$zig_src")
+          chmod +x "$zig_src"
+          echo "$dest_dir" >> "$GITHUB_PATH"
+          echo "$zig_dir" >> "$GITHUB_PATH"
+          "$dest_dir/cargo-zigbuild" --version
+          "$zig_src" version
+
       - name: Build soldr-cli via soldr cargo zigbuild
         shell: bash
         run: |

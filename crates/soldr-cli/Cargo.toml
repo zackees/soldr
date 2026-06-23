@@ -37,6 +37,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
 walkdir = { workspace = true }
+wait-timeout = { workspace = true }
 xz2 = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }

@@ -24,10 +24,14 @@ use running_process::broker::protocol::{
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::timeout;
 
 const BACKEND_HANDLE_PROBE_PREFIX_BYTES: usize = 5;
 const BACKEND_HANDLE_PROBE_NONCE_BYTES: usize = 32;
+const BACKEND_HANDLE_PROBE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const BACKEND_HANDLE_PROBE_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -194,7 +198,17 @@ where
     let body_len = u32::from_le_bytes([prefix[1], prefix[2], prefix[3], prefix[4]]) as usize;
     let mut body = vec![0_u8; body_len];
     if body_len > 0 {
-        stream.read_exact(&mut body).await?;
+        timeout(
+            BACKEND_HANDLE_PROBE_READ_TIMEOUT,
+            stream.read_exact(&mut body),
+        )
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "BackendHandle probe read timed out after 5s",
+            )
+        })??;
     }
     Frame::decode(body.as_slice()).map_err(|err| invalid_data(err.to_string()))
 }
@@ -265,8 +279,23 @@ where
     wire.push(ENVELOPE_VERSION);
     wire.extend_from_slice(&(body.len() as u32).to_le_bytes());
     wire.extend_from_slice(&body);
-    stream.write_all(&wire).await?;
-    stream.flush().await
+    timeout(BACKEND_HANDLE_PROBE_WRITE_TIMEOUT, stream.write_all(&wire))
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "BackendHandle probe write timed out after 15s",
+            )
+        })??;
+    timeout(BACKEND_HANDLE_PROBE_WRITE_TIMEOUT, stream.flush())
+        .await
+        .map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "BackendHandle probe flush timed out after 15s",
+            )
+        })??;
+    Ok(())
 }
 
 fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {

@@ -162,6 +162,45 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
     Ok(xwin_dir)
 }
 
+/// Parse the `--target` argument into a list of triples.
+///
+/// Accepts three shapes — see `cli_args::Commands::Prepare::target` for
+/// the user-facing documentation. The literal `all` is a sentinel that
+/// callers must expand via `cargo_metadata_soldr::resolve_all_targets`;
+/// the dispatch returns `Err(SentinelAll)` so callers branch explicitly.
+///
+/// Comma-separated entries are trimmed and empty tokens dropped; an
+/// empty effective list errors instead of silently producing a zero-
+/// target run.
+pub fn parse_target_arg(target: &str) -> Result<ParsedTargetArg, SoldrError> {
+    if target == "all" {
+        return Ok(ParsedTargetArg::All);
+    }
+    if target.contains(',') {
+        let parsed: Vec<String> = target
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if parsed.is_empty() {
+            return Err(SoldrError::Other(
+                "soldr prepare --target: comma-separated list was empty".to_string(),
+            ));
+        }
+        return Ok(ParsedTargetArg::Explicit(parsed));
+    }
+    Ok(ParsedTargetArg::Explicit(vec![target.to_string()]))
+}
+
+/// Result of parsing the `--target` CLI argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParsedTargetArg {
+    /// `--target all` — caller must resolve from `Cargo.toml`.
+    All,
+    /// One or more explicit triples (single or comma-separated form).
+    Explicit(Vec<String>),
+}
+
 /// Top-level entry point for `soldr prepare --target <triple>`.
 pub async fn run(
     target: String,
@@ -757,6 +796,66 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(parse_target_arg_all_is_sentinel, {
+        assert_eq!(parse_target_arg("all").unwrap(), ParsedTargetArg::All);
+    });
+
+    crate::timed_test!(parse_target_arg_single_triple, {
+        let got = parse_target_arg("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(
+            got,
+            ParsedTargetArg::Explicit(vec!["x86_64-unknown-linux-gnu".into()])
+        );
+    });
+
+    crate::timed_test!(parse_target_arg_comma_separated, {
+        let got = parse_target_arg(
+            "x86_64-pc-windows-msvc,aarch64-apple-darwin,x86_64-unknown-linux-musl",
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            ParsedTargetArg::Explicit(vec![
+                "x86_64-pc-windows-msvc".into(),
+                "aarch64-apple-darwin".into(),
+                "x86_64-unknown-linux-musl".into(),
+            ])
+        );
+    });
+
+    crate::timed_test!(parse_target_arg_trims_whitespace, {
+        let got = parse_target_arg(" x86_64-pc-windows-msvc , aarch64-apple-darwin ").unwrap();
+        assert_eq!(
+            got,
+            ParsedTargetArg::Explicit(vec![
+                "x86_64-pc-windows-msvc".into(),
+                "aarch64-apple-darwin".into(),
+            ])
+        );
+    });
+
+    crate::timed_test!(parse_target_arg_drops_empty_entries, {
+        // Leading / trailing / consecutive commas are silently dropped
+        // because they're a common copy-paste mistake. The error path
+        // covers the "every entry was empty" case below.
+        let got = parse_target_arg(",x86_64-pc-windows-msvc,,aarch64-apple-darwin,").unwrap();
+        assert_eq!(
+            got,
+            ParsedTargetArg::Explicit(vec![
+                "x86_64-pc-windows-msvc".into(),
+                "aarch64-apple-darwin".into(),
+            ])
+        );
+    });
+
+    crate::timed_test!(parse_target_arg_all_empty_errors, {
+        let err = parse_target_arg(", , ,").unwrap_err();
+        assert!(
+            err.to_string().contains("comma-separated list was empty"),
+            "unexpected error: {err}"
+        );
     });
 
     crate::timed_test!(classify_target_windows_msvc, {

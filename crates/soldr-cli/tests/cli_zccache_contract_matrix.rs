@@ -383,7 +383,7 @@ timed_test!(
 );
 
 timed_test!(
-    disabled_and_non_build_paths_skip_managed_zccache,
+    disabled_paths_skip_and_non_build_paths_use_managed_zccache,
     Duration::from_secs(120),
     {
         let no_cache = seed_contract_fixture("zccache-contract-no-cache");
@@ -417,9 +417,13 @@ timed_test!(
         );
         let metadata_log = fs::read_to_string(&metadata.log_path).expect("read metadata log");
         assert!(
-            metadata_log.contains("cache=0"),
-            "non-build cargo should propagate SOLDR_CACHE_ENABLED=0:\n{metadata_log}"
+            metadata_log.contains("cache=1"),
+            "unmodeled cargo subcommands should keep SOLDR_CACHE_ENABLED=1:\n{metadata_log}"
         );
-        assert_no_managed_zccache(&metadata_log);
+        assert!(
+            metadata_log.contains("zccache session-start")
+                && metadata_log.contains("zccache session-end"),
+            "unmodeled cargo subcommands should still run inside a managed zccache session:\n{metadata_log}"
+        );
     }
 );

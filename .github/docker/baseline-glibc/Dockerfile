@@ -16,7 +16,11 @@
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
+RUN apt-get \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \

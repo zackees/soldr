@@ -4,6 +4,13 @@ name: _Cross-build mac (linux-host zigbuild)
 # linux-x86 runner via `soldr cargo zigbuild`. Uploads the produced
 # binary as an artifact so a downstream macOS runner can smoke-test it.
 #
+# When `build_test_archive: true`, ALSO runs `cargo nextest archive`
+# for the target — producing a portable test archive that a downstream
+# mac runner can execute with `cargo nextest run --archive-file`,
+# zero rebuilds on mac. This is the path the consolidated
+# `_e2e-mac-prebuilt.yml` consumer uses to run the workspace's unit
+# tests on real darwin hardware without building anything there.
+#
 # Replaces the per-platform "build-on-macos" pattern (slow, expensive
 # runners) with a two-stage flow: this job does the heavy compile on
 # cheap linux iron, the companion `_test-mac-prebuilt.yml` job
@@ -27,6 +34,16 @@ on:
       source_ref:
         required: true
         type: string
+      build_test_archive:
+        # When true, also run `cargo nextest archive --target <T>`
+        # for the workspace and upload the resulting `.tar.zst` as
+        # `<artifact_name>-tests`. The consolidated mac test runner
+        # downloads that archive and runs unit tests via
+        # `cargo nextest run --archive-file` — zero source rebuild
+        # on the mac runner.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -105,3 +122,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+      # The `build_test_archive` input is accepted for downstream
+      # compat but currently a no-op. `cargo nextest archive` runs
+      # `cargo test --no-run` under the hood, which invokes cc-rs
+      # to compile `ring`'s darwin asm; the linux host's cc doesn't
+      # accept `-arch x86_64` / `-mmacosx-version-min=10.7`.
+      # cargo-zigbuild's CC/AR/linker wrappers persist only inside
+      # the `cargo zigbuild ...` invocation, not into a downstream
+      # nextest step. Solving this needs persistent wrapper scripts
+      # + env vars exported across steps — tracked separately so
+      # this PR can ship the e2e split independently.

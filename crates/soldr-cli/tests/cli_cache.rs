@@ -4,6 +4,7 @@ mod common;
 
 use common::*;
 use serde_json::Value;
+use soldr_cli::fetch::MANAGED_ZCCACHE_VERSION;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -78,7 +79,7 @@ fn status_json_reports_stable_machine_fields() {
     assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(json["cache_default_enabled"], true);
     assert_eq!(json["cache_enabled_for_invocation"], true);
-    assert_eq!(json["managed_zccache_version"], "1.12.8");
+    assert_eq!(json["managed_zccache_version"], MANAGED_ZCCACHE_VERSION);
     assert_eq!(json["root_dir"], cache_root.display().to_string());
     assert_eq!(
         json["cache_dir"],
@@ -235,7 +236,7 @@ fn cache_json_reports_managed_zccache_status() {
         serde_json::from_slice(&output.stdout).expect("cache --json did not return JSON");
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache");
-    assert_eq!(json["managed_zccache_version"], "1.12.8");
+    assert_eq!(json["managed_zccache_version"], MANAGED_ZCCACHE_VERSION);
     assert_eq!(json["zccache"]["session_log_present"], true);
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["session_stats_present"], true);
@@ -287,7 +288,7 @@ fn cache_report_json_emits_stable_schema_when_files_missing() {
         .expect("cache report --json must produce parseable JSON");
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache report");
-    assert_eq!(json["managed_zccache_version"], "1.12.8");
+    assert_eq!(json["managed_zccache_version"], MANAGED_ZCCACHE_VERSION);
     assert_eq!(json["session_stats_present"], false);
     assert_eq!(json["journal_present"], false);
     assert!(json["last_session"].is_null());

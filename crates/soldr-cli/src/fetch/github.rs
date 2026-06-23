@@ -7,6 +7,7 @@
 use crate::core::{Arch, Env, Os, SoldrError, TargetTriple};
 
 use super::VersionSpec;
+use std::time::Duration;
 
 pub(crate) struct RepoInfo {
     pub(crate) owner: String,
@@ -25,7 +26,10 @@ pub(super) struct AssetInfo {
 }
 
 pub(crate) fn http_client() -> Result<reqwest::Client, SoldrError> {
+    // All fetch modules inherit this shared client, so keep both timeouts.
     reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
         .user_agent(format!("soldr/{}", crate::core::version()))
         .build()
         .map_err(|e| SoldrError::Network(e.to_string()))

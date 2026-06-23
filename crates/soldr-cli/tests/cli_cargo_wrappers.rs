@@ -55,7 +55,7 @@ fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
 }
 
 #[test]
-fn cargo_front_door_does_not_start_cache_for_non_build_subcommands() {
+fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
     let cache_root = unique_temp_dir("cargo-non-build-no-cache");
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
@@ -77,15 +77,12 @@ fn cargo_front_door_does_not_start_cache_for_non_build_subcommands() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     assert!(
-        log.contains("cache=0"),
-        "non-build cargo commands should propagate cache disabled: {log}"
+        log.contains("cache=1"),
+        "cargo front door should keep cache enabled for unmodeled subcommands: {log}"
     );
     assert!(
-        !log.contains("zccache start")
-            && !log.contains("zccache session-start")
-            && !log.contains("zccache wrapper")
-            && !log.contains("zccache session-end"),
-        "managed zccache should be skipped for non-build cargo commands: {log}"
+        log.contains("zccache session-start") && log.contains("zccache session-end"),
+        "managed zccache session should wrap unmodeled subcommands: {log}"
     );
 }
 

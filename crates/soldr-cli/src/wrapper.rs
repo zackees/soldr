@@ -12,11 +12,19 @@ use crate::zccache_lifecycle::{
     ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
 };
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
+#[cfg(not(unix))]
+use std::time::Duration;
+#[cfg(not(unix))]
+use wait_timeout::ChildExt;
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
 /// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
 /// passes: `soldr <toolchain-binary> <rustc-args...>`
 const WRAPPER_PASSTHROUGH_TOOLS: &[&str] = &["rustc", "clippy-driver"];
+#[cfg(not(unix))]
+const ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS: u64 = 10 * 60;
+#[cfg(not(unix))]
+const KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS: u64 = 5;
 
 pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
     let stem = std::path::Path::new(arg)
@@ -372,7 +380,7 @@ fn run_wrapper_through_zccache_windows(
         Ok(buf)
     });
 
-    let status = child.wait()?;
+    let status = wait_for_zccache_wrapper_child(&mut child)?;
     let stderr_bytes = reader
         .join()
         .map_err(|_| SoldrError::Other("zccache stderr reader thread panicked".into()))?
@@ -409,6 +417,39 @@ fn run_wrapper_through_zccache_windows(
     suppress_windows_console_window(&mut retry);
     let retry_status = retry.status()?;
     Ok(retry_status.code().unwrap_or(1))
+}
+
+#[cfg(not(unix))]
+fn wait_for_zccache_wrapper_child(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    match child
+        .wait_timeout(Duration::from_secs(ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS))
+        .map_err(|err| SoldrError::Other(format!("wait on zccache wrapper failed: {err}")))?
+    {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result = child.wait_timeout(Duration::from_secs(
+                KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS,
+            ));
+            let mut message = format!(
+                "zccache wrapper timed out after {ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS} seconds"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
 }
 
 /// Run `zccache session-start --stats --log <path> --journal <path>` against
