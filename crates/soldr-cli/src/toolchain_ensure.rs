@@ -10,7 +10,9 @@
 use serde::Serialize;
 use std::time::Instant;
 
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{
+    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+};
 use crate::{
     apply_implicit_toolchain_homes, resolve_toolchain_binary,
     toolchain::{run_prepare_inner, PrepareSummary},
@@ -165,7 +167,7 @@ fn probe_version(tool: &str) -> Option<String> {
     command.arg("--version");
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output().ok()?;
+    let output = command_output_with_timeout(&mut command, &format!("{tool} --version")).ok()?;
     if !output.status.success() {
         return None;
     }

@@ -2,7 +2,9 @@
 //! from `main.rs` as part of issue #339.
 
 use crate::cache::print_json;
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{
+    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+};
 use crate::defender_probe::{self, DefenderProbeState, DefenderVerdict, SCANNED_THRESHOLD_MS};
 use crate::fetch::{ZccacheBinarySummary, ZccacheSource};
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
@@ -922,7 +924,7 @@ fn rustup_toolchain_is_installed(channel: &str) -> Result<bool, SoldrError> {
     command.args(["toolchain", "list"]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output()?;
+    let output = command_output_with_timeout(&mut command, "rustup toolchain list")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(SoldrError::Other(format!(
@@ -944,7 +946,7 @@ fn rustup_installed_components(channel: &str) -> Result<Vec<String>, SoldrError>
     command.args(["component", "list", "--installed", "--toolchain", channel]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output()?;
+    let output = command_output_with_timeout(&mut command, "rustup component list --installed")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(SoldrError::Other(format!(
@@ -960,7 +962,7 @@ fn rustup_installed_targets(channel: &str) -> Result<Vec<String>, SoldrError> {
     command.args(["target", "list", "--installed", "--toolchain", channel]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output()?;
+    let output = command_output_with_timeout(&mut command, "rustup target list --installed")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(SoldrError::Other(format!(

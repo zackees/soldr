@@ -1,7 +1,9 @@
 //! Toolchain / rustup / zccache binary resolution helpers. Extracted from
 //! `main.rs` as part of issue #339.
 
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{
+    command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
+};
 use crate::fetch::VersionSpec;
 use crate::{
     REAL_TOOLCHAIN_BINARY_ENV_PREFIX, TEST_CARGO_BIN_ENV_VAR, TEST_RUSTC_BIN_ENV_VAR,
@@ -22,7 +24,7 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
     command.args(["which", tool]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command.output();
+    let output = command_output_with_timeout(&mut command, &format!("rustup which {tool}"));
 
     match output {
         Ok(output) if output.status.success() => {
