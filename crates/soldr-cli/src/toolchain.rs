@@ -4,6 +4,12 @@
 
 use crate::core::{suppress_windows_console_window, SoldrError};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, rustup_binary};
+use std::time::Duration;
+use wait_timeout::ChildExt;
+
+const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
+const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
+const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Run a rustup-managed toolchain binary with pass-through args.
 pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
@@ -12,7 +18,7 @@ pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status = run_toolchain_command(&mut command, &format!("{tool} passthrough"))?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -32,7 +38,7 @@ pub(crate) fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError>
     command.args(&final_args);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status = run_toolchain_command(&mut command, "rustup passthrough")?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -250,7 +256,7 @@ fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i3
 
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status = run_toolchain_command(&mut command, &format!("cargo install {name}"))?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -266,7 +272,8 @@ fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
     ]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status =
+        run_toolchain_command(&mut command, &format!("rustup toolchain install {channel}"))?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -275,7 +282,10 @@ fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrErro
     command.args(["component", "add", "--toolchain", channel, component]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status = run_toolchain_command(
+        &mut command,
+        &format!("rustup component add {component} --toolchain {channel}"),
+    )?;
     Ok(status.code().unwrap_or(1))
 }
 
@@ -284,6 +294,121 @@ fn rustup_target_add(channel: &str, target: &str) -> Result<i32, SoldrError> {
     command.args(["target", "add", "--toolchain", channel, target]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let status = command.status()?;
+    let status = run_toolchain_command(
+        &mut command,
+        &format!("rustup target add {target} --toolchain {channel}"),
+    )?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn toolchain_command_timeout() -> Duration {
+    std::env::var(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS))
+}
+
+fn run_toolchain_command(
+    command: &mut std::process::Command,
+    context: &str,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("failed to invoke {context}: {err}")))?;
+    let timeout = toolchain_command_timeout();
+    match child
+        .wait_timeout(timeout)
+        .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
+    {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result = child.wait_timeout(Duration::from_secs(
+                KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS,
+            ));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "{context} timed out after {timeout_secs} seconds \
+                 (set {TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR} to override)"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    crate::timed_test!(toolchain_command_timeout_uses_positive_env_override_only, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        {
+            let _guard = EnvVarGuard::set(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR, "23");
+            assert_eq!(toolchain_command_timeout(), Duration::from_secs(23));
+        }
+        for value in ["", "0", "-1", "abc"] {
+            let _guard = EnvVarGuard::set(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR, value);
+            assert_eq!(
+                toolchain_command_timeout(),
+                Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS),
+                "invalid override {value:?} should use default"
+            );
+        }
+        let _guard = EnvVarGuard::remove(TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR);
+        assert_eq!(
+            toolchain_command_timeout(),
+            Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS)
+        );
+    });
 }
