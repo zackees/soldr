@@ -37,11 +37,13 @@
 //!   for that crate. An explicit `--version` wins.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::binaries::resolve_toolchain_binary;
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
 use crate::fetch::known_tools;
 use crate::fetch::MANAGED_ZCCACHE_INSTALL_ATTEMPTS;
+use wait_timeout::ChildExt;
 
 /// Tools `soldr build-from-source <tool>` accepts. Kept tiny on purpose
 /// (see module doc): generic crate source-build belongs in
@@ -55,6 +57,9 @@ pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef"];
 /// soldr. Re-declared instead of imported so the cargo-chef / crgx
 /// source-build path stays decoupled from zccache's constants.
 const RETRY_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(10);
+const CARGO_INSTALL_TIMEOUT_ENV_VAR: &str = "SOLDR_BUILD_FROM_SOURCE_INSTALL_TIMEOUT_SECS";
+const DEFAULT_CARGO_INSTALL_TIMEOUT_SECS: u64 = 45 * 60;
+const KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Directory under `SoldrPaths::bin` where source-built binaries land.
 /// The full layout is
@@ -220,12 +225,7 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             .env_remove("RUSTC_WRAPPER");
         suppress_windows_console_window(&mut command);
 
-        let status = command.status().map_err(|e| {
-            SoldrError::Other(format!(
-                "build-from-source: failed to invoke cargo install for {}@{} (target {}): {e}",
-                plan.tool, plan.version, plan.target,
-            ))
-        })?;
+        let status = run_cargo_install_attempt(&mut command, plan)?;
 
         if status.success() {
             break;
@@ -318,6 +318,59 @@ fn binary_ext_for_triple(triple: &str) -> &'static str {
     }
 }
 
+fn cargo_install_timeout() -> Duration {
+    std::env::var(CARGO_INSTALL_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS))
+}
+
+fn run_cargo_install_attempt(
+    command: &mut std::process::Command,
+    plan: &BuildPlan,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut child = command.spawn().map_err(|e| {
+        SoldrError::Other(format!(
+            "build-from-source: failed to invoke cargo install for {}@{} (target {}): {e}",
+            plan.tool, plan.version, plan.target,
+        ))
+    })?;
+    let timeout = cargo_install_timeout();
+    match child.wait_timeout(timeout).map_err(|e| {
+        SoldrError::Other(format!(
+            "build-from-source: failed to wait for cargo install {}@{} --target {}: {e}",
+            plan.tool, plan.version, plan.target,
+        ))
+    })? {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result =
+                child.wait_timeout(Duration::from_secs(KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "build-from-source: cargo install {}@{} --target {} timed out after {timeout_secs} seconds \
+                 (set {CARGO_INSTALL_TIMEOUT_ENV_VAR} to override)",
+                plan.tool, plan.version, plan.target,
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_CARGO_INSTALL_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
+}
+
 fn sha256_of_file(path: &Path) -> Result<String, SoldrError> {
     use sha2::{Digest, Sha256};
     let mut file = std::fs::File::open(path)
@@ -338,6 +391,10 @@ mod tests {
     use super::*;
     use crate::fetch::known_tools::{lookup_by_crate, CARGO_CHEF_PINNED_VERSION};
     use crate::fetch::MANAGED_CRGX_VERSION;
+    use std::ffi::{OsStr, OsString};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn synthetic_paths(tmp: &Path) -> SoldrPaths {
         let root = tmp.join("soldr-home");
@@ -346,6 +403,58 @@ mod tests {
         std::fs::create_dir_all(&paths.bin).unwrap();
         paths
     }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    crate::timed_test!(cargo_install_timeout_uses_positive_env_override_only, {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        {
+            let _guard = EnvVarGuard::set(CARGO_INSTALL_TIMEOUT_ENV_VAR, "11");
+            assert_eq!(cargo_install_timeout(), Duration::from_secs(11));
+        }
+
+        for value in ["0", "-1", "not-a-number"] {
+            let _guard = EnvVarGuard::set(CARGO_INSTALL_TIMEOUT_ENV_VAR, value);
+            assert_eq!(
+                cargo_install_timeout(),
+                Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS)
+            );
+        }
+
+        let _guard = EnvVarGuard::remove(CARGO_INSTALL_TIMEOUT_ENV_VAR);
+        assert_eq!(
+            cargo_install_timeout(),
+            Duration::from_secs(DEFAULT_CARGO_INSTALL_TIMEOUT_SECS)
+        );
+    });
 
     crate::timed_test!(unsupported_tool_errors_with_directive, {
         let tmp = tempfile::tempdir().expect("tempdir");
