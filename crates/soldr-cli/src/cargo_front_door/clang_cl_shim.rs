@@ -69,7 +69,7 @@ pub fn ensure_clang_cl_shim_for_real_clang(
 
 fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrError> {
     let shim_path = dir.join(if cfg!(windows) { "clang.cmd" } else { "clang" });
-    let shim_body = render_shim_body(&real_clang);
+    let shim_body = render_shim_body(real_clang);
 
     let existing = std::fs::read_to_string(&shim_path).ok();
     if existing.as_deref() != Some(&shim_body) {

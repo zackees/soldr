@@ -13,25 +13,16 @@ use crate::core::SoldrPaths;
 use crate::daemon::client;
 use crate::daemon::lifecycle::{pid_exe_stem_matches, pid_is_alive, read_pid_file};
 use crate::daemon::protocol::PROTOCOL_VERSION;
-use prost14::Message as _;
 use running_process::broker::backend_handle::{BackendHandle, DaemonProcess};
 use running_process::broker::backend_lifecycle::identity::IdentityError;
-use running_process::broker::backend_lifecycle::probe::BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL;
+use running_process::broker::backend_sdk::{BackendEndpointMux, LegacyClassification};
 use running_process::broker::host_identity;
-use running_process::broker::protocol::{
-    Endpoint, Frame, FrameKind, PayloadEncoding, ENVELOPE_VERSION, MAX_FRAME_BYTES,
-};
+use running_process::broker::protocol::Endpoint;
 use sha2::{Digest, Sha256};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::time::timeout;
 
-const BACKEND_HANDLE_PROBE_PREFIX_BYTES: usize = 5;
-const BACKEND_HANDLE_PROBE_NONCE_BYTES: usize = 32;
-const BACKEND_HANDLE_PROBE_READ_TIMEOUT: Duration = Duration::from_secs(5);
-const BACKEND_HANDLE_PROBE_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const LEGACY_FRAME_HEADER_BYTES: usize = 8;
 
 pub(crate) const SOLDR_DAEMON_SERVICE_NAME: &str = "soldr-daemon";
 pub(crate) const SOLDR_DAEMON_SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,8 +41,7 @@ pub(crate) const RUNNING_PROCESS_BACKEND_HANDLE_STATUS: RunningProcessBackendHan
         adoption_tracker_issue: "zackees/running-process#242",
         soldr_issue: "zackees/soldr#718",
         active_endpoint_probe: true,
-        remaining_gate:
-            "adopt backend_sdk BackendEndpointMux for the probe handler (soldr#726 follow-up)",
+        remaining_gate: "none; backend_sdk BackendEndpointMux adopted for the probe handler",
     };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,25 +112,26 @@ pub(crate) fn current_daemon_process(
     DaemonProcess::current_process(soldr_daemon_endpoint(paths), idle_timeout_secs)
 }
 
-pub(crate) fn is_backend_handle_probe_prefix(prefix: &[u8]) -> bool {
-    if prefix.len() != BACKEND_HANDLE_PROBE_PREFIX_BYTES || prefix[0] != ENVELOPE_VERSION {
-        return false;
-    }
-    let body_len = u32::from_le_bytes([prefix[1], prefix[2], prefix[3], prefix[4]]) as usize;
-    body_len <= MAX_FRAME_BYTES
+pub(crate) fn soldr_backend_endpoint_mux(
+    daemon: DaemonProcess,
+) -> BackendEndpointMux<fn(&[u8]) -> LegacyClassification> {
+    BackendEndpointMux::new(daemon, &[], classify_soldr_legacy_wire)
 }
 
-pub(crate) async fn handle_backend_handle_probe_async<S>(
-    stream: &mut S,
-    prefix: &[u8],
-    daemon: &DaemonProcess,
-) -> io::Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let request_frame = read_backend_handle_probe_request(stream, prefix).await?;
-    let nonce = validate_backend_handle_probe_request(&request_frame)?;
-    write_backend_handle_probe_response(stream, &request_frame, &nonce, daemon).await
+fn classify_soldr_legacy_wire(buf: &[u8]) -> LegacyClassification {
+    if buf.len() < LEGACY_FRAME_HEADER_BYTES {
+        return LegacyClassification::NeedMoreBytes;
+    }
+    let version = u32::from_le_bytes(
+        buf[4..LEGACY_FRAME_HEADER_BYTES]
+            .try_into()
+            .expect("slice is exactly 4 bytes"),
+    );
+    if version == PROTOCOL_VERSION {
+        LegacyClassification::Legacy
+    } else {
+        LegacyClassification::NotLegacy
+    }
 }
 
 fn daemon_process_from_pid_file(
@@ -186,118 +177,6 @@ fn soldr_daemon_endpoint(paths: &SoldrPaths) -> Endpoint {
     }
 }
 
-async fn read_backend_handle_probe_request<S>(stream: &mut S, prefix: &[u8]) -> io::Result<Frame>
-where
-    S: AsyncRead + Unpin,
-{
-    if !is_backend_handle_probe_prefix(prefix) {
-        return Err(invalid_data(
-            "not a running-process BackendHandle probe frame",
-        ));
-    }
-    let body_len = u32::from_le_bytes([prefix[1], prefix[2], prefix[3], prefix[4]]) as usize;
-    let mut body = vec![0_u8; body_len];
-    if body_len > 0 {
-        timeout(
-            BACKEND_HANDLE_PROBE_READ_TIMEOUT,
-            stream.read_exact(&mut body),
-        )
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "BackendHandle probe read timed out after 5s",
-            )
-        })??;
-    }
-    Frame::decode(body.as_slice()).map_err(|err| invalid_data(err.to_string()))
-}
-
-fn validate_backend_handle_probe_request(frame: &Frame) -> io::Result<[u8; 32]> {
-    if frame.envelope_version != ENVELOPE_VERSION as u32 {
-        return Err(invalid_data(
-            "BackendHandle probe envelope_version is not v1",
-        ));
-    }
-    if FrameKind::try_from(frame.kind) != Ok(FrameKind::Request) {
-        return Err(invalid_data("BackendHandle probe kind is not REQUEST"));
-    }
-    if frame.payload_protocol != BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL {
-        return Err(invalid_data(
-            "BackendHandle probe payload_protocol does not match",
-        ));
-    }
-    if PayloadEncoding::try_from(frame.payload_encoding) != Ok(PayloadEncoding::None) {
-        return Err(invalid_data("BackendHandle probe payload is compressed"));
-    }
-    frame
-        .payload
-        .as_slice()
-        .try_into()
-        .map_err(|_| invalid_data("BackendHandle probe nonce must be 32 bytes"))
-}
-
-async fn write_backend_handle_probe_response<S>(
-    stream: &mut S,
-    request_frame: &Frame,
-    nonce: &[u8; 32],
-    daemon: &DaemonProcess,
-) -> io::Result<()>
-where
-    S: AsyncWrite + Unpin,
-{
-    let mut payload = Vec::with_capacity(BACKEND_HANDLE_PROBE_NONCE_BYTES + 256);
-    payload.extend_from_slice(nonce);
-    daemon
-        .to_proto()
-        .encode(&mut payload)
-        .map_err(|err| invalid_data(err.to_string()))?;
-
-    let response = Frame {
-        envelope_version: ENVELOPE_VERSION as u32,
-        kind: FrameKind::Response as i32,
-        payload_protocol: BACKEND_HANDLE_PROBE_PAYLOAD_PROTOCOL,
-        payload,
-        request_id: request_frame.request_id,
-        payload_encoding: PayloadEncoding::None as i32,
-        deadline_unix_ms: 0,
-        traceparent: request_frame.traceparent.clone(),
-        tracestate: request_frame.tracestate.clone(),
-    };
-
-    let mut body = Vec::with_capacity(response.encoded_len());
-    response
-        .encode(&mut body)
-        .map_err(|err| invalid_data(err.to_string()))?;
-    if body.len() > MAX_FRAME_BYTES {
-        return Err(invalid_data(
-            "BackendHandle probe response exceeds frame cap",
-        ));
-    }
-
-    let mut wire = Vec::with_capacity(BACKEND_HANDLE_PROBE_PREFIX_BYTES + body.len());
-    wire.push(ENVELOPE_VERSION);
-    wire.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    wire.extend_from_slice(&body);
-    timeout(BACKEND_HANDLE_PROBE_WRITE_TIMEOUT, stream.write_all(&wire))
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "BackendHandle probe write timed out after 15s",
-            )
-        })??;
-    timeout(BACKEND_HANDLE_PROBE_WRITE_TIMEOUT, stream.flush())
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "BackendHandle probe flush timed out after 15s",
-            )
-        })??;
-    Ok(())
-}
-
 fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
     let bytes = std::fs::read(path)?;
     let digest = Sha256::digest(&bytes);
@@ -306,14 +185,11 @@ fn sha256_file(path: &Path) -> io::Result<[u8; 32]> {
     Ok(out)
 }
 
-fn invalid_data(message: impl Into<String>) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, message.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cache_lib::soldr_daemon_dir;
+    use running_process::broker::backend_sdk::MuxPoll;
     use tempfile::TempDir;
 
     fn write_pid_file(paths: &SoldrPaths, pid: u32, exe_path: &Path) {
@@ -340,8 +216,7 @@ mod tests {
         assert_eq!(status.adoption_tracker_issue, "zackees/running-process#242");
         assert_eq!(status.soldr_issue, "zackees/soldr#718");
         assert!(status.active_endpoint_probe);
-        // Remaining gate now describes the deferred BackendEndpointMux adoption.
-        assert!(status.remaining_gate.contains("backend_sdk"));
+        assert!(status.remaining_gate.contains("BackendEndpointMux adopted"));
     });
 
     crate::timed_test!(running_process_disable_requires_exact_one, {
@@ -398,15 +273,26 @@ mod tests {
         }
     );
 
-    crate::timed_test!(backend_handle_probe_prefix_classifies_broker_v1_only, {
-        let mut running_process_prefix = [0_u8; BACKEND_HANDLE_PROBE_PREFIX_BYTES];
-        running_process_prefix[0] = ENVELOPE_VERSION;
-        running_process_prefix[1..].copy_from_slice(&16_u32.to_le_bytes());
-        assert!(is_backend_handle_probe_prefix(&running_process_prefix));
+    crate::timed_test!(backend_endpoint_mux_classifies_soldr_legacy_header, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let current_exe = std::env::current_exe().expect("current exe");
+        let daemon =
+            daemon_process_from_pid_file(&paths, std::process::id(), current_exe).expect("daemon");
+        let mux = soldr_backend_endpoint_mux(daemon);
+        let mut soldr_header = [0_u8; LEGACY_FRAME_HEADER_BYTES];
+        soldr_header[..4].copy_from_slice(&1_u32.to_le_bytes());
+        soldr_header[4..].copy_from_slice(&PROTOCOL_VERSION.to_le_bytes());
 
-        let mut soldr_prefix = [0_u8; BACKEND_HANDLE_PROBE_PREFIX_BYTES];
-        soldr_prefix[..4].copy_from_slice(&1_u32.to_le_bytes());
-        soldr_prefix[4] = PROTOCOL_VERSION as u8;
-        assert!(!is_backend_handle_probe_prefix(&soldr_prefix));
+        assert!(matches!(mux.poll(&soldr_header), Ok(MuxPoll::Legacy)));
+    });
+
+    crate::timed_test!(soldr_legacy_detector_waits_for_full_header, {
+        let mut partial = [0_u8; LEGACY_FRAME_HEADER_BYTES - 1];
+        partial[..4].copy_from_slice(&1_u32.to_le_bytes());
+        assert_eq!(
+            classify_soldr_legacy_wire(&partial),
+            LegacyClassification::NeedMoreBytes,
+        );
     });
 }
