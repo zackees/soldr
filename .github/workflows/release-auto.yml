@@ -337,7 +337,8 @@ jobs:
           # that motivated the soldr-side retry refactor (#432) applies
           # here too, and on the release runner we can't fall back to
           # cargo install.
-          curl --fail --location --retry 6 --retry-delay 5 --retry-all-errors \
+          curl --fail --location --connect-timeout 10 --max-time 120 \
+            --retry 6 --retry-delay 5 --retry-all-errors \
             --output "/tmp/${asset}" "${url}"
 
           case "$ext" in

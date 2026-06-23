@@ -173,6 +173,7 @@ jobs:
           echo "manifest: zccache $zccache_version linux-x64-musl"
           echo "         $asset_url"
           curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
           tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
@@ -358,6 +359,7 @@ jobs:
           echo "manifest: $tool host-asset $asset_filename"
           echo "         $asset_url"
           curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
           # Tarball layout differs across tools (flat vs per-triple
@@ -493,6 +495,7 @@ jobs:
           echo "manifest: zccache $zccache_version ${{ matrix.target }}"
           echo "         $asset_url"
           curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
           case "$asset_filename" in
