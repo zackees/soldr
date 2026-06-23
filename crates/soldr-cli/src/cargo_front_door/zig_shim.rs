@@ -60,17 +60,17 @@ fn rust_target_to_zig_target(triple: &str) -> Result<&'static str, SoldrError> {
 
 fn render_cc_wrapper(subcommand: &str, zig_target: &str) -> String {
     if cfg!(windows) {
-        format!("@echo off\r\ncargo-zigbuild {subcommand} -target {zig_target} %*\r\n",)
+        format!("@echo off\r\ncargo-zigbuild zig {subcommand} -- -target {zig_target} %*\r\n",)
     } else {
-        format!("#!/bin/sh\nexec cargo-zigbuild {subcommand} -target {zig_target} \"$@\"\n",)
+        format!("#!/bin/sh\nexec cargo-zigbuild zig {subcommand} -- -target {zig_target} \"$@\"\n",)
     }
 }
 
 fn render_tool_wrapper(subcommand: &str) -> String {
     if cfg!(windows) {
-        format!("@echo off\r\ncargo-zigbuild {subcommand} %*\r\n")
+        format!("@echo off\r\ncargo-zigbuild zig {subcommand} -- %*\r\n")
     } else {
-        format!("#!/bin/sh\nexec cargo-zigbuild {subcommand} \"$@\"\n")
+        format!("#!/bin/sh\nexec cargo-zigbuild zig {subcommand} -- \"$@\"\n")
     }
 }
 
@@ -124,7 +124,7 @@ mod tests {
         }
         let body = render_cc_wrapper("cc", "aarch64-linux-musl");
         assert!(body.starts_with("#!/bin/sh\n"));
-        assert!(body.contains("cargo-zigbuild cc -target aarch64-linux-musl"));
+        assert!(body.contains("cargo-zigbuild zig cc -- -target aarch64-linux-musl"));
         assert!(body.contains("\"$@\""));
     }
 
@@ -134,7 +134,7 @@ mod tests {
             return;
         }
         let body = render_tool_wrapper("ranlib");
-        assert!(body.contains("cargo-zigbuild ranlib"));
+        assert!(body.contains("cargo-zigbuild zig ranlib --"));
         assert!(body.contains("\"$@\""));
     }
 }
