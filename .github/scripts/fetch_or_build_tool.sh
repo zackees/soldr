@@ -23,6 +23,10 @@
 
 set -euo pipefail
 
+CURL_CONNECT_TIMEOUT_SECS="${FETCH_OR_BUILD_TOOL_CURL_CONNECT_TIMEOUT_SECS:-10}"
+CURL_MAX_TIME_SECS="${FETCH_OR_BUILD_TOOL_CURL_MAX_TIME_SECS:-120}"
+GIT_CLONE_TIMEOUT_SECS="${FETCH_OR_BUILD_TOOL_GIT_CLONE_TIMEOUT_SECS:-300}"
+
 tool="${1:?tool required}"
 target="${2:?target required}"
 build_tool="${3:?build-tool required (zigbuild|xwin|empty for native)}"
@@ -90,6 +94,8 @@ if [ -n "$asset_url" ]; then
   # Fast path: download + extract the prebuilt and we're done.
   asset_filename=$(basename "$asset_url")
   if ! curl --fail --location \
+      --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" \
+      --max-time "$CURL_MAX_TIME_SECS" \
       --retry 6 --retry-delay 5 --retry-all-errors \
       --output "/tmp/${asset_filename}" "$asset_url"; then
     echo "manifest URL fetch failed; falling back to source build" >&2
@@ -138,7 +144,8 @@ fi
 echo "manifest miss for $tool $version $target; source-building"
 work_dir="${RUNNER_TEMP:-/tmp}/${tool}-build"
 rm -rf "$work_dir"
-git clone --depth 1 --branch "v${version}" "$upstream_repo" "$work_dir"
+timeout "$GIT_CLONE_TIMEOUT_SECS" \
+  git clone --depth 1 --branch "v${version}" "$upstream_repo" "$work_dir"
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "${env_var}=$(git -C "$work_dir" rev-parse HEAD)" >> "$GITHUB_ENV"
 fi

@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO="${SOLDR_REPO:-zackees/soldr}"
 INSTALL_DIR="${SOLDR_INSTALL_DIR:-$HOME/.local/bin}"
+CONNECT_TIMEOUT_SECS="${SOLDR_INSTALL_CONNECT_TIMEOUT_SECS:-10}"
+DOWNLOAD_TIMEOUT_SECS="${SOLDR_INSTALL_DOWNLOAD_TIMEOUT_SECS:-120}"
 VERSION=""
 
 usage() {
@@ -15,6 +17,10 @@ Usage:
 Environment:
   SOLDR_REPO         Override the GitHub repository (default: zackees/soldr)
   SOLDR_INSTALL_DIR  Override the installation directory (default: ~/.local/bin)
+  SOLDR_INSTALL_CONNECT_TIMEOUT_SECS
+                     curl connection timeout in seconds (default: 10)
+  SOLDR_INSTALL_DOWNLOAD_TIMEOUT_SECS
+                     curl total request timeout in seconds (default: 120)
 EOF
 }
 
@@ -99,6 +105,8 @@ fetch_release_json() {
   fi
 
   curl -fsSL \
+    --connect-timeout "$CONNECT_TIMEOUT_SECS" \
+    --max-time "$DOWNLOAD_TIMEOUT_SECS" \
     -H "Accept: application/vnd.github+json" \
     -H "X-GitHub-Api-Version: 2022-11-28" \
     "$url"
@@ -179,7 +187,11 @@ ASSET_PATH="${TMP_DIR}/${ASSET_NAME}"
 EXTRACT_DIR="${TMP_DIR}/extract"
 mkdir -p "$EXTRACT_DIR" "$INSTALL_DIR"
 
-curl -fsSL "$DOWNLOAD_URL" -o "$ASSET_PATH"
+curl -fsSL \
+  --connect-timeout "$CONNECT_TIMEOUT_SECS" \
+  --max-time "$DOWNLOAD_TIMEOUT_SECS" \
+  "$DOWNLOAD_URL" \
+  -o "$ASSET_PATH"
 
 if [[ "$ARCHIVE_EXT" == "zip" ]]; then
   unzip -q "$ASSET_PATH" -d "$EXTRACT_DIR"
