@@ -11,7 +11,7 @@ use crate::cache_lib::target_registry::TargetRegistry;
 use crate::cache_lib::{data_db_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
-    current_daemon_process, handle_backend_handle_probe_async, is_backend_handle_probe_prefix,
+    current_daemon_process, soldr_backend_endpoint_mux, LEGACY_FRAME_HEADER_BYTES,
 };
 use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
@@ -315,23 +315,41 @@ async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Resu
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
-    use tokio::io::AsyncReadExt;
+    use running_process::broker::backend_sdk::MuxPoll;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
 
-    let mut prefix = [0_u8; 5];
+    let mux = soldr_backend_endpoint_mux(state.daemon_identity.clone());
+    let mut prefix = [0_u8; LEGACY_FRAME_HEADER_BYTES];
     if !matches!(
         timeout(HANDSHAKE_READ_TIMEOUT, stream.read_exact(&mut prefix)).await,
         Ok(Ok(_))
     ) {
         return Ok(());
     }
-    if is_backend_handle_probe_prefix(&prefix) {
-        let _ =
-            handle_backend_handle_probe_async(&mut stream, &prefix, &state.daemon_identity).await;
-        return Ok(());
+    let mut buffered = prefix.to_vec();
+    loop {
+        match mux.poll(&buffered) {
+            Ok(MuxPoll::Legacy) => break,
+            Ok(MuxPoll::NeedMoreBytes) => {
+                let mut chunk = [0_u8; 4096];
+                let read = match timeout(HANDSHAKE_READ_TIMEOUT, stream.read(&mut chunk)).await {
+                    Ok(Ok(0)) | Err(_) => return Ok(()),
+                    Ok(Ok(n)) => n,
+                    Ok(Err(_)) => return Ok(()),
+                };
+                buffered.extend_from_slice(&chunk[..read]);
+            }
+            Ok(MuxPoll::ProbeAnswered { reply, .. }) => {
+                let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.write_all(&reply)).await;
+                let _ = timeout(HANDSHAKE_READ_TIMEOUT, stream.flush()).await;
+                return Ok(());
+            }
+            Ok(MuxPoll::Payload { .. }) | Err(_) => return Ok(()),
+        }
     }
 
-    let req: Request = match read_frame_async_with_prefix(&mut stream, &prefix).await {
+    let req: Request = match read_frame_async_with_prefix(&mut stream, &buffered).await {
         Ok(r) => r,
         Err(_) => return Ok(()),
     };

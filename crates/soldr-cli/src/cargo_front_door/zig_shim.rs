@@ -93,8 +93,7 @@ fn write_wrapper(path: &Path, body: &str) -> Result<(), SoldrError> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn maps_supported_rust_targets_to_zig_targets() {
+    crate::timed_test!(maps_supported_rust_targets_to_zig_targets, {
         assert_eq!(
             rust_target_to_zig_target("x86_64-unknown-linux-gnu").unwrap(),
             "x86_64-linux-gnu"
@@ -107,18 +106,16 @@ mod tests {
             rust_target_to_zig_target("x86_64-apple-darwin").unwrap(),
             "x86_64-macos-none"
         );
-    }
+    });
 
-    #[test]
-    fn rejects_unknown_targets() {
+    crate::timed_test!(rejects_unknown_targets, {
         assert!(matches!(
             rust_target_to_zig_target("wasm32-unknown-unknown"),
             Err(SoldrError::UnsupportedPlatform(_))
         ));
-    }
+    });
 
-    #[test]
-    fn cc_wrapper_routes_through_zig_with_target() {
+    crate::timed_test!(cc_wrapper_routes_through_zig_with_target, {
         if cfg!(windows) {
             return;
         }
@@ -126,15 +123,14 @@ mod tests {
         assert!(body.starts_with("#!/bin/sh\n"));
         assert!(body.contains("cargo-zigbuild zig cc -- -target aarch64-linux-musl"));
         assert!(body.contains("\"$@\""));
-    }
+    });
 
-    #[test]
-    fn tool_wrapper_routes_through_cargo_zigbuild() {
+    crate::timed_test!(tool_wrapper_routes_through_cargo_zigbuild, {
         if cfg!(windows) {
             return;
         }
         let body = render_tool_wrapper("ranlib");
         assert!(body.contains("cargo-zigbuild zig ranlib --"));
         assert!(body.contains("\"$@\""));
-    }
+    });
 }
