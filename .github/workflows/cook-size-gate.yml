@@ -88,6 +88,8 @@ jobs:
 
       - name: Run soldr cook against zccache (release profile)
         working-directory: zccache-fixture
+        env:
+          SOLDR_GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # cargo-chef happens in-process via soldr's bundled chef; using
