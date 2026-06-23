@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --no-project --script \"$(git rev-parse --show-toplevel)/.claude/hooks/tool_guard.py\"",
+            "command": "top=$(git rev-parse --show-toplevel 2>/dev/null); while [ -n \"$top\" ] && [ ! -f \"$top/.claude/hooks/tool_guard.py\" ]; do parent=$(dirname \"$top\"); [ \"$parent\" = \"$top\" ] && break; top=$parent; done; if [ -f \"$top/.claude/hooks/tool_guard.py\" ]; then uv run --no-project --script \"$top/.claude/hooks/tool_guard.py\"; fi",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --no-project --script \"$(git rev-parse --show-toplevel)/.claude/hooks/tool_guard.py\"",
+            "command": "top=$(git rev-parse --show-toplevel 2>/dev/null); while [ -n \"$top\" ] && [ ! -f \"$top/.claude/hooks/tool_guard.py\" ]; do parent=$(dirname \"$top\"); [ \"$parent\" = \"$top\" ] && break; top=$parent; done; if [ -f \"$top/.claude/hooks/tool_guard.py\" ]; then uv run --no-project --script \"$top/.claude/hooks/tool_guard.py\"; fi",
             "timeout": 5
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --no-project --script \"$(git rev-parse --show-toplevel)/.claude/hooks/tool_guard.py\"",
+            "command": "top=$(git rev-parse --show-toplevel 2>/dev/null); while [ -n \"$top\" ] && [ ! -f \"$top/.claude/hooks/tool_guard.py\" ]; do parent=$(dirname \"$top\"); [ \"$parent\" = \"$top\" ] && break; top=$parent; done; if [ -f \"$top/.claude/hooks/tool_guard.py\" ]; then uv run --no-project --script \"$top/.claude/hooks/tool_guard.py\"; fi",
             "timeout": 5
           }
         ]
