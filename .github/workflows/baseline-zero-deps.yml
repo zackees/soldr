@@ -104,11 +104,12 @@ jobs:
             find "$zig_extract_tmp" -maxdepth 3 -type f -print >&2
             exit 1
           fi
-          cp "$zig_src" "$dest_dir/zig"
-          chmod +x "$dest_dir/zig"
+          zig_dir=$(dirname "$zig_src")
+          chmod +x "$zig_src"
           echo "$dest_dir" >> "$GITHUB_PATH"
+          echo "$zig_dir" >> "$GITHUB_PATH"
           "$dest_dir/cargo-zigbuild" --version
-          "$dest_dir/zig" version
+          "$zig_src" version
 
       - name: Build soldr-cli via soldr cargo zigbuild
         shell: bash
