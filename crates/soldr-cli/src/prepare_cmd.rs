@@ -23,10 +23,12 @@
 //! file so a GitHub-Actions runner can pick them up in $GITHUB_ENV.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::fetch::github::http_client;
 use crate::fetch::{ensure_apple_sdk, ensure_llvm_toolchain, ensure_zig};
+use wait_timeout::ChildExt;
 
 /// URL of the vendored cargo-xwin MSVC CRT + Windows SDK cache on
 /// soldr's `manifest` branch. PR #890 packaged 1.08 GiB of MSVC CRT +
@@ -45,6 +47,10 @@ pub const XWIN_CACHE_URL: &str =
 /// found" in run 27931497526. See #901.
 pub const XWIN_CACHE_SHA256: &str =
     "957a51e5738d1352c18bd14caa664a88099e2f4e78afaf94f911f0cb925745fa";
+
+const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
+const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
+const KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Append `KEY=VALUE` to the file at `path` (creating it if needed).
 /// No-op when `path` is `None`. Used so callers running under GitHub
@@ -776,9 +782,7 @@ fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
         crate::fetch::managed_rustup_home(&paths),
     );
     crate::core::suppress_windows_console_window(&mut command);
-    let status = command
-        .status()
-        .map_err(|e| SoldrError::Other(format!("rustup target add: {e}")))?;
+    let status = run_rustup_target_add(&mut command, triple)?;
     if !status.success() {
         return Err(SoldrError::Other(format!(
             "rustup target add {triple} exited with {}",
@@ -786,6 +790,55 @@ fn rustup_add_target(triple: &str) -> Result<(), SoldrError> {
         )));
     }
     Ok(())
+}
+
+fn rustup_target_add_timeout() -> Duration {
+    std::env::var(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|seconds| *seconds > 0)
+        .map(Duration::from_secs)
+        .unwrap_or_else(|| Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS))
+}
+
+fn run_rustup_target_add(
+    command: &mut std::process::Command,
+    triple: &str,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let mut child = command
+        .spawn()
+        .map_err(|e| SoldrError::Other(format!("rustup target add {triple}: {e}")))?;
+    let timeout = rustup_target_add_timeout();
+    match child.wait_timeout(timeout).map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to wait for rustup target add {triple}: {e}"
+        ))
+    })? {
+        Some(status) => Ok(status),
+        None => {
+            let kill_result = child.kill();
+            let reap_result = child.wait_timeout(Duration::from_secs(
+                KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS,
+            ));
+            let timeout_secs = timeout.as_secs();
+            let mut message = format!(
+                "rustup target add {triple} timed out after {timeout_secs} seconds \
+                 (set {RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR} to override)"
+            );
+            match kill_result {
+                Ok(()) => message.push_str("; killed child process"),
+                Err(err) => message.push_str(&format!("; kill failed: {err}")),
+            }
+            match reap_result {
+                Ok(Some(_)) => {}
+                Ok(None) => message.push_str(&format!(
+                    "; process did not exit within {KILLED_RUSTUP_TARGET_ADD_REAP_TIMEOUT_SECS} seconds after kill"
+                )),
+                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+            }
+            Err(SoldrError::Other(message))
+        }
+    }
 }
 
 fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
@@ -1000,6 +1053,27 @@ mod tests {
         assert!(
             body.contains("args=target add aarch64-apple-darwin --toolchain 1.94.1"),
             "fake rustup should receive pinned toolchain args, got: {body}"
+        );
+    });
+
+    crate::timed_test!(rustup_target_add_timeout_uses_positive_env_override_only, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        {
+            let _guard = EnvVarGuard::set(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR, "19");
+            assert_eq!(rustup_target_add_timeout(), Duration::from_secs(19));
+        }
+        for value in ["", "0", "-1", "abc"] {
+            let _guard = EnvVarGuard::set(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR, value);
+            assert_eq!(
+                rustup_target_add_timeout(),
+                Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS),
+                "invalid override {value:?} should use default"
+            );
+        }
+        let _guard = EnvVarGuard::remove(RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR);
+        assert_eq!(
+            rustup_target_add_timeout(),
+            Duration::from_secs(DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS)
         );
     });
 
