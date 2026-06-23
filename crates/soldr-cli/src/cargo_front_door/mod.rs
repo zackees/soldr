@@ -43,6 +43,7 @@ mod inputs;
 mod profile_debug;
 mod subcommand;
 mod target;
+mod zig_shim;
 
 use cache_plan::CargoCachePlan;
 
@@ -1119,13 +1120,14 @@ async fn append_subcommand_transitive_bin_dirs(
 ) -> Result<(), SoldrError> {
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
-        extra_bin_dirs.push(zig_dir);
+        extra_bin_dirs.push(zig_dir.clone());
         // `soldr cargo zigbuild --target *-apple-darwin` needs the
         // Apple SDK on disk + `SDKROOT` exported so cargo-zigbuild's
         // mach-O linker can resolve `-framework IOKit` / etc.
         // Without this, every Rust dep with an Apple-framework
         // dependency (ring, sysinfo, dirs, …) fails to link.
         if let Some(triple) = extract_target_arg(args) {
+            append_zigbuild_env_overrides(paths, triple, extra_env)?;
             if triple.ends_with("-apple-darwin") {
                 let sdk_dir = crate::fetch::ensure_apple_sdk(paths).await?;
                 // Don't clobber a caller-set SDKROOT — escape hatch
@@ -1133,6 +1135,12 @@ async fn append_subcommand_transitive_bin_dirs(
                 if std::env::var_os("SDKROOT").is_none() {
                     extra_env.push((
                         "SDKROOT".to_string(),
+                        sdk_dir.to_string_lossy().into_owned(),
+                    ));
+                }
+                if std::env::var_os("PKG_CONFIG_SYSROOT_DIR").is_none() {
+                    extra_env.push((
+                        "PKG_CONFIG_SYSROOT_DIR".to_string(),
                         sdk_dir.to_string_lossy().into_owned(),
                     ));
                 }
@@ -1210,6 +1218,35 @@ async fn append_subcommand_transitive_bin_dirs(
                     Err(err) => return Err(err),
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+fn append_zigbuild_env_overrides(
+    paths: &SoldrPaths,
+    triple: &str,
+    extra_env: &mut Vec<(String, String)>,
+) -> Result<(), SoldrError> {
+    let wrappers = match zig_shim::ensure_zig_wrappers(paths, triple) {
+        Ok(wrappers) => wrappers,
+        Err(SoldrError::UnsupportedPlatform(_)) => return Ok(()),
+        Err(err) => return Err(err),
+    };
+    let suffix = triple.replace('-', "_");
+    let upper = suffix.to_uppercase();
+    for (key, val) in [
+        (format!("CC_{suffix}"), wrappers.cc.as_path()),
+        (format!("CXX_{suffix}"), wrappers.cxx.as_path()),
+        (format!("AR_{suffix}"), wrappers.ar.as_path()),
+        (format!("RANLIB_{suffix}"), wrappers.ranlib.as_path()),
+        (
+            format!("CARGO_TARGET_{upper}_LINKER"),
+            wrappers.cc.as_path(),
+        ),
+    ] {
+        if std::env::var_os(&key).is_none() {
+            extra_env.push((key, val.to_string_lossy().into_owned()));
         }
     }
     Ok(())
