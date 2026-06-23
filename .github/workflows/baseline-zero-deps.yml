@@ -62,7 +62,7 @@ jobs:
           cache: true
           cache-key-suffix: baseline-zero-deps-${{ matrix.target }}-v1
 
-      - name: Pre-fetch cargo-zigbuild from manifest -> PATH
+      - name: Pre-fetch zigbuild toolchain -> PATH
         shell: bash
         run: |
           set -euo pipefail
@@ -89,8 +89,26 @@ jobs:
           fi
           cp "$binary_src" "$dest_dir/cargo-zigbuild"
           chmod +x "$dest_dir/cargo-zigbuild"
+          zig_version="0.13.0"
+          zig_asset="zig-linux-x86_64-${zig_version}.tar.xz"
+          curl --fail --location \
+              --connect-timeout 10 --max-time 120 \
+              --retry 6 --retry-delay 5 --retry-all-errors \
+              --output "/tmp/${zig_asset}" \
+              "https://ziglang.org/download/${zig_version}/${zig_asset}"
+          zig_extract_tmp=$(mktemp -d)
+          tar -xaf "/tmp/${zig_asset}" -C "$zig_extract_tmp"
+          zig_src=$(find "$zig_extract_tmp" -type f -name zig -print -quit)
+          if [ -z "$zig_src" ]; then
+            echo "zig not found in $zig_asset" >&2
+            find "$zig_extract_tmp" -maxdepth 3 -type f -print >&2
+            exit 1
+          fi
+          cp "$zig_src" "$dest_dir/zig"
+          chmod +x "$dest_dir/zig"
           echo "$dest_dir" >> "$GITHUB_PATH"
           "$dest_dir/cargo-zigbuild" --version
+          "$dest_dir/zig" version
 
       - name: Build soldr-cli via soldr cargo zigbuild
         shell: bash
