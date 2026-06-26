@@ -140,7 +140,7 @@ When pulling in a new managed zccache release, **four files must be updated in l
 1. `crates/soldr-cli/src/fetch/mod.rs` — bump `MANAGED_ZCCACHE_VERSION`.
 2. `contracts/zccache-runtime.v1.json` — bump `zccache.managed_version` to the same value.
 3. `crates/soldr-cli/src/zccache.rs` — bump the two cosmetic test-fixture paths that embed the version (won't break the contract test, but drifts if not updated).
-4. `crates/soldr-cli/Cargo.toml` — bump the optional `zccache = { git = "...", rev = "<sha>" }` dep (the `embedded` feature backing — issue #977). The rev should point at the commit SHA of the matching upstream tag so the embedded library and the managed binary stay on the same release. Look up the SHA with: `gh api repos/zackees/zccache/git/refs/tags/<VERSION> --jq '.object.sha'`.
+4. `crates/soldr-cli/Cargo.toml` — bump the mandatory `zccache = { git = "...", rev = "<sha>" }` dep (the embedded service backing — issue #977 / #980 L1). The rev should point at the commit SHA of the matching upstream tag so the embedded library and the managed binary stay on the same release. Look up the SHA with: `gh api repos/zackees/zccache/git/refs/tags/<VERSION> --jq '.object.sha'`. NOTE (#980 L1 second pass): the dep is no longer optional and the `embedded` Cargo feature has been deleted — embedded is the only compile backend.
 
 If you bump only #1, the contract test now panics with a directive message naming both files. Same procedure applies for `MANAGED_CRGX_VERSION` and `CARGO_CHEF_PINNED_VERSION` — see the matching `crgx.managed_version` / `cargo_chef.managed_version` entries in the contract.
 

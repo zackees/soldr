@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7"]
+build-backend = "maturin"
+
+[project]
+name = "zccache-fingerprint"
+dynamic = ["version"]
+description = "Fast file fingerprinting backed by blake3"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+
+[tool.maturin]
+features = ["python", "pyo3/abi3-py310"]
+module-name = "zccache.fingerprint._native"
+python-source = "python"
+manifest-path = "Cargo.toml"

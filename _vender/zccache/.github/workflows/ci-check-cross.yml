@@ -1,0 +1,69 @@
+name: CI Check Cross
+
+# Rust-only cross-compile check, used by the musl matrix entries in
+# ci-linux.yml. Simpler than ci-check.yml because:
+#   - No `cargo test` phase: musl tests would need host-arch + glibc
+#     runtime accommodations beyond the matrix coverage goal.
+#   - No isolated SOLDR_CACHE_DIR: there's no self-test phase to
+#     daemon-isolate against.
+#
+# The point of the musl lanes is to prove the workspace COMPILES
+# cleanly against the musl target. Tests + integration coverage live
+# in the native-glibc Linux lanes.
+#
+# We deliberately DO NOT use setup-soldr@v0.9.62's `cross-targets:`
+# input here: as of 2026-06-20 it installs a `cargo-zigbuild` shim at
+# /home/runner/work/_temp/setup-soldr-soldr/bin/cargo-zigbuild-0.23.0/
+# whose binary file fails to execute with "Syntax error: ) unexpected"
+# (wrapper-script issue upstream). Workaround: apt-install musl-tools
+# for the `musl-gcc` linker, then `rustup target add` + bare
+# `cargo build --target <triple>`. Well-trodden host-arch musl pattern,
+# doesn't need zig at all.
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      label:
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: Check (${{ inputs.label }})
+    runs-on: ${{ inputs.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: zackees/setup-soldr@v0.9.62
+        with:
+          zccache-seed-strict: true
+          toolchain: 1.94.1
+          cache: true
+          cache-key-suffix: check-${{ inputs.label }}
+          linker: fast
+          prebuild-deps: soldr-cook
+          prebuild-deps-flags: ""
+          verify-compile-cache: warn
+          solo-toolchain-cache: true
+      - name: Install musl-tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Add rust target
+        run: rustup target add ${{ inputs.target }}
+      - name: Check
+        shell: bash
+        run: |
+          start=$SECONDS
+          soldr cargo check --workspace --target ${{ inputs.target }}
+          status=$?
+          dur=$((SECONDS - start))
+          echo "- **${{ inputs.label }} / Check**: ${dur}s" >> "$GITHUB_STEP_SUMMARY"
+          exit $status

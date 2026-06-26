@@ -1,0 +1,589 @@
+name: "zccache"
+author: "Zachary Vorhies"
+description: >
+  Unified Rust compilation + dependency caching for GitHub Actions.
+  Replaces both mozilla-actions/sccache-action and Swatinem/rust-cache
+  with a single, faster action. ~1ms per warm cache hit vs ~170ms for sccache.
+
+inputs:
+  cache-cargo-registry:
+    description: >
+      Cache cargo registry index, downloaded crate files, and git dependencies.
+      Replaces Swatinem/rust-cache registry caching.
+    required: false
+    default: "true"
+  cache-compilation:
+    description: >
+      Cache individual compilation units (.o/.rlib) via the zccache daemon.
+      Replaces sccache.
+    required: false
+    default: "true"
+  cache-target:
+    description: >
+      Cache a target/ snapshot (excluding incremental/) and run zccache warm.
+      Allows cargo to skip invoking rustc entirely on warm builds. Disabled by
+      default because Cargo target directories can grow to multi-GB snapshots.
+    required: false
+    default: "false"
+  target-snapshot-max-size:
+    description: >
+      Maximum target snapshot size after pruning. Supports B, KiB, MiB, and GiB
+      suffixes. Set to "0" or "unlimited" to disable the size guard.
+    required: false
+    default: "2GiB"
+  target-snapshot-mode:
+    description: >
+      Target snapshot mode when cache-target is true. "hot" saves Cargo
+      metadata plus files read or modified during the job using atime/mtime
+      checks. "full" saves the pruned target tree.
+    required: false
+    default: "hot"
+  target-snapshot-too-large:
+    description: >
+      Behavior when the target snapshot exceeds target-snapshot-max-size.
+      Use "skip" to skip saving or "fail" to fail cleanup.
+    required: false
+    default: "skip"
+  target-prune-incremental:
+    description: >
+      Remove target/**/incremental directories before creating a target snapshot.
+    required: false
+    default: "true"
+  target-prune-build-script-out:
+    description: >
+      Remove target/**/build/*/out directories before creating a target snapshot.
+      This can reclaim native build trees, but may force build scripts to rerun.
+    required: false
+    default: "false"
+  compilation-restore-fallback:
+    description: >
+      Whether restore-key fallback is allowed for the zccache compilation cache.
+      Keep "true" for faster incremental CI across commits. Set to "false" for
+      exact-key-only restores.
+    required: false
+    default: "true"
+  target-restore-fallback:
+    description: >
+      Whether restore-key fallback is allowed for cargo target snapshots.
+      Default "false" because fallback snapshots can be stale for changed
+      source trees, especially on pull_request merge refs.
+    required: false
+    default: "false"
+  target-dir:
+    description: >
+      Path to the cargo target directory.
+      Default: ./target
+    required: false
+    default: "target"
+  shared-key:
+    description: >
+      Additional key segment for cache isolation in matrix builds.
+      Typically the Rust target triple (e.g., x86_64-unknown-linux-gnu).
+    required: false
+    default: ""
+  zccache-version:
+    description: >
+      Version of zccache to install.
+      Use "latest" for the newest release, a specific version like "1.2.5",
+      or "source" to build the checked-out repository version.
+    required: false
+    default: "latest"
+  save-cache:
+    description: >
+      Whether to save caches at the end. Set to "false" for PR builds
+      where you only want to restore (saves GHA cache budget).
+    required: false
+    default: "true"
+
+outputs:
+  cache-hit-compilation:
+    description: "Whether the zccache compilation cache was restored"
+    value: ${{ steps.restore-zccache-native.outputs.cache-hit == 'true' && 'true' || steps.restore-zccache-fallback.outputs.cache-hit == 'true' && 'true' || steps.restore-zccache-cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
+  cache-hit-registry:
+    description: "Whether the cargo registry cache was restored"
+    value: ${{ steps.restore-registry-native.outputs.cache-hit == 'true' && 'true' || steps.restore-registry-cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
+  cache-hit-target:
+    description: "Whether the cargo target snapshot cache was restored"
+    value: ${{ steps.restore-target-native.outputs.cache-hit == 'true' && 'true' || steps.restore-target-fallback.outputs.cache-hit == 'true' && 'true' || steps.restore-target-cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
+
+runs:
+  using: "composite"
+  steps:
+    # --- Compute cache keys ---
+    - name: Compute cache keys
+      id: keys
+      shell: bash
+      run: |
+        # Build a composite key from OS, arch, shared-key, and cargo lock hash.
+        # `shared-key` is folded into every key so matrix builds disambiguate
+        # per-target. Without it, jobs sharing runner.os/runner.arch (e.g.
+        # x86_64-unknown-linux-musl + aarch64-unknown-linux-musl both on
+        # ubuntu-latest → runner.arch=X64) collide on `Unable to reserve cache`.
+        OS="${{ runner.os }}"
+        ARCH="${{ runner.arch }}"
+        SHARED="${{ inputs.shared-key }}"
+        if [ -n "$SHARED" ]; then
+          PREFIX="zccache-${OS}-${ARCH}-${SHARED}"
+          REG_PREFIX="cargo-registry-${OS}-${ARCH}-${SHARED}"
+          TGT_PREFIX="cargo-target-${OS}-${ARCH}-${SHARED}"
+        else
+          PREFIX="zccache-${OS}-${ARCH}"
+          REG_PREFIX="cargo-registry-${OS}-${ARCH}"
+          TGT_PREFIX="cargo-target-${OS}-${ARCH}"
+        fi
+
+        # Hash Cargo.lock for registry cache key (falls back if no lock file)
+        # Use shasum on macOS (sha256sum doesn't exist there)
+        if [ -f Cargo.lock ]; then
+          if command -v sha256sum &>/dev/null; then
+            LOCK_HASH=$(sha256sum Cargo.lock | cut -c1-16)
+          else
+            LOCK_HASH=$(shasum -a 256 Cargo.lock | cut -c1-16)
+          fi
+        else
+          LOCK_HASH="no-lock"
+        fi
+
+        echo "compilation-key=${PREFIX}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.compilation-restore-fallback }}" = "true" ]; then
+          echo "compilation-restore=${PREFIX}-" >> "$GITHUB_OUTPUT"
+        else
+          echo "compilation-restore=" >> "$GITHUB_OUTPUT"
+        fi
+        echo "registry-key=${REG_PREFIX}-${LOCK_HASH}" >> "$GITHUB_OUTPUT"
+        echo "registry-restore=${REG_PREFIX}-" >> "$GITHUB_OUTPUT"
+        echo "target-key=${TGT_PREFIX}-${LOCK_HASH}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+        if [ "${{ inputs.target-restore-fallback }}" = "true" ]; then
+          echo "target-restore=${TGT_PREFIX}-${LOCK_HASH}-" >> "$GITHUB_OUTPUT"
+        else
+          echo "target-restore=" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Detect cache backend
+      id: cache-backend
+      shell: bash
+      run: |
+        if [ -n "${ACTIONS_CACHE_URL:-}" ] && [ -n "${ACTIONS_RUNTIME_TOKEN:-}" ]; then
+          echo "backend=native" >> "$GITHUB_OUTPUT"
+        else
+          echo "backend=actions-cache" >> "$GITHUB_OUTPUT"
+        fi
+
+    # --- Install zccache ---
+    # Try binary download first (faster, no Python dependency), fall back to pip
+    - name: Install zccache and start daemon
+      shell: bash
+      run: |
+        VERSION="${{ inputs.zccache-version }}"
+        INSTALLED=false
+
+        path_for_runner() {
+          local dir="$1"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cygpath -w "$dir" 2>/dev/null || printf '%s\n' "$dir"
+          else
+            printf '%s\n' "$dir"
+          fi
+        }
+
+        add_install_dir_to_path() {
+          local dir="$1"
+          echo "$(path_for_runner "$dir")" >> "$GITHUB_PATH"
+          export PATH="$dir:$PATH"
+        }
+
+        validate_zccache_install() {
+          local version_out
+          if ! version_out="$(zccache --version 2>&1)" || ! printf '%s\n' "$version_out" | grep -Eq '^zccache [0-9]'; then
+            echo "::warning::Installed zccache did not report a valid version: ${version_out:-<empty>}"
+            return 1
+          fi
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            local rustc_bin probe_out
+            rustc_bin="$(rustup which rustc 2>/dev/null || command -v rustc || true)"
+            if [ -n "$rustc_bin" ]; then
+              if ! probe_out="$(zccache "$rustc_bin" -vV 2>&1)" || ! printf '%s\n' "$probe_out" | grep -q '^host: '; then
+                echo "::warning::Installed zccache failed the Windows RUSTC_WRAPPER probe."
+                printf '%s\n' "$probe_out"
+                zccache stop >/dev/null 2>&1 || true
+                return 1
+              fi
+            fi
+          fi
+          return 0
+        }
+
+        if [ "$VERSION" = "source" ] || [ "$VERSION" = "local" ]; then
+          INSTALL_DIR="$HOME/.local/bin"
+          BUILD_DIR="${RUNNER_TEMP:-/tmp}/zccache-action-source-build"
+          mkdir -p "$INSTALL_DIR"
+          rm -rf "$BUILD_DIR"
+
+          cargo build --release --target-dir "$BUILD_DIR" \
+            -p zccache \
+            --bin zccache \
+            --bin zccache-daemon \
+            --bin zccache-fp
+
+          BIN_EXT=""
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN_EXT=".exe"
+          fi
+          cp "$BUILD_DIR/release/zccache${BIN_EXT}" "$INSTALL_DIR/"
+          cp "$BUILD_DIR/release/zccache-daemon${BIN_EXT}" "$INSTALL_DIR/"
+          cp "$BUILD_DIR/release/zccache-fp${BIN_EXT}" "$INSTALL_DIR/"
+          chmod +x "$INSTALL_DIR/zccache"* 2>/dev/null || true
+          add_install_dir_to_path "$INSTALL_DIR"
+          INSTALLED=true
+        fi
+
+        # Try binary install on Linux/macOS (requires GitHub Releases to exist)
+        if [ "$INSTALLED" = "false" ] && [ "${{ runner.os }}" != "Windows" ]; then
+          INSTALL_DIR="$HOME/.local/bin"
+          mkdir -p "$INSTALL_DIR"
+
+          if [ -f "${{ github.action_path }}/install.sh" ]; then
+            INSTALL_SCRIPT="${{ github.action_path }}/install.sh"
+          else
+            INSTALL_SCRIPT="$(mktemp)"
+            curl -fsSL https://raw.githubusercontent.com/zackees/zccache/main/install.sh -o "$INSTALL_SCRIPT" 2>/dev/null || true
+          fi
+
+          if [ -f "$INSTALL_SCRIPT" ] && [ -s "$INSTALL_SCRIPT" ]; then
+            if ZCCACHE_INSTALL_VERSION="$VERSION" \
+               ZCCACHE_INSTALL_DIR="$INSTALL_DIR" \
+               ZCCACHE_NO_MODIFY_PATH=1 \
+                  sh "$INSTALL_SCRIPT" 2>/dev/null; then
+              add_install_dir_to_path "$INSTALL_DIR"
+              INSTALLED=true
+            fi
+          fi
+        fi
+
+        # On Windows, prefer the native release zip over the PyPI console
+        # script wrapper. The native exe is required for RUSTC_WRAPPER.
+        if [ "$INSTALLED" = "false" ] && [ "${{ runner.os }}" = "Windows" ]; then
+          INSTALL_DIR="$HOME/.local/bin"
+          export INSTALL_DIR
+          mkdir -p "$INSTALL_DIR"
+          WIN_INSTALL_DIR="$(cygpath -w "$INSTALL_DIR" 2>/dev/null || python -c 'import os; print(os.path.abspath(os.environ["INSTALL_DIR"]))')"
+
+          if [ -f "${{ github.action_path }}/install.ps1" ]; then
+            INSTALL_SCRIPT="${{ github.action_path }}/install.ps1"
+          else
+            INSTALL_SCRIPT="$(mktemp --suffix=.ps1)"
+            curl -fsSL https://raw.githubusercontent.com/zackees/zccache/main/install.ps1 -o "$INSTALL_SCRIPT" 2>/dev/null || true
+          fi
+
+          if [ -f "$INSTALL_SCRIPT" ] && [ -s "$INSTALL_SCRIPT" ]; then
+            if ZCCACHE_INSTALL_VERSION="$VERSION" ZCCACHE_NO_MODIFY_PATH=1 \
+              pwsh -NoProfile -ExecutionPolicy Bypass -File "$INSTALL_SCRIPT" -BinDir "$WIN_INSTALL_DIR"; then
+              add_install_dir_to_path "$INSTALL_DIR"
+              INSTALLED=true
+            fi
+          fi
+        fi
+
+        if [ "$INSTALLED" = "true" ] && ! validate_zccache_install; then
+          echo "::error::Downloaded zccache release binary is not usable"
+          exit 1
+        fi
+
+        # Try cargo-binstall (downloads pre-built binary, no Python needed)
+        if [ "$INSTALLED" = "false" ] && command -v cargo-binstall &>/dev/null; then
+          INSTALL_DIR="$HOME/.cargo/bin"
+          if [ "$VERSION" = "latest" ]; then
+            cargo-binstall zccache-cli --no-confirm --install-path "$INSTALL_DIR" 2>/dev/null && INSTALLED=true
+          else
+            cargo-binstall "zccache-cli@${VERSION}" --no-confirm --install-path "$INSTALL_DIR" 2>/dev/null && INSTALLED=true
+          fi
+          if [ "$INSTALLED" = "true" ]; then
+            add_install_dir_to_path "$INSTALL_DIR"
+          fi
+        fi
+
+        if [ "$INSTALLED" = "true" ] && ! validate_zccache_install; then
+          echo "::error::Installed zccache binary is not usable"
+          exit 1
+        fi
+
+        # Fall back to pip install (works on all platforms)
+        if [ "$INSTALLED" = "false" ]; then
+          if [ "$VERSION" = "latest" ]; then
+            pip install zccache
+          else
+            pip install "zccache==${VERSION}"
+          fi
+          # pip may put scripts in various locations depending on platform/permissions
+          # Find where the zccache binary actually landed
+          FOUND_DIR=""
+          for DIR in \
+            "$(python -c 'import sysconfig; print(sysconfig.get_path("scripts"))' 2>/dev/null || true)" \
+            "$(python -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))' 2>/dev/null || true)" \
+            "$(python -c 'import sysconfig; print(sysconfig.get_path("scripts", "nt_user"))' 2>/dev/null || true)" \
+            "$(dirname "$(python -c 'import sys; print(sys.executable)')")" \
+            "$HOME/.local/bin" \
+            "/usr/local/bin"; do
+            if [ -n "$DIR" ] && [ -f "$DIR/zccache" -o -f "$DIR/zccache.exe" ]; then
+              FOUND_DIR="$DIR"
+              break
+            fi
+          done
+
+          # If not found in standard locations, ask pip directly
+          if [ -z "$FOUND_DIR" ]; then
+            FOUND_DIR="$(python -c 'import importlib.metadata as m,os;d=m.distribution("zccache");[print(os.path.dirname(str((d._path.parent/f).resolve()))) for f in d.files if f.name in("zccache","zccache.exe")]' 2>/dev/null | head -1 || true)"
+          fi
+
+          if [ -n "$FOUND_DIR" ]; then
+            add_install_dir_to_path "$FOUND_DIR"
+            # Fix executable permissions (macOS PyPI bundles may lose +x)
+            if [ "${{ runner.os }}" != "Windows" ]; then
+              chmod +x "$FOUND_DIR/zccache" "$FOUND_DIR/zccache-daemon" 2>/dev/null || true
+            fi
+          fi
+        fi
+
+        # Verify install
+        which zccache || { echo "ERROR: zccache not found on PATH"; echo "PATH=$PATH"; exit 1; }
+        if ! validate_zccache_install; then
+          echo "::error::Unable to install a working zccache binary"
+          exit 1
+        fi
+
+    - name: Resolve zccache cache paths
+      id: zccache-paths
+      shell: bash
+      run: |
+        CACHE_ROOT="$(zccache cache-root 2>/dev/null || true)"
+        if [ -z "$CACHE_ROOT" ]; then
+          CACHE_ROOT="${ZCCACHE_CACHE_DIR:-$HOME/.zccache}"
+        fi
+        {
+          echo "cache-root=$CACHE_ROOT"
+          echo "cargo-registry-cache=$CACHE_ROOT/cargo-registry"
+          echo "target-meta-dir=$HOME/.zccache-target-meta"
+          echo "action-state-dir=$HOME/.zccache-action-state"
+        } >> "$GITHUB_OUTPUT"
+
+    # --- Layer 1: Restore zccache compilation cache ---
+    - name: Restore zccache compilation cache
+      id: restore-zccache-native
+      if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-compilation == 'true'
+      shell: bash
+      run: |
+        set +e
+        OUTPUT="$(zccache gha-cache restore \
+          --key "${{ steps.keys.outputs.compilation-key }}" \
+          --path "${{ steps.zccache-paths.outputs.cache-root }}" 2>&1)"
+        STATUS=$?
+        set -e
+        printf '%s\n' "$OUTPUT"
+        if [ "$STATUS" -eq 0 ]; then
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if printf '%s\n' "$OUTPUT" | grep -qi "cache miss"; then
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        exit "$STATUS"
+
+    - name: Restore zccache compilation cache fallback
+      id: restore-zccache-fallback
+      if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-compilation == 'true' && inputs.compilation-restore-fallback == 'true' && steps.restore-zccache-native.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.zccache-paths.outputs.cache-root }}
+        key: ${{ steps.keys.outputs.compilation-key }}
+        restore-keys: ${{ steps.keys.outputs.compilation-restore }}
+
+    - name: Restore zccache compilation cache
+      id: restore-zccache-cache
+      if: steps.cache-backend.outputs.backend != 'native' && inputs.cache-compilation == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.zccache-paths.outputs.cache-root }}
+        key: ${{ steps.keys.outputs.compilation-key }}
+        restore-keys: ${{ steps.keys.outputs.compilation-restore }}
+
+    # --- Layer 2: Restore cargo registry cache ---
+    - name: Restore cargo registry archive
+      id: restore-registry-native
+      if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-cargo-registry == 'true'
+      shell: bash
+      run: |
+        set +e
+        OUTPUT="$(zccache gha-cache restore \
+          --key "${{ steps.keys.outputs.registry-key }}" \
+          --path "${{ steps.zccache-paths.outputs.cargo-registry-cache }}" 2>&1)"
+        STATUS=$?
+        set -e
+        printf '%s\n' "$OUTPUT"
+        if [ "$STATUS" -eq 0 ]; then
+          zccache cargo-registry restore \
+            --key "${{ steps.keys.outputs.registry-key }}" \
+            --cargo-home "$HOME/.cargo"
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if printf '%s\n' "$OUTPUT" | grep -qi "cache miss"; then
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        exit "$STATUS"
+
+    - name: Restore cargo registry cache
+      id: restore-registry-cache
+      if: steps.cache-backend.outputs.backend != 'native' && inputs.cache-cargo-registry == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+        key: ${{ steps.keys.outputs.registry-key }}
+        restore-keys: ${{ steps.keys.outputs.registry-restore }}
+
+    # --- Layer 3: Restore cargo target snapshot ---
+    # Restores target/ as a single tarball (excluding incremental/). `zccache warm`
+    # also fills in cached artifacts from the compilation cache when available.
+    # Opt-in until zackees/zccache#65 adds bounded target snapshot GC.
+    - name: Restore cargo target snapshot
+      id: restore-target-native
+      if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-target == 'true'
+      shell: bash
+      run: |
+        set +e
+        OUTPUT="$(zccache gha-cache restore \
+          --key "${{ steps.keys.outputs.target-key }}" \
+          --path "${{ steps.zccache-paths.outputs.target-meta-dir }}" 2>&1)"
+        STATUS=$?
+        set -e
+        printf '%s\n' "$OUTPUT"
+        if [ "$STATUS" -eq 0 ]; then
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        if printf '%s\n' "$OUTPUT" | grep -qi "cache miss"; then
+          echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        exit "$STATUS"
+
+    - name: Restore cargo target snapshot fallback
+      id: restore-target-fallback
+      if: steps.cache-backend.outputs.backend == 'native' && inputs.cache-target == 'true' && inputs.target-restore-fallback == 'true' && steps.restore-target-native.outputs.cache-hit != 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.zccache-paths.outputs.target-meta-dir }}
+        key: ${{ steps.keys.outputs.target-key }}
+        restore-keys: ${{ steps.keys.outputs.target-restore }}
+
+    - name: Restore cargo target snapshot
+      id: restore-target-cache
+      if: steps.cache-backend.outputs.backend != 'native' && inputs.cache-target == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.zccache-paths.outputs.target-meta-dir }}
+        key: ${{ steps.keys.outputs.target-key }}
+        restore-keys: ${{ steps.keys.outputs.target-restore }}
+
+    - name: Extract target snapshot
+      if: inputs.cache-target == 'true'
+      shell: bash
+      run: |
+        TARGET="${{ inputs.target-dir }}"
+        META_TAR="${{ steps.zccache-paths.outputs.target-meta-dir }}/target-meta.tar"
+        if [ -f "$META_TAR" ]; then
+          MAX_BYTES="$(bash "${{ github.action_path }}/action/cleanup/prepare-target-snapshot.sh" --parse-size "${{ inputs.target-snapshot-max-size }}")"
+          TAR_BYTES="$(wc -c < "$META_TAR" | tr -d '[:space:]')"
+          if [ "$MAX_BYTES" -gt 0 ] && [ "$TAR_BYTES" -gt "$MAX_BYTES" ]; then
+            rm -f "$META_TAR"
+            TOO_LARGE_POLICY="$(printf '%s' "${{ inputs.target-snapshot-too-large }}" | tr '[:upper:]' '[:lower:]')"
+            if [ "$TOO_LARGE_POLICY" = "fail" ]; then
+              echo "ERROR: restored target snapshot exceeds target-snapshot-max-size ($TAR_BYTES > $MAX_BYTES)"
+              exit 1
+            fi
+            echo "Skipping oversized restored target snapshot ($TAR_BYTES > $MAX_BYTES)"
+            exit 0
+          fi
+          mkdir -p "$TARGET"
+          tar xf "$META_TAR" -C "$TARGET" 2>/dev/null || true
+          echo "Restored target snapshot ($(du -sh "$META_TAR" | cut -f1))"
+        fi
+
+    # --- Pre-populate target/ from zccache before daemon starts ---
+    # warm reads the redb index directly (no daemon needed), fills in
+    # .rlib/.rmeta from cached artifacts, and touches mtimes. This is tied to
+    # target snapshot caching, which stays opt-in until zackees/zccache#65.
+    - name: Warm target from zccache
+      if: inputs.cache-target == 'true'
+      shell: bash
+      run: |
+        TARGET="${{ inputs.target-dir }}"
+        if [ -d "$TARGET" ]; then
+          zccache warm --target-dir "$TARGET" || true
+          # Per-crate fingerprint revalidation — the content-hash analogue
+          # of cargo's nightly `-Z checksum-freshness`. For each crate in
+          # the sidecar manifest written at save time, recompute blake3 of
+          # every tracked workspace source. If all hashes still match →
+          # bump that crate's freshness anchors (in-fingerprint dep-info
+          # files for lib/bin/test/build-script-compile, plus the `output`
+          # file referenced by RerunIfChanged for build-script-run) so
+          # cargo's normal `source.mtime > anchor.mtime` check trusts the
+          # cache. Crates with any mismatch are left alone → cargo
+          # correctly invokes rustc and/or reruns build scripts. Missing
+          # manifest (snapshot saved by an older daemon) is a silent
+          # no-op: cargo falls through to its baseline check (overbuild
+          # but correct).
+          #
+          # No blanket `find ... touch '+1 min'` follows. snapshot-fp-validate
+          # covers every freshness signal cargo uses for workspace crates,
+          # so there is nothing left to forge — see PR #279 for the
+          # original underbuild bug a blanket touch caused.
+          zccache snapshot-fp-validate \
+            --target-dir "$TARGET" \
+            --workspace-root "$GITHUB_WORKSPACE" \
+            --stamp-seconds-ahead 60 \
+            || true
+        fi
+
+    # --- Start daemon ---
+    - name: Start zccache daemon
+      shell: bash
+      run: zccache start
+
+    # --- Export environment ---
+    - name: Set build environment
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=zccache" >> "$GITHUB_ENV"
+
+    # --- Write state for cleanup action ---
+    - name: Save state for cleanup
+      shell: bash
+      run: |
+        # Write cache keys to a file so the cleanup action can read them
+        STATE_DIR="${{ steps.zccache-paths.outputs.action-state-dir }}"
+        mkdir -p "$STATE_DIR"
+        echo "${{ steps.keys.outputs.compilation-key }}" > "$STATE_DIR/compilation-key"
+        echo "${{ steps.keys.outputs.registry-key }}" > "$STATE_DIR/registry-key"
+        echo "${{ steps.keys.outputs.target-key }}" > "$STATE_DIR/target-key"
+        echo "${{ inputs.save-cache }}" > "$STATE_DIR/save-cache"
+        echo "${{ inputs.cache-compilation }}" > "$STATE_DIR/cache-compilation"
+        echo "${{ inputs.cache-cargo-registry }}" > "$STATE_DIR/cache-registry"
+        echo "${{ inputs.cache-target }}" > "$STATE_DIR/cache-target"
+        echo "${{ inputs.target-dir }}" > "$STATE_DIR/target-dir"
+        echo "${{ inputs.target-snapshot-max-size }}" > "$STATE_DIR/target-snapshot-max-size"
+        echo "${{ inputs.target-snapshot-mode }}" > "$STATE_DIR/target-snapshot-mode"
+        echo "${{ inputs.target-snapshot-too-large }}" > "$STATE_DIR/target-snapshot-too-large"
+        echo "${{ inputs.target-prune-incremental }}" > "$STATE_DIR/target-prune-incremental"
+        echo "${{ inputs.target-prune-build-script-out }}" > "$STATE_DIR/target-prune-build-script-out"
+        echo "${{ steps.cache-backend.outputs.backend }}" > "$STATE_DIR/cache-backend"
+        date +%s > "$STATE_DIR/target-cache-marker-epoch"
+
+branding:
+  icon: "zap"
+  color: "orange"

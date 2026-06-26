@@ -14,7 +14,86 @@ pub(crate) struct CargoCachePlan {
     rust_artifact_plan: Option<RustArtifactPlanContext>,
 }
 
+/// Handle to an in-flight zccache wrapper-plan prefetch, kicked off at
+/// the earliest decision point in the cargo front door so the binary
+/// fetch + extract + redb init overlaps cargo's own startup (manifest
+/// parse, dep-graph resolution).
+///
+/// L3 optimization from soldr#980: on cold builds where the managed
+/// zccache binary is not yet on disk, [`prepare_rustc_wrapper_plan`]
+/// can spend ~14 s pulling the GitHub release and initializing the
+/// daemon. None of that work depends on the cargo manifest, so we
+/// background it the moment we know a build is going to spawn.
+/// The `.await` happens just before the wrapper env is injected,
+/// which is also just before cargo is spawned.
+///
+/// Warm path (binary already cached): the inner future resolves
+/// effectively immediately, so the join is free.
+pub(crate) enum CargoCachePlanPrefetch {
+    /// Caching disabled — no fetch was scheduled.
+    Disabled,
+    /// Caching enabled — a background task is resolving the wrapper plan.
+    Pending(tokio::task::JoinHandle<Result<RustcWrapperPlan, SoldrError>>),
+}
+
+impl CargoCachePlanPrefetch {
+    /// Kick off zccache wrapper-plan resolution on a background tokio
+    /// task. Call this at the earliest point in the front door where we
+    /// know a child cargo will be spawned. The returned handle is
+    /// awaited by [`CargoCachePlan::finalize`] just before the wrapper
+    /// env is injected onto the cargo command.
+    pub(crate) fn start(
+        cache_enabled_for_cargo: bool,
+        paths: &SoldrPaths,
+        zccache_source: ZccacheSourceArg,
+    ) -> Self {
+        if !cache_enabled_for_cargo {
+            return Self::Disabled;
+        }
+        let paths = paths.clone();
+        let handle =
+            tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths, zccache_source).await });
+        Self::Pending(handle)
+    }
+}
+
 impl CargoCachePlan {
+    /// Finalize the cache plan by awaiting the background prefetch
+    /// kicked off by [`CargoCachePlanPrefetch::start`]. Call this
+    /// immediately before [`CargoCachePlan::apply_to_command`] — i.e.
+    /// as late in the front-door pipeline as possible — to give the
+    /// background fetch maximum overlap with the synchronous setup
+    /// work that does not depend on the resolved zccache binary.
+    pub(crate) async fn finalize(
+        cache_enabled_for_cargo: bool,
+        prefetch: CargoCachePlanPrefetch,
+    ) -> Result<Self, SoldrError> {
+        let rustc_wrapper = match prefetch {
+            CargoCachePlanPrefetch::Disabled => None,
+            CargoCachePlanPrefetch::Pending(handle) => match handle.await {
+                Ok(result) => Some(result?),
+                Err(join_err) => {
+                    if join_err.is_panic() {
+                        std::panic::resume_unwind(join_err.into_panic());
+                    }
+                    return Err(SoldrError::Other(format!(
+                        "zccache prefetch task was cancelled before completion: {join_err}"
+                    )));
+                }
+            },
+        };
+        Ok(Self {
+            cache_enabled_for_cargo,
+            rustc_wrapper,
+            rust_artifact_plan: None,
+        })
+    }
+
+    /// Test-only constructor that bypasses the background prefetch.
+    /// Production callers should go through
+    /// [`CargoCachePlanPrefetch::start`] +
+    /// [`CargoCachePlan::finalize`].
+    #[cfg(test)]
     pub(crate) async fn prepare(
         cache_enabled_for_cargo: bool,
         paths: &SoldrPaths,

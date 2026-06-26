@@ -22,12 +22,10 @@
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
 pub mod client;
-/// Phase 2 of issue #977 — `CompileBackend::{Wrapped, Embedded}` enum
-/// held on `server::State`. Unconditional (even without `--features
-/// embedded`) so the daemon always has the abstraction in scope; the
-/// `Embedded` variant itself is gated on the feature.
-pub mod compile_backend;
 pub mod db;
+/// L4 (issue soldr#980) — background batcher that coalesces
+/// per-compile redb event writes into one fsync per 64 rows / 100 ms.
+pub mod event_batcher;
 pub mod ipc;
 pub mod lifecycle;
 pub mod protocol;

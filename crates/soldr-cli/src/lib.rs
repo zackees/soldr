@@ -27,11 +27,12 @@ pub mod self_relocate;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 /// The bin tree declares the same module via `main.rs`.
 pub mod wrapper_target;
-/// Issue #977 — embedded zccache service wrapper. Gated on the
-/// `embedded` Cargo feature; absent the feature this module is not
-/// compiled and the daemon's `CompileBackend` enum only has the
-/// `Wrapped` variant.
-#[cfg(feature = "embedded")]
+/// Issue #977 / #980 L1 — embedded zccache service wrapper. The
+/// daemon always links the embedded service; the legacy
+/// fork-zccache.exe wrapper path has been deleted. The standalone
+/// managed zccache binary is still used by `soldr update-zccache`
+/// and the perf-cluster broker, but those paths are independent of
+/// this module.
 pub mod zccache_embedded;
 pub mod zccache_lifecycle;
 

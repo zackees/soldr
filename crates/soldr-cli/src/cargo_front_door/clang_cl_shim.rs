@@ -73,9 +73,10 @@ fn write_clang_cl_shim(dir: &Path, real_clang: &Path) -> Result<PathBuf, SoldrEr
 
     let existing = std::fs::read_to_string(&shim_path).ok();
     // `Some(shim_body.as_str())` is spelled out (rather than the more idiomatic
-    // `Some(&shim_body)`) because the `embedded` feature pulls in `rkyv` whose
-    // blanket `PartialEq` impls for `Option<T>` defeat deref coercion from
-    // `&String` to `&str` at this comparison site.
+    // `Some(&shim_body)`) because the mandatory `zccache` git dep (used by the
+    // daemon's embedded service) pulls in `rkyv` whose blanket `PartialEq`
+    // impls for `Option<T>` defeat deref coercion from `&String` to `&str` at
+    // this comparison site.
     if existing.as_deref() != Some(shim_body.as_str()) {
         std::fs::write(&shim_path, &shim_body)?;
         #[cfg(unix)]

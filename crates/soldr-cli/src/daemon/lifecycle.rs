@@ -160,10 +160,22 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 /// before the socket is ready.
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
-    let daemon_src = crate::daemon::service_definition::sibling_daemon_binary(&current);
-    if !daemon_src.exists() {
-        return Err(LifecycleError::NoExe);
-    }
+    // Prefer the sibling `soldr-daemon` binary (dev builds + maturin
+    // wheels ship both). Fall back to the running soldr binary itself
+    // invoked as `soldr daemon start --foreground` when the sibling
+    // isn't present — this lets CI workflows and slimmed-down
+    // deployments (which historically distributed only `soldr`) still
+    // bring up the daemon now that Phase 5/7 made the embedded
+    // backend mandatory. The daemon subcommand is already a clap-
+    // matched verb in `cli_args.rs`; the bin target at
+    // `src/bin/soldr_daemon.rs` is just an alias for that subcommand
+    // routed through the main binary.
+    let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
+    let (daemon_src, daemon_via_self) = if sibling.exists() {
+        (sibling, false)
+    } else {
+        (current.clone(), true)
+    };
 
     let paths = SoldrPaths::new().ok();
     let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
@@ -181,8 +193,13 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         return Ok(());
     }
 
-    let relocated = match paths.as_ref() {
-        Some(paths) => crate::self_relocate::ensure_daemon_relocated(paths, &daemon_src)
+    let relocated = match (paths.as_ref(), daemon_via_self) {
+        // When falling back to the running soldr binary, skip the
+        // self_relocate dance — it's specifically for the sibling
+        // daemon binary, not for soldr-self invocations. The current
+        // exe stays where it is.
+        (_, true) => daemon_src.clone(),
+        (Some(paths), false) => crate::self_relocate::ensure_daemon_relocated(paths, &daemon_src)
             .inspect(|r| {
                 crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
             })
@@ -190,13 +207,17 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         // No cache root resolved → run in place. The daemon itself
         // tries SoldrPaths::new() at startup and will surface the
         // same error there.
-        None => daemon_src,
+        (None, false) => daemon_src,
     };
 
-    if !crate::daemon::backend_handle_adoption::running_process_disabled() {
+    if !daemon_via_self && !crate::daemon::backend_handle_adoption::running_process_disabled() {
         let _ = crate::daemon::service_definition::install_service_definition(&relocated);
     }
-    spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
+    if daemon_via_self {
+        spawn_detached_self_inner(&relocated).map_err(LifecycleError::Spawn)
+    } else {
+        spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
+    }
 }
 
 /// Acquire the spawn-herd lock. Returns `Some(file)` when the
@@ -235,10 +256,37 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(daemon);
-    cmd.arg("--foreground")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.arg("--foreground").stdin(Stdio::null());
+    // Diagnostic redirect: spawn the daemon's stderr/stdout to a
+    // log file under the soldr cache root so a startup crash leaves
+    // an artifact the wrapper can surface later. Falls back to
+    // /dev/null if the path can't be created (preserves the original
+    // contract).
+    let log_path = SoldrPaths::new()
+        .ok()
+        .map(|p| p.root.join("daemon-spawn.log"));
+    if let Some(path) = &log_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let stdout_file = file.try_clone().unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")
+                    .expect("dev/null must open")
+            });
+            cmd.stdout(stdout_file).stderr(file);
+        } else {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
     unsafe {
         cmd.pre_exec(|| {
             // Detach from the parent's process group so the daemon
@@ -261,6 +309,72 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 
     Command::new(daemon)
         .arg("--foreground")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(FLAGS)
+        .spawn()?;
+    Ok(())
+}
+
+/// Spawn the daemon via `<current-soldr-exe> daemon start --foreground`
+/// rather than via the sibling `soldr-daemon` binary. Used by
+/// [`try_spawn_detached`] when the sibling daemon binary is missing —
+/// CI environments and slimmed-down deployments historically ship only
+/// the soldr binary. Same detach semantics as
+/// [`spawn_detached_inner`].
+#[cfg(unix)]
+fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    let mut cmd = Command::new(soldr_self);
+    cmd.args(["daemon", "start", "--foreground"])
+        .stdin(Stdio::null());
+    let log_path = SoldrPaths::new()
+        .ok()
+        .map(|p| p.root.join("daemon-spawn.log"));
+    if let Some(path) = &log_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let stdout_file = file.try_clone().unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")
+                    .expect("dev/null must open")
+            });
+            cmd.stdout(stdout_file).stderr(file);
+        } else {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+
+    Command::new(soldr_self)
+        .args(["daemon", "start", "--foreground"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

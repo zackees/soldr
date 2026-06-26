@@ -1,0 +1,47 @@
+# Enforces the `_vender/` discipline documented in docs/VENDORING.md.
+# Runs `verify_vendor_state.py` which checks:
+#   1. Vendor metadata exists when Cargo.toml carries a path-dep zccache
+#   2. `.vendor-state.deadline` is in the future
+#   3. Every `[[deltas]]` entry older than 7 days has `upstream_pr` set
+#
+# The job is fast (< 5 s, pure stdlib Python) and is the canonical
+# place future contributors look to understand why their PR was
+# rejected for vendor-discipline reasons.
+
+name: Vendor state
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      # Run on any PR that touches the vendor, the path-dep declaration,
+      # the policy doc, or the script itself.
+      - "_vender/**"
+      - "crates/soldr-cli/Cargo.toml"
+      - "docs/VENDORING.md"
+      - ".github/scripts/verify_vendor_state.py"
+      - ".github/workflows/vendor-state.yml"
+
+jobs:
+  verify:
+    name: verify_vendor_state.py
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Need the soldr-side commit history to age-check
+          # [[deltas]] entries. Shallow clone is fine — the script
+          # treats missing commits as "infinitely old," which fails
+          # the 7-day gate pessimistically (the safe direction).
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run verify_vendor_state.py
+        run: python3 .github/scripts/verify_vendor_state.py

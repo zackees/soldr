@@ -85,10 +85,36 @@ fn touch_auto_gc_marker(marker: &std::path::Path) -> std::io::Result<()> {
     std::fs::write(marker, "")
 }
 
+/// Issue #980 L7: re-arm the throttle marker so the next wrapper
+/// invocation can rerun the deferred sweep. Called when the background
+/// thread bails out because a `cargo build` is active in this process.
+fn rearm_auto_gc_marker(paths: &SoldrPaths) {
+    let marker = crate::cache_lib::auto_gc_throttle_marker_path(paths);
+    // Best-effort: remove the marker so the next call sees the
+    // throttle as expired. A failure to remove is silent — the
+    // throttle window is 5 minutes, the worst case is one missed
+    // sweep window.
+    let _ = std::fs::remove_file(&marker);
+}
+
 fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::PathBuf) {
     use crate::cache_lib::auto_gc::DiskFreeProbe as _;
     let start = std::time::Instant::now();
     let paths = SoldrPaths::with_root(paths_root);
+
+    // Issue #980 L7: cargo build is running in this same process. Yield
+    // immediately so we don't compete for IO + the cargo
+    // `.package-cache` mutex. Re-arm the marker so the post-build
+    // wrapper invocation can pick up the deferred sweep.
+    if crate::cache_lib::build_active::is_active() {
+        tracing::debug!("auto-GC background tick deferred: build active");
+        let _ = append_auto_gc_log_line(
+            &log_path,
+            "auto-gc status=deferred reason=build_active stage=preamble",
+        );
+        rearm_auto_gc_marker(&paths);
+        return;
+    }
 
     // Tier-0 (Phase 2): prune `daemon_events` rows older than 30 days
     // before any disk-pressure tiers run. Bounded, cheap, runs even when
@@ -177,6 +203,29 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     }
 
     for plan in &plans {
+        // Issue #980 L7: re-check between volumes so a long-running
+        // sweep yields to a cargo build that started after this
+        // thread was spawned. Re-arm the throttle marker once so the
+        // post-build wrapper invocation can re-fire the deferred
+        // sweep instead of waiting a full throttle window.
+        if crate::cache_lib::build_active::is_active() {
+            tracing::debug!(
+                "auto-GC volume loop yielding: build active (volume={})",
+                plan.volume_key
+            );
+            let _ = append_auto_gc_log_line(
+                &log_path,
+                &format!(
+                    "auto-gc volume={} status=deferred reason=build_active",
+                    plan.volume_key
+                ),
+            );
+            rearm_auto_gc_marker(&paths);
+            // Break (not continue) — once a build is active, defer
+            // ALL remaining volumes too. They share the same disk
+            // contention concern.
+            break;
+        }
         let line = format!(
             "auto-gc volume={} free_gib={:.2} trigger_gib={} target_gib={} paths={} status=detected",
             plan.volume_key,

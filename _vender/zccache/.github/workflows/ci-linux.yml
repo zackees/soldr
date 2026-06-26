@@ -1,0 +1,54 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE*"
+      - "NOTICE*"
+      - "AUTHORS*"
+      - "CODEOWNERS"
+      - "CONTRIBUTING*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - "tasks/**"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE*"
+      - "NOTICE*"
+      - "AUTHORS*"
+      - "CODEOWNERS"
+      - "CONTRIBUTING*"
+      - ".gitignore"
+      - ".gitattributes"
+      - ".editorconfig"
+      - "tasks/**"
+
+jobs:
+  x86:
+    uses: ./.github/workflows/ci-check.yml
+    with:
+      os: ubuntu-latest
+
+  arm:
+    uses: ./.github/workflows/ci-check.yml
+    with:
+      os: ubuntu-24.04-arm
+
+  x86-musl:
+    uses: ./.github/workflows/ci-check-cross.yml
+    with:
+      os: ubuntu-latest
+      target: x86_64-unknown-linux-musl
+      label: linux-x86-musl
+
+  arm-musl:
+    uses: ./.github/workflows/ci-check-cross.yml
+    with:
+      os: ubuntu-24.04-arm
+      target: aarch64-unknown-linux-musl
+      label: linux-arm-musl

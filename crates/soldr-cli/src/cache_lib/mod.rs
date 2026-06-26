@@ -12,6 +12,7 @@ use std::{
 
 pub mod auto_gc;
 pub mod auto_target_gc;
+pub mod build_active;
 pub mod cargo_global_cache;
 pub mod cook_archive;
 pub mod cook_gc;

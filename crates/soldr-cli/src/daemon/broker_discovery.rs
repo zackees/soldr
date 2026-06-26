@@ -297,8 +297,8 @@ pub(crate) fn discover_via_broker_with_disabled(
         },
         // Catch-all for variants that only exist under richer
         // running-process feature sets (e.g. `AdoptError::AsyncJoin`,
-        // surfaced when zccache pulls in `client-async` via the
-        // `embedded` feature). Treat unknown adopt failures as
+        // surfaced when zccache pulls in `client-async` through its
+        // embedded service). Treat unknown adopt failures as
         // "broker unavailable" so direct discovery takes over rather
         // than propagating an opaque error. The lint allow keeps the
         // arm green in feature configurations where the enum is

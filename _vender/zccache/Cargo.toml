@@ -1,0 +1,119 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/zccache",
+    "crates/zccache-watcher",
+    "crates/zccache-cli",
+    "crates/zccache-fingerprint",
+]
+exclude = [
+    "dylints/ban_std_pathbuf",
+    "dylints/ban_unrooted_tempdir",
+    "dylints/ban_raw_subprocess_in_daemon",
+]
+
+[workspace.package]
+version = "1.12.11"
+edition = "2021"
+rust-version = "1.94.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/zackees/zccache"
+homepage = "https://github.com/zackees/zccache"
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+console-subscriber = "0.5"
+serde = { version = "1", features = ["derive", "rc"] }
+bincode = "1"
+blake3 = { version = "1", features = ["pure", "rayon"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+clap = { version = "4", features = ["derive", "env"] }
+dashmap = "6"
+arc-swap = "1"
+redb = "2"
+clang = { version = "2", features = ["runtime"] }
+notify = "7"
+memmap2 = "0.9"
+tempfile = "3"
+rayon = "1"
+jwalk = "0.8"
+bytes = "1"
+prost = "0.14"
+prost-build = "0.14"
+protoc-bin-vendored = "3"
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream"] }
+tokio-util = "0.7"
+filetime = "0.2"
+fs2 = "0.4"
+regex = "1"
+serde_json = "1"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+flate2 = "1"
+ruzstd = "0.7"
+lzma-rs = "0.3"
+sevenz-rust = "0.6"
+rkyv = { version = "0.7", features = ["validation"] }
+tikv-jemallocator = { version = "0.6", features = ["unprefixed_malloc_on_supported_platforms"] }
+mimalloc = "0.1"
+running-process = { version = "4.5.7", default-features = false, features = ["client-async"] }
+zccache = { path = "crates/zccache" }
+zccache-watcher = { path = "crates/zccache-watcher" }
+zccache-cli = { path = "crates/zccache-cli" }
+zccache-fingerprint = { path = "crates/zccache-fingerprint" }
+
+# Vendored notify with fixes for Windows ReadDirectoryChangesW:
+# 1. Detect buffer overflow (bytes_written == 0) and report as error
+# 2. Report start_read failure (watcher silently dying) as error
+[patch.crates-io]
+notify = { path = "vendor/notify" }
+
+[workspace.metadata.dylint]
+libraries = [{ path = "dylints/*" }]
+
+# The workspace MSRV tracks rust-toolchain.toml. Lint configuration is also
+# enforced via CI clippy flags.
+#
+# [workspace.lints.rust]
+# unsafe_code = "deny"
+# missing_debug_implementations = "warn"
+#
+# [workspace.lints.clippy]
+# all = { level = "warn", priority = -1 }
+# pedantic = { level = "warn", priority = -1 }
+# nursery = { level = "warn", priority = -1 }
+# unwrap_used = "warn"
+
+# Keep just enough debug info for readable stack traces (function names +
+# source-line numbers) while dropping the DWARF variable/type tables that
+# dominate `target/` size. Trade-off: in-process debuggers like rust-gdb lose
+# variable inspection. Override locally with `CARGO_PROFILE_DEV_DEBUG=full
+# cargo …` when you need full debug info for a single build.
+#
+# `profile.test` inherits from `profile.dev`, so CI test compiles pick this up
+# too. Why this matters here: `target/` ships through setup-soldr's post-job
+# cache tar on every Windows runner, and DWARF bytes are pure dead weight in
+# that pipeline.
+[profile.dev]
+debug = "line-tables-only"
+
+# Release builds keep only `file:line` debug info — enough for a panic
+# backtrace or a profiler to attribute a sample to source, and nothing
+# else (no DWARF variable/type tables). The info is split into a
+# per-binary sidecar so the shipped binary stays slim:
+#   - Linux:        `<binary>.dwp`  (DWARF package, requires rust-dwp)
+#   - macOS:        `<binary>.dSYM/` (dsymutil bundle)
+#   - Windows MSVC: `<binary>.pdb`  (always emitted by msvc, kept explicit)
+# The release workflow stages each sidecar alongside its binary
+# (`.github/workflows/release.yml` — "Stage debug sidecars" step), and
+# `zccache symbols install` lazily downloads the matching sidecar at
+# runtime when a backtrace needs symbolicating.
+# Override with `CARGO_PROFILE_RELEASE_DEBUG=none cargo build --release`
+# for a smallest-possible binary when even line info isn't needed.
+[profile.release]
+debug = "line-tables-only"
+split-debuginfo = "packed"

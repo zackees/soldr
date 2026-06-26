@@ -1,0 +1,410 @@
+name: Benchmark - zccache vs sccache vs bare
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "action.yml"
+      - "action/**"
+      - ".github/workflows/bench-action.yml"
+
+concurrency:
+  group: bench-action-${{ github.ref }}
+  cancel-in-progress: true
+
+# Benchmarks three caching strategies building zccache:
+#
+# 1. Bare cargo (no caching at all)
+# 2. sccache (mozilla-actions/sccache-action)
+# 3. zccache (this repo's action, with target metadata caching)
+#
+# Each measures:
+# - Cold build: first build, empty caches
+# - Warm (clean target): cargo clean then rebuild — tests compilation cache only
+# - Warm (with target): no clean, cargo sees fingerprints — tests full cache stack
+# - No-op: immediate rebuild, nothing changed — tests cargo skip path
+
+env:
+  BUILD_TARGET: zccache
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  # ── Bare cargo (no cache) ────────────────────────────────────
+  bare:
+    name: "Bare (no cache)"
+    runs-on: ubuntu-24.04
+    outputs:
+      cold: ${{ steps.cold.outputs.ms }}
+      warm_clean: ${{ steps.warm_clean.outputs.ms }}
+      warm_target: ${{ steps.warm_target.outputs.ms }}
+      noop: ${{ steps.noop.outputs.ms }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+
+      - name: "Cold build"
+        id: cold
+        shell: bash
+        run: |
+          cargo clean 2>/dev/null || true
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Bare cold: ${MS}ms"
+
+      - name: "No-op rebuild (nothing changed)"
+        id: noop
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Bare no-op: ${MS}ms"
+
+      - name: "Clean target, rebuild"
+        id: warm_clean
+        shell: bash
+        run: |
+          cargo clean
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Bare warm (clean target): ${MS}ms"
+
+      # "warm_target" = same as cold for bare, since there's no external cache
+      - name: "Rebuild with target intact"
+        id: warm_target
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::Bare warm (target intact): ${MS}ms"
+
+  # ── sccache ──────────────────────────────────────────────────
+  sccache:
+    name: "sccache"
+    runs-on: ubuntu-24.04
+    outputs:
+      cold: ${{ steps.cold.outputs.ms }}
+      warm_clean: ${{ steps.warm_clean.outputs.ms }}
+      warm_target: ${{ steps.warm_target.outputs.ms }}
+      noop: ${{ steps.noop.outputs.ms }}
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+      - uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: "Cold build"
+        id: cold
+        shell: bash
+        run: |
+          cargo clean 2>/dev/null || true
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::sccache cold: ${MS}ms"
+
+      - name: "No-op rebuild"
+        id: noop
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::sccache no-op: ${MS}ms"
+
+      - name: "Clean target, rebuild (sccache warm)"
+        id: warm_clean
+        shell: bash
+        run: |
+          cargo clean
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::sccache warm (clean target): ${MS}ms"
+
+      - name: "Rebuild with target intact"
+        id: warm_target
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::sccache warm (target intact): ${MS}ms"
+
+      - run: sccache --show-stats
+
+  # ── zccache ──────────────────────────────────────────────────
+  zccache:
+    name: "zccache"
+    runs-on: ubuntu-24.04
+    outputs:
+      cold: ${{ steps.cold.outputs.ms }}
+      warm_clean: ${{ steps.warm_clean.outputs.ms }}
+      warm_target: ${{ steps.warm_target.outputs.ms }}
+      noop: ${{ steps.noop.outputs.ms }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+
+      - uses: ./
+        with:
+          shared-key: bench
+          cache-target: "true"
+          zccache-version: source
+
+      - name: "Cold build"
+        id: cold
+        shell: bash
+        run: |
+          cargo clean 2>/dev/null || true
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::zccache cold: ${MS}ms"
+
+      - name: "No-op rebuild (cargo sees fingerprints, skips everything)"
+        id: noop
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::zccache no-op: ${MS}ms"
+
+      - name: "Clean target, rebuild (zccache warm, no fingerprints)"
+        id: warm_clean
+        shell: bash
+        run: |
+          cargo clean
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::zccache warm (clean target): ${MS}ms"
+
+      - name: "Rebuild with target intact (full cache stack)"
+        id: warm_target
+        shell: bash
+        run: |
+          START=$(date +%s%N)
+          cargo build -p $BUILD_TARGET 2>&1
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::zccache warm (target intact): ${MS}ms"
+
+      - run: zccache status
+
+      - if: always()
+        uses: ./action/cleanup
+
+  # ── zccache with target cache restored (simulates second CI run) ──
+  zccache-cached:
+    name: "zccache (cached target)"
+    needs: [zccache]
+    runs-on: ubuntu-24.04
+    outputs:
+      restored: ${{ steps.restored.outputs.ms }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.94.1
+
+      # Setup zccache — this should restore target/ from the previous job's save
+      - uses: ./
+        with:
+          shared-key: bench
+          cache-target: "true"
+          zccache-version: source
+
+      - name: "Diagnostics: target restore status"
+        shell: bash
+        run: |
+          echo "=== target/ exists? ==="
+          ls -la target/ 2>/dev/null || echo "NO target/"
+          echo ""
+          echo "=== .fingerprint count ==="
+          if [ -d target/debug/.fingerprint ]; then
+            COUNT=$(find target/debug/.fingerprint -type f | wc -l)
+            echo "Fingerprint files: $COUNT"
+          else
+            echo "NO .fingerprint/"
+          fi
+          echo ""
+          echo "=== deps/ file counts ==="
+          for ext in rlib rmeta d so dylib; do
+            COUNT=$(find target/debug/deps -name "*.$ext" 2>/dev/null | wc -l)
+            echo "  .$ext: $COUNT files"
+          done
+          echo ""
+          echo "=== build/ dirs ==="
+          ls target/debug/build/ 2>/dev/null | head -10 || echo "NO build/"
+          echo ""
+          echo "=== deps/*.rlib mtimes (first 5) ==="
+          find target/debug/deps -name "*.rlib" -exec stat -c "%n mtime=%Y" {} \; 2>/dev/null | head -5
+          echo ""
+          echo "=== source file mtimes ==="
+          stat -c "%n mtime=%Y" crates/zccache/src/*.rs 2>/dev/null | head -5
+          echo ""
+          echo "=== zccache binary ==="
+          which zccache && zccache --version
+          echo ""
+          echo "=== RUSTC_WRAPPER ==="
+          echo "RUSTC_WRAPPER=$RUSTC_WRAPPER"
+          echo ""
+          echo "=== rustc version + path ==="
+          which rustc && rustc --version
+
+      - name: "Build with restored target + cargo fingerprint trace"
+        id: restored
+        shell: bash
+        run: |
+          # Start a zccache session with journal for full logging
+          zccache status || true
+
+          START=$(date +%s%N)
+          CARGO_LOG="cargo::core::compiler::fingerprint=info" \
+            cargo build -p $BUILD_TARGET 2> /tmp/cargo-fingerprint.log
+          END=$(date +%s%N)
+          MS=$(( (END - START) / 1000000 ))
+          echo "ms=$MS" >> "$GITHUB_OUTPUT"
+          echo "::notice::zccache cached target: ${MS}ms"
+
+          echo ""
+          echo "=== Cargo output ==="
+          grep -E "Compiling|Finished|Fresh" /tmp/cargo-fingerprint.log | head -20 || true
+
+          echo ""
+          echo "=== Why dirty? (fingerprint trace) ==="
+          grep -iE "dirty|stale|newer than|fingerprint.*changed|is newer" /tmp/cargo-fingerprint.log | head -20 || true
+
+          echo ""
+          echo "=== Full fingerprint trace (first 50 lines) ==="
+          head -50 /tmp/cargo-fingerprint.log
+
+          COMPILING=$(grep -c "Compiling" /tmp/cargo-fingerprint.log || true)
+          COMPILING=${COMPILING:-0}
+          if [ "$COMPILING" -gt 0 ]; then
+            echo "::warning::Recompiled $COMPILING crates (expected 0 with restored target)"
+          else
+            echo "::notice::Zero recompilation — target cache working perfectly"
+          fi
+
+      - name: "Upload diagnostic logs"
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cached-target-diagnostics
+          path: /tmp/cargo-fingerprint.log
+
+      - if: always()
+        uses: ./action/cleanup
+
+  # ── Report ───────────────────────────────────────────────────
+  report:
+    name: "Results"
+    needs: [bare, sccache, zccache, zccache-cached]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print comparison table
+        shell: bash
+        run: |
+          echo "## Benchmark: \`cargo build -p zccache\` on ubuntu-24.04" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Scenario | Bare | sccache | zccache | zccache vs sccache | zccache vs bare |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|---|---|---|---|---|---|" >> "$GITHUB_STEP_SUMMARY"
+
+          declare -A BARE=( [cold]=${{ needs.bare.outputs.cold }} [warm_clean]=${{ needs.bare.outputs.warm_clean }} [warm_target]=${{ needs.bare.outputs.warm_target }} [noop]=${{ needs.bare.outputs.noop }} )
+          declare -A SC=( [cold]=${{ needs.sccache.outputs.cold }} [warm_clean]=${{ needs.sccache.outputs.warm_clean }} [warm_target]=${{ needs.sccache.outputs.warm_target }} [noop]=${{ needs.sccache.outputs.noop }} )
+          declare -A ZC=( [cold]=${{ needs.zccache.outputs.cold }} [warm_clean]=${{ needs.zccache.outputs.warm_clean }} [warm_target]=${{ needs.zccache.outputs.warm_target }} [noop]=${{ needs.zccache.outputs.noop }} )
+
+          for KEY in cold noop warm_clean warm_target; do
+            case $KEY in
+              cold)        LABEL="Cold build (empty cache)" ;;
+              noop)        LABEL="No-op (nothing changed)" ;;
+              warm_clean)  LABEL="Warm (clean target)" ;;
+              warm_target) LABEL="Warm (target intact)" ;;
+            esac
+
+            B=${BARE[$KEY]}; S=${SC[$KEY]}; Z=${ZC[$KEY]}
+
+            VS_SC="N/A"; VS_BARE="N/A"
+            if [ "$Z" -gt 0 ] 2>/dev/null; then
+              [ "$S" -gt 0 ] 2>/dev/null && VS_SC=$(awk "BEGIN {printf \"%.1fx\", $S/$Z}")
+              [ "$B" -gt 0 ] 2>/dev/null && VS_BARE=$(awk "BEGIN {printf \"%.1fx\", $B/$Z}")
+            fi
+
+            echo "| **$LABEL** | ${B}ms | ${S}ms | **${Z}ms** | ${VS_SC} | ${VS_BARE} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "<details><summary>What each scenario means</summary>" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cold build**: First build, all caches empty." >> "$GITHUB_STEP_SUMMARY"
+          echo "- **No-op**: Immediate rebuild, nothing changed. Measures cargo's fingerprint check speed." >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Warm (clean target)**: \`cargo clean\` then rebuild. Target dir is empty but compilation cache has artifacts. This is the worst case for CI (new runner, no target cache)." >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Warm (target intact)**: Rebuild after the clean+rebuild. Target dir has fingerprints + artifacts. This is the best case — what happens when target metadata cache is restored." >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+
+          echo ""
+          echo "============================================"
+          echo "  BENCHMARK RESULTS"
+          echo "============================================"
+          echo ""
+          printf "%-30s %10s %10s %10s\n" "Scenario" "Bare" "sccache" "zccache"
+          printf "%-30s %10s %10s %10s\n" "---" "---" "---" "---"
+          for KEY in cold noop warm_clean warm_target; do
+            case $KEY in
+              cold)        LABEL="Cold build" ;;
+              noop)        LABEL="No-op" ;;
+              warm_clean)  LABEL="Warm (clean target)" ;;
+              warm_target) LABEL="Warm (target intact)" ;;
+            esac
+            printf "%-30s %8sms %8sms %8sms\n" "$LABEL" "${BARE[$KEY]}" "${SC[$KEY]}" "${ZC[$KEY]}"
+          done
+          echo ""
+          CACHED=${{ needs.zccache-cached.outputs.restored }}
+          WARM_TARGET_LIMIT=$(( (BARE[warm_target] * 13 + 9) / 10 ))
+          if [ "${ZC[warm_target]}" -gt "$WARM_TARGET_LIMIT" ]; then
+            echo "::error::zccache warm-target-intact ${ZC[warm_target]}ms exceeds 1.3x bare ${BARE[warm_target]}ms (limit ${WARM_TARGET_LIMIT}ms)"
+            exit 1
+          fi
+          printf "%-30s %8s   %8s   %8sms\n" "Cached target (2nd CI run)" "—" "—" "$CACHED"
+          echo ""
+          echo "| **Cached target (2nd CI run)** | — | — | **${CACHED}ms** | — | — |" >> "$GITHUB_STEP_SUMMARY"
