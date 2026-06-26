@@ -12,8 +12,9 @@ use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
 use crate::daemon::protocol::{
-    BuildRecord, CompileRequest, CompileResponseBody, Request, Response, StatusInfo,
+    BuildRecord, CompileRequest, Request, Response, StatusInfo,
 };
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -377,22 +378,102 @@ pub fn cook_touch(sock_path: &Path, sha256: [u8; 32]) -> Result<(), ClientError>
     submit_fire_and_forget(sock_path, &Request::CookTouch { sha256 })
 }
 
+/// Metadata returned by the streaming compile call after the last
+/// chunk frame has been consumed (#983 Phase 5b). Carries everything
+/// the wrapper needs to surface to cargo — the captured rustc output
+/// has already been written through to the caller-provided sinks.
+#[derive(Debug, Clone)]
+pub struct CompileDoneInfo {
+    pub exit_code: i32,
+    #[allow(dead_code)] // forwarded for future telemetry; wrapper does not act on it today
+    pub cached: bool,
+    #[allow(dead_code)] // 1=Hit, 2=Miss, 3=Error — same shape as CompileResponseBody
+    pub cache_outcome: i32,
+    /// Daemon-side audit id for the compile. Empty in Phase 5b1 (the
+    /// embedded zccache service does not yet surface it). Plumbed
+    /// through so Phase 5b2 can fill it without another version bump.
+    #[allow(dead_code)]
+    pub compile_id: String,
+}
+
 /// Dispatch a single rustc compile to the daemon's embedded zccache
-/// service (issue #977 Phase 5 / #980 L1).
+/// service and stream the captured rustc stdout/stderr to the caller's
+/// sinks as they arrive (#983 Phase 5b — superseded the v6 single-frame
+/// reply path).
 ///
 /// The reply timeout is generous (30 minutes) because rustc itself may
-/// take many minutes for a release build of a large crate. On any
-/// timeout / IO error the wrapper falls back to the legacy
-/// `zccache.exe` fork path.
-pub fn compile(sock_path: &Path, req: CompileRequest) -> Result<CompileResponseBody, ClientError> {
-    let resp =
-        submit_request_with_timeout(sock_path, &Request::Compile(req), COMPILE_REPLY_TIMEOUT)?;
-    match resp {
-        Response::Compile(body) => Ok(body),
-        Response::Error(msg) => Err(ClientError::Protocol(msg)),
-        other => Err(ClientError::Protocol(format!(
-            "unexpected compile response: {other:?}"
-        ))),
+/// take many minutes for a release build of a large crate. The function
+/// reads frames in a loop, dispatching `CompileStdoutChunk` /
+/// `CompileStderrChunk` to the matching writer and returning once it
+/// sees the terminal `CompileDone` frame.
+///
+/// On any timeout / IO error the wrapper hard-errors (the legacy
+/// `zccache.exe` fork path was removed in #980 L1's second pass).
+pub fn compile_streaming<O, E>(
+    sock_path: &Path,
+    req: CompileRequest,
+    mut stdout: O,
+    mut stderr: E,
+) -> Result<CompileDoneInfo, ClientError>
+where
+    O: Write,
+    E: Write,
+{
+    #[cfg(windows)]
+    {
+        compile_streaming_windows(sock_path, req, &mut stdout, &mut stderr)
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, COMPILE_REPLY_TIMEOUT)?;
+        write_frame_sync(&mut stream, &Request::Compile(req))?;
+        loop {
+            let frame: Response = read_frame_sync(&mut stream)?;
+            match frame {
+                Response::CompileStdoutChunk(bytes) => {
+                    tracing::debug!(
+                        target: "soldr::client::compile_stream",
+                        bytes = bytes.len(),
+                        "stdout chunk received",
+                    );
+                    stdout.write_all(&bytes).map_err(ClientError::Io)?;
+                }
+                Response::CompileStderrChunk(bytes) => {
+                    tracing::debug!(
+                        target: "soldr::client::compile_stream",
+                        bytes = bytes.len(),
+                        "stderr chunk received",
+                    );
+                    stderr.write_all(&bytes).map_err(ClientError::Io)?;
+                }
+                Response::CompileDone {
+                    exit_code,
+                    cached,
+                    cache_outcome,
+                    compile_id,
+                } => {
+                    tracing::debug!(
+                        target: "soldr::client::compile_stream",
+                        exit_code,
+                        cached,
+                        cache_outcome,
+                        "compile done — streaming reply complete",
+                    );
+                    return Ok(CompileDoneInfo {
+                        exit_code,
+                        cached,
+                        cache_outcome,
+                        compile_id,
+                    });
+                }
+                Response::Error(msg) => return Err(ClientError::Protocol(msg)),
+                other => {
+                    return Err(ClientError::Protocol(format!(
+                        "unexpected compile stream frame: {other:?}"
+                    )));
+                }
+            }
+        }
     }
 }
 
@@ -559,6 +640,174 @@ fn submit_request_windows_with_timeout(
             .map_err(|_| windows_timeout_error("daemon IPC request", deadline))?
         })
     })
+}
+
+/// Windows variant of [`compile_streaming`]. Tunnels the chunks back
+/// from a tokio runtime thread to the calling thread via a single
+/// std::sync::mpsc channel; the calling thread drains the channel and
+/// forwards bytes to the caller's `stdout` / `stderr` sinks (which
+/// usually are `std::io::stdout()` and `std::io::stderr()` from the
+/// wrapper). Keeping the user writers off the tokio thread sidesteps
+/// Windows's blocking-IO-on-stdout quirks and matches the sync shape
+/// the Unix branch uses.
+#[cfg(windows)]
+fn compile_streaming_windows<O, E>(
+    sock_path: &Path,
+    req: CompileRequest,
+    stdout: &mut O,
+    stderr: &mut E,
+) -> Result<CompileDoneInfo, ClientError>
+where
+    O: Write,
+    E: Write,
+{
+    use tokio::net::windows::named_pipe::ClientOptions;
+    use tokio::time::timeout;
+
+    /// Frames forwarded from the IPC worker thread to the calling
+    /// thread. `Done` carries the terminal metadata; `Err` short-
+    /// circuits on protocol/io failure.
+    enum StreamMsg {
+        Stdout(Vec<u8>),
+        Stderr(Vec<u8>),
+        Done(CompileDoneInfo),
+        Err(ClientError),
+    }
+
+    let sock_path = sock_path.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel::<StreamMsg>();
+
+    let worker = std::thread::Builder::new()
+        .name("soldr-daemon-client-stream".into())
+        .spawn(move || {
+            let runtime = match windows_runtime() {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
+                    return;
+                }
+            };
+            runtime.block_on(async move {
+                let mut stream = match ClientOptions::new().open(&sock_path) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        let _ = tx.send(StreamMsg::Err(ClientError::from(e)));
+                        return;
+                    }
+                };
+                let request = Request::Compile(req);
+                if let Err(e) = timeout(
+                    COMPILE_REPLY_TIMEOUT,
+                    write_frame_async(&mut stream, &request),
+                )
+                .await
+                .map_err(|_| windows_timeout_error("daemon IPC compile write", COMPILE_REPLY_TIMEOUT))
+                .and_then(|res| res)
+                {
+                    let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
+                    return;
+                }
+                loop {
+                    let frame = match timeout(
+                        COMPILE_REPLY_TIMEOUT,
+                        read_frame_async::<_, Response>(&mut stream),
+                    )
+                    .await
+                    {
+                        Ok(Ok(f)) => f,
+                        Ok(Err(e)) => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
+                            return;
+                        }
+                        Err(_) => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Io(
+                                windows_timeout_error(
+                                    "daemon IPC compile read",
+                                    COMPILE_REPLY_TIMEOUT,
+                                ),
+                            )));
+                            return;
+                        }
+                    };
+                    match frame {
+                        Response::CompileStdoutChunk(bytes) => {
+                            tracing::debug!(
+                                target: "soldr::client::compile_stream",
+                                bytes = bytes.len(),
+                                "stdout chunk received",
+                            );
+                            if tx.send(StreamMsg::Stdout(bytes)).is_err() {
+                                return;
+                            }
+                        }
+                        Response::CompileStderrChunk(bytes) => {
+                            tracing::debug!(
+                                target: "soldr::client::compile_stream",
+                                bytes = bytes.len(),
+                                "stderr chunk received",
+                            );
+                            if tx.send(StreamMsg::Stderr(bytes)).is_err() {
+                                return;
+                            }
+                        }
+                        Response::CompileDone {
+                            exit_code,
+                            cached,
+                            cache_outcome,
+                            compile_id,
+                        } => {
+                            tracing::debug!(
+                                target: "soldr::client::compile_stream",
+                                exit_code,
+                                cached,
+                                cache_outcome,
+                                "compile done — streaming reply complete",
+                            );
+                            let _ = tx.send(StreamMsg::Done(CompileDoneInfo {
+                                exit_code,
+                                cached,
+                                cache_outcome,
+                                compile_id,
+                            }));
+                            return;
+                        }
+                        Response::Error(msg) => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Protocol(msg)));
+                            return;
+                        }
+                        other => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Protocol(format!(
+                                "unexpected compile stream frame: {other:?}"
+                            ))));
+                            return;
+                        }
+                    }
+                }
+            });
+        })
+        .map_err(ClientError::Io)?;
+
+    let result = loop {
+        match rx.recv() {
+            Ok(StreamMsg::Stdout(bytes)) => {
+                stdout.write_all(&bytes).map_err(ClientError::Io)?;
+            }
+            Ok(StreamMsg::Stderr(bytes)) => {
+                stderr.write_all(&bytes).map_err(ClientError::Io)?;
+            }
+            Ok(StreamMsg::Done(info)) => break Ok(info),
+            Ok(StreamMsg::Err(e)) => break Err(e),
+            Err(_) => {
+                break Err(ClientError::Io(std::io::Error::other(
+                    "soldr-daemon-client-stream worker exited without a result",
+                )))
+            }
+        }
+    };
+    // Best effort join — the worker has already pushed its final
+    // message at this point, so this returns promptly.
+    let _ = worker.join();
+    result
 }
 
 /// Returns the well-known socket path the wrapper should use. Centralized

@@ -38,7 +38,25 @@ use thiserror::Error;
 ///   compile to the daemon's embedded `ZccacheService`. The legacy
 ///   fork-zccache.exe path is gone (#980 L1 second pass) — wrappers
 ///   that can't reach a v6 daemon hard-error instead of falling back.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// * v7 (#983 Phase 5b): the daemon stops emitting the single-frame
+///   `Response::Compile` for `Request::Compile`. Instead it streams a
+///   sequence of `Response::CompileStdoutChunk` / `CompileStderrChunk`
+///   frames followed by exactly one terminal `Response::CompileDone`
+///   frame. Wrapper-side memory drops from "full rustc stdout+stderr
+///   buffered before display" to "at most one chunk in flight". The
+///   v6 `CompileResponse` slot is kept on the wire for one release
+///   cycle so cross-version traffic still errors as a clean version
+///   mismatch instead of a silent oneof mis-decode.
+pub const PROTOCOL_VERSION: u32 = 7;
+
+/// Wire-chunk granularity for the streaming Compile reply (#983 Phase
+/// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
+/// and matches the typical SO_SNDBUF on a Unix socket / named-pipe.
+/// Each frame's prost overhead is a handful of bytes so chunk-size is
+/// effectively the IPC frame size on the wire; rustc emits stdout /
+/// stderr in much smaller increments, but the daemon coalesces those
+/// into `CHUNK_BYTES`-sized frames before sending.
+pub const CHUNK_BYTES: usize = 64 * 1024;
 
 /// Maximum prost body size. 4 MiB is comfortably above the largest
 /// realistic Compile response (rustc stdout/stderr — typically tens of
@@ -234,7 +252,31 @@ pub enum Response {
     Ack,
     /// Reply to [`Request::Compile`] (issue #977 Phase 5 / #980 L1)
     /// when the daemon's embedded backend handled the rustc dispatch.
+    ///
+    /// **Deprecated in v7** (#983 Phase 5b): the daemon no longer
+    /// emits this variant; it streams [`Response::CompileStdoutChunk`]
+    /// / [`Response::CompileStderrChunk`] / [`Response::CompileDone`]
+    /// instead. The variant is retained for one release cycle so the
+    /// decode path still admits the legacy shape — useful for tooling
+    /// that replays captured frames.
     Compile(CompileResponseBody),
+    /// One stdout slice in the streaming Compile reply (#983 Phase 5b).
+    /// Each chunk is at most [`CHUNK_BYTES`] long; the wrapper relays
+    /// it onto its own stdout immediately and discards the buffer.
+    CompileStdoutChunk(Vec<u8>),
+    /// One stderr slice in the streaming Compile reply (#983 Phase 5b).
+    /// Mirrors [`Response::CompileStdoutChunk`] for stderr.
+    CompileStderrChunk(Vec<u8>),
+    /// Terminal frame in the streaming Compile reply (#983 Phase 5b).
+    /// The wrapper reads chunk frames until it sees this variant,
+    /// then exits with `exit_code`. `cache_outcome` mirrors the
+    /// integer encoding used by [`CompileResponseBody`].
+    CompileDone {
+        exit_code: i32,
+        cached: bool,
+        cache_outcome: i32,
+        compile_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -311,10 +353,18 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v6_after_compile_verb, {
-        // Bumped from 5 → 6 in #977 Phase 5 / #980 L1 when
-        // Request::Compile + Response::CompileResponse were added.
-        assert_eq!(PROTOCOL_VERSION, 6);
+    crate::timed_test!(protocol_version_is_v7_after_streaming_compile, {
+        // Bumped from 6 → 7 in #983 Phase 5b when the daemon switched
+        // from a single-frame Response::Compile to streaming
+        // CompileStdoutChunk / CompileStderrChunk / CompileDone.
+        assert_eq!(PROTOCOL_VERSION, 7);
+    });
+
+    crate::timed_test!(chunk_bytes_is_64_kib, {
+        // #983 Phase 5b — declared in the protocol so the daemon and
+        // wrapper agree on the frame-size budget without re-importing
+        // an opaque constant from each other's modules.
+        assert_eq!(CHUNK_BYTES, 64 * 1024);
     });
 
     crate::timed_test!(cook_stats_or_zero_defaults_to_zero, {

@@ -137,9 +137,19 @@ message WireResponse {
     WireCookHit cook_hit = 5;
     WireCookMiss cook_miss = 6;
     WireUnit ack = 7;
-    // #977 Phase 5 / #980 L1 — reply to WireCompileRequest carrying
-    // captured rustc stdout/stderr + exit code.
+    // #977 Phase 5 / #980 L1 — original single-frame Compile reply.
+    // Deprecated in v7 (#983 Phase 5b): the daemon no longer emits
+    // this variant; the wire-format slot is reserved for one release
+    // cycle so an in-flight v7-vs-v6 mismatch surfaces as a
+    // version-mismatch error rather than a silent oneof mis-decode.
+    // Plan to remove the tag in v8.
     WireCompileResponse compile_response = 8;
+    // #983 Phase 5b — streaming Compile reply: zero or more
+    // {stdout,stderr} chunk frames followed by exactly one
+    // WireCompileDone frame to close the call.
+    WireCompileStdoutChunk compile_stdout_chunk = 9;
+    WireCompileStderrChunk compile_stderr_chunk = 10;
+    WireCompileDone compile_done = 11;
   }
 }
 
@@ -150,6 +160,28 @@ message WireCompileResponse {
   bool cached = 4;
   // 1=Hit, 2=Miss, 3=Error. Mirrors zccache::embedded::CacheOutcome.
   int32 cache_outcome = 5;
+}
+
+// #983 Phase 5b — one slice of rustc's stdout pipe. Each chunk caps at
+// `CHUNK_BYTES` (64 KiB) so peers hold at most one chunk in memory.
+message WireCompileStdoutChunk {
+  bytes bytes = 1;
+}
+
+// #983 Phase 5b — one slice of rustc's stderr pipe; same shape and cap
+// as WireCompileStdoutChunk.
+message WireCompileStderrChunk {
+  bytes bytes = 1;
+}
+
+// #983 Phase 5b — closes the streaming Compile reply. The wrapper-side
+// reader loops on read_frame_async until it sees this variant.
+message WireCompileDone {
+  int32 exit_code = 1;
+  bool cached = 2;
+  // 1=Hit, 2=Miss, 3=Error. Mirrors zccache::embedded::CacheOutcome.
+  int32 cache_outcome = 3;
+  string compile_id = 4;
 }
 
 message WireBuilds {

@@ -223,7 +223,7 @@ pub mod proto {
 
     #[derive(Clone, PartialEq, Message)]
     pub struct WireResponse {
-        #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8")]
+        #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8,9,10,11")]
         pub kind: Option<WireResponseKind>,
     }
 
@@ -243,9 +243,21 @@ pub mod proto {
         CookMiss(WireCookMiss),
         #[prost(message, tag = "7")]
         Ack(WireUnit),
-        /// #977 Phase 5 / #980 L1 — reply to `WireCompileRequest`.
+        /// #977 Phase 5 / #980 L1 — single-frame reply to
+        /// `WireCompileRequest`. Deprecated in v7 (#983 Phase 5b);
+        /// retained on the wire for one release cycle but no longer
+        /// emitted. Scheduled for removal in v8.
         #[prost(message, tag = "8")]
         CompileResponse(WireCompileResponse),
+        /// #983 Phase 5b — one stdout chunk in the streaming Compile reply.
+        #[prost(message, tag = "9")]
+        CompileStdoutChunk(WireCompileStdoutChunk),
+        /// #983 Phase 5b — one stderr chunk in the streaming Compile reply.
+        #[prost(message, tag = "10")]
+        CompileStderrChunk(WireCompileStderrChunk),
+        /// #983 Phase 5b — terminal frame for the streaming Compile reply.
+        #[prost(message, tag = "11")]
+        CompileDone(WireCompileDone),
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -260,6 +272,30 @@ pub mod proto {
         pub cached: bool,
         #[prost(int32, tag = "5")]
         pub cache_outcome: i32,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct WireCompileStdoutChunk {
+        #[prost(bytes = "vec", tag = "1")]
+        pub bytes: Vec<u8>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct WireCompileStderrChunk {
+        #[prost(bytes = "vec", tag = "1")]
+        pub bytes: Vec<u8>,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct WireCompileDone {
+        #[prost(int32, tag = "1")]
+        pub exit_code: i32,
+        #[prost(bool, tag = "2")]
+        pub cached: bool,
+        #[prost(int32, tag = "3")]
+        pub cache_outcome: i32,
+        #[prost(string, tag = "4")]
+        pub compile_id: String,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -898,6 +934,27 @@ impl From<&Response> for proto::WireResponse {
                     cache_outcome: body.cache_outcome,
                 })
             }
+            Response::CompileStdoutChunk(bytes) => {
+                proto::WireResponseKind::CompileStdoutChunk(proto::WireCompileStdoutChunk {
+                    bytes: bytes.clone(),
+                })
+            }
+            Response::CompileStderrChunk(bytes) => {
+                proto::WireResponseKind::CompileStderrChunk(proto::WireCompileStderrChunk {
+                    bytes: bytes.clone(),
+                })
+            }
+            Response::CompileDone {
+                exit_code,
+                cached,
+                cache_outcome,
+                compile_id,
+            } => proto::WireResponseKind::CompileDone(proto::WireCompileDone {
+                exit_code: *exit_code,
+                cached: *cached,
+                cache_outcome: *cache_outcome,
+                compile_id: compile_id.clone(),
+            }),
         };
         Self { kind: Some(kind) }
     }
@@ -941,6 +998,14 @@ impl TryFrom<proto::WireResponse> for Response {
                 cached: m.cached,
                 cache_outcome: m.cache_outcome,
             }),
+            proto::WireResponseKind::CompileStdoutChunk(m) => Response::CompileStdoutChunk(m.bytes),
+            proto::WireResponseKind::CompileStderrChunk(m) => Response::CompileStderrChunk(m.bytes),
+            proto::WireResponseKind::CompileDone(m) => Response::CompileDone {
+                exit_code: m.exit_code,
+                cached: m.cached,
+                cache_outcome: m.cache_outcome,
+                compile_id: m.compile_id,
+            },
         })
     }
 }
@@ -1068,7 +1133,7 @@ mod tests {
 
     crate::timed_test!(status_response_round_trips_with_cook_stats, {
         let info = StatusInfo {
-            version: 6,
+            version: 7,
             pid: 4242,
             uptime_secs: 60,
             request_count: 17,
@@ -1251,6 +1316,94 @@ mod tests {
                 assert_eq!(decoded.stderr, b"warning: unused import\n");
                 assert!(decoded.cached);
                 assert_eq!(decoded.cache_outcome, 1);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    });
+
+    crate::timed_test!(compile_stdout_chunk_round_trips, {
+        // #983 Phase 5b — streaming chunk variant. Exercises the
+        // happy path including zero-byte chunks (which the daemon
+        // never emits, but the decode side must still accept).
+        let payload = b"rustc: compiling foo v0.1.0\n".to_vec();
+        let resp = Response::CompileStdoutChunk(payload.clone());
+        let bytes = encode_response(&resp);
+        match decode_response(&bytes).expect("decode") {
+            Response::CompileStdoutChunk(decoded) => {
+                assert_eq!(decoded, payload);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
+        let empty = Response::CompileStdoutChunk(Vec::new());
+        let bytes = encode_response(&empty);
+        match decode_response(&bytes).expect("decode") {
+            Response::CompileStdoutChunk(decoded) => assert!(decoded.is_empty()),
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    });
+
+    crate::timed_test!(compile_stderr_chunk_round_trips, {
+        // #983 Phase 5b — the stderr counterpart. Same shape, separate
+        // discriminant so the wrapper-side reader can fan out to the
+        // correct sink without inspecting the payload.
+        let payload = b"warning: unused import `foo`\n".to_vec();
+        let resp = Response::CompileStderrChunk(payload.clone());
+        let bytes = encode_response(&resp);
+        match decode_response(&bytes).expect("decode") {
+            Response::CompileStderrChunk(decoded) => {
+                assert_eq!(decoded, payload);
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+    });
+
+    crate::timed_test!(compile_done_round_trips_with_all_fields, {
+        // #983 Phase 5b — terminal frame in the streaming reply. All
+        // four metadata fields are load-bearing for the wrapper's
+        // exit-code + cache-outcome reporting.
+        let resp = Response::CompileDone {
+            exit_code: 0,
+            cached: true,
+            cache_outcome: 1,
+            compile_id: "abc123-def456".into(),
+        };
+        let bytes = encode_response(&resp);
+        match decode_response(&bytes).expect("decode") {
+            Response::CompileDone {
+                exit_code,
+                cached,
+                cache_outcome,
+                compile_id,
+            } => {
+                assert_eq!(exit_code, 0);
+                assert!(cached);
+                assert_eq!(cache_outcome, 1);
+                assert_eq!(compile_id, "abc123-def456");
+            }
+            other => panic!("unexpected variant: {other:?}"),
+        }
+
+        // Non-zero exit_code + empty compile_id (the daemon emits an
+        // empty string when zccache does not surface an audit id).
+        let resp = Response::CompileDone {
+            exit_code: 101,
+            cached: false,
+            cache_outcome: 2,
+            compile_id: String::new(),
+        };
+        let bytes = encode_response(&resp);
+        match decode_response(&bytes).expect("decode") {
+            Response::CompileDone {
+                exit_code,
+                cached,
+                cache_outcome,
+                compile_id,
+            } => {
+                assert_eq!(exit_code, 101);
+                assert!(!cached);
+                assert_eq!(cache_outcome, 2);
+                assert!(compile_id.is_empty());
             }
             other => panic!("unexpected variant: {other:?}"),
         }

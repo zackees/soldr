@@ -424,12 +424,15 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
         stdin: Vec::new(),
     };
 
-    // First try — daemon may already be running.
-    let first = client::compile(&sock, req.clone());
-    let body = match first {
-        Ok(body) => body,
+    // First try — daemon may already be running. #983 Phase 5b: the
+    // wrapper streams rustc stdout/stderr directly to its own
+    // stdout/stderr as chunk frames arrive, so the IPC layer never
+    // holds the whole rustc output buffered in memory.
+    let first = client::compile_streaming(&sock, req.clone(), std::io::stdout(), std::io::stderr());
+    let done = match first {
+        Ok(info) => info,
         Err(_) => {
-            // Spawn the daemon, then retry up to ~6 s. The spawn
+            // Spawn the daemon, then retry up to ~30 s. The spawn
             // returns before the socket is bound. On cold WSL2 starts
             // (or fresh container layers) the daemon's embedded
             // zccache service can take a couple of seconds to come up
@@ -439,22 +442,27 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
                 eprintln!("soldr: try_spawn_detached returned err: {e:?}");
             }
             let mut last_err = None;
-            let mut body = None;
+            let mut done = None;
             // 30 s retry window — embedded zccache cold-start (redb
             // open, cache root init, depgraph load) can take several
             // seconds on first-ever boot in a container.
             for attempt in 0..300 {
                 std::thread::sleep(std::time::Duration::from_millis(100));
-                match client::compile(&sock, req.clone()) {
-                    Ok(b) => {
-                        body = Some(b);
+                match client::compile_streaming(
+                    &sock,
+                    req.clone(),
+                    std::io::stdout(),
+                    std::io::stderr(),
+                ) {
+                    Ok(info) => {
+                        done = Some(info);
                         break;
                     }
                     Err(e) => last_err = Some((attempt, e)),
                 }
             }
-            match body {
-                Some(b) => b,
+            match done {
+                Some(info) => info,
                 None => {
                     // Diagnose: report whether the daemon binary even
                     // exists at the expected sibling path, the PID
@@ -497,13 +505,7 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
         }
     };
 
-    // Relay captured stdout/stderr verbatim. Best-effort writes:
-    // a broken pipe on stdout should not mask the rustc exit code
-    // we already have.
-    use std::io::Write as _;
-    let _ = std::io::stdout().write_all(&body.stdout);
-    let _ = std::io::stderr().write_all(&body.stderr);
-    Ok(body.exit_code)
+    Ok(done.exit_code)
 }
 
 #[cfg(test)]

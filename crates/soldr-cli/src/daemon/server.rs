@@ -18,7 +18,7 @@ use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink,
+    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink, CHUNK_BYTES,
     COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
 };
 use crate::daemon::zccache_link;
@@ -737,23 +737,111 @@ where
             // Issue #977 / #980 L1: dispatch the rustc compile through
             // the daemon's embedded zccache service. There is no
             // fallback path — embedded is mandatory.
-            let reply = dispatch_compile(&state, req).await;
-            let _ = write_frame_async(&mut stream, &reply).await;
+            //
+            // #983 Phase 5b: stream the captured stdout/stderr back to
+            // the wrapper as a sequence of chunk frames followed by
+            // exactly one CompileDone frame. `dispatch_compile_streaming`
+            // owns the writer for the duration of the call.
+            if let Err(err) = dispatch_compile_streaming(&state, req, &mut stream).await {
+                tracing::warn!("soldr-daemon: streaming compile dispatch failed: {err}");
+            }
         }
     }
     Ok(())
 }
 
-/// Daemon-side compile dispatcher (issue #977 / #980 L1). Forwards to
-/// `SoldrZccacheService::compile` and packages the result.
-async fn dispatch_compile(
+/// Daemon-side streaming compile dispatcher (issue #983 Phase 5b).
+/// Calls `SoldrZccacheService::compile`, then splits the captured
+/// stdout/stderr `Vec<u8>` into `CHUNK_BYTES`-sized frames before
+/// writing them to the connection. The terminal `CompileDone` frame
+/// carries the exit code, cache outcome, and (today empty) compile id.
+///
+/// Phase 5b1 caveat: the underlying `compile_service.compile` still
+/// returns a fully buffered `CompileResponseBody`, so the daemon
+/// briefly holds the entire rustc output in memory before chunking it
+/// out. The on-wire saving (smaller per-frame prost encode + zero
+/// wrapper-side accumulation) is the immediate win; Phase 5b2 lifts
+/// the daemon-side buffering by changing the zccache embedded service
+/// to emit a stream of chunks directly. See `crates/zccache/src/
+/// embedded.rs` in the `_vender/zccache/` submodule.
+async fn dispatch_compile_streaming<S>(
     state: &Arc<State>,
     req: crate::daemon::protocol::CompileRequest,
-) -> Response {
-    match state.compile_service.compile(req).await {
-        Ok(body) => Response::Compile(body),
-        Err(err) => Response::Error(format!("embedded zccache compile failed: {err}")),
+    stream: &mut S,
+) -> std::io::Result<()>
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    let body = match state.compile_service.compile(req).await {
+        Ok(body) => body,
+        Err(err) => {
+            let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
+            return write_frame_async(stream, &reply).await;
+        }
+    };
+
+    let stdout_len = body.stdout.len();
+    let stderr_len = body.stderr.len();
+    let mut stdout_chunks = 0usize;
+    let mut stderr_chunks = 0usize;
+
+    // Stream stdout first, then stderr. zccache already buffers them
+    // separately (different pipes on rustc), so the original
+    // interleaving is gone by this point; the wrapper writes them to
+    // its own stdout/stderr in the same order rustc produced them
+    // within each pipe.
+    for chunk in body.stdout.chunks(CHUNK_BYTES) {
+        write_frame_async(
+            stream,
+            &Response::CompileStdoutChunk(chunk.to_vec()),
+        )
+        .await?;
+        stdout_chunks += 1;
+        tracing::debug!(
+            target: "soldr::daemon::compile_stream",
+            bytes = chunk.len(),
+            chunk_index = stdout_chunks - 1,
+            "stdout chunk emitted",
+        );
     }
+
+    for chunk in body.stderr.chunks(CHUNK_BYTES) {
+        write_frame_async(
+            stream,
+            &Response::CompileStderrChunk(chunk.to_vec()),
+        )
+        .await?;
+        stderr_chunks += 1;
+        tracing::debug!(
+            target: "soldr::daemon::compile_stream",
+            bytes = chunk.len(),
+            chunk_index = stderr_chunks - 1,
+            "stderr chunk emitted",
+        );
+    }
+
+    let done = Response::CompileDone {
+        exit_code: body.exit_code,
+        cached: body.cached,
+        cache_outcome: body.cache_outcome,
+        // Phase 5b1: zccache's embedded service does not surface an
+        // audit id back through `CompileResponseBody`. Plumbing it
+        // through is part of Phase 5b2; for now the wire field is
+        // an empty string and the wrapper ignores it.
+        compile_id: String::new(),
+    };
+    tracing::debug!(
+        target: "soldr::daemon::compile_stream",
+        exit_code = body.exit_code,
+        cached = body.cached,
+        cache_outcome = body.cache_outcome,
+        stdout_bytes = stdout_len,
+        stderr_bytes = stderr_len,
+        stdout_chunks,
+        stderr_chunks,
+        "compile done — streaming reply complete",
+    );
+    write_frame_async(stream, &done).await
 }
 
 /// Best-effort resolver for the `~/.soldr/cache/cook/<sha256>.tar.zst`
