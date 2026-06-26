@@ -28,13 +28,9 @@ use super::hit_branches::{
 };
 use super::request::CompileRequest;
 
-use compile_exec::{
-    run_compile_exec, CompileExecBytes, CompileExecOutcome, CompileExecRequest, CompileExecResult,
-};
+use compile_exec::{run_compile_exec, CompileExecOutcome, CompileExecRequest, CompileExecResult};
 use hash_verify::{hash_and_verify, HashSourceOutcome, HashVerifyInput, HashVerifyOutcome};
-use store_outcome::{store_successful_compile, StoreOutcomeRequest, StoreOutcomeResult};
-
-use super::miss_store::CompileExecStdioSource;
+use store_outcome::{store_successful_compile, StoreOutcomeRequest};
 use system_includes::{discover_system_includes, SystemIncludesOutcome};
 
 const DEPGRAPH_STARTUP_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
@@ -745,25 +741,20 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         CompileExecResult::Error(resp) => return resp,
     };
 
-    // Issue zccache#939 step 2: split on success vs. failure to avoid
-    // materializing the streamed stdout/stderr at the boundary. The
-    // success path forwards `CompileExecBytes` (potentially `Streamed`)
-    // through to the store, which renames pending → cache slot and
-    // reads the slot ONCE — the same `Arc<Vec<u8>>` produced by that
-    // read populates both the inline `ArtifactIndex` field and the
-    // `Response::CompileResult` reply, so the streamed cold path pays
-    // one disk read total (Step 1 paid one read AND would have paid a
-    // separate cache write).
-    //
-    // The failure path still needs the bytes in hand here because
-    // `maybe_store_rustc_error_artifact` AND the response both want
-    // `Arc<Vec<u8>>`s. Rustc stderr on a compile error is typically
-    // small (a few KB of diagnostic lines), so this boundary read is
-    // not a perf-critical path; we preserve the existing shape.
+    // Issue zccache#939 step 1: materialize the captured stdout/stderr
+    // at the consumer boundary so the rest of the pipeline (error
+    // store, success store, Response::CompileResult) keeps its
+    // `Arc<Vec<u8>>` API. The `Buffered` arm clones the existing Arcs
+    // (so no extra copy on the MSVC `/showIncludes` / multi-file / cc
+    // path); the `Streamed` arm reads the pending stdout + stderr
+    // files from `depfile_tmpdir`. Step 2 replaces this read with a
+    // `rename` into the artifact store on the rustc success path.
+    let stdout = Arc::new(bytes.stdout_bytes());
+    let stderr = Arc::new(bytes.stderr_bytes());
+
     if exit_code != 0 {
         state.stats.record_error();
         record_session_stat(&state.sessions, &sid, |t| t.record_error());
-        let (stdout, stderr) = materialize_buffered_stdio(bytes);
         if let Some(rustc_args) = rustc_args_opt.as_ref() {
             if let Some(artifact_key_hex) = maybe_store_rustc_error_artifact(
                 state,
@@ -788,108 +779,70 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
                 );
             }
         }
-        return Response::CompileResult {
-            exit_code,
-            stdout,
-            stderr,
-            cached: false,
-        };
     }
 
-    // Success path: hand the `CompileExecBytes` straight through to
-    // `store_successful_compile` so the streamed arm can rename into
-    // the artifact slot inside `store_miss_artifact`.
-    let stdio_source = compile_exec_bytes_into_source(bytes);
-
-    let store_outcome = store_successful_compile(StoreOutcomeRequest {
-        state_arc,
-        sid: &sid,
-        context_key: &context_key,
-        source_path: &source_path,
-        output_path: &output_path,
-        cwd_path: &cwd_path,
-        ctx: &ctx,
-        compilation: &compilation,
-        rustc_args_opt: rustc_args_opt.as_deref(),
-        rustc_extern_paths: &rustc_extern_paths,
-        is_rustc,
-        rust_profile_enabled,
-        rust_profile_mode,
-        stdio_source,
-        exit_code,
-        depfile_strategy,
-        show_includes_scan,
-        pre_hash_task,
-        // Issue #401: hand the cc/cpp miss path the hashes already
-        // computed in `hash_and_verify` so `store_outcome.rs` skips
-        // re-hashing the same headers in its parallel `t_hash` phase.
-        // For rustc the same hashes arrive via `pre_hash_task` and
-        // `pre_hashed` is left `None`. If we got here via cold context
-        // or fell back to a direct compile, `hash_map` is empty and
-        // the store path will hash everything as before.
-        pre_hashed: if is_rustc || hash_map.is_empty() {
-            None
-        } else {
-            Some(hash_map)
-        },
-        compiler_priority_decision,
-        compile_start,
-        snap_clock,
-        compiler_exec_ns,
-        compiler_process_ns,
-        compiler_prep_ns,
-        post_exec_ns,
-        pre_exec_ns,
-        system_includes_ns,
-        system_watch_ns,
-        parse_args_ns,
-        build_context_ns,
-        hash_source_ns,
-        hash_headers_ns,
-        depgraph_check_ns,
-        break_outputs_ns,
-    })
-    .await;
-
-    match store_outcome {
-        StoreOutcomeResult::EarlyReturn(response) => *response,
-        StoreOutcomeResult::Done(resolved) => Response::CompileResult {
+    // Only cache successful compilations
+    if exit_code == 0 {
+        if let Some(response) = store_successful_compile(StoreOutcomeRequest {
+            state_arc,
+            sid: &sid,
+            context_key: &context_key,
+            source_path: &source_path,
+            output_path: &output_path,
+            cwd_path: &cwd_path,
+            ctx: &ctx,
+            compilation: &compilation,
+            rustc_args_opt: rustc_args_opt.as_deref(),
+            rustc_extern_paths: &rustc_extern_paths,
+            is_rustc,
+            rust_profile_enabled,
+            rust_profile_mode,
+            stdout: Arc::clone(&stdout),
+            stderr: Arc::clone(&stderr),
             exit_code,
-            stdout: resolved.stdout,
-            stderr: resolved.stderr,
-            cached: false,
-        },
-    }
-}
-
-/// Issue zccache#939 step 2: convert the (typically post-failure)
-/// `CompileExecBytes` into the two `Arc<Vec<u8>>` handles the failure
-/// path needs. `Buffered` is a pure clone of the existing Arcs;
-/// `Streamed` reads the pending files once (the failure path is not
-/// perf-critical and the index doesn't need the bytes).
-fn materialize_buffered_stdio(bytes: CompileExecBytes) -> (Arc<Vec<u8>>, Arc<Vec<u8>>) {
-    let stdout = Arc::new(bytes.stdout_bytes());
-    let stderr = Arc::new(bytes.stderr_bytes());
-    (stdout, stderr)
-}
-
-/// Issue zccache#939 step 2: convert the success-path `CompileExecBytes`
-/// produced by the spawn helper into the `CompileExecStdioSource` shape
-/// the store path consumes. Pure shape adapter — no I/O, no allocation
-/// beyond consuming the variant.
-fn compile_exec_bytes_into_source(bytes: CompileExecBytes) -> CompileExecStdioSource {
-    match bytes {
-        CompileExecBytes::Buffered { stdout, stderr } => {
-            CompileExecStdioSource::Buffered { stdout, stderr }
+            depfile_strategy,
+            show_includes_scan,
+            pre_hash_task,
+            // Issue #401: hand the cc/cpp miss path the hashes already
+            // computed in `hash_and_verify` so `store_outcome.rs` skips
+            // re-hashing the same headers in its parallel `t_hash` phase.
+            // For rustc the same hashes arrive via `pre_hash_task` and
+            // `pre_hashed` is left `None`. If we got here via cold context
+            // or fell back to a direct compile, `hash_map` is empty and
+            // the store path will hash everything as before.
+            pre_hashed: if is_rustc || hash_map.is_empty() {
+                None
+            } else {
+                Some(hash_map)
+            },
+            compiler_priority_decision,
+            compile_start,
+            snap_clock,
+            compiler_exec_ns,
+            compiler_process_ns,
+            compiler_prep_ns,
+            post_exec_ns,
+            pre_exec_ns,
+            system_includes_ns,
+            system_watch_ns,
+            parse_args_ns,
+            build_context_ns,
+            hash_source_ns,
+            hash_headers_ns,
+            depgraph_check_ns,
+            break_outputs_ns,
+        })
+        .await
+        {
+            return response;
         }
-        CompileExecBytes::Streamed {
-            stdout_path,
-            stderr_path,
-            ..
-        } => CompileExecStdioSource::Streamed {
-            stdout_path,
-            stderr_path,
-        },
+    }
+
+    Response::CompileResult {
+        exit_code,
+        stdout,
+        stderr,
+        cached: false,
     }
 }
 

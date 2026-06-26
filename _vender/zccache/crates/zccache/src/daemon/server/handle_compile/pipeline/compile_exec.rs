@@ -25,22 +25,22 @@ pub(super) struct CompileExecRequest<'a> {
     pub(super) snap_clock: Clock,
 }
 
-/// Issue zccache#939 (step 1 + step 2): how the compiler's stdout/stderr
-/// made it back from the spawn helper into the pipeline.
+/// Issue zccache#939 (step 1): how the compiler's stdout/stderr made it
+/// back from the spawn helper into the pipeline.
 ///
-/// `Buffered` mirrors the historical shape — `tokio::process::Output`
-/// was `wait_with_output`-ed into two `Arc<Vec<u8>>`s. Used by:
+/// `Buffered` mirrors the historical shape — `tokio::process::Output` was
+/// `wait_with_output`-ed into two `Arc<Vec<u8>>`s. Used by:
 ///   * MSVC `/showIncludes` (stderr is parsed before being forwarded —
 ///     we need it in memory anyway).
 ///   * The multi-file C/C++ spawn path.
 ///   * `run_compiler_direct` (non-cacheable / fallback path).
 ///
-/// `Streamed` is the rustc cold-path shape: the child's stdio pipes
-/// were `tokio::io::copy`-ed straight into two on-disk files under
-/// `state.depfile_tmpdir`. The pipeline forwards this variant by-value
-/// into the store path (step 2), where the pending files are renamed
-/// directly into the per-key cache slots — eliminating the
-/// read-then-write-then-read shape step 1 had at the boundary.
+/// `Streamed` is the rustc cold-path shape introduced by step 1: the
+/// child's pipes were `tokio::io::copy`-ed straight into two on-disk
+/// files under `state.depfile_tmpdir`. Step 2 will replace the
+/// "synchronously read these files into Vec<u8>" boundary in
+/// `pipeline/mod.rs` with a `rename` into the artifact store. For
+/// step 1 the boundary keeps the downstream `Vec<u8>` API stable.
 pub(super) enum CompileExecBytes {
     Buffered {
         stdout: Arc<Vec<u8>>,
@@ -49,18 +49,9 @@ pub(super) enum CompileExecBytes {
     Streamed {
         stdout_path: std::path::PathBuf,
         stderr_path: std::path::PathBuf,
-        /// Captured exit code. Currently mirrored into the
-        /// outer `CompileExecOutcome.exit_code` by the spawn site so
-        /// the pipeline can branch on it without inspecting the
-        /// `Streamed` arm; kept here as a sanity check and to support
-        /// a future API tightening that returns `CompileExecBytes`
-        /// alone from the spawn helper.
-        #[allow(dead_code)]
+        #[allow(dead_code)] // Read in step 2 — kept on the variant for future use.
         exit_code: i32,
-        /// Whether the bytes were served from the cache. Always
-        /// `false` in the spawn path (cache hits never reach this
-        /// site); kept for symmetry with `Response::CompileResult`.
-        #[allow(dead_code)]
+        #[allow(dead_code)] // Read in step 2 — kept on the variant for future use.
         cached: bool,
     },
 }
@@ -69,23 +60,13 @@ impl CompileExecBytes {
     /// Materialize the captured stdout as a `Vec<u8>`.
     ///
     /// For `Buffered` this clones the existing `Arc<Vec<u8>>` contents.
-    /// For `Streamed` this performs a synchronous `std::fs::read` of
-    /// the pending stdout file.
-    ///
-    /// **Step 2 (zccache#939) caller policy**: the success path no
-    /// longer calls this — it consumes `CompileExecBytes` directly
-    /// and routes the `Streamed` arm through
-    /// `miss_store::resolve_stdio_into_cache_slot` so the pending
-    /// file is renamed (not read) into the per-key cache slot before
-    /// the bytes are surfaced. This helper remains the right tool
-    /// for the failure path (`exit_code != 0`) and for any caller
-    /// that explicitly wants `Vec<u8>` semantics without renaming —
-    /// reads are cheap on the failure path since rustc stderr is
-    /// typically a few KB of diagnostic lines.
-    ///
-    /// A failed read returns an empty `Vec<u8>` and logs a warning —
-    /// the caller already has the exit code and stderr-channel
-    /// diagnostics to surface the compile failure.
+    /// For `Streamed` this performs a synchronous `std::fs::read` of the
+    /// pending stdout file. Step 1 keeps the downstream `Vec<u8>` API
+    /// unchanged so consumers don't have to learn the new shape; step 2
+    /// will replace this `read` with a `rename` into the artifact store.
+    /// A failed read returns an empty `Vec<u8>` and logs a warning — the
+    /// caller already has the exit code and stderr-channel diagnostics
+    /// to surface the compile failure.
     pub(super) fn stdout_bytes(&self) -> Vec<u8> {
         match self {
             CompileExecBytes::Buffered { stdout, .. } => (**stdout).clone(),
