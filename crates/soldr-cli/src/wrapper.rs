@@ -312,6 +312,83 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 // L1 daemon-embedded compile path (issue #977 / #980 L1)
 // =========================================================================
 
+/// Predicate for [`compile_via_daemon`]'s env-var filter (Phase 5c
+/// from #981). Returns `true` for env vars that rustc, cargo build
+/// scripts (cc-rs / bindgen / proc-macro setup), or zccache's internal
+/// machinery actually read. Everything else is dropped from the
+/// `Request::Compile` payload to keep the daemon's tokio runtime out
+/// of prost serialization of ~10-50 KB of useless `CARGO_PKG_*`
+/// metadata per compile.
+fn is_compile_env_var(name: &str) -> bool {
+    // Prefix matches first — order roughly by hit rate so the common
+    // case short-circuits early on the per-call hot path.
+    const PREFIXES: &[&str] = &[
+        "CARGO_",   // CARGO_PKG_*, CARGO_CFG_*, CARGO_MANIFEST_DIR, etc.
+        "RUSTC_",   // RUSTC, RUSTC_WRAPPER, RUSTC_BOOTSTRAP, ...
+        "RUST",     // RUSTFLAGS, RUSTDOC*, RUSTFMT, RUSTUP*, RUST_BACKTRACE
+        "SOLDR_",   // SOLDR_ZCCACHE_BIN, SOLDR_CACHE_*, SOLDR_BUILD_SESSION_*
+        "ZCCACHE_", // ZCCACHE_CACHE_DIR, ZCCACHE_PATH_REMAP, ZCCACHE_SESSION_ID
+        "CC_",      // cc-rs cc_PROFILE_TARGET style
+        "CXX_",     // ditto for C++
+        "AR_",
+        "LD_",      // LD_LIBRARY_PATH, LD_PRELOAD — both meaningful to subprocesses
+        "DEP_",     // build-script-emitted DEP_<pkg>_<key> env vars
+        "OUT_",     // OUT_DIR (build script working dir)
+    ];
+    if PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return true;
+    }
+    // Exact matches for shorter vars rustc / cc-rs / linker need.
+    matches!(
+        name,
+        "HOME"
+            | "USER"
+            | "PATH"
+            | "LANG"
+            | "LC_ALL"
+            | "TARGET"
+            | "HOST"
+            | "TMPDIR"
+            | "TMP"
+            | "TEMP"
+            | "USERPROFILE"  // Windows home
+            | "APPDATA"
+            | "LOCALAPPDATA"
+            | "PROGRAMFILES"
+            | "PROGRAMDATA"
+            | "WINDIR"
+            | "SYSTEMROOT"
+            | "SYSTEMDRIVE"
+            | "COMSPEC"
+            | "PATHEXT"
+            | "TERM"
+            | "RUSTUP_HOME"
+            | "RUSTUP_TOOLCHAIN"
+            | "CARGO"
+            | "CARGO_HOME"
+            | "CC"
+            | "CXX"
+            | "AR"
+            | "LD"
+            | "NM"
+            | "OBJCOPY"
+            | "OBJDUMP"
+            | "STRIP"
+            | "RANLIB"
+            | "CFLAGS"
+            | "CXXFLAGS"
+            | "LDFLAGS"
+            | "MSYSTEM"  // MinGW shell detection (cc-rs reads this)
+            | "VCINSTALLDIR"  // MSVC build-script env vars
+            | "VSINSTALLDIR"
+            | "VCToolsInstallDir"
+            | "WindowsSdkDir"
+            | "INCLUDE"
+            | "LIB"
+            | "LIBPATH"
+    )
+}
+
 /// Dispatch the rustc compile to the running daemon's embedded zccache
 /// service over the `Request::Compile` IPC verb. Returns the exit code
 /// to propagate to cargo, or a hard error if the daemon is unreachable
@@ -331,7 +408,15 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
     let cwd = std::env::current_dir()
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_default();
-    let env: Vec<(String, String)> = std::env::vars().collect();
+    // Phase 5c (#981): forward only the env vars rustc + cc-rs build
+    // scripts actually use. The full `std::env::vars()` payload in a
+    // deep cargo build is 10-50 KB per compile (mostly cargo-injected
+    // CARGO_PKG_* metadata that's already in the args), and pushing
+    // it through prost on every Request::Compile dominates the
+    // daemon's tokio-rt-worker cost on cold cache.
+    let env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| is_compile_env_var(k))
+        .collect();
     let req = crate::daemon::protocol::CompileRequest {
         args: effective_args.iter().skip(1).cloned().collect(),
         cwd,
