@@ -22,6 +22,11 @@
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
 pub mod client;
+/// Phase 2 of issue #977 — `CompileBackend::{Wrapped, Embedded}` enum
+/// held on `server::State`. Unconditional (even without `--features
+/// embedded`) so the daemon always has the abstraction in scope; the
+/// `Embedded` variant itself is gated on the feature.
+pub mod compile_backend;
 pub mod db;
 pub mod ipc;
 pub mod lifecycle;

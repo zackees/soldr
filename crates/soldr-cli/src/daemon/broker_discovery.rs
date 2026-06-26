@@ -295,6 +295,16 @@ pub(crate) fn discover_via_broker_with_disabled(
             // Fall back to the direct soldr-daemon path.
             None => Ok((DiscoveryRoute::DirectFallbackUnavailable, None)),
         },
+        // Catch-all for variants that only exist under richer
+        // running-process feature sets (e.g. `AdoptError::AsyncJoin`,
+        // surfaced when zccache pulls in `client-async` via the
+        // `embedded` feature). Treat unknown adopt failures as
+        // "broker unavailable" so direct discovery takes over rather
+        // than propagating an opaque error. The lint allow keeps the
+        // arm green in feature configurations where the enum is
+        // already exhaustively matched above.
+        #[allow(unreachable_patterns)]
+        Err(_) => Ok((DiscoveryRoute::DirectFallbackUnavailable, None)),
     }
 }
 
