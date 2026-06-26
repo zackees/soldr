@@ -354,6 +354,7 @@ pub(super) async fn handle_connection(
                     &cwd,
                     env,
                     stdin,
+                    None,
                 )
                 .await;
                 (resp, Some(ctx))
@@ -711,6 +712,7 @@ async fn compile_response_for_session(
         &compiler,
         env,
         stdin,
+        None,
     )
     .await;
     (resp, Some(ctx))

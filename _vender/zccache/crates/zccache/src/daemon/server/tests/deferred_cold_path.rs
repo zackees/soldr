@@ -106,6 +106,7 @@ async fn cold_then_warm_returns_identical_content() {
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     let (cold_exit, cold_cached) = match cold {
@@ -135,6 +136,7 @@ async fn cold_then_warm_returns_identical_content() {
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     let warm_exit = match warm {
@@ -195,6 +197,7 @@ async fn distinct_sources_have_distinct_cached_outputs() {
             tmp.path(),
             None,
             Vec::new(),
+            None,
         )
         .await;
         match resp {
@@ -225,6 +228,7 @@ async fn distinct_sources_have_distinct_cached_outputs() {
             tmp.path(),
             None,
             Vec::new(),
+            None,
         )
         .await;
         match resp {
@@ -285,6 +289,7 @@ async fn concurrent_lookups_after_cold_miss_return_consistent_content() {
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     match cold_resp {
@@ -320,6 +325,7 @@ async fn concurrent_lookups_after_cold_miss_return_consistent_content() {
                 &cwd,
                 None,
                 Vec::new(),
+                None,
             )
             .await;
             match resp {
@@ -417,6 +423,7 @@ cat "$src" >> "$out"
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     match v1_resp {
@@ -445,6 +452,7 @@ cat "$src" >> "$out"
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     match v2_resp {
@@ -520,6 +528,7 @@ async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
             tmp.path(),
             None,
             Vec::new(),
+            None,
         )
         .await;
         match resp {
@@ -548,6 +557,7 @@ async fn crash_mid_flight_recovery_never_surfaces_wrong_content() {
         tmp.path(),
         None,
         Vec::new(),
+        None,
     )
     .await;
     match resp {
@@ -644,6 +654,7 @@ async fn distinct_cold_misses_never_cross_contaminate() {
                 &cwd,
                 None,
                 Vec::new(),
+                None,
             )
             .await;
             match resp {

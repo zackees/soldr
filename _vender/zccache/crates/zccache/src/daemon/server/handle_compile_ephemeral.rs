@@ -12,6 +12,11 @@ use super::*;
 
 /// Handle a single-roundtrip ephemeral compile: session start + compile + session end.
 /// Avoids 3 IPC roundtrips for drop-in wrapper mode.
+///
+/// Phase 5b2 (soldr#983): the optional `sink` threads through to the
+/// rustc spawn site in `pipeline::compile_exec::run_compile_exec` so the
+/// child's stdout/stderr pipes can be pumped into the streaming channel
+/// as they arrive rather than buffered until `wait_with_output`.
 #[allow(clippy::too_many_arguments)] // Single dispatch hop; ergonomic refactor unblocked once we stop adding new client-side fields.
 pub(super) async fn handle_compile_ephemeral(
     state: &Arc<SharedState>,
@@ -22,6 +27,7 @@ pub(super) async fn handle_compile_ephemeral(
     cwd: &Path,
     env: Option<Vec<(String, String)>>,
     stdin: Vec<u8>,
+    sink: Option<StreamingSink>,
 ) -> Response {
     // 1. Start ephemeral session (inline, no IPC roundtrip)
     state.stats.record_session();
@@ -49,7 +55,7 @@ pub(super) async fn handle_compile_ephemeral(
     };
 
     // 2. Compile — pass the compiler from the ephemeral request
-    let result = handle_compile(state, &session_id, args, cwd, compiler, env, stdin).await;
+    let result = handle_compile(state, &session_id, args, cwd, compiler, env, stdin, sink).await;
 
     // 3. End session (best-effort, no response needed)
     if let Ok(sid) = session_id.parse::<SessionId>() {
