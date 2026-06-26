@@ -1,0 +1,28 @@
+[package]
+name = "zccache-watcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+description = "PyO3 cdylib hosting the `zccache.watcher._native` extension module"
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+python = ["dep:pyo3"]
+
+[dependencies]
+zccache = { workspace = true }
+pyo3 = { version = "0.23", features = [
+    "extension-module",
+    "generate-import-lib",
+    "abi3-py310",
+], optional = true }
+
+[build-dependencies]
+pyo3-build-config = "0.23"

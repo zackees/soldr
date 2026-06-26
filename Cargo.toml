@@ -8,6 +8,13 @@ resolver = "2"
 members = [
     "crates/soldr-cli",
 ]
+# `_vender/zccache/` carries a path-vendored copy of the zccache
+# repo for the duration of soldr#983. Exclude it from soldr's
+# workspace so cargo does not try to resolve zccache's
+# workspace-inherited dependencies against soldr's
+# `[workspace.dependencies]` table. The vendored crate keeps its
+# own workspace root at `_vender/zccache/Cargo.toml`.
+exclude = ["_vender/zccache"]
 
 [workspace.package]
 version = "0.7.59"

@@ -49,7 +49,13 @@ zstd = { workspace = true }
 # `soldr update-zccache` workflow + the perf-cluster harness
 # (see MANAGED_ZCCACHE_VERSION in src/fetch/mod.rs); bump them in
 # lockstep.
-zccache = { git = "https://github.com/zackees/zccache.git", rev = "fde4b916f24d9fe1cd00aeabe6581e4972f32068", default-features = false }
+# Vendored for the duration of soldr#983 (deadline 2026-07-10).
+# When the upstream fixes land + release, this MUST switch back to
+# the released zccache git/crates.io pin and `_vender/zccache/`
+# MUST be deleted. See docs/VENDORING.md for the contract and
+# `_vender/zccache/.vendor-state` for the upstream PR status of
+# each local delta.
+zccache = { path = "../../_vender/zccache/crates/zccache", default-features = false }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent

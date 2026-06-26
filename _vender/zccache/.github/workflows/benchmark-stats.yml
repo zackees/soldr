@@ -1,0 +1,134 @@
+name: Benchmark Stats
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * *"
+
+concurrency:
+  group: benchmark-stats-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  benchmark:
+    name: Generate benchmark stats
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: zackees/setup-soldr@v0.9.62
+        with:
+          zccache-seed-strict: true
+          cache: false
+          linker: fast
+
+      - uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Install benchmark tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang python3-pil
+
+      - name: Install Emscripten
+        shell: bash
+        env:
+          EMSDK_VERSION: "3.1.74"
+        run: |
+          set -euo pipefail
+          sudo git clone --depth 1 https://github.com/emscripten-core/emsdk.git /opt/emsdk
+          sudo chown -R "$(id -u):$(id -g)" /opt/emsdk
+          /opt/emsdk/emsdk install "${EMSDK_VERSION}"
+          /opt/emsdk/emsdk activate "${EMSDK_VERSION}"
+          # Add em++ etc. to PATH for subsequent steps; the perf test also
+          # falls back to /opt/emsdk/upstream/emscripten if not on PATH.
+          echo "/opt/emsdk" >> "$GITHUB_PATH"
+          echo "/opt/emsdk/upstream/emscripten" >> "$GITHUB_PATH"
+          /opt/emsdk/upstream/emscripten/em++ --version
+
+      - name: Generate benchmark report
+        shell: bash
+        env:
+          ZCCACHE_BENCHMARK_PAGES_URL: https://zackees.github.io/zccache/
+          ZCCACHE_BENCHMARK_RAW_BASE_URL: https://raw.githubusercontent.com/zackees/zccache/benchmark-stats
+        run: |
+          set -euo pipefail
+          mkdir -p benchmark-stats
+          curl --fail --silent --location --max-time 30 \
+            -o benchmark-stats/history.jsonl \
+            https://raw.githubusercontent.com/zackees/zccache/benchmark-stats/history.jsonl \
+            || : > benchmark-stats/history.jsonl
+          python3 -m ci.benchmark_stats --run-benchmarks --output-dir benchmark-stats --log-path benchmark-output/benchmark.log
+
+      - name: Upload benchmark stats artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-stats
+          path: benchmark-stats
+          if-no-files-found: error
+
+      # Issue #569: ship the merged stdout+stderr log so future perf
+      # iterations can read the per-phase `zccache_*_miss_profile` lines
+      # the daemon already emits (env enabled in `ci/benchmark_stats`).
+      # Without this upload the only published data is `latest.json`'s
+      # totals — sub-phase data is GC'd with the runner.
+      - name: Upload bench log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-log
+          path: benchmark-output/benchmark.log
+          if-no-files-found: warn
+
+      - name: Publish benchmark-stats branch
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          publish_dir="$(mktemp -d)"
+          cp -a benchmark-stats/. "$publish_dir/"
+          git -C "$publish_dir" init
+          git -C "$publish_dir" checkout -b benchmark-stats
+          git -C "$publish_dir" config user.name "github-actions[bot]"
+          git -C "$publish_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$publish_dir" add .
+          git -C "$publish_dir" commit -m "chore: publish benchmark stats for ${GITHUB_SHA}"
+          git -C "$publish_dir" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -C "$publish_dir" push --force origin benchmark-stats
+
+      - name: Configure GitHub Pages
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/configure-pages@v5
+
+      - name: Upload GitHub Pages artifact
+        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: benchmark-stats
+
+  deploy-pages:
+    name: Deploy benchmark report
+    needs: benchmark
+    if: ${{ needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,56 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Shell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "functions.shell_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --no-project python ci/hooks/tool_guard.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

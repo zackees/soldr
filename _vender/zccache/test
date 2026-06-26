@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Wrapper: delegates to ci/test.py via uv.
+exec uv run python -m ci.test "$@"

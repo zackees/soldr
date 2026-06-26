@@ -1,0 +1,16 @@
+error: use zccache_core::path::NormalizedPath instead of std::path::PathBuf
+  --> $DIR/disallowed.rs:4:26
+   |
+LL |     let _path: PathBuf = PathBuf::from("src/foo.c");
+   |                          ^^^^^^^
+   |
+   = note: `#[deny(ban_std_pathbuf)]` on by default
+
+error: use zccache_core::path::NormalizedPath instead of std::path::PathBuf
+  --> $DIR/disallowed.rs:4:16
+   |
+LL |     let _path: PathBuf = PathBuf::from("src/foo.c");
+   |                ^^^^^^^
+
+error: aborting due to 2 previous errors
+

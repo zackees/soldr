@@ -1,0 +1,78 @@
+# syntax=docker/dockerfile:1.7
+#
+# Linux profiler image for zccache.
+#
+# Generates both on-CPU and off-CPU flame charts of the daemon under a
+# representative workload. Designed to run on Docker Desktop (WSL2 backend)
+# or any Linux Docker with --privileged + --cap-add=SYS_ADMIN +
+# --cap-add=SYS_PTRACE so perf_event_open and BPF helpers are unblocked.
+#
+# Build:  docker build -f ci/docker/profile/Dockerfile.perf-linux -t zccache-profile-linux .
+# Run:    docker run --rm --privileged \
+#           --cap-add=SYS_ADMIN --cap-add=SYS_PTRACE \
+#           -v "$(pwd)":/work \
+#           -v "$(pwd)/.codex-artifacts/profile-linux-docker-2026-06-25":/out \
+#           zccache-profile-linux
+#
+# The entrypoint runs ci/docker/profile/run_profile.sh inside /work,
+# producing oncpu.svg + offcpu.svg + raw .data files in /out.
+
+FROM rust:1.94.1-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Profiler stack:
+#   - linux-perf (perf binary; covers on-CPU sampling + sched events)
+#   - bpftrace (off-CPU via finish_task_switch kprobe — best signal)
+#   - linux-tools-generic / linux-perf-generic when available
+#   - flamegraph scripts (cloned from upstream; pin a commit for repro)
+#   - clang/llvm + build-essential so the perf_bench_test C++ pieces build
+#     in case we extend coverage; rustup toolchain is provided by the base.
+#   - gdb/elfutils/dwarves: dwarf-based unwinding for accurate stacks in
+#     release-optimized rustc/clang frames.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        bash \
+        jq \
+        bc \
+        tar \
+        zstd \
+        time \
+        curl \
+        wget \
+        clang \
+        llvm \
+        cmake \
+        make \
+        pkg-config \
+        libssl-dev \
+        build-essential \
+        gdb \
+        elfutils \
+        dwarves \
+        linux-perf \
+        bpftrace \
+ && rm -rf /var/lib/apt/lists/*
+
+# Brendan Gregg's FlameGraph repo. Pinned commit so the image is
+# reproducible. The two scripts we use:
+#   stackcollapse-perf.pl    on-CPU folding
+#   stackcollapse-bpftrace.pl off-CPU folding (bpftrace output)
+#   flamegraph.pl            SVG renderer (used for both)
+RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph \
+ && ln -s /opt/FlameGraph/stackcollapse-perf.pl /usr/local/bin/stackcollapse-perf.pl \
+ && ln -s /opt/FlameGraph/stackcollapse-bpftrace.pl /usr/local/bin/stackcollapse-bpftrace.pl \
+ && ln -s /opt/FlameGraph/flamegraph.pl /usr/local/bin/flamegraph.pl
+
+# Resolve the `perf` symlink ambiguity (`perf` ships from `linux-perf`
+# which exposes it as `/usr/bin/perf` on bookworm).
+RUN which perf && perf --version
+
+WORKDIR /work
+
+COPY ci/docker/profile/run_profile.sh /usr/local/bin/run_profile.sh
+RUN chmod +x /usr/local/bin/run_profile.sh
+
+ENTRYPOINT ["/usr/local/bin/run_profile.sh"]

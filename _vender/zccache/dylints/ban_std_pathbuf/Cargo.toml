@@ -1,0 +1,26 @@
+[package]
+name = "ban_std_pathbuf"
+# 2026-06-15: bumped to bust the dylint .so cache when allowlist.txt
+# changes. setup-soldr's dylint-cache key hashes the manifest but not
+# src/allowlist.txt, so a content-only change to the allowlist does
+# not invalidate the cached compiled plugin and the OLD allowlist
+# stays in effect.
+version = "0.2.0"
+description = "Ban std::path::PathBuf outside the legacy allowlist"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# `5.0.0` on crates.io predates the 2026-03-18 rustc_session layout change
+# used by newer nightlies / Rust 1.94-era toolchains. Track the upstream
+# compatibility fix until a newer crates.io release is available.
+dylint_linting = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[dev-dependencies]
+dylint_testing = { git = "https://github.com/trailofbits/dylint", rev = "4bd91ce7729b74c7ee5664bbb588f7baf30b4a09" }
+
+[package.metadata.rust-analyzer]
+rustc_private = true

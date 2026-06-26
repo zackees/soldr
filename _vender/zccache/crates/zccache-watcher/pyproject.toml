@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.7"]
+build-backend = "maturin"
+
+[project]
+name = "zccache-watcher"
+dynamic = ["version"]
+description = "Cross-platform filesystem watcher backed by zccache"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+
+[tool.maturin]
+features = ["python", "pyo3/abi3-py310"]
+module-name = "zccache.watcher._native"
+python-source = "python"
+manifest-path = "Cargo.toml"
