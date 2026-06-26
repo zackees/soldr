@@ -237,10 +237,27 @@ impl EmbeddedDaemon {
             .map_err(|err| crate::ipc::IpcError::Endpoint(err.to_string()))?;
         let (state, index_writer_rx) = new_shared_state(&endpoint, &cache_dir, backend_identity);
 
+        // soldr#983: create a single long-lived session at daemon
+        // boot. Every embedded `compile` call reuses it instead of
+        // paying handle_compile_ephemeral's session_start +
+        // session_end overhead per call.
+        let session_config = crate::depgraph::SessionConfig {
+            client_pid: std::process::id(),
+            working_dir: cache_dir.as_path().into(),
+            log_file: None,
+            track_stats: false,
+            journal_path: None,
+            profile: false,
+            private_env: Vec::new(),
+            owner_pids: Vec::new(),
+        };
+        let session_id = state.sessions.create(session_config);
+
         let mut daemon = Self {
             state,
             index_writer_rx: Some(index_writer_rx),
             index_writer_handle: Mutex::new(None),
+            session_id,
         };
         daemon.start_background_tasks().await;
         Ok(daemon)
@@ -358,13 +375,19 @@ impl EmbeddedDaemon {
         self.state
             .last_activity
             .store(now_secs(), Ordering::Relaxed);
-        let response = handle_compile_ephemeral(
+        // soldr#983: skip handle_compile_ephemeral's session
+        // start/end and reuse the daemon-lifetime session created in
+        // `start()`. Direct call into `handle_compile` saves the
+        // session-manager + watch-directory + worktree-root +
+        // depgraph-warning replay cost per compile (~50-100 ms each
+        // — the measured cause of the soldr#981 cold regression).
+        let session_id_str = self.session_id.to_string();
+        let response = super::handle_compile::handle_compile(
             &self.state,
-            std::process::id(),
-            &request.cwd,
-            &request.compiler,
+            &session_id_str,
             &request.args,
             &request.cwd,
+            &request.compiler,
             request.env,
             request.stdin,
         )
@@ -399,6 +422,13 @@ impl EmbeddedDaemon {
     }
 
     pub(crate) async fn shutdown(&self) -> EmbeddedFlushReport {
+        // soldr#983: end the long-lived session we created in
+        // `start()` before tearing down state. Mirrors the
+        // session_end half of handle_compile_ephemeral that we
+        // dropped from the per-call path.
+        self.state.session_worktree_roots.remove(&self.session_id);
+        self.state.sessions.end(&self.session_id);
+
         self.state.shutdown_requested.store(true, Ordering::Release);
         self.state.index_writer_shutdown.notify_waiters();
         let mut index_writer_handle = self.index_writer_handle.lock().await;

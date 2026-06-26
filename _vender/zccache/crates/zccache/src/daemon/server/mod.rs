@@ -84,6 +84,12 @@ pub(crate) struct EmbeddedDaemon {
     state: Arc<SharedState>,
     index_writer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<(String, ArtifactIndex)>>,
     index_writer_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// soldr#983: long-lived per-daemon session created at `start()`
+    /// and reused for every embedded compile. Replaces the per-call
+    /// `handle_compile_ephemeral` which paid session_start + session_end
+    /// overhead on every invocation (~50-100ms each, measured cause of
+    /// the soldr#981 cold regression).
+    session_id: crate::depgraph::SessionId,
 }
 
 pub(crate) struct EmbeddedCompileRequest {
