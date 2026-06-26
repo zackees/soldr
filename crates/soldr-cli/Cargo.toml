@@ -42,6 +42,13 @@ xz2 = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
+# Optional in-process zccache service (issue #977). When the `embedded`
+# feature is enabled the soldr-daemon links zccache::embedded::* directly
+# instead of shelling out to the zccache binary per compile. The git pin
+# tracks the same release (1.12.11) that ships as the managed binary
+# (see MANAGED_ZCCACHE_VERSION in src/fetch/mod.rs); bump them in lockstep.
+zccache = { git = "https://github.com/zackees/zccache.git", rev = "fde4b916f24d9fe1cd00aeabe6581e4972f32068", default-features = false, optional = true }
+
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
 # OpenProcess / GetExitCodeProcess calls are declared inline so no
@@ -75,6 +82,17 @@ test-stubs = []
 # deliberately hangs and observe the watchdog firing. Never enabled
 # in production builds. See `tests/test_watchdog_self_test.rs`.
 test-watchdog-self-test = []
+
+# Issue #977 — Phase 1 + 2: pull in the zccache library and instantiate
+# `ZccacheService` inside the soldr-daemon process. The daemon's tokio
+# runtime is shared with zccache so tokio-console can span both products
+# from a single connection. Off by default while the embedded API still
+# moves upstream; flipping is the parity-gate PR (Phase 5–6). Setting
+# `SOLDR_ZCCACHE_EMBEDDED=1` at daemon startup activates the embedded
+# backend when this feature is compiled in; without the feature the env
+# var is read, a one-line warning is logged, and the daemon falls back
+# to the wrapped binary path (today's behaviour).
+embedded = ["dep:zccache"]
 
 [lints]
 workspace = true

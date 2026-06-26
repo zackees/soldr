@@ -27,6 +27,12 @@ pub mod self_relocate;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 /// The bin tree declares the same module via `main.rs`.
 pub mod wrapper_target;
+/// Issue #977 — embedded zccache service wrapper. Gated on the
+/// `embedded` Cargo feature; absent the feature this module is not
+/// compiled and the daemon's `CompileBackend` enum only has the
+/// `Wrapped` variant.
+#[cfg(feature = "embedded")]
+pub mod zccache_embedded;
 pub mod zccache_lifecycle;
 
 /// Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).

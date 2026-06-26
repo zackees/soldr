@@ -13,6 +13,7 @@ use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
     current_daemon_process, soldr_backend_endpoint_mux, LEGACY_FRAME_HEADER_BYTES,
 };
+use crate::daemon::compile_backend::{embedded_requested, CompileBackend, EMBEDDED_ENV_VAR};
 use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
@@ -114,6 +115,11 @@ struct State {
     /// redb `cook_index_v1` table, not in process-local state.
     cook_hits_this_session: AtomicU64,
     shutdown: Notify,
+    /// Compile-dispatch backend chosen at daemon boot. Default
+    /// [`CompileBackend::Wrapped`] preserves today's behavior; the
+    /// `Embedded` variant is opted into via `SOLDR_ZCCACHE_EMBEDDED=1`
+    /// AND the `embedded` Cargo feature. Issue #977 Phase 1 + 2.
+    compile_backend: CompileBackend,
 }
 
 impl State {
@@ -160,6 +166,75 @@ fn current_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Pick the compile-dispatch backend at daemon boot. Reads the
+/// `SOLDR_ZCCACHE_EMBEDDED=1` env var and resolves it against the
+/// presence of the `embedded` Cargo feature. Defaults to
+/// [`CompileBackend::Wrapped`] for backward compatibility.
+async fn select_compile_backend(_paths: &SoldrPaths) -> CompileBackend {
+    let want_embedded = embedded_requested();
+    if !want_embedded {
+        return CompileBackend::Wrapped;
+    }
+
+    #[cfg(feature = "embedded")]
+    {
+        match crate::zccache_embedded::SoldrZccacheService::start(_paths).await {
+            Ok(svc) => {
+                tracing::info!(
+                    "soldr-daemon: embedded zccache backend active ({}={}=1)",
+                    EMBEDDED_ENV_VAR,
+                    EMBEDDED_ENV_VAR
+                );
+                CompileBackend::Embedded(std::sync::Arc::new(svc))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "soldr-daemon: {}=1 requested but embedded service failed to start ({err}); \
+                     falling back to wrapped binary backend",
+                    EMBEDDED_ENV_VAR
+                );
+                CompileBackend::Wrapped
+            }
+        }
+    }
+
+    #[cfg(not(feature = "embedded"))]
+    {
+        tracing::warn!(
+            "soldr-daemon: {}=1 set but this build of soldr was compiled without \
+             `--features embedded`; backend remains Wrapped",
+            EMBEDDED_ENV_VAR
+        );
+        CompileBackend::Wrapped
+    }
+}
+
+/// Drain + shut down the embedded service if active. No-op for
+/// `CompileBackend::Wrapped`. Best-effort: errors are logged but never
+/// block daemon exit, because the wrapped-binary stop path still has
+/// to run regardless.
+async fn shutdown_compile_backend(state: &Arc<State>) {
+    match &state.compile_backend {
+        CompileBackend::Wrapped => {}
+        #[cfg(feature = "embedded")]
+        CompileBackend::Embedded(svc) => {
+            if let Err(err) = svc.flush().await {
+                tracing::warn!("soldr-daemon: embedded zccache flush failed: {err}");
+            }
+            // The held `Arc<SoldrZccacheService>` lives on `state` which
+            // outlives this function call. We cannot consume it here, so
+            // we issue a flush and rely on `Drop` to do the underlying
+            // service shutdown when `state` is released after
+            // `run_async` returns. `SoldrZccacheService::shutdown` is
+            // exercised by integration tests that own the service
+            // exclusively.
+            tracing::debug!(
+                "soldr-daemon: embedded zccache flushed (service Drop will finalize shutdown)"
+            );
+        }
+    }
+}
+
 /// Synchronous entry point used by both the `soldr-daemon` bin target
 /// and `soldr daemon start --foreground`. Builds a tokio runtime and
 /// blocks until the daemon exits.
@@ -195,6 +270,16 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let idle_timeout_secs = u32::try_from(opts.idle_timeout.as_secs()).ok();
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
+
+    // Issue #977 — embedded zccache backend selection. When the
+    // `embedded` Cargo feature is on and `SOLDR_ZCCACHE_EMBEDDED=1` is
+    // set, start the in-process `ZccacheService` here so the daemon's
+    // tokio runtime owns its background tasks too. tokio-console then
+    // sees the union of soldr + zccache work from a single attach.
+    // Without the feature flag, a one-line warning is logged when the
+    // env var is set so operators know their toggle was a no-op.
+    let compile_backend = select_compile_backend(&paths).await;
+
     let state = Arc::new(State {
         db_path,
         paths: paths.clone(),
@@ -206,6 +291,7 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         exit_via_idle: AtomicBool::new(false),
         cook_hits_this_session: AtomicU64::new(0),
         shutdown: Notify::new(),
+        compile_backend,
     });
 
     write_pid_file(&paths).map_err(|e| match e {
@@ -240,6 +326,11 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     state.shutdown.notified().await;
     accept_handle.abort();
     idle_handle.abort();
+
+    // Issue #977 Phase 1 + 2: shut down the embedded zccache service
+    // before the wrapped-binary stop path so any pending writes drain
+    // through `flush()`. No-op for `CompileBackend::Wrapped`.
+    shutdown_compile_backend(&state).await;
 
     // Phase 3: if the daemon's session linked a zccache daemon PID,
     // stop it before our own final exit. Runs on both explicit shutdown

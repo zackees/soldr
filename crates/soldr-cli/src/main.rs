@@ -48,6 +48,12 @@ mod trampoline_workspace;
 mod wrapper;
 mod wrapper_target;
 mod zccache;
+/// Issue #977 — embedded zccache service. Mirrors `lib.rs`: the bin
+/// tree compiles the same module independently. Gated on the `embedded`
+/// Cargo feature; without it the daemon's `CompileBackend` enum carries
+/// only the `Wrapped` variant.
+#[cfg(feature = "embedded")]
+mod zccache_embedded;
 mod zccache_lifecycle;
 
 // Per-test watchdog (`timed_test!` macro + `run_with_watchdog`).

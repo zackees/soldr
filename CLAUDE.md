@@ -135,11 +135,12 @@ Anything not registered falls through the generic External subcommand, which res
 
 ## Bumping managed_zccache_version
 
-When pulling in a new managed zccache release, **three files must be updated in lockstep** or `zccache_runtime_contract_matches_rust_constants` (or a `./test` run) will fail:
+When pulling in a new managed zccache release, **four files must be updated in lockstep** or `zccache_runtime_contract_matches_rust_constants` (or a `./test` run) will fail:
 
 1. `crates/soldr-cli/src/fetch/mod.rs` — bump `MANAGED_ZCCACHE_VERSION`.
 2. `contracts/zccache-runtime.v1.json` — bump `zccache.managed_version` to the same value.
 3. `crates/soldr-cli/src/zccache.rs` — bump the two cosmetic test-fixture paths that embed the version (won't break the contract test, but drifts if not updated).
+4. `crates/soldr-cli/Cargo.toml` — bump the optional `zccache = { git = "...", rev = "<sha>" }` dep (the `embedded` feature backing — issue #977). The rev should point at the commit SHA of the matching upstream tag so the embedded library and the managed binary stay on the same release. Look up the SHA with: `gh api repos/zackees/zccache/git/refs/tags/<VERSION> --jq '.object.sha'`.
 
 If you bump only #1, the contract test now panics with a directive message naming both files. Same procedure applies for `MANAGED_CRGX_VERSION` and `CARGO_CHEF_PINNED_VERSION` — see the matching `crgx.managed_version` / `cargo_chef.managed_version` entries in the contract.
 

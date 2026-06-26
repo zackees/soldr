@@ -86,7 +86,7 @@ fn gc_list_json_walks_cargo_registry_src_under_cargo_home() {
             let pb = PathBuf::from(p);
             pb == serde_dir
                 || pb == serde_canonical
-                || fs::canonicalize(&pb).ok().as_deref() == Some(&serde_canonical)
+                || fs::canonicalize(&pb).ok().as_deref() == Some(serde_canonical.as_path())
         })
         .expect("serde entry not present in registry_src walk");
     let chrono_tz_entry = reg_src_entries
@@ -96,7 +96,7 @@ fn gc_list_json_walks_cargo_registry_src_under_cargo_home() {
             let pb = PathBuf::from(p);
             pb == chrono_tz_dir
                 || pb == chrono_tz_canonical
-                || fs::canonicalize(&pb).ok().as_deref() == Some(&chrono_tz_canonical)
+                || fs::canonicalize(&pb).ok().as_deref() == Some(chrono_tz_canonical.as_path())
         })
         .expect("chrono-tz entry not present in registry_src walk");
 
