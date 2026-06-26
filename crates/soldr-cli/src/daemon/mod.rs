@@ -22,6 +22,11 @@
 pub mod backend_handle_adoption;
 pub mod broker_discovery;
 pub mod client;
+/// Per-compile JSONL phase trace, gated by `SOLDR_DAEMON_TRACE`.
+/// Diagnostic-only — see `compile_trace.rs` for format. Wired in by
+/// soldr#981 to identify the per-compile dispatch bottleneck that
+/// the zccache#939 buffer-elimination plan failed to find.
+pub mod compile_trace;
 pub mod db;
 /// L4 (issue soldr#980) — background batcher that coalesces
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
