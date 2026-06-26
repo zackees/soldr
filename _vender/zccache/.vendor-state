@@ -28,6 +28,7 @@ driving_issue = "https://github.com/zackees/soldr/issues/983"
 #   summary      = "<one-line>"
 #   upstream_pr  = "<url>" | null
 #
-# Initial state: no deltas. Subagents B/C/D will populate this as
-# they land changes.
-deltas = []
+[[deltas]]
+soldr_commit = "7f8bf95"
+summary = "EmbeddedDaemon::compile reuses process-lifetime session instead of paying handle_compile_ephemeral start/end per call"
+upstream_pr = null
