@@ -725,7 +725,8 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
     .await;
     let CompileExecOutcome {
         exit_code,
-        bytes,
+        stdout,
+        stderr,
         depfile_strategy,
         show_includes_scan,
         pre_hash_task,
@@ -740,17 +741,6 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         CompileExecResult::Ok(outcome) => outcome,
         CompileExecResult::Error(resp) => return resp,
     };
-
-    // Issue zccache#939 step 1: materialize the captured stdout/stderr
-    // at the consumer boundary so the rest of the pipeline (error
-    // store, success store, Response::CompileResult) keeps its
-    // `Arc<Vec<u8>>` API. The `Buffered` arm clones the existing Arcs
-    // (so no extra copy on the MSVC `/showIncludes` / multi-file / cc
-    // path); the `Streamed` arm reads the pending stdout + stderr
-    // files from `depfile_tmpdir`. Step 2 replaces this read with a
-    // `rename` into the artifact store on the rustc success path.
-    let stdout = Arc::new(bytes.stdout_bytes());
-    let stderr = Arc::new(bytes.stderr_bytes());
 
     if exit_code != 0 {
         state.stats.record_error();
