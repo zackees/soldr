@@ -9,7 +9,8 @@ use super::super::miss_profile::{
     emit_cc_miss_profile, emit_rust_miss_profile, CcMissProfile, RustMissProfile,
 };
 use super::super::miss_store::{
-    store_miss_artifact, MissArtifactStoreRequest, MissArtifactStoreStats,
+    resolve_stdio_without_cache_slot, store_miss_artifact, CompileExecStdioSource,
+    MissArtifactStoreOutcome, MissArtifactStoreRequest, MissArtifactStoreStats, ResolvedStdio,
 };
 
 pub(super) struct StoreOutcomeRequest<'a> {
@@ -26,8 +27,14 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) is_rustc: bool,
     pub(super) rust_profile_enabled: bool,
     pub(super) rust_profile_mode: &'a str,
-    pub(super) stdout: Arc<Vec<u8>>,
-    pub(super) stderr: Arc<Vec<u8>>,
+    /// Issue zccache#939 step 2: stdio is now sourced through
+    /// `CompileExecStdioSource` so the streamed rustc path can rename
+    /// the pending stdout/stderr files into the per-key cache slot
+    /// inside `store_miss_artifact` instead of being materialized at
+    /// the pipeline boundary. The buffered arm (MSVC `/showIncludes`,
+    /// multi-file C/C++, failure fallback) is a pure pass-through and
+    /// behaves identically to the pre-step-2 `Arc<Vec<u8>>` shape.
+    pub(super) stdio_source: CompileExecStdioSource,
     pub(super) exit_code: i32,
     pub(super) depfile_strategy: DepfileStrategy,
     pub(super) show_includes_scan: Option<crate::depgraph::ScanResult>,
@@ -57,6 +64,23 @@ pub(super) struct StoreOutcomeRequest<'a> {
     pub(super) hash_headers_ns: u64,
     pub(super) depgraph_check_ns: u64,
     pub(super) break_outputs_ns: u64,
+}
+
+/// Outcome of `store_successful_compile`. Issue zccache#939 step 2: the
+/// pipeline boundary no longer materializes stdout/stderr upfront, so the
+/// store path is responsible for surfacing the resolved `Arc<Vec<u8>>`s
+/// back to the orchestrator. `EarlyReturn` short-circuits with an
+/// already-built `Response` (e.g. output-collection failure); `Done`
+/// hands back the resolved stdio so the orchestrator builds the standard
+/// `Response::CompileResult { cached: false }` with zero extra disk reads.
+///
+/// `Response` is `Box`-ed so the enum stays small — `Response` is the
+/// large protocol variant carrying optional artifact bodies and pushes
+/// the discriminant past clippy's `large_enum_variant` threshold,
+/// while `ResolvedStdio` is just two `Arc<Vec<u8>>` handles.
+pub(super) enum StoreOutcomeResult {
+    EarlyReturn(Box<Response>),
+    Done(ResolvedStdio),
 }
 
 enum CompileOutputCollection {
@@ -197,12 +221,16 @@ fn collect_compile_scan(req: CompileScanRequest) -> CompileScanCollection {
     }
 }
 
-/// Drive the post-compile success path. Returns `Some(Response)` only when an
-/// output-collection failure forces an uncached `CompileResult`; otherwise
-/// returns `None` to signal the orchestrator should respond with the standard
-/// `CompileResult { cached: false }` after this returns.
+/// Drive the post-compile success path. Returns
+/// `StoreOutcomeResult::EarlyReturn(Response)` only when an
+/// output-collection failure forces an uncached `CompileResult`;
+/// otherwise returns `StoreOutcomeResult::Done(ResolvedStdio)` so the
+/// orchestrator can build the standard
+/// `CompileResult { cached: false }` using the same `Arc<Vec<u8>>`s the
+/// store path already produced (avoiding a second disk read on the
+/// streamed rustc path — issue zccache#939 step 2).
 #[allow(clippy::too_many_lines)] // Mirrors the original monolithic block.
-pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Option<Response> {
+pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> StoreOutcomeResult {
     let StoreOutcomeRequest {
         state_arc,
         sid,
@@ -217,8 +245,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         is_rustc,
         rust_profile_enabled,
         rust_profile_mode,
-        stdout,
-        stderr,
+        stdio_source,
         exit_code,
         depfile_strategy,
         show_includes_scan,
@@ -272,12 +299,20 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
             } else {
                 tracing::warn!("failed to read output file {}: {e}", output_path.display());
             }
-            return Some(Response::CompileResult {
+            // Issue zccache#939 step 2: the streamed-rustc arm needs its
+            // pending stdout/stderr files materialized and cleaned up
+            // even when the success path short-circuits — otherwise we'd
+            // leak files under `state.depfile_tmpdir` and return a
+            // response with empty stdio. No artifact key exists yet, so
+            // there's no cache slot to rename into; just read and clean
+            // up. The buffered arm is a pure pass-through.
+            let resolved = resolve_stdio_without_cache_slot(stdio_source);
+            return StoreOutcomeResult::EarlyReturn(Box::new(Response::CompileResult {
                 exit_code,
-                stdout: Arc::clone(&stdout),
-                stderr: Arc::clone(&stderr),
+                stdout: Arc::clone(&resolved.stdout),
+                stderr: Arc::clone(&resolved.stderr),
                 cached: false,
-            });
+            }));
         }
     };
     let (output_data, rustc_all_outputs) = match output_collection {
@@ -444,21 +479,26 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
     }
     let hash_all_ns = t_hash.elapsed().as_nanos() as u64;
 
-    let MissArtifactStoreStats {
-        artifact_store_ns,
-        depgraph_update_ns,
-        artifact_build_ns,
-        persist_enqueue_ns,
-        artifact_insert_stats_ns,
-        artifact_meta_build_ns,
-        rust_snapshot_ns,
-        rust_snapshot_hardlink_count,
-        rust_snapshot_copy_count,
-        rust_snapshot_copy_bytes,
-        rust_snapshot_error_count,
-        artifact_index_build_ns,
-        artifact_index_persist_ns,
-        artifact_memory_insert_ns,
+    let MissArtifactStoreOutcome {
+        stats:
+            MissArtifactStoreStats {
+                artifact_store_ns,
+                depgraph_update_ns,
+                artifact_build_ns,
+                persist_enqueue_ns,
+                artifact_insert_stats_ns,
+                artifact_meta_build_ns,
+                rust_snapshot_ns,
+                rust_snapshot_hardlink_count,
+                rust_snapshot_copy_count,
+                rust_snapshot_copy_bytes,
+                rust_snapshot_error_count,
+                artifact_index_build_ns,
+                artifact_index_persist_ns,
+                artifact_memory_insert_ns,
+                stdio_rename_ns: _stdio_rename_ns,
+            },
+        resolved_stdio,
     } = store_miss_artifact(MissArtifactStoreRequest {
         state_arc,
         sid,
@@ -470,8 +510,7 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         output_data,
         user_depfile: user_depfile_capture,
         rustc_all_outputs: rustc_all_outputs.as_deref(),
-        stdout: &stdout,
-        stderr: &stderr,
+        stdio_source,
         exit_code,
         compile_start,
     });
@@ -583,5 +622,5 @@ pub(super) async fn store_successful_compile(req: StoreOutcomeRequest<'_>) -> Op
         });
     }
 
-    None
+    StoreOutcomeResult::Done(resolved_stdio)
 }

@@ -2,6 +2,48 @@
 
 use super::super::*;
 
+/// Issue zccache#939 step 2: how the compiler's stdout/stderr are sourced
+/// when the success path stores a miss artifact. Mirrors
+/// `CompileExecBytes` from `pipeline::compile_exec` but is owned by the
+/// store path so the pipeline boundary can hand the value in by-value
+/// (taking the pending paths with it).
+///
+/// `Buffered` — bytes are already in memory; used by the MSVC
+/// `/showIncludes` path, the multi-file C/C++ path, and any caller that
+/// materialized the bytes itself (e.g. the failure path that needed
+/// stderr to build a `Response::CompileResult`). The store path stores
+/// these Arcs inline into the `ArtifactIndex`.
+///
+/// `Streamed` — bytes live on disk under `state.depfile_tmpdir` and the
+/// caller has NOT read them. The store path renames the pending files
+/// into the per-key cache slots under `state.artifact_dir` and reads
+/// them ONCE to build the `Arc<Vec<u8>>` needed for the inline
+/// `ArtifactIndex` field and the `Response::CompileResult` reply. Before
+/// step 2 the pipeline boundary read them upfront (Step 1's hack), so
+/// the streamed cold path paid `read-pending` + `inline-clone` + would
+/// have paid a separate `write-cache-slot` if a Step 3 ever wrote the
+/// slot. Step 2 collapses that to `rename-pending-into-slot` +
+/// `single-read-from-slot`.
+pub(super) enum CompileExecStdioSource {
+    Buffered {
+        stdout: Arc<Vec<u8>>,
+        stderr: Arc<Vec<u8>>,
+    },
+    Streamed {
+        stdout_path: std::path::PathBuf,
+        stderr_path: std::path::PathBuf,
+    },
+}
+
+/// Resolved stdout/stderr bytes plus a flag for whether the source was
+/// `Streamed` (renamed into the cache slot) vs `Buffered` (passed through).
+/// Returned by `store_miss_artifact` so the pipeline can forward the
+/// SAME `Arc`s into `Response::CompileResult` without a second read.
+pub(super) struct ResolvedStdio {
+    pub(super) stdout: Arc<Vec<u8>>,
+    pub(super) stderr: Arc<Vec<u8>>,
+}
+
 pub(super) struct MissArtifactStoreRequest<'a> {
     pub(super) state_arc: &'a Arc<SharedState>,
     pub(super) sid: &'a SessionId,
@@ -20,8 +62,13 @@ pub(super) struct MissArtifactStoreRequest<'a> {
     /// rustc (separate persist path).
     pub(super) user_depfile: Option<(NormalizedPath, Vec<u8>)>,
     pub(super) rustc_all_outputs: Option<&'a [RustcOutputFile]>,
-    pub(super) stdout: &'a Arc<Vec<u8>>,
-    pub(super) stderr: &'a Arc<Vec<u8>>,
+    /// Issue zccache#939 step 2: stdout/stderr enter the store path
+    /// either pre-buffered (MSVC `/showIncludes`, multi-file, failure
+    /// fallback) or as on-disk pending paths the streamed rustc spawn
+    /// just wrote. The store path owns the resolution (rename + read
+    /// for streamed; clone-Arc for buffered) so the pipeline boundary
+    /// never has to materialize twice.
+    pub(super) stdio_source: CompileExecStdioSource,
     pub(super) exit_code: i32,
     pub(super) compile_start: Instant,
 }
@@ -42,9 +89,54 @@ pub(super) struct MissArtifactStoreStats {
     pub(super) artifact_index_build_ns: u64,
     pub(super) artifact_index_persist_ns: u64,
     pub(super) artifact_memory_insert_ns: u64,
+    /// Issue zccache#939 step 2: wall time spent renaming the pending
+    /// stdout/stderr files into the per-key cache slots, plus the
+    /// single read used to populate the inline `ArtifactIndex` fields.
+    /// Zero for the `Buffered` path (no rename, no read).
+    pub(super) stdio_rename_ns: u64,
 }
 
-pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> MissArtifactStoreStats {
+/// Issue zccache#939 step 2: cache slot path for a pending stdout
+/// payload that was streamed straight to disk. Lives at the artifact
+/// dir root next to the existing `{key}_<i>` payload files so a future
+/// disk-fallback path can resolve it from `key_hex` alone.
+pub(super) fn pending_stdout_cache_path(artifact_dir: &Path, key_hex: &str) -> PathBuf {
+    artifact_dir.join(format!("{key_hex}.stdout"))
+}
+
+/// Companion to [`pending_stdout_cache_path`].
+pub(super) fn pending_stderr_cache_path(artifact_dir: &Path, key_hex: &str) -> PathBuf {
+    artifact_dir.join(format!("{key_hex}.stderr"))
+}
+
+/// Result of the miss-store path: per-phase stats plus the resolved
+/// stdio Arcs the pipeline forwards into `Response::CompileResult`.
+///
+/// Issue zccache#939 step 2: the `Streamed` arm of
+/// `CompileExecStdioSource` lands the bytes in the cache slot via
+/// rename and then reads them back ONCE to populate the inline
+/// `ArtifactIndex` fields; the same `Arc` is returned here so the
+/// response uses zero additional disk reads. The `Buffered` arm just
+/// forwards the input Arcs unchanged.
+///
+/// **Idempotency**: the artifact-index entry is published (via
+/// `index_writer_tx.send` for rustc outputs at line ~290; via the
+/// foreground `state.artifacts.insert` for single-output cc/cpp at
+/// line ~360) AFTER the stdio rename completes, so a concurrent
+/// wrapper that races the same key sees either "no entry yet" (and
+/// recompiles) or "entry present and slot files exist" — never an
+/// entry pointing at unrenamed pending files. See the
+/// `pending_writes::register` / `complete` pair below for the
+/// in-flight-publication signal that lets concurrent lookups
+/// optionally wait instead of recompiling.
+pub(super) struct MissArtifactStoreOutcome {
+    pub(super) stats: MissArtifactStoreStats,
+    pub(super) resolved_stdio: ResolvedStdio,
+}
+
+pub(super) fn store_miss_artifact(
+    request: MissArtifactStoreRequest<'_>,
+) -> MissArtifactStoreOutcome {
     let MissArtifactStoreRequest {
         state_arc,
         sid,
@@ -56,8 +148,7 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
         output_data,
         user_depfile,
         rustc_all_outputs,
-        stdout,
-        stderr,
+        stdio_source,
         exit_code,
         compile_start,
     } = request;
@@ -93,6 +184,21 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
 
         record_pch_source_mapping(state, source_path, output_path);
 
+        // Issue zccache#939 step 2: resolve stdio BEFORE the
+        // index-publication path so the rename completes (and the slot
+        // files are durable on disk) before the concurrent-lookup
+        // visibility surface is widened by `index_writer_tx.send` /
+        // `state.artifacts.insert`. The artifact key is now known —
+        // safe to name the cache slot.
+        let t_stdio = Instant::now();
+        let resolved_stdio = resolve_stdio_into_cache_slot(
+            state,
+            sid,
+            &artifact_key_hex,
+            stdio_source,
+        );
+        stats.stdio_rename_ns = t_stdio.elapsed().as_nanos() as u64;
+
         let t_artifact_build = Instant::now();
         if let Some(all_outputs) = rustc_all_outputs {
             store_rustc_outputs(
@@ -101,8 +207,8 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 source_path,
                 all_outputs,
                 &artifact_key_hex,
-                stdout,
-                stderr,
+                &resolved_stdio.stdout,
+                &resolved_stdio.stderr,
                 exit_code,
                 compile_start,
                 &mut stats,
@@ -117,18 +223,136 @@ pub(super) fn store_miss_artifact(request: MissArtifactStoreRequest<'_>) -> Miss
                 output_data,
                 user_depfile,
                 &artifact_key_hex,
-                stdout,
-                stderr,
+                &resolved_stdio.stdout,
+                &resolved_stdio.stderr,
                 exit_code,
                 compile_start,
                 &mut stats,
                 t_artifact_build,
             );
         }
+        stats.artifact_store_ns = t_store.elapsed().as_nanos() as u64;
+        return MissArtifactStoreOutcome {
+            stats,
+            resolved_stdio,
+        };
     }
 
+    // No artifact key produced — depgraph update declined to store
+    // (e.g. unresolved includes). Fall back to materializing the stdio
+    // from the original source (no rename happens) so the caller can
+    // still build a `Response::CompileResult`. This path doesn't widen
+    // the visibility surface, so there's no race to worry about.
+    let t_stdio = Instant::now();
+    let resolved_stdio = resolve_stdio_without_cache_slot(stdio_source);
+    stats.stdio_rename_ns = t_stdio.elapsed().as_nanos() as u64;
     stats.artifact_store_ns = t_store.elapsed().as_nanos() as u64;
-    stats
+    MissArtifactStoreOutcome {
+        stats,
+        resolved_stdio,
+    }
+}
+
+/// Resolve `CompileExecStdioSource::Streamed` by renaming the pending
+/// files into the per-key cache slots and then reading them back once
+/// to build the `Arc<Vec<u8>>` the inline `ArtifactIndex` field and the
+/// `Response::CompileResult` reply both need. A rename failure (rare:
+/// cross-volume + cross-volume hardlink + cross-fs copy all failed)
+/// degrades gracefully to "just read the pending file" so the response
+/// stays well-formed; the slot is left empty in that case.
+///
+/// The `Buffered` arm is a pure pass-through.
+fn resolve_stdio_into_cache_slot(
+    state: &SharedState,
+    sid: &SessionId,
+    artifact_key_hex: &str,
+    source: CompileExecStdioSource,
+) -> ResolvedStdio {
+    match source {
+        CompileExecStdioSource::Buffered { stdout, stderr } => ResolvedStdio { stdout, stderr },
+        CompileExecStdioSource::Streamed {
+            stdout_path,
+            stderr_path,
+        } => {
+            let artifact_dir = state.artifact_dir.as_path();
+            let stdout_slot = pending_stdout_cache_path(artifact_dir, artifact_key_hex);
+            let stderr_slot = pending_stderr_cache_path(artifact_dir, artifact_key_hex);
+            let stdout = move_and_read(&stdout_path, &stdout_slot, state, sid, "stdout");
+            let stderr = move_and_read(&stderr_path, &stderr_slot, state, sid, "stderr");
+            ResolvedStdio {
+                stdout: Arc::new(stdout),
+                stderr: Arc::new(stderr),
+            }
+        }
+    }
+}
+
+/// No artifact key was produced (depgraph declined) OR the caller
+/// short-circuited before a key could be derived (e.g. an
+/// output-collection failure). For the streamed arm we still need to
+/// surface the bytes to the caller's response and clean up the pending
+/// files — there's nowhere stable to rename them to, so this just
+/// reads-then-removes. Exposed to `pipeline::store_outcome` for the
+/// output-collection-failure short-circuit.
+pub(super) fn resolve_stdio_without_cache_slot(source: CompileExecStdioSource) -> ResolvedStdio {
+    match source {
+        CompileExecStdioSource::Buffered { stdout, stderr } => ResolvedStdio { stdout, stderr },
+        CompileExecStdioSource::Streamed {
+            stdout_path,
+            stderr_path,
+        } => {
+            let stdout = std::fs::read(&stdout_path).unwrap_or_default();
+            let stderr = std::fs::read(&stderr_path).unwrap_or_default();
+            let _ = std::fs::remove_file(&stdout_path);
+            let _ = std::fs::remove_file(&stderr_path);
+            ResolvedStdio {
+                stdout: Arc::new(stdout),
+                stderr: Arc::new(stderr),
+            }
+        }
+    }
+}
+
+/// Try to rename `pending_path` into `cache_slot`, then read the slot
+/// bytes for the inline `ArtifactIndex` / response. If the rename
+/// itself fails, fall back to reading the pending file in place so the
+/// caller still sees the bytes; the cache slot just stays absent in
+/// that case.
+fn move_and_read(
+    pending_path: &Path,
+    cache_slot: &Path,
+    state: &SharedState,
+    sid: &SessionId,
+    which: &str,
+) -> Vec<u8> {
+    match persist_pending_pipe(pending_path, cache_slot) {
+        Ok(_) => std::fs::read(cache_slot).unwrap_or_else(|e| {
+            tracing::warn!(
+                key = %cache_slot.display(),
+                "failed to read cache slot {which} after rename: {e}"
+            );
+            Vec::new()
+        }),
+        Err(e) => {
+            tracing::warn!(
+                pending = %pending_path.display(),
+                slot = %cache_slot.display(),
+                "failed to move pending {which} into cache slot, falling back to read: {e}"
+            );
+            write_session_log(
+                &state.sessions,
+                sid,
+                &format!(
+                    "[DIAG] streamed_stdio_rename_failed: which={which} pending={} slot={} error={e}",
+                    pending_path.display(),
+                    cache_slot.display(),
+                ),
+            );
+            let bytes = std::fs::read(pending_path).unwrap_or_default();
+            let _ = std::fs::remove_file(pending_path);
+            bytes
+        }
+    }
 }
 
 fn record_pch_source_mapping(
