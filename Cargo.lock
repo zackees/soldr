@@ -4336,6 +4336,7 @@ dependencies = [
 [[package]]
 name = "zccache"
 version = "1.12.11"
+source = "git+https://github.com/zackees/zccache.git?rev=fde4b916f24d9fe1cd00aeabe6581e4972f32068#fde4b916f24d9fe1cd00aeabe6581e4972f32068"
 dependencies = [
  "arc-swap",
  "bincode",

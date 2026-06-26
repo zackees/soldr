@@ -1,3 +1,0 @@
-#!/usr/bin/env bash
-# Wrapper: delegates to ci/lint.py via uv.
-exec uv run python -m ci.lint "$@"
