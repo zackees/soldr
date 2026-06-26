@@ -23,13 +23,6 @@ pub(super) struct CompileExecRequest<'a> {
     pub(super) lineage: &'a crate::daemon::lineage::Lineage,
     pub(super) compile_start: std::time::Instant,
     pub(super) snap_clock: Clock,
-    /// Phase 5b2 (soldr#983): when `Some`, the rustc subprocess pipes
-    /// are pumped into this sink as chunks arrive — taking the per-
-    /// compile buffer hop off the daemon's `tokio-rt-worker` critical
-    /// path. The sink is silently ignored for MSVC `/showIncludes`
-    /// stderr (which needs the full buffer for dependency parsing) —
-    /// see the post-exec branch below.
-    pub(super) sink: Option<StreamingSink>,
 }
 
 pub(super) struct CompileExecOutcome {
@@ -75,7 +68,6 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
         lineage,
         compile_start,
         snap_clock,
-        sink,
     } = req;
 
     let state = state_arc.as_ref();
@@ -223,32 +215,11 @@ pub(super) async fn run_compile_exec(req: CompileExecRequest<'_>) -> CompileExec
     };
     let compile_span_start = std::time::Instant::now();
 
-    // Phase 5b2 (soldr#983): if a streaming sink was provided AND the
-    // compile is not the MSVC /showIncludes flavour (which needs the
-    // full stderr buffered for the post-exec dependency-line filter),
-    // pump the rustc subprocess pipes into the sink as bytes arrive.
-    // The `wait_with_output` removal happens inside
-    // `tokio_command_streaming_with_priority`; the on-disk artifact
-    // store still gets the same `Output` shape so downstream phases
-    // are untouched.
-    let stream_stderr_ok = depfile_strategy != DepfileStrategy::ShowIncludes;
-    let result = match (&sink, stream_stderr_ok) {
-        (Some(s), true) => {
-            crate::daemon::process::tokio_command_streaming_with_priority(
-                &mut cmd,
-                compiler_priority_decision.effective,
-                s.clone(),
-            )
-            .await
-        }
-        _ => {
-            crate::daemon::process::tokio_command_output_with_priority(
-                &mut cmd,
-                compiler_priority_decision.effective,
-            )
-            .await
-        }
-    };
+    let result = crate::daemon::process::tokio_command_output_with_priority(
+        &mut cmd,
+        compiler_priority_decision.effective,
+    )
+    .await;
     let compiler_process_ns = t_compiler_process.elapsed().as_nanos() as u64;
 
     if state.compile_concurrency.is_some() {

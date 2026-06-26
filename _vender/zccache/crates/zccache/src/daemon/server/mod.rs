@@ -112,50 +112,6 @@ pub(crate) struct EmbeddedFlushReport {
     pub(crate) metadata_entries: u64,
 }
 
-/// Sink half of the embedded streaming compile API (Phase 5b2, soldr#983).
-///
-/// The compile pipeline carries an `Option<StreamingSink>` from
-/// [`EmbeddedDaemon::compile_streaming`] down to
-/// `pipeline::compile_exec::run_compile_exec`, where the rustc subprocess
-/// pipes are pumped directly into the channel. The bool flag tells the
-/// embedded service whether the inner pipeline already streamed the
-/// captured output — if it did, the wrapper layer skips the second-pass
-/// chunking of `Response::CompileResult`'s buffers.
-#[derive(Clone)]
-pub struct StreamingSink {
-    tx: tokio::sync::mpsc::Sender<crate::embedded::CompileChunk>,
-    streamed: Arc<AtomicBool>,
-}
-
-impl StreamingSink {
-    pub fn new(tx: tokio::sync::mpsc::Sender<crate::embedded::CompileChunk>) -> Self {
-        Self {
-            tx,
-            streamed: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    /// Send a stdout chunk. Marks the sink as having streamed so the
-    /// wrapper does not double-emit from the accumulated buffer.
-    pub async fn send_stdout(&self, bytes: Vec<u8>) {
-        self.streamed.store(true, Ordering::Release);
-        let _ = self.tx.send(crate::embedded::CompileChunk::Stdout(bytes)).await;
-    }
-
-    /// Send a stderr chunk. Same streamed-flag semantics as [`Self::send_stdout`].
-    pub async fn send_stderr(&self, bytes: Vec<u8>) {
-        self.streamed.store(true, Ordering::Release);
-        let _ = self.tx.send(crate::embedded::CompileChunk::Stderr(bytes)).await;
-    }
-
-    /// True once any byte has been emitted through this sink. Used by
-    /// the wrapper layer in `embedded.rs` to decide whether to replay
-    /// the accumulated buffers after the inner pipeline returns.
-    pub fn streamed(&self) -> bool {
-        self.streamed.load(Ordering::Acquire)
-    }
-}
-
 mod cache_trim;
 mod cached_artifact;
 mod client_env;

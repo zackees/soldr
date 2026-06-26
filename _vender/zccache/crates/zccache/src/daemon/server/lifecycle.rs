@@ -351,7 +351,6 @@ impl EmbeddedDaemon {
         .await;
     }
 
-    #[allow(dead_code)] // Phase 5b2 (soldr#983): superseded by `compile_streaming`. Kept for tests and any future buffered-API caller.
     pub(crate) async fn compile(
         &self,
         request: EmbeddedCompileRequest,
@@ -368,51 +367,6 @@ impl EmbeddedDaemon {
             &request.cwd,
             request.env,
             request.stdin,
-            None,
-        )
-        .await;
-        match response {
-            Response::CompileResult {
-                exit_code,
-                stdout,
-                stderr,
-                cached,
-            } => Ok(EmbeddedCompileResult {
-                exit_code,
-                stdout,
-                stderr,
-                cached,
-            }),
-            Response::Error { message } => Err(message),
-            other => Err(format!("unexpected embedded compile response: {other:?}")),
-        }
-    }
-
-    /// Streaming variant of [`Self::compile`] (Phase 5b2, soldr#983).
-    /// The provided [`StreamingSink`] is threaded down into the compile
-    /// pipeline; the rustc subprocess pipes feed it directly. Returns
-    /// the same [`EmbeddedCompileResult`] shape as the buffered variant
-    /// so the embedded wrapper layer can finalize the
-    /// [`crate::embedded::CompileChunk::Done`] event with the accumulated
-    /// cache-outcome metadata.
-    pub(crate) async fn compile_streaming(
-        &self,
-        request: EmbeddedCompileRequest,
-        sink: StreamingSink,
-    ) -> Result<EmbeddedCompileResult, String> {
-        self.state
-            .last_activity
-            .store(now_secs(), Ordering::Relaxed);
-        let response = handle_compile_ephemeral(
-            &self.state,
-            std::process::id(),
-            &request.cwd,
-            &request.compiler,
-            &request.args,
-            &request.cwd,
-            request.env,
-            request.stdin,
-            Some(sink),
         )
         .await;
         match response {

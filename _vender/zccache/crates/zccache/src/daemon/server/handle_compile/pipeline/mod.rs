@@ -45,7 +45,6 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         compiler_path,
         client_env,
         stdin,
-        sink,
     } = req;
     let state = state_arc.as_ref();
     let compile_start = std::time::Instant::now();
@@ -722,7 +721,6 @@ pub(super) async fn handle_compile_request(req: CompileRequest<'_>) -> Response 
         lineage: &lineage,
         compile_start,
         snap_clock,
-        sink: sink.clone(),
     })
     .await;
     let CompileExecOutcome {

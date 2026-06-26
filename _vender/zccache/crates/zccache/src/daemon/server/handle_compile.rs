@@ -21,7 +21,6 @@ use request::CompileRequest;
 // emits, gated on the same `ZCCACHE_PROFILE_CC_MISS` env.
 pub(super) use miss_profile::{emit_link_miss_profile, LinkMissProfile};
 
-#[allow(clippy::too_many_arguments)] // Streaming sink is the only new field; the rest are inherited from the pre-#983 surface.
 pub(super) async fn handle_compile(
     state_arc: &Arc<SharedState>,
     session_id: &str,
@@ -30,7 +29,6 @@ pub(super) async fn handle_compile(
     compiler_path: &Path,
     client_env: Option<Vec<(String, String)>>,
     stdin: Vec<u8>,
-    sink: Option<StreamingSink>,
 ) -> Response {
     pipeline::handle_compile_request(CompileRequest {
         state_arc,
@@ -40,7 +38,6 @@ pub(super) async fn handle_compile(
         compiler_path,
         client_env,
         stdin,
-        sink,
     })
     .await
 }

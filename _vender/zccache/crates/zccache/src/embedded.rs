@@ -10,7 +10,6 @@ use std::sync::Arc;
 use crate::core::NormalizedPath;
 use crate::daemon::server::{
     EmbeddedCompileRequest, EmbeddedDaemon, EmbeddedFlushReport, EmbeddedStatsSnapshot,
-    StreamingSink,
 };
 
 pub use crate::audit::{AuditConfig, AuditContext};
@@ -96,45 +95,6 @@ pub enum CacheOutcome {
     Error,
 }
 
-/// Streaming compile event.
-///
-/// Phase 5b2 (soldr#983) introduced this enum so the embedded service can
-/// emit captured rustc output as it arrives from the subprocess pipes
-/// instead of holding the full `Vec<u8>` buffers until `wait_with_output`
-/// returns. The terminal [`CompileChunk::Done`] event carries the exit
-/// code, cache outcome, and `compile_id` (mirrors the buffered
-/// [`CompileResponse`] metadata).
-///
-/// The `cache_outcome` field is encoded as an `i32` (1=Hit, 2=Miss,
-/// 3=Error) to match the soldr-side wire format introduced in Phase 5b1
-/// — keeping the conversion zero-cost on the daemon-side bridge.
-#[derive(Debug, Clone)]
-pub enum CompileChunk {
-    /// One slice of rustc's captured stdout. Emitted as soon as the
-    /// pipe-pumping task reads a non-empty buffer from the child.
-    Stdout(Vec<u8>),
-    /// Mirror of [`CompileChunk::Stdout`] for stderr. For MSVC compiles
-    /// that depend on `/showIncludes` stderr parsing the embedded service
-    /// falls back to the buffered fast-path — see notes in
-    /// `handle_compile/pipeline/compile_exec.rs`.
-    Stderr(Vec<u8>),
-    /// Terminal event. The consumer MUST treat any frame after this as a
-    /// protocol violation.
-    Done {
-        exit_code: i32,
-        cached: bool,
-        cache_outcome: CacheOutcome,
-        compile_id: String,
-    },
-}
-
-/// Sender half of the streaming compile mpsc.
-///
-/// The default channel capacity is 64 — enough to keep the rustc pipe-
-/// pump task from blocking on a slow consumer while bounding daemon-side
-/// memory under any single in-flight compile to ~64 × 64 KiB = 4 MiB.
-pub const DEFAULT_STREAMING_CAPACITY: usize = 64;
-
 /// Shutdown behavior requested by the host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShutdownMode {
@@ -195,78 +155,7 @@ impl ZccacheService {
     }
 
     /// Compile using the embedded daemon engine.
-    ///
-    /// Implemented as a thin wrapper around [`Self::compile_streaming`]
-    /// that collects chunks into the buffered [`CompileResponse`] shape
-    /// existing callers expect. The mpsc capacity is sized large enough
-    /// (1024) that a fast-producing rustc never blocks waiting for the
-    /// collector — the buffered API was never bounded so the streaming
-    /// reshape must not introduce backpressure regressions for it.
     pub async fn compile(&self, request: CompileRequest) -> Result<CompileResponse> {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<CompileChunk>(1024);
-
-        // Drive the streaming side and the collector concurrently. The
-        // streaming task ends by sending `Done`; the collector loop
-        // returns once `rx` is closed.
-        let request_clone = request.clone();
-        let stream_fut = async move { self.compile_streaming(request_clone, tx).await };
-        let collect_fut = async move {
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            let mut tail: Option<(i32, bool, CacheOutcome, String)> = None;
-            while let Some(chunk) = rx.recv().await {
-                match chunk {
-                    CompileChunk::Stdout(bytes) => stdout.extend_from_slice(&bytes),
-                    CompileChunk::Stderr(bytes) => stderr.extend_from_slice(&bytes),
-                    CompileChunk::Done {
-                        exit_code,
-                        cached,
-                        cache_outcome,
-                        compile_id,
-                    } => {
-                        tail = Some((exit_code, cached, cache_outcome, compile_id));
-                    }
-                }
-            }
-            (stdout, stderr, tail)
-        };
-
-        let (stream_result, (stdout, stderr, tail)) = tokio::join!(stream_fut, collect_fut);
-        stream_result?;
-        let (exit_code, cached, cache_outcome, compile_id) = tail.ok_or_else(|| {
-            EmbeddedError::Compile(
-                "embedded compile_streaming finished without CompileChunk::Done".into(),
-            )
-        })?;
-        Ok(CompileResponse {
-            exit_code,
-            stdout,
-            stderr,
-            cached,
-            cache_outcome,
-            compile_id,
-        })
-    }
-
-    /// Streaming variant of [`Self::compile`]. Each chunk of rustc's
-    /// stdout / stderr emits a [`CompileChunk::Stdout`] /
-    /// [`CompileChunk::Stderr`] event as it arrives from the subprocess
-    /// pipes (not after `wait_with_output`). The terminal
-    /// [`CompileChunk::Done`] event carries the exit code, cache outcome,
-    /// and `compile_id`.
-    ///
-    /// Phase 5b2 (soldr#983) — the wire-side streaming groundwork landed
-    /// in soldr-side commit 82e26f4; this is the daemon-side source that
-    /// finally takes the per-compile buffer hop off the critical path.
-    /// The on-disk artifact store and post-compile hashing pipeline still
-    /// receive a fully accumulated `Arc<Vec<u8>>` because they need it
-    /// for cached-error replay; the streaming win lives in the IPC
-    /// shipping path between the rustc child and the wrapper process.
-    pub async fn compile_streaming(
-        &self,
-        request: CompileRequest,
-        sink: tokio::sync::mpsc::Sender<CompileChunk>,
-    ) -> Result<()> {
         let compile_id = request
             .audit
             .compile_id
@@ -277,19 +166,15 @@ impl ZccacheService {
         if self.shutdown.load(Ordering::Acquire) {
             return Err(EmbeddedError::ShutDown);
         }
-        let streaming_sink = StreamingSink::new(sink.clone());
         let response = self
             .daemon
-            .compile_streaming(
-                EmbeddedCompileRequest {
-                    compiler: request.compiler.into_path_buf(),
-                    args: request.args,
-                    cwd: request.cwd.into_path_buf(),
-                    env: Some(request.env),
-                    stdin: request.stdin,
-                },
-                streaming_sink.clone(),
-            )
+            .compile(EmbeddedCompileRequest {
+                compiler: request.compiler.into_path_buf(),
+                args: request.args,
+                cwd: request.cwd.into_path_buf(),
+                env: Some(request.env),
+                stdin: request.stdin,
+            })
             .await
             .map_err(EmbeddedError::Compile)?;
         let cache_outcome = if response.exit_code != 0 {
@@ -299,39 +184,14 @@ impl ZccacheService {
         } else {
             CacheOutcome::Miss
         };
-        // If the inner pipeline did not stream the captured buffers
-        // (e.g. cached-hit replay, MSVC `/showIncludes`, error
-        // surfaces), chunk-emit them here so the consumer always sees
-        // the full output before `Done`.
-        if !streaming_sink.streamed() {
-            for chunk in response.stdout.chunks(64 * 1024) {
-                if sink
-                    .send(CompileChunk::Stdout(chunk.to_vec()))
-                    .await
-                    .is_err()
-                {
-                    return Ok(()); // consumer hung up — bail cleanly
-                }
-            }
-            for chunk in response.stderr.chunks(64 * 1024) {
-                if sink
-                    .send(CompileChunk::Stderr(chunk.to_vec()))
-                    .await
-                    .is_err()
-                {
-                    return Ok(());
-                }
-            }
-        }
-        let _ = sink
-            .send(CompileChunk::Done {
-                exit_code: response.exit_code,
-                cached: response.cached,
-                cache_outcome,
-                compile_id,
-            })
-            .await;
-        Ok(())
+        Ok(CompileResponse {
+            exit_code: response.exit_code,
+            stdout: response.stdout.as_ref().clone(),
+            stderr: response.stderr.as_ref().clone(),
+            cached: response.cached,
+            cache_outcome,
+            compile_id,
+        })
     }
 
     /// Return a daemon-compatible stats snapshot.

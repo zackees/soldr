@@ -751,26 +751,19 @@ where
 }
 
 /// Daemon-side streaming compile dispatcher (issue #983 Phase 5b).
+/// Calls `SoldrZccacheService::compile`, then splits the captured
+/// stdout/stderr `Vec<u8>` into `CHUNK_BYTES`-sized frames before
+/// writing them to the connection. The terminal `CompileDone` frame
+/// carries the exit code, cache outcome, and (today empty) compile id.
 ///
-/// Phase 5b2: now bridges directly to the vendored
-/// [`zccache::embedded::ZccacheService::compile_streaming`] flow. The
-/// embedded service pumps rustc's stdout/stderr pipes into an mpsc
-/// channel as bytes arrive; we drain that channel and emit one
-/// [`Response::CompileStdoutChunk`] / [`Response::CompileStderrChunk`]
-/// wire frame per chunk, followed by exactly one terminal
-/// [`Response::CompileDone`] when the embedded side closes the
-/// channel. The daemon never accumulates the full rustc output before
-/// shipping it — the per-compile buffer hop is gone.
-///
-/// Backpressure flows end-to-end: a slow wire writer here parks the
-/// receive loop, which parks the embedded mpsc, which parks the
-/// rustc-pipe-pumping tasks inside `tokio_command_streaming_with_priority`.
-/// Memory ceiling per in-flight compile is bounded by
-/// [`zccache::embedded::DEFAULT_STREAMING_CAPACITY`] (~4 MiB).
-///
-/// Chunks larger than [`CHUNK_BYTES`] (the 64 KiB wire-frame cap) are
-/// re-chunked locally — the embedded side already reads in 64 KiB
-/// buffers so this is a defensive split, not a regular operation.
+/// Phase 5b1 caveat: the underlying `compile_service.compile` still
+/// returns a fully buffered `CompileResponseBody`, so the daemon
+/// briefly holds the entire rustc output in memory before chunking it
+/// out. The on-wire saving (smaller per-frame prost encode + zero
+/// wrapper-side accumulation) is the immediate win; Phase 5b2 lifts
+/// the daemon-side buffering by changing the zccache embedded service
+/// to emit a stream of chunks directly. See `crates/zccache/src/
+/// embedded.rs` in the `_vender/zccache/` submodule.
 async fn dispatch_compile_streaming<S>(
     state: &Arc<State>,
     req: crate::daemon::protocol::CompileRequest,
@@ -779,128 +772,76 @@ async fn dispatch_compile_streaming<S>(
 where
     S: tokio::io::AsyncWrite + Unpin,
 {
-    use crate::zccache_embedded::StreamingCompileEvent;
-
-    let (mut events, driver) = match state.compile_service.compile_streaming(req) {
-        Ok(pair) => pair,
+    let body = match state.compile_service.compile(req).await {
+        Ok(body) => body,
         Err(err) => {
             let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
             return write_frame_async(stream, &reply).await;
         }
     };
 
-    let mut stdout_bytes = 0usize;
-    let mut stderr_bytes = 0usize;
+    let stdout_len = body.stdout.len();
+    let stderr_len = body.stderr.len();
     let mut stdout_chunks = 0usize;
     let mut stderr_chunks = 0usize;
-    // `done_seen` defaults to `false`. The success path overwrites to
-    // `true` inside the `Done` arm before breaking; the fallback
-    // diagnostic at end-of-function fires only when the loop falls
-    // through without that overwrite (e.g. a future channel-shape
-    // change that drops the terminal frame).
-    #[allow(unused_assignments)]
-    let mut done_seen = false;
 
-    // Drive the embedded compile + drain the event channel
-    // concurrently. The driver future is fused so it doesn't
-    // re-poll after completing.
-    tokio::pin!(driver);
-    let mut driver_done: Option<Result<(), crate::zccache_embedded::EmbeddedServiceError>> = None;
-
-    loop {
-        tokio::select! {
-            biased;
-            event = events.recv() => {
-                match event {
-                    Some(StreamingCompileEvent::Stdout(bytes)) => {
-                        stdout_bytes += bytes.len();
-                        // Defensive re-chunking against the wire cap.
-                        for chunk in bytes.chunks(CHUNK_BYTES) {
-                            write_frame_async(
-                                stream,
-                                &Response::CompileStdoutChunk(chunk.to_vec()),
-                            )
-                            .await?;
-                            stdout_chunks += 1;
-                        }
-                    }
-                    Some(StreamingCompileEvent::Stderr(bytes)) => {
-                        stderr_bytes += bytes.len();
-                        for chunk in bytes.chunks(CHUNK_BYTES) {
-                            write_frame_async(
-                                stream,
-                                &Response::CompileStderrChunk(chunk.to_vec()),
-                            )
-                            .await?;
-                            stderr_chunks += 1;
-                        }
-                    }
-                    Some(StreamingCompileEvent::Done {
-                        exit_code,
-                        cached,
-                        cache_outcome,
-                        compile_id,
-                    }) => {
-                        done_seen = true;
-                        let done = Response::CompileDone {
-                            exit_code,
-                            cached,
-                            cache_outcome,
-                            compile_id,
-                        };
-                        tracing::debug!(
-                            target: "soldr::daemon::compile_stream",
-                            exit_code,
-                            cached,
-                            cache_outcome,
-                            stdout_bytes,
-                            stderr_bytes,
-                            stdout_chunks,
-                            stderr_chunks,
-                            "compile done — streaming reply complete",
-                        );
-                        write_frame_async(stream, &done).await?;
-                        // We've shipped Done. The driver is still
-                        // resolving but the wire side is finished.
-                        break;
-                    }
-                    None => {
-                        // Channel closed without a Done frame — the
-                        // driver either errored or the rustc child
-                        // died. Wait for the driver to surface the
-                        // reason.
-                        if driver_done.is_none() {
-                            driver_done = Some((&mut driver).await);
-                        }
-                        let msg = match driver_done.as_ref().unwrap() {
-                            Ok(()) => "embedded compile_streaming ended without Done frame".to_string(),
-                            Err(err) => format!("embedded zccache compile failed: {err}"),
-                        };
-                        let _ = write_frame_async(stream, &Response::Error(msg)).await;
-                        return Ok(());
-                    }
-                }
-            }
-            res = &mut driver, if driver_done.is_none() => {
-                driver_done = Some(res);
-                // Loop again to drain any remaining buffered events.
-            }
-        }
-    }
-
-    // Await the driver to completion so its embedded background tasks
-    // settle before this connection's reply path returns.
-    if driver_done.is_none() {
-        let _ = driver.await;
-    }
-    if !done_seen {
-        let _ = write_frame_async(
+    // Stream stdout first, then stderr. zccache already buffers them
+    // separately (different pipes on rustc), so the original
+    // interleaving is gone by this point; the wrapper writes them to
+    // its own stdout/stderr in the same order rustc produced them
+    // within each pipe.
+    for chunk in body.stdout.chunks(CHUNK_BYTES) {
+        write_frame_async(
             stream,
-            &Response::Error("embedded compile_streaming ended without Done frame".into()),
+            &Response::CompileStdoutChunk(chunk.to_vec()),
         )
-        .await;
+        .await?;
+        stdout_chunks += 1;
+        tracing::debug!(
+            target: "soldr::daemon::compile_stream",
+            bytes = chunk.len(),
+            chunk_index = stdout_chunks - 1,
+            "stdout chunk emitted",
+        );
     }
-    Ok(())
+
+    for chunk in body.stderr.chunks(CHUNK_BYTES) {
+        write_frame_async(
+            stream,
+            &Response::CompileStderrChunk(chunk.to_vec()),
+        )
+        .await?;
+        stderr_chunks += 1;
+        tracing::debug!(
+            target: "soldr::daemon::compile_stream",
+            bytes = chunk.len(),
+            chunk_index = stderr_chunks - 1,
+            "stderr chunk emitted",
+        );
+    }
+
+    let done = Response::CompileDone {
+        exit_code: body.exit_code,
+        cached: body.cached,
+        cache_outcome: body.cache_outcome,
+        // Phase 5b1: zccache's embedded service does not surface an
+        // audit id back through `CompileResponseBody`. Plumbing it
+        // through is part of Phase 5b2; for now the wire field is
+        // an empty string and the wrapper ignores it.
+        compile_id: String::new(),
+    };
+    tracing::debug!(
+        target: "soldr::daemon::compile_stream",
+        exit_code = body.exit_code,
+        cached = body.cached,
+        cache_outcome = body.cache_outcome,
+        stdout_bytes = stdout_len,
+        stderr_bytes = stderr_len,
+        stdout_chunks,
+        stderr_chunks,
+        "compile done — streaming reply complete",
+    );
+    write_frame_async(stream, &done).await
 }
 
 /// Best-effort resolver for the `~/.soldr/cache/cook/<sha256>.tar.zst`

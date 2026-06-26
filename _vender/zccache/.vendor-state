@@ -30,8 +30,4 @@ driving_issue = "https://github.com/zackees/soldr/issues/983"
 #
 # Initial state: no deltas. Subagents B/C/D will populate this as
 # they land changes.
-
-[[deltas]]
-soldr_commit = "HEAD"
-summary = "embedded: streaming compile (chunked rustc pipes instead of wait_with_output)"
-upstream_pr = null
+deltas = []

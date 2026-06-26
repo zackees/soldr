@@ -62,8 +62,8 @@ use std::sync::Arc;
 use blake3::Hasher;
 use zccache::core::NormalizedPath;
 use zccache::embedded::{
-    AuditConfig, AuditContext, CacheOutcome, CompileChunk, CompileRequest as ZccacheCompileRequest,
-    HostIdentity, RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
+    AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest, HostIdentity,
+    RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
 
 use crate::core::SoldrPaths;
@@ -185,85 +185,6 @@ impl SoldrZccacheService {
         })
     }
 
-    /// Streaming variant of [`Self::compile`] (Phase 5b2, soldr#983).
-    /// Returns the borrowed receiver half of the embedded service's
-    /// streaming channel. The caller (daemon `dispatch_compile_streaming`)
-    /// consumes [`StreamingCompileEvent`]s and forwards them as wire
-    /// frames to the wrapper. The driver future MUST be polled
-    /// concurrently with the receiver — `tokio::join!` on the two
-    /// sides is the canonical pattern; see the daemon server for the
-    /// production use.
-    ///
-    /// The mpsc capacity is [`zccache::embedded::DEFAULT_STREAMING_CAPACITY`]
-    /// (64 chunks × 64 KiB = ~4 MiB max in-flight). When rustc
-    /// produces faster than the consumer can ship frames the channel
-    /// applies backpressure to the rustc-pipe pumping tasks inside
-    /// the embedded service — the daemon never accumulates an
-    /// unbounded buffer.
-    pub fn compile_streaming(
-        &self,
-        req: CompileRequest,
-    ) -> Result<
-        (
-            tokio::sync::mpsc::Receiver<StreamingCompileEvent>,
-            impl std::future::Future<Output = Result<(), EmbeddedServiceError>> + Send,
-        ),
-        EmbeddedServiceError,
-    > {
-        let (compiler, rustc_args) = split_compiler_and_args(&req.args)?;
-        let cwd: NormalizedPath = std::path::PathBuf::from(req.cwd).into();
-        let audit = default_audit_context();
-        let zreq = ZccacheCompileRequest {
-            audit,
-            compiler,
-            args: rustc_args,
-            cwd,
-            env: req.env,
-            stdin: req.stdin,
-        };
-        let (inner_tx, mut inner_rx) =
-            tokio::sync::mpsc::channel::<CompileChunk>(zccache::embedded::DEFAULT_STREAMING_CAPACITY);
-        let (out_tx, out_rx) =
-            tokio::sync::mpsc::channel::<StreamingCompileEvent>(zccache::embedded::DEFAULT_STREAMING_CAPACITY);
-        let svc = Arc::clone(&self.inner);
-        let driver = async move {
-            // Two-task fan-out: one task drives the embedded compile
-            // (which sends chunks into `inner_tx`); the current task
-            // drains them into the soldr-side `out_tx`. Without the
-            // concurrent split the producer would deadlock the moment
-            // the inner channel filled up.
-            let stream_task = tokio::spawn(async move {
-                svc.compile_streaming(zreq, inner_tx)
-                    .await
-                    .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))
-            });
-            while let Some(chunk) = inner_rx.recv().await {
-                let out_event = match chunk {
-                    CompileChunk::Stdout(bytes) => StreamingCompileEvent::Stdout(bytes),
-                    CompileChunk::Stderr(bytes) => StreamingCompileEvent::Stderr(bytes),
-                    CompileChunk::Done {
-                        exit_code,
-                        cached,
-                        cache_outcome,
-                        compile_id,
-                    } => StreamingCompileEvent::Done {
-                        exit_code,
-                        cached,
-                        cache_outcome: encode_cache_outcome(cache_outcome),
-                        compile_id,
-                    },
-                };
-                if out_tx.send(out_event).await.is_err() {
-                    break;
-                }
-            }
-            stream_task
-                .await
-                .map_err(|e| EmbeddedServiceError::Compile(format!("compile task join failed: {e}")))?
-        };
-        Ok((out_rx, driver))
-    }
-
     /// Drain pending writes — called from the `Request::BuildSessionEnd`
     /// arm before the session aggregate write hits redb.
     pub async fn flush(&self) -> Result<(), EmbeddedServiceError> {
@@ -330,23 +251,6 @@ fn uuid_like_random_id() -> String {
     hex::encode(&hasher.finalize().as_bytes()[..16])
 }
 
-/// Soldr-side mirror of [`zccache::embedded::CompileChunk`] (Phase 5b2,
-/// soldr#983). The `cache_outcome` field is pre-encoded to the same i32
-/// shape the [`CompileResponseBody`] wire format uses (1=Hit, 2=Miss,
-/// 3=Error) so the daemon dispatcher can fill the `CompileDone` frame
-/// without re-importing the zccache `CacheOutcome` enum.
-#[derive(Debug, Clone)]
-pub enum StreamingCompileEvent {
-    Stdout(Vec<u8>),
-    Stderr(Vec<u8>),
-    Done {
-        exit_code: i32,
-        cached: bool,
-        cache_outcome: i32,
-        compile_id: String,
-    },
-}
-
 /// Encode [`CacheOutcome`] as the integer protocol expects on the wire:
 /// 1=Hit, 2=Miss, 3=Error. Kept inside the embedded module so the
 /// soldr daemon layer never imports `CacheOutcome` directly.
@@ -385,46 +289,4 @@ fn derive_identity(paths: &SoldrPaths) -> HostIdentity {
         instance_id: id_hex.clone(),
         workspace_id: id_hex,
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    crate::timed_test!(encode_cache_outcome_matches_wire_int_encoding, {
-        // Phase 5b2 (soldr#983): the streaming bridge must encode
-        // `CacheOutcome` to the same int the buffered wire format used.
-        // Diverging here would silently break the wrapper's
-        // `cache_outcome` reporting.
-        assert_eq!(encode_cache_outcome(CacheOutcome::Hit), 1);
-        assert_eq!(encode_cache_outcome(CacheOutcome::Miss), 2);
-        assert_eq!(encode_cache_outcome(CacheOutcome::Error), 3);
-    });
-
-    crate::timed_test!(streaming_compile_event_carries_done_metadata, {
-        // Phase 5b2: smoke-check the soldr-side mirror of
-        // `CompileChunk`. The bridge in `dispatch_compile_streaming`
-        // depends on the field shape; a future structural change here
-        // should fail this test until the dispatcher is updated.
-        let ev = StreamingCompileEvent::Done {
-            exit_code: 0,
-            cached: true,
-            cache_outcome: 1,
-            compile_id: "abc".into(),
-        };
-        match ev {
-            StreamingCompileEvent::Done {
-                exit_code,
-                cached,
-                cache_outcome,
-                compile_id,
-            } => {
-                assert_eq!(exit_code, 0);
-                assert!(cached);
-                assert_eq!(cache_outcome, 1);
-                assert_eq!(compile_id, "abc");
-            }
-            other => panic!("unexpected variant: {other:?}"),
-        }
-    });
 }
