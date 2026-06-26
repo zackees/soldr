@@ -653,6 +653,116 @@ pub(crate) async fn tokio_command_output_with_priority_stdin(
     }
 }
 
+/// Spawn `cmd` with priority + job-object + kill_on_drop applied (same as
+/// [`tokio_command_output_with_priority`]) but **stream** stdout and stderr
+/// straight from the child's pipes through `tokio::io::copy` into the two
+/// destination files, rather than accumulating into `Vec<u8>` and returning
+/// `Output`.
+///
+/// Zero-buffer semantics — bytes flow from the child's pipe through the OS
+/// file descriptor to disk without ever sitting in a daemon-owned `Vec`.
+/// Issue zccache#939 step 1: the rustc cold-miss path uses this so its
+/// stdout/stderr can be `rename`d into the artifact store on the success
+/// path without re-allocating the bytes.
+///
+/// Both destination files are created with CREATE | TRUNCATE semantics
+/// (`tokio::fs::File::create`). The function returns the child's
+/// `ExitStatus`; if either pump task fails (e.g. disk full mid-write) the
+/// pump error is propagated as `io::Error`, the child is `kill_on_drop`-ed,
+/// and the partial output file may exist on disk — callers are expected to
+/// treat the error as a compile failure and discard the destination paths.
+pub(crate) async fn tokio_command_streaming_to_files(
+    cmd: &mut tokio::process::Command,
+    priority: CompilePriority,
+    stdout_path: std::path::PathBuf,
+    stderr_path: std::path::PathBuf,
+) -> io::Result<std::process::ExitStatus> {
+    let (decision, _ticket) = priority.resolve_and_track();
+    let priority = decision.effective;
+
+    #[cfg(windows)]
+    let mut child = {
+        use std::process::Stdio;
+
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        cmd.creation_flags(child_creation_flags(priority));
+        let child = cmd.spawn()?;
+        if let Some(handle) = child.raw_handle() {
+            assign_child_to_daemon_job(handle);
+            apply_priority_to_child_windows(handle, priority);
+        }
+        child
+    };
+
+    #[cfg(unix)]
+    let mut child = {
+        use std::process::Stdio;
+
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        cmd.kill_on_drop(true);
+        let child = cmd.spawn()?;
+        if let Some(pid) = child.id() {
+            apply_priority_to_child_unix(pid, priority);
+        }
+        child
+    };
+
+    #[cfg(not(any(unix, windows)))]
+    let mut child = cmd.spawn()?;
+
+    // Take the pipes BEFORE awaiting child.wait(). Holding `wait()` while
+    // the child's stdout pipe is full causes the child to block on write —
+    // classic pipe-buffer deadlock. Each pump task owns its half of the
+    // pipe and drains it concurrently with `wait`.
+    let mut child_stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io::Error::other("child stdout pipe was None after spawn"))?;
+    let mut child_stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("child stderr pipe was None after spawn"))?;
+
+    let stdout_pump = tokio::spawn(async move {
+        let mut out_file = tokio::fs::File::create(&stdout_path).await?;
+        tokio::io::copy(&mut child_stdout, &mut out_file).await?;
+        // Best-effort flush; rename/read after this point sees full bytes.
+        use tokio::io::AsyncWriteExt;
+        out_file.flush().await?;
+        Ok::<(), io::Error>(())
+    });
+
+    let stderr_pump = tokio::spawn(async move {
+        let mut err_file = tokio::fs::File::create(&stderr_path).await?;
+        tokio::io::copy(&mut child_stderr, &mut err_file).await?;
+        use tokio::io::AsyncWriteExt;
+        err_file.flush().await?;
+        Ok::<(), io::Error>(())
+    });
+
+    let status = child.wait().await?;
+
+    // Join both pumps so disk-write errors surface to the caller. If either
+    // task panicked (JoinError) we surface that too — the daemon log will
+    // capture the panic location. Pump-task failure or panic is propagated
+    // as `io::Error` so the caller maps it to a CompileExecResult::Error.
+    let stdout_result = stdout_pump
+        .await
+        .map_err(|e| io::Error::other(format!("stdout pump task panicked: {e}")))?;
+    let stderr_result = stderr_pump
+        .await
+        .map_err(|e| io::Error::other(format!("stderr pump task panicked: {e}")))?;
+    stdout_result?;
+    stderr_result?;
+
+    Ok(status)
+}
+
 #[cfg(windows)]
 fn assign_child_to_daemon_job(raw_handle: std::os::windows::io::RawHandle) {
     let Some(job) = DAEMON_JOB.get_or_init(WindowsJob::new).as_ref() else {
