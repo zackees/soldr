@@ -216,10 +216,15 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
     // bottleneck. Off-CPU profiling showed `tokio-rt-worker` context
     // switches were ~3x higher cold vs bare and `sched_yield` events
     // tripled — capping at 2-4 workers cuts the unused-worker noise.
+    // L6 reverted post-#980 perf measurement: capping the worker pool
+    // to 2-4 starved the daemon's Compile dispatch (each compile awaits
+    // its rustc subprocess on a worker; the cap forced serial dispatch
+    // when cargo wanted N-way parallelism). Use the full host
+    // parallelism — the tokio scheduler keeps workers cheap when idle.
     let available = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(2);
-    let workers = available.saturating_div(2).clamp(2, 4);
+    let workers = available.max(2);
     tracing::info!("soldr-daemon Tokio runtime: {workers} workers (host parallelism: {available})");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)

@@ -50,6 +50,17 @@ pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
         return true;
     }
 
+    // Version probes never compile. Cargo's very first call when it
+    // resolves a toolchain is `rustc -vV`; the wrapper must direct-exec
+    // it instead of routing through the daemon (which doesn't help and
+    // costs the daemon-spawn latency on cold startups).
+    if rest
+        .iter()
+        .any(|a| a == "-vV" || a == "-V" || a == "--version")
+    {
+        return true;
+    }
+
     // Collect every emit-kind across all `--emit`/`--emit=` occurrences.
     // Cargo can spell either form (and may pass multiple), so accumulate
     // the union before deciding.
@@ -328,23 +339,86 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
         stdin: Vec::new(),
     };
 
-    match client::compile(&sock, req) {
-        Ok(body) => {
-            // Relay captured stdout/stderr verbatim. Best-effort writes:
-            // a broken pipe on stdout should not mask the rustc exit
-            // code we already have.
-            use std::io::Write as _;
-            let _ = std::io::stdout().write_all(&body.stdout);
-            let _ = std::io::stderr().write_all(&body.stderr);
-            Ok(body.exit_code)
+    // First try — daemon may already be running.
+    let first = client::compile(&sock, req.clone());
+    let body = match first {
+        Ok(body) => body,
+        Err(_) => {
+            // Spawn the daemon, then retry up to ~6 s. The spawn
+            // returns before the socket is bound. On cold WSL2 starts
+            // (or fresh container layers) the daemon's embedded
+            // zccache service can take a couple of seconds to come up
+            // before it accepts IPC.
+            let spawn_result = crate::daemon::lifecycle::try_spawn_detached();
+            if let Err(e) = &spawn_result {
+                eprintln!("soldr: try_spawn_detached returned err: {e:?}");
+            }
+            let mut last_err = None;
+            let mut body = None;
+            // 30 s retry window — embedded zccache cold-start (redb
+            // open, cache root init, depgraph load) can take several
+            // seconds on first-ever boot in a container.
+            for attempt in 0..300 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                match client::compile(&sock, req.clone()) {
+                    Ok(b) => {
+                        body = Some(b);
+                        break;
+                    }
+                    Err(e) => last_err = Some((attempt, e)),
+                }
+            }
+            match body {
+                Some(b) => b,
+                None => {
+                    // Diagnose: report whether the daemon binary even
+                    // exists at the expected sibling path, the PID
+                    // file presence, and the tail of the daemon's
+                    // spawn log (the daemon's stderr redirected by
+                    // spawn_detached_inner). Concrete place to look.
+                    let bin_diag = std::env::current_exe()
+                        .ok()
+                        .map(|p| crate::daemon::service_definition::sibling_daemon_binary(&p))
+                        .map(|p| (p.exists(), p.display().to_string()))
+                        .unwrap_or((false, "<unknown>".into()));
+                    let log_tail = SoldrPaths::new()
+                        .ok()
+                        .map(|p| p.root.join("daemon-spawn.log"))
+                        .and_then(|p| std::fs::read_to_string(&p).ok())
+                        .map(|s| {
+                            s.lines()
+                                .rev()
+                                .take(20)
+                                .collect::<Vec<_>>()
+                                .into_iter()
+                                .rev()
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_else(|| "<no spawn log>".into());
+                    return Err(SoldrError::Other(format!(
+                        "soldr daemon embedded compile dispatch failed after spawn + 30s retry: \
+                         {:?}. daemon_binary=({}, exists={}) spawn_result={:?} sock={}.\n\
+                         daemon-spawn.log tail:\n{}\n\
+                         The legacy fork-zccache.exe fallback was removed in #980 L1; \
+                         confirm the soldr-daemon binary is present alongside the soldr binary.",
+                        last_err, bin_diag.1, bin_diag.0,
+                        spawn_result,
+                        sock.display(),
+                        log_tail,
+                    )));
+                }
+            }
         }
-        Err(err) => Err(SoldrError::Other(format!(
-            "soldr daemon embedded compile dispatch failed: {err:?}. \
-             The legacy fork-zccache.exe fallback was removed in #980 L1; \
-             the soldr-daemon must be running and reachable for rustc-wrapper \
-             invocations to succeed."
-        ))),
-    }
+    };
+
+    // Relay captured stdout/stderr verbatim. Best-effort writes:
+    // a broken pipe on stdout should not mask the rustc exit code
+    // we already have.
+    use std::io::Write as _;
+    let _ = std::io::stdout().write_all(&body.stdout);
+    let _ = std::io::stderr().write_all(&body.stderr);
+    Ok(body.exit_code)
 }
 
 #[cfg(test)]

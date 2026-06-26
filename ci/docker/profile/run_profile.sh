@@ -53,9 +53,19 @@ rustup toolchain install 1.94.1 --profile minimal --no-self-update 2>&1 \
     | tee -a "${OUT_DIR}/build.log" | tail -3
 rustup default 1.94.1 2>&1 | tee -a "${OUT_DIR}/build.log" | tail -3
 
-log "==> building soldr-cli (debug + frame-pointers) ..."
-cargo build -p soldr-cli --bin soldr 2>&1 | tee -a "${OUT_DIR}/build.log" | tail -5
-SOLDR_BIN=/tmp/soldr-target/debug/soldr
+log "==> building soldr-cli + soldr-daemon (release + frame-pointers + debuginfo) ..."
+# Build both binaries — the wrapper now auto-spawns soldr-daemon via
+# `try_spawn_detached` when the IPC socket is missing, which requires
+# the daemon binary to live alongside the soldr binary on PATH.
+#
+# Release mode matters: the embedded zccache compile service runs
+# inside the soldr-daemon, so a debug-built daemon would underrun
+# the baseline (which forked the release-built managed zccache.exe)
+# by 10-20× on the IPC hot path. Keep `-C force-frame-pointers` +
+# `-C debuginfo=2` so perf still resolves clean stacks.
+cargo build --release -p soldr-cli --bin soldr --bin soldr-daemon 2>&1 \
+    | tee -a "${OUT_DIR}/build.log" | tail -5
+SOLDR_BIN=/tmp/soldr-target/release/soldr
 if [[ ! -x "${SOLDR_BIN}" ]]; then
     log "fatal: soldr binary missing at ${SOLDR_BIN}"
     exit 64
@@ -63,7 +73,7 @@ fi
 log "soldr binary : ${SOLDR_BIN}"
 
 # Ensure soldr is on PATH so its env-detection wins over any host soldr.
-export PATH="/tmp/soldr-target/debug:${PATH}"
+export PATH="/tmp/soldr-target/release:${PATH}"
 
 # Resolve the cargo + rustc that will run inside the fixture.
 log "rustc        : $(command -v rustc) ($(rustc --version))"

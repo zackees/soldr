@@ -235,10 +235,37 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(daemon);
-    cmd.arg("--foreground")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    cmd.arg("--foreground").stdin(Stdio::null());
+    // Diagnostic redirect: spawn the daemon's stderr/stdout to a
+    // log file under the soldr cache root so a startup crash leaves
+    // an artifact the wrapper can surface later. Falls back to
+    // /dev/null if the path can't be created (preserves the original
+    // contract).
+    let log_path = SoldrPaths::new()
+        .ok()
+        .map(|p| p.root.join("daemon-spawn.log"));
+    if let Some(path) = &log_path {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let stdout_file = file.try_clone().unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open("/dev/null")
+                    .expect("dev/null must open")
+            });
+            cmd.stdout(stdout_file).stderr(file);
+        } else {
+            cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        }
+    } else {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    }
     unsafe {
         cmd.pre_exec(|| {
             // Detach from the parent's process group so the daemon
