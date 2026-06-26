@@ -30,4 +30,8 @@ driving_issue = "https://github.com/zackees/soldr/issues/983"
 #
 # Initial state: no deltas. Subagents B/C/D will populate this as
 # they land changes.
-deltas = []
+
+[[deltas]]
+soldr_commit = "3c9eb42b4db57b4f4cac182410ebf9d6fc34c870"
+summary = "compile_exec: introduce CompileExecBytes::Streamed for rustc cold path"
+upstream_pr = null
