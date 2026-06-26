@@ -36,6 +36,10 @@ message WireRequest {
     WireCookLookup cook_lookup = 10;
     WireCookRecord cook_record = 11;
     WireCookTouch cook_touch = 12;
+    // #977 Phase 5 / #980 L1 — wrapper asks the daemon's embedded
+    // zccache service to run a rustc invocation instead of forking
+    // zccache.exe. v6 protocol.
+    WireCompileRequest compile = 13;
   }
 }
 
@@ -108,6 +112,18 @@ message WireCookTouch {
   bytes sha256 = 1;       // exactly 32 bytes
 }
 
+message WireEnvEntry {
+  string key = 1;
+  string value = 2;
+}
+
+message WireCompileRequest {
+  repeated string args = 1;
+  string cwd = 2;
+  repeated WireEnvEntry env = 3;
+  bytes stdin = 4;
+}
+
 // =========================================================================
 // Response (daemon -> client)
 // =========================================================================
@@ -121,7 +137,19 @@ message WireResponse {
     WireCookHit cook_hit = 5;
     WireCookMiss cook_miss = 6;
     WireUnit ack = 7;
+    // #977 Phase 5 / #980 L1 — reply to WireCompileRequest carrying
+    // captured rustc stdout/stderr + exit code.
+    WireCompileResponse compile_response = 8;
   }
+}
+
+message WireCompileResponse {
+  int32 exit_code = 1;
+  bytes stdout = 2;
+  bytes stderr = 3;
+  bool cached = 4;
+  // 1=Hit, 2=Miss, 3=Error. Mirrors zccache::embedded::CacheOutcome.
+  int32 cache_outcome = 5;
 }
 
 message WireBuilds {
@@ -154,6 +182,10 @@ message WireStatusInfo {
   uint64 request_count = 4;
   optional WireZccacheDaemonLink linked_zccache = 5;
   optional WireCookStats cook_stats = 6;
+  // #977 / #980 L1 — always "embedded". The legacy "wrapped"
+  // fork-zccache.exe backend was removed in #980 L1's second pass;
+  // field retained for telemetry stability.
+  string compile_backend = 7;
 }
 
 message WireCookStats {

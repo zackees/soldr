@@ -13,14 +13,16 @@ use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
     current_daemon_process, soldr_backend_endpoint_mux, LEGACY_FRAME_HEADER_BYTES,
 };
-use crate::daemon::compile_backend::{embedded_requested, CompileBackend, EMBEDDED_ENV_VAR};
 use crate::daemon::db;
+use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink, PROTOCOL_VERSION,
+    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink,
+    COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
 };
 use crate::daemon::zccache_link;
+use crate::zccache_embedded::SoldrZccacheService;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -115,11 +117,17 @@ struct State {
     /// redb `cook_index_v1` table, not in process-local state.
     cook_hits_this_session: AtomicU64,
     shutdown: Notify,
-    /// Compile-dispatch backend chosen at daemon boot. Default
-    /// [`CompileBackend::Wrapped`] preserves today's behavior; the
-    /// `Embedded` variant is opted into via `SOLDR_ZCCACHE_EMBEDDED=1`
-    /// AND the `embedded` Cargo feature. Issue #977 Phase 1 + 2.
-    compile_backend: CompileBackend,
+    /// L4 (issue soldr#980) — background drain task that coalesces
+    /// per-compile redb event writes. Hot path (`Request::RecordCompile`)
+    /// pushes into a tokio mpsc instead of opening redb directly. See
+    /// [`crate::daemon::event_batcher`] for the batching contract.
+    event_batcher: EventBatcher,
+    /// In-process zccache compile service (issue #977 / #980 L1). The
+    /// daemon always owns one — the wrapped/fork-zccache.exe
+    /// alternative was removed in the L1 second pass. `start()` is
+    /// fallible at daemon boot; if it fails the daemon refuses to
+    /// start rather than silently degrade.
+    compile_service: Arc<SoldrZccacheService>,
 }
 
 impl State {
@@ -155,6 +163,9 @@ impl State {
                 total_bytes,
                 hits_this_session: self.cook_hits_this_session.load(Ordering::Relaxed),
             }),
+            // Always "embedded" since #980 L1 second pass; field
+            // retained for telemetry stability.
+            compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
         }
     }
 }
@@ -166,80 +177,52 @@ fn current_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Pick the compile-dispatch backend at daemon boot. Reads the
-/// `SOLDR_ZCCACHE_EMBEDDED=1` env var and resolves it against the
-/// presence of the `embedded` Cargo feature. Defaults to
-/// [`CompileBackend::Wrapped`] for backward compatibility.
-async fn select_compile_backend(_paths: &SoldrPaths) -> CompileBackend {
-    let want_embedded = embedded_requested();
-    if !want_embedded {
-        return CompileBackend::Wrapped;
-    }
-
-    #[cfg(feature = "embedded")]
-    {
-        match crate::zccache_embedded::SoldrZccacheService::start(_paths).await {
-            Ok(svc) => {
-                tracing::info!(
-                    "soldr-daemon: embedded zccache backend active ({}={}=1)",
-                    EMBEDDED_ENV_VAR,
-                    EMBEDDED_ENV_VAR
-                );
-                CompileBackend::Embedded(std::sync::Arc::new(svc))
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "soldr-daemon: {}=1 requested but embedded service failed to start ({err}); \
-                     falling back to wrapped binary backend",
-                    EMBEDDED_ENV_VAR
-                );
-                CompileBackend::Wrapped
-            }
+/// Start the embedded zccache compile service at daemon boot. Issue
+/// #977 / #980 L1 — embedded is mandatory; on failure the daemon
+/// itself refuses to start so callers see a hard error instead of a
+/// silent degrade. No env-var gating, no feature gating, no fallback.
+async fn start_compile_service(
+    paths: &SoldrPaths,
+) -> Result<Arc<SoldrZccacheService>, ServerError> {
+    match SoldrZccacheService::start(paths).await {
+        Ok(svc) => {
+            tracing::info!("soldr-daemon: embedded zccache backend active");
+            Ok(Arc::new(svc))
         }
-    }
-
-    #[cfg(not(feature = "embedded"))]
-    {
-        tracing::warn!(
-            "soldr-daemon: {}=1 set but this build of soldr was compiled without \
-             `--features embedded`; backend remains Wrapped",
-            EMBEDDED_ENV_VAR
-        );
-        CompileBackend::Wrapped
+        Err(err) => Err(ServerError::Io(std::io::Error::other(format!(
+            "embedded zccache service failed to start: {err}"
+        )))),
     }
 }
 
-/// Drain + shut down the embedded service if active. No-op for
-/// `CompileBackend::Wrapped`. Best-effort: errors are logged but never
-/// block daemon exit, because the wrapped-binary stop path still has
-/// to run regardless.
-async fn shutdown_compile_backend(state: &Arc<State>) {
-    match &state.compile_backend {
-        CompileBackend::Wrapped => {}
-        #[cfg(feature = "embedded")]
-        CompileBackend::Embedded(svc) => {
-            if let Err(err) = svc.flush().await {
-                tracing::warn!("soldr-daemon: embedded zccache flush failed: {err}");
-            }
-            // The held `Arc<SoldrZccacheService>` lives on `state` which
-            // outlives this function call. We cannot consume it here, so
-            // we issue a flush and rely on `Drop` to do the underlying
-            // service shutdown when `state` is released after
-            // `run_async` returns. `SoldrZccacheService::shutdown` is
-            // exercised by integration tests that own the service
-            // exclusively.
-            tracing::debug!(
-                "soldr-daemon: embedded zccache flushed (service Drop will finalize shutdown)"
-            );
-        }
+/// Drain the embedded service before the daemon exits. Best-effort:
+/// errors are logged but never block daemon exit. The actual shutdown
+/// is delegated to `Drop` because `State` still holds an `Arc` clone
+/// at this point in `run_async`.
+async fn shutdown_compile_service(state: &Arc<State>) {
+    if let Err(err) = state.compile_service.flush().await {
+        tracing::warn!("soldr-daemon: embedded zccache flush failed: {err}");
     }
+    tracing::debug!("soldr-daemon: embedded zccache flushed (service Drop will finalize shutdown)");
 }
 
 /// Synchronous entry point used by both the `soldr-daemon` bin target
 /// and `soldr daemon start --foreground`. Builds a tokio runtime and
 /// blocks until the daemon exits.
 pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
+    // L6 (soldr#980): cap the daemon Tokio runtime to a small fixed
+    // worker count so it doesn't oversubscribe the CPU during cargo
+    // builds. The daemon handles IPC + bookkeeping; rustc is the CPU
+    // bottleneck. Off-CPU profiling showed `tokio-rt-worker` context
+    // switches were ~3x higher cold vs bare and `sched_yield` events
+    // tripled — capping at 2-4 workers cuts the unused-worker noise.
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let workers = available.saturating_div(2).clamp(2, 4);
+    tracing::info!("soldr-daemon Tokio runtime: {workers} workers (host parallelism: {available})");
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(workers)
         .enable_all()
         .build()?;
     runtime.block_on(run_async(opts))
@@ -271,14 +254,18 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
         .map_err(|err| ServerError::Io(std::io::Error::other(err.to_string())))?;
 
-    // Issue #977 — embedded zccache backend selection. When the
-    // `embedded` Cargo feature is on and `SOLDR_ZCCACHE_EMBEDDED=1` is
-    // set, start the in-process `ZccacheService` here so the daemon's
-    // tokio runtime owns its background tasks too. tokio-console then
-    // sees the union of soldr + zccache work from a single attach.
-    // Without the feature flag, a one-line warning is logged when the
-    // env var is set so operators know their toggle was a no-op.
-    let compile_backend = select_compile_backend(&paths).await;
+    // Issue #977 / #980 L1 — start the embedded zccache compile
+    // service here so the daemon's tokio runtime owns its background
+    // tasks. tokio-console sees the union of soldr + zccache work
+    // from a single attach. Embedded is mandatory; if start fails,
+    // the daemon refuses to come up.
+    let compile_service = start_compile_service(&paths).await?;
+
+    // L4 (issue soldr#980): start the background event-flusher BEFORE we
+    // accept any IPC traffic so the very first `RecordCompile` lands on
+    // a live channel. The drain task lives in the daemon's tokio runtime
+    // and exits cleanly via `shutdown()` below.
+    let event_batcher = EventBatcher::start(db_path.clone());
 
     let state = Arc::new(State {
         db_path,
@@ -291,7 +278,8 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         exit_via_idle: AtomicBool::new(false),
         cook_hits_this_session: AtomicU64::new(0),
         shutdown: Notify::new(),
-        compile_backend,
+        event_batcher,
+        compile_service,
     });
 
     write_pid_file(&paths).map_err(|e| match e {
@@ -327,10 +315,15 @@ async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     accept_handle.abort();
     idle_handle.abort();
 
-    // Issue #977 Phase 1 + 2: shut down the embedded zccache service
-    // before the wrapped-binary stop path so any pending writes drain
-    // through `flush()`. No-op for `CompileBackend::Wrapped`.
-    shutdown_compile_backend(&state).await;
+    // L4 (issue soldr#980): drain whatever the background event flusher
+    // has staged in memory before the daemon process exits. Must run
+    // BEFORE the redb file lock is released so the final write txn
+    // succeeds; `shutdown()` awaits the drain task's ack.
+    state.event_batcher.shutdown().await;
+
+    // Issue #977 / #980 L1: drain the embedded zccache service before
+    // any other shutdown work so pending writes flush through.
+    shutdown_compile_service(&state).await;
 
     // Phase 3: if the daemon's session linked a zccache daemon PID,
     // stop it before our own final exit. Runs on both explicit shutdown
@@ -469,6 +462,12 @@ where
             repo_root,
             started_at_ms,
         } => {
+            // Issue #980 L7: mark the daemon as "build in progress" so
+            // any periodic worker living inside the daemon process
+            // (today: none; tomorrow: an inotify cache watcher and a
+            // daemon-resident auto-GC tick) skips its tick. Cleared on
+            // `BuildSessionEnd` below.
+            crate::cache_lib::build_active::set(true);
             let record = BuildRecord {
                 session_id,
                 repo_root,
@@ -481,9 +480,12 @@ where
                 slowest_crate_name: None,
             };
             let _ = db::upsert_build(&state.db_path, &record);
-            let _ = db::append_event(
-                &state.db_path,
-                &db::Event {
+            // L4 (issue soldr#980): route the SessionStart event through
+            // the batcher so we don't compete with the build's first
+            // RecordCompile burst for the redb writer.
+            state
+                .event_batcher
+                .record(db::Event {
                     ts_ms: started_at_ms,
                     session_id: Some(session_id),
                     kind: db::EventKind::SessionStart,
@@ -491,14 +493,22 @@ where
                     duration_us: None,
                     target_dir: None,
                     exit_code: None,
-                },
-            );
+                })
+                .await;
         }
         Request::BuildSessionEnd {
             session_id,
             exit_code,
             ended_at_ms,
         } => {
+            // Issue #980 L7: paired with the `set(true)` in
+            // BuildSessionStart above. Re-enables periodic workers.
+            crate::cache_lib::build_active::set(false);
+            // L4 (issue soldr#980): drain any per-compile events still
+            // staged in the batcher BEFORE aggregating the session.
+            // `aggregate_session` reads from redb, so events buffered in
+            // memory would be invisible without this explicit flush.
+            state.event_batcher.flush().await;
             // Finalize the BuildRecord: aggregate counts/slowest from
             // events with this session_id, persist back.
             let (count, slowest_us, slowest_name) =
@@ -512,9 +522,13 @@ where
                 record.slowest_crate_name = slowest_name;
                 let _ = db::upsert_build(&state.db_path, &record);
             }
-            let _ = db::append_event(
-                &state.db_path,
-                &db::Event {
+            // SessionEnd ALSO rides the batcher and then gets flushed
+            // again so the journal is consistent at the end of the
+            // session (and a follow-up status snapshot sees the
+            // terminator row).
+            state
+                .event_batcher
+                .record(db::Event {
                     ts_ms: ended_at_ms,
                     session_id: Some(session_id),
                     kind: db::EventKind::SessionEnd,
@@ -522,8 +536,9 @@ where
                     duration_us: None,
                     target_dir: None,
                     exit_code: Some(exit_code),
-                },
-            );
+                })
+                .await;
+            state.event_batcher.flush().await;
         }
         Request::RecordCompile {
             session_id,
@@ -532,14 +547,20 @@ where
             started_at_ms,
             duration_us,
         } => {
+            // L4 (issue soldr#980): the hot path. Pre-L4 this opened
+            // redb and did two write txns (next_event_id + event row)
+            // per compile, which fsync'd twice per call — ~3.4 s of
+            // pure-sync wait across the 171 misses observed in the
+            // cold profile. The batcher coalesces these into one fsync
+            // per 64 rows / 100 ms.
             let kind = if duration_us.is_some() {
                 db::EventKind::CompileEnd
             } else {
                 db::EventKind::CompileStart
             };
-            let _ = db::append_event(
-                &state.db_path,
-                &db::Event {
+            state
+                .event_batcher
+                .record(db::Event {
                     ts_ms: started_at_ms,
                     session_id: Some(session_id),
                     kind,
@@ -547,8 +568,8 @@ where
                     duration_us,
                     target_dir: Some(target_dir),
                     exit_code: None,
-                },
-            );
+                })
+                .await;
         }
         Request::ListBuilds { limit, since_ms } => {
             let rows = db::list_builds(&state.db_path, limit, since_ms).unwrap_or_default();
@@ -707,8 +728,27 @@ where
             // failure — the caller already moved on.
             let _ = cook_index::touch(&state.db_path, &sha256, current_unix_ms());
         }
+        Request::Compile(req) => {
+            // Issue #977 / #980 L1: dispatch the rustc compile through
+            // the daemon's embedded zccache service. There is no
+            // fallback path — embedded is mandatory.
+            let reply = dispatch_compile(&state, req).await;
+            let _ = write_frame_async(&mut stream, &reply).await;
+        }
     }
     Ok(())
+}
+
+/// Daemon-side compile dispatcher (issue #977 / #980 L1). Forwards to
+/// `SoldrZccacheService::compile` and packages the result.
+async fn dispatch_compile(
+    state: &Arc<State>,
+    req: crate::daemon::protocol::CompileRequest,
+) -> Response {
+    match state.compile_service.compile(req).await {
+        Ok(body) => Response::Compile(body),
+        Err(err) => Response::Error(format!("embedded zccache compile failed: {err}")),
+    }
 }
 
 /// Best-effort resolver for the `~/.soldr/cache/cook/<sha256>.tar.zst`
@@ -737,6 +777,13 @@ async fn run_idle_watchdog(state: Arc<State>, idle_timeout: Duration) {
     loop {
         tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         if state.idle_for() >= idle_timeout {
+            // Issue #980 L7: a daemon hitting the idle timeout has not
+            // seen any IPC traffic for `idle_timeout`, which means any
+            // BuildSessionStart that never received a matching
+            // BuildSessionEnd should be treated as stale. Clear the
+            // flag so a future daemon-resident worker doesn't sleep
+            // forever on a leftover `true` value.
+            crate::cache_lib::build_active::set(false);
             // Tag the exit reason BEFORE notifying so the main task's
             // post-shutdown lifecycle JSONL emit picks `died-idle`.
             state.exit_via_idle.store(true, Ordering::Relaxed);

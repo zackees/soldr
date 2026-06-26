@@ -22,6 +22,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
+[profile.dev]
+# Pin debug/incremental so cold/warm/bare measure the same thing.
+# soldr forces `debug = false` on managed cargo builds; without this
+# block bare cargo would default `debug = true` and pay for debuginfo
+# work the cold scenario skipped, inflating the cold-minus-bare gap
+# and lying about real soldr overhead. See L8 in soldr#980.
+debug = false
+incremental = false
+
 [profile.release]
 # Keep codegen units > 1 so the cache exercises parallel unit hashing
 # rather than one giant fat-LTO unit.

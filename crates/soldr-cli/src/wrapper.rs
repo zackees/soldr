@@ -1,30 +1,17 @@
 //! `RUSTC_WRAPPER` invocation path: forwards rustc / clippy-driver through
-//! zccache, spills stdin to a temp file when cargo passes `-`, and recovers
-//! from "unknown session" errors on Windows. Extracted from `main.rs` as
-//! part of issue #339.
+//! the daemon's embedded zccache compile service via the `Request::Compile`
+//! IPC verb, spills stdin to a temp file when cargo passes `-`. Extracted
+//! from `main.rs` as part of issue #339. The legacy fork-zccache.exe
+//! wrapper path was removed in #980 L1 second pass — embedded is mandatory.
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::startup_profile::WrapperProfile;
-use crate::zccache_lifecycle::ZCCACHE_DAEMON_NAMESPACE_ENV_VAR;
-#[cfg(not(unix))]
-use crate::zccache_lifecycle::{
-    session_start_args, stderr_indicates_unknown_session, ZccacheLifecycle,
-    ZccachePrivateDaemonConfig, ZccachePrivateEnv, ZccacheSessionStartOptions,
-};
-use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, zccache_binary_override};
-#[cfg(not(unix))]
-use std::time::Duration;
-#[cfg(not(unix))]
-use wait_timeout::ChildExt;
+use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
 /// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
 /// passes: `soldr <toolchain-binary> <rustc-args...>`
 const WRAPPER_PASSTHROUGH_TOOLS: &[&str] = &["rustc", "clippy-driver"];
-#[cfg(not(unix))]
-const ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS: u64 = 10 * 60;
-#[cfg(not(unix))]
-const KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS: u64 = 5;
 
 pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
     let stem = std::path::Path::new(arg)
@@ -33,6 +20,65 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
         .unwrap_or(arg);
 
     WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
+}
+
+/// Detect rustc invocations cargo issues through `RUSTC_WRAPPER` that
+/// can never benefit from zccache (issue #980, L2):
+///
+///   * Any `--print`/`--print=...` probe — these don't compile, they
+///     just print metadata (e.g. `--print sysroot`, `--print cfg`).
+///   * `--emit` invocations whose emit-kind list is exclusively
+///     `dep-info` — cargo's dep-graph refresh pass produces no object
+///     code, so caching it via the wrapper is pure overhead.
+///
+/// `args` is the full argv as received in wrapper mode: `args[0]` is
+/// the soldr binary, `args[1]` is the tool path (rustc / clippy-driver),
+/// and `args[2..]` are the rustc arguments. The caller is responsible
+/// for confirming the tool stem is `rustc` before consulting this
+/// predicate — clippy-driver does its own routing.
+pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
+    if args.len() < 3 {
+        return false;
+    }
+    let rest = &args[2..];
+
+    // `--print <mode>` or `--print=<mode>` never compiles.
+    if rest
+        .iter()
+        .any(|a| a == "--print" || a.starts_with("--print="))
+    {
+        return true;
+    }
+
+    // Collect every emit-kind across all `--emit`/`--emit=` occurrences.
+    // Cargo can spell either form (and may pass multiple), so accumulate
+    // the union before deciding.
+    let mut has_emit = false;
+    let mut emit_kinds: Vec<&str> = Vec::new();
+    let mut iter = rest.iter();
+    while let Some(a) = iter.next() {
+        if a == "--emit" {
+            if let Some(v) = iter.next() {
+                has_emit = true;
+                emit_kinds.extend(v.split(','));
+            }
+        } else if let Some(v) = a.strip_prefix("--emit=") {
+            has_emit = true;
+            emit_kinds.extend(v.split(','));
+        }
+    }
+    if has_emit && !emit_kinds.is_empty() {
+        // `--emit=dep-info=foo.d` is still a dep-info-only emit; strip
+        // the optional `=path` suffix before classifying.
+        let only_dep_info = emit_kinds
+            .iter()
+            .all(|k| k.trim().split('=').next().unwrap_or("") == "dep-info");
+        if only_dep_info {
+            return true;
+        }
+    }
+
+    false
 }
 
 pub(crate) fn run_rustc_wrapper(
@@ -105,17 +151,35 @@ pub(crate) fn run_rustc_wrapper(
         std::borrow::Cow::Borrowed(raw_args)
     };
 
-    // Only route through zccache for actual rustc invocations, not
-    // clippy-driver or other workspace wrappers.
-    if tool_stem == "rustc" && crate::cache_lib::cache_enabled_in_current_process() {
-        if let Some(zccache) = zccache_binary_override() {
-            profile.mark("zccache_resolved");
-            // On Unix `run_wrapper_through_zccache` exec()'s and never
-            // returns, so the profile MUST emit before that — finish()
-            // is the last in-process work we can attribute.
-            profile.finish("before_zccache_exec");
-            return run_wrapper_through_zccache(&effective_args, &zccache);
-        }
+    // L2 cold-build skip (issue #980): some rustc invocations cargo
+    // issues through RUSTC_WRAPPER can NEVER hit the cache — `--print
+    // sysroot` / `--print cfg` probes do not compile anything, and
+    // `--emit=dep-info`-only runs only refresh the dep graph. Routing
+    // those through zccache pays the full wrapper startup tax (process
+    // spawn, daemon IPC) for guaranteed-zero benefit. Detect them here
+    // and let the existing direct-exec tool-spawn path below handle
+    // them instead of the zccache routing block.
+    let non_cacheable = tool_stem == "rustc" && is_non_cacheable_rustc(&effective_args);
+    if non_cacheable {
+        tracing::debug!("soldr: rustc invocation is non-cacheable; bypassing zccache");
+        profile.mark("non_cacheable_bypass");
+    }
+
+    // Only route through the daemon's embedded compile service for
+    // actual rustc invocations, not clippy-driver or other workspace
+    // wrappers.
+    if tool_stem == "rustc"
+        && !non_cacheable
+        && crate::cache_lib::cache_enabled_in_current_process()
+    {
+        // L1 (issue #977 / #980 L1): dispatch the rustc invocation to
+        // the daemon's embedded zccache service over IPC. As of the
+        // L1 second pass there is no fallback — embedded is
+        // mandatory. The legacy `zccache.exe` fork was deleted.
+        // `compile_via_daemon` either returns the daemon's reply or
+        // an error that the wrapper propagates to cargo.
+        profile.finish("before_embedded_compile_ipc");
+        return compile_via_daemon(&effective_args);
     }
 
     // Resolve the tool binary. If it's already a full path, use it
@@ -226,305 +290,6 @@ fn ensure_stdin_source_path(path: &std::path::Path, bytes: &[u8]) -> Result<bool
     }
 }
 
-fn run_wrapper_through_zccache(
-    raw_args: &[String],
-    zccache: &std::path::Path,
-) -> Result<i32, SoldrError> {
-    let mut command = std::process::Command::new(zccache);
-    command.args(&raw_args[1..]);
-    suppress_windows_console_window(&mut command);
-
-    // Cargo's jobserver lives on numbered file descriptors that it inherits
-    // into the RUSTC_WRAPPER, advertised via CARGO_MAKEFLAGS. On Unix,
-    // exec'ing into zccache replaces the wrapper process in-place so those
-    // FDs flow straight through to the inner rustc — rustc otherwise emits
-    // "failed to connect to jobserver from environment variable
-    // CARGO_MAKEFLAGS=...: cannot open file descriptor N" because spawning
-    // a Rust child closes any FDs not explicitly inherited.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        ensure_private_zccache_daemon_before_exec(zccache)?;
-        // TODO(#265): once exec() replaces this process there is nowhere to
-        // observe zccache's stderr or retry on "unknown session:". The
-        // Windows branch below performs that defensive retry. A Unix port
-        // would need to spawn-with-piped-stderr instead of exec, while still
-        // forwarding the cargo jobserver FDs (see issue #265 for context).
-        let err = command.exec();
-        Err(SoldrError::Other(format!(
-            "failed to exec zccache at {}: {err}",
-            zccache.display()
-        )))
-    }
-
-    #[cfg(not(unix))]
-    {
-        run_wrapper_through_zccache_windows(raw_args, zccache)
-    }
-}
-
-#[cfg(unix)]
-fn ensure_private_zccache_daemon_before_exec(zccache: &std::path::Path) -> Result<(), SoldrError> {
-    let Some(daemon_name) = inherited_private_daemon_name() else {
-        return Ok(());
-    };
-
-    let status = zccache_status(zccache)?;
-    if status.status.success() {
-        return Ok(());
-    }
-    if !zccache_daemon_unavailable(&status.stderr) {
-        return Ok(());
-    }
-
-    eprintln!(
-        "soldr: zccache private daemon {daemon_name} unavailable before rustc exec; restarting"
-    );
-    let start = zccache_command_output(zccache, &["start"])?;
-    if !start.status.success() {
-        return Err(SoldrError::Other(format!(
-            "zccache start failed while recovering private daemon {daemon_name}: {}",
-            String::from_utf8_lossy(&start.stderr).trim()
-        )));
-    }
-
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
-        let status = zccache_status(zccache)?;
-        if status.status.success() {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err(SoldrError::Other(format!(
-                "zccache private daemon {daemon_name} did not become available after restart: {}",
-                String::from_utf8_lossy(&status.stderr).trim()
-            )));
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-}
-
-#[cfg(unix)]
-fn zccache_status(zccache: &std::path::Path) -> Result<std::process::Output, SoldrError> {
-    zccache_command_output(zccache, &["status"])
-}
-
-#[cfg(unix)]
-fn zccache_command_output(
-    zccache: &std::path::Path,
-    args: &[&str],
-) -> Result<std::process::Output, SoldrError> {
-    let mut command = std::process::Command::new(zccache);
-    command.args(args);
-    suppress_windows_console_window(&mut command);
-    Ok(command.output()?)
-}
-
-#[cfg(unix)]
-fn zccache_daemon_unavailable(stderr: &[u8]) -> bool {
-    let stderr = String::from_utf8_lossy(stderr).to_ascii_lowercase();
-    stderr.contains("cannot connect to daemon")
-        || stderr.contains("no such file or directory")
-        || stderr.contains("lost connection to daemon")
-        || stderr.contains("not accepting connections")
-}
-
-/// Windows-only wrapper invocation: spawn zccache with its stderr piped so we
-/// can tee it to our own stderr live AND scan it after the process exits.
-///
-/// If zccache returns a non-zero exit and its stderr contains the literal
-/// substring `unknown session:` (issue #265), the managed zccache daemon was
-/// killed mid-build by something outside soldr's control (e.g. zccache-ci's
-/// stop hook on older zccache, AV quarantine, or a Windows binary
-/// replacement). We allocate a fresh session via `zccache session-start` and
-/// retry the wrapper invocation exactly once with the new session id.
-///
-/// Retry budget is 1. On the retry's own failure we propagate that exit code
-/// unchanged — we don't loop on a persistently broken daemon.
-#[cfg(not(unix))]
-fn run_wrapper_through_zccache_windows(
-    raw_args: &[String],
-    zccache: &std::path::Path,
-) -> Result<i32, SoldrError> {
-    use std::io::Read;
-    use std::process::Stdio;
-
-    let mut command = std::process::Command::new(zccache);
-    command.args(&raw_args[1..]);
-    command.stderr(Stdio::piped());
-    suppress_windows_console_window(&mut command);
-
-    let mut child = command.spawn()?;
-    let stderr = child
-        .stderr
-        .take()
-        .expect("stderr was configured as piped above");
-
-    // Tee zccache stderr to soldr's stderr in real time AND buffer it for
-    // post-exit inspection. A reader thread keeps the pipe drained so
-    // zccache cannot block on a full pipe.
-    let reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        let mut reader = std::io::BufReader::new(stderr);
-        let mut chunk = [0u8; 4096];
-        loop {
-            let n = reader.read(&mut chunk)?;
-            if n == 0 {
-                break;
-            }
-            // Best-effort tee: if writing to our own stderr fails we still
-            // want to keep draining the child pipe.
-            let _ = std::io::Write::write_all(&mut std::io::stderr(), &chunk[..n]);
-            buf.extend_from_slice(&chunk[..n]);
-        }
-        Ok(buf)
-    });
-
-    let status = wait_for_zccache_wrapper_child(&mut child)?;
-    let stderr_bytes = reader
-        .join()
-        .map_err(|_| SoldrError::Other("zccache stderr reader thread panicked".into()))?
-        .unwrap_or_default();
-
-    let exit_code = status.code().unwrap_or(1);
-    if status.success() || !stderr_indicates_unknown_session(&stderr_bytes) {
-        return Ok(exit_code);
-    }
-
-    // Daemon told us our session id is gone. Allocate a fresh one and
-    // retry the wrapper invocation once.
-    let new_session_id = match allocate_replacement_session(zccache) {
-        Ok(id) => id,
-        Err(err) => {
-            eprintln!(
-                "soldr: zccache reported \"unknown session:\" but soldr could not allocate \
-                 a replacement session ({err}); propagating original exit code"
-            );
-            return Ok(exit_code);
-        }
-    };
-
-    eprintln!(
-        "soldr: zccache session resync after \"unknown session:\"; retrying once with fresh session {new_session_id}"
-    );
-
-    let mut retry = std::process::Command::new(zccache);
-    retry.args(&raw_args[1..]);
-    retry.env(
-        crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
-        &new_session_id,
-    );
-    suppress_windows_console_window(&mut retry);
-    let retry_status = retry.status()?;
-    Ok(retry_status.code().unwrap_or(1))
-}
-
-#[cfg(not(unix))]
-fn wait_for_zccache_wrapper_child(
-    child: &mut std::process::Child,
-) -> Result<std::process::ExitStatus, SoldrError> {
-    match child
-        .wait_timeout(Duration::from_secs(ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS))
-        .map_err(|err| SoldrError::Other(format!("wait on zccache wrapper failed: {err}")))?
-    {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result = child.wait_timeout(Duration::from_secs(
-                KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS,
-            ));
-            let mut message = format!(
-                "zccache wrapper timed out after {ZCCACHE_WRAPPER_WAIT_TIMEOUT_SECS} seconds"
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_ZCCACHE_WRAPPER_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
-        }
-    }
-}
-
-/// Run `zccache session-start --stats --log <path> --journal <path>` against
-/// the session directory the wrapper invocation inherits from cargo, and return the
-/// parsed session id. Mirrors the args used by `prepare_zccache_build`.
-///
-/// Used by the Windows wrapper retry path (issue #265): when the daemon
-/// reports `unknown session:` the in-process session id is stale, so soldr
-/// allocates a replacement before retrying the wrapper invocation once.
-#[cfg(not(unix))]
-fn allocate_replacement_session(zccache: &std::path::Path) -> Result<String, SoldrError> {
-    let session_dir = std::env::var_os(crate::zccache::SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR)
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| {
-            SoldrError::Other(format!(
-                "{} is not set in the wrapper environment; cannot allocate replacement zccache session",
-                crate::zccache::SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR
-            ))
-        })?;
-    let cache_dir_env = std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_some();
-
-    let session_log_path = crate::cache_lib::session_log_path(&session_dir);
-    let journal_path = crate::cache_lib::session_journal_path(&session_dir);
-    let session_stats_path = crate::cache_lib::session_stats_path(&session_dir);
-    let options = ZccacheSessionStartOptions {
-        id: None,
-        session_log_path,
-        journal_path,
-        session_stats_path,
-    };
-    let mut lifecycle =
-        ZccacheLifecycle::new(zccache, &session_dir).with_cache_dir_env(cache_dir_env);
-    if let Some(daemon_name) = inherited_private_daemon_name() {
-        let private = ZccachePrivateDaemonConfig::new(daemon_name)
-            .with_owner_pid(std::process::id())
-            .with_private_env(inherited_private_zccache_env());
-        lifecycle = lifecycle.with_private_daemon(private);
-    }
-    let args = session_start_args(&options, &session_dir, lifecycle.private_daemon());
-    let session_json = lifecycle.run_strings(&args)?;
-    crate::cache_lib::parse_zccache_session_id(&session_json.stdout).ok_or_else(|| {
-        SoldrError::Other(format!(
-            "failed to parse zccache session id from output: {}",
-            session_json.stdout.trim()
-        ))
-    })
-}
-
-fn inherited_private_daemon_name() -> Option<String> {
-    std::env::var(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-#[cfg(not(unix))]
-fn inherited_private_zccache_env() -> Vec<ZccachePrivateEnv> {
-    [
-        crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR,
-        crate::cache_lib::ZCCACHE_WORKTREE_ROOT_ENV_VAR,
-    ]
-    .into_iter()
-    .filter_map(|key| {
-        let value = std::env::var_os(key)?;
-        if value.is_empty() {
-            return None;
-        }
-        Some(ZccachePrivateEnv::new(
-            key,
-            value.to_string_lossy().to_string(),
-        ))
-    })
-    .collect()
-}
-
 // Routing logic + `TargetTouchPath` live in `wrapper_target.rs` so the
 // integration tests in `tests/cli_wrapper_perf.rs` can drive
 // `record_target_dir_in_registry` in-process via the lib's
@@ -532,10 +297,59 @@ fn inherited_private_zccache_env() -> Vec<ZccachePrivateEnv> {
 // bin-side call sites in this file keep working unchanged.
 pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouchPath};
 
+// =========================================================================
+// L1 daemon-embedded compile path (issue #977 / #980 L1)
+// =========================================================================
+
+/// Dispatch the rustc compile to the running daemon's embedded zccache
+/// service over the `Request::Compile` IPC verb. Returns the exit code
+/// to propagate to cargo, or a hard error if the daemon is unreachable
+/// or replies with anything other than a `CompileResponse`. The legacy
+/// fork-zccache.exe fallback was removed in #980 L1 second pass —
+/// embedded is mandatory.
+fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
+    use crate::daemon::client;
+
+    let paths =
+        SoldrPaths::new().map_err(|e| SoldrError::Other(format!("resolve soldr paths: {e}")))?;
+    let sock = client::default_sock_path(&paths);
+
+    // Build the Compile request. The wrapper's argv layout is
+    // [soldr, rustc-path, rustc-args...]; we strip the soldr binary
+    // (argv[0]) and send rustc-path as args[0], rustc-args as args[1..].
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let env: Vec<(String, String)> = std::env::vars().collect();
+    let req = crate::daemon::protocol::CompileRequest {
+        args: effective_args.iter().skip(1).cloned().collect(),
+        cwd,
+        env,
+        stdin: Vec::new(),
+    };
+
+    match client::compile(&sock, req) {
+        Ok(body) => {
+            // Relay captured stdout/stderr verbatim. Best-effort writes:
+            // a broken pipe on stdout should not mask the rustc exit
+            // code we already have.
+            use std::io::Write as _;
+            let _ = std::io::stdout().write_all(&body.stdout);
+            let _ = std::io::stderr().write_all(&body.stderr);
+            Ok(body.exit_code)
+        }
+        Err(err) => Err(SoldrError::Other(format!(
+            "soldr daemon embedded compile dispatch failed: {err:?}. \
+             The legacy fork-zccache.exe fallback was removed in #980 L1; \
+             the soldr-daemon must be running and reachable for rustc-wrapper \
+             invocations to succeed."
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::zccache_lifecycle::stderr_indicates_unknown_session;
 
     #[test]
     fn stdin_source_path_is_content_addressed() {
@@ -568,50 +382,41 @@ mod tests {
         assert_ne!(a.path(), b.path());
     }
 
-    // -------- stderr_indicates_unknown_session (issue #265) --------
+    // -------- is_non_cacheable_rustc (issue #980, L2) --------
 
-    #[test]
-    fn unknown_session_detector_rejects_empty_stderr() {
-        assert!(!stderr_indicates_unknown_session(b""));
+    /// Build a wrapper-shaped argv: argv[0] is the soldr binary, argv[1]
+    /// is the tool path, argv[2..] are the rustc args under test.
+    fn wrapper_argv(rustc_args: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = vec!["soldr".into(), "rustc".into()];
+        v.extend(rustc_args.iter().map(|s| (*s).to_string()));
+        v
     }
 
-    #[test]
-    fn unknown_session_detector_matches_exact_zccache_line() {
-        let stderr = b"zccache error: unknown session: abc-123\n";
-        assert!(stderr_indicates_unknown_session(stderr));
-    }
+    crate::timed_test!(non_cacheable_print_mode_detected, {
+        // `--print=cfg` is a metadata probe — never compiles, never
+        // benefits from zccache.
+        let argv = wrapper_argv(&["--print=cfg"]);
+        assert!(is_non_cacheable_rustc(&argv));
+    });
 
-    #[test]
-    fn unknown_session_detector_matches_substring_mid_line() {
-        // The marker can appear anywhere in the stream, not necessarily at
-        // the start of a line.
-        let stderr = b"prelude blah blah unknown session: 0000 trailing\n";
-        assert!(stderr_indicates_unknown_session(stderr));
-    }
+    crate::timed_test!(non_cacheable_emit_dep_info_only_detected, {
+        // Cargo's dep-graph refresh: `--emit=dep-info` produces no
+        // object code, so wrapper round-trip is wasted.
+        let argv = wrapper_argv(&["--emit=dep-info", "--crate-name=foo"]);
+        assert!(is_non_cacheable_rustc(&argv));
+    });
 
-    #[test]
-    fn unknown_session_detector_ignores_unrelated_session_mentions() {
-        // The word "session" alone is not enough; we only treat the literal
-        // "unknown session:" marker as a resync trigger.
-        let stderr = b"zccache info: session started\nzccache info: session ok\n";
-        assert!(!stderr_indicates_unknown_session(stderr));
-    }
+    crate::timed_test!(cacheable_emit_link_metadata_not_flagged, {
+        // A normal compile that emits link + metadata MUST still flow
+        // through zccache.
+        let argv = wrapper_argv(&["--emit=link,metadata"]);
+        assert!(!is_non_cacheable_rustc(&argv));
+    });
 
-    #[test]
-    fn unknown_session_detector_tolerates_non_utf8_bytes() {
-        // Surround the marker with raw non-UTF-8 byte sequences; the
-        // detector must not panic and must still find the literal needle.
-        let mut stderr: Vec<u8> = vec![0xFF, 0xFE, 0x80, 0x81];
-        stderr.extend_from_slice(b"zccache error: unknown session: deadbeef\n");
-        stderr.extend_from_slice(&[0xC3, 0x28, 0xA0]);
-        assert!(stderr_indicates_unknown_session(&stderr));
-    }
-
-    #[test]
-    fn unknown_session_detector_rejects_partial_marker() {
-        // "unknown sessio" (missing the trailing "n:") must NOT match — we
-        // only resync on the exact daemon-emitted marker.
-        let stderr = b"unknown sessio\n";
-        assert!(!stderr_indicates_unknown_session(stderr));
-    }
+    crate::timed_test!(cacheable_no_emit_no_print_not_flagged, {
+        // No `--emit`, no `--print` → normal compile, must remain
+        // cacheable.
+        let argv = wrapper_argv(&["src/lib.rs"]);
+        assert!(!is_non_cacheable_rustc(&argv));
+    });
 }

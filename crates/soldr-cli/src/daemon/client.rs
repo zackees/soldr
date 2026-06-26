@@ -11,7 +11,9 @@ use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
-use crate::daemon::protocol::{BuildRecord, Request, Response, StatusInfo};
+use crate::daemon::protocol::{
+    BuildRecord, CompileRequest, CompileResponseBody, Request, Response, StatusInfo,
+};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -23,6 +25,12 @@ const HOT_PATH_TIMEOUT: Duration = Duration::from_millis(50);
 /// to read a body back (status, shutdown). Still small enough that the
 /// CLI returns quickly even if the daemon is unresponsive.
 const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
+
+/// Compile dispatch timeout — rustc may take minutes for a release build
+/// of a large crate. Cap at 30 minutes so a stuck rustc cannot wedge the
+/// wrapper forever, but anything inside that bound is allowed to run to
+/// completion. Issue #977 Phase 5 / #980 L1.
+const COMPILE_REPLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -369,6 +377,46 @@ pub fn cook_touch(sock_path: &Path, sha256: [u8; 32]) -> Result<(), ClientError>
     submit_fire_and_forget(sock_path, &Request::CookTouch { sha256 })
 }
 
+/// Dispatch a single rustc compile to the daemon's embedded zccache
+/// service (issue #977 Phase 5 / #980 L1).
+///
+/// The reply timeout is generous (30 minutes) because rustc itself may
+/// take many minutes for a release build of a large crate. On any
+/// timeout / IO error the wrapper falls back to the legacy
+/// `zccache.exe` fork path.
+pub fn compile(sock_path: &Path, req: CompileRequest) -> Result<CompileResponseBody, ClientError> {
+    let resp =
+        submit_request_with_timeout(sock_path, &Request::Compile(req), COMPILE_REPLY_TIMEOUT)?;
+    match resp {
+        Response::Compile(body) => Ok(body),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected compile response: {other:?}"
+        ))),
+    }
+}
+
+/// Same shape as [`submit_request`] but with an explicit reply timeout.
+/// Extracted so [`compile`] can use a 30-minute budget without bloating
+/// the call surface of the generic helper.
+pub fn submit_request_with_timeout(
+    sock_path: &Path,
+    req: &Request,
+    timeout: Duration,
+) -> Result<Response, ClientError> {
+    #[cfg(windows)]
+    {
+        submit_request_windows_with_timeout(sock_path, req, timeout)
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, timeout)?;
+        write_frame_sync(&mut stream, req)?;
+        let resp: Response = read_frame_sync(&mut stream)?;
+        Ok(resp)
+    }
+}
+
 /// Wrapper-side entry point. Tries the daemon first; on any failure,
 /// upserts the row directly to the redb file. **Never** propagates
 /// errors — a missing daemon must not break a build.
@@ -485,21 +533,30 @@ fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(),
 
 #[cfg(windows)]
 fn submit_request_windows(sock_path: &Path, req: &Request) -> Result<Response, ClientError> {
+    submit_request_windows_with_timeout(sock_path, req, REPLY_TIMEOUT)
+}
+
+#[cfg(windows)]
+fn submit_request_windows_with_timeout(
+    sock_path: &Path,
+    req: &Request,
+    deadline: Duration,
+) -> Result<Response, ClientError> {
     use tokio::net::windows::named_pipe::ClientOptions;
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
     let req = req.clone();
-    run_windows_ipc("daemon IPC request", REPLY_TIMEOUT, move || {
+    run_windows_ipc("daemon IPC request", deadline, move || {
         let runtime = windows_runtime()?;
         runtime.block_on(async move {
             let mut stream = ClientOptions::new().open(sock_path)?;
-            timeout(REPLY_TIMEOUT, async {
+            timeout(deadline, async {
                 write_frame_async(&mut stream, &req).await?;
                 read_frame_async(&mut stream).await
             })
             .await
-            .map_err(|_| windows_timeout_error("daemon IPC request", REPLY_TIMEOUT))?
+            .map_err(|_| windows_timeout_error("daemon IPC request", deadline))?
         })
     })
 }

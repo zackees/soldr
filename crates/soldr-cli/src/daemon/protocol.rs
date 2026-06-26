@@ -33,13 +33,25 @@ use thiserror::Error;
 ///   drops the bincode fallback at the redb layer. Old (v4) clients
 ///   trying to talk to a v5 daemon (and vice versa) still get a
 ///   clean "protocol version mismatch" error.
-pub const PROTOCOL_VERSION: u32 = 5;
+/// * v6 (#977 Phase 5 / #980 L1): adds `Request::Compile` and
+///   `Response::CompileResponse` so the rustc-wrapper dispatches every
+///   compile to the daemon's embedded `ZccacheService`. The legacy
+///   fork-zccache.exe path is gone (#980 L1 second pass) — wrappers
+///   that can't reach a v6 daemon hard-error instead of falling back.
+pub const PROTOCOL_VERSION: u32 = 6;
 
-/// Maximum prost body size. 64 KiB is comfortably above the largest
-/// realistic record (path strings, a few timestamps). Frames larger
-/// than this are rejected on both ends to harden against a misbehaving
-/// peer.
-pub const MAX_BODY_BYTES: u32 = 64 * 1024;
+/// Maximum prost body size. 4 MiB is comfortably above the largest
+/// realistic Compile response (rustc stdout/stderr — typically tens of
+/// KiB; pathological warning storms a few hundred KiB; tests that
+/// emit MB-scale output are vanishingly rare). Bumped from 64 KiB in
+/// #977 Phase 5 to accommodate the `Compile` verb's stdout+stderr
+/// payload; non-Compile requests stay tiny (hundreds of bytes).
+///
+/// Streaming the compile output is a Phase 5+ follow-up; until then
+/// any compile that exceeds this cap returns an `InvalidData` error
+/// to the wrapper which then transparently falls back to the legacy
+/// fork-zccache path.
+pub const MAX_BODY_BYTES: u32 = 4 * 1024 * 1024;
 
 /// Errors surfaced when decoding wire bytes into the public Rust
 /// types. Wraps prost decode failures plus the shape-validation cases
@@ -141,6 +153,52 @@ pub enum Request {
     /// Fire-and-forget: bump the `last_used_unix_ms` field for the
     /// row whose `sha256` matches.
     CookTouch { sha256: [u8; 32] },
+    /// Request-response: dispatch a single rustc invocation to the
+    /// daemon's embedded zccache service (issue #977 Phase 5 / #980 L1).
+    /// The daemon returns [`Response::CompileResponse`] with the
+    /// captured stdout/stderr + exit code, or [`Response::Error`] on
+    /// embedded-service failure. There is no longer a wrapper-side
+    /// fallback to forking `zccache.exe` — embedded is mandatory.
+    Compile(CompileRequest),
+}
+
+/// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
+/// surrounding environment so the daemon's embedded service can rebuild
+/// the cache key + dispatch the inner compile.
+///
+/// * `args[0]` is the rustc binary path (e.g. `.../rustc`); the daemon
+///   does not re-resolve it, the wrapper has already done the
+///   `rustup which rustc` work.
+/// * `args[1..]` is the rustc argument list as cargo passed it to the
+///   wrapper.
+/// * `stdin` is typically empty — rustc reads source from disk. The
+///   wrapper's stdin-spill logic ([`crate::wrapper::spill_stdin_to_content_addressed_file`])
+///   converts cargo's `-` source-on-stdin probes into a file argument
+///   *before* the Compile request is built, so the daemon never has to
+///   shuffle a multi-MB stdin payload across the IPC boundary.
+#[derive(Debug, Clone)]
+pub struct CompileRequest {
+    pub args: Vec<String>,
+    pub cwd: String,
+    pub env: Vec<(String, String)>,
+    pub stdin: Vec<u8>,
+}
+
+/// Body of [`Response::CompileResponse`]. Carries the captured rustc
+/// output verbatim so the wrapper can replay it onto its own stdout /
+/// stderr before exiting with `exit_code`. `cache_outcome` mirrors
+/// `zccache::embedded::CacheOutcome` (1=Hit, 2=Miss, 3=Error); the
+/// wrapper does not act on it today but it is forwarded so future
+/// audit/profiling work can correlate.
+#[derive(Debug, Clone)]
+pub struct CompileResponseBody {
+    pub exit_code: i32,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub cached: bool,
+    /// 1=Hit, 2=Miss, 3=Error. Matches the zccache `CacheOutcome`
+    /// integer encoding so we don't introduce a soldr-side enum.
+    pub cache_outcome: i32,
 }
 
 #[derive(Debug, Clone)]
@@ -174,6 +232,9 @@ pub enum Response {
     /// Generic ack for fire-and-forget-style request/response calls
     /// that don't carry a payload (used by [`Request::CookRecord`]).
     Ack,
+    /// Reply to [`Request::Compile`] (issue #977 Phase 5 / #980 L1)
+    /// when the daemon's embedded backend handled the rustc dispatch.
+    Compile(CompileResponseBody),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,7 +247,18 @@ pub struct StatusInfo {
     pub linked_zccache: Option<ZccacheDaemonLink>,
     /// Cook-index aggregate stats (issue #576).
     pub cook_stats: Option<CookStats>,
+    /// Compile-dispatch backend label. Always [`COMPILE_BACKEND_EMBEDDED`]
+    /// since #980 L1's second pass — the legacy "wrapped" fork-zccache.exe
+    /// backend is gone. Field retained on the wire so v6 status snapshots
+    /// stay stable for telemetry consumers.
+    #[serde(default)]
+    pub compile_backend: String,
 }
+
+/// Canonical `compile_backend` value emitted by the daemon. The
+/// "wrapped" label and its associated dispatch path were deleted in
+/// #980 L1 second pass; the daemon now always advertises this value.
+pub const COMPILE_BACKEND_EMBEDDED: &str = "embedded";
 
 impl StatusInfo {
     /// Resolve `cook_stats` to a concrete value, treating `None` as
@@ -239,8 +311,10 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v5_after_prost_migration, {
-        assert_eq!(PROTOCOL_VERSION, 5);
+    crate::timed_test!(protocol_version_is_v6_after_compile_verb, {
+        // Bumped from 5 → 6 in #977 Phase 5 / #980 L1 when
+        // Request::Compile + Response::CompileResponse were added.
+        assert_eq!(PROTOCOL_VERSION, 6);
     });
 
     crate::timed_test!(cook_stats_or_zero_defaults_to_zero, {
@@ -251,6 +325,7 @@ mod tests {
             request_count: 0,
             linked_zccache: None,
             cook_stats: None,
+            compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
         };
         assert_eq!(info.cook_stats_or_zero(), CookStats::default());
     });

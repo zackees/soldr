@@ -42,12 +42,14 @@ xz2 = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
-# Optional in-process zccache service (issue #977). When the `embedded`
-# feature is enabled the soldr-daemon links zccache::embedded::* directly
-# instead of shelling out to the zccache binary per compile. The git pin
-# tracks the same release (1.12.11) that ships as the managed binary
-# (see MANAGED_ZCCACHE_VERSION in src/fetch/mod.rs); bump them in lockstep.
-zccache = { git = "https://github.com/zackees/zccache.git", rev = "fde4b916f24d9fe1cd00aeabe6581e4972f32068", default-features = false, optional = true }
+# In-process zccache service (issue #977 / #980 L1). The soldr-daemon
+# links zccache::embedded::* directly — there is no longer a wrapper
+# fork-zccache.exe fallback. The git pin tracks the same release
+# (1.12.11) that ships as the managed binary used by the standalone
+# `soldr update-zccache` workflow + the perf-cluster harness
+# (see MANAGED_ZCCACHE_VERSION in src/fetch/mod.rs); bump them in
+# lockstep.
+zccache = { git = "https://github.com/zackees/zccache.git", rev = "fde4b916f24d9fe1cd00aeabe6581e4972f32068", default-features = false }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
@@ -70,29 +72,11 @@ serde_json = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [features]
-# Internal feature flag that enables test-only fixture binaries (e.g.
-# `fake-zccache-265-stub`). Off by default so neither the maturin wheel,
-# the GitHub release tarball, nor `cargo install` pick up the stubs.
-# Integration tests that need the stub build it explicitly with
-# `cargo build --bin <stub> --features test-stubs` at test setup time.
-test-stubs = []
-
 # Opt-in feature that exposes `crate::test_util` outside of `cfg(test)`
 # so integration tests can spawn a child `cargo test` binary that
 # deliberately hangs and observe the watchdog firing. Never enabled
 # in production builds. See `tests/test_watchdog_self_test.rs`.
 test-watchdog-self-test = []
-
-# Issue #977 — Phase 1 + 2: pull in the zccache library and instantiate
-# `ZccacheService` inside the soldr-daemon process. The daemon's tokio
-# runtime is shared with zccache so tokio-console can span both products
-# from a single connection. Off by default while the embedded API still
-# moves upstream; flipping is the parity-gate PR (Phase 5–6). Setting
-# `SOLDR_ZCCACHE_EMBEDDED=1` at daemon startup activates the embedded
-# backend when this feature is compiled in; without the feature the env
-# var is read, a one-line warning is logged, and the daemon falls back
-# to the wrapped binary path (today's behaviour).
-embedded = ["dep:zccache"]
 
 [lints]
 workspace = true
@@ -124,12 +108,3 @@ path = "src/bin/soldr_daemon.rs"
 # (recursion guard), then execs `soldr <tool> ...`. See zackees/soldr#742.
 name = "soldr-shim"
 path = "src/bin/soldr_shim.rs"
-
-[[bin]]
-# Test fixture for crates/soldr-cli/tests/cli_unknown_session_retry.rs
-# (covers the deferred integration test from #265 / closes #266).
-# Gated behind the `test-stubs` feature so the stub is not built or
-# shipped in normal cargo / maturin builds.
-name = "fake-zccache-265-stub"
-path = "tests/bins/fake_zccache_stub.rs"
-required-features = ["test-stubs"]

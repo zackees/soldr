@@ -1,0 +1,67 @@
+# syntax=docker/dockerfile:1.7
+#
+# Linux profiler image for soldr.
+#
+# Captures on-CPU + off-CPU flame charts of the full soldr cargo build
+# pipeline — argv parsing through cargo front door through wrapper exec
+# through zccache shellout. Adapted from zccache's
+# ci/docker/profile/Dockerfile.perf-linux; same toolchain pin and
+# perf/bpftrace stack so the two profile bundles are diffable.
+#
+# Build:  docker build -f ci/docker/profile/Dockerfile.perf-linux -t soldr-profile-linux .
+# Run:    docker run --rm --privileged \
+#           --cap-add=SYS_ADMIN --cap-add=SYS_PTRACE \
+#           -v "$(pwd)":/work \
+#           -v "$(pwd)/.codex-artifacts/soldr-wider-perf-2026-06-26":/out \
+#           soldr-profile-linux
+
+FROM rust:1.94.1-bookworm
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Same profiler stack as zccache: linux-perf (on-CPU + sched events),
+# bpftrace (off-CPU via tracepoint:sched:sched_switch), gdb/elfutils
+# for DWARF unwinding when frame-pointer unwinds miss. clang is needed
+# only because cc-rs build scripts call it during cargo build runs.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        git \
+        bash \
+        jq \
+        bc \
+        tar \
+        zstd \
+        time \
+        curl \
+        wget \
+        clang \
+        llvm \
+        cmake \
+        make \
+        pkg-config \
+        libssl-dev \
+        build-essential \
+        gdb \
+        elfutils \
+        dwarves \
+        linux-perf \
+        bpftrace \
+ && rm -rf /var/lib/apt/lists/*
+
+# Brendan Gregg's FlameGraph — pinned via depth=1 + the upstream main.
+# Same scripts as zccache's profile image so the SVG output style is
+# consistent across the two bundles.
+RUN git clone --depth=1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph \
+ && ln -s /opt/FlameGraph/stackcollapse-perf.pl /usr/local/bin/stackcollapse-perf.pl \
+ && ln -s /opt/FlameGraph/stackcollapse-bpftrace.pl /usr/local/bin/stackcollapse-bpftrace.pl \
+ && ln -s /opt/FlameGraph/flamegraph.pl /usr/local/bin/flamegraph.pl
+
+RUN which perf && perf --version
+
+WORKDIR /work
+
+COPY ci/docker/profile/run_profile.sh /usr/local/bin/run_profile.sh
+RUN chmod +x /usr/local/bin/run_profile.sh
+
+ENTRYPOINT ["/usr/local/bin/run_profile.sh"]

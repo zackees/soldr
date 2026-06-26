@@ -428,6 +428,25 @@ pub(crate) async fn run_cargo_front_door(
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
 
+    // L3 (soldr#980): kick off the managed zccache binary fetch +
+    // extract + redb init on a background tokio task NOW. The rest of
+    // this front-door pipeline — known-subcommand fetch, env scrub,
+    // session-id stamp, target-registry memoization, pre-GC, low-disk
+    // probe, profile_debug detection, linker injection — does not
+    // depend on the resolved zccache path. Overlapping its wall-clock
+    // cost with that synchronous setup is worth ~1-2 s on cold builds
+    // where the binary is not already on disk. On warm builds the
+    // background future resolves effectively immediately so the join
+    // at `CargoCachePlan::finalize` is free.
+    //
+    // We *intentionally* spawn after both trampoline branches above
+    // because those paths exit without spawning cargo, and we don't
+    // want to start a fetch we'll just drop. `cache_enabled` here is
+    // the same flag the original synchronous `CargoCachePlan::prepare`
+    // gated on; passing `false` produces a no-op `Disabled` prefetch.
+    let cache_plan_prefetch =
+        cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths, zccache_source);
+
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
     // PATH so cargo's subcommand dispatch finds it. Also collect transitive
@@ -578,6 +597,13 @@ pub(crate) async fn run_cargo_front_door(
         &session_repo_root,
         session_started_at_ms,
     );
+    // Issue #980 L7: gate the in-process auto-GC orchestrator (and any
+    // other long-running workers) so they sleep while this cargo
+    // invocation is running. The flag is cleared below right after
+    // `build_session_end` so the next throttle tick can resume normal
+    // operation. The daemon process maintains its own copy via the
+    // matching IPC dispatch in `daemon/server.rs`.
+    crate::cache_lib::build_active::set(true);
     if build_like_cargo {
         // Cargo front door only: keep startup/low-disk warnings off unrelated
         // commands and out of the rustc-wrapper hot path.
@@ -600,8 +626,20 @@ pub(crate) async fn run_cargo_front_door(
 
     target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
+    // L3 (soldr#980): await the background zccache prefetch we kicked
+    // off near the top of this function. Up until this point the cargo
+    // command has been built without any wrapper env, so the prefetch
+    // has been overlapping the entire setup pipeline. On a cold build
+    // (binary not yet on disk) this is where the ~1-2 s saving falls
+    // out — on a warm build the await is a near-no-op.
+    //
+    // Note: `cache_enabled_for_cargo` is currently `cache_enabled` (see
+    // the comment above its assignment for the #824 follow-up
+    // rationale). We thread it through `finalize` for symmetry with the
+    // old synchronous API so that future divergence between the two
+    // flags doesn't silently rewire the prefetch decision.
     let mut cache_plan =
-        CargoCachePlan::prepare(cache_enabled_for_cargo, &paths, zccache_source).await?;
+        CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
     cache_plan.apply_to_command(&mut command, explicit_target.as_deref())?;
 
     cache_plan.prepare_rust_artifact_plan(
@@ -732,6 +770,10 @@ pub(crate) async fn run_cargo_front_door(
         status.code().unwrap_or(-1),
         current_unix_ms(),
     );
+    // Issue #980 L7: paired with the `set(true)` above. Clearing here
+    // (before `post_cargo_result`) lets the post-build target-GC pass
+    // run normally without thinking it's still inside the build.
+    crate::cache_lib::build_active::set(false);
 
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {

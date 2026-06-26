@@ -24,8 +24,16 @@ use std::io::{self, Read, Write};
 use std::time::Duration;
 
 const HEADER_BYTES: usize = 8;
-const ASYNC_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(30);
-const ASYNC_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Reads on the daemon side (a `RecordTargetTouch` or similar) used to
+/// finish in milliseconds, so a 30 s cap was generous. With the
+/// `Request::Compile` verb added in #977 Phase 5 / #980 L1 the wrapper
+/// holds the daemon's IPC channel open for the lifetime of a rustc
+/// invocation, which may take minutes for a large release crate. Bumped
+/// to match `client::COMPILE_REPLY_TIMEOUT` so the same 30 minute
+/// budget governs both directions; the wrapper's own
+/// `submit_request_with_timeout` is the steady-state ceiling.
+const ASYNC_FRAME_READ_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const ASYNC_FRAME_WRITE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 fn decode_error(e: WireDecodeError) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, e)
@@ -212,8 +220,11 @@ mod tests {
 
     #[test]
     fn oversize_body_is_rejected_on_encode() {
-        // A very long path string blows past the 64 KiB body cap once
-        // prost varint-length-prefixes the string field.
+        // A very long path string blows past the body cap once prost
+        // varint-length-prefixes the string field. The cap was bumped
+        // from 64 KiB → 4 MiB in #977 Phase 5 to admit the Compile
+        // verb's stdout/stderr payload; this test still proves the
+        // cap is enforced regardless of its current numeric value.
         let blob = "x".repeat((MAX_BODY_BYTES + 1) as usize);
         let msg = Request::RecordTargetTouch {
             path: blob,
