@@ -109,6 +109,38 @@ soldr cargo zigbuild --target aarch64-apple-darwin   --release -p soldr-cli
 - Apple SDK fetch for `*-apple-darwin` targets — `prepare` writes
   `SDKROOT=<path>` for the build step.
 
+### Apple SDK version + shape (soldr-toolchain#14)
+
+The Apple SDK soldr fetches is pinned per-target via two env vars
+(both optional — defaults match the historical behaviour):
+
+| Env var | Values | Default | Effect |
+|---|---|---|---|
+| `SOLDR_APPLE_SDK_VERSION` | `11.3`, `13.3`, `14.5`, `15.2` | `11.3` | Which macOS SDK to vendor (catalogue row selection). |
+| `SOLDR_APPLE_SDK_SHAPE` | `universal2`, `thin-x86_64`, `thin-aarch64`, `auto` | `auto` | Whether to fetch the fat universal2 artifact or a lipo-thinned per-arch slice. |
+
+`auto` (the default) picks the **thin variant matching the target
+triple's arch** when cross-compiling for one Apple arch, falling
+back to `universal2` otherwise. Examples:
+
+```powershell
+# Project targets only Apple Silicon → fetch ~50 MB thin SDK
+$env:SOLDR_APPLE_SDK_VERSION = "14.5"
+$env:SOLDR_APPLE_SDK_SHAPE   = "thin-aarch64"
+soldr cargo zigbuild --target aarch64-apple-darwin --release -p soldr-cli
+
+# Project targets both Apple archs from one cache → one fat artifact
+$env:SOLDR_APPLE_SDK_SHAPE = "universal2"
+soldr cargo zigbuild --target x86_64-apple-darwin  --release -p soldr-cli
+soldr cargo zigbuild --target aarch64-apple-darwin --release -p soldr-cli
+```
+
+The available `(version, shape)` rows live in the soldr-toolchain
+catalogue at `https://zackees.github.io/soldr-toolchain/catalogue.v1.json`
+under the URL pattern `/apple-sdk/<version>/<shape-slug>/`. Catalogue
+backfill for non-11.3 versions is tracked in
+[soldr-toolchain#14](https://github.com/zackees/soldr-toolchain/issues/14).
+
 ### CI
 
 The reusable workflow `.github/workflows/_cross-build-windows-host.yml`
