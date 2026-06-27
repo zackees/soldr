@@ -103,8 +103,10 @@ run_scenario() {
     log "==[scenario: ${name}]=="
 
     # Per-scenario workspace + per-scenario soldr cache.
+    # soldr#981: route the cache dir under /out so daemon-spawn.log
+    # and other diagnostic artifacts survive the container exit.
     local workspace="/tmp/workspace-${name}"
-    local soldr_cache="/tmp/soldr-cache-${name}"
+    local soldr_cache="${scen_out}/soldr-cache"
     mkdir -p "${soldr_cache}"
 
     local fixture_path

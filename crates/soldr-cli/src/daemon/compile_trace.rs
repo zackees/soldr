@@ -27,12 +27,28 @@ fn init() -> Option<Mutex<std::fs::File>> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let file = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
-        .ok()?;
-    Some(Mutex::new(file))
+    {
+        Ok(file) => {
+            // One-line startup confirmation so the harness can verify
+            // the daemon process actually picked up the env var.
+            eprintln!(
+                "soldr-daemon: SOLDR_DAEMON_TRACE active, writing to {}",
+                path.display()
+            );
+            Some(Mutex::new(file))
+        }
+        Err(e) => {
+            eprintln!(
+                "soldr-daemon: SOLDR_DAEMON_TRACE set to {} but open failed: {e}",
+                path.display()
+            );
+            None
+        }
+    }
 }
 
 fn writer() -> Option<&'static Mutex<std::fs::File>> {
