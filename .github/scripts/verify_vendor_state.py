@@ -121,17 +121,42 @@ def soldr_commit_age_days(repo_root: Path, soldr_commit: str) -> float | None:
     return (now - committed).total_seconds() / 86400.0
 
 
+def vendor_is_git_submodule(repo_root: Path) -> bool:
+    """True when `_vender/zccache` is a registered git submodule.
+
+    Submodules track an external repo by commit pointer (no in-tree
+    code copy), so the flat-vendor deadline + delta-tracking discipline
+    does not apply — bumping the submodule is a single `git add` of the
+    pointer, not a code merge with drift risk. The presence of
+    `_vender/zccache` in `.gitmodules` is the signal we use.
+    """
+    gitmodules = repo_root / ".gitmodules"
+    if not gitmodules.is_file():
+        return False
+    text = gitmodules.read_text(encoding="utf-8")
+    # Look for `path = _vender/zccache` (canonical) or whitespace
+    # variants. We don't validate the URL since the submodule could
+    # legitimately be a fork (forked-during-iteration, etc.).
+    return bool(re.search(r"^\s*path\s*=\s*_vender/zccache\s*$", text, flags=re.MULTILINE))
+
+
 def check_vendor_active_means_state_exists(
-    cargo_toml_path: Path, vendor_state_path: Path
+    cargo_toml_path: Path, vendor_state_path: Path, repo_root: Path
 ) -> list[str]:
     errors: list[str] = []
     if soldr_cargo_uses_vendor(cargo_toml_path):
+        # Submodule path: tracked by commit pointer, no .vendor-state
+        # contract applies (per docs/VENDORING.md "Submodule mode").
+        if vendor_is_git_submodule(repo_root):
+            return errors
         if not vendor_state_path.is_file():
             errors.append(
                 f"Check 1 failed: {cargo_toml_path} declares a vendored zccache "
-                f"(path = ../../_vender/...) but {vendor_state_path} is missing. "
-                f"Restore the .vendor-state metadata or switch the dep back to a "
-                f"released git/crates.io pin."
+                f"(path = ../../_vender/...) but {vendor_state_path} is missing "
+                f"and `_vender/zccache` is not a registered git submodule. "
+                f"Either restore the .vendor-state metadata, switch to submodule "
+                f"mode (add to .gitmodules), or switch the dep back to a released "
+                f"git/crates.io pin."
             )
     return errors
 
@@ -229,7 +254,16 @@ def main() -> int:
     vendor_state_path = repo_root / VENDOR_STATE_PATH
 
     errors: list[str] = []
-    errors.extend(check_vendor_active_means_state_exists(cargo_toml_path, vendor_state_path))
+    errors.extend(check_vendor_active_means_state_exists(cargo_toml_path, vendor_state_path, repo_root))
+
+    # In submodule mode there's no .vendor-state to validate; the
+    # submodule pointer is the discipline.
+    if soldr_cargo_uses_vendor(cargo_toml_path) and vendor_is_git_submodule(repo_root):
+        sys.stdout.write(
+            "verify_vendor_state.py: _vender/zccache is a git submodule — "
+            "skipping deadline + delta-PR checks (submodule mode)\n"
+        )
+        return 0
 
     if vendor_state_path.is_file():
         try:
