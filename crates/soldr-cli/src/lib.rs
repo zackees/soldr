@@ -22,6 +22,8 @@ pub mod daemon;
 /// Declared from both lib and bin so the unit tests are reachable
 /// via `cargo test --lib`.
 pub mod env_cmd;
+/// soldr#939 — PyO3 auto-detection via cargo metadata.
+pub mod pyo3_detect;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;
