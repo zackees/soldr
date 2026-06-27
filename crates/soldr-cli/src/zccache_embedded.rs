@@ -118,7 +118,18 @@ impl SoldrZccacheService {
             limits: ServiceLimits::default(),
             runtime: RuntimeHooks {
                 service_name: Some("soldr-daemon".into()),
+                // zccache#922 — leave None to keep today's
+                // implicit-ambient-runtime behavior. We can plumb the
+                // soldr-daemon's tokio handle through here in a
+                // follow-up once we have a reason (tokio-console
+                // attach unity, explicit handle-based shutdown).
+                handle: None,
             },
+            // zccache#923 — None preserves the prior behavior where
+            // only `shutdown(ShutdownMode::Force)` aborts in-flight
+            // work. soldr's daemon already has a Notify-based
+            // shutdown path that race-completes the same scenarios.
+            cancellation: None,
         };
 
         let svc = ZccacheService::start(cfg)

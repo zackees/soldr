@@ -48,6 +48,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
 
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48

@@ -42,14 +42,23 @@ xz2 = { workspace = true }
 zip = { workspace = true }
 zstd = { workspace = true }
 
-# In-process zccache service (issue #977 / #980 L1). The soldr-daemon
-# links zccache::embedded::* directly — there is no longer a wrapper
-# fork-zccache.exe fallback. The git pin tracks the same release
-# (1.12.11) that ships as the managed binary used by the standalone
-# `soldr update-zccache` workflow + the perf-cluster harness
-# (see MANAGED_ZCCACHE_VERSION in src/fetch/mod.rs); bump them in
-# lockstep.
-zccache = { git = "https://github.com/zackees/zccache.git", rev = "fde4b916f24d9fe1cd00aeabe6581e4972f32068", default-features = false }
+# In-process zccache service (issue #977 / #980 L1). soldr links
+# zccache::embedded::* directly. As of soldr#940 + #985 follow-up,
+# the dep is sourced from the `_vender/zccache` git submodule
+# (branch `feat/inner-compile-tracing-940`) so iteration on the
+# embedded compile path can happen in-tree: edit zccache under
+# `_vender/zccache/`, soldr's build picks it up immediately. The
+# submodule ref + the soldr branch land in lockstep PRs.
+#
+# To bump the pinned zccache commit: cd _vender/zccache, git pull
+# (or git checkout <commit>), then `git add _vender/zccache` from
+# the soldr root commits the new submodule pointer.
+#
+# The managed zccache binary (MANAGED_ZCCACHE_VERSION in
+# src/fetch/mod.rs) is still tracked separately — that's the
+# `soldr update-zccache` workflow + perf-cluster harness pin and
+# does not need to match the embedded library commit.
+zccache = { path = "../../_vender/zccache/crates/zccache", default-features = false }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent

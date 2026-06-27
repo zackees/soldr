@@ -8,6 +8,14 @@ resolver = "2"
 members = [
     "crates/soldr-cli",
 ]
+# The zccache submodule has its own [workspace] declaration and its
+# own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here
+# keeps cargo from trying to fold its crates into soldr's workspace —
+# the path-dep in `crates/soldr-cli/Cargo.toml` still resolves the
+# specific `_vender/zccache/crates/zccache` crate we link against.
+exclude = [
+    "_vender/zccache",
+]
 
 [workspace.package]
 version = "0.7.59"
