@@ -385,22 +385,58 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 prepare_cmd::ParsedTargetArg::All => cargo_metadata_soldr::resolve_all_targets()?,
                 prepare_cmd::ParsedTargetArg::Explicit(list) => list,
             };
-            // Per-triple errors are collected so a single bad target in
-            // a multi-target run doesn't hide later failures. The whole
-            // command still exits non-zero if any iteration failed.
-            let mut failures: Vec<(String, String)> = Vec::new();
+            // soldr#940 — run per-target preparations concurrently with
+            // a bounded worker pool. `--target all` previously serialized
+            // 8 cold downloads on top of each other; now they overlap.
+            // Per-target dispatch (zig + Apple SDK, LLVM + xwin, …) is
+            // also internally parallelized — see `prepare_cmd::run`.
+            //
+            // Concurrency cap: min(num_cpus, num_targets, 4). 4 is the
+            // GitHub-runner-friendly ceiling — beyond that the
+            // contention on the NIC dominates the parallelism win.
+            let cpu_cap = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(2);
+            let concurrency = cpu_cap.min(targets.len()).min(4).max(1);
+            if targets.len() > 1 {
+                eprintln!(
+                    "soldr prepare: parallelizing {} targets with {} workers (soldr#940)",
+                    targets.len(),
+                    concurrency,
+                );
+            }
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(concurrency));
+            let mut handles = Vec::with_capacity(targets.len());
             for triple in &targets {
-                eprintln!("soldr prepare: ===== target {triple} =====");
-                if let Err(e) = prepare_cmd::run(
-                    triple.clone(),
-                    github_env.clone(),
-                    save.clone(),
-                    restore.clone(),
-                )
-                .await
-                {
+                let triple_owned = triple.clone();
+                let github_env_clone = github_env.clone();
+                let save_clone = save.clone();
+                let restore_clone = restore.clone();
+                let sem_clone = std::sync::Arc::clone(&sem);
+                handles.push(tokio::spawn(async move {
+                    let _permit = sem_clone
+                        .acquire_owned()
+                        .await
+                        .expect("semaphore not closed");
+                    eprintln!("soldr prepare: ===== target {triple_owned} =====");
+                    let result = prepare_cmd::run(
+                        triple_owned.clone(),
+                        github_env_clone,
+                        save_clone,
+                        restore_clone,
+                    )
+                    .await;
+                    (triple_owned, result)
+                }));
+            }
+            let mut failures: Vec<(String, String)> = Vec::new();
+            for handle in handles {
+                let (triple, result) = handle
+                    .await
+                    .map_err(|e| SoldrError::Other(format!("prepare worker join: {e}")))?;
+                if let Err(e) = result {
                     eprintln!("soldr prepare: target {triple} failed: {e}");
-                    failures.push((triple.clone(), e.to_string()));
+                    failures.push((triple, e.to_string()));
                 }
             }
             if !failures.is_empty() {
