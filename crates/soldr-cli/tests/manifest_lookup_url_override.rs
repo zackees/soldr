@@ -1,13 +1,15 @@
-//! Standalone test binary for the `SOLDR_MANIFEST_URL` override.
-//! Lives in its own file so it gets its own cargo-generated test
-//! binary — `fetch::manifest_lookup` caches its result in a
-//! process-wide `OnceLock`, so cross-test env-var ordering inside a
-//! single binary would race.
+//! Standalone test binary for the `SOLDR_TOOLCHAIN_CATALOGUE_URL`
+//! override (soldr#988 Phase 5 — replaces the retired
+//! `SOLDR_MANIFEST_URL`). Lives in its own file so it gets its own
+//! cargo-generated test binary — `fetch::manifest_lookup` caches its
+//! result in a process-wide `OnceLock`, so cross-test env-var
+//! ordering inside a single binary would race.
 //!
-//! Covers the #856 spec bullet:
+//! Covers:
 //!
-//!   * `manifest_url_override_env_var_works` — `SOLDR_MANIFEST_URL`
-//!     points the fetcher at an alternate URL.
+//!   * `catalogue_url_override_env_var_works` —
+//!     `SOLDR_TOOLCHAIN_CATALOGUE_URL` points the fetcher at an
+//!     alternate URL.
 
 use std::sync::Arc;
 
@@ -43,7 +45,7 @@ async fn spawn_one_shot_json_server(body: String) -> String {
     url
 }
 
-timed_test!(manifest_url_override_env_var_works, {
+timed_test!(catalogue_url_override_env_var_works, {
     // SAFETY: only test in this binary, so env-var writes are
     // single-threaded.
     std::env::remove_var("SOLDR_MANIFEST_DISABLE");
@@ -68,7 +70,7 @@ timed_test!(manifest_url_override_env_var_works, {
         }"#
         .to_string();
         let url = spawn_one_shot_json_server(body).await;
-        std::env::set_var("SOLDR_MANIFEST_URL", &url);
+        std::env::set_var("SOLDR_TOOLCHAIN_CATALOGUE_URL", &url);
 
         // Drive the production fetcher end-to-end. The OnceLock cache
         // is fresh because this is the binary's first call.
@@ -76,7 +78,7 @@ timed_test!(manifest_url_override_env_var_works, {
         assert_eq!(
             idx.entries.len(),
             1,
-            "manifest at SOLDR_MANIFEST_URL should be parsed and cached"
+            "catalogue at SOLDR_TOOLCHAIN_CATALOGUE_URL should be parsed and cached"
         );
         let entry = &idx.entries[0];
         assert_eq!(entry.owner, "test-owner");
@@ -94,6 +96,6 @@ timed_test!(manifest_url_override_env_var_works, {
             "process-wide OnceLock must return the same cached reference"
         );
 
-        std::env::remove_var("SOLDR_MANIFEST_URL");
+        std::env::remove_var("SOLDR_TOOLCHAIN_CATALOGUE_URL");
     });
 });

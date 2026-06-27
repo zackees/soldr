@@ -24,7 +24,10 @@ timed_test!(manifest_disable_env_var_bypasses_lookup, {
     // after the TCP timeout, which on Windows is several seconds).
     // With disable on, the fetch is skipped entirely and the
     // function returns instantly.
-    std::env::set_var("SOLDR_MANIFEST_URL", "http://127.0.0.1:1/never-bound.json");
+    std::env::set_var(
+        "SOLDR_TOOLCHAIN_CATALOGUE_URL",
+        "http://127.0.0.1:1/never-bound.json",
+    );
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -49,5 +52,5 @@ timed_test!(manifest_disable_env_var_bypasses_lookup, {
     );
 
     std::env::remove_var("SOLDR_MANIFEST_DISABLE");
-    std::env::remove_var("SOLDR_MANIFEST_URL");
+    std::env::remove_var("SOLDR_TOOLCHAIN_CATALOGUE_URL");
 });
