@@ -257,30 +257,42 @@ pub async fn run(
         eprintln!("soldr prepare: warning: rustup target add failed: {e}");
     }
 
+    // soldr#940 — assets within a target's dispatch are fetched
+    // concurrently via `tokio::try_join!`. Each ensure_* call already
+    // implements its own integrity verification + caching, so racing
+    // them only affects net-bandwidth ordering — not the on-disk
+    // result.
     match attrs.os {
         TargetOs::Windows => {
             // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
             // toolchain (for clang/lld-link), and the MSVC CRT cache.
-            eprintln!("soldr prepare: dispatch=xwin");
-            let llvm_dir = match ensure_llvm_toolchain(&paths).await {
-                Ok(p) => p,
-                Err(SoldrError::UnsupportedPlatform(m)) => {
-                    eprintln!("soldr prepare: LLVM auto-bootstrap not supported on host: {m}");
-                    PathBuf::new()
+            // Run LLVM and the xwin cache extract concurrently.
+            eprintln!("soldr prepare: dispatch=xwin (parallel)");
+            let llvm_fut = async {
+                match ensure_llvm_toolchain(&paths).await {
+                    Ok(p) => Ok::<PathBuf, SoldrError>(p),
+                    Err(SoldrError::UnsupportedPlatform(m)) => {
+                        eprintln!(
+                            "soldr prepare: LLVM auto-bootstrap not supported on host: {m}"
+                        );
+                        Ok(PathBuf::new())
+                    }
+                    Err(e) => Err(e),
                 }
-                Err(e) => return Err(e),
             };
+            let xwin_fut = ensure_xwin_cache();
+            let (llvm_dir, _) = tokio::try_join!(llvm_fut, xwin_fut)?;
             if !llvm_dir.as_os_str().is_empty() {
                 eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
             }
-            ensure_xwin_cache().await?;
         }
         TargetOs::Darwin => {
             // Darwin cross-compile path: needs zig + Apple SDK; export SDKROOT.
-            eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk");
-            let zig_dir = ensure_zig(&paths).await?;
+            // Both fetches independent — race them.
+            eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk (parallel)");
+            let (zig_dir, sdk) =
+                tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths))?;
             eprintln!("soldr prepare: zig at {}", zig_dir.display());
-            let sdk = ensure_apple_sdk(&paths).await?;
             eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
             let sdk_str = sdk.to_string_lossy();
             println!("SDKROOT={sdk_str}");
@@ -288,7 +300,8 @@ pub async fn run(
         }
         TargetOs::Linux => {
             // Linux cross-compile via zigbuild (musl always, gnu when
-            // host != target arch).
+            // host != target arch). Only one asset to fetch; no parallel
+            // bench yet — leave as-is.
             eprintln!("soldr prepare: dispatch=zigbuild");
             let zig_dir = ensure_zig(&paths).await?;
             eprintln!("soldr prepare: zig at {}", zig_dir.display());
