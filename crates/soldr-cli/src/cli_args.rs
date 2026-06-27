@@ -707,6 +707,18 @@ pub(crate) enum ToolchainSubcommand {
         #[arg(long)]
         json: bool,
     },
+    /// soldr#988 Phase 2 — print the resolved soldr-toolchain
+    /// catalogue origin and a one-line response summary (HTTP
+    /// status, content-length, etag, last-modified). Honors
+    /// `SOLDR_TOOLCHAIN_ORIGIN` (default
+    /// `https://zackees.github.io/soldr-toolchain`).
+    Catalogue {
+        /// Emit the stable machine-facing JSON form
+        /// (`schema_version: 1`) for tooling. Same shape conventions
+        /// as the other `toolchain` JSON outputs.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand)]
