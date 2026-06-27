@@ -46,6 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          submodules: recursive
           fetch-depth: 0
 
       - name: Compare candidate version against PyPI
@@ -216,6 +217,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
       - name: Install Rust toolchain
@@ -1067,6 +1069,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          submodules: recursive
           ref: ${{ needs.prepare.outputs.commit_sha }}
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
