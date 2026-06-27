@@ -1,0 +1,133 @@
+name: _Cross-build linux/mac (windows-host zigbuild)
+
+# soldr#988 Phase 3: cross-compile soldr-cli for a Linux or Mac
+# target FROM A WINDOWS RUNNER via `soldr cargo zigbuild`. Mirrors
+# _cross-build-linux.yml (which runs on Linux hosts) so Windows
+# contributors can produce Linux + Mac binaries locally and CI can
+# prove the path stays green.
+#
+# What this changes vs the existing flow:
+#
+#   * Host is `windows-2022` instead of `ubuntu-24.04`.
+#   * Bootstrap soldr step uses bash via Git-for-Windows / msys
+#     (preinstalled on windows runners) and targets
+#     `x86_64-pc-windows-msvc` so the bootstrap binary runs on the
+#     host. The cross-compile step then uses that host soldr to
+#     fetch zig / cargo-zigbuild for the target triple.
+#
+# Notes:
+#   * Apple targets need the Apple SDK (vendored via the toolchain
+#     catalogue). `soldr prepare --target <triple>` handles the
+#     fetch and exposes `SDKROOT=<path>` if not exported yet. We
+#     defer to `prepare-cross-toolchain` for that. The composite
+#     action is platform-agnostic — `target` is the only input that
+#     varies.
+#   * `actions/checkout` with `submodules: recursive` so the zccache
+#     submodule under `_vender/zccache` is materialized (path-dep).
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        # Linux: aarch64-unknown-linux-gnu, aarch64-unknown-linux-musl,
+        # x86_64-unknown-linux-musl, x86_64-unknown-linux-gnu.
+        # Mac:   x86_64-apple-darwin, aarch64-apple-darwin.
+        # Windows targets cross-build via cargo-xwin (see
+        # _cross-build-windows.yml), not zigbuild.
+        required: true
+        type: string
+      artifact_name:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_COLOR: "1"
+  CLICOLOR_FORCE: "1"
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
+jobs:
+  build:
+    name: cross-build ${{ inputs.target }} (windows host, zigbuild)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        # Use bash so the shell idioms in this workflow match
+        # _cross-build-linux.yml byte-for-byte. Git-for-Windows
+        # ships bash preinstalled on windows-2022 runners.
+        shell: bash
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+          ref: ${{ inputs.source_ref }}
+
+      - name: Install Rust toolchain + host x86_64-pc-windows-msvc + ${{ inputs.target }}
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: x86_64-pc-windows-msvc,${{ inputs.target }}
+
+      - name: Bootstrap soldr (bare cargo, windows host)
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          cargo build \
+            --package soldr-cli \
+            --release \
+            --locked \
+            --target x86_64-pc-windows-msvc
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp target/x86_64-pc-windows-msvc/release/soldr.exe "$RUNNER_TEMP/soldr-bin/soldr.exe"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+
+      - name: Show soldr version
+        run: soldr --version
+
+      # Fetches zig + cargo-zigbuild for the target triple. The
+      # composite is host-agnostic — same recipe Linux uses.
+      - name: Preparing Cross Compile Toolchain
+        uses: ./.github/actions/prepare-cross-toolchain
+        with:
+          target: ${{ inputs.target }}
+
+      - name: Cross-compile soldr-cli for ${{ inputs.target }} (zigbuild)
+        env:
+          CARGO_TARGET_DIR: target
+        run: |
+          set -euo pipefail
+          soldr cargo zigbuild \
+              --package soldr-cli \
+              --release \
+              --locked \
+              --target "${{ inputs.target }}"
+          # The cross-built binary is just "soldr" on Linux/Mac (no
+          # .exe), even though we ran the bootstrap as soldr.exe.
+          ls -la "target/${{ inputs.target }}/release/soldr"
+
+      - name: Stage artifact tarball
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp "target/${{ inputs.target }}/release/soldr" "dist/soldr"
+          chmod +x dist/soldr
+          tar -czf "dist/${{ inputs.artifact_name }}.tar.gz" -C dist soldr
+          sha256sum "dist/${{ inputs.artifact_name }}.tar.gz" | awk '{print "sha256: " $1}'
+
+      - name: Upload prebuilt soldr (${{ inputs.target }})
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/${{ inputs.artifact_name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
