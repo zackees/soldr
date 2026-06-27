@@ -45,8 +45,21 @@ pub mod archive;
 pub mod forge_dispatch;
 pub mod github;
 pub mod llvm;
+/// soldr#997 Phase A — LLVM-tools bundle from soldr-toolchain
+/// `recipes/llvm-tools-linux-x64/`. See module doc for why this is
+/// distinct from [`llvm`].
+pub mod llvm_tools_bundle;
 pub mod manifest_lookup;
 pub mod manifest_v6;
+/// soldr#997 Phase A — Node.js node.lib bundle for Windows MSVC
+/// cross-compile (closes #944).
+pub mod nodelib;
+/// soldr#997 Phase A — OpenSSL libs/headers bundle for Windows MSVC
+/// cross-compile (closes #943).
+pub mod openssl_sysroot;
+/// soldr#997 Phase A — Python sysroot bundle for PyO3 cross-compile
+/// (closes parts of #931, #932, #933).
+pub mod python_sysroot;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;

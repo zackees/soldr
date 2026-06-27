@@ -1,0 +1,173 @@
+name: Refresh vcpkg Windows triplet bundles
+
+# soldr#945 + soldr#946 — periodic producer for the
+# vcpkg `x64-windows-static-md` + `arm64-windows-static-md`
+# port bundles. This workflow lives in soldr proper (not in
+# the soldr-toolchain forge framework) because vcpkg's MSVC
+# triplets cannot be cross-compiled from a Linux runner — the
+# port build needs real Windows.
+#
+# Trigger model: weekly + manual. The bundles change rarely
+# (only when the pinned `vcpkg-pin.txt` list is bumped, or a
+# port's own version bumps inside the pinned vcpkg baseline)
+# so a weekly cadence is enough.
+#
+# Output destination: soldr-toolchain's `assets` branch under
+#
+#     deps/vcpkg/<triplet>/<baseline-sha>/bundle.tar.zst
+#
+# plus a `latest.txt` pointer at the most-recent baseline. The
+# soldr-side fetcher (TBD module under `crates/soldr-cli/src/fetch/`)
+# consumes those rows.
+#
+# The pin list lives at `.github/vcpkg-pin.txt` (one port per
+# line). Bumping it is a manual PR — same pattern as the
+# `MANAGED_ZCCACHE_VERSION` constant in CLAUDE.md's lockstep
+# bookkeeping.
+
+on:
+  schedule:
+    # Sundays 09:00 UTC — quietest window for GHA runners
+    # and lets a Monday-morning consumer pick up the refresh.
+    - cron: "0 9 * * 0"
+  workflow_dispatch:
+    inputs:
+      triplets:
+        description: "Comma-separated triplets to refresh (default: both)"
+        required: false
+        default: "x64-windows-static-md,arm64-windows-static-md"
+        type: string
+      vcpkg_baseline:
+        description: "vcpkg baseline SHA (default: master HEAD at run time)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-vcpkg-windows
+  cancel-in-progress: false
+
+env:
+  VCPKG_BINARY_SOURCES: clear
+  VCPKG_DISABLE_METRICS: "1"
+
+jobs:
+  build-triplet:
+    name: ${{ matrix.triplet }}
+    # MUST be windows. Linux-side clang-cl triplets exist but
+    # port coverage is too spotty for the pin list we ship.
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        triplet:
+          - x64-windows-static-md
+          - arm64-windows-static-md
+    steps:
+      - name: Check out soldr (for the pin list)
+        uses: actions/checkout@v4
+
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          $baseline = "${{ inputs.vcpkg_baseline }}"
+          if (-not $baseline) {
+            git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+            $baseline = (git -C "$env:RUNNER_TEMP\vcpkg" rev-parse HEAD).Trim()
+          } else {
+            git clone https://github.com/microsoft/vcpkg.git "$env:RUNNER_TEMP\vcpkg"
+            git -C "$env:RUNNER_TEMP\vcpkg" checkout $baseline
+          }
+          echo "VCPKG_ROOT=$env:RUNNER_TEMP\vcpkg" >> $env:GITHUB_ENV
+          echo "VCPKG_BASELINE=$baseline" >> $env:GITHUB_ENV
+          & "$env:RUNNER_TEMP\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+
+      - name: Install ports
+        shell: pwsh
+        run: |
+          $pinFile = ".github/vcpkg-pin.txt"
+          if (-not (Test-Path $pinFile)) {
+            Write-Error "missing $pinFile - add the port pin list before refreshing"
+            exit 1
+          }
+          $ports = Get-Content $pinFile | Where-Object {
+            $_ -and -not $_.StartsWith("#")
+          }
+          $portList = $ports -join " "
+          Write-Host "Installing $portList for triplet ${{ matrix.triplet }}"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install $ports --triplet ${{ matrix.triplet }}
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $installed = Join-Path $env:VCPKG_ROOT "installed/${{ matrix.triplet }}"
+          if (-not (Test-Path $installed)) {
+            Write-Error "vcpkg install did not produce $installed"
+            exit 1
+          }
+          $outDir = Join-Path $env:RUNNER_TEMP "bundle"
+          New-Item -ItemType Directory -Force $outDir | Out-Null
+          $tarball = Join-Path $outDir "bundle.tar"
+          tar -cf $tarball -C $installed .
+          if (-not (Test-Path $tarball)) {
+            Write-Error "tar produced no output at $tarball"
+            exit 1
+          }
+          # zstd ships with GHA Windows runners since 2024.
+          zstd -19 --rm $tarball -o "$outDir/bundle.tar.zst"
+          $size = (Get-Item "$outDir/bundle.tar.zst").Length
+          Write-Host "Bundle size: $size bytes"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_BASELINE }}
+          path: ${{ runner.temp }}\bundle\bundle.tar.zst
+          retention-days: 7
+
+  publish:
+    name: Publish to soldr-toolchain assets branch
+    needs: build-triplet
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out soldr-toolchain assets branch
+        uses: actions/checkout@v4
+        with:
+          repository: zackees/soldr-toolchain
+          ref: assets
+          token: ${{ secrets.SOLDR_TOOLCHAIN_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          lfs: true
+          path: assets-checkout
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Stage + commit + push
+        shell: bash
+        run: |
+          cd assets-checkout
+          for d in ../artifacts/vcpkg-*; do
+            artifact_name=$(basename "$d")
+            # Parse "vcpkg-<triplet>-<baseline>" → triplet, baseline
+            stripped="${artifact_name#vcpkg-}"
+            baseline="${stripped##*-}"
+            triplet="${stripped%-*}"
+            dest="deps/vcpkg/$triplet/$baseline"
+            mkdir -p "$dest"
+            cp "$d/bundle.tar.zst" "$dest/"
+            echo "$baseline" > "deps/vcpkg/$triplet/latest.txt"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add deps/vcpkg/
+          if git diff --staged --quiet; then
+            echo "no changes to commit"
+            exit 0
+          fi
+          git commit -m "refresh: vcpkg windows triplet bundles"
+          git push
