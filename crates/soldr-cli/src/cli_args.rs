@@ -432,6 +432,28 @@ pub(crate) enum Commands {
         restore: Option<std::path::PathBuf>,
     },
 
+    /// soldr#938 — print the cross-compile env block (shell-eval).
+    #[command(
+        name = "env",
+        long_about = "Print the cross-compile env block soldr would set internally for the given target, in shell-eval form. Use to bridge env into shells/IDE integrations that bypass `soldr cargo`:\n\n  eval \"$(soldr env --target mac-arm64)\"\n  soldr env --target win-x64 --shell-export   # `export KEY=VALUE` for sh/bash/zsh\n  soldr env --target linux-x64-musl --json    # stable JSON for tooling\n\nResolves the target via the same alias table soldr build uses (`win-x64`, `mac-arm64`, etc.; or Rust triple). The emitted block always includes SDKROOT (darwin) and PYO3_CROSS_LIB_DIR / PYO3_CROSS_PYTHON_VERSION (whenever the catalogue has the Python rows for the target). See soldr#997 + soldr#938 for the design."
+    )]
+    Env {
+        /// Target triple OR soldr alias (e.g. `win-x64`, `mac-arm64`,
+        /// `linux-x64-musl`, `apple-silicon`, `x86_64-pc-windows-msvc`).
+        /// See `crate::target_alias` for the full alias table.
+        #[arg(long, value_name = "TRIPLE-OR-ALIAS")]
+        target: String,
+        /// Emit `export KEY=VALUE` lines (shell-export form) suitable
+        /// for `eval`. Default is bare `KEY=VALUE` lines which `set
+        /// -a` users can also source.
+        #[arg(long)]
+        shell_export: bool,
+        /// Emit the same env block in stable JSON form. Mutually
+        /// exclusive with --shell-export.
+        #[arg(long, conflicts_with = "shell_export")]
+        json: bool,
+    },
+
     /// Cross-compile a soldr-bundled tool (crgx, cargo-chef) for a target triple
     #[command(
         name = "build-from-source",
