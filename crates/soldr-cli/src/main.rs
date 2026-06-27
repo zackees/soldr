@@ -20,6 +20,10 @@ mod cli_args;
 /// soldr#938 — `soldr env --target` subcommand. Prints shell-eval /
 /// shell-export / JSON env block for the given target.
 mod env_cmd;
+/// soldr#939 — PyO3 auto-detection via cargo metadata. Used by the
+/// cargo front door to inject PYO3_CROSS_* env vars when the
+/// workspace pulls in PyO3 and target ≠ host.
+mod pyo3_detect;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// Bin tree mirrors the lib declaration; only one alias resolver
 /// is reachable in either build mode.
