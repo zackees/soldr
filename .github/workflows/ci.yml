@@ -170,6 +170,22 @@ jobs:
       artifact_name: soldr-ci-e2e-linux-arm64-musl
       source_ref: ${{ github.sha }}
 
+  # soldr#988 Phase 3 regression — cross-compile soldr-cli for a
+  # Linux target FROM A WINDOWS RUNNER via `soldr cargo zigbuild`.
+  # Keeps the Windows-host cross-compile path green so contributors
+  # on Windows can build Linux/Mac soldr binaries locally without
+  # pushing a branch and waiting on CI. Cheapest target — same arch,
+  # different OS — proves the zigbuild path works on Windows; the
+  # produced binary is uploaded but not e2e-exercised (the
+  # cross-build IS the regression test).
+  cross-build-from-windows-x64-linux:
+    name: cross-build x86_64-unknown-linux-gnu (windows host)
+    uses: ./.github/workflows/_cross-build-windows-host.yml
+    with:
+      target: x86_64-unknown-linux-gnu
+      artifact_name: soldr-ci-cross-windows-x64-linux
+      source_ref: ${{ github.sha }}
+
   e2e-linux-arm64-musl:
     name: build
     needs: e2e-linux-arm64-musl-build

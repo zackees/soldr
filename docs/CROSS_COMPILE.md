@@ -25,6 +25,8 @@ instead.
 |---|---|
 | Linux → Windows GNU | `cargo-zigbuild` + `ziglang` ([Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended)) |
 | Linux → Windows MSVC | `cargo-xwin` ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)) |
+| **Windows → Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
+| **Windows → Mac** | `cargo-zigbuild` + Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
 ---
@@ -73,6 +75,49 @@ soldr cargo zigbuild --release --target x86_64-pc-windows-gnu
   upstream ships `.tar.xz` archives and soldr's extractor does not yet
   handle that format. Until then, `[soldr.plugins]` performs a `cargo
   install` on first `soldr toolchain prepare`.
+
+---
+
+## 1a. Windows → Linux via `cargo-zigbuild` (soldr#988 Phase 3)
+
+Same `cargo-zigbuild` tool, host-flipped. Windows contributors can produce
+Linux and Mac binaries locally instead of pushing a branch and waiting on
+CI. `zig` ships the libc headers / `libSystem` shims `zigbuild` needs;
+no mingw or wsl required.
+
+### Recipe
+
+```powershell
+# Pin the cross targets in rust-toolchain.toml (same shape as Section 1):
+#   [toolchain]
+#   targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+#
+# Then materialize the toolchain + fetch zig/cargo-zigbuild:
+soldr prepare --target x86_64-unknown-linux-gnu
+soldr prepare --target aarch64-apple-darwin   # also fetches the Apple SDK
+
+# Build:
+soldr cargo zigbuild --target x86_64-unknown-linux-gnu --release -p soldr-cli
+soldr cargo zigbuild --target aarch64-apple-darwin   --release -p soldr-cli
+```
+
+### What soldr handles automatically
+
+- `cargo-zigbuild` install (fetched from the soldr-toolchain catalogue
+  per `SOLDR_TOOLCHAIN_ORIGIN`).
+- `zig` install (same).
+- Apple SDK fetch for `*-apple-darwin` targets — `prepare` writes
+  `SDKROOT=<path>` for the build step.
+
+### CI
+
+The reusable workflow `.github/workflows/_cross-build-windows-host.yml`
+runs this exact recipe on a `windows-2022` runner. The
+`cross-build-from-windows-x64-linux` job in `ci.yml` exercises it on every
+PR with `target = x86_64-unknown-linux-gnu` as the regression test.
+
+[Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended) covers
+the Linux → Windows-GNU mirror of this recipe.
 
 ---
 
