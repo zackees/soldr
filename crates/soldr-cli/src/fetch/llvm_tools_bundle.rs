@@ -1,0 +1,123 @@
+//! LLVM toolchain bundle fetcher — Phase A of soldr#997 (closes #934 +
+//! #942).
+//!
+//! Distinct from [`crate::fetch::llvm`]: that module pulls the existing
+//! `zackees/clang-tool-chain-bins` LLVM build (the xwin-lane bootstrap
+//! for `cargo xwin build --target *-pc-windows-msvc`). This module
+//! consumes the **new** `recipes/llvm-tools-linux-x64/` catalogue row
+//! that bundles the same upstream LLVM 18.1.8 release archive
+//! whitelist-extracted to just the binutils we actually need:
+//!
+//! ```
+//! bin/{clang, clang++, clang-cl, lld, lld-link, llvm-lib, llvm-rc,
+//!      llvm-dlltool, llvm-strip, llvm-objcopy, llvm-ar, llvm-readobj}
+//! lib/libLLVM.so.<ver>
+//! lib/clang/<ver>/include/   ← cc-rs C/C++ headers
+//! ```
+//!
+//! Why two LLVM modules?
+//!   * `llvm.rs` — xwin-specific, version-pinned at 21.1.5, ships pre-
+//!     compressed `.tar.zst` per-host from `clang-tool-chain-bins`. It
+//!     pre-dates the `soldr-toolchain` Phase A pipeline.
+//!   * `llvm_tools_bundle.rs` (this file) — the soldr#997 Phase A
+//!     bundle. Comes from soldr-toolchain's forge-built recipes; one
+//!     row per cross-compile-driver host (today: linux-x64 only;
+//!     linux-arm64 / macos-arm64 hosts to follow when soldr's
+//!     bootstrap supports them as drivers).
+//!
+//! Eventually `llvm.rs` and `llvm_tools_bundle.rs` should consolidate
+//! into a single module, but that needs a catalogue migration. Keep
+//! them separate until soldr#997 closes and the xwin lane proves the
+//! new pipeline is healthy.
+
+use std::path::PathBuf;
+
+use crate::core::{SoldrError, SoldrPaths};
+
+/// LLVM version the soldr-toolchain `recipes/llvm-tools-linux-x64/`
+/// recipe pins. Must match `LLVM_VERSION_DEFAULT` in the recipe file.
+pub const MANAGED_LLVM_TOOLS_VERSION: &str = "18.1.8";
+
+/// Catalogue layout: cross-compile-driver host → recipe slug. Today
+/// only linux x86_64 is wired. Linux arm64 + macOS arm64 hosts can
+/// be added when soldr's bootstrap matrix supports them as drivers
+/// (today the docker image is linux x86_64 only — see soldr#997).
+pub const LLVM_TOOLS_HOSTS: &[(&str, &str)] = &[
+    ("x86_64-unknown-linux-gnu", "linux-x64"),
+];
+
+/// Catalogue slug for a host triple.
+pub fn host_slug_for(host_triple: &str) -> Option<&'static str> {
+    LLVM_TOOLS_HOSTS
+        .iter()
+        .find(|(rust, _)| *rust == host_triple)
+        .map(|(_, slug)| *slug)
+}
+
+/// Construct the expected `assets`-branch URL for the LLVM-tools
+/// bundle. Catalogue layout:
+///
+///     deps/llvm-tools/<version>/<slug>/bundle.tar.zst
+pub fn asset_url_for(version: &str, slug: &str) -> String {
+    format!(
+        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
+         deps/llvm-tools/{version}/{slug}/bundle.tar.zst"
+    )
+}
+
+/// Ensure the LLVM-tools bundle is materialized for the given driver
+/// host. Returns the directory containing `bin/` + `lib/` + `include/`.
+///
+/// **Status (as of this PR):** catalogue ingest pending — see
+/// [`crate::fetch::python_sysroot::ensure_python_sysroot`] for the
+/// pattern.
+pub async fn ensure_llvm_tools_bundle(
+    paths: &SoldrPaths,
+    host_triple: &str,
+) -> Result<PathBuf, SoldrError> {
+    let _ = paths;
+    let slug = host_slug_for(host_triple).ok_or_else(|| {
+        SoldrError::UnsupportedPlatform(format!(
+            "no llvm-tools bundle for host {host_triple}; \
+             supported: {:?}",
+            LLVM_TOOLS_HOSTS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
+        ))
+    })?;
+    let url = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, slug);
+    Err(SoldrError::Other(format!(
+        "llvm-tools bundle for {host_triple} ({slug}) not yet ingested into the \
+         soldr-toolchain catalogue. Expected URL: {url}\n\
+         Tracking: https://github.com/zackees/soldr/issues/997"
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::timed_test!(host_slug_for_known_triple, {
+        assert_eq!(
+            host_slug_for("x86_64-unknown-linux-gnu"),
+            Some("linux-x64")
+        );
+        assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
+    });
+
+    crate::timed_test!(asset_url_layout_matches_catalogue, {
+        let u = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, "linux-x64");
+        assert!(u.starts_with("https://media.githubusercontent.com/media/"));
+        assert!(u.contains("/deps/llvm-tools/18.1.8/linux-x64/"));
+        assert!(u.ends_with("/bundle.tar.zst"));
+    });
+
+    crate::timed_test!(version_constant_well_formed, {
+        let parts: Vec<&str> = MANAGED_LLVM_TOOLS_VERSION.split('.').collect();
+        assert_eq!(parts.len(), 3, "expected MAJOR.MINOR.PATCH");
+        for p in parts {
+            assert!(
+                p.chars().all(|c| c.is_ascii_digit()),
+                "non-digit in version: {p}"
+            );
+        }
+    });
+}
