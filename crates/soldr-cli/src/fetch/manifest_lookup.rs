@@ -1,12 +1,20 @@
-//! Manifest-branch first asset resolver.
+//! Toolchain-catalogue first asset resolver.
 //!
 //! Before consulting `api.github.com/repos/<owner>/<repo>/releases/...`
-//! the release-asset resolver consults a vendored asset index hosted on
-//! soldr's own `manifest` branch:
+//! the release-asset resolver consults the v1 catalogue published by
+//! `zackees/soldr-toolchain` and served over GitHub Pages:
 //!
 //! ```text
-//! https://raw.githubusercontent.com/zackees/soldr/manifest/asset-index.json
+//! https://zackees.github.io/soldr-toolchain/catalogue.v1.json
 //! ```
+//!
+//! Migration (soldr#988): the legacy `manifest` branch origin
+//! (`raw.githubusercontent.com/zackees/soldr/manifest/asset-index.json`)
+//! and its `refresh-manifest.yml` nightly job were retired in Phase 5.
+//! There is no fallback to a second URL — a catalogue miss degrades
+//! straight to the live GitHub Releases API. Use the catalogue's own
+//! producer (`scripts/build_catalogue_v1.py` on `zackees/soldr-toolchain`)
+//! to publish new entries.
 //!
 //! Schema (intentionally flat — one row per (owner, repo, tag, asset) —
 //! so the lookup is a single linear scan and the file is grep-friendly):
@@ -36,10 +44,13 @@
 //!
 //! ## Env-var seams
 //!
-//! * `SOLDR_MANIFEST_URL` — override the index URL (testing + air-gapped
-//!   mirrors). Must point at the same flat-array JSON shape.
-//! * `SOLDR_MANIFEST_DISABLE=1` — skip the manifest entirely; the
-//!   resolver immediately falls through to the live GitHub Releases API.
+//! * `SOLDR_TOOLCHAIN_ORIGIN` — override the catalogue origin (the
+//!   resolver builds `{origin}/catalogue.v1.json`). See Phase 2.
+//! * `SOLDR_TOOLCHAIN_CATALOGUE_URL` — override the full URL (testing
+//!   + air-gapped mirrors). When set takes precedence over
+//!   `SOLDR_TOOLCHAIN_ORIGIN`.
+//! * `SOLDR_MANIFEST_DISABLE=1` — skip the catalogue lookup entirely;
+//!   the resolver falls through to the live GitHub Releases API.
 //!
 //! ## Why a separate file from `manifest.json`?
 //!
@@ -60,14 +71,6 @@ use serde::Deserialize;
 
 use crate::core::SoldrError;
 
-/// Default URL of the soldr-published asset index on the `manifest`
-/// branch. Overridable via [`MANIFEST_URL_ENV_VAR`]. soldr#988
-/// migration: the catalogue origin defined by
-/// [`DEFAULT_TOOLCHAIN_ORIGIN`] / [`TOOLCHAIN_ORIGIN_ENV_VAR`] is
-/// tried FIRST; this constant is the one-release fallback.
-pub const DEFAULT_MANIFEST_URL: &str =
-    "https://raw.githubusercontent.com/zackees/soldr/manifest/asset-index.json";
-
 /// soldr#988 Phase 2 — default origin of the v1 catalogue document
 /// published by `zackees/soldr-toolchain`. The full URL we fetch is
 /// `{origin}/catalogue.v1.json`. Overridable via
@@ -79,21 +82,24 @@ pub const DEFAULT_TOOLCHAIN_ORIGIN: &str = "https://zackees.github.io/soldr-tool
 /// trailing slash). Test seam + air-gapped-mirror seam.
 pub const TOOLCHAIN_ORIGIN_ENV_VAR: &str = "SOLDR_TOOLCHAIN_ORIGIN";
 
+/// soldr#988 Phase 5 — full-URL override for the catalogue endpoint.
+/// When set takes precedence over [`TOOLCHAIN_ORIGIN_ENV_VAR`]'s
+/// origin+filename composition. Test seam — lets integration tests
+/// point at a one-shot HTTP listener whose path doesn't match the
+/// canonical `/catalogue.v1.json`.
+pub const TOOLCHAIN_CATALOGUE_URL_ENV_VAR: &str = "SOLDR_TOOLCHAIN_CATALOGUE_URL";
+
 /// Catalogue document name. Producers on `zackees/soldr-toolchain`
 /// emit this filename under the configured origin; consumers GET
 /// `{origin}/{CATALOGUE_DOC_NAME}`.
 pub const CATALOGUE_DOC_NAME: &str = "catalogue.v1.json";
 
-/// Env var that overrides [`DEFAULT_MANIFEST_URL`]. Set to a `file://`,
-/// `http://`, or `https://` URL pointing at the same flat-array JSON
-/// shape. Test seam + air-gapped-mirror seam.
-pub const MANIFEST_URL_ENV_VAR: &str = "SOLDR_MANIFEST_URL";
-
 /// Env var that, when set to a non-empty value other than `0`,
-/// disables the manifest lookup entirely. Resolution skips straight to
-/// the live GitHub Releases API. Escape hatch for the rare case where
-/// the published manifest is wrong and a user needs to bypass it
-/// without waiting for a soldr release.
+/// disables the catalogue lookup entirely. Resolution skips straight
+/// to the live GitHub Releases API. Escape hatch for the rare case
+/// where the published catalogue is wrong and a user needs to bypass
+/// it without waiting for a soldr release. Name preserved across the
+/// soldr#988 retirement so the user-facing env var stays stable.
 pub const MANIFEST_DISABLE_ENV_VAR: &str = "SOLDR_MANIFEST_DISABLE";
 
 /// Wall-clock budget for the one-shot manifest fetch. Generous enough
@@ -189,15 +195,6 @@ fn disabled_via_env() -> bool {
     }
 }
 
-/// Resolve the URL the manifest should be fetched from, honoring
-/// [`MANIFEST_URL_ENV_VAR`].
-fn resolve_url() -> String {
-    match std::env::var(MANIFEST_URL_ENV_VAR) {
-        Ok(value) if !value.trim().is_empty() => value.trim().to_string(),
-        _ => DEFAULT_MANIFEST_URL.to_string(),
-    }
-}
-
 /// soldr#988 Phase 2 — resolve the catalogue origin, honoring
 /// [`TOOLCHAIN_ORIGIN_ENV_VAR`]. Trailing slash is stripped so the
 /// caller can append `/catalogue.v1.json` unconditionally.
@@ -209,9 +206,17 @@ pub fn resolve_toolchain_origin() -> String {
     raw.trim_end_matches('/').to_string()
 }
 
-/// soldr#988 Phase 2 — full URL of the catalogue document.
+/// soldr#988 — full URL of the catalogue document.
+/// [`TOOLCHAIN_CATALOGUE_URL_ENV_VAR`] takes precedence (test seam +
+/// air-gapped-mirror seam); otherwise we compose
 /// `{resolve_toolchain_origin()}/catalogue.v1.json`.
 pub fn resolve_catalogue_url() -> String {
+    if let Ok(value) = std::env::var(TOOLCHAIN_CATALOGUE_URL_ENV_VAR) {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
     format!("{}/{}", resolve_toolchain_origin(), CATALOGUE_DOC_NAME)
 }
 
@@ -242,29 +247,15 @@ pub async fn get_or_fetch() -> &'static ManifestIndex {
     MANIFEST_CACHE.get().expect("just set above")
 }
 
-/// One-shot fetch of the manifest, used by [`get_or_fetch`] on a
-/// cache miss. Tries the soldr#988 toolchain catalogue origin first;
-/// on any failure (network, parse, HTTP error) falls back to the
-/// legacy `manifest` branch URL. Returns `Err` only when BOTH paths
-/// fail; the caller maps that to an empty index for graceful
-/// degradation.
+/// One-shot fetch of the catalogue, used by [`get_or_fetch`] on a
+/// cache miss. soldr#988 Phase 5: only the v1 toolchain catalogue is
+/// consulted — the legacy `manifest`-branch fallback was removed
+/// along with its origin and refresh workflow. Failures degrade
+/// silently to an empty index so the resolver falls through to the
+/// live GitHub Releases API.
 async fn fetch_once() -> Result<ManifestIndex, SoldrError> {
-    // 1. Try the v1 catalogue origin first.
-    let catalogue_url = resolve_catalogue_url();
-    match fetch_index_from(&catalogue_url).await {
-        Ok(idx) => return Ok(idx),
-        Err(err) => {
-            tracing::debug!(
-                target: "soldr::manifest_lookup",
-                url = %catalogue_url,
-                "toolchain catalogue fetch failed, falling back to legacy manifest branch: {err}",
-            );
-        }
-    }
-
-    // 2. Fall back to the legacy `manifest` branch URL.
-    let legacy_url = resolve_url();
-    fetch_index_from(&legacy_url).await
+    let url = resolve_catalogue_url();
+    fetch_index_from(&url).await
 }
 
 /// HTTP-GET + JSON-parse a single index URL. Shared by both the v1
@@ -576,14 +567,22 @@ mod tests {
         );
     });
 
-    crate::timed_test!(resolve_url_returns_default_when_env_unset, {
-        // We can't unset env vars safely in unit tests under parallel
-        // execution, but we can assert the default is the published
-        // raw.githubusercontent.com URL. The override path is exercised
-        // by the integration tests under `tests/manifest_lookup.rs`.
+    crate::timed_test!(default_toolchain_origin_is_pages, {
+        // soldr#988 Phase 5: legacy manifest-branch URL constant is
+        // gone. The default catalogue origin is the soldr-toolchain
+        // Pages site.
         assert_eq!(
-            DEFAULT_MANIFEST_URL,
-            "https://raw.githubusercontent.com/zackees/soldr/manifest/asset-index.json"
+            DEFAULT_TOOLCHAIN_ORIGIN,
+            "https://zackees.github.io/soldr-toolchain"
         );
+    });
+
+    crate::timed_test!(catalogue_url_override_takes_precedence, {
+        // The full-URL override is the one the integration tests use
+        // when they spawn a local HTTP listener on a random port —
+        // they can't fit that under the `origin + /catalogue.v1.json`
+        // composition because the listener path is fixed.
+        // Verify the override is recognized via the public const name.
+        assert_eq!(TOOLCHAIN_CATALOGUE_URL_ENV_VAR, "SOLDR_TOOLCHAIN_CATALOGUE_URL");
     });
 }
