@@ -317,6 +317,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             ToolchainSubcommand::Doctor { json } => {
                 std::process::exit(toolchain_doctor::run_toolchain_doctor(json)?);
             }
+            ToolchainSubcommand::Catalogue { json } => {
+                std::process::exit(
+                    crate::fetch::manifest_lookup::run_toolchain_catalogue(json).await?,
+                );
+            }
         },
         Commands::Bootstrap { json } => {
             std::process::exit(bootstrap::run_bootstrap(json).await?);
