@@ -61,6 +61,7 @@ use std::sync::Arc;
 
 use blake3::Hasher;
 use zccache::core::NormalizedPath;
+use zccache::audit::AuditMode;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest, HostIdentity,
     RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
@@ -111,10 +112,21 @@ impl SoldrZccacheService {
         std::fs::create_dir_all(&cache_root)?;
         let identity = derive_identity(paths);
 
+        // zccache#926 strict-validation: `AuditConfig::default()` ships
+        // `mode = AuditMode::Normal` + `output_root = None`, which the
+        // new audit-sink validation rejects ("audit sink requires
+        // output_root when mode > Off"). soldr does not consume zccache
+        // audit events today — the per-compile trace site (soldr#985 /
+        // zccache#940) lives outside the AuditSink. Set mode = Off
+        // explicitly so the embedded service starts cleanly.
+        let audit = AuditConfig {
+            mode: AuditMode::Off,
+            ..AuditConfig::default()
+        };
         let cfg = ZccacheConfig {
             host: identity.clone(),
             cache_root: cache_root.clone().into(),
-            audit: AuditConfig::default(),
+            audit,
             limits: ServiceLimits::default(),
             runtime: RuntimeHooks {
                 service_name: Some("soldr-daemon".into()),
