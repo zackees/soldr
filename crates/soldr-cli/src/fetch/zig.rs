@@ -26,11 +26,18 @@ use crate::core::{SoldrError, SoldrPaths};
 use super::trust;
 
 /// Zig version that ships in soldr's managed bootstrap.
-/// 0.13.0 is the long-tested LTS release of zig (June 2024) and is the
-/// floor that cargo-zigbuild 0.20+ depends on. Bumping is a one-line
-/// change here, but keep the major.minor stable between consumer
-/// releases — cargo-zigbuild itself is sensitive to zig API breakage.
-pub const MANAGED_ZIG_VERSION: &str = "0.13.0";
+///
+/// 0.14.1 (March 2025) is the floor that picks up cargo-zigbuild's
+/// macOS SDKROOT fixes (v0.21.2 — rust-cross/cargo-zigbuild#387) and
+/// the Xcode 15 / Apple SDK linker work that resolves the
+/// `unable to find dynamic system library 'objc'` failure observed
+/// on soldr's CI Apple cross-build lanes. cargo-zigbuild v0.21.4
+/// added zig-0.15 compat and v0.23.0 handles zig-0.15 ZON output; we
+/// stay on 0.14.1 because the API churn between zig 0.14 and 0.15 is
+/// material and 0.14.1 is the most-tested combination with
+/// cargo-zigbuild's current release. Bump in lockstep with cargo-
+/// zigbuild whenever zig 0.15+ becomes the floor downstream needs.
+pub const MANAGED_ZIG_VERSION: &str = "0.14.1";
 
 const ZIG_ENV_VAR: &str = "ZIG";
 const ZIG_DOWNLOAD_ATTEMPTS: u32 = 4;
@@ -299,7 +306,17 @@ fn zig_download_url(version: &str) -> Result<(String, String), SoldrError> {
         )));
     };
     let ext = if os == "windows" { "zip" } else { "tar.xz" };
-    let asset = format!("zig-{os}-{arch}-{version}.{ext}");
+    // Asset-naming swap landed in zig 0.14.0: pre-0.14 used
+    // `zig-{os}-{arch}-{ver}.tar.xz`; 0.14+ uses
+    // `zig-{arch}-{os}-{ver}.tar.xz`. Branch on the major/minor here
+    // rather than threading a per-version table — the swap is the
+    // only naming change in the version range soldr cares about.
+    let pre_0_14 = matches!(version, "0.13.0" | "0.12.0" | "0.11.0" | "0.10.1" | "0.10.0");
+    let asset = if pre_0_14 {
+        format!("zig-{os}-{arch}-{version}.{ext}")
+    } else {
+        format!("zig-{arch}-{os}-{version}.{ext}")
+    };
     let url = format!("https://ziglang.org/download/{version}/{asset}");
     Ok((asset, url))
 }
@@ -330,7 +347,7 @@ mod tests {
 
     crate::timed_test!(zig_download_url_known_targets, {
         // Smoke: we don't hit the network in unit tests, just verify the
-        // URL builder formats the asset name as `zig-<os>-<arch>-<ver>.<ext>`.
+        // URL builder formats the asset name correctly.
         let (asset, url) =
             zig_download_url("0.13.0").expect("host should resolve in unit-test env");
         assert!(
@@ -345,6 +362,20 @@ mod tests {
             asset.ends_with(".tar.xz") || asset.ends_with(".zip"),
             "asset extension should match the OS family: {asset}",
         );
+    });
+
+    crate::timed_test!(zig_download_url_naming_swap_at_0_14, {
+        // Zig 0.13.0: pre-swap naming → `zig-{os}-{arch}-{ver}.tar.xz`.
+        // Zig 0.14.0+: post-swap naming → `zig-{arch}-{os}-{ver}.tar.xz`.
+        let (asset_13, _) = zig_download_url("0.13.0").unwrap();
+        let (asset_14, _) = zig_download_url("0.14.1").unwrap();
+        // Whatever host the unit tests run on, the arch + os tokens
+        // must appear in swapped order between the two versions.
+        let Some((os, arch)) = host_zig_os_arch() else { return };
+        let pre_13 = format!("zig-{os}-{arch}-0.13.0");
+        let post_14 = format!("zig-{arch}-{os}-0.14.1");
+        assert!(asset_13.starts_with(&pre_13), "0.13.0: {asset_13}");
+        assert!(asset_14.starts_with(&post_14), "0.14.1: {asset_14}");
     });
 
     crate::timed_test!(env_var_overrides_path_and_managed_install, {
