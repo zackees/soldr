@@ -17,6 +17,10 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
 mod cli_args;
+/// soldr#997 — friendly target aliases + Rust-triple passthrough.
+/// Bin tree mirrors the lib declaration; only one alias resolver
+/// is reachable in either build mode.
+mod target_alias;
 mod cook;
 mod core;
 mod daemon;

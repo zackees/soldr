@@ -1,0 +1,431 @@
+//! soldr#997 — friendly target aliases + Rust-triple passthrough.
+//!
+//! The native-chain front door of `soldr build --target …` accepts
+//! either a soldr alias (`win-x64`, `mac-arm64`, `linux-x64-musl`, …)
+//! or a real Rust target triple (`x86_64-pc-windows-msvc`, …).
+//! Both routes converge on the resolved Rust triple plus the catalogue
+//! asset list that the cargo front door needs to populate env vars
+//! (SDKROOT, PYO3_CROSS_*, …) before spawning cargo.
+//!
+//! See [`resolve_soldr_target`] for the routing entry point.
+//!
+//! ## Grammar
+//!
+//! `<os>-<arch>[-<libc-or-abi>]`. All-lowercase, hyphen-separated.
+//! `arch` is always the short form: `x64` (= `x86_64` / `amd64`) and
+//! `arm64` (= `aarch64`). 32-bit triples don't ship in soldr.
+//!
+//! Canonical aliases — the documented form — are listed in the
+//! [`CANONICAL_ALIASES`] table below. Synonyms (`darwin-arm64`,
+//! `apple-silicon`, `musl-x64`, …) all resolve silently through
+//! [`SYNONYMS`].
+//!
+//! ## CLAUDE.md policy
+//!
+//! Bare cargo built-in verbs (`build`, `test`, `check`, `run`,
+//! `bench`, `doc`, `fmt`, `clippy`) become soldr-native **only when
+//! `--target` is present**. Without it they remain shorthand for
+//! `cargo <verb>`. The explicit escape hatch is `soldr cargo <verb>`
+//! which is always pure passthrough regardless of `--target`. See
+//! the documentation in `crate::main` for where the routing decision
+//! is made.
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// Canonical alias → Rust target triple table. 8 entries; matches
+/// `crate::core::canonical_targets::CANONICAL_TARGETS` 1:1.
+pub const CANONICAL_ALIASES: &[(&str, &str)] = &[
+    ("win-x64", "x86_64-pc-windows-msvc"),
+    ("win-arm64", "aarch64-pc-windows-msvc"),
+    ("mac-x64", "x86_64-apple-darwin"),
+    ("mac-arm64", "aarch64-apple-darwin"),
+    ("linux-x64", "x86_64-unknown-linux-gnu"),
+    ("linux-arm64", "aarch64-unknown-linux-gnu"),
+    ("linux-x64-musl", "x86_64-unknown-linux-musl"),
+    ("linux-arm64-musl", "aarch64-unknown-linux-musl"),
+];
+
+/// Synonym → canonical alias table. Every entry's value MUST appear
+/// in [`CANONICAL_ALIASES`]'s key column. Tests enforce this.
+const SYNONYMS: &[(&str, &str)] = &[
+    // Windows
+    ("win-x86_64", "win-x64"),
+    ("win-amd64", "win-x64"),
+    ("windows-x64", "win-x64"),
+    ("windows-x86_64", "win-x64"),
+    ("windows-amd64", "win-x64"),
+    ("win-aarch64", "win-arm64"),
+    ("windows-arm64", "win-arm64"),
+    ("windows-aarch64", "win-arm64"),
+    // macOS
+    ("mac-x86_64", "mac-x64"),
+    ("mac-amd64", "mac-x64"),
+    ("macos-x64", "mac-x64"),
+    ("macos-x86_64", "mac-x64"),
+    ("darwin-x64", "mac-x64"),
+    ("darwin-x86_64", "mac-x64"),
+    ("mac-aarch64", "mac-arm64"),
+    ("macos-arm64", "mac-arm64"),
+    ("macos-aarch64", "mac-arm64"),
+    ("darwin-arm64", "mac-arm64"),
+    ("darwin-aarch64", "mac-arm64"),
+    ("apple-silicon", "mac-arm64"),
+    // Linux glibc
+    ("linux-x86_64", "linux-x64"),
+    ("linux-amd64", "linux-x64"),
+    ("linux-aarch64", "linux-arm64"),
+    // Linux musl
+    ("linux-x86_64-musl", "linux-x64-musl"),
+    ("linux-amd64-musl", "linux-x64-musl"),
+    ("musl-x64", "linux-x64-musl"),
+    ("musl-x86_64", "linux-x64-musl"),
+    ("linux-aarch64-musl", "linux-arm64-musl"),
+    ("musl-arm64", "linux-arm64-musl"),
+    ("musl-aarch64", "linux-arm64-musl"),
+];
+
+/// Special aliases that don't map directly to a fixed triple.
+const SPECIAL_ALIASES: &[&str] = &["native", "host", "all"];
+
+/// Result of resolving a target string. Carries both the resolved
+/// Rust triple and the input form, so error messages can echo what
+/// the user typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedTarget {
+    /// What the user typed verbatim.
+    pub input: String,
+    /// Resolved Rust target triple, e.g. `x86_64-pc-windows-msvc`.
+    pub rust_triple: String,
+    /// True iff `input` was a soldr alias (canonical or synonym).
+    /// False iff `input` was already a Rust triple.
+    pub via_alias: bool,
+}
+
+/// Errors raised when resolution fails.
+#[derive(Debug, thiserror::Error)]
+pub enum AliasError {
+    #[error(
+        "soldr build --target `{input}`: not a known alias or Rust triple. \
+         Did you mean `{suggestion}`?"
+    )]
+    Unknown {
+        input: String,
+        suggestion: String,
+    },
+    #[error(
+        "soldr build --target `{input}`: ambiguous — could mean ARM32 \
+         (not supported) or ARM64. Use `{disambiguated}` explicitly."
+    )]
+    Ambiguous {
+        input: String,
+        disambiguated: String,
+    },
+    #[error(
+        "soldr build --target `{input}`: 32-bit targets are not in soldr's \
+         supported set. Did you mean `{suggestion}`?"
+    )]
+    Thirty2Bit {
+        input: String,
+        suggestion: String,
+    },
+    #[error(
+        "soldr build --target `all` is only valid for `soldr prepare --target all`; \
+         expand explicitly for `soldr build`."
+    )]
+    AllNotBuildable,
+}
+
+/// One-shot resolver — primary entry point. Pass whatever the user
+/// typed; gets back a [`ResolvedTarget`] or an [`AliasError`] with
+/// a suggested correction.
+///
+/// Resolution order:
+/// 1. **Lowercase + trim** the input.
+/// 2. **Canonical alias** — exact match against [`CANONICAL_ALIASES`].
+/// 3. **Synonym** — lookup in [`SYNONYMS`] → canonical → triple.
+/// 4. **Special: `native` / `host`** — current host's triple.
+/// 5. **Special: `all`** — explicit error (caller must expand).
+/// 6. **Rust triple passthrough** — accepted if `looks_like_rust_triple`.
+/// 7. **Reject** with [`AliasError::Unknown`] including a
+///    Jaro-Winkler best-match suggestion (reuses the `strsim` dep
+///    already on the workspace).
+pub fn resolve_soldr_target(input: &str) -> Result<ResolvedTarget, AliasError> {
+    let raw = input.trim();
+    let lower = raw.to_ascii_lowercase();
+
+    // Ambiguity + 32-bit gates fire BEFORE alias lookup so users get
+    // the targeted error rather than "unknown" with a fuzzy match.
+    if let Some(disambiguated) = check_ambiguous(&lower) {
+        return Err(AliasError::Ambiguous {
+            input: raw.to_string(),
+            disambiguated: disambiguated.to_string(),
+        });
+    }
+    if let Some(sug) = check_thirty2_bit(&lower) {
+        return Err(AliasError::Thirty2Bit {
+            input: raw.to_string(),
+            suggestion: sug.to_string(),
+        });
+    }
+
+    // Special aliases
+    if lower == "native" || lower == "host" {
+        return Ok(ResolvedTarget {
+            input: raw.to_string(),
+            rust_triple: host_triple().to_string(),
+            via_alias: true,
+        });
+    }
+    if lower == "all" {
+        return Err(AliasError::AllNotBuildable);
+    }
+
+    // Canonical alias
+    if let Some(triple) = canonical_lookup(&lower) {
+        return Ok(ResolvedTarget {
+            input: raw.to_string(),
+            rust_triple: triple.to_string(),
+            via_alias: true,
+        });
+    }
+
+    // Synonym → canonical → triple
+    if let Some(canonical) = synonym_lookup(&lower) {
+        let triple = canonical_lookup(canonical)
+            .expect("synonyms table value MUST appear in CANONICAL_ALIASES — test enforced");
+        return Ok(ResolvedTarget {
+            input: raw.to_string(),
+            rust_triple: triple.to_string(),
+            via_alias: true,
+        });
+    }
+
+    // Rust triple passthrough — let it through if it looks like one
+    if looks_like_rust_triple(&lower) {
+        return Ok(ResolvedTarget {
+            input: raw.to_string(),
+            rust_triple: raw.to_string(),
+            via_alias: false,
+        });
+    }
+
+    // Reject with a suggestion
+    Err(AliasError::Unknown {
+        input: raw.to_string(),
+        suggestion: best_match_suggestion(&lower).to_string(),
+    })
+}
+
+// ---- internal helpers -----------------------------------------
+
+fn canonical_map() -> &'static HashMap<&'static str, &'static str> {
+    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| CANONICAL_ALIASES.iter().copied().collect())
+}
+
+fn synonym_map() -> &'static HashMap<&'static str, &'static str> {
+    static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| SYNONYMS.iter().copied().collect())
+}
+
+fn canonical_lookup(input: &str) -> Option<&'static str> {
+    canonical_map().get(input).copied()
+}
+
+fn synonym_lookup(input: &str) -> Option<&'static str> {
+    synonym_map().get(input).copied()
+}
+
+/// True iff `input` superficially looks like a Rust target triple.
+/// Loose check — 2+ hyphens, only ASCII alnum + `_` + `-` characters.
+/// Rust's actual triple grammar is more relaxed than this, but
+/// anything that passes the check is forwarded to cargo, which will
+/// produce the real validation error if the triple is genuinely
+/// unknown.
+fn looks_like_rust_triple(input: &str) -> bool {
+    if input.matches('-').count() < 2 {
+        return false;
+    }
+    input
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Detect inputs that are ambiguous between 32-bit and 64-bit ARM.
+/// Returns the suggested unambiguous alias.
+fn check_ambiguous(input: &str) -> Option<&'static str> {
+    match input {
+        "mac-arm" | "macos-arm" | "darwin-arm" => Some("mac-arm64"),
+        "win-arm" | "windows-arm" => Some("win-arm64"),
+        "linux-arm" => Some("linux-arm64"),
+        _ => None,
+    }
+}
+
+/// Detect 32-bit-named inputs and suggest the 64-bit replacement.
+/// Soldr deliberately doesn't ship 32-bit triples.
+fn check_thirty2_bit(input: &str) -> Option<&'static str> {
+    match input {
+        "win-x86" | "windows-x86" | "win-i686" | "win-i386" => Some("win-x64"),
+        "mac-x86" | "macos-x86" | "darwin-x86" | "mac-i686" => Some("mac-x64"),
+        "linux-x86" | "linux-i686" | "linux-i386" => Some("linux-x64"),
+        _ => None,
+    }
+}
+
+/// Best Jaro-Winkler match among all canonical aliases + Rust triples
+/// we recognize. Used for the "did you mean" suggestion in
+/// [`AliasError::Unknown`].
+fn best_match_suggestion(input: &str) -> &'static str {
+    let mut best: (f64, &'static str) = (-1.0, "win-x64");
+    for (alias, _) in CANONICAL_ALIASES {
+        let score = strsim::jaro_winkler(input, alias);
+        if score > best.0 {
+            best = (score, alias);
+        }
+    }
+    for &alias in SPECIAL_ALIASES {
+        let score = strsim::jaro_winkler(input, alias);
+        if score > best.0 {
+            best = (score, alias);
+        }
+    }
+    best.1
+}
+
+/// Host triple at runtime — used by `native`/`host` aliases.
+fn host_triple() -> &'static str {
+    // soldr ships a host-triple constant baked at build time via
+    // env! in `core::target_triple` for the actual targeting logic.
+    // For the alias resolver we just want the canonical form.
+    // CFG-based resolution covers the supported host set; anything
+    // else falls back to a sensible default + lets cargo error.
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        "aarch64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        "x86_64-apple-darwin"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "musl")) {
+        "x86_64-unknown-linux-musl"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64", target_env = "musl")) {
+        "aarch64-unknown-linux-musl"
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "x86_64-unknown-linux-gnu"
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        "aarch64-unknown-linux-gnu"
+    } else {
+        "x86_64-unknown-linux-gnu"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::timed_test!(canonical_alias_resolves_to_rust_triple, {
+        let r = resolve_soldr_target("win-x64").unwrap();
+        assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
+        assert!(r.via_alias);
+        let r = resolve_soldr_target("mac-arm64").unwrap();
+        assert_eq!(r.rust_triple, "aarch64-apple-darwin");
+        assert!(r.via_alias);
+    });
+
+    crate::timed_test!(synonym_resolves_to_canonical_triple, {
+        let r = resolve_soldr_target("apple-silicon").unwrap();
+        assert_eq!(r.rust_triple, "aarch64-apple-darwin");
+        let r = resolve_soldr_target("musl-x64").unwrap();
+        assert_eq!(r.rust_triple, "x86_64-unknown-linux-musl");
+        let r = resolve_soldr_target("linux-amd64-musl").unwrap();
+        assert_eq!(r.rust_triple, "x86_64-unknown-linux-musl");
+    });
+
+    crate::timed_test!(rust_triple_passthrough, {
+        let r = resolve_soldr_target("x86_64-pc-windows-msvc").unwrap();
+        assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
+        assert!(!r.via_alias);
+        let r = resolve_soldr_target("wasm32-unknown-unknown").unwrap();
+        assert_eq!(r.rust_triple, "wasm32-unknown-unknown");
+        assert!(!r.via_alias);
+    });
+
+    crate::timed_test!(case_insensitivity, {
+        let r = resolve_soldr_target("WIN-X64").unwrap();
+        assert_eq!(r.rust_triple, "x86_64-pc-windows-msvc");
+        let r = resolve_soldr_target("Apple-Silicon").unwrap();
+        assert_eq!(r.rust_triple, "aarch64-apple-darwin");
+    });
+
+    crate::timed_test!(ambiguous_arm_rejected_with_suggestion, {
+        let err = resolve_soldr_target("mac-arm").unwrap_err();
+        match err {
+            AliasError::Ambiguous { disambiguated, .. } => {
+                assert_eq!(disambiguated, "mac-arm64");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    });
+
+    crate::timed_test!(thirty_two_bit_rejected, {
+        let err = resolve_soldr_target("win-x86").unwrap_err();
+        match err {
+            AliasError::Thirty2Bit { suggestion, .. } => {
+                assert_eq!(suggestion, "win-x64");
+            }
+            other => panic!("expected Thirty2Bit, got {other:?}"),
+        }
+    });
+
+    crate::timed_test!(all_alias_rejected_for_build, {
+        let err = resolve_soldr_target("all").unwrap_err();
+        assert!(matches!(err, AliasError::AllNotBuildable));
+    });
+
+    crate::timed_test!(unknown_input_carries_jaro_winkler_suggestion, {
+        let err = resolve_soldr_target("win-arm6").unwrap_err();
+        match err {
+            AliasError::Unknown { suggestion, .. } => {
+                assert_eq!(suggestion, "win-arm64");
+            }
+            other => panic!("expected Unknown with suggestion, got {other:?}"),
+        }
+    });
+
+    crate::timed_test!(native_resolves_to_a_real_triple, {
+        let r = resolve_soldr_target("native").unwrap();
+        assert!(r.via_alias);
+        // Resolved triple varies by host; just confirm it's non-empty
+        // and looks like a triple.
+        assert!(looks_like_rust_triple(&r.rust_triple));
+    });
+
+    crate::timed_test!(synonyms_table_targets_are_all_canonical, {
+        // Static invariant: every synonym value must appear as a key
+        // in CANONICAL_ALIASES. If this fails, the resolver's
+        // synonym → canonical → triple chain panics in production.
+        let canonical_keys: std::collections::HashSet<&str> =
+            CANONICAL_ALIASES.iter().map(|(k, _)| *k).collect();
+        for (syn, canonical_target) in SYNONYMS {
+            assert!(
+                canonical_keys.contains(canonical_target),
+                "synonym `{syn}` → `{canonical_target}` is not a canonical alias key"
+            );
+        }
+    });
+
+    crate::timed_test!(canonical_aliases_match_canonical_targets_const, {
+        // Soldr ships TWO related canonical-list tables:
+        //   - crate::core::CANONICAL_TARGETS (Rust triples)
+        //   - target_alias::CANONICAL_ALIASES (alias → triple)
+        // Their VALUES (Rust triples) must agree as a set.
+        let triples_const: std::collections::HashSet<&str> =
+            crate::core::CANONICAL_TARGETS.iter().copied().collect();
+        let triples_alias: std::collections::HashSet<&str> =
+            CANONICAL_ALIASES.iter().map(|(_, t)| *t).collect();
+        assert_eq!(triples_const, triples_alias);
+    });
+}
