@@ -233,7 +233,15 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
     runtime.block_on(run_async(opts))
 }
 
-async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
+/// Async daemon entry point. Use this when calling from inside an
+/// existing tokio runtime (e.g. `soldr daemon start --foreground`
+/// dispatched from `main`'s `#[tokio::main]` runtime). The synchronous
+/// `run` builds its own multi-thread runtime and is the right entry
+/// point for the `soldr-daemon` bin target whose `main` has no
+/// ambient runtime. Calling `run` from within an ambient runtime
+/// panics with "Cannot start a runtime from within a runtime" — that
+/// was the failure on soldr#985's perf-matrix CI run.
+pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let paths = SoldrPaths::new()?;
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
 
@@ -772,24 +780,39 @@ async fn dispatch_compile_streaming<S>(
 where
     S: tokio::io::AsyncWrite + Unpin,
 {
+    // Per-compile id for the JSONL phase trace (soldr#981). Cheap —
+    // monotonic counter, only meaningful within a single daemon
+    // lifetime, which is exactly the scope we need for offline
+    // post-cold-build analysis.
+    let compile_id = next_compile_id();
+
+    let total = std::time::Instant::now();
+
+    let inner_started = std::time::Instant::now();
     let body = match state.compile_service.compile(req).await {
         Ok(body) => body,
         Err(err) => {
+            crate::daemon::compile_trace::record(
+                "inner_compile_err",
+                inner_started.elapsed().as_micros() as u64,
+                &compile_id,
+            );
             let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
             return write_frame_async(stream, &reply).await;
         }
     };
+    crate::daemon::compile_trace::record(
+        "inner_compile",
+        inner_started.elapsed().as_micros() as u64,
+        &compile_id,
+    );
 
     let stdout_len = body.stdout.len();
     let stderr_len = body.stderr.len();
     let mut stdout_chunks = 0usize;
     let mut stderr_chunks = 0usize;
 
-    // Stream stdout first, then stderr. zccache already buffers them
-    // separately (different pipes on rustc), so the original
-    // interleaving is gone by this point; the wrapper writes them to
-    // its own stdout/stderr in the same order rustc produced them
-    // within each pipe.
+    let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
         write_frame_async(
             stream,
@@ -804,7 +827,13 @@ where
             "stdout chunk emitted",
         );
     }
+    crate::daemon::compile_trace::record(
+        "wire_stdout",
+        wire_stdout_started.elapsed().as_micros() as u64,
+        &compile_id,
+    );
 
+    let wire_stderr_started = std::time::Instant::now();
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
         write_frame_async(
             stream,
@@ -819,15 +848,16 @@ where
             "stderr chunk emitted",
         );
     }
+    crate::daemon::compile_trace::record(
+        "wire_stderr",
+        wire_stderr_started.elapsed().as_micros() as u64,
+        &compile_id,
+    );
 
     let done = Response::CompileDone {
         exit_code: body.exit_code,
         cached: body.cached,
         cache_outcome: body.cache_outcome,
-        // Phase 5b1: zccache's embedded service does not surface an
-        // audit id back through `CompileResponseBody`. Plumbing it
-        // through is part of Phase 5b2; for now the wire field is
-        // an empty string and the wrapper ignores it.
         compile_id: String::new(),
     };
     tracing::debug!(
@@ -841,7 +871,40 @@ where
         stderr_chunks,
         "compile done — streaming reply complete",
     );
-    write_frame_async(stream, &done).await
+    let wire_done_started = std::time::Instant::now();
+    let res = write_frame_async(stream, &done).await;
+    crate::daemon::compile_trace::record(
+        "wire_done",
+        wire_done_started.elapsed().as_micros() as u64,
+        &compile_id,
+    );
+    crate::daemon::compile_trace::record(
+        "total_dispatch",
+        total.elapsed().as_micros() as u64,
+        &compile_id,
+    );
+    // Co-record per-compile output bytes for cross-axis analysis.
+    crate::daemon::compile_trace::record(
+        "stdout_bytes",
+        stdout_len as u64,
+        &compile_id,
+    );
+    crate::daemon::compile_trace::record(
+        "stderr_bytes",
+        stderr_len as u64,
+        &compile_id,
+    );
+    res
+}
+
+/// Monotonic per-daemon compile counter. The id is stable within one
+/// daemon process and meaningless across restarts — exactly the scope
+/// the `SOLDR_DAEMON_TRACE` JSONL is designed for.
+fn next_compile_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering as AOrdering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, AOrdering::Relaxed);
+    format!("c{n:08x}")
 }
 
 /// Best-effort resolver for the `~/.soldr/cache/cook/<sha256>.tar.zst`

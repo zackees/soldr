@@ -103,8 +103,10 @@ run_scenario() {
     log "==[scenario: ${name}]=="
 
     # Per-scenario workspace + per-scenario soldr cache.
+    # soldr#981: route the cache dir under /out so daemon-spawn.log
+    # and other diagnostic artifacts survive the container exit.
     local workspace="/tmp/workspace-${name}"
-    local soldr_cache="/tmp/soldr-cache-${name}"
+    local soldr_cache="${scen_out}/soldr-cache"
     mkdir -p "${soldr_cache}"
 
     local fixture_path
@@ -118,10 +120,17 @@ run_scenario() {
         cold|warm)
             cmd=("${SOLDR_BIN}" cargo build --manifest-path "${fixture_path}/Cargo.toml")
             export SOLDR_CACHE_DIR="${soldr_cache}"
+            # soldr#981 diagnostic: tell the embedded daemon to emit
+            # per-phase JSONL into the scenario output dir. Off when
+            # the var is unset (zero hot-path cost). Soaked at the
+            # whole scenario including warm so the comparison is
+            # apples-to-apples.
+            export SOLDR_DAEMON_TRACE="${scen_out}/daemon-trace.jsonl"
             ;;
         bare)
             cmd=(cargo build --manifest-path "${fixture_path}/Cargo.toml")
             unset SOLDR_CACHE_DIR
+            unset SOLDR_DAEMON_TRACE
             ;;
         *)
             log "unknown scenario ${name} — skipping"
