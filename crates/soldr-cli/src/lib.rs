@@ -18,6 +18,10 @@ pub mod cache_lib;
 pub mod cargo_metadata_soldr;
 pub mod core;
 pub mod daemon;
+/// soldr#938 — `soldr env --target` subcommand implementation.
+/// Declared from both lib and bin so the unit tests are reachable
+/// via `cargo test --lib`.
+pub mod env_cmd;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;

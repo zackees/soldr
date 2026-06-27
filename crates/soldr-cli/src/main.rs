@@ -17,6 +17,9 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
 mod cli_args;
+/// soldr#938 — `soldr env --target` subcommand. Prints shell-eval /
+/// shell-export / JSON env block for the given target.
+mod env_cmd;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// Bin tree mirrors the lib declaration; only one alias resolver
 /// is reachable in either build mode.
@@ -419,6 +422,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             version,
         } => {
             build_from_source_cmd::run(&tool, target, version)?;
+        }
+        Commands::Env {
+            target,
+            shell_export,
+            json,
+        } => {
+            std::process::exit(env_cmd::run_env_command(&target, shell_export, json)?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
