@@ -233,7 +233,15 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
     runtime.block_on(run_async(opts))
 }
 
-async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
+/// Async daemon entry point. Use this when calling from inside an
+/// existing tokio runtime (e.g. `soldr daemon start --foreground`
+/// dispatched from `main`'s `#[tokio::main]` runtime). The synchronous
+/// `run` builds its own multi-thread runtime and is the right entry
+/// point for the `soldr-daemon` bin target whose `main` has no
+/// ambient runtime. Calling `run` from within an ambient runtime
+/// panics with "Cannot start a runtime from within a runtime" — that
+/// was the failure on soldr#985's perf-matrix CI run.
+pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let paths = SoldrPaths::new()?;
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
 

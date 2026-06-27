@@ -660,7 +660,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             cache::run_session_end_command(id, clear, json)?;
         }
         Commands::Daemon { command } => {
-            run_daemon_command(command)?;
+            run_daemon_command(command).await?;
         }
         Commands::External(args) => {
             if args.is_empty() {
@@ -1025,10 +1025,10 @@ fn render_builds(
     }
 }
 
-fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
+async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
     use crate::daemon::lifecycle::{is_live, try_spawn_detached};
-    use crate::daemon::server::{run as run_server, server_sock_path, ServerOptions};
+    use crate::daemon::server::{run_async, server_sock_path, ServerOptions};
     use core::SoldrPaths;
     use std::time::Duration;
 
@@ -1048,7 +1048,16 @@ fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
                         Duration::from_secs(idle_timeout)
                     },
                 };
-                run_server(opts)
+                // We're already inside main()'s #[tokio::main] runtime
+                // (run_with_args is async, called from main's runtime).
+                // Calling the sync `server::run` here would have it build
+                // ANOTHER multi-thread runtime + block_on, which panics
+                // with "Cannot start a runtime from within a runtime"
+                // (the symptom on the CI perf-matrix run in soldr#985
+                // diagnosis). Reach run_async directly instead — it
+                // does the same work without building a runtime.
+                run_async(opts)
+                    .await
                     .map_err(|e| SoldrError::Other(format!("soldr-daemon failed: {e:?}")))?;
                 Ok(())
             } else {
