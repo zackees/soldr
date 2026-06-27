@@ -127,31 +127,49 @@ pub fn find_cargo_toml(start_dir: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve `--target all` to the explicit target list by walking up
-/// from the current working directory, reading the nearest
-/// `Cargo.toml`, and returning `[*.metadata.soldr].targets`. Errors
-/// with a directive when the section is missing or empty — the
-/// caller asked for "all" and we must not silently substitute a
-/// host-only default.
+/// Resolve `--target all` to the explicit target list.
+///
+/// Resolution order (soldr#937 — containerized image-build needs a
+/// no-workspace fallback):
+///
+/// 1. Walk up from the current working directory; on the first
+///    `Cargo.toml` found, return `[*.metadata.soldr].targets` if the
+///    section is present **and non-empty**.
+/// 2. Otherwise fall back to [`crate::core::canonical_targets`] —
+///    soldr's compiled-in 8-target list. Prints a one-line stderr
+///    notice so the fallback is visible in container build logs.
+///
+/// The fallback path is what makes `soldr prepare --target all`
+/// work inside `examples/docker-cross-all/Dockerfile` where the
+/// soldr source isn't mounted — no need for the explicit
+/// comma-separated 8-triple form the Dockerfile used to ship.
 pub fn resolve_all_targets() -> Result<Vec<String>, SoldrError> {
     let cwd = std::env::current_dir()
         .map_err(|e| SoldrError::Other(format!("soldr prepare: cwd: {e}")))?;
-    let manifest = find_cargo_toml(&cwd).ok_or_else(|| {
-        SoldrError::Other(format!(
-            "soldr prepare --target all: no Cargo.toml found in `{}` or any parent",
-            cwd.display()
-        ))
-    })?;
-    let meta = read_soldr_metadata(&manifest)?;
-    if meta.targets.is_empty() {
-        return Err(SoldrError::Other(format!(
-            "soldr prepare --target all: no targets declared in `{}`. \
-             Add a `[workspace.metadata.soldr]` (or `[package.metadata.soldr]`) \
-             table with `targets = [\"...\", ...]`",
+
+    if let Some(manifest) = find_cargo_toml(&cwd) {
+        let meta = read_soldr_metadata(&manifest)?;
+        if !meta.targets.is_empty() {
+            return Ok(meta.targets);
+        }
+        eprintln!(
+            "soldr prepare --target all: `{}` declares no \
+             `[workspace.metadata.soldr].targets` — falling back to soldr's \
+             compiled-in canonical 8-target list (soldr#937).",
             manifest.display()
-        )));
+        );
+    } else {
+        eprintln!(
+            "soldr prepare --target all: no Cargo.toml under `{}` — \
+             falling back to soldr's compiled-in canonical 8-target list (soldr#937).",
+            cwd.display()
+        );
     }
-    Ok(meta.targets)
+
+    Ok(crate::core::canonical_targets()
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect())
 }
 
 #[cfg(test)]

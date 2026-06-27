@@ -17,12 +17,17 @@ use std::time::Duration;
 use thiserror::Error;
 use wait_timeout::ChildExt;
 
+/// soldr#941 — single-source-of-truth for the canonical 8-target list.
+/// Mirror of `[workspace.metadata.soldr].targets` in the root
+/// `Cargo.toml`; a parity test enforces byte-equality.
+pub mod canonical_targets;
 pub mod git;
 mod paths;
 mod target_triple;
 mod toolchain_manifest;
 mod toolchain_resolve;
 
+pub use canonical_targets::{canonical_targets, is_canonical, CANONICAL_TARGETS};
 pub use paths::{
     resolve_cargo_home, resolve_rustup_home, AutoGcConfig, CookConfig, GcConfig, PinsConfig,
     SoldrConfig, SoldrPaths, SOLDR_CACHE_DIR_ENV_VAR,
