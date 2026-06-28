@@ -258,6 +258,28 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     let trust_inherited_soldr_env = cli.trust_inherited_soldr_env;
 
     match cli.command {
+        Commands::Build { args } => {
+            // soldr#1012 PR 1 — `soldr build` is the blessed-default
+            // surface for builds. Today it's functionally an alias for
+            // `soldr cargo build`: we prepend `build` to the user's
+            // args and forward through the same `cargo_front_door`
+            // pipeline. Subsequent #1012 PRs (especially PR 5) layer
+            // catalogue-driven sysroot prep + the clang shim on top
+            // by branching here BEFORE the front-door call. The user-
+            // facing surface stays stable across that evolution.
+            let mut full_args = Vec::with_capacity(args.len() + 1);
+            full_args.push("build".to_string());
+            full_args.extend(args);
+            std::process::exit(
+                cargo_front_door::run_cargo_front_door(
+                    &full_args,
+                    cache_enabled,
+                    zccache_source,
+                    trust_inherited_soldr_env,
+                )
+                .await?,
+            );
+        }
         Commands::Cargo { args } => {
             std::process::exit(
                 cargo_front_door::run_cargo_front_door(
