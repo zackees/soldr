@@ -80,6 +80,19 @@ pub enum AutoBootstrapOutcome {
 ///
 /// This is the cheap discovery that runs on every CLI invocation. Returns
 /// `None` only if the host has no rustup at all.
+///
+/// Order:
+///   1. `which("rustup")` — covers system rustup + any rustup that's
+///      already on PATH.
+///   2. `paths.bin/rustup{,.exe}` — where the bootstrap *copies* rustup
+///      to so it can be discovered on every invocation.
+///   3. `paths.root/cargo/bin/rustup{,.exe}` — where `rustup-init`'s
+///      profile=minimal install actually puts the binary. The bootstrap
+///      copies-up to `paths.bin/` after install, but a pre-existing
+///      soldr-managed install (e.g. via `soldr toolchain ensure` from a
+///      previous session) may only have the cargo/bin/ copy. Without
+///      this fallback, the cheap discover misses it and forces an
+///      unnecessary re-bootstrap on every cold-cache CLI start.
 pub fn discover_rustup(paths: &SoldrPaths) -> Option<PathBuf> {
     if let Some(p) = which_on_path("rustup") {
         return Some(p);
@@ -87,6 +100,12 @@ pub fn discover_rustup(paths: &SoldrPaths) -> Option<PathBuf> {
     let managed = managed_rustup_path(paths);
     if managed.is_file() {
         return Some(managed);
+    }
+    let cargo_bin = managed_cargo_home(paths)
+        .join("bin")
+        .join(rustup_filename());
+    if cargo_bin.is_file() {
+        return Some(cargo_bin);
     }
     None
 }
