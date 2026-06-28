@@ -129,45 +129,55 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish to soldr-toolchain assets branch
+    name: Publish to soldr vcpkg-bundles release
     needs: build-triplet
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Check out soldr-toolchain assets branch
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          repository: zackees/soldr-toolchain
-          ref: assets
-          token: ${{ secrets.SOLDR_TOOLCHAIN_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-          lfs: true
-          path: assets-checkout
-
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
-      - name: Stage + commit + push
+      - name: Stage + upload to vcpkg-bundles-latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Publish to a rolling `vcpkg-bundles-latest` GitHub release on
+        # this repo (zackees/soldr). The default `GITHUB_TOKEN` has
+        # write access to current-repo releases, so this avoids the
+        # cross-repo PAT (`SOLDR_TOOLCHAIN_PUSH_TOKEN`) the previous
+        # design needed. The soldr-side `fetch/vcpkg.rs` consumer
+        # resolves bundles via the release-asset URL:
+        #
+        #   https://github.com/zackees/soldr/releases/download/
+        #     vcpkg-bundles-latest/
+        #     vcpkg-{triplet}-{baseline}.tar.zst
+        #
+        # Each refresh rotates the release tag forward so historical
+        # baselines remain accessible via the per-tag pinning
+        # mechanism (release_baseline field on consumer side).
         shell: bash
         run: |
-          cd assets-checkout
-          for d in ../artifacts/vcpkg-*; do
+          set -euo pipefail
+          TAG="vcpkg-bundles-latest"
+          mkdir -p staging
+          for d in artifacts/vcpkg-*; do
             artifact_name=$(basename "$d")
-            # Parse "vcpkg-<triplet>-<baseline>" → triplet, baseline
             stripped="${artifact_name#vcpkg-}"
             baseline="${stripped##*-}"
             triplet="${stripped%-*}"
-            dest="deps/vcpkg/$triplet/$baseline"
-            mkdir -p "$dest"
-            cp "$d/bundle.tar.zst" "$dest/"
-            echo "$baseline" > "deps/vcpkg/$triplet/latest.txt"
+            staged="staging/vcpkg-${triplet}-${baseline}.tar.zst"
+            cp "$d/bundle.tar.zst" "$staged"
+            echo "${baseline}" > "staging/vcpkg-${triplet}-baseline.txt"
+            ls -lh "$staged"
           done
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add deps/vcpkg/
-          if git diff --staged --quiet; then
-            echo "no changes to commit"
-            exit 0
+          # Recreate the rolling tag at HEAD.
+          if gh release view "$TAG" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release delete "$TAG" --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag
           fi
-          git commit -m "refresh: vcpkg windows triplet bundles"
-          git push
+          gh release create "$TAG" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "vcpkg bundles (latest baseline)" \
+              --notes "Auto-published by .github/workflows/vcpkg-windows-refresh.yml. Bundles built fresh against vcpkg master HEAD at workflow run time." \
+              staging/*
