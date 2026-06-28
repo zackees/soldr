@@ -117,3 +117,12 @@ path = "src/bin/soldr_daemon.rs"
 # (recursion guard), then execs `soldr <tool> ...`. See zackees/soldr#742.
 name = "soldr-shim"
 path = "src/bin/soldr_shim.rs"
+
+[[bin]]
+# Tiny `clang` / `clang++` wrapper that routes to `clang-cl` when any
+# arg in argv matches `--target=*-pc-windows-msvc`. Sidesteps the ring
+# 0.17.14 build.rs:563 oversight (cf. soldr#1012 PR 4). Installed by
+# `Commands::Build` (PR 5) at `~/.soldr/bin/clang` for blessed cross-
+# compile to MSVC targets.
+name = "soldr-clang-shim"
+path = "src/bin/soldr_clang_shim.rs"
