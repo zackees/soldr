@@ -74,48 +74,54 @@ pub async fn prepare(
 
     // ----------------------------- Windows MSVC ------------------------------
     if target_triple.ends_with("-pc-windows-msvc") && !legacy_xwin_opt_out() {
+        // Install the clang shim + set cc-rs env vars FIRST,
+        // independent of xwin-cache state. The shim is what actually
+        // fixes ring's hardcoded compiler override (build.rs:563);
+        // xwin-cache is only an optimization that lets cargo-xwin
+        // short-circuit its live MSVC download. Even when the
+        // catalogue row for a target arch isn't yet ingested (arm64
+        // today, until soldr-toolchain PR #30's recipe gets dispatched
+        // + ingested), the shim alone makes ring compile correctly —
+        // cargo-xwin's live download still works for the SDK itself.
+        let target_u = target_triple.replace('-', "_");
+        let target_u_upper = target_u.to_uppercase();
+
+        let shim_dir = install_clang_shim(paths)?;
+        prep.shim_path_dir = Some(shim_dir);
+
+        prep.env.push((format!("CC_{target_u}"), "clang".to_string()));
+        prep.env
+            .push((format!("CXX_{target_u}"), "clang".to_string()));
+        prep.env
+            .push((format!("AR_{target_u}"), "llvm-lib".to_string()));
+        prep.env.push((
+            format!("CARGO_TARGET_{target_u_upper}_LINKER"),
+            "lld-link".to_string(),
+        ));
+
+        // Now try to materialize xwin-cache too. If the catalogue row
+        // for this arch is ingested, we set XWIN_CACHE_DIR so cargo-
+        // xwin transparently uses our cache instead of triggering a
+        // fresh live download. If not, fall through — the shim alone
+        // is enough for the win-arm64 ring fix; cargo-xwin's live
+        // download still produces a working SDK.
         match crate::fetch::xwin_cache::ensure_xwin_cache(paths, target_triple).await {
             Ok(cache_dir) => {
-                let target_u = target_triple.replace('-', "_");
-                let target_u_upper = target_u.to_uppercase();
-
                 prep.xwin_cache_dir = Some(cache_dir.clone());
                 prep.env.push((
                     crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR.to_string(),
                     cache_dir.to_string_lossy().into_owned(),
                 ));
-
-                // soldr#1012 PR 4's shim wins when on PATH. We install
-                // the shim binary at `<paths.bin>/clang(.exe)` and
-                // ensure the caller prepends this directory ahead of
-                // /usr/bin or wherever the system clang lives.
-                let shim_dir = install_clang_shim(paths)?;
-                prep.shim_path_dir = Some(shim_dir);
-
-                // cc-rs target-specific env vars. Set both CC_<t> /
-                // CXX_<t> / AR_<t> and the CARGO_TARGET_<T>_LINKER
-                // override. Soldr's `clang` shim (PR 4) then routes
-                // to clang-cl for MSVC targets even when ring force-
-                // overrides to plain `"clang"`.
-                prep.env.push((format!("CC_{target_u}"), "clang".to_string()));
-                prep.env
-                    .push((format!("CXX_{target_u}"), "clang".to_string()));
-                prep.env
-                    .push((format!("AR_{target_u}"), "llvm-lib".to_string()));
-                prep.env.push((
-                    format!("CARGO_TARGET_{target_u_upper}_LINKER"),
-                    "lld-link".to_string(),
-                ));
             }
             Err(e) => {
-                // Catalogue row not yet ingested (arm64 today). Don't
-                // hard-fail — surface the warning and fall through to
-                // the legacy cargo-xwin path so existing CI keeps
-                // working.
                 eprintln!(
-                    "soldr build: blessed xwin-cache unavailable for {target_triple}: {e}"
+                    "soldr build: catalogue xwin-cache unavailable for {target_triple}: {e}"
                 );
-                eprintln!("soldr build: falling through to legacy cargo-xwin path");
+                eprintln!(
+                    "soldr build: continuing without XWIN_CACHE_DIR — \
+                     cargo-xwin's live download will produce the SDK \
+                     (clang shim is still active for ring's compile fix)"
+                );
             }
         }
     }
