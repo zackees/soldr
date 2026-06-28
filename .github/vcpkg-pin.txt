@@ -14,7 +14,7 @@
 
 openssl
 zlib
-libcurl
+curl
 sqlite3
 protobuf
 libssh2
