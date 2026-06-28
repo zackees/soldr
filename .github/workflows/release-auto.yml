@@ -256,6 +256,45 @@ jobs:
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
 
+      # soldr#1012 release-pipeline followup: tikv-jemalloc-sys (via
+      # vendored zccache's `cfg(unix)` allocator dep) needs a proper
+      # aarch64-linux-musl cross-toolchain to compile its bundled C
+      # source. `musl-tools` only ships musl-gcc for the host arch;
+      # aarch64-musl cross needs aarch64-linux-musl-gcc + matching
+      # binutils. Without it jemalloc's configure script falls through
+      # to `Don't have atomics implemented on this platform.`
+      #
+      # Use musl.cc's official prebuilt cross-toolchain. Install once
+      # under /opt/aarch64-linux-musl-cross/ and export CC/CXX/AR for
+      # the build script to pick up via cc-rs convention.
+      - name: Install aarch64-linux-musl cross-toolchain
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_arch="$(uname -m)"
+          # musl.cc publishes per-host prebuilts; pick x86_64 by default
+          # since GHA's ubuntu-latest is x86_64.
+          if [ "$host_arch" = "aarch64" ]; then
+            url="https://musl.cc/aarch64-linux-musl-cross.tgz"
+          else
+            url="https://musl.cc/aarch64-linux-musl-cross.tgz"
+          fi
+          echo "fetching aarch64-linux-musl cross from $url"
+          curl -fsSL --retry 5 --retry-connrefused "$url" -o /tmp/cross.tgz
+          sudo mkdir -p /opt
+          sudo tar -xzf /tmp/cross.tgz -C /opt
+          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
+          # Tell cc-rs (used by tikv-jemalloc-sys's build script) which
+          # compiler + archiver to invoke. The underscore form matches
+          # cc-rs's env-var convention for target overrides.
+          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
+          echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++" >> "$GITHUB_ENV"
+          echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar" >> "$GITHUB_ENV"
+          # Linker for rustc / cargo: pass through musl-gcc as the
+          # linker driver so rustc invokes the right downstream.
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
+
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -459,7 +498,18 @@ jobs:
           # Pin to the exact tag — depth 1 keeps the clone small. The
           # tag → commit sha lookup is recorded in manifest.json below
           # so a re-build is exactly reproducible from the manifest.
-          timeout 300 git clone --depth 1 --branch "v${crgx_version}" \
+          # `timeout` is GNU-only; on macOS coreutils ships it as
+          # `gtimeout` (via brew install coreutils, which is on every
+          # GHA macOS runner image by default). soldr#1012 followup.
+          if command -v timeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="timeout 300"
+          elif command -v gtimeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="gtimeout 300"
+          else
+            echo "warning: no timeout / gtimeout available; running git clone unwrapped" >&2
+            TIMEOUT_CMD=""
+          fi
+          $TIMEOUT_CMD git clone --depth 1 --branch "v${crgx_version}" \
             https://github.com/yfedoseev/crgx.git "$work_dir"
           crgx_commit=$(git -C "$work_dir" rev-parse HEAD)
           echo "crgx_commit=$crgx_commit"
@@ -511,7 +561,17 @@ jobs:
 
           work_dir="${RUNNER_TEMP}/cargo-chef-build"
           rm -rf "$work_dir"
-          timeout 300 git clone --depth 1 --branch "v${cargo_chef_version}" \
+          # `timeout` GNU-only; fall back to `gtimeout` on macOS (see
+          # the symmetric crgx step above for the rationale).
+          if command -v timeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="timeout 300"
+          elif command -v gtimeout >/dev/null 2>&1; then
+            TIMEOUT_CMD="gtimeout 300"
+          else
+            echo "warning: no timeout / gtimeout available; running git clone unwrapped" >&2
+            TIMEOUT_CMD=""
+          fi
+          $TIMEOUT_CMD git clone --depth 1 --branch "v${cargo_chef_version}" \
             https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
           cargo_chef_commit=$(git -C "$work_dir" rev-parse HEAD)
           echo "cargo_chef_commit=$cargo_chef_commit"
