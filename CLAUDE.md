@@ -21,7 +21,20 @@ A single Rust binary with two jobs:
 
 Mode is detected automatically from argv[1]: path-to-rustc → cache mode, built-in command → dispatch, anything else → tool fetch.
 
-**soldr wraps rustc, NOT cargo.** This is the most important design decision: cargo owns build orchestration, soldr owns per-unit caching. See DESIGN.md "Why no `soldr build`" for rationale. As of #685 (phase 2 of #682) `soldr build` / `soldr test` / `soldr clippy` / etc. are accepted as **dispatch shorthand** for `soldr cargo build` / `soldr cargo test` / `soldr cargo clippy` — they route through the cargo front door and do not become soldr-native verbs (the `Commands::Cargo` arm is still where the work happens).
+**soldr wraps rustc, NOT cargo.** This is the most important design decision: cargo owns build orchestration, soldr owns per-unit caching. See DESIGN.md "Why no `soldr build`" for rationale. As of #685 (phase 2 of #682) `soldr test` / `soldr clippy` / etc. are accepted as **dispatch shorthand** for `soldr cargo test` / `soldr cargo clippy` — they route through the cargo front door and do not become soldr-native verbs (the `Commands::Cargo` arm is still where the work happens).
+
+## Two build paths — blessed vs legacy (soldr#1010)
+
+`soldr build --target <triple>` is the **blessed-default surface**; `soldr cargo build --target <triple>` is the **explicit legacy passthrough**. Both invoke cargo under the hood — the difference is the toolchain stack each surface mounts and which behaviors evolve at each level:
+
+| Verb | Surface intent | Underlying mechanism (today) | Evolution (soldr#1010) |
+|---|---|---|---|
+| **`soldr build --target X`** | **blessed default** | Today behaves like an alias for `soldr cargo build` (cargo under the hood). | Gains catalogue-driven sysroot prep (Phase 6 of #1010): resolves required libs/headers from `https://zackees.github.io/soldr-toolchain/catalogue.v1.json`, materializes under `~/.soldr/sdk/<triple>/`, exports env vars, ships a `clang`/`clang-cl` shim so cross-compile lands without `cargo xwin` or `cargo zigbuild`. Zero-auth, zero-API-quota, pre-compressed `tar.zst`. |
+| **`soldr cargo build --target X`** | **explicit legacy** | Routes through `cargo xwin build` for `*-pc-windows-msvc`, `cargo zigbuild` for `*-apple-darwin` / `*-unknown-linux-musl` cross. Live MSVC SDK downloads, etc. | Stays as the documented fallback when users want the historical path or when blessed misses an asset. `--use-legacy-{xwin,zigbuild}` flags surface the same behavior on `soldr build` for diagnostic toggling. |
+
+The split is **a surface contract, not an implementation contract**. `soldr build` may delegate to cargo internally; what matters is that callers asking for `soldr build` get the soldr-blessed toolchain story (with whatever extras land there over time), while callers asking for `soldr cargo build` get the legacy cargo-xwin/zigbuild path verbatim. Internal sharing of the dispatch is allowed and expected.
+
+Friendly target aliases (`win-x64`, `mac-arm64`, etc.) are accepted by both verbs and resolve identically.
 
 ## Build Commands
 
@@ -99,7 +112,7 @@ Anything not registered falls through the generic External subcommand, which res
 
 ## Key Design Rules
 
-- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook`, `archive`, `build-from-source` plus the toolchain passthroughs listed above. These are clap-captured and must NOT be repurposed. Bare cargo built-in verbs — `build`, `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish` — route to `cargo <verb>` via the External arm (see `CARGO_BUILTIN_VERBS` in `cli_args.rs` and the phase-2 hop in `Commands::External` of `main.rs`). They are NOT soldr-native verbs and may not be reused as such; their soldr meaning is "shorthand for `cargo <verb>`."
+- **Frozen built-in commands**: `status`, `clean`, `config`, `cache`, `version`, `help`, `rustup`, `toolchain`, `doctor`, `optimize`, `cook`, `archive`, `build-from-source`, **`build` (soldr#1010 blessed surface — see "Two build paths" above)** plus the toolchain passthroughs listed above. These are clap-captured and must NOT be repurposed. Bare cargo built-in verbs — `test`, `check`, `run`, `bench`, `doc`, `fmt`, `clippy`, `tree`, `update`, `fix`, `add`, `remove`, `metadata`, `pkgid`, `search`, `vendor`, `yank`, `owner`, `login`, `logout`, `init`, `new`, `generate-lockfile`, `verify-project`, `locate-project`, `report`, `install`, `uninstall`, `publish` — route to `cargo <verb>` via the External arm (see `CARGO_BUILTIN_VERBS` in `cli_args.rs` and the phase-2 hop in `Commands::External` of `main.rs`). They are NOT soldr-native verbs and may not be reused as such; their soldr meaning is "shorthand for `cargo <verb>`." `build` is the **exception** — it has been promoted to a soldr-native surface and is no longer a pure cargo-builtin alias.
 - **MSVC on Windows always**: Default to `x86_64-pc-windows-msvc` (or aarch64). Only use GNU if `rust-toolchain.toml` explicitly says so. Target resolved at runtime, not compile-time.
 - **Pre-built first**: Try every binary source before `cargo install`. Resolution order matters.
 - **RUSTC_WRAPPER defaults to zccache**: If `RUSTC_WRAPPER` is not set, soldr defaults to using `zccache` as the wrapper.
