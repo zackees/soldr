@@ -68,7 +68,7 @@ jobs:
           - arm64-windows-static-md
     steps:
       - name: Check out soldr (for the pin list)
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Set up vcpkg
         shell: pwsh
@@ -122,7 +122,7 @@ jobs:
           Write-Host "Bundle size: $size bytes"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: vcpkg-${{ matrix.triplet }}-${{ env.VCPKG_BASELINE }}
           path: ${{ runner.temp }}\bundle\bundle.tar.zst
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out soldr-toolchain assets branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/soldr-toolchain
           ref: assets
@@ -143,7 +143,7 @@ jobs:
           path: assets-checkout
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: artifacts
 
