@@ -499,7 +499,9 @@ fn cargo_builtin_shorthand_covers_every_verb_in_the_const() {
     // hard-coded — adding a new cargo verb to the const without
     // also adding it here is the kind of drift this test catches.
     let expected = [
-        "build",
+        // `build` deliberately not in this list: soldr#1012 PR 1
+        // promoted `build` to a soldr-native verb (clap-captured before
+        // External). It joins clean/config/version as a collision verb.
         "test",
         "check",
         "run",
@@ -554,12 +556,13 @@ fn cargo_builtin_shorthand_covers_every_verb_in_the_const() {
 
 #[test]
 fn cargo_builtin_shorthand_excludes_soldr_native_collision_verbs() {
-    // The three collision verbs (`clean`, `config`, `version`) own
-    // a soldr-native meaning today and MUST NOT be remapped to
-    // cargo by the phase-2 hop. Clap captures them before the
-    // External arm runs, but we also assert the const itself
-    // excludes them — defense in depth + intent documentation.
-    for collision_verb in ["clean", "config", "version"] {
+    // Collision verbs (`build`, `clean`, `config`, `version`) own a
+    // soldr-native meaning and MUST NOT be remapped to cargo by the
+    // phase-2 hop. Clap captures them before the External arm runs,
+    // but we also assert the const itself excludes them — defense in
+    // depth + intent documentation. `build` joined this list in
+    // soldr#1012 PR 1 as the blessed-default surface for cross-compile.
+    for collision_verb in ["build", "clean", "config", "version"] {
         assert!(
             !is_cargo_builtin_verb(collision_verb),
             "soldr-native verb {collision_verb:?} must NOT be in CARGO_BUILTIN_VERBS"
@@ -569,13 +572,19 @@ fn cargo_builtin_shorthand_excludes_soldr_native_collision_verbs() {
 
 #[test]
 fn cargo_builtin_shorthand_skips_when_user_pinned_a_version() {
-    // `soldr build@1.0` keeps the existing External fetch path —
+    // `soldr test@1.0` keeps the existing External fetch path —
     // cargo built-ins have no per-invocation version dimension and
     // the parse-time `@version` form is reserved for the
     // crate-fetch path. Same shape as the phase-1
     // `bare_shorthand_skips_when_user_pinned_a_version` test.
-    let (crate_name, version) = parse_tool_spec("build@1.0");
-    assert_eq!(crate_name, "build");
+    //
+    // (Pre-soldr#1012 this test used `build@1.0`, but `build` is
+    // now a soldr-native verb captured by clap before the External
+    // arm runs, so the version-pin code path no longer applies to
+    // it. `test` is the next-shortest cargo-builtin still in the
+    // const and exercises the exact same logic.)
+    let (crate_name, version) = parse_tool_spec("test@1.0");
+    assert_eq!(crate_name, "test");
     assert!(
         matches!(version, VersionSpec::Exact(_)),
         "pinned bare verb must parse to VersionSpec::Exact"

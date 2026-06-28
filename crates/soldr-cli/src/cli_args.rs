@@ -136,7 +136,12 @@ pub(crate) enum ZccacheSourceArg {
 /// output of first-party commands; new cargo verbs (rare) need an
 /// explicit add here.
 pub(crate) const CARGO_BUILTIN_VERBS: &[&str] = &[
-    "build",
+    // `build` is intentionally NOT here. As of soldr#1012 PR 1, `build`
+    // is a soldr-native verb (`Commands::Build`) — clap captures it
+    // before the External arm runs. It joins `clean`, `config`, and
+    // `version` as a collision verb whose meaning is owned by soldr.
+    // `soldr cargo build` is the explicit legacy-passthrough escape
+    // hatch; `soldr build` is the blessed default.
     "test",
     "check",
     "run",
@@ -176,6 +181,11 @@ pub(crate) fn is_cargo_builtin_verb(verb: &str) -> bool {
 }
 
 pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
+    // soldr#1012 PR 1: `build` is a soldr-native verb (the blessed-
+    // default surface). Today functionally aliases `soldr cargo build`;
+    // future #1012 PRs layer catalogue-driven sysroot prep on this arm.
+    // Stays paired with `Commands::Build` in the enum.
+    "build",
     "cargo",
     "cook",
     "rustc",
@@ -200,6 +210,10 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "shims",
     "optimize",
     "defender-exclusions",
+    // pre-existing drift caught by the SOLDR_BUILTIN_VERBS gate while
+    // landing soldr#1012 PR 1 — `Commands::Env` was added but never
+    // registered in this const. Belongs here next to other verbs.
+    "env",
     "session-start",
     "session-end",
     "install-zccache",
@@ -215,6 +229,32 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
 
 #[derive(clap::Subcommand)]
 pub(crate) enum Commands {
+    /// Build the workspace via soldr's blessed cross-compile path
+    ///
+    /// `soldr build --target X` is the **blessed-default surface** for
+    /// builds. Today this is functionally an alias for `soldr cargo
+    /// build` — all arguments are forwarded to `cargo build` verbatim
+    /// through the same `cargo_front_door` pipeline, with the same
+    /// caching, target resolution, and managed-toolchain behavior. The
+    /// surface contract is the load-bearing part: callers asking for
+    /// `soldr build` get the soldr-blessed toolchain story, while
+    /// callers asking for `soldr cargo build` get the explicit legacy
+    /// passthrough.
+    ///
+    /// Per soldr#1010 / soldr#1012, future work layers catalogue-driven
+    /// sysroot prep + a clang/clang-cl shim on top of this verb so
+    /// cross-compile to `*-pc-windows-msvc` lands without `cargo xwin`
+    /// — but those land behind this same `Commands::Build` arm; today's
+    /// users get a stable surface that won't change.
+    ///
+    /// Internal sharing of dispatch with `Commands::Cargo` is
+    /// intentional and expected; what matters is the user-facing
+    /// contract that `soldr build` evolves into the blessed-default
+    /// without breaking the alias surface.
+    Build {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
