@@ -245,16 +245,23 @@ jobs:
             fi
             sleep $((attempts * 3))
           done
+          # cmake + perl added soldr#1022: zstd-sys (cmake) and
+          # openssl-sys (perl) transitively-depended build scripts
+          # need them. ubuntu-latest ships both, so this was implicit;
+          # locally-validated in `ci/docker-aarch64-musl-cross/` via a
+          # vanilla ubuntu:24.04 container to surface the dependency.
           attempts=0
-          until sudo apt-get install -y --no-install-recommends musl-tools; do
+          until sudo apt-get install -y --no-install-recommends musl-tools cmake perl; do
             attempts=$((attempts + 1))
             if [ "$attempts" -ge "$max_attempts" ]; then
-              echo "apt-get install musl-tools failed after $max_attempts attempts" >&2
+              echo "apt-get install musl-tools+cmake+perl failed after $max_attempts attempts" >&2
               exit 1
             fi
             sleep $((attempts * 3))
           done
           dpkg-query -W -f='musl-tools installed version: ${Version}\n' musl-tools
+          dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
+          dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
       # soldr#1012 release-pipeline followup: tikv-jemalloc-sys (via
       # vendored zccache's `cfg(unix)` allocator dep) needs a proper
