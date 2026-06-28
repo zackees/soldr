@@ -9,6 +9,9 @@ use clap::Parser;
 
 mod archive_cmd;
 mod binaries;
+/// soldr#1012 PR 5 — blessed cross-compile sysroot prep called from
+/// Commands::Build.
+mod blessed_build;
 mod bootstrap;
 mod build_from_source_cmd;
 mod cache;
@@ -259,17 +262,41 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
     match cli.command {
         Commands::Build { args } => {
-            // soldr#1012 PR 1 — `soldr build` is the blessed-default
-            // surface for builds. Today it's functionally an alias for
-            // `soldr cargo build`: we prepend `build` to the user's
-            // args and forward through the same `cargo_front_door`
-            // pipeline. Subsequent #1012 PRs (especially PR 5) layer
-            // catalogue-driven sysroot prep + the clang shim on top
-            // by branching here BEFORE the front-door call. The user-
-            // facing surface stays stable across that evolution.
+            // soldr#1012 PR 1 + PR 5. The `soldr build` surface
+            // routes through `blessed_build::prepare` for any
+            // canonical target triple it can identify in argv (looks
+            // for `--target X` / `--target=X`). On MSVC targets that
+            // step materializes the xwin-cache from the soldr-
+            // toolchain catalogue, installs the soldr-clang-shim
+            // ahead of system clang on PATH, and sets the cc-rs +
+            // cargo target-specific env vars. The cargo front door is
+            // then invoked with the same args + the prep env applied.
+            //
+            // Targets with no prep need (linux musl, linux gnu) get
+            // a no-op prep + the standard cargo front door behavior.
+            // `SOLDR_USE_LEGACY_XWIN=1` opts out of the blessed path
+            // and falls through to the unchanged cargo-xwin flow.
             let mut full_args = Vec::with_capacity(args.len() + 1);
             full_args.push("build".to_string());
             full_args.extend(args);
+
+            // Try to recognize a target from argv so we can prep
+            // before invoking cargo. If the user didn't pass `--target`,
+            // blessed prep is a no-op and we forward unchanged.
+            if let Some(target_triple) = extract_target_from_args(&full_args) {
+                let paths = crate::core::SoldrPaths::new()?;
+                let prep = crate::blessed_build::prepare(&paths, &target_triple).await?;
+                // Apply prep env onto the current process env so the
+                // child cargo invocation (and its sub-rustc + build
+                // scripts) inherit them.
+                for (k, v) in &prep.env {
+                    std::env::set_var(k, v);
+                }
+                if let Some(shim_dir) = prep.shim_path_dir.as_ref() {
+                    prepend_to_path_env(shim_dir);
+                }
+            }
+
             std::process::exit(
                 cargo_front_door::run_cargo_front_door(
                     &full_args,
@@ -931,6 +958,48 @@ fn should_self_relocate_for_invocation(raw_args: &[String]) -> bool {
 /// region of the user's argv. Stops scanning at the first non-flag
 /// positional (conventionally the subcommand), so a `--as` appearing
 /// after `cargo` belongs to cargo and is left alone.
+/// soldr#1012 PR 5 — scan `args` for `--target X` (two-arg form) or
+/// `--target=X` (single-arg form). Returns the FIRST occurrence; if
+/// both forms are present the single-arg form wins by virtue of
+/// appearing first in a left-to-right scan (cargo behavior is
+/// "last --target wins", but for prep purposes any match is enough
+/// because the prep is target-keyed and cargo handles the final
+/// dispatch).
+fn extract_target_from_args(args: &[String]) -> Option<String> {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        if let Some(triple) = arg.strip_prefix("--target=") {
+            if !triple.is_empty() {
+                return Some(triple.to_string());
+            }
+        }
+        if arg == "--target" {
+            if let Some(next) = iter.next() {
+                if !next.is_empty() {
+                    return Some(next.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// soldr#1012 PR 5 — prepend `dir` to the current process's `PATH`
+/// env var. Idempotent in the sense that if `dir` is already first
+/// on PATH, the value is unchanged (PATH stays clean).
+fn prepend_to_path_env(dir: &std::path::Path) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut existing: Vec<std::path::PathBuf> =
+        std::env::split_paths(&current).collect();
+    if existing.first().is_some_and(|p| p == dir) {
+        return;
+    }
+    existing.insert(0, dir.to_path_buf());
+    if let Ok(joined) = std::env::join_paths(existing) {
+        std::env::set_var("PATH", joined);
+    }
+}
+
 fn extract_as_pin(args: &[String]) -> Result<(Option<String>, Vec<String>), SoldrError> {
     let mut out: Vec<String> = Vec::with_capacity(args.len());
     let mut version: Option<String> = None;

@@ -39,6 +39,9 @@ pub use rustup_init::{
 
 pub mod apple_sdk;
 pub mod archive;
+/// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
+/// blessed `*-pc-windows-msvc` cross-compile path.
+pub mod xwin_cache;
 /// soldr#988 Phase 4 — on-demand builds via `zackees/forge` when the
 /// toolchain catalogue lookup misses. See module doc for the env-var
 /// contract and failure surface.
