@@ -638,3 +638,129 @@ fn cargo_builtin_shorthand_does_not_capture_other_verbs() {
         );
     }
 }
+
+// soldr#882: pick_cross_subcommand + rewrite_build_args_for_subcommand
+// dispatch tests.
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pick_cross_subcommand_msvc_returns_xwin() {
+    let _g = ENV_LOCK.lock().unwrap();
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
+    assert_eq!(
+        pick_cross_subcommand("x86_64-pc-windows-msvc"),
+        Some("xwin"),
+    );
+    assert_eq!(
+        pick_cross_subcommand("aarch64-pc-windows-msvc"),
+        Some("xwin"),
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pick_cross_subcommand_darwin_returns_zigbuild() {
+    let _g = ENV_LOCK.lock().unwrap();
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
+    assert_eq!(
+        pick_cross_subcommand("x86_64-apple-darwin"),
+        Some("zigbuild"),
+    );
+    assert_eq!(
+        pick_cross_subcommand("aarch64-apple-darwin"),
+        Some("zigbuild"),
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pick_cross_subcommand_musl_returns_zigbuild() {
+    let _g = ENV_LOCK.lock().unwrap();
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
+    assert_eq!(
+        pick_cross_subcommand("x86_64-unknown-linux-musl"),
+        Some("zigbuild"),
+    );
+    assert_eq!(
+        pick_cross_subcommand("aarch64-unknown-linux-musl"),
+        Some("zigbuild"),
+    );
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pick_cross_subcommand_legacy_xwin_returns_none() {
+    let _g = ENV_LOCK.lock().unwrap();
+    std::env::set_var(
+        crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR,
+        "1",
+    );
+    assert_eq!(
+        pick_cross_subcommand("x86_64-pc-windows-msvc"),
+        None,
+    );
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn pick_cross_subcommand_legacy_zigbuild_returns_none() {
+    let _g = ENV_LOCK.lock().unwrap();
+    std::env::set_var(
+        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
+        "1",
+    );
+    assert_eq!(
+        pick_cross_subcommand("aarch64-apple-darwin"),
+        None,
+    );
+    std::env::remove_var(
+        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
+    );
+}
+
+#[test]
+#[cfg(not(target_os = "linux"))]
+fn pick_cross_subcommand_non_linux_host_returns_none() {
+    // On macos / windows hosts the auto-dispatch is suppressed; the
+    // host's native cargo build chain handles the local target.
+    assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc"), None);
+    assert_eq!(pick_cross_subcommand("aarch64-apple-darwin"), None);
+    assert_eq!(pick_cross_subcommand("x86_64-unknown-linux-musl"), None);
+}
+
+#[test]
+fn rewrite_build_args_zigbuild_swaps_verb() {
+    let args = vec![
+        "build".to_string(),
+        "--target".to_string(),
+        "x86_64-apple-darwin".to_string(),
+        "--release".to_string(),
+    ];
+    let out = rewrite_build_args_for_subcommand(args, "zigbuild");
+    assert_eq!(
+        out,
+        vec!["zigbuild", "--target", "x86_64-apple-darwin", "--release"],
+    );
+}
+
+#[test]
+fn rewrite_build_args_xwin_prepends_xwin() {
+    let args = vec![
+        "build".to_string(),
+        "--target".to_string(),
+        "aarch64-pc-windows-msvc".to_string(),
+    ];
+    let out = rewrite_build_args_for_subcommand(args, "xwin");
+    assert_eq!(
+        out,
+        vec!["xwin", "build", "--target", "aarch64-pc-windows-msvc"],
+    );
+}
+
+#[test]
+fn rewrite_build_args_unknown_subcmd_is_noop() {
+    let args = vec!["build".to_string(), "--release".to_string()];
+    let out = rewrite_build_args_for_subcommand(args.clone(), "gibberish");
+    assert_eq!(out, args);
+}

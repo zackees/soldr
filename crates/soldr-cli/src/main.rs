@@ -295,6 +295,21 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 if let Some(shim_dir) = prep.shim_path_dir.as_ref() {
                     prepend_to_path_env(shim_dir);
                 }
+
+                // soldr#882: auto-dispatch cargo subcommand based on
+                // target. *-pc-windows-msvc routes through `cargo xwin
+                // build`, *-apple-darwin / *-unknown-linux-musl /
+                // cross-arch *-unknown-linux-gnu route through
+                // `cargo zigbuild`. Opt-out via SOLDR_USE_LEGACY_{XWIN,
+                // ZIGBUILD}=1 (same env vars blessed_build::prepare
+                // already honors for sysroot prep). cfg-gated to linux
+                // hosts — native msvc/darwin host builds keep using
+                // plain cargo build.
+                if let Some(subcmd) = pick_cross_subcommand(&target_triple) {
+                    full_args = rewrite_build_args_for_subcommand(
+                        full_args, subcmd,
+                    );
+                }
             }
 
             std::process::exit(
@@ -982,6 +997,83 @@ fn extract_target_from_args(args: &[String]) -> Option<String> {
         }
     }
     None
+}
+
+/// soldr#882: pick the cargo subcommand to dispatch for a given
+/// cross-target. Only fires on Linux hosts — native macos/windows
+/// host builds keep using plain `cargo build`.
+///
+/// Returns:
+/// * `Some("xwin")` for `*-pc-windows-msvc` (unless `SOLDR_USE_LEGACY_XWIN`
+///   is set in env — escape hatch for callers who want the plain
+///   `cargo build` fallback)
+/// * `Some("zigbuild")` for `*-apple-darwin`, `*-unknown-linux-musl`,
+///   and aarch64 `*-unknown-linux-gnu` (cross from x86_64), unless
+///   `SOLDR_USE_LEGACY_ZIGBUILD` is set
+/// * `None` for everything else
+fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+
+    let legacy_xwin = std::env::var_os(
+        crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR,
+    )
+    .map(|v| !v.is_empty() && v != "0")
+    .unwrap_or(false);
+    let legacy_zigbuild = std::env::var_os(
+        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
+    )
+    .map(|v| !v.is_empty() && v != "0")
+    .unwrap_or(false);
+
+    if target_triple.ends_with("-pc-windows-msvc") {
+        return if legacy_xwin { None } else { Some("xwin") };
+    }
+    if target_triple.ends_with("-apple-darwin")
+        || target_triple.ends_with("-unknown-linux-musl")
+    {
+        return if legacy_zigbuild { None } else { Some("zigbuild") };
+    }
+    // Cross from x86_64 host to aarch64 linux — needs zigbuild for
+    // the bundled libc.
+    if target_triple == "aarch64-unknown-linux-gnu"
+        && cfg!(target_arch = "x86_64")
+    {
+        return if legacy_zigbuild { None } else { Some("zigbuild") };
+    }
+    None
+}
+
+/// soldr#882: rewrite the args vector for the picked cargo subcommand.
+///
+/// For `zigbuild`: cargo-zigbuild IS the build verb — replace the
+/// leading `build` with `zigbuild`. So `["build", "--target", X, ...]`
+/// becomes `["zigbuild", "--target", X, ...]`.
+///
+/// For `xwin`: cargo-xwin uses `xwin build ...` as a subcommand
+/// pair — prepend `xwin` keeping the `build` verb. So
+/// `["build", "--target", X, ...]` becomes
+/// `["xwin", "build", "--target", X, ...]`.
+fn rewrite_build_args_for_subcommand(
+    mut args: Vec<String>,
+    subcmd: &str,
+) -> Vec<String> {
+    match subcmd {
+        "zigbuild" => {
+            if let Some(first) = args.first_mut() {
+                if first == "build" {
+                    *first = "zigbuild".to_string();
+                }
+            }
+            args
+        }
+        "xwin" => {
+            args.insert(0, "xwin".to_string());
+            args
+        }
+        _ => args,
+    }
 }
 
 /// soldr#1012 PR 5 — prepend `dir` to the current process's `PATH`
