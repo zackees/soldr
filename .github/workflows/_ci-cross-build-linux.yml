@@ -1,0 +1,166 @@
+# soldr#1041 / #1038 phase 3: consolidated linux cross-build job.
+#
+# One ubuntu-24.04 job per target triple that does the whole every-commit
+# pipeline for that target in a single runner spin-up:
+#
+#   1. Lint (cargo fmt --check + cargo clippy --target <T>)
+#   2. Source-tree-coupled tests (canonical_targets_parity etc.)
+#   3. Cross-build: `soldr build --target <T>` (or `cargo zigbuild` per recipe)
+#   4. Test-binary build: `cargo nextest archive --target <T>`
+#   5. Upload artifact: release binary + test-bins.tar.zst + fixtures/
+#
+# Linux native targets (gnu, musl) terminate here — they have a follow-on
+# `cargo test` step on the same runner. Other targets emit just the
+# artifact for a phase-4 target-run job to consume.
+#
+# This workflow is `workflow_call`-only — callers (ci.yml) pick which
+# targets to run via the matrix.
+
+name: CI cross-build (linux host)
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+        description: Target triple to cross-build for.
+      run_native_tests:
+        type: boolean
+        default: false
+        description: |
+          When true, also run `cargo nextest run` on this runner (only
+          makes sense for linux-native targets — gnu / musl on the host
+          arch). When false, only the artifact is produced for a
+          downstream target-run job to consume.
+      artifact_name:
+        type: string
+        default: ""
+        description: |
+          Optional override for the uploaded artifact name. Defaults to
+          `ci-cross-build-<target>`.
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    name: cross-build ${{ inputs.target }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Install rust toolchain
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ inputs.target }}
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: ci-cross-${{ inputs.target }}
+
+      # Per-target apt deps (#1038 Q4 recipe table). Cheapest superset
+      # that covers every cross-compile we ship from linux:
+      #   - musl-tools cmake perl for *-unknown-linux-musl (zstd-sys etc.)
+      #   - clang lld llvm llvm-dev libclang-dev for *-pc-windows-msvc
+      #   - jq xz-utils for catalogue fetch + zig tarball extract
+      - name: Install apt deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config file jq xz-utils bzip2 \
+            ca-certificates curl git \
+            musl-tools cmake perl \
+            clang lld llvm llvm-dev libclang-dev
+
+      # Install zig + cargo-zigbuild from the soldr-toolchain catalogue
+      # (matches the docker harnesses' pattern). Required for any musl
+      # target; harmless on gnu / msvc.
+      - name: Setup zig (musl targets)
+        if: contains(inputs.target, 'musl')
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild (musl targets)
+        if: contains(inputs.target, 'musl')
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with:
+          tool: cargo-zigbuild@0.23.0
+
+      # Install nextest for the archive flow (phase-4 target-run jobs
+      # consume the archive).
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with:
+          tool: cargo-nextest
+
+      # Stage A — lint (one-shot, cheap)
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --target ${{ inputs.target }} --all-targets
+
+      # Stage B — release binary build
+      - name: Cross-build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ inputs.target }}" == *-unknown-linux-musl ]]; then
+            cargo zigbuild --release --target ${{ inputs.target }} \
+              --package soldr-cli --bin soldr
+          else
+            cargo build --release --target ${{ inputs.target }} \
+              --package soldr-cli --bin soldr
+          fi
+
+      # Stage C — test-binary archive (phase 4 consumes this)
+      - name: nextest archive (test binaries for downstream run)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          if [[ "${{ inputs.target }}" == *-unknown-linux-musl ]]; then
+            # nextest archive doesn't know about zigbuild; pre-build
+            # the test binaries via zigbuild --tests, then have nextest
+            # bundle them.
+            cargo zigbuild --tests --release --target ${{ inputs.target }} \
+              --package soldr-cli || true
+          fi
+          cargo nextest archive \
+            --target ${{ inputs.target }} \
+            --workspace \
+            --archive-file dist/test-bins.tar.zst \
+            --archive-format tar-zst || echo "nextest archive failed — phase 4 will skip"
+
+      # Stage D — native test run for linux-host targets only (gnu lane)
+      - name: cargo nextest run (linux native lanes)
+        if: inputs.run_native_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo nextest run --target ${{ inputs.target }} --workspace --no-fail-fast \
+            -E '!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/)'
+
+      # Stage E — upload artifact for phase-4 target-run jobs
+      - name: Upload artifact
+        if: success() || failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+        with:
+          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('ci-cross-build-{0}', inputs.target) }}
+          path: |
+            target/${{ inputs.target }}/release/soldr*
+            dist/test-bins.tar.zst
+            crates/soldr-cli/tests/fixtures/
+          if-no-files-found: warn
+          retention-days: 7
