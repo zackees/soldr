@@ -9,10 +9,18 @@
 //! (corrupt TOML, missing file in a container build) only fails
 //! THIS file, not the rest of the integration tests.
 
+mod common;
+
 use soldr_cli::core::CANONICAL_TARGETS;
 use soldr_cli::timed_test;
 
 timed_test!(canonical_const_matches_workspace_metadata, {
+    // soldr#1040 phase 2: source-tree-coupled — skip on runners that
+    // don't have the workspace checked out (target-run jobs in the
+    // cross-build CI shape).
+    if common::should_skip_source_tree_test("canonical_const_matches_workspace_metadata") {
+        return;
+    }
     // Walk up from the test binary's directory to find the workspace
     // root. Cargo gives us `CARGO_MANIFEST_DIR` for the bin crate
     // (`crates/soldr-cli`); the workspace root is its parent's

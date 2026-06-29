@@ -28,6 +28,8 @@
 //!   `CLAUDE.md`. All three should move together so the next
 //!   contributor finds the new shape documented.
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -37,6 +39,10 @@ const ALLOWED_WORKSPACE_MEMBERS: &[&str] = &["crates/soldr-cli"];
 
 #[test]
 fn workspace_members_contains_exactly_the_allowed_set() {
+    // soldr#1040 phase 2: source-tree-coupled.
+    if common::should_skip_source_tree_test("workspace_members_contains_exactly_the_allowed_set") {
+        return;
+    }
     let root = workspace_root();
     let manifest_path = root.join("Cargo.toml");
     let raw = fs::read_to_string(&manifest_path)
@@ -73,6 +79,9 @@ fn workspace_members_contains_exactly_the_allowed_set() {
 
 #[test]
 fn exactly_one_cargo_toml_under_crates() {
+    if common::should_skip_source_tree_test("exactly_one_cargo_toml_under_crates") {
+        return;
+    }
     let root = workspace_root();
     let crates_dir = root.join("crates");
     let entries = fs::read_dir(&crates_dir)
