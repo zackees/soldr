@@ -126,11 +126,54 @@ ENV PATH=/root/.cargo/bin:$PATH \
     RUSTUP_HOME=/root/.rustup \
     CARGO_HOME=/root/.cargo
 
-# Pre-install cargo-zigbuild so the per-build step doesn't need to
-# fetch from crates.io. Pinned to a known-working version.
-RUN /root/.cargo/bin/rustup toolchain install stable --profile minimal --no-self-update \
- && /root/.cargo/bin/cargo +stable install cargo-zigbuild --version 0.19.7 --locked \
- && cargo-zigbuild --version
+# cargo-zigbuild — catalogue-first / upstream-fallback chain, same
+# pattern as the zig install above. soldr-toolchain ships a prebuilt
+# binary for linux-x86_64-gnu in the catalogue (the result of
+# rust-cross/cargo-zigbuild's own release pipeline + soldr-toolchain's
+# nightly manifest refresh). Falling back to upstream GitHub release
+# URL keeps the harness functional if soldr-toolchain CDN is briefly
+# unreachable. The previous `cargo install` path required a full
+# stable Rust toolchain + ~10 min of source compile — both gone now.
+ENV CARGO_ZIGBUILD_VERSION=v0.23.0 \
+    CARGO_ZIGBUILD_CATALOGUE_URL=https://raw.githubusercontent.com/zackees/soldr-toolchain/assets/cargo-zigbuild/manifest.json \
+    CARGO_ZIGBUILD_FALLBACK_URL=https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.23.0/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz \
+    CARGO_ZIGBUILD_FALLBACK_SHA256=c636e4f72b6f40a40ddf0414c8c6056f78b87eea3be0edf01f08d65fa028a373
+
+RUN set -eu; \
+    echo "resolving cargo-zigbuild ${CARGO_ZIGBUILD_VERSION} via catalogue: ${CARGO_ZIGBUILD_CATALOGUE_URL}"; \
+    czb_url=""; \
+    czb_sha=""; \
+    if curl -fsSL --connect-timeout 15 --max-time 30 \
+            "$CARGO_ZIGBUILD_CATALOGUE_URL" -o /tmp/czb-manifest.json; then \
+        czb_url=$(jq -r --arg v "$CARGO_ZIGBUILD_VERSION" '.releases[] | select(.version==$v) | .platforms[] | select(.platform.os=="linux" and .platform.arch=="x86_64" and .platform.libc=="glibc") | .asset.urls[0]' /tmp/czb-manifest.json); \
+        czb_sha=$(jq -r --arg v "$CARGO_ZIGBUILD_VERSION" '.releases[] | select(.version==$v) | .platforms[] | select(.platform.os=="linux" and .platform.arch=="x86_64" and .platform.libc=="glibc") | .asset.sha256' /tmp/czb-manifest.json); \
+        if [ -z "$czb_url" ] || [ "$czb_url" = "null" ]; then \
+            echo "catalogue resolved but ${CARGO_ZIGBUILD_VERSION} not in manifest; falling back" >&2; \
+            czb_url=""; \
+        fi; \
+        rm -f /tmp/czb-manifest.json; \
+    else \
+        echo "catalogue unreachable; falling back to hardcoded GitHub URL" >&2; \
+    fi; \
+    if [ -z "$czb_url" ]; then \
+        czb_url="$CARGO_ZIGBUILD_FALLBACK_URL"; \
+        czb_sha="$CARGO_ZIGBUILD_FALLBACK_SHA256"; \
+    fi; \
+    echo "fetching cargo-zigbuild from: $czb_url"; \
+    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
+        "$czb_url" -o /tmp/czb.tar.xz; \
+    echo "${czb_sha}  /tmp/czb.tar.xz" | sha256sum -c -; \
+    mkdir -p /tmp/czb-extract; \
+    tar -xJf /tmp/czb.tar.xz -C /tmp/czb-extract; \
+    czb_bin=$(find /tmp/czb-extract -type f -name cargo-zigbuild | head -n1); \
+    if [ -z "$czb_bin" ] || [ ! -f "$czb_bin" ]; then \
+        echo "FATAL: cargo-zigbuild binary not found in extracted tarball" >&2; \
+        find /tmp/czb-extract -maxdepth 3 -print >&2; \
+        exit 1; \
+    fi; \
+    install -m 0755 "$czb_bin" /usr/local/bin/cargo-zigbuild; \
+    rm -rf /tmp/czb.tar.xz /tmp/czb-extract; \
+    cargo-zigbuild --version
 
 # Kernel-independent 32-bit ELF guard (soldr#1029 agent option C).
 # Detects toolchain binaries that ship as 32-bit i386 — these run on

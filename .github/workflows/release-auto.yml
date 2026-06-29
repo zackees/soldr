@@ -418,6 +418,26 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
              "dist/package/${{ matrix.binary }}"
           chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
+
+          # soldr#1032 bug 2: ship soldr-clang-shim next to soldr.
+          # The shim is a tiny clang/clang++ wrapper installed by
+          # Commands::Build (#1015 + #1016) to route ring 0.17.x's
+          # hardcoded `c.compiler("clang")` to clang-cl on
+          # *-pc-windows-msvc targets. `Commands::Build` looks for it
+          # at `~/.soldr/bin/soldr-clang-shim`, sourced FROM the release
+          # archive — so every archive must include it. Including it on
+          # every target keeps the archive layout uniform; it's a no-op
+          # binary on non-MSVC lanes.
+          shim_suffix=""
+          case "${{ matrix.target }}" in *-pc-windows-msvc) shim_suffix=".exe" ;; esac
+          shim_src="target/${{ matrix.target }}/release/soldr-clang-shim${shim_suffix}"
+          if [ ! -f "$shim_src" ]; then
+            echo "expected soldr-clang-shim${shim_suffix} in target dir; observed release dir:" >&2
+            ls -la "target/${{ matrix.target }}/release" >&2 || true
+            exit 1
+          fi
+          cp "$shim_src" "dist/package/soldr-clang-shim${shim_suffix}"
+          chmod +x "dist/package/soldr-clang-shim${shim_suffix}" 2>/dev/null || true
           case "${{ matrix.target }}" in
             *-pc-windows-msvc)
               # Windows MSVC always emits a `.pdb` next to the binary
