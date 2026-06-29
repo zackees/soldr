@@ -14,7 +14,7 @@ use std::{
 
 #[test]
 fn rustup_resolution_failure_reports_raw_error_and_ci_guidance() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["--no-cache", "rustc", "--version"])
         .env("RUSTUP_TOOLCHAIN", "soldr-ci-missing-toolchain")
         .output()
@@ -73,7 +73,7 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
         .join("tests")
         .join("fixtures")
         .join("windows-msvc-default");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["--no-cache", "cargo", "build"])
         .current_dir(&fixture)
         .env("PATH", prepend_to_path(&fake_tools))
@@ -132,7 +132,7 @@ fn wrapper_mode_stdin_source_propagates_nonzero_exit_code() {
 
     // Invoke soldr as RUSTC_WRAPPER: soldr <rustc-path> - <flags...>
     // Disable the cache to avoid a zccache binary being required.
-    let mut child = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let mut child = Command::new(common::soldr_bin())
         .args([
             rustc.as_str(),
             "-",

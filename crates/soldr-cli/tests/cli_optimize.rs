@@ -22,7 +22,7 @@ fn isolated_soldr_home() -> PathBuf {
 #[test]
 fn optimize_dry_run_json_runs_end_to_end_on_current_platform() {
     let soldr_home = isolated_soldr_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--dry-run", "--json"])
         .current_dir(&soldr_home)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -68,7 +68,7 @@ fn optimize_dry_run_json_runs_end_to_end_on_current_platform() {
 #[test]
 fn optimize_ci_auto_skip_emits_skip_message() {
     let soldr_home = isolated_soldr_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--json"])
         .current_dir(&soldr_home)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -102,7 +102,7 @@ fn optimize_ci_auto_skip_emits_skip_message() {
 #[test]
 fn optimize_project_scope_errors_when_no_cargo_toml() {
     let workspace = unique_temp_dir("soldr-optimize-no-cargo");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--scope", "project", "--dry-run", "--json"])
         .current_dir(&workspace)
         .env_remove("GITHUB_ACTIONS")
@@ -143,7 +143,7 @@ fn optimize_invokes_add_mppreference_with_admin_seam() {
     )
     .expect("Cargo.toml");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--scope", "all", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -238,7 +238,7 @@ fn optimize_undo_only_removes_managed_paths() {
 
     let defender_log = soldr_home.join("defender.log");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--undo", "--scope", "global", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -283,7 +283,7 @@ fn optimize_undo_only_removes_managed_paths() {
 #[test]
 fn defender_exclusions_check_returns_dry_run_json() {
     let soldr_home = isolated_soldr_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["defender-exclusions", "check", "--json"])
         .current_dir(&soldr_home)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -322,7 +322,7 @@ fn defender_exclusions_remove_maps_to_undo() {
     // CI auto-skip lets us prove the dispatch wires `remove` to undo
     // semantics without touching the real subsystem.
     let soldr_home = isolated_soldr_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["defender-exclusions", "remove", "--json"])
         .current_dir(&soldr_home)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -346,7 +346,7 @@ fn defender_exclusions_remove_maps_to_undo() {
 #[test]
 fn defender_exclusions_add_dry_run_does_not_invoke_powershell() {
     let soldr_home = isolated_soldr_home();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["defender-exclusions", "add", "--dry-run", "--json"])
         .current_dir(&soldr_home)
         .env("SOLDR_CACHE_DIR", &soldr_home)
@@ -377,7 +377,7 @@ fn defender_exclusions_add_dry_run_does_not_invoke_powershell() {
 
 #[test]
 fn defender_exclusions_help_lists_verbs() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["defender-exclusions", "--help"])
         .output()
         .expect("failed to run soldr defender-exclusions --help");
@@ -393,7 +393,7 @@ fn defender_exclusions_help_lists_verbs() {
 
 #[test]
 fn optimize_help_lists_scope_values() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["optimize", "--help"])
         .output()
         .expect("failed to run soldr optimize --help");

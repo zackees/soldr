@@ -29,6 +29,8 @@ use soldr_cli::daemon::client::{self, cook_lookup, cook_record, cook_touch, Cook
 use soldr_cli::daemon::protocol::Response;
 use soldr_cli::timed_test;
 
+mod common;
+
 const HARNESS_ENV: &str = "SOLDR_COOK_DOCKER_HARNESS";
 
 fn harness_enabled() -> bool {
@@ -60,7 +62,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"
@@ -414,6 +416,7 @@ timed_test!(
         else {
             panic!("expected mac hit")
         };
+
 
         assert_eq!(linux_sha, [0xAAu8; 32]);
         assert_eq!(linux_size, 100);

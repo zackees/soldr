@@ -44,7 +44,7 @@ fn cache_prune_target_dry_run_emits_json() {
         f.set_modified(newer_when).expect("set newer mtime");
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cache", "prune-target"])
         .arg(&target)
         .args(["--dry-run", "--json"])

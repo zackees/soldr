@@ -30,6 +30,8 @@ use soldr_cli::core::git::{
 use soldr_cli::daemon::client::{self, cook_lookup, cook_record, CookLookupOutcome};
 use soldr_cli::timed_test;
 
+mod common;
+
 const HARNESS_ENV: &str = "SOLDR_COOK_DOCKER_HARNESS";
 
 fn harness_enabled() -> bool {
@@ -66,13 +68,14 @@ fn write_file(p: &Path, bytes: &[u8]) {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"
     } else {
         "soldr-daemon"
     };
+
     parent.join(stem)
 }
 

@@ -21,7 +21,7 @@ timed_test!(
     {
         let workspace = unique_temp_dir("toolchain-doctor-json");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = Command::new(common::soldr_bin())
             .args(["toolchain", "doctor", "--json"])
             .current_dir(&workspace)
             .output()
@@ -71,7 +71,7 @@ timed_test!(
     {
         let workspace = unique_temp_dir("toolchain-doctor-human");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = Command::new(common::soldr_bin())
             .args(["toolchain", "doctor"])
             .current_dir(&workspace)
             .output()
@@ -116,7 +116,7 @@ timed_test!(
         fs::create_dir_all(&fingerprint).expect("mkdir fingerprint");
         fs::write(fingerprint.join("invoked.timestamp"), "").expect("seed fingerprint");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = Command::new(common::soldr_bin())
             .args(["toolchain", "doctor", "--json"])
             .current_dir(&workspace)
             .output()

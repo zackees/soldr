@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 #[test]
 fn help_advertises_cook_subcommand() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .arg("--help")
         .output()
         .expect("failed to run soldr --help");
@@ -26,7 +26,7 @@ fn help_advertises_cook_subcommand() {
 
 #[test]
 fn cook_help_describes_supported_flags() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cook", "--help"])
         .output()
         .expect("failed to run soldr cook --help");
@@ -48,7 +48,7 @@ fn cook_fails_when_no_cargo_toml_above_cwd() {
     // tempfile::tempdir which is usually under the system temp root — no
     // ancestor will contain Cargo.toml.
     let tmp = tempfile::tempdir().expect("tempdir");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .arg("cook")
         .arg("--prepare-only")
         .current_dir(tmp.path())
@@ -74,7 +74,7 @@ fn cook_rejects_cook_only_without_recipe_path() {
         "[package]\nname = \"smoke\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cook", "--cook-only"])
         .current_dir(tmp.path())
         .output()
@@ -96,7 +96,7 @@ fn cook_rejects_unknown_flag_before_passthrough_separator() {
         "[package]\nname = \"smoke\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
     )
     .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cook", "--definitely-not-a-flag"])
         .current_dir(tmp.path())
         .output()
@@ -138,7 +138,7 @@ fn cook_prepare_only_against_example_project_runs_end_to_end() {
     assert!(lock_status.success());
 
     let recipe = tmp.path().join("recipe.json");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cook", "--prepare-only", "--recipe-path"])
         .arg(&recipe)
         .current_dir(tmp.path())
@@ -309,7 +309,7 @@ fn wipe_target(project: &std::path::Path) {
 /// caller reads naturally; clap doesn't care about quoting at this
 /// level since none of our tokens contain spaces.
 fn time_soldr(project: &std::path::Path, leading: &[&str], tail: &str) -> (Duration, bool) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    let mut cmd = Command::new(common::soldr_bin());
     cmd.args(leading);
     cmd.args(tail.split_whitespace());
     cmd.current_dir(project);

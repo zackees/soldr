@@ -31,6 +31,8 @@ use soldr_cli::daemon::client::{
 };
 use soldr_cli::timed_test;
 
+mod common;
+
 const HARNESS_ENV: &str = "SOLDR_COOK_DOCKER_HARNESS";
 
 fn harness_enabled() -> bool {
@@ -67,7 +69,7 @@ fn write_file(p: &Path, bytes: &[u8]) {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"
@@ -78,7 +80,7 @@ fn soldr_daemon_bin() -> PathBuf {
 }
 
 fn soldr_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_soldr"))
+    common::soldr_bin()
 }
 
 fn run_git_in(dir: &Path, args: &[&str]) {
@@ -264,6 +266,7 @@ timed_test!(
         else {
             panic!("expected CookHit");
         };
+
         assert_eq!(sha256, packed.sha256);
         assert_eq!(size_bytes, packed.size_bytes);
 

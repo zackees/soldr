@@ -437,7 +437,7 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
     let pin_src = seed_pin_source(&tmp);
 
     // 1. Pin the staged binaries via the CLI.
-    let install = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let install = Command::new(common::soldr_bin())
         .args(["install-zccache", "--json"])
         .arg(&pin_src)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -455,7 +455,7 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
     );
 
     // 2. soldr doctor --json must report active_zccache_source = pinned.
-    let doctor = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let doctor = Command::new(common::soldr_bin())
         .args(["doctor", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -485,7 +485,7 @@ fn install_then_doctor_subprocess_reports_pinned_active_source() {
 
     // 3. The new "active zccache source:" diagnostic line appears in the
     //    human output too.
-    let doctor_human = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let doctor_human = Command::new(common::soldr_bin())
         .args(["doctor"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -512,7 +512,7 @@ fn install_then_cache_subprocess_reports_pinned_source() {
     fs::create_dir_all(home_root.join(".soldr").join("bin")).expect("seed home/.soldr/bin");
     let pin_src = seed_pin_source(&tmp);
 
-    let install = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let install = Command::new(common::soldr_bin())
         .args(["install-zccache"])
         .arg(&pin_src)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -528,7 +528,7 @@ fn install_then_cache_subprocess_reports_pinned_source() {
     // executables — `zccache status` will fail to run them. That's
     // fine: `collect_zccache_status` handles the failure and the JSON
     // still contains `binary_source` per the new schema.
-    let cache = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let cache = Command::new(common::soldr_bin())
         .args(["cache", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)

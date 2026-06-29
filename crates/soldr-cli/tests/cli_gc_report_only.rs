@@ -45,7 +45,7 @@ timed_test!(
         let (cache_root, cargo_home, rustup_home, _registry_cache) =
             seed_report_only_roots("gc-report-only-list");
 
-        let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+        let output = Command::new(common::soldr_bin())
             .args(["gc", "list", "--json"])
             .env("SOLDR_CACHE_DIR", &cache_root)
             .env("CARGO_HOME", &cargo_home)
@@ -102,7 +102,7 @@ timed_test!(gc_purge_report_only_kind_is_rejected_and_preserves_files, {
         seed_report_only_roots("gc-report-only-purge");
     assert!(registry_cache.exists());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args([
             "gc",
             "purge",

@@ -25,8 +25,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, SystemTime};
 
-fn soldr_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_soldr")
+fn soldr_bin() -> std::path::PathBuf {
+    // soldr#1039 phase 1.
+    common::soldr_bin()
 }
 
 /// Build a tiny project containing a single binary that prints

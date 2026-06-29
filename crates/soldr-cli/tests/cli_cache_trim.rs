@@ -50,7 +50,7 @@ fn cache_trim_target_ci_profile_strips_recreatable_noise() {
     let real_artifact = target.join("debug/deps/libreal-eeeeeeeeeeeee.rlib");
     write_bytes(&real_artifact, b"keep me");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cache", "trim-target"])
         .arg(&target)
         .args(["--profile", "ci", "--force", "--json"])
@@ -135,7 +135,7 @@ fn cache_trim_target_local_profile_only_prunes_hash_siblings() {
     write_bytes(&large_stderr, &vec![0u8; 200 * 1024]);
     touch_dir(&incremental_dir);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cache", "trim-target"])
         .arg(&target)
         .args(["--profile", "local", "--force", "--json"])
@@ -182,7 +182,7 @@ fn cache_trim_target_dry_run_does_not_modify_disk() {
     write_bytes(&large_stderr, &vec![0u8; 200 * 1024]);
     touch_dir(&incremental_dir);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cache", "trim-target"])
         .arg(&target)
         .args(["--profile", "ci", "--dry-run", "--json"])
@@ -219,7 +219,7 @@ fn cache_trim_target_refuses_when_cargo_lock_present() {
     fs::write(&rlib, b"x").unwrap();
     fs::write(target.join(".cargo-lock"), b"").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cache", "trim-target"])
         .arg(&target)
         .args(["--profile", "ci", "--force"])

@@ -354,7 +354,7 @@ fn cargo_front_door_uses_custom_rustc_wrapper_from_env_var() {
         expected_sccache_dir.display()
     );
     assert!(
-        !log.contains(env!("CARGO_BIN_EXE_soldr")),
+        !log.contains(common::soldr_bin().to_string_lossy().as_ref()),
         "soldr should not stay in the wrapper slot when overridden: {log}"
     );
     assert!(
@@ -486,7 +486,7 @@ fn no_cache_bypasses_wrapper_and_zccache() {
         "no-cache front door should not start zccache: {log}"
     );
     assert!(
-        !log.contains(env!("CARGO_BIN_EXE_soldr")),
+        !log.contains(common::soldr_bin().to_string_lossy().as_ref()),
         "no-cache front door should not set soldr as wrapper: {log}"
     );
     assert!(

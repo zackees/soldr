@@ -822,10 +822,11 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
         );
         // The shim must reference the running soldr binary so subprocess
         // exec lands back on this build.
-        let soldr_bin = env!("CARGO_BIN_EXE_soldr");
+        let soldr_bin = common::soldr_bin();
         assert!(
-            body.contains(soldr_bin),
-            "shim body for {tool} should reference soldr binary {soldr_bin}: {body}"
+            body.contains(soldr_bin.to_string_lossy().as_ref()),
+            "shim body for {tool} should reference soldr binary {}: {body}",
+            soldr_bin.display(),
         );
     }
 }

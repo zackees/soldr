@@ -27,7 +27,7 @@ fn soldr_build_alias_resolves_via_clap_not_external() {
     // try to install a crate literally named "build"). This is the
     // simplest possible smoke test that `Commands::Build` exists and
     // is wired through clap.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["build", "--help"])
         .output()
         .expect("failed to run soldr build --help");
@@ -78,7 +78,7 @@ fn soldr_build_invokes_real_cargo_build() {
     // cargo dispatch is what we're testing, not a successful build.
     let cache_root = unique_temp_dir("build-alias-routes-to-cargo");
 
-    let build_out = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let build_out = Command::new(common::soldr_bin())
         .args([
             "--no-cache",
             "build",
@@ -89,7 +89,7 @@ fn soldr_build_invokes_real_cargo_build() {
         .output()
         .expect("failed to run soldr build");
 
-    let cargo_out = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let cargo_out = Command::new(common::soldr_bin())
         .args([
             "--no-cache",
             "cargo",
@@ -132,7 +132,7 @@ fn soldr_build_help_documents_blessed_surface() {
     // default surface contract. The `--help` output must surface that
     // language so users discovering `soldr build --help` understand
     // why they'd pick it over `soldr cargo build`.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["build", "--help"])
         .output()
         .expect("failed to run soldr build --help");
