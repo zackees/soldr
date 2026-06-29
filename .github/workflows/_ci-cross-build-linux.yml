@@ -136,23 +136,31 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Bootstrap soldr from the current checkout (only for darwin —
-      # used to drive `soldr prepare --target ... --github-env` which
-      # materializes the apple SDK via the catalogue + exports SDKROOT
-      # to subsequent steps). Bare cargo build to avoid a chicken-and-
-      # egg with the wrapper.
-      - name: Bootstrap soldr for SDK prep (darwin only)
-        if: contains(inputs.target, 'apple-darwin')
+      # Bootstrap soldr from the current checkout. Darwin uses it to
+      # drive `soldr prepare --target ... --github-env`. Windows MSVC
+      # uses it to drive `soldr build --target X` (the blessed
+      # cross-compile surface). The version that setup-soldr installs
+      # (~v0.7.42 today) predates both subcommands so we need a fresh
+      # binary from main HEAD. Bare cargo build to avoid a chicken-
+      # and-egg with the wrapper.
+      - name: Bootstrap soldr for SDK / blessed-build prep
+        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         env:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          cargo build --release --locked --package soldr-cli --bin soldr \
+          cargo build --release --locked --package soldr-cli \
+            --bin soldr --bin soldr-clang-shim \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
           cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          # blessed_build::install_clang_shim looks for soldr-clang-shim
+          # next to the soldr exe. Without it, `soldr build` errors with
+          # "soldr-clang-shim binary not found".
+          cp target/x86_64-unknown-linux-gnu/release/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
 
       # Apple SDK fetch for darwin targets — soldr prepare materializes
@@ -222,13 +230,17 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       # Stage B — release binary build, tool dispatched per target.
+      # Windows MSVC: `soldr build` (the blessed cross-compile surface
+      # per CLAUDE.md "Two build paths" — handles xwin-cache + clang
+      # shim + lld-link env vars internally). Avoids cargo-xwin's CFLAGS
+      # `/imsvc <path>` token-concatenation bug for aarch64. #1070.
       - name: Cross-build release binary
         shell: bash
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
           if [[ "$target" == *-pc-windows-msvc ]]; then
-            cargo xwin build --release --target "$target" \
+            soldr build --release --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-apple-darwin ]] \
                || [[ "$target" == *-unknown-linux-musl ]] \
