@@ -95,6 +95,38 @@ RUN /root/.cargo/bin/rustup toolchain install stable --profile minimal --no-self
  && /root/.cargo/bin/cargo +stable install cargo-xwin --version 0.18.6 --locked \
  && cargo-xwin --version
 
+# soldr#1036: pre-stage an xwin SDK splat at image-build time so the
+# e2e `cargo nextest archive --target aarch64-pc-windows-msvc` step
+# doesn't have to download MS CRT + SDK at every harness run. Mirrors
+# the recipe used by `xwin-cache-windows-arm64` in zackees/soldr-
+# toolchain (the splatted layout that cargo-xwin's XWIN_CACHE_DIR
+# consumer expects). Uses xwin directly (not cargo-xwin) so we get
+# just the splat without driving a per-crate build.
+ENV XWIN_VERSION=0.6.5 \
+    XWIN_CACHE_DIR=/opt/xwin-cache
+
+RUN set -eu; \
+    url="https://github.com/Jake-Shadle/xwin/releases/download/${XWIN_VERSION}/xwin-${XWIN_VERSION}-x86_64-unknown-linux-musl.tar.gz"; \
+    echo "fetching xwin ${XWIN_VERSION} from ${url}"; \
+    curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 "$url" -o /tmp/xwin.tgz; \
+    mkdir -p /tmp/xwin-extract; \
+    tar -xzf /tmp/xwin.tgz -C /tmp/xwin-extract; \
+    xwin_bin=$(find /tmp/xwin-extract -type f -name xwin | head -1); \
+    chmod +x "$xwin_bin"; \
+    "$xwin_bin" --accept-license \
+        --arch aarch64 \
+        splat \
+        --output "$XWIN_CACHE_DIR" \
+        --preserve-ms-arch-notation; \
+    rm -rf /tmp/xwin.tgz /tmp/xwin-extract; \
+    # Sanity check — xwin's canonical splatted layout has crt/ + sdk/
+    [ -d "$XWIN_CACHE_DIR/crt" ] && [ -d "$XWIN_CACHE_DIR/sdk" ] || { \
+        echo "FATAL: xwin splat produced unexpected layout under $XWIN_CACHE_DIR" >&2; \
+        ls -la "$XWIN_CACHE_DIR" >&2 || true; \
+        exit 1; \
+    }; \
+    du -sh "$XWIN_CACHE_DIR"
+
 # Kernel-independent 32-bit ELF guard — same paranoia as the
 # aarch64-musl harness. Catches future toolchain vendor changes that
 # might ship 32-bit binaries that locally work but ENOEXEC on GHA.
