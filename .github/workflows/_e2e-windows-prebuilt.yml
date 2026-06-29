@@ -133,9 +133,18 @@ jobs:
           SOLDR_CACHE_LIFECYCLE: command
           SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/e2e-${{ inputs.target }}/cache/zccache
+        # soldr#1032 follow-up: route soldr's cargo invocation through
+        # the run_with_ts.py wrapper so every output line gets a
+        # seconds-since-step-start prefix. Without this, the step's
+        # progress is invisible until cargo prints its next line — which
+        # for some long-running rustc steps means 5+ minutes of silence
+        # that looks like a hang. The wrapper's subprocess pattern
+        # preserves the real exit code (PowerShell's pipe + $LASTEXITCODE
+        # would yield python's, not soldr's).
         run: |
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --locked --target "${{ inputs.target }}"
+          python "${{ github.workspace }}/.github/scripts/run_with_ts.py" `
+            soldr cargo build --locked --target "${{ inputs.target }}"
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
