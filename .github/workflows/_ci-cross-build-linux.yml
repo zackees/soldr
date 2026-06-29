@@ -1,20 +1,19 @@
-# soldr#1041 / #1038 phase 3: consolidated linux cross-build job.
+# soldr#1051 / #1038: consolidated linux cross-build for all 8 targets.
 #
 # One ubuntu-24.04 job per target triple that does the whole every-commit
-# pipeline for that target in a single runner spin-up:
+# pipeline for that target in a single runner spin-up. Target dispatch
+# table:
 #
-#   1. Lint (cargo fmt --check + cargo clippy --target <T>)
-#   2. Source-tree-coupled tests (canonical_targets_parity etc.)
-#   3. Cross-build: `soldr build --target <T>` (or `cargo zigbuild` per recipe)
-#   4. Test-binary build: `cargo nextest archive --target <T>`
-#   5. Upload artifact: release binary + test-bins.tar.zst + fixtures/
+#   *-unknown-linux-gnu (x86_64 native)  -> plain cargo
+#   *-unknown-linux-gnu (aarch64 cross)  -> cargo zigbuild
+#   *-unknown-linux-musl                 -> cargo zigbuild
+#   *-apple-darwin                       -> cargo zigbuild + apple-sdk + persistent zig-cc wrappers
+#   *-pc-windows-msvc                    -> cargo xwin
 #
-# Linux native targets (gnu, musl) terminate here — they have a follow-on
-# `cargo test` step on the same runner. Other targets emit just the
-# artifact for a phase-4 target-run job to consume.
-#
-# This workflow is `workflow_call`-only — callers (ci.yml) pick which
-# targets to run via the matrix.
+# Output: release binary at target/<triple>/release/soldr[.exe] + an
+# optional cargo nextest archive at dist/<artifact_name>-tests.tar.zst.
+# Both are uploaded as the named artifact for downstream
+# _ci-target-run.yml consumption.
 
 name: CI cross-build (linux host)
 
@@ -25,27 +24,30 @@ on:
         type: string
         required: true
         description: Target triple to cross-build for.
-      run_native_tests:
-        type: boolean
-        default: false
-        description: |
-          When true, also run `cargo nextest run` on this runner (only
-          makes sense for linux-native targets — gnu / musl on the host
-          arch). When false, only the artifact is produced for a
-          downstream target-run job to consume.
       artifact_name:
+        type: string
+        required: true
+        description: Name to use for the uploaded artifact.
+      build_test_archive:
+        type: boolean
+        default: true
+        description: |
+          Build a `cargo nextest archive` of test binaries alongside
+          the release binary. Set false to skip — useful for lanes
+          that don't run tests downstream.
+      source_ref:
         type: string
         default: ""
         description: |
-          Optional override for the uploaded artifact name. Defaults to
-          `ci-cross-build-<target>`.
+          Optional commit SHA to checkout. Defaults to the workflow's
+          implicit ref via actions/checkout default behavior.
 
 permissions:
   contents: read
 
 jobs:
   cross-build:
-    name: cross-build ${{ inputs.target }}
+    name: cross-build ${{ inputs.target }} (linux host)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -53,8 +55,9 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
+          ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
 
-      - name: Install rust toolchain
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: 1.94.1
@@ -66,101 +69,154 @@ jobs:
         with:
           shared-key: ci-cross-${{ inputs.target }}
 
-      # Per-target apt deps (#1038 Q4 recipe table). Cheapest superset
-      # that covers every cross-compile we ship from linux:
-      #   - musl-tools cmake perl for *-unknown-linux-musl (zstd-sys etc.)
-      #   - clang lld llvm llvm-dev libclang-dev for *-pc-windows-msvc
-      #   - jq xz-utils for catalogue fetch + zig tarball extract
       - name: Install apt deps
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config file jq xz-utils bzip2 \
+            build-essential pkg-config file jq xz-utils bzip2 zip unzip \
             ca-certificates curl git \
             musl-tools cmake perl \
             clang lld llvm llvm-dev libclang-dev
 
-      # Install zig + cargo-zigbuild from the soldr-toolchain catalogue
-      # (matches the docker harnesses' pattern). Required for any musl
-      # target; harmless on gnu / msvc.
-      - name: Setup zig (musl targets)
-        if: contains(inputs.target, 'musl')
+      # zig + cargo-zigbuild — required for musl, darwin, and aarch64
+      # gnu cross-builds.
+      - name: Setup zig
+        if: contains(inputs.target, 'musl') || contains(inputs.target, 'apple-darwin') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
-      - name: Install cargo-zigbuild (musl targets)
-        if: contains(inputs.target, 'musl')
+      - name: Install cargo-zigbuild
+        if: contains(inputs.target, 'musl') || contains(inputs.target, 'apple-darwin') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-zigbuild@0.23.0
 
-      # Install nextest for the archive flow (phase-4 target-run jobs
-      # consume the archive).
+      # cargo-xwin — required for *-pc-windows-msvc.
+      - name: Install cargo-xwin
+        if: contains(inputs.target, 'pc-windows-msvc')
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with:
+          tool: cargo-xwin@0.18.6
+
+      # nextest — required for the test archive output.
       - name: Install cargo-nextest
+        if: inputs.build_test_archive
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-nextest
 
-      # Stage A — lint (one-shot, cheap)
+      # Bootstrap soldr from the current checkout (only for darwin —
+      # used to drive `soldr prepare --target ... --github-env` which
+      # materializes the apple SDK via the catalogue + exports SDKROOT
+      # to subsequent steps). Bare cargo build to avoid a chicken-and-
+      # egg with the wrapper.
+      - name: Bootstrap soldr for SDK prep (darwin only)
+        if: contains(inputs.target, 'apple-darwin')
+        shell: bash
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --package soldr-cli --bin soldr \
+            --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+
+      # Apple SDK fetch for darwin targets — soldr prepare materializes
+      # it via the catalogue + exports SDKROOT.
+      - name: Prepare Apple SDK (darwin only)
+        if: contains(inputs.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr prepare --target ${{ inputs.target }} --github-env
+
+      # Persistent zig-cc wrapper scripts for darwin (soldr#1043).
+      # Required so cargo nextest archive's cc-rs invocation routes
+      # through zig cc (not the linux host cc).
+      - name: Setup persistent zig-cc wrappers (darwin only)
+        if: contains(inputs.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
+
+      # Stage A — lint
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --target ${{ inputs.target }} --all-targets
 
-      # Stage B — release binary build
+      # Stage B — release binary build, tool dispatched per target.
       - name: Cross-build release binary
         shell: bash
         run: |
           set -euo pipefail
-          if [[ "${{ inputs.target }}" == *-unknown-linux-musl ]]; then
-            cargo zigbuild --release --target ${{ inputs.target }} \
+          target='${{ inputs.target }}'
+          if [[ "$target" == *-pc-windows-msvc ]]; then
+            cargo xwin build --release --target "$target" \
+              --package soldr-cli --bin soldr
+          elif [[ "$target" == *-apple-darwin ]] \
+               || [[ "$target" == *-unknown-linux-musl ]] \
+               || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
+            cargo zigbuild --release --target "$target" \
               --package soldr-cli --bin soldr
           else
-            cargo build --release --target ${{ inputs.target }} \
+            cargo build --release --target "$target" \
               --package soldr-cli --bin soldr
           fi
+          suffix=""
+          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          ls -la "target/$target/release/soldr$suffix"
+          file "target/$target/release/soldr$suffix"
 
-      # Stage C — test-binary archive (phase 4 consumes this)
-      - name: nextest archive (test binaries for downstream run)
+      # Stage C — test binary archive (consumed by _ci-target-run.yml).
+      - name: Build nextest archive
+        if: inputs.build_test_archive
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p dist
-          if [[ "${{ inputs.target }}" == *-unknown-linux-musl ]]; then
-            # nextest archive doesn't know about zigbuild; pre-build
-            # the test binaries via zigbuild --tests, then have nextest
-            # bundle them.
-            cargo zigbuild --tests --release --target ${{ inputs.target }} \
-              --package soldr-cli || true
-          fi
+          target='${{ inputs.target }}'
+          archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
           cargo nextest archive \
-            --target ${{ inputs.target }} \
+            --target "$target" \
             --workspace \
-            --archive-file dist/test-bins.tar.zst \
-            --archive-format tar-zst || echo "nextest archive failed — phase 4 will skip"
+            --archive-file "$archive" \
+            --archive-format tar-zst
+          ls -la "$archive"
 
-      # Stage D — native test run for linux-host targets only (gnu lane)
-      - name: cargo nextest run (linux native lanes)
-        if: inputs.run_native_tests
+      # Stage D — stage + upload artifact bundle
+      - name: Stage artifact bundle
         shell: bash
         run: |
           set -euo pipefail
-          cargo nextest run --target ${{ inputs.target }} --workspace --no-fail-fast \
-            -E '!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/)'
+          target='${{ inputs.target }}'
+          suffix=""
+          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          mkdir -p dist/package
+          cp "target/$target/release/soldr$suffix" "dist/package/soldr$suffix"
+          chmod +x "dist/package/soldr$suffix" 2>/dev/null || true
+          # Fixtures go alongside the binary so the target-run job can
+          # set SOLDR_TEST_FIXTURES_DIR via the helper from #1040.
+          if [ -d crates/soldr-cli/tests/fixtures ]; then
+            cp -R crates/soldr-cli/tests/fixtures dist/package/fixtures
+          fi
+          ls -la dist/
 
-      # Stage E — upload artifact for phase-4 target-run jobs
       - name: Upload artifact
-        if: success() || failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ inputs.artifact_name != '' && inputs.artifact_name || format('ci-cross-build-{0}', inputs.target) }}
+          name: ${{ inputs.artifact_name }}
           path: |
-            target/${{ inputs.target }}/release/soldr*
-            dist/test-bins.tar.zst
-            crates/soldr-cli/tests/fixtures/
+            dist/package/
+            dist/${{ inputs.artifact_name }}-tests.tar.zst
           if-no-files-found: warn
           retention-days: 7
+          compression-level: 0
