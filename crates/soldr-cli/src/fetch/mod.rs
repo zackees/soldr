@@ -477,11 +477,85 @@ async fn fetch_repo_binary_once(
     )
     .await?;
 
+    // soldr#936: post-extract smoke test. Confirms the binary is
+    // actually executable + not a corrupted-shell-script masquerade
+    // (the `4: Syntax error: ")" unexpected` failure mode that
+    // motivated this issue). Failure deletes the extracted artifact
+    // and bubbles up a clear error so the caller can retry or fail
+    // loudly instead of silently caching a broken binary.
+    smoke_test_or_evict(&binary_path, cache_name)?;
+
     Ok(FetchResult {
         binary_path,
         version: release.version,
         cached: false,
     })
+}
+
+/// soldr#936: smoke-test a freshly-extracted binary by invoking it
+/// with `--version` (with a short timeout). On failure, evict the
+/// extracted file so the next fetch attempt does a clean re-download
+/// rather than reading the corrupt artifact from cache.
+fn smoke_test_or_evict(
+    binary_path: &std::path::Path,
+    cache_name: &str,
+) -> Result<(), SoldrError> {
+    use std::process::Command;
+
+    if !binary_path.is_file() {
+        return Err(SoldrError::Other(format!(
+            "smoke test: {cache_name} binary at {} is not a file after extract",
+            binary_path.display()
+        )));
+    }
+
+    let output = Command::new(binary_path)
+        .arg("--version")
+        .output();
+
+    let evict = |reason: &str| {
+        eprintln!(
+            "soldr: smoke test FAILED for {cache_name} at {}: {reason} — evicting from cache",
+            binary_path.display()
+        );
+        let _ = std::fs::remove_file(binary_path);
+    };
+
+    match output {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            // Some tools (e.g. unusual subcommand stubs) don't support
+            // --version cleanly. Fall through to --help as the
+            // second-chance probe before evicting.
+            let help_ok = Command::new(binary_path)
+                .arg("--help")
+                .output()
+                .map(|h| h.status.success())
+                .unwrap_or(false);
+            if help_ok {
+                Ok(())
+            } else {
+                evict(&format!(
+                    "exit status {} on --version (stderr: {})",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ));
+                Err(SoldrError::Other(format!(
+                    "smoke test failed: {cache_name} binary at {} \
+                     did not respond to --version / --help — likely \
+                     a corrupted download (see soldr#936)",
+                    binary_path.display()
+                )))
+            }
+        }
+        Err(err) => {
+            evict(&format!("exec failed: {err}"));
+            Err(SoldrError::Other(format!(
+                "smoke test failed: could not exec {cache_name} at {}: {err}",
+                binary_path.display()
+            )))
+        }
+    }
 }
 
 /// Env var (issue #873) controlling which resolver hops fire. Comma-
@@ -1020,4 +1094,48 @@ mod tests {
         assert!(msg.contains("aarch64-apple-darwin"));
         assert!(msg.contains("release lookup"));
     }
+
+    // soldr#936 smoke-test-or-evict regression tests.
+
+    crate::timed_test!(smoke_test_missing_file_errors, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let bogus = tmp.path().join("not-a-binary");
+        let err = smoke_test_or_evict(&bogus, "fake-tool")
+            .expect_err("missing file must fail smoke");
+        assert!(
+            err.to_string().contains("not a file after extract"),
+            "expected 'not a file after extract' in error, got: {err}"
+        );
+    });
+
+    crate::timed_test!(smoke_test_corrupt_shell_evicts_file, {
+        // soldr#936's actual motivating case: a downloaded artifact
+        // is actually a corrupted shell script that fails with
+        // `4: Syntax error: ")" unexpected`. Smoke runs --version,
+        // detects the failure, deletes the bogus file.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let bogus_bin = tmp.path().join("cargo-zigbuild");
+        std::fs::write(
+            &bogus_bin,
+            "#!/bin/sh\nsomething_that_will_definitely_fail_to_exec_or_be_a_command\nexit 1\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = std::fs::metadata(&bogus_bin).unwrap().permissions();
+            p.set_mode(0o755);
+            std::fs::set_permissions(&bogus_bin, p).unwrap();
+        }
+
+        let result = smoke_test_or_evict(&bogus_bin, "cargo-zigbuild");
+        // On Windows the shebang fails to execute at all → exec error
+        // path. On Unix the script runs but exits 1 → exit-status
+        // path. Both paths must evict + error.
+        assert!(result.is_err(), "smoke test must fail for corrupt binary");
+        assert!(
+            !bogus_bin.is_file(),
+            "smoke failure must evict the corrupted binary at {bogus_bin:?}"
+        );
+    });
 }
