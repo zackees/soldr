@@ -164,15 +164,44 @@ jobs:
           set -euo pipefail
           soldr prepare --target ${{ inputs.target }} --github-env "$GITHUB_ENV"
 
-      # Persistent zig-cc wrapper scripts for darwin (soldr#1043).
-      # Required so cargo nextest archive's cc-rs invocation routes
-      # through zig cc (not the linux host cc).
-      - name: Setup persistent zig-cc wrappers (darwin only)
-        if: contains(inputs.target, 'apple-darwin')
+      # Persistent zig-cc wrapper scripts for every zigbuild target
+      # (darwin + musl + aarch64-linux-gnu). soldr#1043 / #1068.
+      # Required so cargo clippy / nextest archive's cc-rs invocations
+      # find a cross-cc (`zig cc -target X`) rather than expecting
+      # `aarch64-linux-gnu-gcc` etc. on the host.
+      - name: Setup persistent zig-cc wrappers
+        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         shell: bash
         run: |
           set -euo pipefail
           bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
+
+      # For darwin: ensure SDKROOT propagates to cc-rs via -isysroot in
+      # CFLAGS_<t>, so jemalloc / other C deps with autoconf-emitted
+      # `#include <sys/syscall.h>` resolve against the Apple SDK rather
+      # than the linux host headers. soldr#1068.
+      - name: Inject SDKROOT into CFLAGS (darwin only)
+        if: contains(inputs.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_u=$(echo "${{ inputs.target }}" | tr '-' '_')
+          if [ -n "${SDKROOT:-}" ]; then
+            echo "CFLAGS_${target_u}=-isysroot $SDKROOT" >> "$GITHUB_ENV"
+            echo "CXXFLAGS_${target_u}=-isysroot $SDKROOT" >> "$GITHUB_ENV"
+          fi
+
+      # For musl + aarch64-gnu (every linux zigbuild target): suppress
+      # rustc's self-contained crt files. Zig already supplies its own
+      # crt1.o via `-target X`; without this, the linker sees BOTH and
+      # fails with "duplicate symbol: _start". soldr#1068.
+      - name: Disable rustc self-contained crt (musl + aarch64-gnu)
+        if: contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
+        shell: bash
+        run: |
+          set -euo pipefail
+          target_u_upper=$(echo "${{ inputs.target }}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
+          echo "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-self-contained=no" >> "$GITHUB_ENV"
 
       # Stage A — lint
       # `-p soldr-cli` instead of `--all`: soldr-cli has a `path`
@@ -183,8 +212,14 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt -p soldr-cli -- --check
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --target ${{ inputs.target }} --all-targets
+      # Host clippy, NOT `--target ${{ inputs.target }}`. Running
+      # clippy against a cross target requires the C cross-toolchain
+      # for every *-sys / ring build script. The cross-build lane below
+      # dispatches to cargo-xwin / cargo-zigbuild for the actual cross-
+      # compile; clippy only needs the host toolchain to catch
+      # source-level lint issues. soldr#1068.
+      - name: cargo clippy (host)
+        run: cargo clippy --workspace --all-targets
 
       # Stage B — release binary build, tool dispatched per target.
       - name: Cross-build release binary
@@ -210,8 +245,12 @@ jobs:
           file "target/$target/release/soldr$suffix"
 
       # Stage C — test binary archive (consumed by _ci-target-run.yml).
+      # Skipped for windows-msvc: `cargo nextest archive` doesn't go
+      # through `cargo xwin`, so it can't find MSVC `lib.exe` on
+      # linux. Tracked under #1068; will switch to `soldr build`-style
+      # blessed env-var injection in a follow-up.
       - name: Build nextest archive
-        if: inputs.build_test_archive
+        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         run: |
           set -euo pipefail

@@ -83,14 +83,33 @@ linker_path="$out_dir/${target}-linker"
 cat > "$cc_path" <<EOF
 #!/usr/bin/env bash
 # Auto-generated persistent zig-cc wrapper for $target (soldr#1043).
-exec zig cc -target $zig_target "\$@"
+# Strip caller --target=<rust-triple>: cc-rs injects it for cross
+# builds, but zig's -target (set below) uses zig-format triples and
+# rejects rust-format like aarch64-unknown-linux-gnu with
+# "UnknownOperatingSystem". soldr#1068.
+filtered=()
+for arg in "\$@"; do
+    case "\$arg" in
+        --target=*) ;;
+        *) filtered+=("\$arg") ;;
+    esac
+done
+exec zig cc -target $zig_target "\${filtered[@]}"
 EOF
 chmod +x "$cc_path"
 
 cat > "$cxx_path" <<EOF
 #!/usr/bin/env bash
 # Auto-generated persistent zig-c++ wrapper for $target (soldr#1043).
-exec zig c++ -target $zig_target "\$@"
+# See CC wrapper for --target filtering rationale.
+filtered=()
+for arg in "\$@"; do
+    case "\$arg" in
+        --target=*) ;;
+        *) filtered+=("\$arg") ;;
+    esac
+done
+exec zig c++ -target $zig_target "\${filtered[@]}"
 EOF
 chmod +x "$cxx_path"
 
@@ -104,7 +123,19 @@ chmod +x "$ar_path"
 cat > "$linker_path" <<EOF
 #!/usr/bin/env bash
 # Auto-generated persistent zig-cc linker wrapper for $target (soldr#1043).
-exec zig cc -target $zig_target "\$@"
+# See CC wrapper for --target filtering rationale. The duplicate-_start
+# problem from #1068 is handled at the workflow level via the
+# CARGO_TARGET_<T>_RUSTFLAGS=-C link-self-contained=no env var
+# (so rustc doesn't pass its own crt files), NOT via -nostartfiles
+# here (zig appears to ignore -nostartfiles in -target mode).
+filtered=()
+for arg in "\$@"; do
+    case "\$arg" in
+        --target=*) ;;
+        *) filtered+=("\$arg") ;;
+    esac
+done
+exec zig cc -target $zig_target "\${filtered[@]}"
 EOF
 chmod +x "$linker_path"
 
