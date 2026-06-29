@@ -143,7 +143,11 @@ mod tests {
     });
 
     crate::timed_test!(env_block_always_marks_pyo3_no_python, {
-        for triple in ["x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-unknown-linux-musl"] {
+        for triple in [
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+            "x86_64-unknown-linux-musl",
+        ] {
             let env = build_env_block(triple).expect("ok");
             assert_eq!(env.get("PYO3_NO_PYTHON").map(String::as_str), Some("1"));
         }

@@ -417,7 +417,6 @@ timed_test!(
             panic!("expected mac hit")
         };
 
-
         assert_eq!(linux_sha, [0xAAu8; 32]);
         assert_eq!(linux_size, 100);
         assert_eq!(mac_sha, [0xBBu8; 32]);

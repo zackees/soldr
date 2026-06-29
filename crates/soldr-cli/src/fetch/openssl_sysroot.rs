@@ -79,7 +79,10 @@ mod tests {
     use super::*;
 
     crate::timed_test!(slug_for_supported_triples, {
-        assert_eq!(catalogue_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
+        assert_eq!(
+            catalogue_slug_for("x86_64-pc-windows-msvc"),
+            Some("windows-x64")
+        );
         assert_eq!(
             catalogue_slug_for("aarch64-pc-windows-msvc"),
             Some("windows-arm64")

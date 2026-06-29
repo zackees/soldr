@@ -232,9 +232,8 @@ pub async fn request_forge_build(req: &ForgeRequest) -> Result<String, ForgeErro
     let workflow = read_dispatch_workflow();
     let git_ref = read_dispatch_ref();
 
-    let dispatch_url = format!(
-        "https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches"
-    );
+    let dispatch_url =
+        format!("https://api.github.com/repos/{repo}/actions/workflows/{workflow}/dispatches");
 
     let client = super::github::http_client().map_err(|e| ForgeError::Network(e.to_string()))?;
     let body = serde_json::json!({
@@ -409,7 +408,10 @@ mod tests {
         std::env::remove_var(FORGE_TOKEN_ENV_VAR);
         match read_token() {
             Err(ForgeError::MissingToken { repo }) => {
-                assert!(!repo.is_empty(), "missing-token error must carry the dispatch repo");
+                assert!(
+                    !repo.is_empty(),
+                    "missing-token error must carry the dispatch repo"
+                );
             }
             other => panic!("expected MissingToken, got {other:?}"),
         }

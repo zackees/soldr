@@ -39,9 +39,6 @@ pub use rustup_init::{
 
 pub mod apple_sdk;
 pub mod archive;
-/// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
-/// blessed `*-pc-windows-msvc` cross-compile path.
-pub mod xwin_cache;
 /// soldr#988 Phase 4 — on-demand builds via `zackees/forge` when the
 /// toolchain catalogue lookup misses. See module doc for the env-var
 /// contract and failure surface.
@@ -63,6 +60,9 @@ pub mod openssl_sysroot;
 /// soldr#997 Phase A — Python sysroot bundle for PyO3 cross-compile
 /// (closes parts of #931, #932, #933).
 pub mod python_sysroot;
+/// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
+/// blessed `*-pc-windows-msvc` cross-compile path.
+pub mod xwin_cache;
 // soldr#1064 Phase B — *-sys C library catalogue distribution.
 // Each module is a stub-until-ingested consumer modeled on
 // openssl_sysroot.rs. Once the soldr-toolchain forge dispatches
@@ -74,12 +74,12 @@ pub mod jemalloc_sysroot;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod sqlite_sysroot;
-pub mod zlib_ng_sysroot;
-pub mod zstd_sysroot;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
 pub mod zig;
+pub mod zlib_ng_sysroot;
+pub mod zstd_sysroot;
 
 pub use apple_sdk::{ensure_apple_sdk, MANAGED_APPLE_SDK_VERSION};
 pub use llvm::{ensure_llvm_toolchain, MANAGED_LLVM_VERSION};
@@ -509,10 +509,7 @@ async fn fetch_repo_binary_once(
 /// with `--version` (with a short timeout). On failure, evict the
 /// extracted file so the next fetch attempt does a clean re-download
 /// rather than reading the corrupt artifact from cache.
-fn smoke_test_or_evict(
-    binary_path: &std::path::Path,
-    cache_name: &str,
-) -> Result<(), SoldrError> {
+fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Result<(), SoldrError> {
     use std::process::Command;
 
     if !binary_path.is_file() {
@@ -522,9 +519,7 @@ fn smoke_test_or_evict(
         )));
     }
 
-    let output = Command::new(binary_path)
-        .arg("--version")
-        .output();
+    let output = Command::new(binary_path).arg("--version").output();
 
     let evict = |reason: &str| {
         eprintln!(
@@ -1113,8 +1108,8 @@ mod tests {
     crate::timed_test!(smoke_test_missing_file_errors, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let bogus = tmp.path().join("not-a-binary");
-        let err = smoke_test_or_evict(&bogus, "fake-tool")
-            .expect_err("missing file must fail smoke");
+        let err =
+            smoke_test_or_evict(&bogus, "fake-tool").expect_err("missing file must fail smoke");
         assert!(
             err.to_string().contains("not a file after extract"),
             "expected 'not a file after extract' in error, got: {err}"

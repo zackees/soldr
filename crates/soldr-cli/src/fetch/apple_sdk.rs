@@ -339,9 +339,15 @@ mod tests {
     // soldr-toolchain#14 Phase 6 — shape + version picker.
 
     crate::timed_test!(shape_slugs_match_catalogue_layout, {
-        assert_eq!(AppleSdkShape::Universal2.catalogue_slug(), "darwin-universal2");
+        assert_eq!(
+            AppleSdkShape::Universal2.catalogue_slug(),
+            "darwin-universal2"
+        );
         assert_eq!(AppleSdkShape::ThinX86_64.catalogue_slug(), "darwin-x86_64");
-        assert_eq!(AppleSdkShape::ThinAArch64.catalogue_slug(), "darwin-aarch64");
+        assert_eq!(
+            AppleSdkShape::ThinAArch64.catalogue_slug(),
+            "darwin-aarch64"
+        );
     });
 
     crate::timed_test!(catalogue_url_substr_format, {

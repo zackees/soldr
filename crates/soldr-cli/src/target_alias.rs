@@ -109,10 +109,7 @@ pub enum AliasError {
         "soldr build --target `{input}`: not a known alias or Rust triple. \
          Did you mean `{suggestion}`?"
     )]
-    Unknown {
-        input: String,
-        suggestion: String,
-    },
+    Unknown { input: String, suggestion: String },
     #[error(
         "soldr build --target `{input}`: ambiguous — could mean ARM32 \
          (not supported) or ARM64. Use `{disambiguated}` explicitly."
@@ -125,10 +122,7 @@ pub enum AliasError {
         "soldr build --target `{input}`: 32-bit targets are not in soldr's \
          supported set. Did you mean `{suggestion}`?"
     )]
-    Thirty2Bit {
-        input: String,
-        suggestion: String,
-    },
+    Thirty2Bit { input: String, suggestion: String },
     #[error(
         "soldr build --target `all` is only valid for `soldr prepare --target all`; \
          expand explicitly for `soldr build`."
@@ -309,9 +303,17 @@ fn host_triple() -> &'static str {
         "x86_64-apple-darwin"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "aarch64-apple-darwin"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "musl")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "musl"
+    )) {
         "x86_64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64", target_env = "musl")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "musl"
+    )) {
         "aarch64-unknown-linux-musl"
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"

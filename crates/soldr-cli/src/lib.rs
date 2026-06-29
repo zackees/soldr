@@ -22,19 +22,19 @@ pub mod cache_lib;
 pub mod cargo_metadata_soldr;
 pub mod core;
 pub mod daemon;
+pub mod defender;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 /// Declared from both lib and bin so the unit tests are reachable
 /// via `cargo test --lib`.
 pub mod env_cmd;
+pub mod fetch;
 /// soldr#939 — PyO3 auto-detection via cargo metadata.
 pub mod pyo3_detect;
+pub mod release_sidecar;
+pub mod self_relocate;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;
-pub mod defender;
-pub mod fetch;
-pub mod release_sidecar;
-pub mod self_relocate;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).

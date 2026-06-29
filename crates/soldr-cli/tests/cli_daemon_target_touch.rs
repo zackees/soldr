@@ -15,7 +15,6 @@ use soldr_cli::daemon::lifecycle;
 use soldr_cli::daemon::protocol::Request;
 mod common;
 
-
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -42,9 +42,7 @@ pub const MANAGED_LLVM_TOOLS_VERSION: &str = "18.1.8";
 /// only linux x86_64 is wired. Linux arm64 + macOS arm64 hosts can
 /// be added when soldr's bootstrap matrix supports them as drivers
 /// (today the docker image is linux x86_64 only — see soldr#997).
-pub const LLVM_TOOLS_HOSTS: &[(&str, &str)] = &[
-    ("x86_64-unknown-linux-gnu", "linux-x64"),
-];
+pub const LLVM_TOOLS_HOSTS: &[(&str, &str)] = &[("x86_64-unknown-linux-gnu", "linux-x64")];
 
 /// Catalogue slug for a host triple.
 pub fn host_slug_for(host_triple: &str) -> Option<&'static str> {
@@ -96,10 +94,7 @@ mod tests {
     use super::*;
 
     crate::timed_test!(host_slug_for_known_triple, {
-        assert_eq!(
-            host_slug_for("x86_64-unknown-linux-gnu"),
-            Some("linux-x64")
-        );
+        assert_eq!(host_slug_for("x86_64-unknown-linux-gnu"), Some("linux-x64"));
         assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
     });
 

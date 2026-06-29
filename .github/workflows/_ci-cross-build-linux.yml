@@ -82,6 +82,17 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
 
+      # `prebuild-deps: soldr-cook` runs cargo-chef under the hood,
+      # which replaces every workspace crate's main.rs / lib.rs / build.rs
+      # with `fn main() {}` stubs while it cooks dependency layers. The
+      # cook step doesn't restore the originals — soldr#1066. Without
+      # this `git restore` the subsequent `cargo fmt --check` sees the
+      # stubs (missing trailing newlines, lone `fn main() {}` content)
+      # and fails. The ci.yml `lint` job uses the identical pattern.
+      - name: Restore checkout after soldr-cook
+        shell: bash
+        run: git restore --worktree -- .
+
       - name: Add cross-compile target
         shell: bash
         run: rustup target add ${{ inputs.target }}
@@ -151,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr prepare --target ${{ inputs.target }} --github-env
+          soldr prepare --target ${{ inputs.target }} --github-env "$GITHUB_ENV"
 
       # Persistent zig-cc wrapper scripts for darwin (soldr#1043).
       # Required so cargo nextest archive's cc-rs invocation routes
@@ -164,8 +175,13 @@ jobs:
           bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
 
       # Stage A — lint
+      # `-p soldr-cli` instead of `--all`: soldr-cli has a `path`
+      # dependency on `_vender/zccache/crates/zccache`, and although
+      # `_vender/zccache` is in `workspace.exclude`, `cargo fmt --all`
+      # still walks the path-dep target and flags rustfmt drift in
+      # submodule sources we do not own. See soldr#1066.
       - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p soldr-cli -- --check
 
       - name: cargo clippy
         run: cargo clippy --workspace --target ${{ inputs.target }} --all-targets
