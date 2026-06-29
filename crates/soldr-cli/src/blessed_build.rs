@@ -426,7 +426,14 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
     candidates
         .iter()
         .filter(|p| p.is_dir())
-        .map(|p| format!("/imsvc {}", p.display()))
+        // No space between `/imsvc` and the path. clang-cl accepts
+        // the `/imsvc<path>` joined form; the two-token `/imsvc <path>`
+        // form gets mangled because cc-rs receives CFLAGS, splits on
+        // whitespace, then passes each token as a separate argv entry
+        // — and clang-cl ends up seeing `/imsvc <path>` as two
+        // unrelated args (the path arg is treated as a positional
+        // source file). soldr#1070 root cause.
+        .map(|p| format!("/imsvc{}", p.display()))
         .collect::<Vec<_>>()
         .join(" ")
 }

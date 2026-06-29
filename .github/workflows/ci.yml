@@ -253,17 +253,10 @@ jobs:
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
 
-  # ---------- Windows ARM64 (DISABLED — #1070) ----------
-  # aarch64-pc-windows-msvc cross-build fails at libz-ng-sys's ARM
-  # intrinsics (`__crc32b`, `vld1q_u16_x4`) under clang-cl with
-  # blessed_build's `/imsvc<path>` CFLAGS format bug. Properly fixing
-  # this needs (a) a soldr-side fix to xwin_msvc_cflags() spacing and
-  # (b) a forge-built libz-ng prebuilt for aarch64-msvc shipped via
-  # the soldr-toolchain catalogue. Tracked in #1070 + the forge
-  # toolchain umbrella issue. Re-enable once those land.
+  # ---------- Windows ARM64 ----------
   e2e-windows-arm64-build:
     name: cross-build aarch64-pc-windows-msvc (linux host)
-    if: false  # #1070
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-pc-windows-msvc
@@ -273,7 +266,7 @@ jobs:
   e2e-windows-arm64:
     name: target-run aarch64-pc-windows-msvc
     needs: e2e-windows-arm64-build
-    if: false  # #1070
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: windows-11-arm
