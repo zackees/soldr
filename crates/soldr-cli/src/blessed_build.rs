@@ -102,9 +102,15 @@ pub async fn prepare(
         // Now try to materialize xwin-cache too. If the catalogue row
         // for this arch is ingested, we set XWIN_CACHE_DIR so cargo-
         // xwin transparently uses our cache instead of triggering a
-        // fresh live download. If not, fall through — the shim alone
-        // is enough for the win-arm64 ring fix; cargo-xwin's live
-        // download still produces a working SDK.
+        // fresh live download, AND we inject the `/imsvc` include flags
+        // + `/LIBPATH:` linker args via `CFLAGS_<t>` / `CXXFLAGS_<t>` /
+        // `CARGO_TARGET_<T>_RUSTFLAGS` so the blessed path works
+        // natively without cargo-xwin in the loop (soldr#1036 — make
+        // soldr build a true cargo-xwin replacement, not just a wrapper
+        // that delegates to it). If the catalogue row isn't ingested,
+        // fall through — the shim alone is enough for the win-arm64
+        // ring fix; cargo-xwin's live download still produces a working
+        // SDK.
         match crate::fetch::xwin_cache::ensure_xwin_cache(paths, target_triple).await {
             Ok(cache_dir) => {
                 prep.xwin_cache_dir = Some(cache_dir.clone());
@@ -112,6 +118,30 @@ pub async fn prepare(
                     crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR.to_string(),
                     cache_dir.to_string_lossy().into_owned(),
                 ));
+
+                // Native cflags + rustflags injection (soldr#1036).
+                // cc-rs reads `CFLAGS_<target>` / `CXXFLAGS_<target>`
+                // and forwards them to the compiler invocation. The
+                // soldr-clang-shim routes `clang` → `clang-cl` for
+                // *-pc-windows-msvc, and clang-cl natively accepts
+                // `/imsvc <path>` MSVC-style include flags.
+                let cflags = xwin_msvc_cflags(&cache_dir);
+                if !cflags.is_empty() {
+                    prep.env.push((format!("CFLAGS_{target_u}"), cflags.clone()));
+                    prep.env.push((format!("CXXFLAGS_{target_u}"), cflags));
+                }
+
+                // Linker args via cargo's per-target RUSTFLAGS env var.
+                // Each /LIBPATH: entry becomes a `-C link-arg=...` so
+                // rustc passes it through to lld-link. Whitespace-
+                // separated rustflags is cargo's documented contract.
+                let link_args = xwin_msvc_link_args(&cache_dir, target_triple);
+                if !link_args.is_empty() {
+                    prep.env.push((
+                        format!("CARGO_TARGET_{target_u_upper}_RUSTFLAGS"),
+                        link_args,
+                    ));
+                }
             }
             Err(e) => {
                 eprintln!(
@@ -256,6 +286,69 @@ fn locate_shim_binary() -> Result<PathBuf, SoldrError> {
     )))
 }
 
+/// Build the MSVC-style include-flag string that cargo-xwin would
+/// have injected for a child cargo invocation. Format:
+/// `"/imsvc <crt/include> /imsvc <sdk/include/ucrt> ..."` — each
+/// `/imsvc` is followed by the path as a separate token. clang-cl
+/// natively recognizes `/imsvc <path>` as an MSVC-style include
+/// directive (equivalent to clang's `-isystem <path>`).
+///
+/// Paths that don't exist on disk are silently skipped — defends
+/// against catalogue-shape drift (e.g. a future xwin-cache that
+/// stops shipping the winrt include tree shouldn't make the whole
+/// CFLAGS injection error out).
+fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
+    let candidates = [
+        cache_dir.join("crt").join("include"),
+        cache_dir.join("sdk").join("include").join("ucrt"),
+        cache_dir.join("sdk").join("include").join("um"),
+        cache_dir.join("sdk").join("include").join("shared"),
+        cache_dir.join("sdk").join("include").join("winrt"),
+        cache_dir.join("sdk").join("include").join("cppwinrt"),
+    ];
+    candidates
+        .iter()
+        .filter(|p| p.is_dir())
+        .map(|p| format!("/imsvc {}", p.display()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Build the rustc `-C link-arg=/LIBPATH:<path>` chain for the
+/// xwin-cache so lld-link finds the MSVC import libs without
+/// cargo-xwin being in the loop. Returns a whitespace-separated
+/// rustflags string consumable via `CARGO_TARGET_<T>_RUSTFLAGS`.
+///
+/// The xwin tarball lays libs out per-arch as `crt/lib/<arch>/` and
+/// `sdk/lib/{um,ucrt}/<arch>/` where `<arch>` is the MS arch name
+/// (`x64`, `arm64`) — matching xwin's `--preserve-ms-arch-notation`
+/// flag in the upstream recipe.
+fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> String {
+    let arch = if target_triple.starts_with("aarch64-") {
+        "arm64"
+    } else if target_triple.starts_with("x86_64-") {
+        "x64"
+    } else {
+        return String::new();
+    };
+    let candidates = [
+        cache_dir.join("crt").join("lib").join(arch),
+        cache_dir.join("sdk").join("lib").join("um").join(arch),
+        cache_dir.join("sdk").join("lib").join("ucrt").join(arch),
+    ];
+    candidates
+        .iter()
+        .filter(|p| p.is_dir())
+        .flat_map(|p| {
+            vec![
+                "-C".to_string(),
+                format!("link-arg=/LIBPATH:{}", p.display()),
+            ]
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +384,118 @@ mod tests {
         assert!(prep.xwin_cache_dir.is_none());
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
+    });
+
+    crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {
+        // soldr#1036: simulate an xwin-cache layout, confirm CFLAGS
+        // string contains an `/imsvc <path>` entry for each present
+        // include subtree (and skips absent ones).
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        // Materialize crt/include + sdk/include/ucrt only; leave the
+        // others absent to prove the filter works.
+        std::fs::create_dir_all(root.join("crt").join("include")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("include").join("ucrt")).unwrap();
+
+        let cflags = xwin_msvc_cflags(root);
+        assert!(
+            cflags.contains("/imsvc"),
+            "cflags must contain /imsvc directive: {cflags}"
+        );
+        // Both materialized paths should appear, separated by `/imsvc`.
+        let imsvc_count = cflags.matches("/imsvc").count();
+        assert_eq!(
+            imsvc_count, 2,
+            "expected 2 /imsvc entries (one per present subtree), got: {cflags}"
+        );
+        // Absent winrt subtree must NOT have an entry.
+        assert!(
+            !cflags.contains("winrt"),
+            "absent winrt subtree leaked into cflags: {cflags}"
+        );
+    });
+
+    crate::timed_test!(xwin_cflags_empty_for_empty_cache, {
+        // No subtrees present → empty cflags string. Caller can detect
+        // this and skip the CFLAGS_<t> env var injection entirely.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let cflags = xwin_msvc_cflags(tmp.path());
+        assert!(cflags.is_empty(), "expected empty cflags, got: {cflags:?}");
+    });
+
+    crate::timed_test!(xwin_link_args_picks_correct_arch_subdir, {
+        // Confirm aarch64-pc-windows-msvc looks under `arm64/`,
+        // x86_64-pc-windows-msvc looks under `x64/`. This is the
+        // MS-arch-notation contract from xwin's
+        // --preserve-ms-arch-notation flag in the upstream recipe.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        for arch in ["arm64", "x64"] {
+            std::fs::create_dir_all(
+                root.join("crt").join("lib").join(arch),
+            )
+            .unwrap();
+            std::fs::create_dir_all(
+                root.join("sdk").join("lib").join("um").join(arch),
+            )
+            .unwrap();
+            std::fs::create_dir_all(
+                root.join("sdk").join("lib").join("ucrt").join(arch),
+            )
+            .unwrap();
+        }
+
+        let aarch64 = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+        assert!(
+            aarch64.contains("/arm64") || aarch64.contains("\\arm64"),
+            "aarch64 must hit arm64 subdir: {aarch64}"
+        );
+        assert!(
+            !aarch64.contains("/x64") && !aarch64.contains("\\x64"),
+            "aarch64 link args leaked x64 path: {aarch64}"
+        );
+
+        let x86 = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc");
+        assert!(
+            x86.contains("/x64") || x86.contains("\\x64"),
+            "x86_64 must hit x64 subdir: {x86}"
+        );
+        assert!(
+            !x86.contains("/arm64") && !x86.contains("\\arm64"),
+            "x86_64 link args leaked arm64 path: {x86}"
+        );
+    });
+
+    crate::timed_test!(xwin_link_args_unknown_arch_returns_empty, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        // Non-MSVC triple → empty link args.
+        let out = xwin_msvc_link_args(tmp.path(), "x86_64-unknown-linux-gnu");
+        assert!(
+            out.is_empty(),
+            "non-msvc triple must yield empty link args, got: {out:?}"
+        );
+    });
+
+    crate::timed_test!(xwin_link_args_format_uses_c_link_arg_pairs, {
+        // Each /LIBPATH: must be paired with a leading `-C` so rustc
+        // parses them as link-args. Without the `-C` prefix the flag
+        // would be passed as a plain rustc arg and silently dropped.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("crt").join("lib").join("arm64"))
+            .unwrap();
+
+        let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+        // Count `-C` tokens vs `link-arg=/LIBPATH:` tokens; should be equal.
+        let dash_c = out.split_whitespace().filter(|t| *t == "-C").count();
+        let link_arg = out
+            .split_whitespace()
+            .filter(|t| t.starts_with("link-arg=/LIBPATH:"))
+            .count();
+        assert_eq!(
+            dash_c, link_arg,
+            "every link-arg must be preceded by -C: {out}"
+        );
+        assert!(dash_c >= 1, "expected at least one link-arg pair: {out}");
     });
 }
