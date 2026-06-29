@@ -162,7 +162,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr prepare --target ${{ inputs.target }} --github-env
+          soldr prepare --target ${{ inputs.target }} --github-env "$GITHUB_ENV"
 
       # Persistent zig-cc wrapper scripts for darwin (soldr#1043).
       # Required so cargo nextest archive's cc-rs invocation routes
