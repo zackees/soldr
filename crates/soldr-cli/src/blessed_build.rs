@@ -178,7 +178,139 @@ pub async fn prepare(
         }
     }
 
+    // -------------------------- *-sys library overrides ----------------------
+    // soldr#1064 Phase B. For each registered *-sys library, try to
+    // materialize the catalogue sysroot for the active target. On
+    // success, push the crate-specific override env vars so the *-sys
+    // build.rs skips its vendored compile. On error (not yet ingested,
+    // unsupported triple, network failure), log + fall through — the
+    // crate's vendored compile path still works.
+    if !legacy_vendored_sys_opt_out() {
+        inject_sys_library_overrides(paths, target_triple, &mut prep).await;
+    }
+
     Ok(prep)
+}
+
+/// Env var that opts out of the entire `*-sys` catalogue-substitution
+/// path and falls through to each crate's vendored compile. Set to any
+/// non-empty value (other than `"0"`) to trigger. Mirrors the
+/// `SOLDR_USE_LEGACY_{XWIN,ZIGBUILD}` env-var contract.
+pub const USE_LEGACY_VENDORED_SYS_ENV_VAR: &str = "SOLDR_USE_LEGACY_VENDORED_SYS";
+
+fn legacy_vendored_sys_opt_out() -> bool {
+    std::env::var(USE_LEGACY_VENDORED_SYS_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
+/// Per-*-sys-crate catalogue substitution. Each block follows the same
+/// shape: call the consumer module's `ensure_<lib>_sysroot`, and on
+/// success push the override env vars. Failures are logged but never
+/// fatal — the *-sys crate's vendored compile remains the safety net.
+async fn inject_sys_library_overrides(
+    paths: &SoldrPaths,
+    target_triple: &str,
+    prep: &mut BlessedPrep,
+) {
+    // zstd-sys → ZSTD_SYS_USE_PKG_CONFIG=1 + PKG_CONFIG_PATH
+    match crate::fetch::zstd_sysroot::ensure_zstd_sysroot(paths, target_triple).await {
+        Ok(sysroot) => {
+            prep.env
+                .push(("ZSTD_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
+            prepend_pkg_config_path(prep, &sysroot);
+        }
+        Err(e) => log_sys_unavailable("zstd", target_triple, &e),
+    }
+
+    // libsqlite3-sys → LIBSQLITE3_SYS_USE_PKG_CONFIG=1 + PKG_CONFIG_PATH
+    match crate::fetch::sqlite_sysroot::ensure_sqlite_sysroot(paths, target_triple).await {
+        Ok(sysroot) => {
+            prep.env
+                .push(("LIBSQLITE3_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
+            prepend_pkg_config_path(prep, &sysroot);
+        }
+        Err(e) => log_sys_unavailable("sqlite", target_triple, &e),
+    }
+
+    // tikv-jemalloc-sys → JEMALLOC_OVERRIDE=<lib>/libjemalloc.a
+    match crate::fetch::jemalloc_sysroot::ensure_jemalloc_sysroot(paths, target_triple).await {
+        Ok(sysroot) => {
+            let lib = sysroot.join("lib").join("libjemalloc.a");
+            prep.env.push((
+                "JEMALLOC_OVERRIDE".to_string(),
+                lib.to_string_lossy().into_owned(),
+            ));
+        }
+        Err(e) => log_sys_unavailable("jemalloc", target_triple, &e),
+    }
+
+    // libmimalloc-sys → MIMALLOC_OVERRIDE=<lib>/libmimalloc.a
+    match crate::fetch::mimalloc_sysroot::ensure_mimalloc_sysroot(paths, target_triple).await {
+        Ok(sysroot) => {
+            let lib = sysroot.join("lib").join("libmimalloc.a");
+            prep.env.push((
+                "MIMALLOC_OVERRIDE".to_string(),
+                lib.to_string_lossy().into_owned(),
+            ));
+        }
+        Err(e) => log_sys_unavailable("mimalloc", target_triple, &e),
+    }
+
+    // libz-ng-sys → PKG_CONFIG_PATH (pkg-config-only contract)
+    match crate::fetch::zlib_ng_sysroot::ensure_zlib_ng_sysroot(paths, target_triple).await {
+        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
+        Err(e) => log_sys_unavailable("zlib-ng", target_triple, &e),
+    }
+
+    // lzma-sys → LZMA_API_STATIC=1 + PKG_CONFIG_PATH
+    match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
+        Ok(sysroot) => {
+            prep.env
+                .push(("LZMA_API_STATIC".to_string(), "1".to_string()));
+            prepend_pkg_config_path(prep, &sysroot);
+        }
+        Err(e) => log_sys_unavailable("lzma", target_triple, &e),
+    }
+
+    // bzip2-sys → PKG_CONFIG_PATH (pkg-config-only contract)
+    match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {
+        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
+        Err(e) => log_sys_unavailable("bzip2", target_triple, &e),
+    }
+}
+
+/// Prepend `<sysroot>/lib/pkgconfig` to whatever `PKG_CONFIG_PATH`
+/// value is already queued on `prep.env`. Multiple sysroots stack via
+/// repeated calls (last-wins lookup order = first-pushed sysroot).
+fn prepend_pkg_config_path(prep: &mut BlessedPrep, sysroot: &std::path::Path) {
+    let pkgconfig_dir = sysroot.join("lib").join("pkgconfig");
+    let new_entry = pkgconfig_dir.to_string_lossy().into_owned();
+    // If a prior call already pushed a PKG_CONFIG_PATH entry, prepend
+    // to it rather than clobbering. cargo + the child cargo will see
+    // the final composed value at child-process spawn time.
+    if let Some(existing) = prep
+        .env
+        .iter_mut()
+        .find(|(name, _)| name == "PKG_CONFIG_PATH")
+    {
+        let sep = if cfg!(windows) { ';' } else { ':' };
+        existing.1 = format!("{new_entry}{sep}{}", existing.1);
+    } else {
+        prep.env
+            .push(("PKG_CONFIG_PATH".to_string(), new_entry));
+    }
+}
+
+fn log_sys_unavailable(lib_name: &str, target_triple: &str, err: &SoldrError) {
+    eprintln!(
+        "soldr build: catalogue {lib_name} sysroot unavailable for \
+         {target_triple}: {err}"
+    );
+    eprintln!(
+        "soldr build: continuing — {lib_name}-sys will compile from its \
+         vendored C source as usual"
+    );
 }
 
 fn legacy_xwin_opt_out() -> bool {
