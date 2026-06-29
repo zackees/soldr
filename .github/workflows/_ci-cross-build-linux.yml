@@ -222,13 +222,17 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       # Stage B — release binary build, tool dispatched per target.
+      # Windows MSVC: `soldr build` (the blessed cross-compile surface
+      # per CLAUDE.md "Two build paths" — handles xwin-cache + clang
+      # shim + lld-link env vars internally). Avoids cargo-xwin's CFLAGS
+      # `/imsvc <path>` token-concatenation bug for aarch64. #1070.
       - name: Cross-build release binary
         shell: bash
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
           if [[ "$target" == *-pc-windows-msvc ]]; then
-            cargo xwin build --release --target "$target" \
+            soldr build --release --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-apple-darwin ]] \
                || [[ "$target" == *-unknown-linux-musl ]] \
