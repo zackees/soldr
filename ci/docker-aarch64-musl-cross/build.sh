@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Run inside the soldr-aarch64-musl-cross docker image.
 # Cross-compiles the soldr binary to aarch64-unknown-linux-musl using
-# the aarch64-linux-musl-cross toolchain pre-installed in the image.
+# `cargo zigbuild` (zig 0.13.0 pre-installed in the image bundles a
+# hermetic x86_64-native musl toolchain — no musl.cc or third-party
+# CDN dependency at build time).
 #
 # Output verification: asserts the produced binary is a valid
 # ELF 64-bit LSB aarch64 executable. The NO CHEATING gate that
@@ -21,16 +23,15 @@ echo "::endgroup::"
 
 echo "::group::env probe"
 echo "PATH=$PATH"
-echo "CC_aarch64_unknown_linux_musl=${CC_aarch64_unknown_linux_musl:-<unset>}"
-echo "which aarch64-linux-musl-gcc: $(which aarch64-linux-musl-gcc || echo NOT-FOUND)"
-echo "aarch64-linux-musl-gcc --version:"
-aarch64-linux-musl-gcc --version | head -1
+echo "zig version: $(zig version)"
+echo "cargo-zigbuild version: $(cargo-zigbuild --version)"
 echo "::endgroup::"
 
-echo "::group::Build soldr-cli for $TARGET"
-# Skip the soldr wrapper — this is a fresh container without soldr
-# bootstrapped — call cargo directly through rustup.
-cargo build --release \
+echo "::group::Build soldr-cli for $TARGET via cargo zigbuild"
+# `cargo zigbuild` delegates to cargo build but routes C/C++/linker
+# invocations through zig's bundled musl toolchain. Hermetic — no
+# host C compiler involved for the cross-compile.
+cargo zigbuild --release \
     --target "$TARGET" \
     -p soldr-cli \
     --bin soldr
