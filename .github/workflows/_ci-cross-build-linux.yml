@@ -82,6 +82,17 @@ jobs:
           prebuild-deps: soldr-cook
           prebuild-deps-flags: ""
 
+      # `prebuild-deps: soldr-cook` runs cargo-chef under the hood,
+      # which replaces every workspace crate's main.rs / lib.rs / build.rs
+      # with `fn main() {}` stubs while it cooks dependency layers. The
+      # cook step doesn't restore the originals — soldr#1066. Without
+      # this `git restore` the subsequent `cargo fmt --check` sees the
+      # stubs (missing trailing newlines, lone `fn main() {}` content)
+      # and fails. The ci.yml `lint` job uses the identical pattern.
+      - name: Restore checkout after soldr-cook
+        shell: bash
+        run: git restore --worktree -- .
+
       - name: Add cross-compile target
         shell: bash
         run: rustup target add ${{ inputs.target }}
