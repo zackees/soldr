@@ -150,11 +150,17 @@ jobs:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          cargo build --release --locked --package soldr-cli --bin soldr \
+          cargo build --release --locked --package soldr-cli \
+            --bin soldr --bin soldr-clang-shim \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
           cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          # blessed_build::install_clang_shim looks for soldr-clang-shim
+          # next to the soldr exe. Without it, `soldr build` errors with
+          # "soldr-clang-shim binary not found".
+          cp target/x86_64-unknown-linux-gnu/release/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
 
       # Apple SDK fetch for darwin targets — soldr prepare materializes
