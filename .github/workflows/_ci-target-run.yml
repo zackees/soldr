@@ -1,0 +1,106 @@
+# soldr#1042 / #1038 phase 4: target run-only job.
+#
+# Companion to `_ci-cross-build-linux.yml` (phase 3). Downloads the
+# artifact produced by the linux cross-builder + runs the pre-built
+# test binaries on the native runner. No `cargo` / `rustc` / `rustup`
+# install — just `cargo-nextest` (a single self-contained binary) and
+# the downloaded test archive.
+#
+# Sets SOLDR_BIN / SOLDR_TEST_FIXTURES_DIR / SOLDR_TEST_SKIP_SOURCE_TREE
+# so tests resolve binaries + fixtures from the artifact and skip the
+# source-tree-coupled tests (phases 1 + 2 of the refactor).
+
+name: CI target run (download + nextest run)
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        type: string
+        required: true
+        description: Target triple — used to pick the runner OS + the artifact name.
+      runs_on:
+        type: string
+        required: true
+        description: GHA runs-on label (e.g. macos-15, windows-11-arm, macos-15-intel).
+      artifact_name:
+        type: string
+        required: true
+        description: Name of the artifact produced by _ci-cross-build-linux.yml.
+      skip_filter:
+        type: string
+        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/)"
+        description: |
+          nextest filter expression. Default skips real-toolchain tests
+          per #1038 Q2 — those need cargo/rustup on the runner. Override
+          if a target's runner has the toolchain (e.g. linux-native).
+
+permissions:
+  contents: read
+
+jobs:
+  target-run:
+    name: target-run ${{ inputs.target }}
+    runs-on: ${{ inputs.runs_on }}
+    timeout-minutes: 30
+    steps:
+      # No source checkout — the artifact carries everything we need.
+      # If individual tests want to fall back to MANIFEST_DIR, they
+      # short-circuit via SOLDR_TEST_SKIP_SOURCE_TREE.
+
+      - name: Download cross-build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v6
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: artifact
+
+      - name: List artifact contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -la artifact/ || true
+          find artifact/ -maxdepth 3 -type f | head -30 || true
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run pre-built tests via nextest archive
+        shell: bash
+        env:
+          # soldr#1039 phase 1 + #1040 phase 2 env handoff.
+          SOLDR_BIN: ${{ github.workspace }}/artifact/target/${{ inputs.target }}/release/soldr
+          SOLDR_TEST_FIXTURES_DIR: ${{ github.workspace }}/artifact/crates/soldr-cli/tests/fixtures
+          SOLDR_TEST_SKIP_SOURCE_TREE: "1"
+        run: |
+          set -euo pipefail
+          archive="artifact/dist/test-bins.tar.zst"
+          if [ ! -f "$archive" ]; then
+            echo "FATAL: $archive missing — phase-3 nextest archive may have failed" >&2
+            exit 1
+          fi
+          # On Windows the SOLDR_BIN path needs .exe + backslash
+          # adaptation; nextest run handles cross-platform paths but
+          # bash + Win paths can drift. Surface the resolution first.
+          echo "SOLDR_BIN=$SOLDR_BIN"
+          echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
+          if [ ! -f "$SOLDR_BIN" ] && [ -f "${SOLDR_BIN}.exe" ]; then
+            SOLDR_BIN="${SOLDR_BIN}.exe"
+            export SOLDR_BIN
+            echo "(adjusted SOLDR_BIN to .exe variant)"
+          fi
+          cargo nextest run \
+            --archive-file "$archive" \
+            --no-fail-fast \
+            -E "${{ inputs.skip_filter }}"
+
+      - name: Upload junit / on-failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+        with:
+          name: target-run-${{ inputs.target }}-failure
+          path: |
+            target/nextest/default/*.xml
+          if-no-files-found: ignore
+          retention-days: 7
