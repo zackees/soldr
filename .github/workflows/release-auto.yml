@@ -281,13 +281,13 @@ jobs:
       # (SYSV), statically linked, stripped` binary.
       - name: Setup zig (aarch64-musl lane)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        uses: mlugg/setup-zig@v2
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
       - name: Install cargo-zigbuild (aarch64-musl lane)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-zigbuild@0.23.0
 
