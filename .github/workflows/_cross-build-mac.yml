@@ -124,13 +124,46 @@ jobs:
           retention-days: 7
           compression-level: 0
 
-      # The `build_test_archive` input is accepted for downstream
-      # compat but currently a no-op. `cargo nextest archive` runs
-      # `cargo test --no-run` under the hood, which invokes cc-rs
-      # to compile `ring`'s darwin asm; the linux host's cc doesn't
-      # accept `-arch x86_64` / `-mmacosx-version-min=10.7`.
-      # cargo-zigbuild's CC/AR/linker wrappers persist only inside
-      # the `cargo zigbuild ...` invocation, not into a downstream
-      # nextest step. Solving this needs persistent wrapper scripts
-      # + env vars exported across steps — tracked separately so
-      # this PR can ship the e2e split independently.
+      # soldr#1043 phase 5: persistent zig-cc wrappers + nextest archive.
+      #
+      # Background: `cargo nextest archive` runs `cargo test --no-run`,
+      # which re-invokes cc-rs for ring's darwin asm. cargo-zigbuild's
+      # CC/AR/linker wrappers persist only inside `cargo zigbuild ...`,
+      # not into a downstream nextest step. Materialize persistent
+      # wrapper scripts on disk + export CC_<target> / CXX_<target> /
+      # AR_<target> / CARGO_TARGET_<T>_LINKER via GITHUB_ENV so the
+      # nextest invocation below picks them up.
+      - name: Setup persistent zig-cc wrappers (darwin test archive)
+        if: inputs.build_test_archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
+
+      - name: Install cargo-nextest (darwin test archive)
+        if: inputs.build_test_archive
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with:
+          tool: cargo-nextest
+
+      - name: Build nextest archive (darwin)
+        if: inputs.build_test_archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cargo nextest archive \
+            --target "${{ inputs.target }}" \
+            --workspace \
+            --archive-file "dist/${{ inputs.artifact_name }}-tests.tar.zst" \
+            --archive-format tar-zst
+          ls -la dist/
+
+      - name: Upload nextest archive (darwin)
+        if: inputs.build_test_archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ inputs.artifact_name }}-tests
+          path: dist/${{ inputs.artifact_name }}-tests.tar.zst
+          if-no-files-found: error
+          retention-days: 7
