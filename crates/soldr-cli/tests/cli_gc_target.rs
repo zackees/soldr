@@ -5,14 +5,17 @@
 
 #![allow(unused_imports)]
 
+mod common;
+
 use serde_json::Value;
 use soldr_cli::timed_test;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn soldr_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_soldr")
+fn soldr_bin() -> std::path::PathBuf {
+    // soldr#1039 phase 1.
+    common::soldr_bin()
 }
 
 fn seed_workspace(root: &Path, name: &str, target_bytes: usize) -> PathBuf {

@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 use soldr_cli::daemon::db;
 use soldr_cli::daemon::protocol::BuildRecord;
+mod common;
+
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -26,7 +28,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"
@@ -37,7 +39,7 @@ fn soldr_daemon_bin() -> PathBuf {
 }
 
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    let mut cmd = Command::new(common::soldr_bin());
     cmd.args(args)
         .env("SOLDR_CACHE_DIR", cache_root)
         .env("HOME", home_root)

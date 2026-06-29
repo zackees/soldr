@@ -14,7 +14,7 @@ use std::{
 
 #[test]
 fn version_command_prints_workspace_version() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .arg("version")
         .output()
         .expect("failed to run soldr version");
@@ -30,7 +30,7 @@ fn version_command_prints_workspace_version() {
 
 #[test]
 fn version_command_emits_versioned_json() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["version", "--json"])
         .output()
         .expect("failed to run soldr version --json");
@@ -46,7 +46,7 @@ fn version_command_emits_versioned_json() {
 
 #[test]
 fn help_lists_phase_one_command_surface() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .arg("--help")
         .output()
         .expect("failed to run soldr --help");

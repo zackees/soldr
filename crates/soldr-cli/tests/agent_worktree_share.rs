@@ -213,7 +213,7 @@ fn git(args: &[&str], cwd: &Path) {
 
 fn soldr_cargo_build(worktree: &Path, cache_dir: &Path) {
     let zccache_dir = cache_dir.join("cache").join("zccache");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["cargo", "build"])
         .current_dir(worktree)
         .env("SOLDR_CACHE_DIR", cache_dir)

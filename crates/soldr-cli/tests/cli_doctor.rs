@@ -167,7 +167,7 @@ fn doctor_reports_drift_when_component_missing() {
     // on the dev machine causes `soldr doctor` to exit 1 with empty
     // stdout — a real bug worth fixing in `resolve_pinned_zccache`
     // separately, but the test should be hermetic regardless.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -232,7 +232,7 @@ fn doctor_reports_no_drift_when_everything_installed() {
     // on the dev machine causes `soldr doctor` to exit 1 with empty
     // stdout — a real bug worth fixing in `resolve_pinned_zccache`
     // separately, but the test should be hermetic regardless.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -269,7 +269,7 @@ fn doctor_handles_missing_manifest() {
     // rustup will write to the log and exit non-zero.
     let rustup = install_failing_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["doctor"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -331,7 +331,7 @@ fn doctor_surfaces_local_zccache_override_when_env_var_set() {
     let log_path = tmp.join("rustup.log");
     let rustup = install_failing_fake_rustup(&log_path);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
@@ -441,7 +441,7 @@ fn doctor_reports_missing_target() {
     // on the dev machine causes `soldr doctor` to exit 1 with empty
     // stdout — a real bug worth fixing in `resolve_pinned_zccache`
     // separately, but the test should be hermetic regardless.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["doctor", "--json"])
         .current_dir(&workspace)
         .env("SOLDR_TEST_RUSTUP_BIN", &rustup)

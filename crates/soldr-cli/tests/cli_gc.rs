@@ -17,7 +17,7 @@ fn gc_summary_is_non_destructive_and_lists_largest_candidates() {
     let cache_root = unique_temp_dir("gc-summary");
     let target = seed_gc_candidate(&cache_root, "summary-project");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "--older-than", "1s", "--larger-than", "1B"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -55,7 +55,7 @@ fn gc_summary_json_reports_candidates_without_deleting() {
     let cache_root = unique_temp_dir("gc-summary-json");
     let target = seed_gc_candidate(&cache_root, "summary-json-project");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "--json", "--older-than", "1s", "--larger-than", "1B"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -92,7 +92,7 @@ fn gc_purge_all_deletes_candidates_without_prompt() {
     let cache_root = unique_temp_dir("gc-purge-all");
     let target = seed_gc_candidate(&cache_root, "purge-project");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args([
             "gc",
             "purge",
@@ -124,7 +124,7 @@ fn gc_purge_enter_accepts_candidate() {
     let cache_root = unique_temp_dir("gc-purge-enter");
     let target = seed_gc_candidate(&cache_root, "purge-enter-project");
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let mut child = Command::new(common::soldr_bin())
         .args(["gc", "purge", "--older-than", "1s", "--larger-than", "1B"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .stdin(std::process::Stdio::piped())
@@ -169,7 +169,7 @@ fn gc_purge_all_json_reports_error_log_path_and_keeps_failed_row() {
     let cache_root = unique_temp_dir("gc-purge-json-failure");
     let target = seed_gc_file_candidate(&cache_root, "purge-json-failure-project");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args([
             "gc",
             "purge",
@@ -234,13 +234,13 @@ fn gc_list_json_reports_built_project_target_dir() {
     fs::create_dir_all(project_dir.join("src")).expect("failed to create src dir");
     fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").expect("failed to write main.rs");
 
-    let soldr_bin = env!("CARGO_BIN_EXE_soldr");
+    let soldr_bin = common::soldr_bin();
     let cargo = rustup_which("cargo");
 
     let build = Command::new(&cargo)
         .args(["build", "--quiet"])
         .current_dir(&project_dir)
-        .env("RUSTC_WRAPPER", soldr_bin)
+        .env("RUSTC_WRAPPER", &soldr_bin)
         .env("SOLDR_CACHE_DIR", &cache_root)
         // This fixture intentionally exercises soldr as a plain
         // RUSTC_WRAPPER, not as a child of the outer `soldr cargo test`
@@ -266,7 +266,7 @@ fn gc_list_json_reports_built_project_target_dir() {
 
     let canonical_target = fs::canonicalize(&target_dir).unwrap_or_else(|_| target_dir.clone());
 
-    let output = Command::new(soldr_bin)
+    let output = Command::new(&soldr_bin)
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &sandbox_cargo_home)
@@ -360,7 +360,7 @@ fn gc_list_json_entries_include_kind_and_purge_safety_defaults() {
     let cache_root = unique_temp_dir("gc-list-kind-defaults");
     let target = seed_gc_candidate(&cache_root, "kind-defaults-project");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -415,7 +415,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
         );
     }
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &sandbox_cargo_home)
@@ -457,7 +457,7 @@ fn gc_list_json_prunes_missing_registry_rows_in_one_pass() {
 
 #[test]
 fn gc_flat_all_is_rejected_with_purge_hint() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "--all"])
         .env("SOLDR_CACHE_DIR", unique_temp_dir("gc-flat-all"))
         .output()

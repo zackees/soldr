@@ -16,8 +16,37 @@ use std::{
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Resolve the soldr binary path for tests. Prefers the `SOLDR_BIN`
+/// env var so a runner that downloaded a pre-built artifact can point
+/// the tests at it; falls back to `env!("CARGO_BIN_EXE_soldr")` so
+/// local `cargo test` keeps working without setup.
+///
+/// soldr#1039 / #1038 phase 1: `env!` expands at compile time, baking
+/// the build-machine's absolute path into the test binary. On a target
+/// runner that downloaded the test artifact from a Linux builder,
+/// that path doesn't exist. This helper centralizes the lookup so
+/// production CI can set `SOLDR_BIN` explicitly without touching any
+/// test code.
+pub(crate) fn soldr_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("SOLDR_BIN") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_soldr"))
+}
+
+/// Companion to `soldr_bin` for tests that need the daemon binary.
+/// Prefers `SOLDR_DAEMON_BIN`; falls back to the in-crate compile-time
+/// path. soldr#1039.
+#[allow(dead_code)]
+pub(crate) fn soldr_daemon_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("SOLDR_DAEMON_BIN") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_soldr-daemon"))
+}
+
 pub(crate) fn isolated_soldr_command() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    let mut command = Command::new(soldr_bin());
     scrub_outer_soldr_env(&mut command);
     command
 }

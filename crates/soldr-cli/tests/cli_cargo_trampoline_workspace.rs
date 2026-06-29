@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-fn soldr_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_soldr")
+fn soldr_bin() -> std::path::PathBuf {
+    // soldr#1039 phase 1.
+    common::soldr_bin()
 }
 
 /// Tiny crate with a binary and a small library so `cargo build` emits

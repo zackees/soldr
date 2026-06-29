@@ -44,7 +44,7 @@ fn gc_list_json_walks_cargo_git_checkouts_under_cargo_home() {
     let _a = seed_git_checkout(&cargo_home, "tokio-abc123", "deadbeef1234");
     let _b = seed_git_checkout(&cargo_home, "serde-def456", "cafefacedeed");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "list", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -96,7 +96,7 @@ fn gc_list_json_kind_filter_narrows_to_cargo_git_checkouts() {
     let cargo_home = fresh_cargo_home("gc-git-checkouts-filter-cargo");
     let _x = seed_git_checkout(&cargo_home, "tokio-abc", "abc123");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "list", "--json", "--kind", "cargo_git_checkouts"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -123,7 +123,7 @@ fn gc_purge_git_checkouts_removes_checkout_directories() {
     let dir = seed_git_checkout(&cargo_home, "tokio-abc", "deadbeef");
     assert!(dir.is_dir());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "purge", "--git-checkouts", "--all", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("CARGO_HOME", &cargo_home)
@@ -153,7 +153,7 @@ fn gc_purge_git_checkouts_removes_checkout_directories() {
 #[test]
 fn gc_purge_rejects_both_registry_src_and_git_checkouts() {
     let cache_root = unique_temp_dir("gc-purge-mutex-cache");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args([
             "gc",
             "purge",

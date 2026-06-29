@@ -17,6 +17,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::daemon::{client, db};
 use soldr_cli::timed_test;
+mod common;
+
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -29,7 +31,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"

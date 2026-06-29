@@ -63,7 +63,7 @@ fn install_zccache_from_directory_writes_sidecar() {
     let home_root = unique_home_dir("install-zccache-dir");
     let src = seed_source_dir(&tmp);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -103,7 +103,7 @@ fn install_zccache_json_round_trip() {
     let src = seed_source_dir(&tmp);
 
     // install --json
-    let install = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let install = Command::new(common::soldr_bin())
         .args(["install-zccache", "--json"])
         .arg(&src)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -123,7 +123,7 @@ fn install_zccache_json_round_trip() {
     );
 
     // --status --json
-    let status = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let status = Command::new(common::soldr_bin())
         .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -143,7 +143,7 @@ fn install_zccache_json_round_trip() {
     );
 
     // --remove --json
-    let remove = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let remove = Command::new(common::soldr_bin())
         .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -156,7 +156,7 @@ fn install_zccache_json_round_trip() {
     assert_eq!(remove_json["removed"], true);
 
     // Second remove is idempotent: removed=false.
-    let remove2 = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let remove2 = Command::new(common::soldr_bin())
         .args(["install-zccache", "--remove", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -176,7 +176,7 @@ fn install_zccache_status_with_no_install_reports_managed_default() {
     fs::create_dir_all(&cache_root).unwrap();
     let home_root = unique_home_dir("install-zccache-status-empty");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache", "--status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -196,7 +196,7 @@ fn install_zccache_no_source_no_flags_errors() {
     let cache_root = tmp.join("soldr-root");
     let home_root = unique_home_dir("install-zccache-empty-args");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -219,7 +219,7 @@ fn install_zccache_mutually_exclusive_flags_rejected() {
     let home_root = unique_home_dir("install-zccache-mutex");
 
     // clap should reject `--remove` + `--status` outright.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache", "--remove", "--status"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -233,7 +233,7 @@ fn install_zccache_mutually_exclusive_flags_rejected() {
     );
 
     // SOURCE + --remove is also rejected.
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache", "system", "--remove"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -255,7 +255,7 @@ fn install_zccache_unknown_extension_errors() {
     let bogus = tmp.join("zccache.7z");
     fs::write(&bogus, b"junk").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["install-zccache"])
         .arg(&bogus)
         .env("SOLDR_CACHE_DIR", &cache_root)

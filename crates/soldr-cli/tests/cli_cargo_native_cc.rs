@@ -26,6 +26,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::timed_test;
 
+mod common;
+
 static SOLDR_CARGO_BUILD_LOCK: Mutex<()> = Mutex::new(());
 
 fn soldr_cargo_build_lock() -> MutexGuard<'static, ()> {
@@ -68,8 +70,9 @@ fn toml_string(path: &Path) -> String {
         .replace('"', "\\\"")
 }
 
-fn soldr_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_soldr")
+fn soldr_bin() -> std::path::PathBuf {
+    // soldr#1039 phase 1.
+    common::soldr_bin()
 }
 
 /// Issue #692: the four `run_soldr_cargo_build`-based tests in this

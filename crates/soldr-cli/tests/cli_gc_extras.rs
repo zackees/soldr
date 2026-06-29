@@ -18,7 +18,7 @@ use std::{
 
 #[test]
 fn gc_cargo_help_lists_max_flags_and_dry_run() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "cargo", "--help"])
         .output()
         .expect("failed to run soldr gc cargo --help");
@@ -48,7 +48,7 @@ fn gc_cargo_help_lists_max_flags_and_dry_run() {
 
 #[test]
 fn gc_cargo_rejects_unknown_flag() {
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "cargo", "--bogus-flag"])
         .output()
         .expect("failed to run soldr gc cargo --bogus-flag");
@@ -63,7 +63,7 @@ fn gc_cargo_rejects_unknown_flag() {
 #[test]
 fn gc_locations_json_emits_valid_schema_even_without_caches() {
     let cache_root = unique_temp_dir("gc-locations-json");
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "locations", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         // Disable auto-GC so the test isn't affected by background work.
@@ -134,7 +134,7 @@ fn gc_sweep_no_cargo_dry_run_runs_end_to_end_without_changes() {
     let cache_root = unique_temp_dir("gc-sweep-dryrun");
     let target = seed_gc_candidate(&cache_root, "sweep-dryrun");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_soldr"))
+    let output = Command::new(common::soldr_bin())
         .args(["gc", "sweep", "--no-cargo-gc", "--dry-run", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_AUTO_GC_DISABLED", "1")

@@ -14,6 +14,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
+mod common;
+
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,7 +52,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
 }
 
 fn soldr_daemon_bin() -> PathBuf {
-    let soldr = PathBuf::from(env!("CARGO_BIN_EXE_soldr"));
+    let soldr = common::soldr_bin();
     let parent = soldr.parent().expect("CARGO_BIN_EXE_soldr has a parent");
     let stem = if cfg!(windows) {
         "soldr-daemon.exe"
@@ -87,7 +89,7 @@ fn wait_for_ready(cache_root: &Path, deadline: Instant) -> bool {
 }
 
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    let mut cmd = Command::new(common::soldr_bin());
     cmd.args(args);
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
@@ -244,7 +246,7 @@ fn install_servicedef_writes_running_process_definition() {
     });
     fs::write(&daemon_binary, b"stub daemon").expect("write fake daemon binary");
 
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_soldr"));
+    let mut cmd = Command::new(common::soldr_bin());
     cmd.args([
         "daemon",
         "install-servicedef",
