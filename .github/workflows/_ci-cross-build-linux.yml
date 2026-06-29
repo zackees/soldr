@@ -136,13 +136,15 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Bootstrap soldr from the current checkout (only for darwin —
-      # used to drive `soldr prepare --target ... --github-env` which
-      # materializes the apple SDK via the catalogue + exports SDKROOT
-      # to subsequent steps). Bare cargo build to avoid a chicken-and-
-      # egg with the wrapper.
-      - name: Bootstrap soldr for SDK prep (darwin only)
-        if: contains(inputs.target, 'apple-darwin')
+      # Bootstrap soldr from the current checkout. Darwin uses it to
+      # drive `soldr prepare --target ... --github-env`. Windows MSVC
+      # uses it to drive `soldr build --target X` (the blessed
+      # cross-compile surface). The version that setup-soldr installs
+      # (~v0.7.42 today) predates both subcommands so we need a fresh
+      # binary from main HEAD. Bare cargo build to avoid a chicken-
+      # and-egg with the wrapper.
+      - name: Bootstrap soldr for SDK / blessed-build prep
+        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         env:
           RUSTC_WRAPPER: ""
