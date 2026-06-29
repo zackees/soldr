@@ -45,6 +45,43 @@ pub(crate) fn soldr_daemon_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_soldr-daemon"))
 }
 
+/// soldr#1040 / #1038 phase 2: runtime skip marker for tests that
+/// genuinely require the source tree on disk (workspace Cargo.toml
+/// walks, `src/`-tree scans, fixture-directory reads, etc.). When
+/// `SOLDR_TEST_SKIP_SOURCE_TREE` is set, these tests early-return.
+/// Default OFF — local `cargo test` exercises them as before.
+///
+/// On the cross-build CI flow (target runner downloaded a pre-built
+/// test artifact + has no source tree checked out), the workflow
+/// step that invokes `nextest run` sets `SOLDR_TEST_SKIP_SOURCE_TREE=1`
+/// so these tests skip cleanly instead of erroring on `read_to_string`
+/// against a non-existent path.
+#[allow(dead_code)]
+pub(crate) fn should_skip_source_tree_test(test_name: &str) -> bool {
+    if std::env::var_os("SOLDR_TEST_SKIP_SOURCE_TREE").is_some() {
+        eprintln!(
+            "skipping {test_name}: SOLDR_TEST_SKIP_SOURCE_TREE is set \
+             (source tree not present on this runner — soldr#1040)"
+        );
+        return true;
+    }
+    false
+}
+
+/// Resolve the test-fixtures directory. Prefers `SOLDR_TEST_FIXTURES_DIR`
+/// (set by the cross-build CI when fixtures are packaged separately
+/// from the test binary); falls back to `<CARGO_MANIFEST_DIR>/tests/fixtures`
+/// for local-dev. soldr#1040 / #1038 phase 2.
+#[allow(dead_code)]
+pub(crate) fn fixtures_dir() -> PathBuf {
+    if let Some(p) = std::env::var_os("SOLDR_TEST_FIXTURES_DIR") {
+        return PathBuf::from(p);
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+}
+
 pub(crate) fn isolated_soldr_command() -> Command {
     let mut command = Command::new(soldr_bin());
     scrub_outer_soldr_env(&mut command);

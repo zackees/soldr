@@ -69,10 +69,20 @@ fn cargo_front_door_forces_msvc_target_even_with_polluted_path() {
     .expect("failed to write fake rustc.cmd");
 
     let target_dir = unique_temp_dir("target-dir");
-    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join("windows-msvc-default");
+    // soldr#1040 phase 2: resolve fixtures via SOLDR_TEST_FIXTURES_DIR
+    // with CARGO_MANIFEST_DIR fallback so a runner that downloaded
+    // fixtures alongside the test binary works without code changes.
+    let fixture = common::fixtures_dir().join("windows-msvc-default");
+    if !fixture.is_dir() {
+        if common::should_skip_source_tree_test("wrapper_routes_msvc_default_through_msys_bash") {
+            return;
+        }
+        panic!(
+            "windows-msvc-default fixture not found at {} — \
+             SOLDR_TEST_FIXTURES_DIR may need to be set",
+            fixture.display()
+        );
+    }
     let output = Command::new(common::soldr_bin())
         .args(["--no-cache", "cargo", "build"])
         .current_dir(&fixture)

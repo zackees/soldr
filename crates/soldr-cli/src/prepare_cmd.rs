@@ -1287,6 +1287,16 @@ mod tests {
         // Every entry must classify cleanly via the fuzzy classifier
         // — typos in soldr's own manifest fail at test time, not
         // mid-CI when `soldr prepare --target all` blows up.
+        //
+        // soldr#1040 phase 2: source-tree-coupled — skip on cross-build
+        // target runners that don't have the workspace checked out.
+        if std::env::var_os("SOLDR_TEST_SKIP_SOURCE_TREE").is_some() {
+            eprintln!(
+                "skipping soldr_workspace_metadata_dogfood: \
+                 SOLDR_TEST_SKIP_SOURCE_TREE is set (soldr#1040)"
+            );
+            return;
+        }
         let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("workspace parent of crate dir")

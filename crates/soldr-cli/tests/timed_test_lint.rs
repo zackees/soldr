@@ -38,6 +38,8 @@ use std::path::{Path, PathBuf};
 
 use soldr_cli::timed_test;
 
+mod common;
+
 /// Files that still contain bare `#[test]` declarations. New entries
 /// should NOT be added without explicit reviewer sign-off — migrate
 /// the file to `timed_test!` instead. The list is sorted to make diffs
@@ -237,6 +239,11 @@ fn relative_unix_path(abs: &Path, root: &Path) -> Option<String> {
 }
 
 timed_test!(every_test_uses_timed_test_macro_or_is_allowlisted, {
+    // soldr#1040 phase 2: source-tree-coupled — scans src/ + tests/
+    // directories from disk. Skip on cross-build target runners.
+    if common::should_skip_source_tree_test("every_test_uses_timed_test_macro_or_is_allowlisted") {
+        return;
+    }
     let root = crate_root();
     let mut files = Vec::new();
     collect_rs_files(&root.join("src"), &mut files);
