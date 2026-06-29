@@ -176,10 +176,22 @@ mod tests {
     });
 
     crate::timed_test!(catalogue_slug_for_known_triples, {
-        assert_eq!(catalogue_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
-        assert_eq!(catalogue_slug_for("aarch64-pc-windows-msvc"), Some("windows-arm64"));
-        assert_eq!(catalogue_slug_for("x86_64-apple-darwin"), Some("darwin-x64"));
-        assert_eq!(catalogue_slug_for("aarch64-apple-darwin"), Some("darwin-arm64"));
+        assert_eq!(
+            catalogue_slug_for("x86_64-pc-windows-msvc"),
+            Some("windows-x64")
+        );
+        assert_eq!(
+            catalogue_slug_for("aarch64-pc-windows-msvc"),
+            Some("windows-arm64")
+        );
+        assert_eq!(
+            catalogue_slug_for("x86_64-apple-darwin"),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            catalogue_slug_for("aarch64-apple-darwin"),
+            Some("darwin-arm64")
+        );
         assert_eq!(
             catalogue_slug_for("x86_64-unknown-linux-musl"),
             Some("linux-x64-musl")

@@ -20,23 +20,15 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
 mod cli_args;
-/// soldr#938 — `soldr env --target` subcommand. Prints shell-eval /
-/// shell-export / JSON env block for the given target.
-mod env_cmd;
-/// soldr#939 — PyO3 auto-detection via cargo metadata. Used by the
-/// cargo front door to inject PYO3_CROSS_* env vars when the
-/// workspace pulls in PyO3 and target ≠ host.
-mod pyo3_detect;
-/// soldr#997 — friendly target aliases + Rust-triple passthrough.
-/// Bin tree mirrors the lib declaration; only one alias resolver
-/// is reachable in either build mode.
-mod target_alias;
 mod cook;
 mod core;
 mod daemon;
 mod defender;
 mod defender_probe;
 mod doctor;
+/// soldr#938 — `soldr env --target` subcommand. Prints shell-eval /
+/// shell-export / JSON env block for the given target.
+mod env_cmd;
 mod fetch;
 mod fuzzy_match;
 mod gc;
@@ -47,12 +39,20 @@ mod optimize;
 mod optimize_detect;
 mod optimize_windows;
 mod prepare_cmd;
+/// soldr#939 — PyO3 auto-detection via cargo metadata. Used by the
+/// cargo front door to inject PYO3_CROSS_* env vars when the
+/// workspace pulls in PyO3 and target ≠ host.
+mod pyo3_detect;
 mod release_sidecar;
 mod rust_plan;
 mod save_load;
 mod self_relocate;
 mod shim_dir;
 mod startup_profile;
+/// soldr#997 — friendly target aliases + Rust-triple passthrough.
+/// Bin tree mirrors the lib declaration; only one alias resolver
+/// is reachable in either build mode.
+mod target_alias;
 mod toolchain;
 mod toolchain_doctor;
 mod toolchain_ensure;
@@ -306,9 +306,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // hosts — native msvc/darwin host builds keep using
                 // plain cargo build.
                 if let Some(subcmd) = pick_cross_subcommand(&target_triple) {
-                    full_args = rewrite_build_args_for_subcommand(
-                        full_args, subcmd,
-                    );
+                    full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
                 }
             }
 
@@ -1016,31 +1014,31 @@ fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
         return None;
     }
 
-    let legacy_xwin = std::env::var_os(
-        crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR,
-    )
-    .map(|v| !v.is_empty() && v != "0")
-    .unwrap_or(false);
-    let legacy_zigbuild = std::env::var_os(
-        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
-    )
-    .map(|v| !v.is_empty() && v != "0")
-    .unwrap_or(false);
+    let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    let legacy_zigbuild = std::env::var_os(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
 
     if target_triple.ends_with("-pc-windows-msvc") {
         return if legacy_xwin { None } else { Some("xwin") };
     }
-    if target_triple.ends_with("-apple-darwin")
-        || target_triple.ends_with("-unknown-linux-musl")
-    {
-        return if legacy_zigbuild { None } else { Some("zigbuild") };
+    if target_triple.ends_with("-apple-darwin") || target_triple.ends_with("-unknown-linux-musl") {
+        return if legacy_zigbuild {
+            None
+        } else {
+            Some("zigbuild")
+        };
     }
     // Cross from x86_64 host to aarch64 linux — needs zigbuild for
     // the bundled libc.
-    if target_triple == "aarch64-unknown-linux-gnu"
-        && cfg!(target_arch = "x86_64")
-    {
-        return if legacy_zigbuild { None } else { Some("zigbuild") };
+    if target_triple == "aarch64-unknown-linux-gnu" && cfg!(target_arch = "x86_64") {
+        return if legacy_zigbuild {
+            None
+        } else {
+            Some("zigbuild")
+        };
     }
     None
 }
@@ -1055,10 +1053,7 @@ fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
 /// pair — prepend `xwin` keeping the `build` verb. So
 /// `["build", "--target", X, ...]` becomes
 /// `["xwin", "build", "--target", X, ...]`.
-fn rewrite_build_args_for_subcommand(
-    mut args: Vec<String>,
-    subcmd: &str,
-) -> Vec<String> {
+fn rewrite_build_args_for_subcommand(mut args: Vec<String>, subcmd: &str) -> Vec<String> {
     match subcmd {
         "zigbuild" => {
             if let Some(first) = args.first_mut() {
@@ -1081,8 +1076,7 @@ fn rewrite_build_args_for_subcommand(
 /// on PATH, the value is unchanged (PATH stays clean).
 fn prepend_to_path_env(dir: &std::path::Path) {
     let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut existing: Vec<std::path::PathBuf> =
-        std::env::split_paths(&current).collect();
+    let mut existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
     if existing.first().is_some_and(|p| p == dir) {
         return;
     }

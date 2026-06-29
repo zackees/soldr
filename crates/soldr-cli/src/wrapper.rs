@@ -330,10 +330,9 @@ fn is_compile_env_var(name: &str) -> bool {
         "ZCCACHE_", // ZCCACHE_CACHE_DIR, ZCCACHE_PATH_REMAP, ZCCACHE_SESSION_ID
         "CC_",      // cc-rs cc_PROFILE_TARGET style
         "CXX_",     // ditto for C++
-        "AR_",
-        "LD_",      // LD_LIBRARY_PATH, LD_PRELOAD — both meaningful to subprocesses
-        "DEP_",     // build-script-emitted DEP_<pkg>_<key> env vars
-        "OUT_",     // OUT_DIR (build script working dir)
+        "AR_", "LD_",  // LD_LIBRARY_PATH, LD_PRELOAD — both meaningful to subprocesses
+        "DEP_", // build-script-emitted DEP_<pkg>_<key> env vars
+        "OUT_", // OUT_DIR (build script working dir)
     ];
     if PREFIXES.iter().any(|p| name.starts_with(p)) {
         return true;
@@ -429,67 +428,68 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
     // stdout/stderr as chunk frames arrive, so the IPC layer never
     // holds the whole rustc output buffered in memory.
     let first = client::compile_streaming(&sock, req.clone(), std::io::stdout(), std::io::stderr());
-    let done = match first {
-        Ok(info) => info,
-        Err(_) => {
-            // Spawn the daemon, then retry up to ~30 s. The spawn
-            // returns before the socket is bound. On cold WSL2 starts
-            // (or fresh container layers) the daemon's embedded
-            // zccache service can take a couple of seconds to come up
-            // before it accepts IPC.
-            let spawn_result = crate::daemon::lifecycle::try_spawn_detached();
-            if let Err(e) = &spawn_result {
-                eprintln!("soldr: try_spawn_detached returned err: {e:?}");
-            }
-            let mut last_err = None;
-            let mut done = None;
-            // 30 s retry window — embedded zccache cold-start (redb
-            // open, cache root init, depgraph load) can take several
-            // seconds on first-ever boot in a container.
-            for attempt in 0..300 {
-                std::thread::sleep(std::time::Duration::from_millis(100));
-                match client::compile_streaming(
-                    &sock,
-                    req.clone(),
-                    std::io::stdout(),
-                    std::io::stderr(),
-                ) {
-                    Ok(info) => {
-                        done = Some(info);
-                        break;
-                    }
-                    Err(e) => last_err = Some((attempt, e)),
+    let done =
+        match first {
+            Ok(info) => info,
+            Err(_) => {
+                // Spawn the daemon, then retry up to ~30 s. The spawn
+                // returns before the socket is bound. On cold WSL2 starts
+                // (or fresh container layers) the daemon's embedded
+                // zccache service can take a couple of seconds to come up
+                // before it accepts IPC.
+                let spawn_result = crate::daemon::lifecycle::try_spawn_detached();
+                if let Err(e) = &spawn_result {
+                    eprintln!("soldr: try_spawn_detached returned err: {e:?}");
                 }
-            }
-            match done {
-                Some(info) => info,
-                None => {
-                    // Diagnose: report whether the daemon binary even
-                    // exists at the expected sibling path, the PID
-                    // file presence, and the tail of the daemon's
-                    // spawn log (the daemon's stderr redirected by
-                    // spawn_detached_inner). Concrete place to look.
-                    let bin_diag = std::env::current_exe()
-                        .ok()
-                        .map(|p| crate::daemon::service_definition::sibling_daemon_binary(&p))
-                        .map(|p| (p.exists(), p.display().to_string()))
-                        .unwrap_or((false, "<unknown>".into()));
-                    let log_tail = SoldrPaths::new()
-                        .ok()
-                        .map(|p| p.root.join("daemon-spawn.log"))
-                        .and_then(|p| std::fs::read_to_string(&p).ok())
-                        .map(|s| {
-                            s.lines()
-                                .rev()
-                                .take(20)
-                                .collect::<Vec<_>>()
-                                .into_iter()
-                                .rev()
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        })
-                        .unwrap_or_else(|| "<no spawn log>".into());
-                    return Err(SoldrError::Other(format!(
+                let mut last_err = None;
+                let mut done = None;
+                // 30 s retry window — embedded zccache cold-start (redb
+                // open, cache root init, depgraph load) can take several
+                // seconds on first-ever boot in a container.
+                for attempt in 0..300 {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    match client::compile_streaming(
+                        &sock,
+                        req.clone(),
+                        std::io::stdout(),
+                        std::io::stderr(),
+                    ) {
+                        Ok(info) => {
+                            done = Some(info);
+                            break;
+                        }
+                        Err(e) => last_err = Some((attempt, e)),
+                    }
+                }
+                match done {
+                    Some(info) => info,
+                    None => {
+                        // Diagnose: report whether the daemon binary even
+                        // exists at the expected sibling path, the PID
+                        // file presence, and the tail of the daemon's
+                        // spawn log (the daemon's stderr redirected by
+                        // spawn_detached_inner). Concrete place to look.
+                        let bin_diag = std::env::current_exe()
+                            .ok()
+                            .map(|p| crate::daemon::service_definition::sibling_daemon_binary(&p))
+                            .map(|p| (p.exists(), p.display().to_string()))
+                            .unwrap_or((false, "<unknown>".into()));
+                        let log_tail = SoldrPaths::new()
+                            .ok()
+                            .map(|p| p.root.join("daemon-spawn.log"))
+                            .and_then(|p| std::fs::read_to_string(&p).ok())
+                            .map(|s| {
+                                s.lines()
+                                    .rev()
+                                    .take(20)
+                                    .collect::<Vec<_>>()
+                                    .into_iter()
+                                    .rev()
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            })
+                            .unwrap_or_else(|| "<no spawn log>".into());
+                        return Err(SoldrError::Other(format!(
                         "soldr daemon embedded compile dispatch failed after spawn + 30s retry: \
                          {:?}. daemon_binary=({}, exists={}) spawn_result={:?} sock={}.\n\
                          daemon-spawn.log tail:\n{}\n\
@@ -500,10 +500,10 @@ fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
                         sock.display(),
                         log_tail,
                     )));
+                    }
                 }
             }
-        }
-    };
+        };
 
     Ok(done.exit_code)
 }

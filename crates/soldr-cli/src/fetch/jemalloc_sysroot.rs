@@ -77,8 +77,14 @@ mod tests {
     use super::*;
 
     crate::timed_test!(slug_for_supported_triples, {
-        assert_eq!(catalogue_slug_for("x86_64-unknown-linux-musl"), Some("linux-x64-musl"));
-        assert_eq!(catalogue_slug_for("aarch64-apple-darwin"), Some("darwin-arm64"));
+        assert_eq!(
+            catalogue_slug_for("x86_64-unknown-linux-musl"),
+            Some("linux-x64-musl")
+        );
+        assert_eq!(
+            catalogue_slug_for("aarch64-apple-darwin"),
+            Some("darwin-arm64")
+        );
         // Windows is intentionally unsupported for jemalloc.
         assert_eq!(catalogue_slug_for("x86_64-pc-windows-msvc"), None);
     });

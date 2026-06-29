@@ -19,7 +19,6 @@ use soldr_cli::daemon::{client, db};
 use soldr_cli::timed_test;
 mod common;
 
-
 fn unique_temp_dir(label: &str) -> PathBuf {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -321,7 +321,10 @@ pub async fn run_toolchain_catalogue(json: bool) -> Result<i32, SoldrError> {
             if !status.is_success() {
                 print_catalogue_error(
                     &url,
-                    &format!("HTTP {} (the catalogue file may not be published yet)", status),
+                    &format!(
+                        "HTTP {} (the catalogue file may not be published yet)",
+                        status
+                    ),
                     json,
                 );
                 return Ok(1);
@@ -489,7 +492,10 @@ mod tests {
         // exercise the public string-shape via the pure helper that
         // does not read env: build the URL from the default origin.
         let url = format!("{}/{}", DEFAULT_TOOLCHAIN_ORIGIN, CATALOGUE_DOC_NAME);
-        assert_eq!(url, "https://zackees.github.io/soldr-toolchain/catalogue.v1.json");
+        assert_eq!(
+            url,
+            "https://zackees.github.io/soldr-toolchain/catalogue.v1.json"
+        );
     });
 
     crate::timed_test!(catalogue_v1_json_parses_through_manifest_index, {
@@ -583,6 +589,9 @@ mod tests {
         // they can't fit that under the `origin + /catalogue.v1.json`
         // composition because the listener path is fixed.
         // Verify the override is recognized via the public const name.
-        assert_eq!(TOOLCHAIN_CATALOGUE_URL_ENV_VAR, "SOLDR_TOOLCHAIN_CATALOGUE_URL");
+        assert_eq!(
+            TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
+            "SOLDR_TOOLCHAIN_CATALOGUE_URL"
+        );
     });
 }

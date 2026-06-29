@@ -126,7 +126,10 @@ fn detect_uncached(workspace_root: &Path) -> bool {
 /// Returns an empty map iff PyO3 detection found nothing OR the
 /// target equals the host (no cross-compile, native Python in
 /// the rustc-default toolchain works).
-pub fn cross_env_for_target(workspace_root: &Path, target: &str) -> std::collections::BTreeMap<String, String> {
+pub fn cross_env_for_target(
+    workspace_root: &Path,
+    target: &str,
+) -> std::collections::BTreeMap<String, String> {
     let mut env = std::collections::BTreeMap::new();
     if target.is_empty() || !workspace_uses_pyo3(workspace_root) {
         return env;
@@ -154,9 +157,17 @@ fn host_triple() -> &'static str {
         "x86_64-apple-darwin"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
         "aarch64-apple-darwin"
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64", target_env = "musl")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "x86_64",
+        target_env = "musl"
+    )) {
         "x86_64-unknown-linux-musl"
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64", target_env = "musl")) {
+    } else if cfg!(all(
+        target_os = "linux",
+        target_arch = "aarch64",
+        target_env = "musl"
+    )) {
         "aarch64-unknown-linux-musl"
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "x86_64-unknown-linux-gnu"

@@ -68,8 +68,10 @@ jobs:
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
+      # `-p soldr-cli` not `--all` — `cargo fmt --all` walks the
+      # `_vender/zccache` path-dep submodule. See soldr#1066.
       - name: Check formatting
-        run: soldr cargo fmt --all -- --check
+        run: soldr cargo fmt -p soldr-cli -- --check
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js

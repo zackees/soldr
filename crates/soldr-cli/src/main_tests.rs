@@ -691,14 +691,8 @@ fn pick_cross_subcommand_musl_returns_zigbuild() {
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_xwin_returns_none() {
     let _g = ENV_LOCK.lock().unwrap();
-    std::env::set_var(
-        crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR,
-        "1",
-    );
-    assert_eq!(
-        pick_cross_subcommand("x86_64-pc-windows-msvc"),
-        None,
-    );
+    std::env::set_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR, "1");
+    assert_eq!(pick_cross_subcommand("x86_64-pc-windows-msvc"), None,);
     std::env::remove_var(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR);
 }
 
@@ -706,17 +700,9 @@ fn pick_cross_subcommand_legacy_xwin_returns_none() {
 #[cfg(target_os = "linux")]
 fn pick_cross_subcommand_legacy_zigbuild_returns_none() {
     let _g = ENV_LOCK.lock().unwrap();
-    std::env::set_var(
-        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
-        "1",
-    );
-    assert_eq!(
-        pick_cross_subcommand("aarch64-apple-darwin"),
-        None,
-    );
-    std::env::remove_var(
-        crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR,
-    );
+    std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
+    assert_eq!(pick_cross_subcommand("aarch64-apple-darwin"), None,);
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
 }
 
 #[test]

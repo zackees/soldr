@@ -16,7 +16,6 @@ use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
 mod common;
 
-
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvScope {

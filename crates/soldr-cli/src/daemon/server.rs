@@ -814,11 +814,7 @@ where
 
     let wire_stdout_started = std::time::Instant::now();
     for chunk in body.stdout.chunks(CHUNK_BYTES) {
-        write_frame_async(
-            stream,
-            &Response::CompileStdoutChunk(chunk.to_vec()),
-        )
-        .await?;
+        write_frame_async(stream, &Response::CompileStdoutChunk(chunk.to_vec())).await?;
         stdout_chunks += 1;
         tracing::debug!(
             target: "soldr::daemon::compile_stream",
@@ -835,11 +831,7 @@ where
 
     let wire_stderr_started = std::time::Instant::now();
     for chunk in body.stderr.chunks(CHUNK_BYTES) {
-        write_frame_async(
-            stream,
-            &Response::CompileStderrChunk(chunk.to_vec()),
-        )
-        .await?;
+        write_frame_async(stream, &Response::CompileStderrChunk(chunk.to_vec())).await?;
         stderr_chunks += 1;
         tracing::debug!(
             target: "soldr::daemon::compile_stream",
@@ -884,16 +876,8 @@ where
         &compile_id,
     );
     // Co-record per-compile output bytes for cross-axis analysis.
-    crate::daemon::compile_trace::record(
-        "stdout_bytes",
-        stdout_len as u64,
-        &compile_id,
-    );
-    crate::daemon::compile_trace::record(
-        "stderr_bytes",
-        stderr_len as u64,
-        &compile_id,
-    );
+    crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, &compile_id);
+    crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, &compile_id);
     res
 }
 

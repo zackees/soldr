@@ -60,8 +60,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use blake3::Hasher;
-use zccache::core::NormalizedPath;
 use zccache::audit::AuditMode;
+use zccache::core::NormalizedPath;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest, HostIdentity,
     RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,

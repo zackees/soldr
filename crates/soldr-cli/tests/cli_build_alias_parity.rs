@@ -53,9 +53,7 @@ fn soldr_build_alias_resolves_via_clap_not_external() {
     );
     // Must reference the build verb's own docstring or `--target`.
     assert!(
-        combined.contains("build")
-            || combined.contains("--target")
-            || combined.contains("blessed"),
+        combined.contains("build") || combined.contains("--target") || combined.contains("blessed"),
         "soldr build --help should produce build-verb help text:\n{combined}"
     );
 }
@@ -115,7 +113,9 @@ fn soldr_build_invokes_real_cargo_build() {
         ("soldr cargo build", &cargo_stderr),
     ] {
         assert!(
-            stderr.contains("manifest") || stderr.contains("Cargo.toml") || stderr.contains("nonexistent"),
+            stderr.contains("manifest")
+                || stderr.contains("Cargo.toml")
+                || stderr.contains("nonexistent"),
             "{name} did not reach cargo's manifest-handling path; stderr was:\n{stderr}"
         );
         assert!(
@@ -144,7 +144,9 @@ fn soldr_build_help_documents_blessed_surface() {
     );
 
     assert!(
-        combined.contains("blessed") || combined.contains("cross-compile") || combined.contains("Build the workspace"),
+        combined.contains("blessed")
+            || combined.contains("cross-compile")
+            || combined.contains("Build the workspace"),
         "soldr build --help is missing the blessed-surface contract language:\n{combined}"
     );
 }

@@ -11,9 +11,7 @@ use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
-use crate::daemon::protocol::{
-    BuildRecord, CompileRequest, Request, Response, StatusInfo,
-};
+use crate::daemon::protocol::{BuildRecord, CompileRequest, Request, Response, StatusInfo};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -701,7 +699,9 @@ where
                     write_frame_async(&mut stream, &request),
                 )
                 .await
-                .map_err(|_| windows_timeout_error("daemon IPC compile write", COMPILE_REPLY_TIMEOUT))
+                .map_err(|_| {
+                    windows_timeout_error("daemon IPC compile write", COMPILE_REPLY_TIMEOUT)
+                })
                 .and_then(|res| res)
                 {
                     let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
@@ -720,12 +720,11 @@ where
                             return;
                         }
                         Err(_) => {
-                            let _ = tx.send(StreamMsg::Err(ClientError::Io(
-                                windows_timeout_error(
+                            let _ =
+                                tx.send(StreamMsg::Err(ClientError::Io(windows_timeout_error(
                                     "daemon IPC compile read",
                                     COMPILE_REPLY_TIMEOUT,
-                                ),
-                            )));
+                                ))));
                             return;
                         }
                     };

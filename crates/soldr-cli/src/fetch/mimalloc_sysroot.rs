@@ -72,8 +72,14 @@ mod tests {
     use super::*;
 
     crate::timed_test!(slug_for_supported_triples, {
-        assert_eq!(catalogue_slug_for("x86_64-pc-windows-msvc"), Some("windows-x64"));
-        assert_eq!(catalogue_slug_for("aarch64-unknown-linux-gnu"), Some("linux-arm64-gnu"));
+        assert_eq!(
+            catalogue_slug_for("x86_64-pc-windows-msvc"),
+            Some("windows-x64")
+        );
+        assert_eq!(
+            catalogue_slug_for("aarch64-unknown-linux-gnu"),
+            Some("linux-arm64-gnu")
+        );
         assert_eq!(catalogue_slug_for("wasm32-unknown-unknown"), None);
     });
 

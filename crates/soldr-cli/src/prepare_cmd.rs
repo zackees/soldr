@@ -272,9 +272,7 @@ pub async fn run(
                 match ensure_llvm_toolchain(&paths).await {
                     Ok(p) => Ok::<PathBuf, SoldrError>(p),
                     Err(SoldrError::UnsupportedPlatform(m)) => {
-                        eprintln!(
-                            "soldr prepare: LLVM auto-bootstrap not supported on host: {m}"
-                        );
+                        eprintln!("soldr prepare: LLVM auto-bootstrap not supported on host: {m}");
                         Ok(PathBuf::new())
                     }
                     Err(e) => Err(e),
@@ -290,8 +288,7 @@ pub async fn run(
             // Darwin cross-compile path: needs zig + Apple SDK; export SDKROOT.
             // Both fetches independent — race them.
             eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk (parallel)");
-            let (zig_dir, sdk) =
-                tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths))?;
+            let (zig_dir, sdk) = tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths))?;
             eprintln!("soldr prepare: zig at {}", zig_dir.display());
             eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
             let sdk_str = sdk.to_string_lossy();

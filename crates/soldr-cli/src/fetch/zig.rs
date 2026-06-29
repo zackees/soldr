@@ -353,7 +353,10 @@ fn zig_download_url(version: &str) -> Result<(String, String), SoldrError> {
     // `zig-{arch}-{os}-{ver}.tar.xz`. Branch on the major/minor here
     // rather than threading a per-version table — the swap is the
     // only naming change in the version range soldr cares about.
-    let pre_0_14 = matches!(version, "0.13.0" | "0.12.0" | "0.11.0" | "0.10.1" | "0.10.0");
+    let pre_0_14 = matches!(
+        version,
+        "0.13.0" | "0.12.0" | "0.11.0" | "0.10.1" | "0.10.0"
+    );
     let asset = if pre_0_14 {
         format!("zig-{os}-{arch}-{version}.{ext}")
     } else {
@@ -413,7 +416,9 @@ mod tests {
         let (asset_14, _) = zig_download_url("0.14.1").unwrap();
         // Whatever host the unit tests run on, the arch + os tokens
         // must appear in swapped order between the two versions.
-        let Some((os, arch)) = host_zig_os_arch() else { return };
+        let Some((os, arch)) = host_zig_os_arch() else {
+            return;
+        };
         let pre_13 = format!("zig-{os}-{arch}-0.13.0");
         let post_14 = format!("zig-{arch}-{os}-0.14.1");
         assert!(asset_13.starts_with(&pre_13), "0.13.0: {asset_13}");
@@ -427,7 +432,9 @@ mod tests {
         // follows the same pre/post-0.14 branching as zig_download_url —
         // they MUST agree or extracts land in a directory the lookup misses
         // (soldr#1032).
-        let Some((os, arch)) = host_zig_os_arch() else { return };
+        let Some((os, arch)) = host_zig_os_arch() else {
+            return;
+        };
         let root = managed_zig_archive_root();
         // MANAGED_ZIG_VERSION is currently 0.14.1 (post-swap).
         let expected = format!("zig-{arch}-{os}-{MANAGED_ZIG_VERSION}");

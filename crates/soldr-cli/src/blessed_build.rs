@@ -66,10 +66,7 @@ pub struct BlessedPrep {
 ///
 /// Caller is responsible for applying `prep.env` and prepending
 /// `prep.shim_path_dir` to `PATH` on the child cargo invocation.
-pub async fn prepare(
-    paths: &SoldrPaths,
-    target_triple: &str,
-) -> Result<BlessedPrep, SoldrError> {
+pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedPrep, SoldrError> {
     let mut prep = BlessedPrep::default();
 
     // ----------------------------- Windows MSVC ------------------------------
@@ -89,7 +86,8 @@ pub async fn prepare(
         let shim_dir = install_clang_shim(paths)?;
         prep.shim_path_dir = Some(shim_dir);
 
-        prep.env.push((format!("CC_{target_u}"), "clang".to_string()));
+        prep.env
+            .push((format!("CC_{target_u}"), "clang".to_string()));
         prep.env
             .push((format!("CXX_{target_u}"), "clang".to_string()));
         prep.env
@@ -127,7 +125,8 @@ pub async fn prepare(
                 // `/imsvc <path>` MSVC-style include flags.
                 let cflags = xwin_msvc_cflags(&cache_dir);
                 if !cflags.is_empty() {
-                    prep.env.push((format!("CFLAGS_{target_u}"), cflags.clone()));
+                    prep.env
+                        .push((format!("CFLAGS_{target_u}"), cflags.clone()));
                     prep.env.push((format!("CXXFLAGS_{target_u}"), cflags));
                 }
 
@@ -144,9 +143,7 @@ pub async fn prepare(
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "soldr build: catalogue xwin-cache unavailable for {target_triple}: {e}"
-                );
+                eprintln!("soldr build: catalogue xwin-cache unavailable for {target_triple}: {e}");
                 eprintln!(
                     "soldr build: continuing without XWIN_CACHE_DIR — \
                      cargo-xwin's live download will produce the SDK \
@@ -163,15 +160,11 @@ pub async fn prepare(
         match crate::fetch::apple_sdk::ensure_apple_sdk(paths).await {
             Ok(sdk) => {
                 prep.sdkroot = Some(sdk.clone());
-                prep.env.push((
-                    "SDKROOT".to_string(),
-                    sdk.to_string_lossy().into_owned(),
-                ));
+                prep.env
+                    .push(("SDKROOT".to_string(), sdk.to_string_lossy().into_owned()));
             }
             Err(e) => {
-                eprintln!(
-                    "soldr build: apple SDK unavailable for {target_triple}: {e}"
-                );
+                eprintln!("soldr build: apple SDK unavailable for {target_triple}: {e}");
                 // Don't hard-fail; zigbuild may still locate an SDK
                 // via cargo-zigbuild's own mechanism.
             }
@@ -297,8 +290,7 @@ fn prepend_pkg_config_path(prep: &mut BlessedPrep, sysroot: &std::path::Path) {
         let sep = if cfg!(windows) { ';' } else { ':' };
         existing.1 = format!("{new_entry}{sep}{}", existing.1);
     } else {
-        prep.env
-            .push(("PKG_CONFIG_PATH".to_string(), new_entry));
+        prep.env.push(("PKG_CONFIG_PATH".to_string(), new_entry));
     }
 }
 
@@ -378,29 +370,22 @@ fn clang_shim_names() -> Vec<String> {
     // clang-cl symlink first and the shim re-invokes itself with
     // argv[0]=clang-cl → `unrecognized argv[0] basename`. See
     // ci/docker-aarch64-windows-msvc-cross/ + soldr#1033 followup.
-    vec![
-        "clang.exe".to_string(),
-        "clang++.exe".to_string(),
-    ]
+    vec!["clang.exe".to_string(), "clang++.exe".to_string()]
 }
 
 #[cfg(not(windows))]
 fn clang_shim_names() -> Vec<String> {
     // See the Windows branch for why clang-cl is NOT here.
-    vec![
-        "clang".to_string(),
-        "clang++".to_string(),
-    ]
+    vec!["clang".to_string(), "clang++".to_string()]
 }
 
 fn locate_shim_binary() -> Result<PathBuf, SoldrError> {
     // Look next to the running `soldr` executable.
-    let current_exe = std::env::current_exe().map_err(|e| {
-        SoldrError::Other(format!("could not resolve current exe: {e}"))
-    })?;
-    let exe_dir = current_exe.parent().ok_or_else(|| {
-        SoldrError::Other("current exe has no parent directory".to_string())
-    })?;
+    let current_exe = std::env::current_exe()
+        .map_err(|e| SoldrError::Other(format!("could not resolve current exe: {e}")))?;
+    let exe_dir = current_exe
+        .parent()
+        .ok_or_else(|| SoldrError::Other("current exe has no parent directory".to_string()))?;
 
     let shim_name = if cfg!(windows) {
         "soldr-clang-shim.exe"
@@ -563,18 +548,9 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = tmp.path();
         for arch in ["arm64", "x64"] {
-            std::fs::create_dir_all(
-                root.join("crt").join("lib").join(arch),
-            )
-            .unwrap();
-            std::fs::create_dir_all(
-                root.join("sdk").join("lib").join("um").join(arch),
-            )
-            .unwrap();
-            std::fs::create_dir_all(
-                root.join("sdk").join("lib").join("ucrt").join(arch),
-            )
-            .unwrap();
+            std::fs::create_dir_all(root.join("crt").join("lib").join(arch)).unwrap();
+            std::fs::create_dir_all(root.join("sdk").join("lib").join("um").join(arch)).unwrap();
+            std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join(arch)).unwrap();
         }
 
         let aarch64 = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
@@ -614,8 +590,7 @@ mod tests {
         // would be passed as a plain rustc arg and silently dropped.
         let tmp = tempfile::tempdir().expect("tmpdir");
         let root = tmp.path();
-        std::fs::create_dir_all(root.join("crt").join("lib").join("arm64"))
-            .unwrap();
+        std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
 
         let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
         // Count `-C` tokens vs `link-arg=/LIBPATH:` tokens; should be equal.

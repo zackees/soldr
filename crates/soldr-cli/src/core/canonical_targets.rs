@@ -75,10 +75,7 @@ mod tests {
                 triple.matches('-').count() >= 2,
                 "{triple} is missing components — should be `<arch>-<vendor>-<os>[-<env>]`",
             );
-            assert!(
-                !triple.contains(' '),
-                "{triple} contains whitespace",
-            );
+            assert!(!triple.contains(' '), "{triple} contains whitespace",);
         }
     });
 
@@ -86,8 +83,14 @@ mod tests {
         for t in CANONICAL_TARGETS {
             assert!(is_canonical(t), "{t} not recognized by is_canonical");
         }
-        assert!(!is_canonical("i686-pc-windows-msvc"), "32-bit shouldn't be canonical");
-        assert!(!is_canonical("wasm32-unknown-unknown"), "wasm not canonical");
+        assert!(
+            !is_canonical("i686-pc-windows-msvc"),
+            "32-bit shouldn't be canonical"
+        );
+        assert!(
+            !is_canonical("wasm32-unknown-unknown"),
+            "wasm not canonical"
+        );
         assert!(!is_canonical(""), "empty string");
     });
 }
