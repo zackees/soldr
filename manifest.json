@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-06-29T17:04:56Z",
-  "git_sha": "0c86c65f4b0ca5e23c54e96b473a7de73b784251",
+  "generated_at": "2026-06-29T17:37:34Z",
+  "git_sha": "f91a33e3efdc70c914b6f6aa50f0df27aad6e29c",
   "branch": "benchmark-stats",
   "repository": "zackees/soldr",
   "artifacts": {
