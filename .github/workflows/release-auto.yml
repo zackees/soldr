@@ -197,12 +197,17 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             binary: soldr
+          # soldr#917 / #1053: darwin release builds moved from
+          # macos-15-intel / macos-15 (10× billing multiplier) to
+          # ubuntu-24.04 + cargo zigbuild. Same pattern proven for
+          # aarch64-musl below + the every-commit ci.yml darwin lanes
+          # (PR #1052).
           - name: macOS x64
-            runner: macos-15-intel
+            runner: ubuntu-24.04
             target: x86_64-apple-darwin
             binary: soldr
           - name: macOS ARM64
-            runner: macos-15
+            runner: ubuntu-24.04
             target: aarch64-apple-darwin
             binary: soldr
           - name: Windows x64
@@ -279,17 +284,50 @@ jobs:
       # --add-host musl.cc:127.0.0.1` (musl.cc blackholed): produced
       # a valid `ELF 64-bit LSB executable, ARM aarch64, version 1
       # (SYSV), statically linked, stripped` binary.
-      - name: Setup zig (aarch64-musl lane)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
+      # soldr#917 / #1053: zig + cargo-zigbuild for aarch64-musl AND
+      # for both darwin lanes (cross-compile from linux replaces
+      # macos-runner builds). Same pinned versions as the every-commit
+      # _ci-cross-build-linux.yml workflow.
+      - name: Setup zig (zigbuild lanes)
+        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'apple-darwin')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
-      - name: Install cargo-zigbuild (aarch64-musl lane)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
+      - name: Install cargo-zigbuild (zigbuild lanes)
+        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'apple-darwin')
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-zigbuild@0.23.0
+
+      # Bootstrap soldr from this checkout (bare cargo, host-arch) so
+      # subsequent steps can call `soldr prepare --target <darwin>
+      # --github-env` to materialize the Apple SDK + export SDKROOT.
+      # Mirrors the proven pattern in _ci-cross-build-linux.yml (PR
+      # #1052). Darwin-only — no SDK fetch needed for other lanes.
+      - name: Bootstrap soldr for Apple SDK prep (darwin only)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --package soldr-cli --bin soldr \
+            --target x86_64-unknown-linux-gnu
+          mkdir -p "$RUNNER_TEMP/soldr-bin"
+          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+
+      - name: Prepare Apple SDK (darwin only)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: soldr prepare --target ${{ matrix.target }} --github-env
+
+      - name: Setup persistent zig-cc wrappers (darwin only)
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: bash .github/scripts/make_zig_cc_wrappers.sh "${{ matrix.target }}"
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -301,14 +339,15 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
         run: |
-          # soldr#1029: aarch64-unknown-linux-musl routes through
-          # cargo-zigbuild for a hermetic cross-compile (see the Setup
-          # zig / Install cargo-zigbuild steps above). All other lanes
-          # use plain `cargo build`.
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
-            cargo zigbuild --package soldr-cli --release --locked --target ${{ matrix.target }}
+          # soldr#1029 + soldr#917: aarch64-musl and both apple-darwin
+          # lanes route through cargo zigbuild for a hermetic cross-
+          # compile from linux. All other lanes use plain cargo build
+          # on their native runner.
+          target='${{ matrix.target }}'
+          if [ "$target" = "aarch64-unknown-linux-musl" ] || [[ "$target" == *-apple-darwin ]]; then
+            cargo zigbuild --package soldr-cli --release --locked --target "$target"
           else
-            cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+            cargo build --package soldr-cli --release --locked --target "$target"
           fi
 
       - name: Install zstd
