@@ -70,19 +70,22 @@ jobs:
         shell: bash
         env:
           # soldr#1039 phase 1 + #1040 phase 2 env handoff.
-          SOLDR_BIN: ${{ github.workspace }}/artifact/target/${{ inputs.target }}/release/soldr
-          SOLDR_TEST_FIXTURES_DIR: ${{ github.workspace }}/artifact/crates/soldr-cli/tests/fixtures
+          # The cross-build artifact layout (from _ci-cross-build-linux.yml
+          # Stage D) puts the soldr binary at `package/soldr[.exe]` and
+          # fixtures at `package/fixtures/`. The test archive sits next to
+          # `package/` at `<artifact-name>-tests.tar.zst`.
+          SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr
+          SOLDR_TEST_FIXTURES_DIR: ${{ github.workspace }}/artifact/package/fixtures
           SOLDR_TEST_SKIP_SOURCE_TREE: "1"
         run: |
           set -euo pipefail
-          archive="artifact/dist/test-bins.tar.zst"
+          # The archive's filename mirrors the artifact name + a -tests suffix.
+          archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           if [ ! -f "$archive" ]; then
             echo "FATAL: $archive missing — phase-3 nextest archive may have failed" >&2
+            find artifact/ -maxdepth 3 -type f >&2 || true
             exit 1
           fi
-          # On Windows the SOLDR_BIN path needs .exe + backslash
-          # adaptation; nextest run handles cross-platform paths but
-          # bash + Win paths can drift. Surface the resolution first.
           echo "SOLDR_BIN=$SOLDR_BIN"
           echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
           if [ ! -f "$SOLDR_BIN" ] && [ -f "${SOLDR_BIN}.exe" ]; then
