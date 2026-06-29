@@ -8,15 +8,8 @@
 
 Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `zackees/setup-soldr` — see its `comparison-cluster` workflow and the rendered page once the migration in soldr#674 completes. The legacy `https://zackees.github.io/soldr/` page is being repurposed for soldr-internal per-scenario regression history (no third-party comparison surface lives on this repo anymore).
 
-[![Linux x64](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64.yml)
-[![Linux ARM64](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64.yml)
-[![Linux x64 musl](https://github.com/zackees/soldr/actions/workflows/build-linux-x64-musl.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-x64-musl.yml)
-[![Linux ARM64 musl](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64-musl.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-linux-arm64-musl.yml)
-
-[![macOS x64](https://github.com/zackees/soldr/actions/workflows/build-macos-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-macos-x64.yml)
-[![macOS ARM64](https://github.com/zackees/soldr/actions/workflows/build-macos-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-macos-arm64.yml)
-[![Windows x64](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-x64.yml)
-[![Windows ARM64](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/build-windows-arm64.yml)
+[![CI](https://github.com/zackees/soldr/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/ci.yml)
+[![Autonomous Release](https://github.com/zackees/soldr/actions/workflows/release-auto.yml/badge.svg?branch=main)](https://github.com/zackees/soldr/actions/workflows/release-auto.yml)
 
 ## Performance
 
