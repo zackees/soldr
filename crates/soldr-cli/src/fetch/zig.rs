@@ -263,18 +263,60 @@ fn zig_binary_filename() -> &'static str {
 }
 
 fn managed_zig_binary_path(install_dir: &Path) -> PathBuf {
-    install_dir
+    // Try the constructed name first (no I/O). Fall back to a single-
+    // depth scan if the constructed name doesn't exist. The scan is
+    // the robustness layer for future upstream naming changes
+    // (see soldr#1032 — the zig-0.14.0 asset-naming swap also flipped
+    // the tarball's internal top-level dir name, and the previous
+    // hardcoded `zig-{os}-{arch}-{ver}` formula in `managed_zig_archive_root`
+    // pointed at a directory that doesn't exist for 0.14+).
+    let constructed = install_dir
         .join(managed_zig_archive_root())
-        .join(zig_binary_filename())
+        .join(zig_binary_filename());
+    if constructed.is_file() {
+        return constructed;
+    }
+    if let Some(scanned) = scan_for_zig_binary(install_dir) {
+        return scanned;
+    }
+    constructed
 }
 
-/// The official zig tarballs / zips unpack to a single top-level
-/// directory `zig-<os>-<arch>-<version>` (the 0.13.x naming
-/// convention). Mirror that so we know exactly where to find the
-/// extracted binary without scanning.
+/// The official zig tarballs unpack to a single top-level directory
+/// `zig-<arch>-<os>-<version>` (the 0.14+ naming) or
+/// `zig-<os>-<arch>-<version>` (the 0.13.x naming). Match the same
+/// branching used by `zig_download_url` so the extracted directory
+/// name is found on the first try without scanning.
 fn managed_zig_archive_root() -> String {
     let (os, arch) = host_zig_os_arch().unwrap_or(("linux", "x86_64"));
-    format!("zig-{os}-{arch}-{MANAGED_ZIG_VERSION}")
+    let pre_0_14 = matches!(
+        MANAGED_ZIG_VERSION,
+        "0.13.0" | "0.12.0" | "0.11.0" | "0.10.1" | "0.10.0"
+    );
+    if pre_0_14 {
+        format!("zig-{os}-{arch}-{MANAGED_ZIG_VERSION}")
+    } else {
+        format!("zig-{arch}-{os}-{MANAGED_ZIG_VERSION}")
+    }
+}
+
+/// Fallback: look one level down from `install_dir` for a directory
+/// that contains the zig binary. Robustness layer if upstream changes
+/// the top-level directory naming again in a future release without
+/// soldr getting a coordinated bump.
+fn scan_for_zig_binary(install_dir: &Path) -> Option<PathBuf> {
+    let exe = zig_binary_filename();
+    let read_dir = std::fs::read_dir(install_dir).ok()?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let candidate = path.join(exe);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn host_zig_os_arch() -> Option<(&'static str, &'static str)> {
@@ -376,6 +418,41 @@ mod tests {
         let post_14 = format!("zig-{arch}-{os}-0.14.1");
         assert!(asset_13.starts_with(&pre_13), "0.13.0: {asset_13}");
         assert!(asset_14.starts_with(&post_14), "0.14.1: {asset_14}");
+    });
+
+    crate::timed_test!(managed_zig_archive_root_swaps_with_version, {
+        // The directory name inside the tarball mirrors the asset name.
+        // 0.13.x uses `zig-{os}-{arch}-{ver}/`, 0.14+ uses
+        // `zig-{arch}-{os}-{ver}/`. This test confirms managed_zig_archive_root
+        // follows the same pre/post-0.14 branching as zig_download_url —
+        // they MUST agree or extracts land in a directory the lookup misses
+        // (soldr#1032).
+        let Some((os, arch)) = host_zig_os_arch() else { return };
+        let root = managed_zig_archive_root();
+        // MANAGED_ZIG_VERSION is currently 0.14.1 (post-swap).
+        let expected = format!("zig-{arch}-{os}-{MANAGED_ZIG_VERSION}");
+        assert_eq!(
+            root, expected,
+            "managed_zig_archive_root should match the 0.14+ post-swap layout"
+        );
+    });
+
+    crate::timed_test!(managed_zig_binary_path_falls_back_to_scan, {
+        // Even if upstream changes the directory naming AGAIN in a future
+        // release without soldr getting a coordinated bump, the scan
+        // fallback should locate the binary. soldr#1032 hardening.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        // Create a directory whose name does NOT match the constructed
+        // one, containing the zig binary.
+        let surprise = tmp.path().join("zig-some-weird-future-naming-0.99.0");
+        std::fs::create_dir_all(&surprise).unwrap();
+        let zig = surprise.join(zig_binary_filename());
+        std::fs::write(&zig, b"#!/bin/sh\necho fake\n").unwrap();
+        let resolved = managed_zig_binary_path(tmp.path());
+        assert_eq!(
+            resolved, zig,
+            "scan fallback should find the zig binary in any subdirectory"
+        );
     });
 
     crate::timed_test!(env_var_overrides_path_and_managed_install, {
