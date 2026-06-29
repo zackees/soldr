@@ -263,64 +263,33 @@ jobs:
           dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
           dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
-      # soldr#1012 release-pipeline followup: tikv-jemalloc-sys (via
-      # vendored zccache's `cfg(unix)` allocator dep) needs a proper
-      # aarch64-linux-musl cross-toolchain to compile its bundled C
-      # source. `musl-tools` only ships musl-gcc for the host arch;
-      # aarch64-musl cross needs aarch64-linux-musl-gcc + matching
-      # binutils. Without it jemalloc's configure script falls through
-      # to `Don't have atomics implemented on this platform.`
+      # soldr#1029: aarch64-unknown-linux-musl uses cargo-zigbuild instead
+      # of the legacy musl.cc cross-toolchain. Background: musl.cc ships
+      # statically-linked 32-bit i386 host binaries; GHA ubuntu-24.04's
+      # `linux-azure` kernel has CONFIG_IA32_EMULATION_DEFAULT_DISABLED=y
+      # since Linux 6.7, so any attempt to exec those binaries ENOEXECs
+      # with `os error 8`. cargo-zigbuild bundles a hermetic x86_64-native
+      # musl toolchain via zig — no kernel exec-format dependency, no
+      # third-party CDN beyond ziglang.org. Same pattern as
+      # rust-cross/cargo-zigbuild's own CI, maturin, and fbuild's
+      # template_native_build.yml.
       #
-      # Mirror-first strategy (soldr#1027): musl.cc has been a single-
-      # point-of-failure for this lane twice (2026-06-28 — runs
-      # #28338586417 and #28339126319 both lost ~14 min each to musl.cc
-      # connectivity timeouts). Try the github.com mirror under
-      # zackees/soldr-toolchain FIRST; fall back to musl.cc upstream
-      # only if the mirror is unreachable.
-      #
-      # SHA256 pin (mirror only): the mirror tarball is provenance-
-      # captured from a successful musl.cc pull 2026-06-28; same
-      # binaries as upstream, different tar metadata. Falling back to
-      # musl.cc accepts upstream-as-authoritative without re-verifying
-      # since musl.cc's repacked SHA may differ.
-      #
-      # Validated locally 2026-06-28 in `ci/docker-aarch64-musl-cross/`
-      # with `docker build --add-host musl.cc:127.0.0.1` simulating the
-      # outage: mirror path produces a binary identical to the upstream
-      # path (`ELF 64-bit LSB ... ARM aarch64 ... statically linked`,
-      # 12.6 MB).
-      - name: Install aarch64-linux-musl cross-toolchain
+      # Validated 2026-06-29 in `ci/docker-aarch64-musl-cross/` against
+      # a vanilla ubuntu:24.04 container with `docker build
+      # --add-host musl.cc:127.0.0.1` (musl.cc blackholed): produced
+      # a valid `ELF 64-bit LSB executable, ARM aarch64, version 1
+      # (SYSV), statically linked, stripped` binary.
+      - name: Setup zig (aarch64-musl lane)
         if: matrix.target == 'aarch64-unknown-linux-musl'
-        shell: bash
-        env:
-          MUSL_CROSS_MIRROR_URL: https://github.com/zackees/soldr-toolchain/releases/download/musl-cross-v1/aarch64-linux-musl-cross.tgz
-          MUSL_CROSS_UPSTREAM_URL: https://musl.cc/aarch64-linux-musl-cross.tgz
-          MUSL_CROSS_MIRROR_SHA256: 67f54eb62ee912477a530e70567f82f5c8fb58ce458faafd76a23fbb08a38287
-        run: |
-          set -euo pipefail
-          echo "fetching aarch64-linux-musl cross from mirror: $MUSL_CROSS_MIRROR_URL"
-          if curl -fsSL --connect-timeout 30 --max-time 600 --retry 3 \
-                  "$MUSL_CROSS_MIRROR_URL" -o /tmp/cross.tgz; then
-            echo "mirror download OK; verifying sha256..."
-            echo "$MUSL_CROSS_MIRROR_SHA256  /tmp/cross.tgz" | sha256sum -c -
-          else
-            echo "mirror unreachable; falling back to upstream: $MUSL_CROSS_UPSTREAM_URL" >&2
-            curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
-                "$MUSL_CROSS_UPSTREAM_URL" -o /tmp/cross.tgz
-            echo "upstream download OK (sha not verified — upstream-as-authoritative fallback)"
-          fi
-          sudo mkdir -p /opt
-          sudo tar -xzf /tmp/cross.tgz -C /opt
-          echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
-          # Tell cc-rs (used by tikv-jemalloc-sys's build script) which
-          # compiler + archiver to invoke. The underscore form matches
-          # cc-rs's env-var convention for target overrides.
-          echo "CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
-          echo "CXX_aarch64_unknown_linux_musl=aarch64-linux-musl-g++" >> "$GITHUB_ENV"
-          echo "AR_aarch64_unknown_linux_musl=aarch64-linux-musl-ar" >> "$GITHUB_ENV"
-          # Linker for rustc / cargo: pass through musl-gcc as the
-          # linker driver so rustc invokes the right downstream.
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc" >> "$GITHUB_ENV"
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.2
+
+      - name: Install cargo-zigbuild (aarch64-musl lane)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild@0.23.0
 
       - name: Cache cargo registry and target
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
@@ -328,9 +297,19 @@ jobs:
           shared-key: release-${{ matrix.target }}
 
       - name: Build release binary
+        shell: bash
         env:
           CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
-        run: cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+        run: |
+          # soldr#1029: aarch64-unknown-linux-musl routes through
+          # cargo-zigbuild for a hermetic cross-compile (see the Setup
+          # zig / Install cargo-zigbuild steps above). All other lanes
+          # use plain `cargo build`.
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            cargo zigbuild --package soldr-cli --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --package soldr-cli --release --locked --target ${{ matrix.target }}
+          fi
 
       - name: Install zstd
         shell: bash
