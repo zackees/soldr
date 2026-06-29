@@ -208,19 +208,26 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 
 #[cfg(windows)]
 fn clang_shim_names() -> Vec<String> {
+    // Only `clang` + `clang++` — soldr-clang-shim's `from_argv0` accepts
+    // those two basenames (plus `soldr-clang-shim` itself). DO NOT add
+    // `clang-cl` here: the shim invokes `clang-cl` as its DOWNSTREAM (it
+    // exists to route clang→clang-cl), and if `clang-cl` is also a
+    // symlink to the shim then PATH resolution finds the shim's own
+    // clang-cl symlink first and the shim re-invokes itself with
+    // argv[0]=clang-cl → `unrecognized argv[0] basename`. See
+    // ci/docker-aarch64-windows-msvc-cross/ + soldr#1033 followup.
     vec![
         "clang.exe".to_string(),
         "clang++.exe".to_string(),
-        "clang-cl.exe".to_string(),
     ]
 }
 
 #[cfg(not(windows))]
 fn clang_shim_names() -> Vec<String> {
+    // See the Windows branch for why clang-cl is NOT here.
     vec![
         "clang".to_string(),
         "clang++".to_string(),
-        "clang-cl".to_string(),
     ]
 }
 

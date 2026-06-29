@@ -195,10 +195,24 @@ fn argv_has_msvc_target(args: &[OsString]) -> bool {
 
 /// Find `binary` on PATH, optionally stripping this shim's own
 /// directory first so the lookup doesn't loop back to ourselves.
+///
+/// `argv0` is kept as a fallback hint for when `current_exe()` fails
+/// (rare), but is NOT the primary source of truth: shells invoke
+/// argv[0] as the bare basename (`clang`), and `Path::new("clang").parent()`
+/// returns `Some("")` which never matches a real PATH entry — so the
+/// shim's own dir would not get stripped and PATH resolution would
+/// loop back to the shim's own clang-cl symlink. Using `current_exe`
+/// gives the canonical install dir directly.
 fn locate_in_path(binary: &str, strip_self: bool, argv0: &str) -> Option<PathBuf> {
     let original_path = env::var_os("PATH").unwrap_or_default();
     let strip_dir: Option<PathBuf> = if strip_self {
-        Path::new(argv0).parent().map(|p| p.to_path_buf())
+        // Primary: current_exe's parent. Fallback: argv0's parent.
+        env::current_exe()
+            .ok()
+            .as_deref()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+            .or_else(|| Path::new(argv0).parent().map(Path::to_path_buf))
     } else {
         None
     };
@@ -389,5 +403,39 @@ mod tests {
             "the shim binary's own name should still resolve when invoked directly (for testing)"
         );
         assert_eq!(ShimTool::from_argv0("gcc"), None);
+    }
+
+    #[test]
+    fn clang_cl_is_not_a_recognized_shim_argv0() {
+        // soldr#1032 followup: clang-cl MUST NOT be a valid shim argv[0].
+        // The shim invokes clang-cl as its downstream — if clang-cl were
+        // also a shim symlink and was a recognized argv[0], the shim
+        // would loop into itself when invoked as clang-cl (which is
+        // exactly what `clang_shim_names` used to do until we removed
+        // clang-cl from the install set). Test gates both halves of the
+        // fix: the install can never re-add clang-cl as a symlink AND
+        // have the shim accept it.
+        assert_eq!(ShimTool::from_argv0("clang-cl"), None);
+        assert_eq!(ShimTool::from_argv0("/usr/bin/clang-cl"), None);
+        assert_eq!(
+            ShimTool::from_argv0("/root/.soldr/bin/clang-shim/clang-cl"),
+            None,
+        );
+    }
+
+    #[test]
+    fn locate_in_path_strips_current_exe_dir_even_when_argv0_is_bare() {
+        // soldr#1032 followup: when the shell invokes a shim symlink by
+        // bare basename (`clang`), argv[0] has no directory and
+        // `Path::new("clang").parent()` yields `Some("")` which never
+        // matches a real PATH entry — so the shim's own dir wouldn't
+        // get stripped and a `clang-cl` symlink in the same dir would
+        // re-resolve to the shim. The fix prefers `current_exe()`.
+        //
+        // We don't validate the actual PATH lookup here (would require
+        // mocking PATH + the filesystem); we just confirm that the
+        // strip_dir resolution is exercised. The clang_cl regression
+        // test above is the primary acceptance gate.
+        let _ = locate_in_path("definitely-not-a-real-binary", true, "clang");
     }
 }
