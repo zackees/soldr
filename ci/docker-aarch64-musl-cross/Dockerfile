@@ -47,16 +47,41 @@ RUN apt-get update \
         cmake perl \
  && rm -rf /var/lib/apt/lists/*
 
-# Download the aarch64-linux-musl-cross toolchain from musl.cc. This
-# is the load-bearing piece that makes jemalloc-sys's build script
-# succeed for the aarch64-unknown-linux-musl target — without it
-# jemalloc's configure script fails atomics detection.
-RUN curl -fsSL --retry 5 \
-        https://musl.cc/aarch64-linux-musl-cross.tgz \
-        -o /tmp/cross.tgz \
- && mkdir -p /opt \
- && tar -xzf /tmp/cross.tgz -C /opt \
- && rm /tmp/cross.tgz
+# Download the aarch64-linux-musl-cross toolchain. This is the load-
+# bearing piece that makes jemalloc-sys's build script succeed for
+# the aarch64-unknown-linux-musl target — without it jemalloc's
+# configure script fails atomics detection.
+#
+# Mirror-first strategy (soldr#1027): musl.cc has been a single-point-
+# of-failure twice (2026-06-28 — both release runs that day lost ~14
+# min each to musl.cc connectivity timeouts). Try the github.com
+# mirror under zackees/soldr-toolchain FIRST; fall back to musl.cc
+# upstream only if the mirror is unreachable.
+#
+# SHA256 pin is for the mirror tarball (provenance: repacked from a
+# successful musl.cc pull 2026-06-28). When falling back to musl.cc,
+# we accept upstream-as-authoritative without re-verifying since
+# musl.cc's own SHA may differ from the mirror's repack — same
+# binaries, different tar metadata.
+ENV MUSL_CROSS_MIRROR_URL=https://github.com/zackees/soldr-toolchain/releases/download/musl-cross-v1/aarch64-linux-musl-cross.tgz \
+    MUSL_CROSS_UPSTREAM_URL=https://musl.cc/aarch64-linux-musl-cross.tgz \
+    MUSL_CROSS_MIRROR_SHA256=67f54eb62ee912477a530e70567f82f5c8fb58ce458faafd76a23fbb08a38287
+
+RUN set -eu; \
+    echo "fetching aarch64-linux-musl cross from mirror: $MUSL_CROSS_MIRROR_URL"; \
+    if curl -fsSL --connect-timeout 30 --max-time 600 --retry 3 \
+            "$MUSL_CROSS_MIRROR_URL" -o /tmp/cross.tgz; then \
+        echo "mirror download OK; verifying sha256..."; \
+        echo "$MUSL_CROSS_MIRROR_SHA256  /tmp/cross.tgz" | sha256sum -c -; \
+    else \
+        echo "mirror unreachable; falling back to upstream: $MUSL_CROSS_UPSTREAM_URL" >&2; \
+        curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
+            "$MUSL_CROSS_UPSTREAM_URL" -o /tmp/cross.tgz; \
+        echo "upstream download OK (sha not verified — upstream-as-authoritative fallback)"; \
+    fi; \
+    mkdir -p /opt; \
+    tar -xzf /tmp/cross.tgz -C /opt; \
+    rm /tmp/cross.tgz
 
 ENV PATH=/opt/aarch64-linux-musl-cross/bin:$PATH \
     CC_aarch64_unknown_linux_musl=aarch64-linux-musl-gcc \

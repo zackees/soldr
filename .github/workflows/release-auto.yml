@@ -271,24 +271,44 @@ jobs:
       # binutils. Without it jemalloc's configure script falls through
       # to `Don't have atomics implemented on this platform.`
       #
-      # Use musl.cc's official prebuilt cross-toolchain. Install once
-      # under /opt/aarch64-linux-musl-cross/ and export CC/CXX/AR for
-      # the build script to pick up via cc-rs convention.
+      # Mirror-first strategy (soldr#1027): musl.cc has been a single-
+      # point-of-failure for this lane twice (2026-06-28 — runs
+      # #28338586417 and #28339126319 both lost ~14 min each to musl.cc
+      # connectivity timeouts). Try the github.com mirror under
+      # zackees/soldr-toolchain FIRST; fall back to musl.cc upstream
+      # only if the mirror is unreachable.
+      #
+      # SHA256 pin (mirror only): the mirror tarball is provenance-
+      # captured from a successful musl.cc pull 2026-06-28; same
+      # binaries as upstream, different tar metadata. Falling back to
+      # musl.cc accepts upstream-as-authoritative without re-verifying
+      # since musl.cc's repacked SHA may differ.
+      #
+      # Validated locally 2026-06-28 in `ci/docker-aarch64-musl-cross/`
+      # with `docker build --add-host musl.cc:127.0.0.1` simulating the
+      # outage: mirror path produces a binary identical to the upstream
+      # path (`ELF 64-bit LSB ... ARM aarch64 ... statically linked`,
+      # 12.6 MB).
       - name: Install aarch64-linux-musl cross-toolchain
         if: matrix.target == 'aarch64-unknown-linux-musl'
         shell: bash
+        env:
+          MUSL_CROSS_MIRROR_URL: https://github.com/zackees/soldr-toolchain/releases/download/musl-cross-v1/aarch64-linux-musl-cross.tgz
+          MUSL_CROSS_UPSTREAM_URL: https://musl.cc/aarch64-linux-musl-cross.tgz
+          MUSL_CROSS_MIRROR_SHA256: 67f54eb62ee912477a530e70567f82f5c8fb58ce458faafd76a23fbb08a38287
         run: |
           set -euo pipefail
-          host_arch="$(uname -m)"
-          # musl.cc publishes per-host prebuilts; pick x86_64 by default
-          # since GHA's ubuntu-latest is x86_64.
-          if [ "$host_arch" = "aarch64" ]; then
-            url="https://musl.cc/aarch64-linux-musl-cross.tgz"
+          echo "fetching aarch64-linux-musl cross from mirror: $MUSL_CROSS_MIRROR_URL"
+          if curl -fsSL --connect-timeout 30 --max-time 600 --retry 3 \
+                  "$MUSL_CROSS_MIRROR_URL" -o /tmp/cross.tgz; then
+            echo "mirror download OK; verifying sha256..."
+            echo "$MUSL_CROSS_MIRROR_SHA256  /tmp/cross.tgz" | sha256sum -c -
           else
-            url="https://musl.cc/aarch64-linux-musl-cross.tgz"
+            echo "mirror unreachable; falling back to upstream: $MUSL_CROSS_UPSTREAM_URL" >&2
+            curl -fsSL --connect-timeout 30 --max-time 600 --retry 5 \
+                "$MUSL_CROSS_UPSTREAM_URL" -o /tmp/cross.tgz
+            echo "upstream download OK (sha not verified — upstream-as-authoritative fallback)"
           fi
-          echo "fetching aarch64-linux-musl cross from $url"
-          curl -fsSL --retry 5 --retry-connrefused "$url" -o /tmp/cross.tgz
           sudo mkdir -p /opt
           sudo tar -xzf /tmp/cross.tgz -C /opt
           echo "/opt/aarch64-linux-musl-cross/bin" >> "$GITHUB_PATH"
