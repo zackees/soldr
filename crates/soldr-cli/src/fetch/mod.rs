@@ -63,6 +63,19 @@ pub mod openssl_sysroot;
 /// soldr#997 Phase A — Python sysroot bundle for PyO3 cross-compile
 /// (closes parts of #931, #932, #933).
 pub mod python_sysroot;
+// soldr#1064 Phase B — *-sys C library catalogue distribution.
+// Each module is a stub-until-ingested consumer modeled on
+// openssl_sysroot.rs. Once the soldr-toolchain forge dispatches
+// land the assets, blessed_build::prepare wires the corresponding
+// _SYSTEM / _OVERRIDE env vars onto the child cargo invocation so
+// the *-sys crate's build.rs skips its vendored compile.
+pub mod bzip2_sysroot;
+pub mod jemalloc_sysroot;
+pub mod lzma_sysroot;
+pub mod mimalloc_sysroot;
+pub mod sqlite_sysroot;
+pub mod zlib_ng_sysroot;
+pub mod zstd_sysroot;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;
