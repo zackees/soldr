@@ -231,6 +231,48 @@ file a follow-up issue referencing #329.
 
 ---
 
+## 3.5. ring + `aarch64-pc-windows-msvc` requires `soldr build`
+
+Crates depending on `ring 0.17.x` (rustls, reqwest's TLS, …) include
+hand-written ARM assembly at `pregenerated/sha256-armv8-win64.S` etc.
+ring's `build.rs` hardcodes `c.compiler("clang")` for windows-msvc and
+shells out to `clang` directly. On `aarch64-pc-windows-msvc` plain
+`clang` rejects this — soldr's `soldr-clang-shim` binary intercepts
+the call and re-execs `clang-cl` with the same argv.
+
+**Use the blessed surface**: `soldr build --target
+aarch64-pc-windows-msvc` (soldr#1012, #882). It auto-dispatches to
+cargo-xwin AND installs the shim at `~/.soldr/bin/clang-shim/` ahead
+of system clang on `PATH`.
+
+### Direct cargo-xwin path is unsupported
+
+Bypassing `soldr build` (e.g. inside `messense/cargo-xwin:0.23.0`
+docker, or a workflow that doesn't go through soldr) means the shim
+isn't on `PATH` and the build fails:
+
+```
+error occurred in cc-rs: command did not execute successfully
+LC_ALL=C clang ... --target=aarch64-pc-windows-msvc ...
+  -c ring-0.17.14/pregenerated/sha256-armv8-win64.S
+```
+
+To use the shim outside soldr-managed shells: install soldr
+(`pip install soldr` / `npm install -g @zackees/soldr`), then run
+`soldr build --target aarch64-pc-windows-msvc --help` once to trigger
+shim install. After that, add `$HOME/.soldr/bin/clang-shim` to `PATH`
+manually and any downstream tool's clang invocation resolves to the
+shim.
+
+### Why not upstream?
+
+Upstream-able in principle, but ring's `c.compiler("clang")` is
+intentional and cargo-xwin's `CC_*=clang-cl` gets overridden by
+cc-rs's `compiler_family()` probe. The shim is the surgical fix that
+lives in soldr's toolchain story. See soldr#886.
+
+---
+
 ## 4. What soldr deliberately does NOT do
 
 The #329 exploration is explicit about the lines soldr will not cross:
