@@ -50,6 +50,12 @@ jobs:
     name: cross-build ${{ inputs.target }} (linux host)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      # zstd-sys' build.rs probes pkg-config; pkg-config-rs refuses
+      # cross-compile probes by default. Setting this 1 lets the probe
+      # run (and fall back to vendored compile if it fails). Required
+      # after PR #1111 expanded the transitive *-sys dep tree.
+      PKG_CONFIG_ALLOW_CROSS: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

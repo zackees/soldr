@@ -82,13 +82,13 @@ mod tests {
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_bzip2_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_bzip2_sysroot_rejects_unknown_target, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(ensure_bzip2_sysroot(&paths, "x86_64-unknown-linux-gnu"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+            .block_on(ensure_bzip2_sysroot(&paths, "wasm32-unknown-unknown"));
+        let err = result.expect_err("unsupported target must error");
+        assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
     });
 }
