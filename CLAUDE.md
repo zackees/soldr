@@ -157,6 +157,22 @@ This rule was set during the #1105 fix: the `rust-lld` LIB-injection feature was
 - uv for Python dependency management
 - Workspace dependencies shared in root `Cargo.toml`
 
+## Bumping soldr's own version (release PRs)
+
+When opening a release PR, **three files must be bumped in lockstep** or every CI lane fails immediately with `error: cannot update the lock file because --locked was passed to prevent this` (the v0.7.65 trap from #1024 / #1025):
+
+1. `Cargo.toml` — `[workspace.package].version`.
+2. `package.json` — top-level `"version"`.
+3. `Cargo.lock` — the `soldr-cli` package's `version` field. Refresh with a no-op build (`soldr cargo build -p soldr-cli`) AFTER bumping `Cargo.toml`, then `git add Cargo.lock` so the new version is committed alongside the other two.
+
+The regression guard at `crates/soldr-cli/tests/version_lockstep.rs` reads all three files and asserts they match — `soldr cargo test -p soldr-cli --test version_lockstep` (or any full `cargo test` run) fails the build if any of the three drifts. The same test runs on every PR via the `Lint` job.
+
+A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to run when the lockfile is stale relative to manifests) but adds a separate workflow. The in-tree test covers the same ground with no CI plumbing.
+
+### Why a separate checklist for this
+
+The 'Bumping managed_zccache_version' section below documents the four-file lockstep for the *zccache* pin (`MANAGED_ZCCACHE_VERSION` + the contract file + a cosmetic test fixture + the `zccache = { git = ... }` rev). That's an internal dependency pin — orthogonal to soldr's own release version. Both lockstep checklists live in this file because both have surfaced bugs in the past, and both need to be in front of an agent's eyes when it goes to open a PR that touches versions.
+
 ## Bumping managed_zccache_version
 
 When pulling in a new managed zccache release, **four files must be updated in lockstep** or `zccache_runtime_contract_matches_rust_constants` (or a `./test` run) will fail:
