@@ -191,9 +191,24 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 let clangxx_base = format!(
                     "clang++ --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++"
                 );
-                let cflags = format!("-isysroot {sdk_str} -mmacosx-version-min=11.0");
-                let cxxflags =
-                    format!("-isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++");
+                // `-fuse-ld=lld` is critical for the C/C++ flags too:
+                // cmake-based -sys crates (libz-ng-sys, etc.) test the
+                // compiler with a tiny .c + link round-trip. Without it
+                // they invoke clang → /usr/bin/ld which is the host's
+                // Linux ld and can't produce Mach-O, so the cmake
+                // configure step panics with "linker command failed".
+                // Adding it to CFLAGS/CXXFLAGS routes the test link
+                // through lld which knows Mach-O. The `--target=` flag
+                // is also needed in CFLAGS so the compiler test
+                // actually targets darwin (not the linux host).
+                let cflags = format!(
+                    "--target={clang_arch_target} -isysroot {sdk_str} \
+                     -mmacosx-version-min=11.0 -fuse-ld=lld"
+                );
+                let cxxflags = format!(
+                    "--target={clang_arch_target} -isysroot {sdk_str} \
+                     -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
+                );
                 let rustflags = format!(
                     "-C link-arg=--target={clang_arch_target} \
                      -C link-arg=-isysroot \
