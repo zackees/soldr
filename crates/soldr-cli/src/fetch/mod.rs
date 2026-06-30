@@ -74,6 +74,10 @@ pub mod jemalloc_sysroot;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod sqlite_sysroot;
+/// soldr#1064 Phase B — shared download + extract for the six
+/// *-sys C library catalogue bundles. The per-lib modules each
+/// call this helper with their own `(lib, version, slug)` tuple.
+pub mod syslib_common;
 pub mod zccache;
 pub mod zccache_install;
 pub mod zccache_runtime;

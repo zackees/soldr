@@ -41,17 +41,13 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/mimalloc/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_common::asset_url_for("mimalloc", version, slug)
 }
 
 pub async fn ensure_mimalloc_sysroot(
     paths: &SoldrPaths,
     target_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no mimalloc sysroot recipe for target {target_triple}; \
@@ -59,12 +55,8 @@ pub async fn ensure_mimalloc_sysroot(
             MIMALLOC_TARGETS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    let url = asset_url_for(MANAGED_MIMALLOC_VERSION, slug);
-    Err(SoldrError::Other(format!(
-        "mimalloc sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/1064"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "mimalloc", MANAGED_MIMALLOC_VERSION, slug)
+        .await
 }
 
 #[cfg(test)]
@@ -85,7 +77,7 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_MIMALLOC_VERSION, "windows-x64");
-        assert!(u.contains("/deps/mimalloc/3.0.4/windows-x64/"));
+        assert!(u.contains("/mimalloc/3.0.4/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 

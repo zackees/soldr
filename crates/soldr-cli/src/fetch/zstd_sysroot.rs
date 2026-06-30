@@ -53,21 +53,17 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
         .map(|(_, slug)| *slug)
 }
 
-/// Construct the expected `assets`-branch URL.
-///
-///     deps/zstd/<version>/<slug>/bundle.tar.zst
+/// Construct the expected `assets`-branch URL. Thin wrapper over
+/// [`super::syslib_common::asset_url_for`] kept for the existing
+/// per-module test contract.
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/zstd/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_common::asset_url_for("zstd", version, slug)
 }
 
 pub async fn ensure_zstd_sysroot(
     paths: &SoldrPaths,
     target_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no zstd sysroot recipe for target {target_triple}; \
@@ -75,12 +71,7 @@ pub async fn ensure_zstd_sysroot(
             ZSTD_TARGETS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    let url = asset_url_for(MANAGED_ZSTD_VERSION, slug);
-    Err(SoldrError::Other(format!(
-        "zstd sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/1064"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "zstd", MANAGED_ZSTD_VERSION, slug).await
 }
 
 #[cfg(test)]
@@ -125,21 +116,15 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_ZSTD_VERSION, "linux-x64-musl");
-        assert!(u.contains("/deps/zstd/1.5.7/linux-x64-musl/"));
+        assert!(u.contains("/zstd/1.5.7/linux-x64-musl/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_zstd_sysroot_returns_not_yet_ingested, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(ensure_zstd_sysroot(&paths, "x86_64-unknown-linux-musl"));
-        let err = result.expect_err("must error until catalogue row lands");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not yet ingested"),
-            "expected 'not yet ingested' marker in error, got: {msg}"
-        );
-    });
+    // The original `ensure_zstd_sysroot_returns_not_yet_ingested` unit
+    // test was removed in the soldr#1064 phase B follow-up: now that the
+    // zstd 1.5.7 bundle IS ingested into the live catalogue, this
+    // function returns either a real sysroot path (catalogue reachable)
+    // or a network error (catalogue unreachable). Neither is a stable
+    // unit-test signal. The end-to-end smoke is exercised in the cross-
+    // compile lanes that run `cargo build` against the *-sys crate.
 }

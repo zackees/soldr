@@ -45,17 +45,13 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/lzma/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_common::asset_url_for("lzma", version, slug)
 }
 
 pub async fn ensure_lzma_sysroot(
     paths: &SoldrPaths,
     target_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no lzma sysroot recipe for target {target_triple}; \
@@ -63,12 +59,7 @@ pub async fn ensure_lzma_sysroot(
             LZMA_TARGETS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    let url = asset_url_for(MANAGED_LZMA_VERSION, slug);
-    Err(SoldrError::Other(format!(
-        "lzma sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/1064"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "lzma", MANAGED_LZMA_VERSION, slug).await
 }
 
 #[cfg(test)]
@@ -89,7 +80,7 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_LZMA_VERSION, "darwin-arm64");
-        assert!(u.contains("/deps/lzma/5.6.3/darwin-arm64/"));
+        assert!(u.contains("/lzma/5.6.3/darwin-arm64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
