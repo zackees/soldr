@@ -159,20 +159,20 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/soldr dist/package/soldr
           chmod +x dist/package/soldr
 
-      - name: Fetch matched zccache release for linux-x86 (from manifest branch)
+      - name: Fetch matched zccache release for linux-x86
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
           # zccache ships musl-only for Linux x64 (static; runs on
-          # glibc). One tool_query.py call resolves both the URL and
-          # the version pinning.
-          asset_url=$(python3 .github/scripts/tool_query.py \
+          # glibc). The soldr-toolchain catalogue resolves both the URL
+          # and the version pinning.
+          asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
               --platform linux --arch x86 --extra musl \
               --version "$zccache_version" \
               zccache)
           asset_filename=$(basename "$asset_url")
-          echo "manifest: zccache $zccache_version linux-x64-musl"
+          echo "catalogue: zccache $zccache_version linux-x64-musl"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
@@ -192,10 +192,9 @@ jobs:
 
       # crgx + cargo-chef were previously source-built here every run
       # (~60s + ~42s of warm wall time). The
-      # `fetch_or_build_tool.sh` helper checks the public manifest
-      # branch for a prebuilt asset first and falls back to the
-      # source-build path only on a manifest miss. Prebuilts are
-      # produced by `refresh-tool-prebuilts.yml`.
+      # `fetch_or_build_tool.sh` helper checks the public soldr-toolchain
+      # catalogue for a prebuilt asset first and falls back to the
+      # source-build path only on a catalogue miss.
       - name: Fetch or build crgx — x86_64-unknown-linux-gnu
         run: |
           set -euo pipefail
@@ -336,7 +335,7 @@ jobs:
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 
       # Pre-fetch cargo-zigbuild (zigbuild lanes) or cargo-xwin (xwin
-      # lanes) from the public manifest branch and put it on PATH BEFORE
+      # lanes) from the public soldr-toolchain catalogue and put it on PATH BEFORE
       # invoking soldr cargo. soldr's cargo front door has a PATH-first
       # deferral branch (issue #816) that short-circuits its own GitHub
       # API call when it finds the binary already on PATH — that's how
@@ -348,19 +347,19 @@ jobs:
           tool="cargo-${{ matrix.tool }}"
           dest_dir="${RUNNER_TEMP}/cross-bin"
           mkdir -p "$dest_dir"
-          # The runner host is linux-x64. tool_query.py walks the
-          # manifest branch's normalized `platforms` map and prints
+          # The runner host is linux-x64. toolchain_asset_query.py walks the
+          # catalogue's normalized `platforms` map and prints
           # the public download URL. Try gnu first, fall back to musl
           # (cargo-xwin ships musl-only for x64); both fallbacks
           # invoke the same Python script so no per-tool YAML logic.
           asset_url=$(
-              python3 .github/scripts/tool_query.py \
+              python3 .github/scripts/toolchain_asset_query.py \
                   --platform linux --arch x86 --extra gnu "$tool" \
-              || python3 .github/scripts/tool_query.py \
+              || python3 .github/scripts/toolchain_asset_query.py \
                   --platform linux --arch x86 --extra musl "$tool"
           )
           asset_filename=$(basename "$asset_url")
-          echo "manifest: $tool host-asset $asset_filename"
+          echo "catalogue: $tool host-asset $asset_filename"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
@@ -394,7 +393,7 @@ jobs:
       # cross-compile" + "Pre-fetch cargo-xwin MSVC CRT + SDK cache" +
       # any future per-target bootstrap. `soldr prepare --target X`
       # dispatches on the triple to fetch the right vendored assets
-      # from the manifest branch (Apple SDK for darwin, xwin cache for
+      # from soldr-toolchain (Apple SDK for darwin, xwin cache for
       # windows-msvc, etc.) and writes any env vars (SDKROOT) into
       # $GITHUB_ENV. Composite action keeps the workflow YAML clean.
       - name: Preparing Cross Compile Toolchain
@@ -477,12 +476,12 @@ jobs:
           }
           EOF
 
-      - name: Fetch matched zccache release (from manifest branch)
+      - name: Fetch matched zccache release
         run: |
           set -euo pipefail
           zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
-          # Map the rust target triple → tool_query.py CLI args. zccache
+          # Map the rust target triple to toolchain asset query CLI args. zccache
           # ships linux as musl-only (static, glibc-compatible).
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-*)   q="--platform linux   --arch x86 --extra musl" ;;
@@ -493,10 +492,10 @@ jobs:
             aarch64-pc-windows-msvc)  q="--platform windows --arch arm --extra msvc" ;;
             *) echo "no zccache platform mapping for ${{ matrix.target }}" >&2; exit 1 ;;
           esac
-          asset_url=$(python3 .github/scripts/tool_query.py \
+          asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
               $q --version "$zccache_version" zccache)
           asset_filename=$(basename "$asset_url")
-          echo "manifest: zccache $zccache_version ${{ matrix.target }}"
+          echo "catalogue: zccache $zccache_version ${{ matrix.target }}"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
@@ -544,10 +543,9 @@ jobs:
           fi
 
       # Same fetch-or-build pattern as the bootstrap job. The helper
-      # script first probes the manifest branch for a prebuilt asset
+      # script first probes the soldr-toolchain catalogue for a prebuilt asset
       # for this (tool, target) and only falls back to a source build
-      # on a manifest miss. Prebuilts come from
-      # `refresh-tool-prebuilts.yml`.
+      # on a catalogue miss.
       - name: Fetch or build crgx — ${{ matrix.target }} (${{ matrix.tool }})
         run: |
           set -euo pipefail

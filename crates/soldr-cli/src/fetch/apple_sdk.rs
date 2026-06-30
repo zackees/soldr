@@ -17,8 +17,8 @@
 //!      custom SDK).
 //!   2. `xcrun --show-sdk-path` (macOS host only, with Xcode installed)
 //!      → use what Apple's tooling points at.
-//!   3. Managed fetch from the soldr `manifest` branch
-//!      (`deps/mac/sdk.tar.zstd`, ~52 MiB compressed), cached at
+//!   3. Managed fetch from soldr-toolchain assets
+//!      (`apple-sdk/MacOSX11.3/darwin-universal2/sdk.tar.zstd`, ~52 MiB compressed), cached at
 //!      `~/.soldr/sdk/MacOSX11.3.sdk/`.
 
 use std::path::{Path, PathBuf};
@@ -41,15 +41,15 @@ pub const MANAGED_APPLE_SDK_VERSION: &str = "11.3";
 /// discovery expects).
 pub const MANAGED_APPLE_SDK_DIRNAME: &str = "MacOSX11.3.sdk";
 
-/// URL of the SDK blob on soldr's `manifest` branch. Uses
+/// URL of the SDK blob on soldr-toolchain assets. Uses
 /// `media.githubusercontent.com/media/` — the LFS-aware CDN endpoint
 /// that follows LFS pointer files to the actual binary content (works
 /// for both LFS-tracked and regular blobs, matching the pattern from
 /// `zackees/clang-tool-chain-bins`). NOT subject to the GitHub API
 /// rate limit. The blob was extracted once from
-/// `messense/cargo-zigbuild:0.20.0` and pushed under `deps/mac/sdk.tar.zstd`.
+/// `messense/cargo-zigbuild:0.20.0` and pushed under `apple-sdk/MacOSX11.3`.
 pub const MANAGED_APPLE_SDK_URL: &str =
-    "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd";
+    "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3/darwin-universal2/sdk.tar.zstd";
 
 /// SHA-256 of the SDK blob. Hard-coded for integrity verification on
 /// every fetch. Bump alongside `MANAGED_APPLE_SDK_VERSION` when the
@@ -250,13 +250,13 @@ async fn fetch_managed_sdk(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 
     // Integrity check is mandatory — the blob is hand-curated and the
     // sha256 is pinned in this file. A mismatch means either the
-    // manifest branch was tampered with or the constants drifted; refuse
+    // catalogue blob was replaced or the constants drifted; refuse
     // to extract in either case.
     let digest = trust::sha256_of(&bytes);
     if digest != MANAGED_APPLE_SDK_SHA256 {
         return Err(SoldrError::Other(format!(
             "Apple SDK sha256 mismatch: expected {MANAGED_APPLE_SDK_SHA256}, got {digest} \
-             (manifest branch blob may have been replaced — refusing to extract)"
+             (catalogue blob may have been replaced — refusing to extract)"
         )));
     }
     eprintln!("soldr: trust: verified Apple SDK v{MANAGED_APPLE_SDK_VERSION} sha256={digest}");

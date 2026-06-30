@@ -413,12 +413,12 @@ async fn fetch_repo_binary_once(
 
     // Resolver order (issue #873): embed → live → api. The first two
     // hops are gated by `SOLDR_RESOLVER_ORDER` for testing + debugging.
-    // The embedded blob is a zstd-compressed snapshot of the live
-    // asset-index baked in at build time (see build.rs + manifest_v6),
-    // so a hit short-circuits all network traffic. The live fetch
-    // remains as a safety net for assets published after the embed was
-    // baked. Both feed the same `archive::download_and_extract_with_pin`
-    // sha-pin verification path.
+    // The embedded blob is a zstd-compressed checked-in snapshot (see
+    // build.rs + manifest_v6), so a hit short-circuits all network
+    // traffic. The live catalogue fetch remains as a safety net for
+    // assets published after the snapshot was updated. Both feed the
+    // same `archive::download_and_extract_with_pin` sha-pin verification
+    // path.
     let order = ResolverOrder::from_env();
     if order.try_embed {
         if let VersionSpec::Exact(ref tag) = version {
