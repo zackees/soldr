@@ -43,7 +43,12 @@ env:
 jobs:
   lint:
     name: Lint
-    if: github.ref_name == 'main'
+    # Run on every push to main AND on every PR — without this PRs slip
+    # in unformatted code that breaks main's Lint job on merge. Repeated
+    # 4 times in late 2026-06 (#1111/#1114/#1115/#1120 fallout), each
+    # requiring a chase-PR to unbreak main. PR-side Lint failure is the
+    # cheap fix; required-status branch protection is the structural
+    # fix and lives in repo settings.
     runs-on: ubuntu-24.04
 
     steps:

@@ -66,6 +66,22 @@ jobs:
           ls -la artifact/ || true
           find artifact/ -maxdepth 3 -type f | head -30 || true
 
+      # actions/download-artifact unpacks from a zip, which strips the
+      # executable bit on POSIX runners. Tests that exec SOLDR_BIN
+      # otherwise fail with "Permission denied" before any logic runs.
+      # No-op on windows runners.
+      - name: Restore executable bit on artifact binaries
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in artifact/package/soldr artifact/package/soldr-clang-shim; do
+            if [ -f "$bin" ]; then
+              chmod +x "$bin"
+              echo "chmod +x $bin"
+            fi
+          done
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:

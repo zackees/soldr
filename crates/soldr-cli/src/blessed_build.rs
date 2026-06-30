@@ -262,79 +262,83 @@ async fn inject_sys_library_overrides(
     target_triple: &str,
     prep: &mut BlessedPrep,
 ) {
-    // zstd-sys → ZSTD_SYS_USE_PKG_CONFIG=1 + PKG_CONFIG_PATH
+    // All syslib env vars below are **target-scoped** via the
+    // `PKG_CONFIG_PATH_<triple>` naming convention pkg-config-rs
+    // honors. Unscoped `PKG_CONFIG_PATH` would leak into host
+    // build-script compilations (cargo runs build scripts with the
+    // same env it spawns cargo with), causing the host-side
+    // build_script_build link step for soldr-cli to try linking
+    // against the cross-target sysroot — e.g. `rust-lld: unable to
+    // find library -lzstd_static` when the catalogue path points
+    // at a Windows-format zstd dir but the host link runs on Linux.
+    //
+    // We also no longer set `ZSTD_SYS_USE_PKG_CONFIG=1` /
+    // `LIBSQLITE3_SYS_USE_PKG_CONFIG=1` / `LZMA_API_STATIC=1`
+    // unconditionally — those flags are NOT target-scoped, so
+    // setting them globally forces every consumer (including the
+    // host build-script side of the same crate) to attempt
+    // pkg-config probing, which then matches against the leaked
+    // unscoped `PKG_CONFIG_PATH` and re-introduces the same link
+    // bug. The catalogue sysroot is still surfaced via the
+    // target-scoped `PKG_CONFIG_PATH_<triple>`; -sys crates that
+    // natively probe pkg-config-rs will find it for the cross
+    // target without us having to flip a global feature flag.
+
+    // zstd-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::zstd_sysroot::ensure_zstd_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            prep.env
-                .push(("ZSTD_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
-        }
+        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("zstd", target_triple, &e),
     }
 
-    // libsqlite3-sys → LIBSQLITE3_SYS_USE_PKG_CONFIG=1 + PKG_CONFIG_PATH
+    // libsqlite3-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::sqlite_sysroot::ensure_sqlite_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            prep.env
-                .push(("LIBSQLITE3_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
-        }
+        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("sqlite", target_triple, &e),
     }
 
-    // libmimalloc-sys → MIMALLOC_OVERRIDE=<lib>/libmimalloc.a
-    match crate::fetch::mimalloc_sysroot::ensure_mimalloc_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            let lib = sysroot.join("lib").join("libmimalloc.a");
-            prep.env.push((
-                "MIMALLOC_OVERRIDE".to_string(),
-                lib.to_string_lossy().into_owned(),
-            ));
-        }
-        Err(e) => log_sys_unavailable("mimalloc", target_triple, &e),
-    }
+    // libmimalloc-sys → MIMALLOC_OVERRIDE (NOT target-scoped by
+    // libmimalloc-sys upstream; leaving disabled — mimalloc's
+    // vendored compile is fast enough and works everywhere).
+    // Catalogue mimalloc sysroot fetcher kept for future use if
+    // upstream gains target-scoped env-var support.
+    let _ = crate::fetch::mimalloc_sysroot::catalogue_slug_for(target_triple);
 
-    // libz-ng-sys → PKG_CONFIG_PATH (pkg-config-only contract)
+    // libz-ng-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::zlib_ng_sysroot::ensure_zlib_ng_sysroot(paths, target_triple).await {
-        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
+        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("zlib-ng", target_triple, &e),
     }
 
-    // lzma-sys → LZMA_API_STATIC=1 + PKG_CONFIG_PATH
+    // lzma-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            prep.env
-                .push(("LZMA_API_STATIC".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
-        }
+        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("lzma", target_triple, &e),
     }
 
-    // bzip2-sys → PKG_CONFIG_PATH (pkg-config-only contract)
+    // bzip2-sys → PKG_CONFIG_PATH_<triple>
     match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {
-        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
+        Ok(sysroot) => prepend_pkg_config_path_for_target(prep, target_triple, &sysroot),
         Err(e) => log_sys_unavailable("bzip2", target_triple, &e),
     }
 }
 
-/// Prepend `<sysroot>/lib/pkgconfig` to whatever `PKG_CONFIG_PATH`
-/// value is already queued on `prep.env`. Multiple sysroots stack via
-/// repeated calls (last-wins lookup order = first-pushed sysroot).
-fn prepend_pkg_config_path(prep: &mut BlessedPrep, sysroot: &std::path::Path) {
+/// Prepend `<sysroot>/lib/pkgconfig` to the **target-scoped**
+/// `PKG_CONFIG_PATH_<triple>` env var (pkg-config-rs convention).
+/// Unscoped `PKG_CONFIG_PATH` is deliberately NOT used — see the
+/// rationale in `inject_sys_library_overrides`.
+fn prepend_pkg_config_path_for_target(
+    prep: &mut BlessedPrep,
+    target_triple: &str,
+    sysroot: &std::path::Path,
+) {
+    let var_name = format!("PKG_CONFIG_PATH_{target_triple}");
     let pkgconfig_dir = sysroot.join("lib").join("pkgconfig");
     let new_entry = pkgconfig_dir.to_string_lossy().into_owned();
-    // If a prior call already pushed a PKG_CONFIG_PATH entry, prepend
-    // to it rather than clobbering. cargo + the child cargo will see
-    // the final composed value at child-process spawn time.
-    if let Some(existing) = prep
-        .env
-        .iter_mut()
-        .find(|(name, _)| name == "PKG_CONFIG_PATH")
-    {
+    if let Some(existing) = prep.env.iter_mut().find(|(name, _)| name == &var_name) {
         let sep = if cfg!(windows) { ';' } else { ':' };
         existing.1 = format!("{new_entry}{sep}{}", existing.1);
     } else {
-        prep.env.push(("PKG_CONFIG_PATH".to_string(), new_entry));
+        prep.env.push((var_name, new_entry));
     }
 }
 
