@@ -379,7 +379,18 @@ jobs:
           #    runner.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            soldr build --target "$target" --release --locked --package soldr-cli
+            # --no-trampoline: opt out of cargo_front_door's
+            # workspace trampoline (soldr#354). The trampoline
+            # short-circuits `build` / `check` / `clippy` with
+            # "exit 0, no on-disk changes" when a sidecar from a
+            # prior build says everything is up-to-date. Because
+            # the bootstrap step already built soldr for
+            # `x86_64-unknown-linux-gnu`, the sidecar there can
+            # mis-match for `--target x86_64-apple-darwin` and
+            # cause this step to exit 0 without ever producing
+            # `target/x86_64-apple-darwin/release/soldr` (see
+            # the v0.7.78 macOS x64 failure trace).
+            soldr build --target "$target" --release --locked --package soldr-cli --no-trampoline
           elif [ "$target" = "aarch64-unknown-linux-musl" ]; then
             cargo zigbuild --package soldr-cli --release --locked --target "$target"
           else
