@@ -146,9 +146,7 @@ pub fn classify_cargo_path(path: &Path) -> CargoOnPathFinding {
     let classification = if lower.contains("/.cargo/bin/") || lower.contains("/cargo/bin/") {
         // Rustup proxy lives under CARGO_HOME/bin (default `~/.cargo/bin`).
         CargoClassification::Rustup
-    } else if lower.contains("/.rustup/toolchains/")
-        || lower.contains("/rustup/toolchains/")
-    {
+    } else if lower.contains("/.rustup/toolchains/") || lower.contains("/rustup/toolchains/") {
         CargoClassification::RustupToolchainBin
     } else if lower.contains("/chocolatey/") {
         CargoClassification::Chocolatey
@@ -165,7 +163,10 @@ pub fn classify_cargo_path(path: &Path) -> CargoOnPathFinding {
         CargoClassification::Unknown
     };
 
-    let honors = matches!(classification, CargoClassification::Rustup | CargoClassification::SoldrShim);
+    let honors = matches!(
+        classification,
+        CargoClassification::Rustup | CargoClassification::SoldrShim
+    );
 
     CargoOnPathFinding {
         resolved: path.to_path_buf(),
@@ -240,14 +241,20 @@ mod tests {
         assert!(f.honors_rust_toolchain_toml);
     });
 
-    timed_test!(classify_rustup_toolchain_bin_is_warned, Duration::from_secs(5), {
-        // Direct toolchain bin path — pinned to ONE channel, ignores
-        // per-crate overrides. Warn.
-        let p = PathBuf::from("/home/me/.rustup/toolchains/1.94.1-x86_64-pc-windows-msvc/bin/cargo");
-        let f = classify_cargo_path(&p);
-        assert_eq!(f.classification, CargoClassification::RustupToolchainBin);
-        assert!(!f.honors_rust_toolchain_toml);
-    });
+    timed_test!(
+        classify_rustup_toolchain_bin_is_warned,
+        Duration::from_secs(5),
+        {
+            // Direct toolchain bin path — pinned to ONE channel, ignores
+            // per-crate overrides. Warn.
+            let p = PathBuf::from(
+                "/home/me/.rustup/toolchains/1.94.1-x86_64-pc-windows-msvc/bin/cargo",
+            );
+            let f = classify_cargo_path(&p);
+            assert_eq!(f.classification, CargoClassification::RustupToolchainBin);
+            assert!(!f.honors_rust_toolchain_toml);
+        }
+    );
 
     timed_test!(classify_system_package_linux, Duration::from_secs(5), {
         let p = PathBuf::from("/usr/bin/cargo");
@@ -264,31 +271,35 @@ mod tests {
         assert!(warning_for(&f).is_some());
     });
 
-    timed_test!(detect_cargo_on_path_respects_synth_env, Duration::from_secs(10), {
-        // Build an isolated PATH and a fake cargo binary; verify the
-        // detector finds it. Restore PATH at the end so we don't
-        // pollute downstream tests.
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let bin = tmp.path().join("scoop").join("shims");
-        std::fs::create_dir_all(&bin).unwrap();
-        let exe_name = if cfg!(windows) { "cargo.exe" } else { "cargo" };
-        let exe = bin.join(exe_name);
-        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
-        #[cfg(unix)]
+    timed_test!(
+        detect_cargo_on_path_respects_synth_env,
+        Duration::from_secs(10),
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&exe).unwrap().permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&exe, perms).unwrap();
+            // Build an isolated PATH and a fake cargo binary; verify the
+            // detector finds it. Restore PATH at the end so we don't
+            // pollute downstream tests.
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let bin = tmp.path().join("scoop").join("shims");
+            std::fs::create_dir_all(&bin).unwrap();
+            let exe_name = if cfg!(windows) { "cargo.exe" } else { "cargo" };
+            let exe = bin.join(exe_name);
+            std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&exe).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&exe, perms).unwrap();
+            }
+            let prior = std::env::var_os("PATH");
+            std::env::set_var("PATH", &bin);
+            let found = detect_cargo_on_path();
+            match prior {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+            let found = found.expect("detector should find the fake cargo");
+            assert_eq!(found.classification, CargoClassification::Scoop);
         }
-        let prior = std::env::var_os("PATH");
-        std::env::set_var("PATH", &bin);
-        let found = detect_cargo_on_path();
-        match prior {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
-        let found = found.expect("detector should find the fake cargo");
-        assert_eq!(found.classification, CargoClassification::Scoop);
-    });
+    );
 }

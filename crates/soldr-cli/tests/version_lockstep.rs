@@ -28,8 +28,8 @@ use std::time::Duration;
 /// `CARGO_MANIFEST_DIR` points at `<repo>/crates/soldr-cli`; we want
 /// `<repo>/`.
 fn repo_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .expect("CARGO_MANIFEST_DIR set by cargo at test time");
+    let manifest_dir =
+        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo at test time");
     PathBuf::from(manifest_dir)
         .parent()
         .and_then(|p| p.parent())

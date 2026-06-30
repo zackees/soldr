@@ -19,7 +19,6 @@ mod cache_lib;
 mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
-mod cli_args;
 /// soldr#1081 — shared `Request::Compile` dispatch with hang-safe
 /// retry budget. Used by `wrapper.rs` and the `zccache-soldr` bin.
 /// soldr#1059 — classify the `cargo` binary that `which cargo` would
@@ -27,6 +26,7 @@ mod cli_args;
 /// when a Chocolatey-style standalone shadows rustup's proxy, defeating
 /// per-crate `rust-toolchain.toml` overrides for subprocess invocations.
 mod cargo_path_check;
+mod cli_args;
 mod compile_dispatch;
 mod cook;
 mod core;
