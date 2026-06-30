@@ -122,6 +122,10 @@ jobs:
           EOF
           cat rust-toolchain.ci.toml
 
+      # soldr#1083 follow-up: cache + soldr-cook disabled across the
+      # repo. Cook rewrites workspace + per-crate source files in
+      # ways incompatible with cross-compile lanes. Save cost no
+      # longer offsets savings. Toolchain install only.
       - name: Setup soldr build cache
         id: setup_soldr
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
@@ -129,19 +133,9 @@ jobs:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
           toolchain-file: rust-toolchain.ci.toml
-          cache: true
+          cache: false
           zccache-seed-strict: true
           linker: platform-default
-          cache-key-suffix: bootstrap-${{ inputs.target }}-native-cc-v2
-          lockfile: Cargo.lock
-          target-dir: target
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: "--target ${{ inputs.target }}"
-
-      - name: Restore checkout after soldr-cook
-        shell: pwsh
-        working-directory: soldr
-        run: git restore --worktree -- .
 
       - name: Reset stale cache fallback artifacts
         if: >-
