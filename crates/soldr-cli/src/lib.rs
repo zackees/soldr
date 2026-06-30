@@ -41,6 +41,10 @@ pub mod env_cmd;
 /// `cargo test --lib`.
 pub mod exec_cmd;
 pub mod fetch;
+/// soldr#820 — `soldr logs` discoverable runtime-log surface.
+/// Lib-side declaration mirrors `main.rs` so unit tests are reachable
+/// via `cargo test --lib`.
+pub mod logs_cmd;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
 /// onto the current process so `soldr cargo build` / `soldr cargo test`
