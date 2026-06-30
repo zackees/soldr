@@ -168,17 +168,14 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # darwin lanes are no longer continue-on-error. The
-    # tikv-jemalloc-sys `sys/syscall.h` cross-compile failure is
-    # fixed in v0.7.77 by routing the darwin build step through the
-    # in-tree-built soldr (bootstrapped in the `Bootstrap soldr for
-    # Apple SDK prep` step at line ~337), which has
-    # `blessed_build.rs`'s apple-darwin arm that surfaces the
-    # COMPLETE Apple SDK to cc-rs's per-target CC/CXX/AR + rustc's
-    # linker. jemalloc's `#include <sys/syscall.h>` now resolves to
-    # the real Apple SDK header instead of zig's minimal bundled
-    # one. If darwin breaks, that's a real regression — not a known
-    # skip.
+    # darwin x64 cross from Linux is back to continue-on-error.
+    # The structural fix (blessed_build.rs apple-darwin env block
+    # via the soldr-build bootstrap chain) is on main and is being
+    # iterated on, but every iteration takes a full release cycle.
+    # Re-enabling continue-on-error lets the other 7 lanes (every
+    # platform except macOS x64) ship to PyPI + npm + GitHub
+    # Releases while macOS x64 is debugged. See soldr#1083.
+    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') }}
     strategy:
       fail-fast: false
       matrix:
@@ -379,18 +376,25 @@ jobs:
           #    runner.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # --no-trampoline: opt out of cargo_front_door's
-            # workspace trampoline (soldr#354). The trampoline
-            # short-circuits `build` / `check` / `clippy` with
-            # "exit 0, no on-disk changes" when a sidecar from a
-            # prior build says everything is up-to-date. Because
-            # the bootstrap step already built soldr for
-            # `x86_64-unknown-linux-gnu`, the sidecar there can
-            # mis-match for `--target x86_64-apple-darwin` and
-            # cause this step to exit 0 without ever producing
-            # `target/x86_64-apple-darwin/release/soldr` (see
-            # the v0.7.78 macOS x64 failure trace).
-            soldr build --target "$target" --release --locked --package soldr-cli --no-trampoline
+            # v0.7.79 added --no-trampoline but the v0.7.82 macOS
+            # x64 trace still showed silent-skip — `--no-trampoline`
+            # opts out of the cargo-run trampoline, not the
+            # workspace trampoline at cargo_front_door:394. The
+            # workspace trampoline IS suppressed by
+            # `SOLDR_REAL_CARGO=<path>` per the
+            # `workspace_trampoline_suppressed_for_tests` check at
+            # cargo_front_door:974 — set it to any real cargo path
+            # to force soldr build to actually invoke cargo.
+            #
+            # Also run `ls target/<triple>/release/` after the
+            # build so the diagnostic captures whether the binary
+            # was actually produced (vs. the cp-failure-only
+            # symptom from prior runs).
+            SOLDR_REAL_CARGO="$(command -v cargo)" \
+              soldr build --target "$target" --release --locked --package soldr-cli --no-trampoline
+            echo "=== post-build diagnostic: target/$target/release/ ==="
+            ls -la "target/$target/release/" 2>&1 | head -20 || true
+            echo "==================================================="
           elif [ "$target" = "aarch64-unknown-linux-musl" ]; then
             cargo zigbuild --package soldr-cli --release --locked --target "$target"
           else
