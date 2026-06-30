@@ -20,6 +20,10 @@
 pub mod blessed_build;
 pub mod cache_lib;
 pub mod cargo_metadata_soldr;
+/// soldr#1059 — classify the `cargo` binary that `which cargo`
+/// resolves to. Lib-side declaration mirrors `main.rs` so integration
+/// tests can exercise the classifier directly.
+pub mod cargo_path_check;
 /// soldr#1081 — Shared `Request::Compile` dispatch logic used by both
 /// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and the dedicated
 /// `zccache-soldr` shim binary (`bin/zccache_soldr.rs`). Owns the
@@ -32,6 +36,10 @@ pub mod defender;
 /// Declared from both lib and bin so the unit tests are reachable
 /// via `cargo test --lib`.
 pub mod env_cmd;
+/// soldr#1059 — `soldr exec <cmd>` PATH-prepend wrapper. Lib-side
+/// declaration mirrors `main.rs` so the unit tests are reachable via
+/// `cargo test --lib`.
+pub mod exec_cmd;
 pub mod fetch;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH

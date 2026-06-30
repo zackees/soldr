@@ -1,0 +1,265 @@
+//! `soldr exec <cmd>` — issue #1059 escape hatch.
+//!
+//! Runs an arbitrary command with rustup's toolchain bin dir prepended
+//! to PATH, so any subprocess the command spawns finds rustup's
+//! `cargo` (and therefore the rustup proxy, which DOES honor per-crate
+//! `rust-toolchain.toml` overrides) before any Chocolatey/scoop/
+//! standalone shim that may also be on PATH.
+//!
+//! Resolution flow:
+//!
+//!   1. Resolve `cargo` via the shared `resolve_toolchain_binary`
+//!      helper. This either calls `rustup which cargo` or hits one of
+//!      the direct-probe shortcuts in `binaries.rs`.
+//!   2. Take its containing directory (the rustup toolchain `bin/`).
+//!   3. Build a new `PATH` value with that dir prepended.
+//!   4. Resolve the user-supplied `<cmd>` against the new PATH so
+//!      `soldr exec cargo-dylint ...` works even when `cargo-dylint`
+//!      lives under `~/.cargo/bin/`.
+//!   5. Spawn the resolved binary with the new PATH and the remaining
+//!      args, forwarding stdout / stderr unchanged.
+//!
+//! The wrapped command inherits the current process env otherwise. We
+//! deliberately don't set `RUSTUP_TOOLCHAIN` or `CARGO` — those wouldn't
+//! help against the very subprocess-y `cargo-dylint` style hardcoded
+//! `"cargo"` invocations the issue is about. The PATH-prepend is the
+//! load-bearing change.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use crate::core::{suppress_windows_console_window, SoldrError};
+
+/// Implementation of `soldr exec`. Returns the child process exit code
+/// (or 127 on spawn failure, matching the POSIX "command not found"
+/// convention).
+pub fn run_exec(args: &[String]) -> Result<i32, SoldrError> {
+    if args.is_empty() {
+        return Err(SoldrError::Other(
+            "soldr exec: missing command — usage: soldr exec <cmd> [args...]".to_string(),
+        ));
+    }
+
+    let cargo = resolve_rustup_cargo()?;
+    let rustup_bin_dir = cargo.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "soldr exec: resolved cargo has no parent dir: {}",
+            cargo.display()
+        ))
+    })?;
+
+    let new_path = path_with_prepend(rustup_bin_dir);
+
+    let (cmd, cmd_args) = args.split_first().expect("non-empty checked above");
+    // Resolve `cmd` against the NEW path so the rustup-bin lookup wins.
+    let resolved_cmd = find_on_path(cmd, &new_path).unwrap_or_else(|| PathBuf::from(cmd));
+
+    eprintln!(
+        "soldr exec: PATH prefix {} | running {} {}",
+        rustup_bin_dir.display(),
+        resolved_cmd.display(),
+        shell_quote(cmd_args)
+    );
+
+    let mut command = Command::new(&resolved_cmd);
+    command.args(cmd_args);
+    command.env("PATH", &new_path);
+    suppress_windows_console_window(&mut command);
+
+    let status = command.status().map_err(|e| {
+        SoldrError::Other(format!(
+            "soldr exec: failed to spawn {}: {e}",
+            resolved_cmd.display()
+        ))
+    })?;
+    Ok(status.code().unwrap_or(127))
+}
+
+/// Build a new PATH-style env var value with `prepend_dir` placed first
+/// (and de-duplicated against an existing copy in the rest of PATH).
+pub fn path_with_prepend(prepend_dir: &Path) -> std::ffi::OsString {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    path_with_prepend_using(prepend_dir, current.as_os_str())
+}
+
+/// Pure-function form of [`path_with_prepend`] — takes the base PATH
+/// value explicitly so tests don't race on the process env.
+pub fn path_with_prepend_using(
+    prepend_dir: &Path,
+    base: &std::ffi::OsStr,
+) -> std::ffi::OsString {
+    let mut entries: Vec<PathBuf> = std::env::split_paths(base)
+        .filter(|p| p != prepend_dir)
+        .collect();
+    entries.insert(0, prepend_dir.to_path_buf());
+    std::env::join_paths(entries).unwrap_or_else(|_| base.to_os_string())
+}
+
+/// Look up `name` against a PATH-shape value (NOT the process env).
+/// Used so `soldr exec` resolves the command against its own
+/// PATH-prepended view rather than the unmodified process PATH.
+pub fn find_on_path(name: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf> {
+    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    // If the user gave a path-like argument (contains a separator), no
+    // PATH lookup — just trust it.
+    if name.contains('/') || name.contains('\\') {
+        return Some(PathBuf::from(name));
+    }
+    for dir in std::env::split_paths(path_value) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for ext in exts {
+            let candidate: PathBuf = if ext.is_empty() {
+                dir.join(name)
+            } else {
+                dir.join(format!("{name}{ext}"))
+            };
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the path of rustup's `cargo` binary. soldr#1059's escape
+/// hatch is specifically for hosts where `which cargo` returns a
+/// shadowing standalone — we deliberately DO NOT consult PATH here.
+/// Lookup order:
+///
+///   1. `RUSTUP_HOME` / default rustup home → `<home>/bin/cargo[.exe]`
+///      (the rustup proxy).
+///   2. `rustup which cargo` shelled out (covers the case where
+///      rustup is on PATH under a non-standard home).
+///
+/// Returns a `SoldrError` when neither resolution path produces a
+/// real file. The error message names both attempts so the user
+/// knows whether to install rustup or set `RUSTUP_HOME`.
+fn resolve_rustup_cargo() -> Result<PathBuf, SoldrError> {
+    if let Some(home) = std::env::var_os("CARGO_HOME") {
+        let candidate = PathBuf::from(home)
+            .join("bin")
+            .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    if let Some(home) = dirs_home_dir() {
+        let candidate = home
+            .join(".cargo")
+            .join("bin")
+            .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    // Fallback to `rustup which cargo`.
+    let rustup = if cfg!(windows) { "rustup.exe" } else { "rustup" };
+    let mut command = Command::new(rustup);
+    command.args(["which", "cargo"]);
+    suppress_windows_console_window(&mut command);
+    if let Ok(out) = command.output() {
+        if out.status.success() {
+            let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !path.is_empty() {
+                let pb = PathBuf::from(path);
+                if pb.is_file() {
+                    return Ok(pb);
+                }
+            }
+        }
+    }
+    Err(SoldrError::Other(
+        "soldr exec: could not resolve rustup's cargo binary; \
+         tried $CARGO_HOME/bin, ~/.cargo/bin, and `rustup which cargo`. \
+         Install rustup or set CARGO_HOME to a rustup install."
+            .to_string(),
+    ))
+}
+
+fn dirs_home_dir() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        std::env::var_os("USERPROFILE").map(PathBuf::from)
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var_os("HOME").map(PathBuf::from)
+    }
+}
+
+fn shell_quote(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.contains(' ') || a.contains('"') {
+                format!("{a:?}")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::timed_test;
+    use std::time::Duration;
+
+    timed_test!(path_with_prepend_inserts_dir_first, Duration::from_secs(5), {
+        // Pure-function form — no env mutation, no race with sibling
+        // tests under parallel `cargo test`.
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
+        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+        assert_eq!(entries.first().map(|p| p.as_path()), Some(Path::new("/x/y")));
+        assert!(
+            entries.iter().any(|p| p == Path::new("/a/b")),
+            "missing /a/b in {entries:?}",
+        );
+        assert!(
+            entries.iter().any(|p| p == Path::new("/c/d")),
+            "missing /c/d in {entries:?}",
+        );
+    });
+
+    timed_test!(path_with_prepend_deduplicates_existing, Duration::from_secs(5), {
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
+        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+        // `/x/y` should appear exactly once — the duplicate should have
+        // been dropped before we prepended.
+        let count = entries.iter().filter(|p| p == &Path::new("/x/y")).count();
+        assert_eq!(count, 1, "expected exactly one /x/y entry, got {count} in {entries:?}");
+    });
+
+    timed_test!(find_on_path_locates_executable, Duration::from_secs(5), {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let exe = tmp.path().join(if cfg!(windows) { "myexe.exe" } else { "myexe" });
+        std::fs::write(&exe, b"x").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&exe).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&exe, perms).unwrap();
+        }
+        let path_value: std::ffi::OsString = std::env::join_paths(std::iter::once(tmp.path()))
+            .unwrap();
+        let resolved = find_on_path("myexe", path_value.as_os_str())
+            .expect("should find the fake executable");
+        assert_eq!(resolved, exe);
+    });
+
+    timed_test!(find_on_path_passthrough_for_explicit_path, Duration::from_secs(5), {
+        // When the name already contains a separator, treat it as a
+        // direct path and skip PATH lookup.
+        let path_value: std::ffi::OsString = "/this/does/not/exist".into();
+        let resolved = find_on_path("/explicit/path/binary", path_value.as_os_str());
+        assert_eq!(resolved.as_deref(), Some(Path::new("/explicit/path/binary")));
+    });
+}

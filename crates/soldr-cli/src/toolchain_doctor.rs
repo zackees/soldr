@@ -37,6 +37,7 @@ pub(crate) fn run_toolchain_doctor(json: bool) -> Result<i32, SoldrError> {
     let probes = vec![
         probe_musl_cc(&host),
         probe_shared_target_warning(&workspace),
+        probe_cargo_on_path_shadowing(),
     ];
 
     let all_ok = probes.iter().all(|p| p.ok);
@@ -119,6 +120,8 @@ pub(crate) const PROBE_MUSL_CC: &str = "musl-cc";
 /// Probe name for the pre-populated-target warning (ports
 /// `detect-shared-target-warning.ts`).
 pub(crate) const PROBE_SHARED_TARGET_WARNING: &str = "shared-target-warning";
+/// Probe name for the soldr#1059 Chocolatey-cargo-shadowing detector.
+pub(crate) const PROBE_CARGO_ON_PATH_SHADOWING: &str = "cargo-on-path-shadowing";
 
 /// Detect availability of a musl C compiler on PATH. On non-Linux
 /// hosts the probe is skipped (ok=true, details=`{"skipped": "not-linux"}`)
@@ -198,6 +201,37 @@ pub(crate) fn probe_shared_target_warning(workspace: &Path) -> ProbeResult {
 }
 
 /// PATH lookup helper. Mirrors setup-soldr's `findOnPathSync`.
+/// soldr#1059 — probe the first `cargo` on PATH and classify whether
+/// it honors per-crate `rust-toolchain.toml` overrides. The probe
+/// returns `ok = true` even when the resolved cargo is a shadowing
+/// shim — the diagnosis itself succeeded; the *finding* (in
+/// `details.honors_rust_toolchain_toml`) tells the caller whether to
+/// act on it. Mirrors how `probe_shared_target_warning` already
+/// reports `would_warn: true` with `ok: true`.
+pub(crate) fn probe_cargo_on_path_shadowing() -> ProbeResult {
+    let Some(finding) = crate::cargo_path_check::detect_cargo_on_path() else {
+        return ProbeResult {
+            name: PROBE_CARGO_ON_PATH_SHADOWING.to_string(),
+            ok: true,
+            details: json!({
+                "cargo_on_path": null,
+                "found": false,
+            }),
+        };
+    };
+    let warning = crate::cargo_path_check::warning_for(&finding);
+    ProbeResult {
+        name: PROBE_CARGO_ON_PATH_SHADOWING.to_string(),
+        ok: true,
+        details: json!({
+            "cargo_on_path": finding.resolved.display().to_string(),
+            "classification": finding.classification.label(),
+            "honors_rust_toolchain_toml": finding.honors_rust_toolchain_toml,
+            "would_warn": warning.is_some(),
+        }),
+    }
+}
+
 fn find_on_path(cmd: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
