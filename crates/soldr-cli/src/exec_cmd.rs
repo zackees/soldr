@@ -84,10 +84,7 @@ pub fn path_with_prepend(prepend_dir: &Path) -> std::ffi::OsString {
 
 /// Pure-function form of [`path_with_prepend`] — takes the base PATH
 /// value explicitly so tests don't race on the process env.
-pub fn path_with_prepend_using(
-    prepend_dir: &Path,
-    base: &std::ffi::OsStr,
-) -> std::ffi::OsString {
+pub fn path_with_prepend_using(prepend_dir: &Path, base: &std::ffi::OsStr) -> std::ffi::OsString {
     let mut entries: Vec<PathBuf> = std::env::split_paths(base)
         .filter(|p| p != prepend_dir)
         .collect();
@@ -99,7 +96,11 @@ pub fn path_with_prepend_using(
 /// Used so `soldr exec` resolves the command against its own
 /// PATH-prepended view rather than the unmodified process PATH.
 pub fn find_on_path(name: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf> {
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
     // If the user gave a path-like argument (contains a separator), no
     // PATH lookup — just trust it.
     if name.contains('/') || name.contains('\\') {
@@ -138,24 +139,29 @@ pub fn find_on_path(name: &str, path_value: &std::ffi::OsStr) -> Option<PathBuf>
 /// knows whether to install rustup or set `RUSTUP_HOME`.
 fn resolve_rustup_cargo() -> Result<PathBuf, SoldrError> {
     if let Some(home) = std::env::var_os("CARGO_HOME") {
-        let candidate = PathBuf::from(home)
-            .join("bin")
-            .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let candidate =
+            PathBuf::from(home)
+                .join("bin")
+                .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
     if let Some(home) = dirs_home_dir() {
-        let candidate = home
-            .join(".cargo")
-            .join("bin")
-            .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let candidate =
+            home.join(".cargo")
+                .join("bin")
+                .join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
         if candidate.is_file() {
             return Ok(candidate);
         }
     }
     // Fallback to `rustup which cargo`.
-    let rustup = if cfg!(windows) { "rustup.exe" } else { "rustup" };
+    let rustup = if cfg!(windows) {
+        "rustup.exe"
+    } else {
+        "rustup"
+    };
     let mut command = Command::new(rustup);
     command.args(["which", "cargo"]);
     suppress_windows_console_window(&mut command);
@@ -208,38 +214,54 @@ mod tests {
     use crate::timed_test;
     use std::time::Duration;
 
-    timed_test!(path_with_prepend_inserts_dir_first, Duration::from_secs(5), {
-        // Pure-function form — no env mutation, no race with sibling
-        // tests under parallel `cargo test`.
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
-        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
-        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
-        assert_eq!(entries.first().map(|p| p.as_path()), Some(Path::new("/x/y")));
-        assert!(
-            entries.iter().any(|p| p == Path::new("/a/b")),
-            "missing /a/b in {entries:?}",
-        );
-        assert!(
-            entries.iter().any(|p| p == Path::new("/c/d")),
-            "missing /c/d in {entries:?}",
-        );
-    });
+    timed_test!(
+        path_with_prepend_inserts_dir_first,
+        Duration::from_secs(5),
+        {
+            // Pure-function form — no env mutation, no race with sibling
+            // tests under parallel `cargo test`.
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let base: std::ffi::OsString = format!("/a/b{sep}/c/d").into();
+            let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+            let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+            assert_eq!(
+                entries.first().map(|p| p.as_path()),
+                Some(Path::new("/x/y"))
+            );
+            assert!(
+                entries.iter().any(|p| p == Path::new("/a/b")),
+                "missing /a/b in {entries:?}",
+            );
+            assert!(
+                entries.iter().any(|p| p == Path::new("/c/d")),
+                "missing /c/d in {entries:?}",
+            );
+        }
+    );
 
-    timed_test!(path_with_prepend_deduplicates_existing, Duration::from_secs(5), {
-        let sep = if cfg!(windows) { ";" } else { ":" };
-        let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
-        let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
-        let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
-        // `/x/y` should appear exactly once — the duplicate should have
-        // been dropped before we prepended.
-        let count = entries.iter().filter(|p| p == &Path::new("/x/y")).count();
-        assert_eq!(count, 1, "expected exactly one /x/y entry, got {count} in {entries:?}");
-    });
+    timed_test!(
+        path_with_prepend_deduplicates_existing,
+        Duration::from_secs(5),
+        {
+            let sep = if cfg!(windows) { ";" } else { ":" };
+            let base: std::ffi::OsString = format!("/x/y{sep}/a/b").into();
+            let prepended = path_with_prepend_using(Path::new("/x/y"), base.as_os_str());
+            let entries: Vec<PathBuf> = std::env::split_paths(&prepended).collect();
+            // `/x/y` should appear exactly once — the duplicate should have
+            // been dropped before we prepended.
+            let count = entries.iter().filter(|p| p == &Path::new("/x/y")).count();
+            assert_eq!(
+                count, 1,
+                "expected exactly one /x/y entry, got {count} in {entries:?}"
+            );
+        }
+    );
 
     timed_test!(find_on_path_locates_executable, Duration::from_secs(5), {
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let exe = tmp.path().join(if cfg!(windows) { "myexe.exe" } else { "myexe" });
+        let exe = tmp
+            .path()
+            .join(if cfg!(windows) { "myexe.exe" } else { "myexe" });
         std::fs::write(&exe, b"x").unwrap();
         #[cfg(unix)]
         {
@@ -248,18 +270,25 @@ mod tests {
             perms.set_mode(0o755);
             std::fs::set_permissions(&exe, perms).unwrap();
         }
-        let path_value: std::ffi::OsString = std::env::join_paths(std::iter::once(tmp.path()))
-            .unwrap();
-        let resolved = find_on_path("myexe", path_value.as_os_str())
-            .expect("should find the fake executable");
+        let path_value: std::ffi::OsString =
+            std::env::join_paths(std::iter::once(tmp.path())).unwrap();
+        let resolved =
+            find_on_path("myexe", path_value.as_os_str()).expect("should find the fake executable");
         assert_eq!(resolved, exe);
     });
 
-    timed_test!(find_on_path_passthrough_for_explicit_path, Duration::from_secs(5), {
-        // When the name already contains a separator, treat it as a
-        // direct path and skip PATH lookup.
-        let path_value: std::ffi::OsString = "/this/does/not/exist".into();
-        let resolved = find_on_path("/explicit/path/binary", path_value.as_os_str());
-        assert_eq!(resolved.as_deref(), Some(Path::new("/explicit/path/binary")));
-    });
+    timed_test!(
+        find_on_path_passthrough_for_explicit_path,
+        Duration::from_secs(5),
+        {
+            // When the name already contains a separator, treat it as a
+            // direct path and skip PATH lookup.
+            let path_value: std::ffi::OsString = "/this/does/not/exist".into();
+            let resolved = find_on_path("/explicit/path/binary", path_value.as_os_str());
+            assert_eq!(
+                resolved.as_deref(),
+                Some(Path::new("/explicit/path/binary"))
+            );
+        }
+    );
 }
