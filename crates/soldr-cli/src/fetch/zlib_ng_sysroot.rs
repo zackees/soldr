@@ -9,11 +9,11 @@
 //! include/zlib-ng.h
 //! ```
 //!
-//! When `libz-ng-sys` is in the transitive deps and the catalogue row
-//! is ingested, the blessed path exports `PKG_CONFIG_PATH` pointing at
-//! the materialized `lib/pkgconfig/` directory so `libz-ng-sys`'
-//! build.rs uses pkg-config to locate the precompiled libz-ng instead
-//! of triggering its cmake build (10-20s).
+//! This module is intentionally disabled for now. The current
+//! `libz-ng-sys` version does not expose a reliable system-library
+//! override for these catalogue bundles, and its vendored zlib-ng
+//! version does not match the merged recipe. Blessed builds must not
+//! inject this sysroot until that contract is real.
 
 use std::path::PathBuf;
 
@@ -40,10 +40,7 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/zlib-ng/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_bundle::asset_url_for("zlib-ng", version, slug)
 }
 
 pub async fn ensure_zlib_ng_sysroot(
@@ -60,8 +57,9 @@ pub async fn ensure_zlib_ng_sysroot(
     })?;
     let url = asset_url_for(MANAGED_ZLIB_NG_VERSION, slug);
     Err(SoldrError::Other(format!(
-        "zlib-ng sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
+        "zlib-ng sysroot for {target_triple} ({slug}) is disabled: current \
+         libz-ng-sys does not expose a reliable catalogue override and the \
+         catalogue recipe version is not aligned. Current expected URL: {url}\n\
          Tracking: https://github.com/zackees/soldr/issues/1064"
     )))
 }
@@ -84,17 +82,18 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_ZLIB_NG_VERSION, "linux-x64-gnu");
-        assert!(u.contains("/deps/zlib-ng/2.2.5/linux-x64-gnu/"));
+        assert!(u.contains("/zlib-ng/2.2.5/linux-x64-gnu/"));
+        assert!(!u.contains("/deps/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_zlib_ng_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_zlib_ng_sysroot_returns_disabled_error, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(ensure_zlib_ng_sysroot(&paths, "x86_64-unknown-linux-gnu"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+        let err = result.expect_err("must error while disabled");
+        assert!(err.to_string().contains("disabled"));
     });
 }

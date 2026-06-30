@@ -60,15 +60,14 @@ pub mod openssl_sysroot;
 /// soldr#997 Phase A — Python sysroot bundle for PyO3 cross-compile
 /// (closes parts of #931, #932, #933).
 pub mod python_sysroot;
+pub(crate) mod syslib_bundle;
 /// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
 /// blessed `*-pc-windows-msvc` cross-compile path.
 pub mod xwin_cache;
-// soldr#1064 Phase B — *-sys C library catalogue distribution.
-// Each module is a stub-until-ingested consumer modeled on
-// openssl_sysroot.rs. Once the soldr-toolchain forge dispatches
-// land the assets, blessed_build::prepare wires the corresponding
-// _SYSTEM / _OVERRIDE env vars onto the child cargo invocation so
-// the *-sys crate's build.rs skips its vendored compile.
+// soldr#1064 Phase B: *-sys C library catalogue distribution.
+// zstd/sqlite are active consumers; the other modules preserve the
+// target/version tables but return disabled errors until their crate
+// hooks and bundled versions are safe to override.
 pub mod bzip2_sysroot;
 pub mod jemalloc_sysroot;
 pub mod lzma_sysroot;

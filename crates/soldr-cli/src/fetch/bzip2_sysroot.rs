@@ -1,4 +1,4 @@
-//! bzip2 (libbz2) sysroot fetcher — soldr#1064 Phase B.
+//! bzip2 (libbz2) sysroot fetcher placeholder for soldr#1064 Phase B.
 //!
 //! Consumes the soldr-toolchain `recipes/bzip2-<platform>/` catalogue
 //! rows. Each row ships:
@@ -9,14 +9,10 @@
 //! include/bzlib.h
 //! ```
 //!
-//! When `bzip2-sys` is in the transitive deps and the catalogue row is
-//! ingested, the blessed path exports `PKG_CONFIG_PATH` pointing at the
-//! materialized `lib/pkgconfig/` directory so `bzip2-sys`' build.rs
-//! uses pkg-config to locate the precompiled libbz2 instead of
-//! recompiling the in-tree bzip2 sources (1-3s).
-//!
-//! Lowest-cost crate in the in-scope list — included for completeness
-//! since the recipe pattern is identical.
+//! This module is intentionally disabled for now. `bzip2-sys` only has
+//! partial pkg-config behavior across the target set, and
+//! `BZIP2_NO_PKG_CONFIG=0` is not a valid enable contract for the
+//! all-target blessed-build path tracked by soldr#1064.
 
 use std::path::PathBuf;
 
@@ -43,10 +39,7 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/bzip2/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_bundle::asset_url_for("bzip2", version, slug)
 }
 
 pub async fn ensure_bzip2_sysroot(
@@ -56,15 +49,15 @@ pub async fn ensure_bzip2_sysroot(
     let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
-            "no bzip2 sysroot recipe for target {target_triple}; \
-             supported: {:?}",
+            "no bzip2 sysroot recipe for target {target_triple}; supported: {:?}",
             BZIP2_TARGETS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
     let url = asset_url_for(MANAGED_BZIP2_VERSION, slug);
     Err(SoldrError::Other(format!(
-        "bzip2 sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
+        "bzip2 sysroot for {target_triple} ({slug}) is disabled: current bzip2-sys \
+         does not expose a valid all-target catalogue override. Current expected \
+         URL: {url}\n\
          Tracking: https://github.com/zackees/soldr/issues/1064"
     )))
 }
@@ -87,17 +80,18 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_BZIP2_VERSION, "linux-x64-gnu");
-        assert!(u.contains("/deps/bzip2/1.0.8/linux-x64-gnu/"));
+        assert!(u.contains("/bzip2/1.0.8/linux-x64-gnu/"));
+        assert!(!u.contains("/deps/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_bzip2_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_bzip2_sysroot_returns_disabled_error, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(ensure_bzip2_sysroot(&paths, "x86_64-unknown-linux-gnu"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+        let err = result.expect_err("must error while disabled");
+        assert!(err.to_string().contains("disabled"));
     });
 }

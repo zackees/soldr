@@ -8,13 +8,11 @@
 //! include/mimalloc.h
 //! ```
 //!
-//! When `libmimalloc-sys` is in the transitive deps and the catalogue
-//! row is ingested, the blessed path exports:
-//!
-//!   * `MIMALLOC_OVERRIDE=<sysroot>/lib/libmimalloc.a`
-//!
-//! `libmimalloc-sys`' build.rs (v0.1.49+) honors `MIMALLOC_OVERRIDE`
-//! and skips its cmake compile entirely.
+//! This module is intentionally disabled for now. The current
+//! `libmimalloc-sys` build script does not expose a
+//! `MIMALLOC_OVERRIDE` contract, and its bundled mimalloc version does
+//! not match the merged catalogue recipe. Do not wire this into
+//! blessed builds until the upstream hook and version are aligned.
 
 use std::path::PathBuf;
 
@@ -41,10 +39,7 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/mimalloc/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_bundle::asset_url_for("mimalloc", version, slug)
 }
 
 pub async fn ensure_mimalloc_sysroot(
@@ -61,8 +56,9 @@ pub async fn ensure_mimalloc_sysroot(
     })?;
     let url = asset_url_for(MANAGED_MIMALLOC_VERSION, slug);
     Err(SoldrError::Other(format!(
-        "mimalloc sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
+        "mimalloc sysroot for {target_triple} ({slug}) is disabled: current \
+         libmimalloc-sys does not expose a MIMALLOC_OVERRIDE hook and the \
+         catalogue recipe version is not aligned. Current expected URL: {url}\n\
          Tracking: https://github.com/zackees/soldr/issues/1064"
     )))
 }
@@ -85,17 +81,18 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_MIMALLOC_VERSION, "windows-x64");
-        assert!(u.contains("/deps/mimalloc/3.0.4/windows-x64/"));
+        assert!(u.contains("/mimalloc/3.0.4/windows-x64/"));
+        assert!(!u.contains("/deps/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_mimalloc_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_mimalloc_sysroot_returns_disabled_error, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(ensure_mimalloc_sysroot(&paths, "aarch64-apple-darwin"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+        let err = result.expect_err("must error while disabled");
+        assert!(err.to_string().contains("disabled"));
     });
 }

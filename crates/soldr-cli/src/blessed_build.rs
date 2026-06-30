@@ -268,7 +268,7 @@ async fn inject_sys_library_overrides(
         Ok(sysroot) => {
             prep.env
                 .push(("ZSTD_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
+            prepend_pkg_config_path(prep, target_triple, &sysroot);
         }
         Err(e) => log_sys_unavailable("zstd", target_triple, &e),
     }
@@ -278,76 +278,62 @@ async fn inject_sys_library_overrides(
         Ok(sysroot) => {
             prep.env
                 .push(("LIBSQLITE3_SYS_USE_PKG_CONFIG".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
+            prepend_pkg_config_path(prep, target_triple, &sysroot);
         }
         Err(e) => log_sys_unavailable("sqlite", target_triple, &e),
     }
 
-    // tikv-jemalloc-sys → JEMALLOC_OVERRIDE=<lib>/libjemalloc.a
-    match crate::fetch::jemalloc_sysroot::ensure_jemalloc_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            let lib = sysroot.join("lib").join("libjemalloc.a");
-            prep.env.push((
-                "JEMALLOC_OVERRIDE".to_string(),
-                lib.to_string_lossy().into_owned(),
-            ));
-        }
-        Err(e) => log_sys_unavailable("jemalloc", target_triple, &e),
-    }
-
-    // libmimalloc-sys → MIMALLOC_OVERRIDE=<lib>/libmimalloc.a
-    match crate::fetch::mimalloc_sysroot::ensure_mimalloc_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            let lib = sysroot.join("lib").join("libmimalloc.a");
-            prep.env.push((
-                "MIMALLOC_OVERRIDE".to_string(),
-                lib.to_string_lossy().into_owned(),
-            ));
-        }
-        Err(e) => log_sys_unavailable("mimalloc", target_triple, &e),
-    }
-
-    // libz-ng-sys → PKG_CONFIG_PATH (pkg-config-only contract)
-    match crate::fetch::zlib_ng_sysroot::ensure_zlib_ng_sysroot(paths, target_triple).await {
-        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
-        Err(e) => log_sys_unavailable("zlib-ng", target_triple, &e),
-    }
-
-    // lzma-sys → LZMA_API_STATIC=1 + PKG_CONFIG_PATH
-    match crate::fetch::lzma_sysroot::ensure_lzma_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            prep.env
-                .push(("LZMA_API_STATIC".to_string(), "1".to_string()));
-            prepend_pkg_config_path(prep, &sysroot);
-        }
-        Err(e) => log_sys_unavailable("lzma", target_triple, &e),
-    }
-
-    // bzip2-sys → PKG_CONFIG_PATH (pkg-config-only contract)
-    match crate::fetch::bzip2_sysroot::ensure_bzip2_sysroot(paths, target_triple).await {
-        Ok(sysroot) => prepend_pkg_config_path(prep, &sysroot),
-        Err(e) => log_sys_unavailable("bzip2", target_triple, &e),
-    }
+    // Currently not wired:
+    // - jemalloc: recipe version differs from tikv-jemalloc-sys' vendored lib.
+    // - mimalloc and zlib-ng: current sys crates do not expose valid hooks.
+    // - lzma: LZMA_API_STATIC selects the vendored path today.
+    // - bzip2: pkg-config behavior is partial and not all-target safe.
 }
 
 /// Prepend `<sysroot>/lib/pkgconfig` to whatever `PKG_CONFIG_PATH`
-/// value is already queued on `prep.env`. Multiple sysroots stack via
-/// repeated calls (last-wins lookup order = first-pushed sysroot).
-fn prepend_pkg_config_path(prep: &mut BlessedPrep, sysroot: &std::path::Path) {
+/// value is already queued on `prep.env`, and also expose the same
+/// path through pkg-config-rs' target-scoped variable.
+fn prepend_pkg_config_path(prep: &mut BlessedPrep, target_triple: &str, sysroot: &std::path::Path) {
     let pkgconfig_dir = sysroot.join("lib").join("pkgconfig");
     let new_entry = pkgconfig_dir.to_string_lossy().into_owned();
+    upsert_path_env(prep, "PKG_CONFIG_PATH", &new_entry);
+    upsert_path_env(
+        prep,
+        &format!("PKG_CONFIG_PATH_{}", target_triple.replace('-', "_")),
+        &new_entry,
+    );
+    upsert_env(prep, "PKG_CONFIG_ALLOW_CROSS", "1");
+}
+
+fn upsert_path_env(prep: &mut BlessedPrep, name: &str, new_entry: &str) {
     // If a prior call already pushed a PKG_CONFIG_PATH entry, prepend
     // to it rather than clobbering. cargo + the child cargo will see
     // the final composed value at child-process spawn time.
     if let Some(existing) = prep
         .env
         .iter_mut()
-        .find(|(name, _)| name == "PKG_CONFIG_PATH")
+        .find(|(existing_name, _)| existing_name == name)
     {
         let sep = if cfg!(windows) { ';' } else { ':' };
-        existing.1 = format!("{new_entry}{sep}{}", existing.1);
+        if existing.1.is_empty() {
+            existing.1 = new_entry.to_string();
+        } else {
+            existing.1 = format!("{new_entry}{sep}{}", existing.1);
+        }
     } else {
-        prep.env.push(("PKG_CONFIG_PATH".to_string(), new_entry));
+        prep.env.push((name.to_string(), new_entry.to_string()));
+    }
+}
+
+fn upsert_env(prep: &mut BlessedPrep, name: &str, value: &str) {
+    if let Some(existing) = prep
+        .env
+        .iter_mut()
+        .find(|(existing_name, _)| existing_name == name)
+    {
+        existing.1 = value.to_string();
+    } else {
+        prep.env.push((name.to_string(), value.to_string()));
     }
 }
 
@@ -558,13 +544,41 @@ mod tests {
     crate::timed_test!(linux_targets_get_no_prep, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let prev = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
+        std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
         let prep = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(prepare(&paths, "x86_64-unknown-linux-musl"))
             .expect("linux musl target should not error");
+        match prev {
+            Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
+            None => std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR),
+        }
         assert!(prep.xwin_cache_dir.is_none());
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
+    });
+
+    crate::timed_test!(pkg_config_env_is_global_target_scoped_and_cross_enabled, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let sysroot = tmp.path().join("zstd");
+        let mut prep = BlessedPrep::default();
+        prepend_pkg_config_path(&mut prep, "x86_64-unknown-linux-musl", &sysroot);
+
+        let value_for = |name: &str| {
+            prep.env
+                .iter()
+                .find(|(env_name, _)| env_name == name)
+                .map(|(_, value)| value.as_str())
+        };
+        let pkgconfig = sysroot.join("lib").join("pkgconfig");
+        let pkgconfig = pkgconfig.to_string_lossy();
+        assert_eq!(value_for("PKG_CONFIG_PATH"), Some(pkgconfig.as_ref()));
+        assert_eq!(
+            value_for("PKG_CONFIG_PATH_x86_64_unknown_linux_musl"),
+            Some(pkgconfig.as_ref())
+        );
+        assert_eq!(value_for("PKG_CONFIG_ALLOW_CROSS"), Some("1"));
     });
 
     crate::timed_test!(xwin_cflags_emits_imsvc_for_present_dirs, {

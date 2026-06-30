@@ -10,15 +10,10 @@
 //! include/lzma/*.h
 //! ```
 //!
-//! When `lzma-sys` is in the transitive deps and the catalogue row is
-//! ingested, the blessed path exports:
-//!
-//!   * `LZMA_API_STATIC=1`
-//!   * `PKG_CONFIG_PATH=<sysroot>/lib/pkgconfig:$PKG_CONFIG_PATH`
-//!
-//! so `lzma-sys`' build.rs uses pkg-config to locate the precompiled
-//! liblzma static archive instead of recompiling its in-tree xz copy
-//! (5-10s).
+//! This module is intentionally disabled for now. In the current
+//! `lzma-sys` build script, `LZMA_API_STATIC=1` selects the vendored
+//! static build path instead of forcing pkg-config. Blessed builds must
+//! not inject this sysroot until the upstream contract is proven.
 
 use std::path::PathBuf;
 
@@ -45,10 +40,7 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/lzma/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_bundle::asset_url_for("lzma", version, slug)
 }
 
 pub async fn ensure_lzma_sysroot(
@@ -65,8 +57,9 @@ pub async fn ensure_lzma_sysroot(
     })?;
     let url = asset_url_for(MANAGED_LZMA_VERSION, slug);
     Err(SoldrError::Other(format!(
-        "lzma sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
+        "lzma sysroot for {target_triple} ({slug}) is disabled: current lzma-sys \
+         does not expose the static pkg-config override described in the issue. \
+         Current expected URL: {url}\n\
          Tracking: https://github.com/zackees/soldr/issues/1064"
     )))
 }
@@ -89,17 +82,18 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_LZMA_VERSION, "darwin-arm64");
-        assert!(u.contains("/deps/lzma/5.6.3/darwin-arm64/"));
+        assert!(u.contains("/lzma/5.6.3/darwin-arm64/"));
+        assert!(!u.contains("/deps/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_lzma_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_lzma_sysroot_returns_disabled_error, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(ensure_lzma_sysroot(&paths, "aarch64-apple-darwin"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+        let err = result.expect_err("must error while disabled");
+        assert!(err.to_string().contains("disabled"));
     });
 }

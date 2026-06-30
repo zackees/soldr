@@ -16,6 +16,11 @@
 //!
 //! tikv-jemalloc-sys' build.rs short-circuits the 20-40s autotools
 //! build entirely when this env var points at a static archive.
+//!
+//! This module stays disabled until the recipe version is aligned with
+//! the current Cargo.lock entry: tikv-jemalloc-sys 0.7.1 vendors
+//! jemalloc 5.3.1, while the merged soldr-toolchain recipe currently
+//! builds 5.3.0.
 
 use std::path::PathBuf;
 
@@ -46,10 +51,7 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 }
 
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/jemalloc/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_bundle::asset_url_for("jemalloc", version, slug)
 }
 
 pub async fn ensure_jemalloc_sysroot(
@@ -66,8 +68,9 @@ pub async fn ensure_jemalloc_sysroot(
     })?;
     let url = asset_url_for(MANAGED_JEMALLOC_VERSION, slug);
     Err(SoldrError::Other(format!(
-        "jemalloc sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
+        "jemalloc sysroot for {target_triple} ({slug}) is disabled until \
+         the catalogue recipe version is aligned with tikv-jemalloc-sys' \
+         vendored jemalloc 5.3.1. Current expected URL: {url}\n\
          Tracking: https://github.com/zackees/soldr/issues/1064"
     )))
 }
@@ -91,18 +94,19 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_JEMALLOC_VERSION, "linux-x64-musl");
-        assert!(u.contains("/deps/jemalloc/5.3.0/linux-x64-musl/"));
+        assert!(u.contains("/jemalloc/5.3.0/linux-x64-musl/"));
+        assert!(!u.contains("/deps/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_jemalloc_sysroot_returns_not_yet_ingested, {
+    crate::timed_test!(ensure_jemalloc_sysroot_returns_disabled_error, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(ensure_jemalloc_sysroot(&paths, "x86_64-unknown-linux-musl"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
+        let err = result.expect_err("must error while disabled");
+        assert!(err.to_string().contains("disabled"));
     });
 
     crate::timed_test!(ensure_jemalloc_rejects_windows, {

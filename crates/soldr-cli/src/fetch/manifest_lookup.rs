@@ -161,6 +161,13 @@ impl ManifestIndex {
             .find(|e| e.owner == owner && e.repo == repo && e.tag == tag && e.asset == asset)
     }
 
+    /// Look up a catalogue entry by exact download URL. This is needed
+    /// for soldr-toolchain local assets that intentionally reuse generic
+    /// filenames like `bundle.tar.zst` under distinct platform paths.
+    pub fn lookup_url(&self, url: &str) -> Option<&ManifestEntry> {
+        self.entries.iter().find(|e| e.url == url)
+    }
+
     /// Look up by `(owner, repo, tag)` only, ignoring the asset filter.
     /// Useful when the caller already knows the platform-matched asset
     /// name and just wants to round-trip the URL + sha256 for that one
@@ -472,9 +479,20 @@ mod tests {
             .is_none());
     });
 
+    crate::timed_test!(lookup_url_finds_exact_url_match, {
+        let idx = ManifestIndex::from_json(sample_json()).unwrap();
+        let url = "https://github.com/zackees/zccache/releases/download/1.12.9/zccache-x86_64-pc-windows-msvc.zip";
+        let hit = idx.lookup_url(url).expect("should hit exact URL");
+        assert_eq!(hit.asset, "zccache-x86_64-pc-windows-msvc.zip");
+        assert!(idx
+            .lookup_url("https://example.invalid/miss.tar.zst")
+            .is_none());
+    });
+
     crate::timed_test!(empty_index_lookup_always_misses, {
         let idx = ManifestIndex::empty();
         assert!(idx.lookup("a", "b", "c", "d").is_none());
+        assert!(idx.lookup_url("https://example.invalid/nope").is_none());
         assert!(idx.lookup_release("a", "b", "c").is_empty());
     });
 
