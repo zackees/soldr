@@ -54,7 +54,7 @@ pub fn canonical_targets() -> &'static [&'static str] {
 /// Returns `true` iff `triple` is in [`CANONICAL_TARGETS`].
 /// Cheap linear scan over 8 entries.
 pub fn is_canonical(triple: &str) -> bool {
-    CANONICAL_TARGETS.iter().any(|t| *t == triple)
+    CANONICAL_TARGETS.contains(&triple)
 }
 
 #[cfg(test)]

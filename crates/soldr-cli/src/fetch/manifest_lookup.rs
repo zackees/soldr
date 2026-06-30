@@ -48,7 +48,7 @@
 //!   resolver builds `{origin}/catalogue.v1.json`). See Phase 2.
 //! * `SOLDR_TOOLCHAIN_CATALOGUE_URL` — override the full URL (testing
 //!   + air-gapped mirrors). When set takes precedence over
-//!   `SOLDR_TOOLCHAIN_ORIGIN`.
+//!     `SOLDR_TOOLCHAIN_ORIGIN`.
 //! * `SOLDR_MANIFEST_DISABLE=1` — skip the catalogue lookup entirely;
 //!   the resolver falls through to the live GitHub Releases API.
 //!
