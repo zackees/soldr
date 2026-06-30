@@ -18,6 +18,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 IMAGE_TAG="soldr-darwin-cross:latest"
 
+# Prevent MSYS / Git-Bash on Windows from translating container-side
+# paths (`/src`, `-w /src`) into host Windows paths
+# (`C:/Program Files/Git/src`). No effect on Linux/macOS bash.
+export MSYS_NO_PATHCONV=1
+export MSYS2_ARG_CONV_EXCL='*'
+
 # Named volumes survive `docker run --rm` so cargo's compiled deps
 # persist between iterations. ~/.cargo/registry caches the crates.io
 # downloads. target/$triple/ caches the compiled object files.
@@ -98,6 +104,10 @@ if [ "$mode" = "shell" ]; then
 fi
 
 echo "[build.sh] cross-compiling soldr-cli for $target ..."
+# `${arr[@]+"${arr[@]}"}` expands to nothing when arr is empty; the
+# more common `${arr[@]:-}` would expand to a single empty string,
+# which clap (cargo's arg parser) rejects with `error: unexpected
+# argument '' found`.
 docker run "${run_args[@]}" \
     "$IMAGE_TAG" \
-    /opt/build-soldr-for-darwin.sh "$target" "${extra_args[@]:-}"
+    /opt/build-soldr-for-darwin.sh "$target" ${extra_args[@]+"${extra_args[@]}"}

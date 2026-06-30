@@ -48,18 +48,94 @@ esac
 TARGET_U="${TARGET//-/_}"
 TARGET_U_UPPER="$(echo "$TARGET_U" | tr '[:lower:]' '[:upper:]')"
 
+# Wrapper scripts that bake `--target=$CLANG_ARCH -isysroot $SDKROOT
+# -mmacosx-version-min=11.0` into every clang invocation. Required
+# because cc-rs splits compiler binary from flags when invoking
+# configure (CC=clang, --target ends up in CFLAGS), and jemalloc's
+# Makefile has a hidden `$(CC) -MM $(CPPFLAGS)` dep-gen invocation
+# that uses CC only (no CFLAGS). Without the wrapper, that -MM call
+# misses --target+isysroot, falls back to Linux system headers, and
+# fails the `#include <os/lock.h>` resolution. The CC wrapper makes
+# the flags survive ALL clang invocations.
+WRAP_DIR="/tmp/clang-wrap-${TARGET}"
+mkdir -p "$WRAP_DIR"
+
+# Save the real clang on first run (idempotent if already saved).
+if [ ! -f /usr/bin/clang.real ]; then
+    cp /usr/bin/clang-18 /usr/bin/clang.real
+    cp /usr/bin/clang++-18 /usr/bin/clang++.real
+fi
+
+cat > "$WRAP_DIR/clang" <<EOF
+#!/bin/sh
+exec /usr/bin/clang.real --target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld "\$@"
+EOF
+cat > "$WRAP_DIR/clang++" <<EOF
+#!/bin/sh
+exec /usr/bin/clang++.real --target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld "\$@"
+EOF
+chmod +x "$WRAP_DIR/clang" "$WRAP_DIR/clang++"
+
+# Nuclear option: replace /usr/bin/clang with the wrapper so EVERY
+# clang invocation (including cc-rs's hardcoded `CC=clang` for
+# cross-compile detection of cross-toolchain naming) goes through
+# the wrapper. cc-rs's CC_<triple> env var override has edge cases
+# that didn't take effect for tikv-jemalloc-sys's configure
+# invocation — config.log kept showing `CC=clang` despite our env.
+# Symlinking the system binary is unambiguous: every bare `clang`
+# invocation in the build resolves to our wrapper.
+ln -sf "$WRAP_DIR/clang" /usr/bin/clang
+ln -sf "$WRAP_DIR/clang++" /usr/bin/clang++
+# Also redirect /usr/bin/clang-18 in case cc-rs bypasses the
+# unversioned name. clang.real (saved above) is the real binary.
+ln -sf "$WRAP_DIR/clang" /usr/bin/clang-18
+ln -sf "$WRAP_DIR/clang++" /usr/bin/clang++-18
+
 # v0.7.87's env block — keep in lockstep with release-auto.yml.
 # -fuse-ld=lld in CFLAGS so cmake-rs sub-builds use lld for their
 # test-compile-link step (else they call /usr/bin/ld which can't
 # emit Mach-O).
-export "CC_${TARGET_U}=clang --target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
-export "CXX_${TARGET_U}=clang++ --target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
+export "CC_${TARGET_U}=$WRAP_DIR/clang"
+export "CXX_${TARGET_U}=$WRAP_DIR/clang++"
 export "AR_${TARGET_U}=llvm-ar"
 export "RANLIB_${TARGET_U}=llvm-ranlib"
-export "CFLAGS_${TARGET_U}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
-export "CXXFLAGS_${TARGET_U}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
-export "CARGO_TARGET_${TARGET_U_UPPER}_LINKER=clang"
-export "CARGO_TARGET_${TARGET_U_UPPER}_RUSTFLAGS=-C link-arg=--target=${CLANG_ARCH} -C link-arg=-isysroot -C link-arg=${SDKROOT} -C link-arg=-mmacosx-version-min=11.0 -C link-arg=-fuse-ld=lld"
+# Belt-and-suspenders: also set plain CC/CXX. Some build scripts
+# (notably tikv-jemalloc-sys) use cc-rs to detect the compiler;
+# cc-rs's per-target env lookup has edge cases. Setting plain CC
+# is unambiguous since this script is darwin-only.
+export CC="$WRAP_DIR/clang"
+export CXX="$WRAP_DIR/clang++"
+export AR=llvm-ar
+export RANLIB=llvm-ranlib
+# CFLAGS/CXXFLAGS still needed for cc-rs's own probe stage. Wrapper
+# already adds --target+isysroot but cc-rs may add its own flags too;
+# leaving CFLAGS explicit ensures cc-rs's downstream cargo invocations
+# (rustc -C link-arg=...) also have the right view.
+export "CFLAGS_${TARGET_U}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0"
+export "CXXFLAGS_${TARGET_U}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++"
+# Plain CPPFLAGS (no triple suffix) — load-bearing for jemalloc 5.3.1's
+# autotools build. jemalloc's Makefile has TWO clang invocations per .c
+# file:
+#     $(CC) $(CFLAGS) -c $(CPPFLAGS) $(CTARGET) $<
+#     @$(CC) -MM $(CPPFLAGS) -MT $@ -o $(@:%.$(O)=%.d) $<
+# The second one (the -MM dep-tracker, suppressed from `make V=1`
+# echo by the `@`) uses CPPFLAGS ONLY — no CFLAGS, no --target,
+# no -isysroot. Without sysroot in CPPFLAGS, clang falls back to
+# Linux system headers when generating dependencies and the
+# `#include <os/lock.h>` in jemalloc_internal_decls.h fails to
+# resolve.
+#
+# autoconf-style configure scripts (like jemalloc's) only honor the
+# bare `CPPFLAGS` env var — not the cc-rs-style `CPPFLAGS_<triple>`
+# suffix. So we have to set CPPFLAGS directly. This script is darwin-
+# only (entry point gated on `*-apple-darwin` in release-auto.yml +
+# in the docker harness's caller), so setting plain CPPFLAGS doesn't
+# bleed into other targets.
+export CPPFLAGS="--target=${CLANG_ARCH} -isysroot ${SDKROOT} -mmacosx-version-min=11.0"
+export "CARGO_TARGET_${TARGET_U_UPPER}_LINKER=$WRAP_DIR/clang"
+export "CARGO_TARGET_${TARGET_U_UPPER}_RUSTFLAGS=-C link-arg=-fuse-ld=lld"
+# Drop the explicit CPPFLAGS — the wrapper takes care of it.
+unset CPPFLAGS
 
 echo "===== inline darwin env ====="
 env | grep -E "^(SDKROOT|CC_|CXX_|AR_|RANLIB_|CFLAGS_|CXXFLAGS_|CARGO_TARGET_)" \
