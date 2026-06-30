@@ -166,14 +166,13 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // Surface the COMPLETE Apple SDK to every C/C++ build
                 // script in the dep tree by overriding cc-rs's per-
                 // target compiler picks. Without this, anything that
-                // probes platform headers (e.g. tikv-jemalloc-sys'
-                // `sys/syscall.h` configure check) hits zig's minimal
-                // bundled darwin sysroot instead of the real SDK and
-                // fails the cross-compile. With it, every C/C++ dep —
-                // jemalloc, ring, zstd-sys, libsqlite3-sys, libz-ng-sys,
-                // bzip2-sys, lzma-sys, libmimalloc-sys — sees the same
-                // headers a native macOS build would. Pattern mirrors
-                // the Windows MSVC arm above (lines 84-110).
+                // probes platform headers hits zig's minimal bundled
+                // darwin sysroot instead of the real SDK and fails the
+                // cross-compile. With it, every C/C++ dep — ring,
+                // zstd-sys, libsqlite3-sys, libz-ng-sys, bzip2-sys,
+                // lzma-sys, libmimalloc-sys — sees the same headers a
+                // native macOS build would. Pattern mirrors the
+                // Windows MSVC arm above (lines 84-110).
                 //
                 // Linker: use clang as the driver with `-fuse-ld=lld`.
                 // lld knows Mach-O; clang knows how to pass the right
@@ -281,18 +280,6 @@ async fn inject_sys_library_overrides(
             prepend_pkg_config_path(prep, &sysroot);
         }
         Err(e) => log_sys_unavailable("sqlite", target_triple, &e),
-    }
-
-    // tikv-jemalloc-sys → JEMALLOC_OVERRIDE=<lib>/libjemalloc.a
-    match crate::fetch::jemalloc_sysroot::ensure_jemalloc_sysroot(paths, target_triple).await {
-        Ok(sysroot) => {
-            let lib = sysroot.join("lib").join("libjemalloc.a");
-            prep.env.push((
-                "JEMALLOC_OVERRIDE".to_string(),
-                lib.to_string_lossy().into_owned(),
-            ));
-        }
-        Err(e) => log_sys_unavailable("jemalloc", target_triple, &e),
     }
 
     // libmimalloc-sys → MIMALLOC_OVERRIDE=<lib>/libmimalloc.a
