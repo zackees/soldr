@@ -14,6 +14,12 @@ If you want a more permissive, CI-side experience that *can* install system
 packages, see [`zackees/setup-soldr`][setup-soldr]'s `cross-targets:` input
 instead.
 
+**Windows hosts:** the bash-flavored docker-prebuilt + cross-compile recipes
+on this page assume Git Bash / MSYS2 / Cygwin / WSL on PATH. soldr does NOT
+bootstrap the POSIX shell layer — see [`docs/WINDOWS_PREREQS.md`](WINDOWS_PREREQS.md)
+for the install matrix + the common `cygpath: command not found` / docker
+bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/issues/885)).
+
 [issue-329]: https://github.com/zackees/soldr/issues/329
 [setup-soldr]: https://github.com/zackees/setup-soldr
 
