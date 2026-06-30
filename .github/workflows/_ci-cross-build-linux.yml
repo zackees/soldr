@@ -231,20 +231,26 @@ jobs:
         run: cargo clippy --workspace --all-targets
 
       # Stage B — release binary build, tool dispatched per target.
-      # Windows MSVC: `soldr build` (the blessed cross-compile surface
-      # per CLAUDE.md "Two build paths" — handles xwin-cache + clang
-      # shim + lld-link env vars internally). Avoids cargo-xwin's CFLAGS
-      # `/imsvc <path>` token-concatenation bug for aarch64. #1070.
+      # Windows MSVC + Apple Darwin: `soldr build` (the blessed cross-
+      # compile surface per CLAUDE.md "Two build paths" — handles
+      # xwin-cache + clang shim + lld-link for win, and Apple SDK +
+      # clang + lld for darwin, via blessed_build.rs). Darwin needs
+      # `soldr build` after #1112: mimalloc joined the dep tree via
+      # zccache, and libmimalloc-sys' build script #include's
+      # `CommonCrypto/CommonCryptoError.h` which lives in the real
+      # Apple SDK but NOT in zig's bundled minimal darwin sysroot.
+      # `cargo zigbuild` fails to compile mimalloc; `soldr build`
+      # exports SDKROOT + CC_<triple>=clang and finds the header.
       - name: Cross-build release binary
         shell: bash
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
-          if [[ "$target" == *-pc-windows-msvc ]]; then
+          if [[ "$target" == *-pc-windows-msvc ]] \
+             || [[ "$target" == *-apple-darwin ]]; then
             soldr build --release --target "$target" \
               --package soldr-cli --bin soldr
-          elif [[ "$target" == *-apple-darwin ]] \
-               || [[ "$target" == *-unknown-linux-musl ]] \
+          elif [[ "$target" == *-unknown-linux-musl ]] \
                || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
             cargo zigbuild --release --target "$target" \
               --package soldr-cli --bin soldr

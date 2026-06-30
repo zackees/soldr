@@ -659,9 +659,19 @@ fn pick_cross_subcommand_msvc_returns_xwin() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn pick_cross_subcommand_darwin_returns_zigbuild() {
+fn pick_cross_subcommand_darwin_returns_none_by_default() {
+    // soldr#1081 follow-up: *-apple-darwin no longer routes through
+    // cargo-zigbuild. The blessed-build apple-darwin arm in
+    // blessed_build.rs exports the COMPLETE Apple SDK to cc-rs +
+    // rustc's linker, so plain `cargo build --target X` produces a
+    // Mach-O binary from a Linux host. Opt-in legacy still routes
+    // through zigbuild.
     let _g = ENV_LOCK.lock().unwrap();
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
+    assert_eq!(pick_cross_subcommand("x86_64-apple-darwin"), None);
+    assert_eq!(pick_cross_subcommand("aarch64-apple-darwin"), None);
+
+    std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
     assert_eq!(
         pick_cross_subcommand("x86_64-apple-darwin"),
         Some("zigbuild"),
@@ -670,6 +680,7 @@ fn pick_cross_subcommand_darwin_returns_zigbuild() {
         pick_cross_subcommand("aarch64-apple-darwin"),
         Some("zigbuild"),
     );
+    std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
 }
 
 #[test]
