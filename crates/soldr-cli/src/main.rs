@@ -20,6 +20,9 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
 mod cli_args;
+/// soldr#1081 — shared `Request::Compile` dispatch with hang-safe
+/// retry budget. Used by `wrapper.rs` and the `zccache-soldr` bin.
+mod compile_dispatch;
 mod cook;
 mod core;
 mod daemon;

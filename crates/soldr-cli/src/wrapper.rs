@@ -4,7 +4,7 @@
 //! from `main.rs` as part of issue #339. The legacy fork-zccache.exe
 //! wrapper path was removed in #980 L1 second pass — embedded is mandatory.
 
-use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use crate::core::{suppress_windows_console_window, SoldrError};
 use crate::startup_profile::WrapperProfile;
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary};
 
@@ -190,7 +190,13 @@ pub(crate) fn run_rustc_wrapper(
         // `compile_via_daemon` either returns the daemon's reply or
         // an error that the wrapper propagates to cargo.
         profile.finish("before_embedded_compile_ipc");
-        return compile_via_daemon(&effective_args);
+        // soldr#1081 — lifted to `crate::compile_dispatch` so the
+        // dedicated `zccache-soldr` shim binary can share the same
+        // hang-safe retry logic. The bin-local copy below is the
+        // legacy path retained only for the unit tests that still
+        // import it; the production path now goes through the lifted
+        // function.
+        return crate::compile_dispatch::compile_via_daemon(&effective_args[1..]);
     }
 
     // Resolve the tool binary. If it's already a full path, use it
@@ -311,202 +317,14 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 // =========================================================================
 // L1 daemon-embedded compile path (issue #977 / #980 L1)
 // =========================================================================
-
-/// Predicate for [`compile_via_daemon`]'s env-var filter (Phase 5c
-/// from #981). Returns `true` for env vars that rustc, cargo build
-/// scripts (cc-rs / bindgen / proc-macro setup), or zccache's internal
-/// machinery actually read. Everything else is dropped from the
-/// `Request::Compile` payload to keep the daemon's tokio runtime out
-/// of prost serialization of ~10-50 KB of useless `CARGO_PKG_*`
-/// metadata per compile.
-fn is_compile_env_var(name: &str) -> bool {
-    // Prefix matches first — order roughly by hit rate so the common
-    // case short-circuits early on the per-call hot path.
-    const PREFIXES: &[&str] = &[
-        "CARGO_",   // CARGO_PKG_*, CARGO_CFG_*, CARGO_MANIFEST_DIR, etc.
-        "RUSTC_",   // RUSTC, RUSTC_WRAPPER, RUSTC_BOOTSTRAP, ...
-        "RUST",     // RUSTFLAGS, RUSTDOC*, RUSTFMT, RUSTUP*, RUST_BACKTRACE
-        "SOLDR_",   // SOLDR_ZCCACHE_BIN, SOLDR_CACHE_*, SOLDR_BUILD_SESSION_*
-        "ZCCACHE_", // ZCCACHE_CACHE_DIR, ZCCACHE_PATH_REMAP, ZCCACHE_SESSION_ID
-        "CC_",      // cc-rs cc_PROFILE_TARGET style
-        "CXX_",     // ditto for C++
-        "AR_", "LD_",  // LD_LIBRARY_PATH, LD_PRELOAD — both meaningful to subprocesses
-        "DEP_", // build-script-emitted DEP_<pkg>_<key> env vars
-        "OUT_", // OUT_DIR (build script working dir)
-    ];
-    if PREFIXES.iter().any(|p| name.starts_with(p)) {
-        return true;
-    }
-    // Exact matches for shorter vars rustc / cc-rs / linker need.
-    matches!(
-        name,
-        "HOME"
-            | "USER"
-            | "PATH"
-            | "LANG"
-            | "LC_ALL"
-            | "TARGET"
-            | "HOST"
-            | "TMPDIR"
-            | "TMP"
-            | "TEMP"
-            | "USERPROFILE"  // Windows home
-            | "APPDATA"
-            | "LOCALAPPDATA"
-            | "PROGRAMFILES"
-            | "PROGRAMDATA"
-            | "WINDIR"
-            | "SYSTEMROOT"
-            | "SYSTEMDRIVE"
-            | "COMSPEC"
-            | "PATHEXT"
-            | "TERM"
-            | "RUSTUP_HOME"
-            | "RUSTUP_TOOLCHAIN"
-            | "CARGO"
-            | "CARGO_HOME"
-            | "CC"
-            | "CXX"
-            | "AR"
-            | "LD"
-            | "NM"
-            | "OBJCOPY"
-            | "OBJDUMP"
-            | "STRIP"
-            | "RANLIB"
-            | "CFLAGS"
-            | "CXXFLAGS"
-            | "LDFLAGS"
-            | "MSYSTEM"  // MinGW shell detection (cc-rs reads this)
-            | "VCINSTALLDIR"  // MSVC build-script env vars
-            | "VSINSTALLDIR"
-            | "VCToolsInstallDir"
-            | "WindowsSdkDir"
-            | "INCLUDE"
-            | "LIB"
-            | "LIBPATH"
-    )
-}
-
-/// Dispatch the rustc compile to the running daemon's embedded zccache
-/// service over the `Request::Compile` IPC verb. Returns the exit code
-/// to propagate to cargo, or a hard error if the daemon is unreachable
-/// or replies with anything other than a `CompileResponse`. The legacy
-/// fork-zccache.exe fallback was removed in #980 L1 second pass —
-/// embedded is mandatory.
-fn compile_via_daemon(effective_args: &[String]) -> Result<i32, SoldrError> {
-    use crate::daemon::client;
-
-    let paths =
-        SoldrPaths::new().map_err(|e| SoldrError::Other(format!("resolve soldr paths: {e}")))?;
-    let sock = client::default_sock_path(&paths);
-
-    // Build the Compile request. The wrapper's argv layout is
-    // [soldr, rustc-path, rustc-args...]; we strip the soldr binary
-    // (argv[0]) and send rustc-path as args[0], rustc-args as args[1..].
-    let cwd = std::env::current_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-    // Phase 5c (#981): forward only the env vars rustc + cc-rs build
-    // scripts actually use. The full `std::env::vars()` payload in a
-    // deep cargo build is 10-50 KB per compile (mostly cargo-injected
-    // CARGO_PKG_* metadata that's already in the args), and pushing
-    // it through prost on every Request::Compile dominates the
-    // daemon's tokio-rt-worker cost on cold cache.
-    let env: Vec<(String, String)> = std::env::vars()
-        .filter(|(k, _)| is_compile_env_var(k))
-        .collect();
-    let req = crate::daemon::protocol::CompileRequest {
-        args: effective_args.iter().skip(1).cloned().collect(),
-        cwd,
-        env,
-        stdin: Vec::new(),
-    };
-
-    // First try — daemon may already be running. #983 Phase 5b: the
-    // wrapper streams rustc stdout/stderr directly to its own
-    // stdout/stderr as chunk frames arrive, so the IPC layer never
-    // holds the whole rustc output buffered in memory.
-    let first = client::compile_streaming(&sock, req.clone(), std::io::stdout(), std::io::stderr());
-    let done =
-        match first {
-            Ok(info) => info,
-            Err(_) => {
-                // Spawn the daemon, then retry up to ~30 s. The spawn
-                // returns before the socket is bound. On cold WSL2 starts
-                // (or fresh container layers) the daemon's embedded
-                // zccache service can take a couple of seconds to come up
-                // before it accepts IPC.
-                let spawn_result = crate::daemon::lifecycle::try_spawn_detached();
-                if let Err(e) = &spawn_result {
-                    eprintln!("soldr: try_spawn_detached returned err: {e:?}");
-                }
-                let mut last_err = None;
-                let mut done = None;
-                // 30 s retry window — embedded zccache cold-start (redb
-                // open, cache root init, depgraph load) can take several
-                // seconds on first-ever boot in a container.
-                for attempt in 0..300 {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    match client::compile_streaming(
-                        &sock,
-                        req.clone(),
-                        std::io::stdout(),
-                        std::io::stderr(),
-                    ) {
-                        Ok(info) => {
-                            done = Some(info);
-                            break;
-                        }
-                        Err(e) => last_err = Some((attempt, e)),
-                    }
-                }
-                match done {
-                    Some(info) => info,
-                    None => {
-                        // Diagnose: report whether the daemon binary even
-                        // exists at the expected sibling path, the PID
-                        // file presence, and the tail of the daemon's
-                        // spawn log (the daemon's stderr redirected by
-                        // spawn_detached_inner). Concrete place to look.
-                        let bin_diag = std::env::current_exe()
-                            .ok()
-                            .map(|p| crate::daemon::service_definition::sibling_daemon_binary(&p))
-                            .map(|p| (p.exists(), p.display().to_string()))
-                            .unwrap_or((false, "<unknown>".into()));
-                        let log_tail = SoldrPaths::new()
-                            .ok()
-                            .map(|p| p.root.join("daemon-spawn.log"))
-                            .and_then(|p| std::fs::read_to_string(&p).ok())
-                            .map(|s| {
-                                s.lines()
-                                    .rev()
-                                    .take(20)
-                                    .collect::<Vec<_>>()
-                                    .into_iter()
-                                    .rev()
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            })
-                            .unwrap_or_else(|| "<no spawn log>".into());
-                        return Err(SoldrError::Other(format!(
-                        "soldr daemon embedded compile dispatch failed after spawn + 30s retry: \
-                         {:?}. daemon_binary=({}, exists={}) spawn_result={:?} sock={}.\n\
-                         daemon-spawn.log tail:\n{}\n\
-                         The legacy fork-zccache.exe fallback was removed in #980 L1; \
-                         confirm the soldr-daemon binary is present alongside the soldr binary.",
-                        last_err, bin_diag.1, bin_diag.0,
-                        spawn_result,
-                        sock.display(),
-                        log_tail,
-                    )));
-                    }
-                }
-            }
-        };
-
-    Ok(done.exit_code)
-}
+//
+// As of issue #1081 the `compile_via_daemon` body and the
+// `is_compile_env_var` allowlist were lifted into
+// `crate::compile_dispatch` so the new `zccache-soldr` shim binary
+// can share them. The wrapper-entry dispatch site above now calls
+// `compile_dispatch::compile_via_daemon` directly. Nothing remains in
+// this file beyond the cargo-arg-shape predicates + stdin spill
+// helper.
 
 #[cfg(test)]
 mod tests {
