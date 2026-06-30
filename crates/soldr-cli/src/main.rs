@@ -484,7 +484,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let cpu_cap = std::thread::available_parallelism()
                 .map(|n| n.get())
                 .unwrap_or(2);
-            let concurrency = cpu_cap.min(targets.len()).min(4).max(1);
+            let concurrency = cpu_cap.min(targets.len()).clamp(1, 4);
             if targets.len() > 1 {
                 eprintln!(
                     "soldr prepare: parallelizing {} targets with {} workers (soldr#940)",
