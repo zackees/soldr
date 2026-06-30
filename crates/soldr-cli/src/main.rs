@@ -1045,7 +1045,22 @@ fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
     if target_triple.ends_with("-pc-windows-msvc") {
         return if legacy_xwin { None } else { Some("xwin") };
     }
-    if target_triple.ends_with("-apple-darwin") || target_triple.ends_with("-unknown-linux-musl") {
+    // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
+    // cargo-zigbuild. The blessed-build apple-darwin arm in
+    // `blessed_build.rs` now exports the COMPLETE Apple SDK to cc-rs +
+    // rustc's linker, so plain `cargo build --target X` produces a
+    // Mach-O binary from a Linux host without the
+    // tikv-jemalloc-sys/zig-minimal-sysroot mismatch that broke the
+    // release lane. `SOLDR_USE_LEGACY_ZIGBUILD=1` re-routes darwin
+    // through zigbuild for diagnostic comparison.
+    if target_triple.ends_with("-apple-darwin") {
+        return if legacy_zigbuild {
+            Some("zigbuild")
+        } else {
+            None
+        };
+    }
+    if target_triple.ends_with("-unknown-linux-musl") {
         return if legacy_zigbuild {
             None
         } else {

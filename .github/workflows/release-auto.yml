@@ -868,6 +868,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # soldr#1083 follow-up: wipe dist/ before maturin runs so a
+          # stale wheel restored from setup-soldr's target/ cache
+          # (or left over from a prior maturin invocation in the same
+          # workspace) cannot leak into the upload set. Without this,
+          # lanes whose target/ cache included an old `dist/` from a
+          # pre-version-bump build silently re-upload e.g.
+          # `soldr-0.0.1-py3-none-manylinux_2_34_x86_64.whl` and twine
+          # aborts the whole PyPI publish on the first 400.
+          rm -rf dist target/wheels
+          mkdir -p dist
           uv tool install "maturin>=1.7,<2"
           maturin build \
             --release \
@@ -877,6 +887,60 @@ jobs:
             --target "${{ matrix.target }}" \
             --target-dir target \
             --out dist
+
+      - name: Lint wheel filenames against workspace version
+        if: ${{ !contains(matrix.target, 'musl') }}
+        shell: python
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          # soldr#1083 follow-up: catch wrong-versioned wheels (e.g.
+          # the 0.0.1-tagged stubs from the v0.7.72 release that
+          # aborted PyPI upload) BEFORE they leave the build job and
+          # poison the publish-pypi twine step. Fails the build with
+          # a clear error if any wheel in dist/ has a name whose
+          # version field doesn't match `[workspace.package].version`
+          # as derived from the prepare job. PEP 491: wheel filename
+          # is `<distname>-<version>-...`, so version is parts[1].
+          import os
+          import re
+          import sys
+          from pathlib import Path
+
+          # outputs.version is `vX.Y.Z`; wheel filename uses `X.Y.Z`.
+          expected = os.environ["EXPECTED_VERSION"].lstrip("v")
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheels in dist/ — maturin produced nothing?")
+          bad = []
+          for w in wheels:
+              parts = w.stem.split("-")
+              if len(parts) < 2:
+                  bad.append((w.name, "filename has no version field"))
+                  continue
+              wheel_version = parts[1]
+              if wheel_version != expected:
+                  bad.append(
+                      (w.name, f"version {wheel_version!r} != expected {expected!r}")
+                  )
+          if bad:
+              msg = ["wheel version lint FAILED:"]
+              for name, why in bad:
+                  msg.append(f"  - {name}: {why}")
+              msg.append("")
+              msg.append(
+                  f"Every wheel in dist/ must be tagged {expected!r} to match "
+                  f"[workspace.package].version in Cargo.toml. A wrong-versioned "
+                  f"wheel here would cause twine to abort the whole PyPI publish "
+                  f"on its first '400 File already exists' (see soldr#1083 + the "
+                  f"v0.7.72 release log)."
+              )
+              sys.exit("\n".join(msg))
+          print(
+              f"wheel version lint OK: {len(wheels)} wheel(s) all tagged {expected!r}:"
+          )
+          for w in wheels:
+              print(f"  - {w.name}")
 
       - name: Verify wheel ships the bin script at the spec path
         if: ${{ !contains(matrix.target, 'musl') }}
