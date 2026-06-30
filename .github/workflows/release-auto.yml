@@ -213,7 +213,7 @@ jobs:
             target: x86_64-apple-darwin
             binary: soldr
           - name: macOS ARM64
-            runner: ubuntu-24.04
+            runner: macos-15
             target: aarch64-apple-darwin
             binary: soldr
           - name: Windows x64
