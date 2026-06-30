@@ -18,6 +18,11 @@
 /// `Commands::Build` for canonical target triples. Coordinates the
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
+/// soldr#1081 — Shared `Request::Compile` dispatch logic used by both
+/// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and the dedicated
+/// `zccache-soldr` shim binary (`bin/zccache_soldr.rs`). Owns the
+/// hang-safe retry budget contract.
+pub mod compile_dispatch;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
 /// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
 /// onto the current process so `soldr cargo build` / `soldr cargo test`

@@ -126,3 +126,11 @@ path = "src/bin/soldr_shim.rs"
 # compile to MSVC targets.
 name = "soldr-clang-shim"
 path = "src/bin/soldr_clang_shim.rs"
+
+[[bin]]
+# soldr#1081 — dedicated RUSTC_WRAPPER shim. Replaces the legacy
+# standalone `zccache.exe` slot. Talks to soldr-daemon's embedded
+# zccache service over the `Request::Compile` IPC verb; ships no
+# separate zccache binaries.
+name = "zccache-soldr"
+path = "src/bin/zccache_soldr.rs"
