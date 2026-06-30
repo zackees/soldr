@@ -193,7 +193,8 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                     "clang++ --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++"
                 );
                 let cflags = format!("-isysroot {sdk_str} -mmacosx-version-min=11.0");
-                let cxxflags = format!("-isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++");
+                let cxxflags =
+                    format!("-isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++");
                 let rustflags = format!(
                     "-C link-arg=--target={clang_arch_target} \
                      -C link-arg=-isysroot \
@@ -201,9 +202,9 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                      -C link-arg=-mmacosx-version-min=11.0 \
                      -C link-arg=-fuse-ld=lld"
                 );
-                prep.env.push((format!("CC_{target_u}"), clang_base.clone()));
                 prep.env
-                    .push((format!("CXX_{target_u}"), clangxx_base));
+                    .push((format!("CC_{target_u}"), clang_base.clone()));
+                prep.env.push((format!("CXX_{target_u}"), clangxx_base));
                 prep.env
                     .push((format!("AR_{target_u}"), "llvm-ar".to_string()));
                 prep.env
@@ -214,8 +215,10 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                     format!("CARGO_TARGET_{target_u_upper}_LINKER"),
                     "clang".to_string(),
                 ));
-                prep.env
-                    .push((format!("CARGO_TARGET_{target_u_upper}_RUSTFLAGS"), rustflags));
+                prep.env.push((
+                    format!("CARGO_TARGET_{target_u_upper}_RUSTFLAGS"),
+                    rustflags,
+                ));
             }
             Err(e) => {
                 eprintln!("soldr build: apple SDK unavailable for {target_triple}: {e}");
