@@ -879,26 +879,48 @@ jobs:
       - name: Build hardened wheel from shared target directory
         if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
-          # soldr#1083 follow-up: wipe stale wheels before maturin
-          # runs so a leftover .whl restored from setup-soldr's
-          # target/ cache (or maturin's internal staging dir) cannot
-          # leak into the upload set. Without this, lanes whose
-          # target/ cache included an old `dist/` from a pre-version-
-          # bump build silently re-upload e.g.
-          # `soldr-0.0.1-py3-none-manylinux_2_34_x86_64.whl` and
-          # twine aborts the whole PyPI publish on the first 400.
+          # soldr#1083 follow-up: aggressive cache bust before maturin.
+          # Linux GNU lanes were producing wheels tagged with
+          # version "0.0.1" instead of the workspace version
+          # because setup-soldr's target/ cache restored stale
+          # build artifacts whose fingerprints lied about the
+          # crate version. macOS ARM64 + Windows lanes didn't have
+          # this contamination and produced correct wheels.
           #
-          # NOTE: surgical wipe of `dist/*.whl` ONLY — `rm -rf dist`
-          # would also delete `dist/soldr-v$VERSION-$TARGET.tar.zst`
-          # which the `Package combined archive` step above created
-          # and the `Smoke test combined tar.zst archive` step below
-          # reads. The v0.7.73 release on the Linux ARM64 lane
-          # demonstrated this regression (run 28422788167).
+          # Steps:
+          #   1. Wipe ANY .whl anywhere under dist/ or target/.
+          #      Belt-and-suspenders for stale wheels.
+          #   2. Wipe maturin's internal staging dirs.
+          #   3. `cargo clean -p soldr-cli --target $T --release`
+          #      invalidates the soldr-cli per-package fingerprint
+          #      so the upcoming maturin-driven cargo build
+          #      re-evaluates the crate version from the (correct)
+          #      Cargo.toml on disk. Only invalidates soldr-cli
+          #      itself; the 200+ transitive deps keep their cached
+          #      object code. Recompile cost: ~30-60s.
+          #   4. Verify the source-of-truth version BEFORE maturin
+          #      runs (defense in depth — the wheel-lint after
+          #      maturin would still catch this, but failing early
+          #      with the exact diagnostic is friendlier).
           rm -f dist/*.whl
-          rm -rf target/wheels
+          rm -rf target/wheels target/maturin
+          find target -name "*.whl" -delete 2>/dev/null || true
+          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
           mkdir -p dist
+
+          expected="${EXPECTED_VERSION#v}"
+          cargo_version="$(grep '^version' Cargo.toml | head -1 | awk -F'"' '{print $2}')"
+          echo "Cargo.toml [workspace.package].version = $cargo_version"
+          echo "Expected (from prepare.outputs.version) = $expected"
+          if [ "$cargo_version" != "$expected" ]; then
+              echo "ERROR: Cargo.toml workspace version mismatch — possible cache contamination" >&2
+              exit 1
+          fi
+
           uv tool install "maturin>=1.7,<2"
           maturin build \
             --release \
