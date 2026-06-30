@@ -874,15 +874,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # soldr#1083 follow-up: wipe dist/ before maturin runs so a
-          # stale wheel restored from setup-soldr's target/ cache
-          # (or left over from a prior maturin invocation in the same
-          # workspace) cannot leak into the upload set. Without this,
-          # lanes whose target/ cache included an old `dist/` from a
-          # pre-version-bump build silently re-upload e.g.
-          # `soldr-0.0.1-py3-none-manylinux_2_34_x86_64.whl` and twine
-          # aborts the whole PyPI publish on the first 400.
-          rm -rf dist target/wheels
+          # soldr#1083 follow-up: wipe stale wheels before maturin
+          # runs so a leftover .whl restored from setup-soldr's
+          # target/ cache (or maturin's internal staging dir) cannot
+          # leak into the upload set. Without this, lanes whose
+          # target/ cache included an old `dist/` from a pre-version-
+          # bump build silently re-upload e.g.
+          # `soldr-0.0.1-py3-none-manylinux_2_34_x86_64.whl` and
+          # twine aborts the whole PyPI publish on the first 400.
+          #
+          # NOTE: surgical wipe of `dist/*.whl` ONLY — `rm -rf dist`
+          # would also delete `dist/soldr-v$VERSION-$TARGET.tar.zst`
+          # which the `Package combined archive` step above created
+          # and the `Smoke test combined tar.zst archive` step below
+          # reads. The v0.7.73 release on the Linux ARM64 lane
+          # demonstrated this regression (run 28422788167).
+          rm -f dist/*.whl
+          rm -rf target/wheels
           mkdir -p dist
           uv tool install "maturin>=1.7,<2"
           maturin build \
