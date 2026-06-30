@@ -18,6 +18,13 @@
 /// `Commands::Build` for canonical target triples. Coordinates the
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
+/// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
+/// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
+/// onto the current process so `soldr cargo build` / `soldr cargo test`
+/// succeed from a plain PowerShell without the downstream `$env:LIB`
+/// workaround. Detect-host now; managed-catalogue fallback is a
+/// follow-up in the same issue.
+pub mod msvc_host;
 pub mod cache_lib;
 pub mod cargo_metadata_soldr;
 pub mod core;
