@@ -856,6 +856,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 let mut cargo_args = Vec::with_capacity(args.len());
                 cargo_args.push(crate_name.clone());
                 cargo_args.extend(tool_args.iter().cloned());
+                // soldr#1105: bare-verb dispatch must also pre-inject
+                // the host MSVC env so `soldr check` / `soldr build` /
+                // `soldr test` on Windows behave the same as the
+                // explicit `soldr cargo ...` forms with respect to
+                // rust-lld's `LIB` requirement.
+                ensure_msvc_host_env_for_native(&cargo_args);
                 std::process::exit(
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
