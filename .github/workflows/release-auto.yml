@@ -168,14 +168,12 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # darwin x64 cross from Linux is back to continue-on-error.
-    # The structural fix (blessed_build.rs apple-darwin env block
-    # via the soldr-build bootstrap chain) is on main and is being
-    # iterated on, but every iteration takes a full release cycle.
-    # Re-enabling continue-on-error lets the other 7 lanes (every
-    # platform except macOS x64) ship to PyPI + npm + GitHub
-    # Releases while macOS x64 is debugged. See soldr#1083.
-    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') }}
+    # Both darwin x64 (jemalloc-syscall structural issue, fix
+    # WIP) and aarch64-pc-windows-msvc (chocolatey-zstd install
+    # flake on windows-11-arm) are continue-on-error so transient
+    # / structural issues on those lanes don't block PyPI + npm +
+    # GitHub Release publishes for the 6+ working lanes.
+    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') || matrix.target == 'aarch64-pc-windows-msvc' }}
     strategy:
       fail-fast: false
       matrix:
@@ -376,23 +374,32 @@ jobs:
           #    runner.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # v0.7.83's --no-trampoline + SOLDR_REAL_CARGO did not
-            # suppress the workspace trampoline in CI (target dir
-            # never created → soldr build exited 0 with no work).
-            # Bypass soldr entirely for darwin: inline the same env
-            # block blessed_build.rs would have set (clang +
-            # Apple SDK + clang+lld linker) and call plain cargo
-            # build. SDKROOT was already exported by the earlier
-            # `soldr prepare --target X --github-env` step.
-            #
-            # Apt install ensures clang-18 + llvm-18 (for llvm-ar
-            # + lld). ubuntu-24.04 ships clang-18 by default but
-            # not always the llvm-* CLI tools.
+            # v0.7.84 lesson: `soldr prepare --target X
+            # --github-env` does NOT actually export SDKROOT to
+            # $GITHUB_ENV in this runner context (bootstrapped
+            # soldr may not have that flag, or fetch failed
+            # silently). Bypass soldr entirely AND fetch the
+            # Apple SDK ourselves with curl. Pin to the same
+            # MacOSX11.3.sdk that apple_sdk.rs uses in production.
             sudo apt-get update -qq
             sudo apt-get install -y -qq clang-18 llvm-18 lld-18
             sudo ln -sf /usr/bin/llvm-ar-18 /usr/bin/llvm-ar
             sudo ln -sf /usr/bin/lld-18 /usr/bin/ld.lld
-            : "${SDKROOT:?SDKROOT must be set by Prepare Apple SDK step}"
+
+            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3.sdk.tar.xz"
+            mkdir -p "$RUNNER_TEMP/apple-sdk"
+            if [ ! -d "$RUNNER_TEMP/apple-sdk/MacOSX11.3.sdk" ]; then
+                echo "fetching Apple SDK from $APPLE_SDK_URL ..."
+                curl -fsSL "$APPLE_SDK_URL" -o /tmp/MacOSX11.3.sdk.tar.xz
+                tar -xJ -C "$RUNNER_TEMP/apple-sdk" -f /tmp/MacOSX11.3.sdk.tar.xz
+                rm /tmp/MacOSX11.3.sdk.tar.xz
+            fi
+            export SDKROOT="$RUNNER_TEMP/apple-sdk/MacOSX11.3.sdk"
+            if [ ! -f "$SDKROOT/usr/include/sys/syscall.h" ]; then
+                echo "ERROR: Apple SDK did not contain usr/include/sys/syscall.h" >&2
+                find "$SDKROOT" -maxdepth 3 -type d | head -20 >&2
+                exit 1
+            fi
             target_u="${target//-/_}"
             target_u_upper="$(echo "$target_u" | tr '[:lower:]' '[:upper:]')"
             case "$target" in
@@ -437,10 +444,17 @@ jobs:
               brew install zstd
               ;;
             Windows)
-              # Chocolatey is preinstalled on the windows-2025 / windows-11-arm
-              # GitHub-hosted runners. `--no-progress` keeps the workflow log
-              # readable; `-y` accepts the EULA-ish prompt.
-              choco install zstandard --no-progress -y
+              # Chocolatey-zstandard is flaky on windows-11-arm
+              # (v0.7.83 + v0.7.84 lost the Windows ARM64 lane to
+              # `chocolatey: zstd: command not found`). Retry up to
+              # 3 times before declaring failure.
+              for attempt in 1 2 3; do
+                if choco install zstandard --no-progress -y; then
+                  break
+                fi
+                echo "choco install zstandard attempt $attempt failed; retrying in 5s..." >&2
+                sleep 5
+              done
               # Chocolatey installs to `C:\ProgramData\chocolatey\bin` which
               # may not be on PATH for the current step. Add it for any
               # follow-on bash/pwsh that needs zstd.
