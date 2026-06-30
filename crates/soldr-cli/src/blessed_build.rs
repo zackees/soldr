@@ -159,9 +159,63 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // so this is reuse rather than new logic.
         match crate::fetch::apple_sdk::ensure_apple_sdk(paths).await {
             Ok(sdk) => {
+                let sdk_str = sdk.to_string_lossy().into_owned();
                 prep.sdkroot = Some(sdk.clone());
+                prep.env.push(("SDKROOT".to_string(), sdk_str.clone()));
+
+                // Surface the COMPLETE Apple SDK to every C/C++ build
+                // script in the dep tree by overriding cc-rs's per-
+                // target compiler picks. Without this, anything that
+                // probes platform headers (e.g. tikv-jemalloc-sys'
+                // `sys/syscall.h` configure check) hits zig's minimal
+                // bundled darwin sysroot instead of the real SDK and
+                // fails the cross-compile. With it, every C/C++ dep —
+                // jemalloc, ring, zstd-sys, libsqlite3-sys, libz-ng-sys,
+                // bzip2-sys, lzma-sys, libmimalloc-sys — sees the same
+                // headers a native macOS build would. Pattern mirrors
+                // the Windows MSVC arm above (lines 84-110).
+                //
+                // Linker: use clang as the driver with `-fuse-ld=lld`.
+                // lld knows Mach-O; clang knows how to pass the right
+                // -L / -F flags to satisfy darwin framework references
+                // (Security, CoreFoundation, etc.) from the SDK's
+                // System/Library/Frameworks/.
+                let target_u = target_triple.replace('-', "_");
+                let target_u_upper = target_u.to_uppercase();
+                let clang_arch_target = if target_triple.starts_with("aarch64") {
+                    "arm64-apple-darwin"
+                } else {
+                    "x86_64-apple-darwin"
+                };
+                let clang_base =
+                    format!("clang --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0");
+                let clangxx_base = format!(
+                    "clang++ --target={clang_arch_target} -isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++"
+                );
+                let cflags = format!("-isysroot {sdk_str} -mmacosx-version-min=11.0");
+                let cxxflags = format!("-isysroot {sdk_str} -mmacosx-version-min=11.0 -stdlib=libc++");
+                let rustflags = format!(
+                    "-C link-arg=--target={clang_arch_target} \
+                     -C link-arg=-isysroot \
+                     -C link-arg={sdk_str} \
+                     -C link-arg=-mmacosx-version-min=11.0 \
+                     -C link-arg=-fuse-ld=lld"
+                );
+                prep.env.push((format!("CC_{target_u}"), clang_base.clone()));
                 prep.env
-                    .push(("SDKROOT".to_string(), sdk.to_string_lossy().into_owned()));
+                    .push((format!("CXX_{target_u}"), clangxx_base));
+                prep.env
+                    .push((format!("AR_{target_u}"), "llvm-ar".to_string()));
+                prep.env
+                    .push((format!("RANLIB_{target_u}"), "llvm-ranlib".to_string()));
+                prep.env.push((format!("CFLAGS_{target_u}"), cflags));
+                prep.env.push((format!("CXXFLAGS_{target_u}"), cxxflags));
+                prep.env.push((
+                    format!("CARGO_TARGET_{target_u_upper}_LINKER"),
+                    "clang".to_string(),
+                ));
+                prep.env
+                    .push((format!("CARGO_TARGET_{target_u_upper}_RUSTFLAGS"), rustflags));
             }
             Err(e) => {
                 eprintln!("soldr build: apple SDK unavailable for {target_triple}: {e}");
