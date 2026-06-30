@@ -1303,6 +1303,7 @@ Commands:
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
 | `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |
+| `SOLDR_TARGET_CACHE_MODE` | **Master toggle for target-cache.** `thin` enables thin-slice mode (zccache saves the rmeta/dep-info skeleton, restores it before `cargo build`). `full` enables full-target mode (zccache saves+restores the entire `target/` tree). `off` / `false` / `0` / `no` / empty / unset disables the feature entirely — `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)` and no surrounding code (front-door, GC, registry) does any "free" work on this path. Designed for CI runners that can persist `~/.cache/zccache/` across runs; **off by default** because a local dev machine has nothing to save it to. CI workflows that want it set this explicitly (typically via `setup-soldr`). See [Target cache](#target-cache-default-off) for the contract. | unset (off) |
 | `SOLDR_TARGET_CACHE_TAR_THREADS` | Reader-thread count for the target-cache tar walk in zccache, AND for soldr's own thin-slice manifest walk (issue #272). `auto` lets each side pick a vCPU-bounded count (capped at 8). `1` disables parallelism (sequential walk). Any positive integer sets an explicit count, clamped to `[1, 8]` on the soldr side. soldr validates the value at the cargo front door and uses it when statting bundle files for the `manifest.v2.json` thin-slice manifest; the bulk multi-GB `target/` tar walk lives in zccache. | unset (`auto`) |
 | `SOLDR_LINKER` | Pick the linker injected for `soldr cargo ...` builds (issue #285). Accepted values: `default` (no injection — keep the rust-toolchain default), `ld` (system linker — also no injection on every supported platform), `mold` (Linux only; hard error elsewhere), `rust-lld` (Windows MSVC and Linux/MinGW via `clang -fuse-ld=lld`; **no-op on macOS** — see below), `fast` (mold on Linux when present on `PATH`, otherwise rust-lld; rust-lld on Windows MSVC; **no-op on macOS** — see below). The choice resolves to `CARGO_TARGET_<TRIPLE>_LINKER` and `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` injected into the spawned cargo process; the active target is the same one Cargo would pick (`--target` flag, `CARGO_BUILD_TARGET`, or the host triple). A `linker = "..."` field in `~/.soldr/config.toml` is honored when the env var is unset. On macOS targets `rust-lld` and `fast` fall back silently to the platform default linker (issue #509): Apple clang only accepts `-fuse-ld=lld` when the toolchain wires up an `ld64.lld` shim, and stock macOS toolchains do not — injecting it would break even `cc-rs` build-script compilations. | unset |
 | `SOLDR_QUIET_DEFENDER` | Suppress the once-per-day pre-build warning emitted by the cargo front door when Defender is actively scanning the soldr cache directory (issue #358). Truthy values silence the warning; the warning is also automatically suppressed in CI environments. | unset |
@@ -1332,6 +1333,40 @@ cache root; otherwise it uses zccache's normal default daemon.
 On Windows, soldr may copy the running `soldr.exe` into `SOLDR_CACHE_DIR/runtime/soldr-self/<version-and-hash>/soldr.exe` and re-run the command from that relocated copy before build orchestration starts. This keeps disposable worktree builds from repeatedly using the worktree-local `soldr.exe` as `RUSTC_WRAPPER`. The trampoline sets `SOLDR_RELOCATED_EXE=1` and `SOLDR_ORIGINAL_EXE=<original path>` as a recursion guard and preserves argv, inherited environment, stdio, and exit status. Stale relocated copies are purged by a best-effort runtime GC step that runs periodically and skips copies that cannot be removed because they are still locked.
 
 `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` is a default-on short-circuit for the `rust-plan restore` step. After a successful `rust-plan save`, soldr writes a sentinel next to the thin-slice bundle recording the plan inputs hash, target dir, `GITHUB_RUN_ID`, `GITHUB_JOB`, `GITHUB_RUN_ATTEMPT`, zccache session id, and a unix timestamp. On the next invocation, if the sentinel exists and every match field equals the current value — and the sentinel is no older than 5 minutes — soldr skips `rust-plan restore` and leaves the already-warm `target/` tree untouched. This avoids invalidating Cargo's mtime-based fingerprints when split CI steps share a checkout but spawn fresh shells per step (issue #229). The flag is enabled when unset; set it to a falsy value (`0`, `false`, `no`, `off`, or empty, case-insensitive) to opt out, and any other value (including the historical truthy spellings `1`, `true`, `yes`, `on`) keeps the short-circuit enabled. The gate is conservative: a missing, stale, or partially-mismatched sentinel falls through to the normal restore, so the short-circuit can never make a build less correct than the default path. Promoted to default-on after the #229 CI validation runs (PRs #247, #257, #260, #261, #262) landed cleanly on `main`.
+
+### Target cache (default off)
+
+soldr's **target-cache** (also called the "rust-plan" path) save/restores
+`target/` artifacts via zccache so a fresh CI runner with a populated cache root
+can skip recompilation. It is **off by default** — the planner short-circuits
+the moment `SOLDR_TARGET_CACHE_MODE` is empty/unset and never touches cargo
+metadata, the tar walker, or the per-build registry. CI workflows that want it
+(typically through `setup-soldr`) set the env var explicitly to `thin` or
+`full`.
+
+Activation contract (verified against `rust_plan.rs` + `cargo_front_door/cache_plan.rs`
+in soldr#784):
+
+* `rust_artifact_cache_mode_from_env()` returns `Ok(None)` on the unset/off
+  branch. `maybe_prepare_rust_artifact_plan` short-circuits to `Ok(None)`
+  immediately — no `cargo metadata`, no `RustArtifactPlanContext` allocation,
+  no env-var fan-out.
+* `restore_rust_artifacts` is `let Some(plan) = … else { return Ok(()) }` — a
+  pure stat-free no-op when the plan is absent.
+* `save_rust_artifacts` is `if let Some(plan) = …` — same no-op shape.
+* `target_dir_for_hooks` falls through to `super::resolve_target_dir_for_gc`,
+  which only walks `--target-dir` / `CARGO_TARGET_DIR` / workspace lookup. The
+  watchdog hook at `cargo_front_door/mod.rs` therefore sees the same target
+  dir resolution regardless of target-cache state.
+
+The corollary: a local dev machine running `soldr cargo build` with no
+`setup-soldr` involvement pays zero overhead for target-cache. The feature is
+opt-in by design.
+
+If a contributor runs `setup-soldr` locally (e.g. via `act` or a docker
+reproducer), the env vars get exported and the target-cache code DOES fire —
+that's intentional ("reproduce CI exactly"). To suppress it manually, unset
+`SOLDR_TARGET_CACHE_MODE` or set it to `off` before invoking `soldr cargo …`.
 
 ---
 
