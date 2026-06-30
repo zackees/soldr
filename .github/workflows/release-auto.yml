@@ -924,13 +924,23 @@ jobs:
           mkdir -p dist
 
           expected="${EXPECTED_VERSION#v}"
-          # v0.7.80 lesson: regex-based version extract from
-          # Cargo.toml kept extracting `4` on Linux gnu lanes
-          # (Cargo.LOCK format version, not Cargo.toml's workspace
-          # version). Stop guessing — use `cargo metadata` which
-          # parses TOML properly and returns the SAME version
-          # maturin will use. Plus full diagnostic on mismatch so
-          # the next regression is self-explaining.
+          # v0.7.81 lesson: the workspace `Cargo.toml` on disk at
+          # this point is a STRIPPED variant (only `[workspace]` +
+          # `[workspace.dependencies]`, missing `[workspace.package]`
+          # entirely). Some prior step in this matrix lane is
+          # replacing the manifest — most likely setup-soldr's
+          # cache restoration normalizing it for cache-key
+          # stability. The result: maturin reads the wrong
+          # manifest, writes wheels tagged with whatever first
+          # `version = "X"` line is in the stripped file (the
+          # first dep version, usually clap's "4"), and downstream
+          # twine aborts the PyPI upload.
+          #
+          # Restore the real manifest tree from git BEFORE
+          # anything reads it. Cheap (just file IO from
+          # .git/objects).
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
+
           echo "=== pre-maturin diagnostic ==="
           echo "pwd: $(pwd)"
           echo "ls Cargo.toml Cargo.lock:"
