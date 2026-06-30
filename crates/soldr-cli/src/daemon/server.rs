@@ -943,7 +943,10 @@ pub(crate) enum DispatchOutcome<T> {
 /// compile-future are ready in the same poll tick, prefer the
 /// disconnect branch so we don't accidentally write a response into a
 /// half-closed pipe.
-pub(crate) async fn race_against_disconnect<R, F>(reader: &mut R, fut: F) -> DispatchOutcome<F::Output>
+pub(crate) async fn race_against_disconnect<R, F>(
+    reader: &mut R,
+    fut: F,
+) -> DispatchOutcome<F::Output>
 where
     R: tokio::io::AsyncRead + Unpin,
     F: std::future::Future,

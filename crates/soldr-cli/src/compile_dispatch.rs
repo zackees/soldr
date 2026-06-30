@@ -42,8 +42,7 @@ use crate::daemon::protocol::CompileRequest;
 /// set this to a sub-second value so the wait-for-daemon loop fails
 /// fast against a known-absent socket instead of wedging the test
 /// runner.
-pub const SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR: &str =
-    "SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS";
+pub const SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR: &str = "SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS";
 
 /// Default 30-second budget for the daemon-spawn + retry loop.
 ///
@@ -196,9 +195,7 @@ where
     let req = build_compile_request(rustc_argv);
 
     // First try — daemon may already be running.
-    if let Ok(done) =
-        client::compile_streaming(&sock, req.clone(), &mut stdout, &mut stderr)
-    {
+    if let Ok(done) = client::compile_streaming(&sock, req.clone(), &mut stdout, &mut stderr) {
         return Ok(done.exit_code);
     }
 
@@ -318,62 +315,82 @@ mod tests {
         }
     }
 
-    timed_test!(is_compile_env_var_recognizes_msvc_link_vars, Duration::from_secs(5), {
-        // Issue #1079 — the MSVC discovery sets LIB / INCLUDE / LIBPATH
-        // on the wrapper process. The dispatch's env filter must
-        // forward them to the daemon so the embedded rustc invocation
-        // gets the same env. Regression-test that explicitly.
-        for v in ["LIB", "INCLUDE", "LIBPATH", "PATH"] {
-            assert!(is_compile_env_var(v), "{v} must be forwarded to daemon");
+    timed_test!(
+        is_compile_env_var_recognizes_msvc_link_vars,
+        Duration::from_secs(5),
+        {
+            // Issue #1079 — the MSVC discovery sets LIB / INCLUDE / LIBPATH
+            // on the wrapper process. The dispatch's env filter must
+            // forward them to the daemon so the embedded rustc invocation
+            // gets the same env. Regression-test that explicitly.
+            for v in ["LIB", "INCLUDE", "LIBPATH", "PATH"] {
+                assert!(is_compile_env_var(v), "{v} must be forwarded to daemon");
+            }
         }
-    });
+    );
 
-    timed_test!(is_compile_env_var_drops_common_noise, Duration::from_secs(5), {
-        for v in [
-            "PROMPT",
-            "PSModulePath",
-            "ChocolateyInstall",
-            "WSL_DISTRO_NAME",
-        ] {
-            assert!(!is_compile_env_var(v), "{v} should be dropped");
+    timed_test!(
+        is_compile_env_var_drops_common_noise,
+        Duration::from_secs(5),
+        {
+            for v in [
+                "PROMPT",
+                "PSModulePath",
+                "ChocolateyInstall",
+                "WSL_DISTRO_NAME",
+            ] {
+                assert!(!is_compile_env_var(v), "{v} should be dropped");
+            }
         }
-    });
+    );
 
-    timed_test!(build_compile_request_filters_env_and_carries_args, Duration::from_secs(5), {
-        std::env::set_var("CARGO_PKG_NAME_TEST_DISPATCH", "soldr-cli-test");
-        let argv = vec!["rustc".to_string(), "--version".to_string()];
-        let req = build_compile_request(&argv);
-        std::env::remove_var("CARGO_PKG_NAME_TEST_DISPATCH");
+    timed_test!(
+        build_compile_request_filters_env_and_carries_args,
+        Duration::from_secs(5),
+        {
+            std::env::set_var("CARGO_PKG_NAME_TEST_DISPATCH", "soldr-cli-test");
+            let argv = vec!["rustc".to_string(), "--version".to_string()];
+            let req = build_compile_request(&argv);
+            std::env::remove_var("CARGO_PKG_NAME_TEST_DISPATCH");
 
-        assert_eq!(req.args, argv);
-        assert!(
-            req.env
-                .iter()
-                .any(|(k, _)| k == "CARGO_PKG_NAME_TEST_DISPATCH"),
-            "CARGO_*-prefixed env var must survive the filter"
-        );
-    });
+            assert_eq!(req.args, argv);
+            assert!(
+                req.env
+                    .iter()
+                    .any(|(k, _)| k == "CARGO_PKG_NAME_TEST_DISPATCH"),
+                "CARGO_*-prefixed env var must survive the filter"
+            );
+        }
+    );
 
-    timed_test!(resolved_spawn_retry_budget_respects_override, Duration::from_secs(5), {
-        let g = BudgetEnvGuard::acquire();
-        g.set("250");
-        let budget = resolved_spawn_retry_budget();
-        drop(g);
-        assert_eq!(budget, Duration::from_millis(250));
-    });
+    timed_test!(
+        resolved_spawn_retry_budget_respects_override,
+        Duration::from_secs(5),
+        {
+            let g = BudgetEnvGuard::acquire();
+            g.set("250");
+            let budget = resolved_spawn_retry_budget();
+            drop(g);
+            assert_eq!(budget, Duration::from_millis(250));
+        }
+    );
 
-    timed_test!(resolved_spawn_retry_budget_clamps_to_min_100ms, Duration::from_secs(5), {
-        // Defense in depth: no caller can disable retries entirely
-        // by passing 0 — the loop must still get at least one shot.
-        let g = BudgetEnvGuard::acquire();
-        g.set("0");
-        let budget = resolved_spawn_retry_budget();
-        drop(g);
-        assert!(
-            budget >= Duration::from_millis(100),
-            "budget {budget:?} must be clamped to at least 100ms"
-        );
-    });
+    timed_test!(
+        resolved_spawn_retry_budget_clamps_to_min_100ms,
+        Duration::from_secs(5),
+        {
+            // Defense in depth: no caller can disable retries entirely
+            // by passing 0 — the loop must still get at least one shot.
+            let g = BudgetEnvGuard::acquire();
+            g.set("0");
+            let budget = resolved_spawn_retry_budget();
+            drop(g);
+            assert!(
+                budget >= Duration::from_millis(100),
+                "budget {budget:?} must be clamped to at least 100ms"
+            );
+        }
+    );
 
     // The TDD acceptance test for the no-hang contract: point dispatch
     // at a socket path that cannot possibly accept, set the budget to
@@ -381,45 +398,49 @@ mod tests {
     // The `timed_test!` 10-second deadline is the belt-and-suspenders —
     // if a regression makes the dispatch ignore the budget, the test
     // hangs there and the watchdog fires.
-    timed_test!(dispatch_compile_with_sock_fails_within_budget_on_dead_socket, Duration::from_secs(15), {
-        let g = BudgetEnvGuard::acquire();
-        // 250 ms budget; we expect dispatch to fail-fast.
-        g.set("250");
+    timed_test!(
+        dispatch_compile_with_sock_fails_within_budget_on_dead_socket,
+        Duration::from_secs(15),
+        {
+            let g = BudgetEnvGuard::acquire();
+            // 250 ms budget; we expect dispatch to fail-fast.
+            g.set("250");
 
-        // A path that cannot resolve to a live socket / pipe on any
-        // platform. On Windows the leading `\\.\pipe\` prefix is
-        // mandatory for named pipes, so a Unix-style path under TMP
-        // cannot accept; on Unix the path simply does not exist.
-        let dead = if cfg!(windows) {
-            PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-12345")
-        } else {
-            std::env::temp_dir().join("soldr-test-no-such-sock-12345")
-        };
-        // Make sure no leftover artifact from a prior test is on disk.
-        let _ = std::fs::remove_file(&dead);
+            // A path that cannot resolve to a live socket / pipe on any
+            // platform. On Windows the leading `\\.\pipe\` prefix is
+            // mandatory for named pipes, so a Unix-style path under TMP
+            // cannot accept; on Unix the path simply does not exist.
+            let dead = if cfg!(windows) {
+                PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-12345")
+            } else {
+                std::env::temp_dir().join("soldr-test-no-such-sock-12345")
+            };
+            // Make sure no leftover artifact from a prior test is on disk.
+            let _ = std::fs::remove_file(&dead);
 
-        let argv = vec!["rustc".to_string(), "--version".to_string()];
-        let mut stdout: Vec<u8> = Vec::new();
-        let mut stderr: Vec<u8> = Vec::new();
+            let argv = vec!["rustc".to_string(), "--version".to_string()];
+            let mut stdout: Vec<u8> = Vec::new();
+            let mut stderr: Vec<u8> = Vec::new();
 
-        let start = Instant::now();
-        let result = dispatch_compile_with_sock(&dead, &argv, &mut stdout, &mut stderr);
-        let elapsed = start.elapsed();
-        drop(g);
+            let start = Instant::now();
+            let result = dispatch_compile_with_sock(&dead, &argv, &mut stdout, &mut stderr);
+            let elapsed = start.elapsed();
+            drop(g);
 
-        assert!(result.is_err(), "dispatch should error on dead socket");
-        // Windows runtime spawn overhead per attempt can push elapsed
-        // well past the configured budget. The contract is "the loop
-        // honors the budget" — i.e. we don't sit at the 30 s default —
-        // not a tight stopwatch on absolute time. A 5 s ceiling is
-        // generous enough to absorb tokio runtime startup while still
-        // catching a regression that ignores the budget entirely.
-        assert!(
-            elapsed < Duration::from_secs(5),
-            "dispatch took {elapsed:?} on a dead socket with a 250 ms budget — \
+            assert!(result.is_err(), "dispatch should error on dead socket");
+            // Windows runtime spawn overhead per attempt can push elapsed
+            // well past the configured budget. The contract is "the loop
+            // honors the budget" — i.e. we don't sit at the 30 s default —
+            // not a tight stopwatch on absolute time. A 5 s ceiling is
+            // generous enough to absorb tokio runtime startup while still
+            // catching a regression that ignores the budget entirely.
+            assert!(
+                elapsed < Duration::from_secs(5),
+                "dispatch took {elapsed:?} on a dead socket with a 250 ms budget — \
              this is the no-hang contract: the retry loop MUST honor the \
              SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS budget instead of waiting \
              out the 30s default"
-        );
-    });
+            );
+        }
+    );
 }
