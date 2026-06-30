@@ -386,18 +386,29 @@ jobs:
             sudo ln -sf /usr/bin/llvm-ar-18 /usr/bin/llvm-ar
             sudo ln -sf /usr/bin/lld-18 /usr/bin/ld.lld
 
-            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3.sdk.tar.xz"
+            # Same URL apple_sdk.rs uses in production (see
+            # MANAGED_APPLE_SDK_URL in fetch/apple_sdk.rs). v0.7.85
+            # used the wrong URL + wrong extension (.tar.xz) and
+            # 404'd — corrected to soldr/manifest deps/mac/sdk.tar.zstd.
+            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd"
             mkdir -p "$RUNNER_TEMP/apple-sdk"
-            if [ ! -d "$RUNNER_TEMP/apple-sdk/MacOSX11.3.sdk" ]; then
+            if ! ls "$RUNNER_TEMP/apple-sdk/"MacOSX*.sdk 1>/dev/null 2>&1; then
                 echo "fetching Apple SDK from $APPLE_SDK_URL ..."
-                curl -fsSL "$APPLE_SDK_URL" -o /tmp/MacOSX11.3.sdk.tar.xz
-                tar -xJ -C "$RUNNER_TEMP/apple-sdk" -f /tmp/MacOSX11.3.sdk.tar.xz
-                rm /tmp/MacOSX11.3.sdk.tar.xz
+                sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+                curl -fsSL "$APPLE_SDK_URL" -o /tmp/sdk.tar.zstd
+                zstd -dc /tmp/sdk.tar.zstd | tar -xf - -C "$RUNNER_TEMP/apple-sdk"
+                rm /tmp/sdk.tar.zstd
             fi
-            export SDKROOT="$RUNNER_TEMP/apple-sdk/MacOSX11.3.sdk"
-            if [ ! -f "$SDKROOT/usr/include/sys/syscall.h" ]; then
+            # Discover whatever MacOSXXX.X.sdk dir landed (the
+            # tarball's top-level name is the SDK version).
+            SDKROOT="$(ls -d "$RUNNER_TEMP/apple-sdk/"MacOSX*.sdk 2>/dev/null | head -1)"
+            export SDKROOT
+            echo "resolved SDKROOT=$SDKROOT"
+            if [ -z "$SDKROOT" ] || [ ! -f "$SDKROOT/usr/include/sys/syscall.h" ]; then
                 echo "ERROR: Apple SDK did not contain usr/include/sys/syscall.h" >&2
-                find "$SDKROOT" -maxdepth 3 -type d | head -20 >&2
+                echo "RUNNER_TEMP/apple-sdk contents:" >&2
+                ls -la "$RUNNER_TEMP/apple-sdk" >&2 || true
+                find "$RUNNER_TEMP/apple-sdk" -maxdepth 4 -type d | head -30 >&2
                 exit 1
             fi
             target_u="${target//-/_}"
