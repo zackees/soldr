@@ -418,11 +418,17 @@ jobs:
               aarch64-apple-darwin)  clang_arch=arm64-apple-darwin ;;
               *) echo "unsupported darwin target: $target" >&2 ; exit 1 ;;
             esac
-            export "CC_${target_u}=clang --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0"
-            export "CXX_${target_u}=clang++ --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++"
+            # v0.7.86 lesson: cmake's CMakeTestCCompiler probe
+            # invoked the system /usr/bin/ld (GNU) instead of lld
+            # for the test-link step, hit "unrecognised emulation
+            # mode: llvm". `-fuse-ld=lld` MUST be in CFLAGS/CXXFLAGS
+            # (not just RUSTFLAGS) so any compile-link sequence
+            # cmake-rs runs uses lld and can link Mach-O.
+            export "CC_${target_u}=clang --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
+            export "CXX_${target_u}=clang++ --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
             export "AR_${target_u}=llvm-ar"
-            export "CFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0"
-            export "CXXFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++"
+            export "CFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
+            export "CXXFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
             export "CARGO_TARGET_${target_u_upper}_LINKER=clang"
             export "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-arg=--target=${clang_arch} -C link-arg=-isysroot -C link-arg=${SDKROOT} -C link-arg=-mmacosx-version-min=11.0 -C link-arg=-fuse-ld=lld"
             echo "=== inline darwin env ==="
