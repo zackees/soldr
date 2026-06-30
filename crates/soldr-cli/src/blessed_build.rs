@@ -555,13 +555,19 @@ mod tests {
         }
     });
 
-    crate::timed_test!(linux_targets_get_no_prep, {
+    crate::timed_test!(linux_targets_get_no_xwin_or_sdk_prep, {
+        // soldr#1064 Phase B: syslib catalogue overrides may populate
+        // prep.env even on linux targets. The invariant we still want to
+        // assert is "linux gets no Windows-xwin and no Apple-SDK prep" —
+        // opt out of catalogue injection to keep this test hermetic.
+        std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let prep = tokio::runtime::Runtime::new()
+        let result = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(prepare(&paths, "x86_64-unknown-linux-musl"))
-            .expect("linux musl target should not error");
+            .block_on(prepare(&paths, "x86_64-unknown-linux-musl"));
+        std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR);
+        let prep = result.expect("linux musl target should not error");
         assert!(prep.xwin_cache_dir.is_none());
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
