@@ -154,6 +154,16 @@ fn join_semicolons(parts: &[PathBuf]) -> String {
 /// attempted and failed in a way the caller should know about — most
 /// commonly "no VS install with VC++ tools".
 pub fn ensure_msvc_env_for_native(target_triple: &str) -> Result<bool, MsvcDetectionError> {
+    ensure_msvc_env_for_native_in(target_triple, &std::env::current_dir().unwrap_or_default())
+}
+
+/// Same as [`ensure_msvc_env_for_native`] but with the project root
+/// passed in explicitly so tests can exercise the `.cargo/config.toml`
+/// linker-pin probe without `chdir`-ing the process. Issue #1105.
+pub fn ensure_msvc_env_for_native_in(
+    target_triple: &str,
+    project_dir: &Path,
+) -> Result<bool, MsvcDetectionError> {
     if !cfg!(target_os = "windows") {
         return Ok(false);
     }
@@ -163,13 +173,112 @@ pub fn ensure_msvc_env_for_native(target_triple: &str) -> Result<bool, MsvcDetec
     if opted_out() {
         return Ok(false);
     }
-    if already_in_msvc_env() {
+    // soldr#1105: when the project pins `linker = "rust-lld.exe"` in
+    // .cargo/config.toml, `link.exe` is irrelevant — rust-lld is the
+    // linker and it relies SOLELY on `LIB` to find the import libs.
+    // The conservative `already_in_msvc_env()` check (LIB && link.exe)
+    // therefore misses this scenario: a Developer Command Prompt
+    // sets both, but a plain PowerShell with a half-loaded env from
+    // a previous failed attempt may have LIB but no link.exe — in
+    // which case we should defer to the user's LIB regardless of
+    // link.exe. For rust-lld-pinned projects, defer iff LIB is set
+    // (link.exe presence does not matter).
+    let pins_rust_lld = project_pins_rust_lld_for_msvc(project_dir);
+    let lib_already_set = std::env::var_os("LIB")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    let should_skip = if pins_rust_lld {
+        lib_already_set
+    } else {
+        already_in_msvc_env()
+    };
+    if should_skip {
         return Ok(false);
     }
     let layout = discover_msvc_layout()?;
     let env = layout.synthesize_env_x64();
     apply_to_process(&env);
     Ok(true)
+}
+
+/// Walk from `cwd` up to the filesystem root looking for a cargo
+/// config file (`.cargo/config.toml`, falling back to the legacy
+/// `.cargo/config` if no `.toml` form is present at the same level).
+/// Returns `true` as soon as any of them contains a `linker` field
+/// pointing at `rust-lld` for a windows-msvc target. Issue #1105 —
+/// the rust-lld pin is the smoking gun that the project needs
+/// soldr's MSVC SDK env injection even when other heuristics would
+/// short-circuit.
+pub fn project_pins_rust_lld_for_msvc(cwd: &Path) -> bool {
+    for ancestor in cwd.ancestors() {
+        let cargo_dir = ancestor.join(".cargo");
+        for cfg in [cargo_dir.join("config.toml"), cargo_dir.join("config")] {
+            if cfg.is_file() {
+                if let Ok(contents) = std::fs::read_to_string(&cfg) {
+                    if config_pins_rust_lld(&contents) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Pure-function helper for [`project_pins_rust_lld_for_msvc`].
+/// Parses a cargo config TOML string and returns `true` when any
+/// `[target.<X>]` table whose key mentions `windows` has a `linker`
+/// field that resolves to `rust-lld` (case-insensitive, with or
+/// without the `.exe` suffix, with or without a leading path).
+///
+/// Lives in `msvc_host` (not a generic cargo-config helper) because
+/// it intentionally only fires for the windows-msvc case — that is
+/// the only place rust-lld needs `LIB` injection.
+pub fn config_pins_rust_lld(toml_str: &str) -> bool {
+    let value: toml::Value = match toml_str.parse() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let target = match value.as_table().and_then(|t| t.get("target")) {
+        Some(toml::Value::Table(t)) => t,
+        _ => return false,
+    };
+    for (key, sub) in target {
+        // Filter to target keys that could plausibly cover windows-msvc.
+        // Accept literal triples (`x86_64-pc-windows-msvc`,
+        // `aarch64-pc-windows-msvc`), `cfg(windows)` predicates, and
+        // anything else containing `windows` (defensive — cargo config
+        // accepts a variety of cfg-strings).
+        let key_lc = key.to_ascii_lowercase();
+        if !(key_lc.contains("windows") || key_lc.contains("msvc")) {
+            continue;
+        }
+        let linker = sub
+            .as_table()
+            .and_then(|t| t.get("linker"))
+            .and_then(|v| v.as_str());
+        let Some(linker) = linker else { continue };
+        if linker_is_rust_lld(linker) {
+            return true;
+        }
+    }
+    false
+}
+
+fn linker_is_rust_lld(linker: &str) -> bool {
+    let trimmed = linker.trim().trim_matches('"');
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "rust-lld" || lower == "rust-lld.exe" {
+        return true;
+    }
+    // Accept paths ending in rust-lld / rust-lld.exe. Normalize both
+    // separators because the project's `.cargo/config.toml` may use
+    // Windows backslashes even when the test (or a Linux Docker
+    // harness, per CLAUDE.md issue #1105 rule) is running on Linux —
+    // `std::path::Path::file_name` only recognizes `/` on Linux.
+    let normalized = lower.replace('\\', "/");
+    let bare = normalized.rsplit('/').next().unwrap_or("");
+    bare == "rust-lld" || bare == "rust-lld.exe"
 }
 
 /// Returns `true` if `SOLDR_MSVC_DISCOVERY` is set to `off`, `0`, or
@@ -373,6 +482,17 @@ mod tests {
     use crate::timed_test;
     use std::time::Duration;
 
+    // cfg-gated to Windows: the assertions look for backslash-joined
+    // path segments (`VC\Tools\MSVC\...`) which only appear when
+    // `PathBuf::display()` runs on Windows. The function under test
+    // (`synthesize_env_x64`) uses `PathBuf::display()` and so produces
+    // platform-native separators — on Linux that's forward slashes.
+    // Issue #1105 surfaced this by running the suite under Docker
+    // Linux for the first time. Fixing `synthesize_env_x64` itself to
+    // always emit backslashes is a separate concern; for now we keep
+    // the existing Windows-only coverage and ensure the test no longer
+    // panics on Linux CI / Linux Docker runs.
+    #[cfg(target_os = "windows")]
     timed_test!(
         synthesize_env_x64_builds_canonical_paths,
         Duration::from_secs(5),
@@ -499,6 +619,153 @@ mod tests {
             let applied = ensure_msvc_env_for_native("x86_64-unknown-linux-gnu")
                 .expect("noop should not error");
             assert!(!applied, "linux-gnu target must not trigger MSVC discovery");
+        }
+    );
+
+    // ---- soldr#1105: .cargo/config.toml rust-lld linker probe -----
+
+    timed_test!(
+        config_pins_rust_lld_detects_bare_rust_lld_exe,
+        Duration::from_secs(5),
+        {
+            let toml = r#"
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+"#;
+            assert!(
+                config_pins_rust_lld(toml),
+                "should match bare rust-lld.exe linker pin"
+            );
+        }
+    );
+
+    timed_test!(
+        config_pins_rust_lld_detects_path_to_rust_lld,
+        Duration::from_secs(5),
+        {
+            let toml = r#"
+[target.aarch64-pc-windows-msvc]
+linker = "C:/Users/me/.rustup/toolchains/stable/bin/rust-lld.exe"
+"#;
+            assert!(
+                config_pins_rust_lld(toml),
+                "should match absolute path to rust-lld.exe"
+            );
+        }
+    );
+
+    // Backslash-path variant — TOML uses `\\` escapes so the actual
+    // string the parser sees is `C:\Users\...\rust-lld.exe`. This
+    // case must work even when the test runs on Linux (Path::file_name
+    // doesn't recognize `\` on Linux); the implementation normalizes
+    // separators before splitting.
+    timed_test!(
+        config_pins_rust_lld_detects_backslash_path_on_any_host,
+        Duration::from_secs(5),
+        {
+            let toml = "
+[target.x86_64-pc-windows-msvc]
+linker = \"C:\\\\Users\\\\me\\\\.rustup\\\\toolchains\\\\stable\\\\bin\\\\rust-lld.exe\"
+";
+            assert!(
+                config_pins_rust_lld(toml),
+                "should match Windows-backslash path even on Linux hosts"
+            );
+        }
+    );
+
+    timed_test!(
+        config_pins_rust_lld_detects_no_exe_suffix,
+        Duration::from_secs(5),
+        {
+            let toml = r#"
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
+"#;
+            assert!(
+                config_pins_rust_lld(toml),
+                "should match rust-lld without .exe"
+            );
+        }
+    );
+
+    timed_test!(
+        config_pins_rust_lld_ignores_link_exe,
+        Duration::from_secs(5),
+        {
+            let toml = r#"
+[target.x86_64-pc-windows-msvc]
+linker = "link.exe"
+"#;
+            assert!(
+                !config_pins_rust_lld(toml),
+                "should NOT match the default link.exe — soldr#1105 only cares about rust-lld pins"
+            );
+        }
+    );
+
+    timed_test!(
+        config_pins_rust_lld_ignores_non_windows_targets,
+        Duration::from_secs(5),
+        {
+            let toml = r#"
+[target.x86_64-unknown-linux-gnu]
+linker = "rust-lld"
+"#;
+            assert!(
+                !config_pins_rust_lld(toml),
+                "rust-lld pinned for a linux target must not trigger MSVC env injection"
+            );
+        }
+    );
+
+    timed_test!(
+        config_pins_rust_lld_handles_malformed_toml_silently,
+        Duration::from_secs(5),
+        {
+            let toml = "not = valid = toml = at = all";
+            assert!(
+                !config_pins_rust_lld(toml),
+                "malformed cargo config must be a soft-skip, not a panic — soldr#1105"
+            );
+        }
+    );
+
+    timed_test!(
+        project_pins_rust_lld_walks_ancestors,
+        Duration::from_secs(10),
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            // Put .cargo/config.toml at the parent level and CWD two levels deep.
+            let parent = tmp.path().join("repo");
+            let nested = parent.join("crates").join("inner");
+            std::fs::create_dir_all(&nested).unwrap();
+            let cargo_dir = parent.join(".cargo");
+            std::fs::create_dir_all(&cargo_dir).unwrap();
+            std::fs::write(
+                cargo_dir.join("config.toml"),
+                r#"
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld.exe"
+"#,
+            )
+            .unwrap();
+            assert!(
+                project_pins_rust_lld_for_msvc(&nested),
+                "walker should find the parent-level cargo config from a nested CWD"
+            );
+        }
+    );
+
+    timed_test!(
+        project_pins_rust_lld_no_config_is_false,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            assert!(
+                !project_pins_rust_lld_for_msvc(tmp.path()),
+                "empty directory tree must return false"
+            );
         }
     );
 
