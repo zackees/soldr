@@ -18,20 +18,13 @@
 /// `Commands::Build` for canonical target triples. Coordinates the
 /// xwin-cache materialization + clang-shim install + env var setup.
 pub mod blessed_build;
+pub mod cache_lib;
+pub mod cargo_metadata_soldr;
 /// soldr#1081 — Shared `Request::Compile` dispatch logic used by both
 /// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and the dedicated
 /// `zccache-soldr` shim binary (`bin/zccache_soldr.rs`). Owns the
 /// hang-safe retry budget contract.
 pub mod compile_dispatch;
-/// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
-/// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
-/// onto the current process so `soldr cargo build` / `soldr cargo test`
-/// succeed from a plain PowerShell without the downstream `$env:LIB`
-/// workaround. Detect-host now; managed-catalogue fallback is a
-/// follow-up in the same issue.
-pub mod msvc_host;
-pub mod cache_lib;
-pub mod cargo_metadata_soldr;
 pub mod core;
 pub mod daemon;
 pub mod defender;
@@ -40,6 +33,13 @@ pub mod defender;
 /// via `cargo test --lib`.
 pub mod env_cmd;
 pub mod fetch;
+/// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Probes
+/// vswhere + the Windows SDK and synthesizes LIB/INCLUDE/PATH/LIBPATH
+/// onto the current process so `soldr cargo build` / `soldr cargo test`
+/// succeed from a plain PowerShell without the downstream `$env:LIB`
+/// workaround. Detect-host now; managed-catalogue fallback is a
+/// follow-up in the same issue.
+pub mod msvc_host;
 /// soldr#939 — PyO3 auto-detection via cargo metadata.
 pub mod pyo3_detect;
 pub mod release_sidecar;

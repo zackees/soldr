@@ -120,7 +120,10 @@ impl MsvcHostLayout {
         ];
         let path_prepend = vec![
             msvc.join("bin").join("Hostx64").join("x64"),
-            self.sdk_root.join("bin").join(&self.sdk_version).join("x64"),
+            self.sdk_root
+                .join("bin")
+                .join(&self.sdk_version)
+                .join("x64"),
             msvc.join("bin").join("Hostx64").join("x86"),
         ];
         let libpath = vec![
@@ -370,176 +373,207 @@ mod tests {
     use crate::timed_test;
     use std::time::Duration;
 
-    timed_test!(synthesize_env_x64_builds_canonical_paths, Duration::from_secs(5), {
-        let layout = MsvcHostLayout {
-            vs_install: PathBuf::from(
-                r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community",
-            ),
-            vc_tools_version: "14.29.30133".into(),
-            sdk_root: PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"),
-            sdk_version: "10.0.22621.0".into(),
-        };
-        let env = layout.synthesize_env_x64();
+    timed_test!(
+        synthesize_env_x64_builds_canonical_paths,
+        Duration::from_secs(5),
+        {
+            let layout = MsvcHostLayout {
+                vs_install: PathBuf::from(
+                    r"C:\Program Files (x86)\Microsoft Visual Studio\2019\Community",
+                ),
+                vc_tools_version: "14.29.30133".into(),
+                sdk_root: PathBuf::from(r"C:\Program Files (x86)\Windows Kits\10"),
+                sdk_version: "10.0.22621.0".into(),
+            };
+            let env = layout.synthesize_env_x64();
 
-        assert!(
-            env.lib.contains(r"VC\Tools\MSVC\14.29.30133\lib\x64"),
-            "lib should contain canonical MSVC x64 libs path: {}",
-            env.lib
-        );
-        assert!(
-            env.lib.contains(r"Windows Kits\10\Lib\10.0.22621.0\ucrt\x64"),
-            "lib should contain ucrt x64 path: {}",
-            env.lib
-        );
-        assert!(
-            env.include.contains(r"VC\Tools\MSVC\14.29.30133\include"),
-            "include should contain MSVC include path: {}",
-            env.include
-        );
-        assert!(
-            env.path_prepend
-                .contains(r"VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64"),
-            "path_prepend should contain x64 host tools (link.exe lives here): {}",
-            env.path_prepend
-        );
-    });
-
-    timed_test!(vswhere_path_honors_override_env_var, Duration::from_secs(5), {
-        // Mutate env: ok because we read-then-restore. Run serially
-        // would be ideal but a single set/clear pair is atomic enough
-        // for cargo test's default parallelism — and no other tests
-        // touch SOLDR_VSWHERE.
-        let prior = std::env::var_os(SOLDR_VSWHERE_ENV_VAR);
-        std::env::set_var(SOLDR_VSWHERE_ENV_VAR, r"D:\custom\vswhere.exe");
-        let p = vswhere_path();
-        match prior {
-            Some(v) => std::env::set_var(SOLDR_VSWHERE_ENV_VAR, v),
-            None => std::env::remove_var(SOLDR_VSWHERE_ENV_VAR),
+            assert!(
+                env.lib.contains(r"VC\Tools\MSVC\14.29.30133\lib\x64"),
+                "lib should contain canonical MSVC x64 libs path: {}",
+                env.lib
+            );
+            assert!(
+                env.lib
+                    .contains(r"Windows Kits\10\Lib\10.0.22621.0\ucrt\x64"),
+                "lib should contain ucrt x64 path: {}",
+                env.lib
+            );
+            assert!(
+                env.include.contains(r"VC\Tools\MSVC\14.29.30133\include"),
+                "include should contain MSVC include path: {}",
+                env.include
+            );
+            assert!(
+                env.path_prepend
+                    .contains(r"VC\Tools\MSVC\14.29.30133\bin\Hostx64\x64"),
+                "path_prepend should contain x64 host tools (link.exe lives here): {}",
+                env.path_prepend
+            );
         }
-        assert_eq!(p, PathBuf::from(r"D:\custom\vswhere.exe"));
-    });
+    );
 
-    timed_test!(opted_out_recognizes_off_zero_false, Duration::from_secs(5), {
-        let prior = std::env::var_os(SOLDR_MSVC_DISCOVERY_ENV_VAR);
-        for v in ["off", "OFF", "0", "false", "FALSE", "no", "  off  "] {
-            std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v);
-            assert!(opted_out(), "value `{v}` should opt out");
+    timed_test!(
+        vswhere_path_honors_override_env_var,
+        Duration::from_secs(5),
+        {
+            // Mutate env: ok because we read-then-restore. Run serially
+            // would be ideal but a single set/clear pair is atomic enough
+            // for cargo test's default parallelism — and no other tests
+            // touch SOLDR_VSWHERE.
+            let prior = std::env::var_os(SOLDR_VSWHERE_ENV_VAR);
+            std::env::set_var(SOLDR_VSWHERE_ENV_VAR, r"D:\custom\vswhere.exe");
+            let p = vswhere_path();
+            match prior {
+                Some(v) => std::env::set_var(SOLDR_VSWHERE_ENV_VAR, v),
+                None => std::env::remove_var(SOLDR_VSWHERE_ENV_VAR),
+            }
+            assert_eq!(p, PathBuf::from(r"D:\custom\vswhere.exe"));
         }
-        for v in ["on", "1", "true", "auto", ""] {
-            std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v);
-            assert!(!opted_out(), "value `{v}` should NOT opt out");
-        }
-        match prior {
-            Some(v) => std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v),
-            None => std::env::remove_var(SOLDR_MSVC_DISCOVERY_ENV_VAR),
-        }
-    });
+    );
 
-    timed_test!(pick_highest_sdk_version_skips_partial_installs, Duration::from_secs(10), {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let inc = tmp.path().join("Include");
-        // 10.0.19041.0 — half-installed, missing ucrt/
-        std::fs::create_dir_all(inc.join("10.0.19041.0").join("um")).unwrap();
-        // 10.0.22621.0 — fully installed
-        std::fs::create_dir_all(inc.join("10.0.22621.0").join("um")).unwrap();
-        std::fs::create_dir_all(inc.join("10.0.22621.0").join("ucrt")).unwrap();
-        // 10.0.20348.0 — also fully installed but older
-        std::fs::create_dir_all(inc.join("10.0.20348.0").join("um")).unwrap();
-        std::fs::create_dir_all(inc.join("10.0.20348.0").join("ucrt")).unwrap();
+    timed_test!(
+        opted_out_recognizes_off_zero_false,
+        Duration::from_secs(5),
+        {
+            let prior = std::env::var_os(SOLDR_MSVC_DISCOVERY_ENV_VAR);
+            for v in ["off", "OFF", "0", "false", "FALSE", "no", "  off  "] {
+                std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v);
+                assert!(opted_out(), "value `{v}` should opt out");
+            }
+            for v in ["on", "1", "true", "auto", ""] {
+                std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v);
+                assert!(!opted_out(), "value `{v}` should NOT opt out");
+            }
+            match prior {
+                Some(v) => std::env::set_var(SOLDR_MSVC_DISCOVERY_ENV_VAR, v),
+                None => std::env::remove_var(SOLDR_MSVC_DISCOVERY_ENV_VAR),
+            }
+        }
+    );
 
-        let picked = pick_highest_sdk_version(tmp.path()).expect("should find a version");
-        assert_eq!(
+    timed_test!(
+        pick_highest_sdk_version_skips_partial_installs,
+        Duration::from_secs(10),
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let inc = tmp.path().join("Include");
+            // 10.0.19041.0 — half-installed, missing ucrt/
+            std::fs::create_dir_all(inc.join("10.0.19041.0").join("um")).unwrap();
+            // 10.0.22621.0 — fully installed
+            std::fs::create_dir_all(inc.join("10.0.22621.0").join("um")).unwrap();
+            std::fs::create_dir_all(inc.join("10.0.22621.0").join("ucrt")).unwrap();
+            // 10.0.20348.0 — also fully installed but older
+            std::fs::create_dir_all(inc.join("10.0.20348.0").join("um")).unwrap();
+            std::fs::create_dir_all(inc.join("10.0.20348.0").join("ucrt")).unwrap();
+
+            let picked = pick_highest_sdk_version(tmp.path()).expect("should find a version");
+            assert_eq!(
             picked, "10.0.22621.0",
             "should pick the highest fully-installed version, skipping the partial 10.0.19041.0"
         );
-    });
+        }
+    );
 
-    timed_test!(pick_highest_sdk_version_errors_on_empty_install, Duration::from_secs(10), {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        // Only Include/ exists, but no version subdirs with um+ucrt.
-        std::fs::create_dir_all(tmp.path().join("Include")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("Include").join("10.0.0.0").join("um")).unwrap();
-        // missing ucrt → should not qualify
-        let err = pick_highest_sdk_version(tmp.path()).expect_err("should fail");
-        assert!(matches!(err, MsvcDetectionError::NoSdkVersion(_)));
-    });
+    timed_test!(
+        pick_highest_sdk_version_errors_on_empty_install,
+        Duration::from_secs(10),
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            // Only Include/ exists, but no version subdirs with um+ucrt.
+            std::fs::create_dir_all(tmp.path().join("Include")).unwrap();
+            std::fs::create_dir_all(tmp.path().join("Include").join("10.0.0.0").join("um"))
+                .unwrap();
+            // missing ucrt → should not qualify
+            let err = pick_highest_sdk_version(tmp.path()).expect_err("should fail");
+            assert!(matches!(err, MsvcDetectionError::NoSdkVersion(_)));
+        }
+    );
 
-    timed_test!(ensure_msvc_env_for_native_is_noop_on_non_msvc_target, Duration::from_secs(5), {
-        // This test runs on every platform and proves the early-out
-        // for non-MSVC targets. Even on Windows, asking for a
-        // non-MSVC target must skip discovery.
-        let applied = ensure_msvc_env_for_native("x86_64-unknown-linux-gnu")
-            .expect("noop should not error");
-        assert!(!applied, "linux-gnu target must not trigger MSVC discovery");
-    });
+    timed_test!(
+        ensure_msvc_env_for_native_is_noop_on_non_msvc_target,
+        Duration::from_secs(5),
+        {
+            // This test runs on every platform and proves the early-out
+            // for non-MSVC targets. Even on Windows, asking for a
+            // non-MSVC target must skip discovery.
+            let applied = ensure_msvc_env_for_native("x86_64-unknown-linux-gnu")
+                .expect("noop should not error");
+            assert!(!applied, "linux-gnu target must not trigger MSVC discovery");
+        }
+    );
 
     #[cfg(not(target_os = "windows"))]
-    timed_test!(ensure_msvc_env_for_native_is_noop_on_non_windows_host, Duration::from_secs(5), {
-        let applied = ensure_msvc_env_for_native("x86_64-pc-windows-msvc")
-            .expect("noop should not error");
-        assert!(
-            !applied,
-            "non-windows host must not attempt MSVC discovery"
-        );
-    });
+    timed_test!(
+        ensure_msvc_env_for_native_is_noop_on_non_windows_host,
+        Duration::from_secs(5),
+        {
+            let applied = ensure_msvc_env_for_native("x86_64-pc-windows-msvc")
+                .expect("noop should not error");
+            assert!(!applied, "non-windows host must not attempt MSVC discovery");
+        }
+    );
 
     // -------------------------------------------------------------------
     // Windows-only end-to-end probe. Skips gracefully on hosts without
     // a VS install (CI lanes without VC++ workload).
     // -------------------------------------------------------------------
     #[cfg(target_os = "windows")]
-    timed_test!(discover_msvc_layout_on_developer_machine_finds_real_link_exe, Duration::from_secs(30), {
-        let v = vswhere_path();
-        if !v.is_file() {
-            eprintln!(
-                "msvc_host: skipping discovery test — vswhere not present at {}",
-                v.display()
+    timed_test!(
+        discover_msvc_layout_on_developer_machine_finds_real_link_exe,
+        Duration::from_secs(30),
+        {
+            let v = vswhere_path();
+            if !v.is_file() {
+                eprintln!(
+                    "msvc_host: skipping discovery test — vswhere not present at {}",
+                    v.display()
+                );
+                return;
+            }
+            let layout = match discover_msvc_layout() {
+                Ok(l) => l,
+                Err(MsvcDetectionError::NoVsInstall) => {
+                    eprintln!("msvc_host: skipping — vswhere installed but no VS with C++ tools");
+                    return;
+                }
+                Err(MsvcDetectionError::NoSdkRoot | MsvcDetectionError::NoSdkVersion(_)) => {
+                    eprintln!("msvc_host: skipping — no Windows 10/11 SDK on host");
+                    return;
+                }
+                Err(e) => panic!("unexpected discovery error: {e}"),
+            };
+
+            // The whole point of discovery is to produce a layout that
+            // resolves to a real link.exe. If this asserts, the layout
+            // is wrong and the env we'd inject would not fix the
+            // "linker `link.exe` not found" symptom.
+            let link_exe = layout
+                .vs_install
+                .join("VC")
+                .join("Tools")
+                .join("MSVC")
+                .join(&layout.vc_tools_version)
+                .join("bin")
+                .join("Hostx64")
+                .join("x64")
+                .join("link.exe");
+            assert!(
+                link_exe.is_file(),
+                "expected discovered layout to point at a real link.exe — got {}",
+                link_exe.display()
             );
-            return;
+
+            let env = layout.synthesize_env_x64();
+            assert!(
+                env.lib.contains(r"VC\Tools\MSVC"),
+                "lib should contain VC\\Tools\\MSVC: {}",
+                env.lib
+            );
+            assert!(
+                env.path_prepend.contains(r"VC\Tools\MSVC"),
+                "path_prepend should contain VC\\Tools\\MSVC: {}",
+                env.path_prepend
+            );
         }
-        let layout = match discover_msvc_layout() {
-            Ok(l) => l,
-            Err(MsvcDetectionError::NoVsInstall) => {
-                eprintln!("msvc_host: skipping — vswhere installed but no VS with C++ tools");
-                return;
-            }
-            Err(MsvcDetectionError::NoSdkRoot | MsvcDetectionError::NoSdkVersion(_)) => {
-                eprintln!("msvc_host: skipping — no Windows 10/11 SDK on host");
-                return;
-            }
-            Err(e) => panic!("unexpected discovery error: {e}"),
-        };
-
-        // The whole point of discovery is to produce a layout that
-        // resolves to a real link.exe. If this asserts, the layout
-        // is wrong and the env we'd inject would not fix the
-        // "linker `link.exe` not found" symptom.
-        let link_exe = layout
-            .vs_install
-            .join("VC")
-            .join("Tools")
-            .join("MSVC")
-            .join(&layout.vc_tools_version)
-            .join("bin")
-            .join("Hostx64")
-            .join("x64")
-            .join("link.exe");
-        assert!(
-            link_exe.is_file(),
-            "expected discovered layout to point at a real link.exe — got {}",
-            link_exe.display()
-        );
-
-        let env = layout.synthesize_env_x64();
-        assert!(
-            env.lib.contains(r"VC\Tools\MSVC"),
-            "lib should contain VC\\Tools\\MSVC: {}",
-            env.lib
-        );
-        assert!(
-            env.path_prepend.contains(r"VC\Tools\MSVC"),
-            "path_prepend should contain VC\\Tools\\MSVC: {}",
-            env.path_prepend
-        );
-    });
+    );
 }
