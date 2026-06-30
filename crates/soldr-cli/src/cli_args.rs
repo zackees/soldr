@@ -202,6 +202,8 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "purge",
     "config",
     "cache",
+    // soldr#820 phase 1 — `soldr logs` discoverable runtime-log API
+    "logs",
     "version",
     "gc",
     "purge-targets", // alias of `gc`
@@ -392,6 +394,19 @@ pub(crate) enum Commands {
         json: bool,
         #[command(subcommand)]
         command: Option<CacheSubcommand>,
+    },
+    /// Inspect soldr's runtime logs (issue #820)
+    ///
+    /// Phase 1 of the discoverable logs surface: today only the
+    /// `paths` subcommand is implemented — it prints every directory
+    /// soldr writes session / lifecycle / daemon logs into, with a
+    /// one-line annotation per path so an agent or human triaging a
+    /// slow build can find the right journal without grepping the
+    /// source. Future subcommands (`list`, `show`, `view`, `prune`)
+    /// build on this entry point per the issue's design.
+    Logs {
+        #[command(subcommand)]
+        command: Option<LogsSubcommand>,
     },
     /// Show or set soldr configuration
     Config,
@@ -1273,4 +1288,24 @@ pub enum TrimProfileArg {
     /// Aggressive: prune + strip recreatable noise + drop
     /// `incremental/`.
     Ci,
+}
+
+/// `soldr logs` subcommand surface — issue #820.
+///
+/// Phase 1 ships `paths` only. The fuller `list` / `show` / `view` /
+/// `prune` verbs documented in the issue land in follow-up PRs as
+/// the supporting JSONL parser + retention-window logic come online.
+#[derive(clap::Subcommand)]
+pub(crate) enum LogsSubcommand {
+    /// Print every directory soldr writes logs into, annotated with
+    /// what each directory contains. Self-documenting escape hatch
+    /// so an agent or human triaging a slow build can locate the
+    /// right journal without grepping source. JSON form for tooling.
+    Paths {
+        /// Emit the stable machine-facing JSON form for this command
+        /// (`schema_version: 1`). Stable enough for consumers; field
+        /// additions are additive.
+        #[arg(long)]
+        json: bool,
+    },
 }
