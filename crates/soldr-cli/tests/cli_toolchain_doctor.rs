@@ -48,11 +48,13 @@ timed_test!(
         assert!(host["os"].is_string());
         assert!(host["arch"].is_string());
         assert!(host["libc"].is_string());
-        // Probes array contains both expected probe names in stable order.
+        // Probes array contains all expected probe names in stable order.
+        // soldr#1059 added the `cargo-on-path-shadowing` row.
         let probes = parsed["probes"].as_array().expect("probes array");
-        assert_eq!(probes.len(), 2, "expected 2 probes, got {}", probes.len());
+        assert_eq!(probes.len(), 3, "expected 3 probes, got {}", probes.len());
         assert_eq!(probes[0]["name"], Value::from("musl-cc"));
         assert_eq!(probes[1]["name"], Value::from("shared-target-warning"));
+        assert_eq!(probes[2]["name"], Value::from("cargo-on-path-shadowing"));
         // Each probe MUST carry an `ok` boolean and a `details` object.
         for probe in probes {
             assert!(probe["ok"].is_boolean(), "probe.ok must be bool: {probe}");

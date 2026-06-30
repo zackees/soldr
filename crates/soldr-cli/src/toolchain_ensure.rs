@@ -119,6 +119,18 @@ pub(crate) async fn run_toolchain_ensure(json: bool) -> Result<i32, SoldrError> 
         emit_human(&output);
     }
 
+    // soldr#1059 — flag a shadowing standalone `cargo` on PATH. JSON
+    // callers (setup-soldr#133) already pick this up through the
+    // doctor probe; the warning here is for the human surface only,
+    // emitted to stderr so JSON consumers ignore it.
+    if !json {
+        if let Some(finding) = crate::cargo_path_check::detect_cargo_on_path() {
+            if let Some(msg) = crate::cargo_path_check::warning_for(&finding) {
+                eprintln!("{msg}");
+            }
+        }
+    }
+
     if smoke_ok {
         Ok(0)
     } else {

@@ -188,6 +188,8 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "build",
     "cargo",
     "cook",
+    // soldr#1059 — PATH-prepending escape hatch for cargo extensions.
+    "exec",
     "rustc",
     "rustfmt",
     "clippy-driver",
@@ -258,6 +260,24 @@ pub(crate) enum Commands {
     /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run an arbitrary command with rustup's toolchain bin dir prepended to PATH (#1059)
+    ///
+    /// Workaround for Windows hosts where a Chocolatey-installed
+    /// standalone Rust shadows rustup's `cargo` proxy. Cargo extensions
+    /// like `cargo-dylint` / `cargo-binstall` invoke `"cargo"` directly
+    /// (not through soldr), find the Chocolatey shim on PATH, and fail
+    /// to honor per-crate `rust-toolchain.toml` overrides.
+    ///
+    /// `soldr exec <cmd> [args...]` resolves rustup's cargo via
+    /// `rustup which cargo`, prepends its containing directory to PATH
+    /// for the child process, and execs `<cmd>` unchanged. Any
+    /// subprocess `<cmd>` spawns will then see rustup's proxy first.
+    ///
+    /// Example: `soldr exec cargo-dylint dylint --all`
+    Exec {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, required = true)]
         args: Vec<String>,
     },
     /// Compile Rust source via the pinned toolchain

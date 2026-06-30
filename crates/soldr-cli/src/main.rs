@@ -22,6 +22,11 @@ mod cargo_metadata_soldr;
 mod cli_args;
 /// soldr#1081 — shared `Request::Compile` dispatch with hang-safe
 /// retry budget. Used by `wrapper.rs` and the `zccache-soldr` bin.
+/// soldr#1059 — classify the `cargo` binary that `which cargo` would
+/// resolve to. Used by `toolchain doctor` / `toolchain ensure` to warn
+/// when a Chocolatey-style standalone shadows rustup's proxy, defeating
+/// per-crate `rust-toolchain.toml` overrides for subprocess invocations.
+mod cargo_path_check;
 mod compile_dispatch;
 mod cook;
 mod core;
@@ -32,6 +37,10 @@ mod doctor;
 /// soldr#938 — `soldr env --target` subcommand. Prints shell-eval /
 /// shell-export / JSON env block for the given target.
 mod env_cmd;
+/// soldr#1059 — `soldr exec <cmd>` escape hatch for cargo extensions
+/// like cargo-dylint that hard-code `"cargo"` and would otherwise pick
+/// up a Chocolatey/scoop standalone instead of rustup's proxy.
+mod exec_cmd;
 mod fetch;
 mod fuzzy_match;
 mod gc;
@@ -354,6 +363,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Cook { args } => {
             std::process::exit(cook::run_cook(&args, cache_enabled, zccache_source).await?);
+        }
+        Commands::Exec { args } => {
+            std::process::exit(exec_cmd::run_exec(&args)?);
         }
         Commands::Rustc { args } => {
             std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);
