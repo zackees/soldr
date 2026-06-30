@@ -44,21 +44,17 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
         .map(|(_, slug)| *slug)
 }
 
-/// Construct the expected `assets`-branch URL.
-///
-///     deps/openssl/<version>/<slug>/bundle.tar.zst
+/// Construct the expected `assets`-branch URL via the shared
+/// `syslib_common` helper. Layout:
+/// `https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/openssl/<version>/<slug>/bundle.tar.zst`.
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/openssl/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_common::asset_url_for("openssl", version, slug)
 }
 
 pub async fn ensure_openssl_sysroot(
     paths: &SoldrPaths,
     target_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no openssl sysroot recipe for target {target_triple}; \
@@ -66,12 +62,8 @@ pub async fn ensure_openssl_sysroot(
             OPENSSL_TARGETS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    let url = asset_url_for(MANAGED_OPENSSL_VERSION, slug);
-    Err(SoldrError::Other(format!(
-        "openssl sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/997"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "openssl", MANAGED_OPENSSL_VERSION, slug)
+        .await
 }
 
 #[cfg(test)]
@@ -92,7 +84,7 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_OPENSSL_VERSION, "windows-arm64");
-        assert!(u.contains("/deps/openssl/3.5.0/windows-arm64/"));
+        assert!(u.contains("/openssl/3.5.0/windows-arm64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 }
