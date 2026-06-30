@@ -924,21 +924,32 @@ jobs:
           mkdir -p dist
 
           expected="${EXPECTED_VERSION#v}"
-          # sed-based extract (the prior awk -F'"' attempt produced
-          # `4` instead of the version string in the v0.7.78 run on
-          # Linux gnu lanes — likely a YAML/bash quoting interaction
-          # specific to those runners). sed with a literal
-          # single-quoted pattern is unambiguous.
-          cargo_version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
-          echo "Cargo.toml [workspace.package].version = $cargo_version"
+          # v0.7.80 lesson: regex-based version extract from
+          # Cargo.toml kept extracting `4` on Linux gnu lanes
+          # (Cargo.LOCK format version, not Cargo.toml's workspace
+          # version). Stop guessing — use `cargo metadata` which
+          # parses TOML properly and returns the SAME version
+          # maturin will use. Plus full diagnostic on mismatch so
+          # the next regression is self-explaining.
+          echo "=== pre-maturin diagnostic ==="
+          echo "pwd: $(pwd)"
+          echo "ls Cargo.toml Cargo.lock:"
+          ls -la Cargo.toml Cargo.lock 2>&1 || true
+          echo "head -30 Cargo.toml:"
+          head -30 Cargo.toml || true
+          echo "================================"
+
+          # Authoritative version via cargo metadata.
+          cargo_version="$(cargo metadata --no-deps --format-version 1 --manifest-path crates/soldr-cli/Cargo.toml 2>/dev/null \
+              | python3 -c 'import json,sys; d=json.load(sys.stdin); pkgs=[p for p in d["packages"] if p["name"]=="soldr-cli"]; print(pkgs[0]["version"] if pkgs else "")' 2>/dev/null || true)"
+          echo "cargo metadata reports soldr-cli version = $cargo_version"
           echo "Expected (from prepare.outputs.version) = $expected"
           if [ -z "$cargo_version" ]; then
-              echo "ERROR: failed to extract version from Cargo.toml. Top of file:" >&2
-              head -30 Cargo.toml >&2
+              echo "ERROR: cargo metadata returned no version for soldr-cli" >&2
               exit 1
           fi
           if [ "$cargo_version" != "$expected" ]; then
-              echo "ERROR: Cargo.toml workspace version ($cargo_version) does not match prepare.outputs.version ($expected) — possible cache contamination" >&2
+              echo "ERROR: soldr-cli version ($cargo_version) does not match prepare.outputs.version ($expected) — possible cache contamination" >&2
               exit 1
           fi
 
