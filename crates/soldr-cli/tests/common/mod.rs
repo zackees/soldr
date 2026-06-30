@@ -4,14 +4,12 @@
 //! per-binary basis without sprinkling allows over individual helpers.
 #![allow(dead_code)]
 
-use serde_json::Value;
-use std::io::Write;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     fs,
     path::{Path, PathBuf},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
