@@ -1,8 +1,13 @@
 //! Shared helpers for the `cli_*` integration test binaries. Each binary
 //! pulls in `mod common;` and re-exports the helpers it actually uses; the
 //! `#![allow(dead_code)]` on the module silences unused-helper warnings on a
-//! per-binary basis without sprinkling allows over individual helpers.
+//! per-binary basis without sprinkling allows over individual helpers. The
+//! same situation applies to imports: some integration binaries use
+//! `serde_json::Value` / `std::io::Write` / `Duration` / `Instant`, others
+//! don't — `#![allow(unused_imports)]` keeps the common-helpers pattern
+//! working under `-D warnings`.
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
