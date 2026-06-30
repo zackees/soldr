@@ -238,15 +238,18 @@ jobs:
       # artifact restore that every-commit CI now uses. Saves the
       # 45-70s/lane that release builds were spending on bit-identical
       # libsqlite3-sys / tikv-jemalloc-sys / zstd-sys / ring rebuilds.
-      - name: Setup soldr build cache (Rust toolchain + cook hydration)
+      # soldr#1083 follow-up: cache + soldr-cook hydration disabled.
+      # Cook rewrites Cargo.toml in ways that don't compose with
+      # cross-compile (stripped [workspace.package], wrong-versioned
+      # wheels). Save cost no longer offsets the savings. Drop both;
+      # rely on cargo's native incremental + zccache for build
+      # acceleration.
+      - name: Setup soldr build cache (Rust toolchain only)
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           toolchain: 1.94.1
-          cache: true
+          cache: false
           zccache-seed-strict: true
-          cache-key-suffix: release-${{ matrix.target }}
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
 
       - name: Add cross-compile target
         shell: bash

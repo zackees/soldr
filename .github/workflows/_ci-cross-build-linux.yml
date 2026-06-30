@@ -72,26 +72,21 @@ jobs:
       # cc-rs invocations that produced bit-identical outputs to
       # the previous PR. soldr#1061 gap analysis: ~2h/day of CI
       # wallclock burned across the 8-lane matrix.
-      - name: Setup soldr build cache (Rust toolchain + cook hydration)
+      # soldr#1083 follow-up: cache + soldr-cook disabled. Cook's
+      # cargo-chef pass replaces every workspace crate's lib.rs /
+      # main.rs / build.rs with `fn main() {}` stubs AND rewrites
+      # the workspace Cargo.toml to a stripped variant — both
+      # incompatible with cross-compile lanes (wheel-version
+      # extraction broke, formatter saw stub-only files). Save cost
+      # no longer offsets the savings. Pure toolchain install via
+      # setup-soldr; no cook, no cache restore, no
+      # `git restore --worktree` workaround needed.
+      - name: Setup soldr build cache (Rust toolchain only)
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           toolchain: 1.94.1
-          cache: true
+          cache: false
           zccache-seed-strict: true
-          cache-key-suffix: ci-cross-${{ inputs.target }}
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
-
-      # `prebuild-deps: soldr-cook` runs cargo-chef under the hood,
-      # which replaces every workspace crate's main.rs / lib.rs / build.rs
-      # with `fn main() {}` stubs while it cooks dependency layers. The
-      # cook step doesn't restore the originals — soldr#1066. Without
-      # this `git restore` the subsequent `cargo fmt --check` sees the
-      # stubs (missing trailing newlines, lone `fn main() {}` content)
-      # and fails. The ci.yml `lint` job uses the identical pattern.
-      - name: Restore checkout after soldr-cook
-        shell: bash
-        run: git restore --worktree -- .
 
       - name: Add cross-compile target
         shell: bash

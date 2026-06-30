@@ -51,19 +51,20 @@ jobs:
         with:
           submodules: recursive
 
+      # soldr#1083 follow-up: cache + soldr-cook hydration disabled.
+      # Cook hydration was rewriting the workspace Cargo.toml to a
+      # stripped variant (workspace + dependencies, no
+      # [workspace.package]) which broke the release wheel-version
+      # extraction. Cache save cost no longer translates to
+      # measurable speedups on the lint job. Drop both. Restore-from-
+      # git workaround that paired with it is no longer needed
+      # because the manifest is never overwritten.
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           toolchain: 1.94.1
-          cache: true
+          cache: false
           zccache-seed-strict: true
-          cache-key-suffix: lint-ubuntu
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
-
-      - name: Restore checkout after soldr-cook
-        shell: pwsh
-        run: git restore --worktree -- .
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy
