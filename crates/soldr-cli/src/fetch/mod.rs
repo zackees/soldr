@@ -70,7 +70,6 @@ pub mod xwin_cache;
 // _SYSTEM / _OVERRIDE env vars onto the child cargo invocation so
 // the *-sys crate's build.rs skips its vendored compile.
 pub mod bzip2_sysroot;
-pub mod jemalloc_sysroot;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod sqlite_sysroot;
