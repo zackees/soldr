@@ -53,27 +53,17 @@ pub fn host_slug_for(host_triple: &str) -> Option<&'static str> {
 }
 
 /// Construct the expected `assets`-branch URL for the LLVM-tools
-/// bundle. Catalogue layout:
-///
-///     deps/llvm-tools/<version>/<slug>/bundle.tar.zst
+/// bundle. Catalogue layout: `llvm-tools/<version>/<slug>/bundle.tar.zst`.
 pub fn asset_url_for(version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/llvm-tools/{version}/{slug}/bundle.tar.zst"
-    )
+    super::syslib_common::asset_url_for("llvm-tools", version, slug)
 }
 
 /// Ensure the LLVM-tools bundle is materialized for the given driver
 /// host. Returns the directory containing `bin/` + `lib/` + `include/`.
-///
-/// **Status (as of this PR):** catalogue ingest pending — see
-/// [`crate::fetch::python_sysroot::ensure_python_sysroot`] for the
-/// pattern.
 pub async fn ensure_llvm_tools_bundle(
     paths: &SoldrPaths,
     host_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = host_slug_for(host_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no llvm-tools bundle for host {host_triple}; \
@@ -81,12 +71,8 @@ pub async fn ensure_llvm_tools_bundle(
             LLVM_TOOLS_HOSTS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    let url = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, slug);
-    Err(SoldrError::Other(format!(
-        "llvm-tools bundle for {host_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/997"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "llvm-tools", MANAGED_LLVM_TOOLS_VERSION, slug)
+        .await
 }
 
 #[cfg(test)]
@@ -101,7 +87,7 @@ mod tests {
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, "linux-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
-        assert!(u.contains("/deps/llvm-tools/18.1.8/linux-x64/"));
+        assert!(u.contains("/llvm-tools/18.1.8/linux-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 

@@ -83,16 +83,13 @@ pub fn catalogue_slug_for(triple: &str) -> Option<&'static str> {
 /// asset. The catalogue producer pipeline (forge-conan.yml → ingest)
 /// publishes under this layout:
 ///
-///     deps/python/<py-version>/<slug>/sysroot.tar.zst
+///     python/<py-version>/<slug>/bundle.tar.zst
 ///
 /// `media.githubusercontent.com/media/` is used (not `raw`) so LFS-
 /// tracked blobs follow their pointer files to the actual bytes —
 /// matching the apple-sdk fetcher's pattern.
 pub fn asset_url_for(py_version: &str, slug: &str) -> String {
-    format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         deps/python/{py_version}/{slug}/sysroot.tar.zst"
-    )
+    super::syslib_common::asset_url_for("python", py_version, slug)
 }
 
 /// Resolve the Python version soldr should fetch. Precedence:
@@ -128,7 +125,6 @@ pub async fn ensure_python_sysroot(
     paths: &SoldrPaths,
     target_triple: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let _ = paths;
     let slug = catalogue_slug_for(target_triple).ok_or_else(|| {
         SoldrError::UnsupportedPlatform(format!(
             "no python sysroot recipe for target {target_triple}; \
@@ -140,12 +136,7 @@ pub async fn ensure_python_sysroot(
         ))
     })?;
     let version = resolve_python_version();
-    let url = asset_url_for(&version, slug);
-    Err(SoldrError::Other(format!(
-        "python sysroot for {target_triple} ({slug}) not yet ingested into the \
-         soldr-toolchain catalogue. Expected URL: {url}\n\
-         Tracking: https://github.com/zackees/soldr/issues/997"
-    )))
+    super::syslib_common::ensure_syslib_bundle(paths, "python", &version, slug).await
 }
 
 #[cfg(test)]
@@ -171,8 +162,8 @@ mod tests {
         let u = asset_url_for("3.13.0", "windows-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
         assert!(u.contains("/zackees/soldr-toolchain/assets/"));
-        assert!(u.contains("/deps/python/3.13.0/windows-x64/"));
-        assert!(u.ends_with("/sysroot.tar.zst"));
+        assert!(u.contains("/python/3.13.0/windows-x64/"));
+        assert!(u.ends_with("/bundle.tar.zst"));
     });
 
     crate::timed_test!(catalogue_slug_for_known_triples, {
