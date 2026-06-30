@@ -34,6 +34,10 @@ mod fuzzy_match;
 mod gc;
 mod install_shims;
 mod linker;
+/// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Runs
+/// before cargo for MSVC targets so `link.exe` + `LIB` are set
+/// without the user touching `$env:LIB`.
+mod msvc_host;
 mod native_cc;
 mod optimize;
 mod optimize_detect;
@@ -310,6 +314,15 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
             }
 
+            // soldr#1079: ensure native Windows MSVC builds get LIB /
+            // INCLUDE / PATH (link.exe) injected from the host VS
+            // install, so users invoking `soldr build` from a plain
+            // PowerShell don't have to set `$env:LIB` themselves.
+            // No-op when not on Windows, when the user opted out via
+            // `SOLDR_MSVC_DISCOVERY=off`, when LIB is already set, or
+            // when the resolved target is non-MSVC.
+            ensure_msvc_host_env_for_native(&full_args);
+
             std::process::exit(
                 cargo_front_door::run_cargo_front_door(
                     &full_args,
@@ -321,6 +334,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             );
         }
         Commands::Cargo { args } => {
+            // soldr#1079: same MSVC host env injection that
+            // `Commands::Build` does, so `soldr cargo build` /
+            // `soldr cargo test` on a native Windows MSVC target also
+            // succeed from a plain PowerShell without `$env:LIB`.
+            ensure_msvc_host_env_for_native(&args);
             std::process::exit(
                 cargo_front_door::run_cargo_front_door(
                     &args,
@@ -1068,6 +1086,50 @@ fn rewrite_build_args_for_subcommand(mut args: Vec<String>, subcmd: &str) -> Vec
             args
         }
         _ => args,
+    }
+}
+
+/// soldr#1079 — bridge between the cargo dispatcher and the MSVC
+/// host-discovery module. Resolves the target triple (explicit
+/// `--target` first, then `TargetTriple::detect()` for the implicit
+/// native default) and asks [`crate::msvc_host`] to inject the
+/// vcvars-equivalent env vars when relevant.
+///
+/// All branches are silent on success / no-op. Discovery errors are
+/// printed as a single warning line so the user gets a hint about
+/// `SOLDR_MSVC_DISCOVERY=off` if the auto-probe trips on an unusual
+/// install — the underlying cargo invocation still runs and emits
+/// its own (better) error if it actually needs the env.
+fn ensure_msvc_host_env_for_native(args: &[String]) {
+    if !cfg!(target_os = "windows") {
+        return;
+    }
+    let target = match extract_target_from_args(args) {
+        Some(t) => t,
+        None => match crate::core::TargetTriple::detect() {
+            Ok(t) => t.triple(),
+            Err(_) => return,
+        },
+    };
+    match crate::msvc_host::ensure_msvc_env_for_native(&target) {
+        Ok(true) => {
+            tracing::debug!(
+                target: "soldr::msvc_host",
+                target_triple = %target,
+                "injected host MSVC env (LIB/INCLUDE/PATH/LIBPATH) for native build"
+            );
+        }
+        Ok(false) => {
+            // Skipped — non-windows, non-msvc, opt-out, or already-set.
+            // Nothing to log; this is the steady-state branch in dev
+            // command prompts.
+        }
+        Err(err) => {
+            eprintln!(
+                "soldr: MSVC host discovery failed for {target}: {err}\n\
+                 soldr: cargo will still run; set SOLDR_MSVC_DISCOVERY=off to silence this probe."
+            );
+        }
     }
 }
 
