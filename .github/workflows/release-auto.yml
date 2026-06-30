@@ -168,6 +168,12 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
+    # darwin cross-build via zigbuild hits tikv-jemalloc-sys's
+    # sys/syscall.h cross-compile bug. Tracked in soldr-toolchain#34
+    # priority 2 (jemalloc-darwin forge recipes). Until that lands,
+    # ship releases without darwin binaries rather than block every
+    # patch release on a structural toolchain gap.
+    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') }}
     strategy:
       fail-fast: false
       matrix:
