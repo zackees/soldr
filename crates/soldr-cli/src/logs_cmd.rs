@@ -218,84 +218,104 @@ mod tests {
     use crate::timed_test;
     use std::time::Duration;
 
-    timed_test!(build_log_paths_output_carries_schema_version_one, Duration::from_secs(5), {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let output = build_log_paths_output(&paths);
-        assert_eq!(output.schema_version, 1);
-        assert_eq!(output.root, tmp.path());
-        assert!(!output.paths.is_empty(), "must include at least one entry");
-    });
-
-    timed_test!(build_log_paths_output_names_the_private_daemon_root, Duration::from_secs(5), {
-        // The issue #820 repro's hardest-to-find log lived under
-        // `~/.soldr/cache/zccache/private/soldr-dev-<hash>/logs/`.
-        // The entry MUST surface that root so the human/agent finds
-        // the right journal in 30 seconds.
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let output = build_log_paths_output(&paths);
-        let entry = output
-            .paths
-            .iter()
-            .find(|e| e.name == "zccache-private-daemon-roots")
-            .expect("private-daemon entry must exist");
-        let expected = tmp.path().join("cache").join("zccache").join("private");
-        assert_eq!(entry.path, expected);
-        assert!(
-            entry.description.contains("private-daemon"),
-            "description should mention private-daemon, got: {}",
-            entry.description
-        );
-    });
-
-    timed_test!(build_log_paths_output_names_soldr_daemon_runtime, Duration::from_secs(5), {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let output = build_log_paths_output(&paths);
-        let entry = output
-            .paths
-            .iter()
-            .find(|e| e.name == "soldr-daemon-runtime")
-            .expect("soldr-daemon-runtime entry must exist");
-        let expected = tmp.path().join("runtime").join("soldr-daemon");
-        assert_eq!(entry.path, expected);
-    });
-
-    timed_test!(build_log_paths_output_marks_missing_dirs, Duration::from_secs(5), {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let output = build_log_paths_output(&paths);
-        // Fresh tmpdir → no soldr install → most entries should be
-        // `exists = false`. The root itself exists (it's the tmpdir).
-        let root_entry = output
-            .paths
-            .iter()
-            .find(|e| e.name == "soldr-root")
-            .expect("soldr-root entry must exist");
-        assert!(root_entry.exists, "soldr-root should exist (tmpdir)");
-        let zccache_entry = output
-            .paths
-            .iter()
-            .find(|e| e.name == "zccache-private-daemon-roots")
-            .expect("private-daemon entry must exist");
-        assert!(
-            !zccache_entry.exists,
-            "private-daemon dir under a fresh tmpdir must NOT exist yet"
-        );
-    });
-
-    timed_test!(wrap_description_handles_long_text, Duration::from_secs(5), {
-        let lines = wrap_description("the quick brown fox jumps over the lazy dog", 12);
-        // each line must be <= 12 chars (greedy fit; first word always
-        // lands even if it overflows).
-        for line in &lines {
-            assert!(line.len() <= 12, "line too long: {line:?}");
+    timed_test!(
+        build_log_paths_output_carries_schema_version_one,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let output = build_log_paths_output(&paths);
+            assert_eq!(output.schema_version, 1);
+            assert_eq!(output.root, tmp.path());
+            assert!(!output.paths.is_empty(), "must include at least one entry");
         }
-        // joined back must equal the original (modulo whitespace).
-        let joined = lines.join(" ");
-        assert_eq!(joined, "the quick brown fox jumps over the lazy dog");
-    });
+    );
+
+    timed_test!(
+        build_log_paths_output_names_the_private_daemon_root,
+        Duration::from_secs(5),
+        {
+            // The issue #820 repro's hardest-to-find log lived under
+            // `~/.soldr/cache/zccache/private/soldr-dev-<hash>/logs/`.
+            // The entry MUST surface that root so the human/agent finds
+            // the right journal in 30 seconds.
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let output = build_log_paths_output(&paths);
+            let entry = output
+                .paths
+                .iter()
+                .find(|e| e.name == "zccache-private-daemon-roots")
+                .expect("private-daemon entry must exist");
+            let expected = tmp.path().join("cache").join("zccache").join("private");
+            assert_eq!(entry.path, expected);
+            assert!(
+                entry.description.contains("private-daemon"),
+                "description should mention private-daemon, got: {}",
+                entry.description
+            );
+        }
+    );
+
+    timed_test!(
+        build_log_paths_output_names_soldr_daemon_runtime,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let output = build_log_paths_output(&paths);
+            let entry = output
+                .paths
+                .iter()
+                .find(|e| e.name == "soldr-daemon-runtime")
+                .expect("soldr-daemon-runtime entry must exist");
+            let expected = tmp.path().join("runtime").join("soldr-daemon");
+            assert_eq!(entry.path, expected);
+        }
+    );
+
+    timed_test!(
+        build_log_paths_output_marks_missing_dirs,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let output = build_log_paths_output(&paths);
+            // Fresh tmpdir → no soldr install → most entries should be
+            // `exists = false`. The root itself exists (it's the tmpdir).
+            let root_entry = output
+                .paths
+                .iter()
+                .find(|e| e.name == "soldr-root")
+                .expect("soldr-root entry must exist");
+            assert!(root_entry.exists, "soldr-root should exist (tmpdir)");
+            let zccache_entry = output
+                .paths
+                .iter()
+                .find(|e| e.name == "zccache-private-daemon-roots")
+                .expect("private-daemon entry must exist");
+            assert!(
+                !zccache_entry.exists,
+                "private-daemon dir under a fresh tmpdir must NOT exist yet"
+            );
+        }
+    );
+
+    timed_test!(
+        wrap_description_handles_long_text,
+        Duration::from_secs(5),
+        {
+            let lines = wrap_description("the quick brown fox jumps over the lazy dog", 12);
+            // each line must be <= 12 chars (greedy fit; first word always
+            // lands even if it overflows).
+            for line in &lines {
+                assert!(line.len() <= 12, "line too long: {line:?}");
+            }
+            // joined back must equal the original (modulo whitespace).
+            let joined = lines.join(" ");
+            assert_eq!(joined, "the quick brown fox jumps over the lazy dog");
+        }
+    );
 
     timed_test!(json_output_is_valid_json, Duration::from_secs(5), {
         let tmp = tempfile::tempdir().expect("tmpdir");
