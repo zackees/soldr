@@ -62,12 +62,7 @@ pub async fn ensure_syslib_bundle(
     paths.ensure_dirs()?;
     let url = asset_url_for(lib, version, slug);
 
-    let install_root = paths
-        .bin
-        .join("syslib")
-        .join(lib)
-        .join(version)
-        .join(slug);
+    let install_root = paths.bin.join("syslib").join(lib).join(version).join(slug);
     let sysroot = install_root.join("package");
     let stamp = install_root.join(".complete");
 
@@ -113,9 +108,7 @@ pub async fn ensure_syslib_bundle(
              expected {expected_sha256}, got {digest}"
         )));
     }
-    eprintln!(
-        "soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}"
-    );
+    eprintln!("soldr: trust: verified syslib {lib}/{version}/{slug} sha256={digest}");
 
     if install_root.exists() {
         std::fs::remove_dir_all(&install_root)?;
@@ -142,9 +135,7 @@ pub async fn ensure_syslib_bundle(
 /// so we filter by URL substring instead. Returns `None` when the
 /// catalogue is empty (network failure / disabled) or the URL hasn't
 /// been ingested yet.
-async fn catalogue_entry_for_url(
-    url: &str,
-) -> Option<manifest_lookup::ManifestEntry> {
+async fn catalogue_entry_for_url(url: &str) -> Option<manifest_lookup::ManifestEntry> {
     let index = manifest_lookup::get_or_fetch().await;
     index.entries.iter().find(|e| e.url == url).cloned()
 }
@@ -168,7 +159,10 @@ mod tests {
 
     timed_test!(asset_url_layout, Duration::from_secs(5), {
         let u = asset_url_for("zstd", "1.5.7", "linux-x64-gnu");
-        assert!(u.contains("/zstd/1.5.7/linux-x64-gnu/bundle.tar.zst"), "{u}");
+        assert!(
+            u.contains("/zstd/1.5.7/linux-x64-gnu/bundle.tar.zst"),
+            "{u}"
+        );
         assert!(u.starts_with("https://media.githubusercontent.com/"));
     });
 
