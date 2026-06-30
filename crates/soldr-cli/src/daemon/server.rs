@@ -766,20 +766,35 @@ where
     Ok(())
 }
 
-/// Daemon-side streaming compile dispatcher (issue #983 Phase 5b).
+/// Daemon-side streaming compile dispatcher (issue #983 Phase 5b /
+/// soldr#981).
+///
 /// Calls `SoldrZccacheService::compile`, then splits the captured
 /// stdout/stderr `Vec<u8>` into `CHUNK_BYTES`-sized frames before
 /// writing them to the connection. The terminal `CompileDone` frame
 /// carries the exit code, cache outcome, and (today empty) compile id.
 ///
-/// Phase 5b1 caveat: the underlying `compile_service.compile` still
-/// returns a fully buffered `CompileResponseBody`, so the daemon
-/// briefly holds the entire rustc output in memory before chunking it
-/// out. The on-wire saving (smaller per-frame prost encode + zero
-/// wrapper-side accumulation) is the immediate win; Phase 5b2 lifts
-/// the daemon-side buffering by changing the zccache embedded service
-/// to emit a stream of chunks directly. See `crates/zccache/src/
-/// embedded.rs` in the `_vender/zccache/` submodule.
+/// **Wire contract locked in `tests/phase5_contract.rs`** — that
+/// regression test asserts the chunked `Response::CompileStdoutChunk`
+/// / `CompileStderrChunk` / `CompileDone` variants round-trip
+/// byte-for-byte over the prost codec. If anyone re-introduces the
+/// single-frame `Response::Compile(body)` shape from the v6-era
+/// fork-zccache.exe path, that test fails with a directive message
+/// pointing at #981.
+///
+/// **Phase 5b1 caveat:** the underlying `compile_service.compile`
+/// still returns a fully buffered `CompileResponseBody`, so the
+/// daemon briefly holds the entire rustc output in memory before
+/// chunking it out. The on-wire saving (smaller per-frame prost
+/// encode + zero wrapper-side accumulation) is the immediate win;
+/// **Phase 5b2** lifts the daemon-side buffering by switching to the
+/// already-published `compile_service.compile_streaming(req,
+/// |chunk| …)` API, whose producer side will start emitting chunks
+/// incrementally once `zccache#937` (cross-cutting daemon-pipeline
+/// streaming) lands in `_vender/zccache/`. The consumer surface is
+/// already in place: this function chunks output identically to what
+/// `compile_streaming` emits today, so the migration is mechanical
+/// and the wire bytes don't change.
 async fn dispatch_compile_streaming<S>(
     state: &Arc<State>,
     req: crate::daemon::protocol::CompileRequest,
