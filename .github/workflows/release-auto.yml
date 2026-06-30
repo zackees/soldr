@@ -376,22 +376,41 @@ jobs:
           #    runner.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # v0.7.79 added --no-trampoline but the v0.7.82 macOS
-            # x64 trace still showed silent-skip — `--no-trampoline`
-            # opts out of the cargo-run trampoline, not the
-            # workspace trampoline at cargo_front_door:394. The
-            # workspace trampoline IS suppressed by
-            # `SOLDR_REAL_CARGO=<path>` per the
-            # `workspace_trampoline_suppressed_for_tests` check at
-            # cargo_front_door:974 — set it to any real cargo path
-            # to force soldr build to actually invoke cargo.
+            # v0.7.83's --no-trampoline + SOLDR_REAL_CARGO did not
+            # suppress the workspace trampoline in CI (target dir
+            # never created → soldr build exited 0 with no work).
+            # Bypass soldr entirely for darwin: inline the same env
+            # block blessed_build.rs would have set (clang +
+            # Apple SDK + clang+lld linker) and call plain cargo
+            # build. SDKROOT was already exported by the earlier
+            # `soldr prepare --target X --github-env` step.
             #
-            # Also run `ls target/<triple>/release/` after the
-            # build so the diagnostic captures whether the binary
-            # was actually produced (vs. the cp-failure-only
-            # symptom from prior runs).
-            SOLDR_REAL_CARGO="$(command -v cargo)" \
-              soldr build --target "$target" --release --locked --package soldr-cli --no-trampoline
+            # Apt install ensures clang-18 + llvm-18 (for llvm-ar
+            # + lld). ubuntu-24.04 ships clang-18 by default but
+            # not always the llvm-* CLI tools.
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clang-18 llvm-18 lld-18
+            sudo ln -sf /usr/bin/llvm-ar-18 /usr/bin/llvm-ar
+            sudo ln -sf /usr/bin/lld-18 /usr/bin/ld.lld
+            : "${SDKROOT:?SDKROOT must be set by Prepare Apple SDK step}"
+            target_u="${target//-/_}"
+            target_u_upper="$(echo "$target_u" | tr '[:lower:]' '[:upper:]')"
+            case "$target" in
+              x86_64-apple-darwin)   clang_arch=x86_64-apple-darwin ;;
+              aarch64-apple-darwin)  clang_arch=arm64-apple-darwin ;;
+              *) echo "unsupported darwin target: $target" >&2 ; exit 1 ;;
+            esac
+            export "CC_${target_u}=clang --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0"
+            export "CXX_${target_u}=clang++ --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++"
+            export "AR_${target_u}=llvm-ar"
+            export "CFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0"
+            export "CXXFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++"
+            export "CARGO_TARGET_${target_u_upper}_LINKER=clang"
+            export "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-arg=--target=${clang_arch} -C link-arg=-isysroot -C link-arg=${SDKROOT} -C link-arg=-mmacosx-version-min=11.0 -C link-arg=-fuse-ld=lld"
+            echo "=== inline darwin env ==="
+            env | grep -E "^(SDKROOT|CC_|CXX_|AR_|CFLAGS_|CARGO_TARGET_)" | grep -E "${target_u}|${target_u_upper}|SDKROOT" | sort
+            echo "========================="
+            cargo build --package soldr-cli --release --locked --target "$target"
             echo "=== post-build diagnostic: target/$target/release/ ==="
             ls -la "target/$target/release/" 2>&1 | head -20 || true
             echo "==================================================="
