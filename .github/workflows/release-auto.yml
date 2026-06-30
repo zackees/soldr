@@ -924,11 +924,21 @@ jobs:
           mkdir -p dist
 
           expected="${EXPECTED_VERSION#v}"
-          cargo_version="$(grep '^version' Cargo.toml | head -1 | awk -F'"' '{print $2}')"
+          # sed-based extract (the prior awk -F'"' attempt produced
+          # `4` instead of the version string in the v0.7.78 run on
+          # Linux gnu lanes — likely a YAML/bash quoting interaction
+          # specific to those runners). sed with a literal
+          # single-quoted pattern is unambiguous.
+          cargo_version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' Cargo.toml | head -1)"
           echo "Cargo.toml [workspace.package].version = $cargo_version"
           echo "Expected (from prepare.outputs.version) = $expected"
+          if [ -z "$cargo_version" ]; then
+              echo "ERROR: failed to extract version from Cargo.toml. Top of file:" >&2
+              head -30 Cargo.toml >&2
+              exit 1
+          fi
           if [ "$cargo_version" != "$expected" ]; then
-              echo "ERROR: Cargo.toml workspace version mismatch — possible cache contamination" >&2
+              echo "ERROR: Cargo.toml workspace version ($cargo_version) does not match prepare.outputs.version ($expected) — possible cache contamination" >&2
               exit 1
           fi
 
