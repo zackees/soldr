@@ -41,9 +41,7 @@
 //! single-frame shape, or unfilters the env, the tests fail with a
 //! directive message pointing at #981.
 
-use soldr_cli::daemon::protocol::{
-    CompileRequest, CompileResponseBody, Request, Response,
-};
+use soldr_cli::daemon::protocol::{CompileRequest, CompileResponseBody, Request, Response};
 use soldr_cli::daemon::wire::{decode_request, decode_response, encode_request, encode_response};
 use soldr_cli::timed_test;
 use std::time::Duration;
@@ -52,38 +50,30 @@ use std::time::Duration;
 // Phase 5b — chunked Response variants round-trip byte-for-byte
 // =============================================================================
 
-timed_test!(
-    compile_stdout_chunk_round_trips,
-    Duration::from_secs(5),
-    {
-        let payload = vec![0x10, 0x20, 0x30, 0xff, 0x00, 0x7e];
-        let r = Response::CompileStdoutChunk(payload.clone());
-        let bytes = encode_response(&r);
-        let decoded = decode_response(&bytes).expect("decode");
-        assert!(
-            matches!(decoded, Response::CompileStdoutChunk(ref b) if b == &payload),
-            "Phase 5b: CompileStdoutChunk(Vec<u8>) must round-trip byte-for-byte; \
+timed_test!(compile_stdout_chunk_round_trips, Duration::from_secs(5), {
+    let payload = vec![0x10, 0x20, 0x30, 0xff, 0x00, 0x7e];
+    let r = Response::CompileStdoutChunk(payload.clone());
+    let bytes = encode_response(&r);
+    let decoded = decode_response(&bytes).expect("decode");
+    assert!(
+        matches!(decoded, Response::CompileStdoutChunk(ref b) if b == &payload),
+        "Phase 5b: CompileStdoutChunk(Vec<u8>) must round-trip byte-for-byte; \
              if this fails the daemon and wrapper are speaking different protocol \
              versions and cold builds will silently miss the chunk-streaming win \
              from soldr#981. Got: {decoded:?}"
-        );
-    }
-);
+    );
+});
 
-timed_test!(
-    compile_stderr_chunk_round_trips,
-    Duration::from_secs(5),
-    {
-        let payload = b"error: linker `lld` not found\n".to_vec();
-        let r = Response::CompileStderrChunk(payload.clone());
-        let bytes = encode_response(&r);
-        let decoded = decode_response(&bytes).expect("decode");
-        assert!(
-            matches!(decoded, Response::CompileStderrChunk(ref b) if b == &payload),
-            "Phase 5b: CompileStderrChunk must round-trip byte-for-byte. Got: {decoded:?}"
-        );
-    }
-);
+timed_test!(compile_stderr_chunk_round_trips, Duration::from_secs(5), {
+    let payload = b"error: linker `lld` not found\n".to_vec();
+    let r = Response::CompileStderrChunk(payload.clone());
+    let bytes = encode_response(&r);
+    let decoded = decode_response(&bytes).expect("decode");
+    assert!(
+        matches!(decoded, Response::CompileStderrChunk(ref b) if b == &payload),
+        "Phase 5b: CompileStderrChunk must round-trip byte-for-byte. Got: {decoded:?}"
+    );
+});
 
 timed_test!(
     compile_done_round_trips_with_outcome_fields,
@@ -200,7 +190,11 @@ timed_test!(
         // CARGO_PKG_VERSION (cargo treats these as build-script
         // contract).
         use soldr_cli::compile_dispatch::is_compile_env_var;
-        for kept in ["CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_CFG_TARGET_ARCH"] {
+        for kept in [
+            "CARGO_PKG_NAME",
+            "CARGO_PKG_VERSION",
+            "CARGO_CFG_TARGET_ARCH",
+        ] {
             assert!(
                 is_compile_env_var(kept),
                 "{kept} must be forwarded (cargo build-script contract)"
