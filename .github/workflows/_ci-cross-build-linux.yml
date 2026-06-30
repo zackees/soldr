@@ -164,41 +164,28 @@ jobs:
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
 
-      # Apple SDK fetch for darwin targets — soldr prepare materializes
-      # it via the catalogue + exports SDKROOT.
-      - name: Prepare Apple SDK (darwin only)
-        if: contains(inputs.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          soldr prepare --target ${{ inputs.target }} --github-env "$GITHUB_ENV"
-
-      # Persistent zig-cc wrapper scripts for every zigbuild target
-      # (darwin + musl + aarch64-linux-gnu). soldr#1043 / #1068.
-      # Required so cargo clippy / nextest archive's cc-rs invocations
-      # find a cross-cc (`zig cc -target X`) rather than expecting
-      # `aarch64-linux-gnu-gcc` etc. on the host.
-      - name: Setup persistent zig-cc wrappers
-        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
+      # Persistent zig-cc wrapper scripts for the zigbuild-driven
+      # targets (musl + aarch64-linux-gnu). Darwin is intentionally
+      # excluded: it goes through `soldr build` which handles SDK +
+      # CC injection internally via blessed_build.rs. Setting
+      # CC_<triple>=zig-wrapper on darwin overrode the clang-with-
+      # -isysroot env that blessed_build.rs sets and broke
+      # libmimalloc-sys' CommonCrypto include resolution.
+      - name: Setup persistent zig-cc wrappers (musl + linux-gnu aarch64)
+        if: contains(inputs.target, 'linux-musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         shell: bash
         run: |
           set -euo pipefail
           bash .github/scripts/make_zig_cc_wrappers.sh "${{ inputs.target }}"
 
-      # For darwin: ensure SDKROOT propagates to cc-rs via -isysroot in
-      # CFLAGS_<t>, so jemalloc / other C deps with autoconf-emitted
-      # `#include <sys/syscall.h>` resolve against the Apple SDK rather
-      # than the linux host headers. soldr#1068.
-      - name: Inject SDKROOT into CFLAGS (darwin only)
-        if: contains(inputs.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          target_u=$(echo "${{ inputs.target }}" | tr '-' '_')
-          if [ -n "${SDKROOT:-}" ]; then
-            echo "CFLAGS_${target_u}=-isysroot $SDKROOT" >> "$GITHUB_ENV"
-            echo "CXXFLAGS_${target_u}=-isysroot $SDKROOT" >> "$GITHUB_ENV"
-          fi
+      # Darwin used to need:
+      #   - Prepare Apple SDK  (soldr prepare --github-env)
+      #   - Inject SDKROOT into CFLAGS_<t>
+      # Both are gone now. `soldr build` does the SDK fetch + sets
+      # CC_<t>=clang + CFLAGS_<t>=-isysroot+--target+-fuse-ld=lld
+      # internally via blessed_build::prepare. Workflow-level env
+      # injection of the old zigbuild path would override those and
+      # re-break the build.
 
       # For musl + aarch64-gnu (every linux zigbuild target): suppress
       # rustc's self-contained crt files. Zig already supplies its own
