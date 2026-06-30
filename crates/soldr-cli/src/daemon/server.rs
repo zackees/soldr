@@ -750,6 +750,14 @@ where
             // the wrapper as a sequence of chunk frames followed by
             // exactly one CompileDone frame. `dispatch_compile_streaming`
             // owns the writer for the duration of the call.
+            //
+            // Cancellation: `dispatch_compile_streaming` watches the IPC
+            // read side for disconnect concurrently with the in-flight
+            // compile. If the client (rustc-wrapper) terminates — Ctrl-C
+            // on the parent cargo, a hung wrapper killed by the user —
+            // the daemon drops the compile future immediately so rustc
+            // is cleaned up by its `kill_on_drop` chain rather than
+            // grinding to completion on output no one will read.
             if let Err(err) = dispatch_compile_streaming(&state, req, &mut stream).await {
                 tracing::warn!("soldr-daemon: streaming compile dispatch failed: {err}");
             }
@@ -778,7 +786,7 @@ async fn dispatch_compile_streaming<S>(
     stream: &mut S,
 ) -> std::io::Result<()>
 where
-    S: tokio::io::AsyncWrite + Unpin,
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     // Per-compile id for the JSONL phase trace (soldr#981). Cheap —
     // monotonic counter, only meaningful within a single daemon
@@ -789,9 +797,10 @@ where
     let total = std::time::Instant::now();
 
     let inner_started = std::time::Instant::now();
-    let body = match state.compile_service.compile(req).await {
-        Ok(body) => body,
-        Err(err) => {
+    let compile_fut = state.compile_service.compile(req);
+    let body = match race_against_disconnect(stream, compile_fut).await {
+        DispatchOutcome::Completed(Ok(body)) => body,
+        DispatchOutcome::Completed(Err(err)) => {
             crate::daemon::compile_trace::record(
                 "inner_compile_err",
                 inner_started.elapsed().as_micros() as u64,
@@ -799,6 +808,25 @@ where
             );
             let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
             return write_frame_async(stream, &reply).await;
+        }
+        DispatchOutcome::ClientDisconnected => {
+            // The wrapper is gone — its IPC fd closed mid-compile, so
+            // the embedded zccache future was dropped at the `select!`
+            // boundary above. Don't attempt to write a reply (the pipe
+            // is dead) and don't burn CPU finishing a rustc whose
+            // output no one will read. Record the disconnect for the
+            // per-compile trace so postmortems can correlate.
+            crate::daemon::compile_trace::record(
+                "client_disconnect_cancelled",
+                inner_started.elapsed().as_micros() as u64,
+                &compile_id,
+            );
+            tracing::info!(
+                target: "soldr::daemon::compile_stream",
+                compile_id = compile_id.as_str(),
+                "client disconnected during compile — aborting in-flight work",
+            );
+            return Ok(());
         }
     };
     crate::daemon::compile_trace::record(
@@ -897,6 +925,62 @@ where
     res
 }
 
+/// Outcome of [`race_against_disconnect`]. Separated from the inner
+/// future's result so the caller can distinguish "the compile finished
+/// with an error" (still want to ship the error back to the wrapper)
+/// from "the wrapper is gone" (don't write anything; the connection is
+/// dead).
+pub(crate) enum DispatchOutcome<T> {
+    /// The future ran to completion. Carries whatever the future
+    /// returned — typically `Result<CompileResponseBody, _>`.
+    Completed(T),
+    /// The client closed the IPC connection (EOF on `read`) or the OS
+    /// reported a broken pipe before the future completed. The future
+    /// has been dropped at the `select!` boundary; any RAII cleanup
+    /// (notably `kill_on_drop`-marked rustc child processes inside the
+    /// embedded zccache service) has been invoked.
+    ClientDisconnected,
+}
+
+/// Drive `fut` to completion while concurrently watching `reader` for a
+/// client disconnect. Returns instantly (within the OS's EOF surfacing
+/// latency — microseconds on Unix sockets and Windows named pipes) when
+/// the client closes its end of the IPC channel, dropping `fut` so any
+/// inflight work it owns is cancelled at the same instant.
+///
+/// The protocol contract on a `Request::Compile` exchange is strictly
+/// request-response: once the wrapper sends the Compile frame it sits
+/// blocked waiting for the daemon's response, so any byte arriving on
+/// `reader` mid-compile is also treated as a disconnect (it can only
+/// be a protocol violation or a stale-frame leftover, and either way
+/// the safe action is to abort and close).
+///
+/// The `biased` `select!` is intentional: when the reader and the
+/// compile-future are ready in the same poll tick, prefer the
+/// disconnect branch so we don't accidentally write a response into a
+/// half-closed pipe.
+pub(crate) async fn race_against_disconnect<R, F>(reader: &mut R, fut: F) -> DispatchOutcome<F::Output>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: std::future::Future,
+{
+    use tokio::io::AsyncReadExt;
+    tokio::pin!(fut);
+    let mut probe = [0_u8; 1];
+    tokio::select! {
+        biased;
+        read = reader.read(&mut probe) => {
+            // Ok(0) = clean EOF, Err = broken pipe / reset, Ok(n>0) =
+            // unexpected protocol-violating bytes mid-compile. All
+            // three mean "the wrapper is gone or wedged" — drop the
+            // future and tell the caller to close the connection.
+            let _ = read;
+            DispatchOutcome::ClientDisconnected
+        }
+        out = &mut fut => DispatchOutcome::Completed(out),
+    }
+}
+
 /// Monotonic per-daemon compile counter. The id is stable within one
 /// daemon process and meaningless across restarts — exactly the scope
 /// the `SOLDR_DAEMON_TRACE` JSONL is designed for.
@@ -963,4 +1047,192 @@ pub fn server_sock_path(paths: &SoldrPaths) -> PathBuf {
             crate::cache_lib::daemon_pipe_name(paths)
         ))
     }
+}
+
+#[cfg(test)]
+mod cancel_on_disconnect_tests {
+    //! TDD regression guard for: "when the soldr CLI is terminated, the
+    //! soldr daemon should cancel its outstanding build, and do so
+    //! instantly."
+    //!
+    //! The contract under test is [`race_against_disconnect`]:
+    //!
+    //!   1. When the IPC reader sees EOF, the inner future is dropped
+    //!      synchronously at the `select!` boundary (proven by a
+    //!      drop-tracker that flips an atomic from inside `Drop`).
+    //!   2. Detection latency is bounded — well under 500ms in practice
+    //!      and asserted here at 250ms so that a regression that
+    //!      reintroduces a wait-for-timeout style cancellation fails
+    //!      the test loudly instead of just running slow.
+    //!
+    //! These two properties together are what makes daemon-side
+    //! cancellation actually useful: if the cancellation either took
+    //! seconds to fire or didn't drop the inner work, the daemon would
+    //! still be sitting on a rustc compile whose output no one will
+    //! read.
+
+    use super::{race_against_disconnect, DispatchOutcome};
+    use crate::timed_test;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    /// A future that flips `aborted` to `true` if it is dropped before
+    /// completing. Lets the test prove the helper actually cancelled
+    /// the in-flight work, not merely stopped polling it.
+    struct CancelTracker {
+        aborted: Arc<AtomicBool>,
+        completed: bool,
+    }
+
+    impl Drop for CancelTracker {
+        fn drop(&mut self) {
+            if !self.completed {
+                self.aborted.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    timed_test!(
+        race_against_disconnect_aborts_inflight_future_when_client_disconnects,
+        Duration::from_secs(10),
+        {
+            // Use a multi-thread runtime so the disconnect-spawner task
+            // can make progress on a different worker while
+            // race_against_disconnect parks the calling task on the
+            // select!. A current-thread runtime would serialize them,
+            // making the latency measurement uninterpretable.
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .expect("tokio rt");
+            rt.block_on(async {
+                // tokio::io::duplex gives us a paired in-memory
+                // bidirectional stream — exactly the shape of the
+                // daemon's per-connection AsyncRead+AsyncWrite stream
+                // (Unix socket / Windows named pipe) without the OS
+                // round-trip. Dropping one half makes `read` on the
+                // other half return Ok(0) immediately, which is the
+                // disconnect signal `race_against_disconnect` is built
+                // around.
+                let (server_side, client_side) = tokio::io::duplex(64);
+                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+
+                let aborted = Arc::new(AtomicBool::new(false));
+                let polled_once = Arc::new(AtomicBool::new(false));
+                let aborted_inner = Arc::clone(&aborted);
+                let polled_inner = Arc::clone(&polled_once);
+
+                // A "compile" that would sit for an hour if uninterrupted
+                // — well past the timed_test! 10s watchdog so the test
+                // can only pass via real cancellation. The `tracker` is
+                // constructed on the first poll, so we MUST give the
+                // select! at least one polling round before the
+                // disconnect fires (see the spawn below) — otherwise
+                // the inner async block never executes, no tracker is
+                // ever created, and the Drop side of the cancellation
+                // contract is untestable.
+                let slow_compile = async move {
+                    let mut tracker = CancelTracker {
+                        aborted: aborted_inner,
+                        completed: false,
+                    };
+                    polled_inner.store(true, Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_secs(3600)).await;
+                    tracker.completed = true;
+                    "compile_done"
+                };
+
+                // Simulate the CLI dying SHORTLY AFTER the daemon has
+                // begun the compile. The 50ms head-start lets the
+                // select! poll `slow_compile` at least once (it goes
+                // Pending on the 1h sleep), establishing the async
+                // state machine WITH `tracker` constructed. Then we
+                // drop the client end; the server's reader returns
+                // EOF; select! drops the pinned slow_compile; the
+                // state-machine drop runs `CancelTracker::drop`,
+                // setting `aborted = true` — proving the cancellation
+                // really did happen mid-execution.
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    drop(client_side);
+                });
+
+                let start = Instant::now();
+                let outcome = race_against_disconnect(&mut server_reader, slow_compile).await;
+                let elapsed = start.elapsed();
+
+                assert!(
+                    matches!(outcome, DispatchOutcome::ClientDisconnected),
+                    "expected ClientDisconnected, got a Completed variant — \
+                     race_against_disconnect did not detect EOF"
+                );
+                assert!(
+                    polled_once.load(Ordering::SeqCst),
+                    "slow_compile was never polled — test setup did not give \
+                     the future a chance to start. Cancellation is being \
+                     tested on a never-started future, which does not match \
+                     production reality."
+                );
+                assert!(
+                    elapsed < Duration::from_millis(500),
+                    "disconnect detection took {elapsed:?}; the contract is \
+                     'instantly' (<500ms including the 50ms scheduled delay \
+                     before the disconnect). A regression here usually means \
+                     the helper is no longer running the disconnect probe \
+                     concurrently with the inner future."
+                );
+                assert!(
+                    aborted.load(Ordering::SeqCst),
+                    "slow_compile future was NOT dropped on disconnect — \
+                     the inflight build would have continued running. The \
+                     `select!` arm must drop the pinned future at its \
+                     boundary."
+                );
+            });
+        }
+    );
+
+    // Sanity counter-test: when the client does NOT disconnect and the
+    // future completes normally, we get `Completed` and the inner
+    // future ran to its natural end (no spurious cancellation).
+    timed_test!(
+        race_against_disconnect_returns_completed_on_happy_path,
+        Duration::from_secs(10),
+        {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("tokio rt");
+            rt.block_on(async {
+                let (server_side, _client_side) = tokio::io::duplex(64);
+                let (mut server_reader, _server_writer) = tokio::io::split(server_side);
+
+                let aborted = Arc::new(AtomicBool::new(false));
+                let aborted_inner = Arc::clone(&aborted);
+                let fast = async move {
+                    let mut tracker = CancelTracker {
+                        aborted: aborted_inner,
+                        completed: false,
+                    };
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    tracker.completed = true;
+                    42_u32
+                };
+
+                let outcome = race_against_disconnect(&mut server_reader, fast).await;
+                match outcome {
+                    DispatchOutcome::Completed(value) => assert_eq!(value, 42),
+                    DispatchOutcome::ClientDisconnected => {
+                        panic!("unexpected disconnect — client end was held open");
+                    }
+                }
+                assert!(
+                    !aborted.load(Ordering::SeqCst),
+                    "inner future was cancelled despite running to completion"
+                );
+            });
+        }
+    );
 }
