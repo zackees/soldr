@@ -310,13 +310,13 @@ jobs:
       # macos-runner builds). Same pinned versions as the every-commit
       # _ci-cross-build-linux.yml workflow.
       - name: Setup zig (zigbuild lanes)
-        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'apple-darwin')
+        if: matrix.target == 'aarch64-unknown-linux-musl' || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
       - name: Install cargo-zigbuild (zigbuild lanes)
-        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'apple-darwin')
+        if: matrix.target == 'aarch64-unknown-linux-musl' || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-zigbuild@0.23.0
@@ -327,7 +327,7 @@ jobs:
       # Mirrors the proven pattern in _ci-cross-build-linux.yml (PR
       # #1052). Darwin-only — no SDK fetch needed for other lanes.
       - name: Bootstrap soldr for Apple SDK prep (darwin only)
-        if: contains(matrix.target, 'apple-darwin')
+        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
         shell: bash
         env:
           RUSTC_WRAPPER: ""
@@ -341,12 +341,12 @@ jobs:
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
 
       - name: Prepare Apple SDK (darwin only)
-        if: contains(matrix.target, 'apple-darwin')
+        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
         shell: bash
         run: soldr prepare --target ${{ matrix.target }} --github-env
 
       - name: Setup persistent zig-cc wrappers (darwin only)
-        if: contains(matrix.target, 'apple-darwin')
+        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
         shell: bash
         run: bash .github/scripts/make_zig_cc_wrappers.sh "${{ matrix.target }}"
 
@@ -363,7 +363,11 @@ jobs:
           # compile from linux. All other lanes use plain cargo build
           # on their native runner.
           target='${{ matrix.target }}'
-          if [ "$target" = "aarch64-unknown-linux-musl" ] || [[ "$target" == *-apple-darwin ]]; then
+          # Use cargo zigbuild only when cross-compiling from a linux
+          # host. Native macOS runners (aarch64-apple-darwin on
+          # macos-15) use plain cargo build.
+          if [ "$target" = "aarch64-unknown-linux-musl" ] \
+             || { [[ "$target" == *-apple-darwin ]] && [ "$RUNNER_OS" = "Linux" ]; }; then
             cargo zigbuild --package soldr-cli --release --locked --target "$target"
           else
             cargo build --package soldr-cli --release --locked --target "$target"
