@@ -168,20 +168,17 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # darwin cross-build via zigbuild hits tikv-jemalloc-sys's
-    # sys/syscall.h cross-compile bug. Tracked in soldr-toolchain#34
-    # priority 2 (jemalloc-darwin forge recipes). Until that lands,
-    # ship releases without darwin binaries rather than block every
-    # patch release on a structural toolchain gap.
-    #
-    # The earlier attempt at fixing this (#1085) wired `soldr build
-    # --target $T` into this workflow, but the soldr binary that
-    # setup-soldr installs predates the `Commands::Build` arm and
-    # fell into the External tool-fetch path on every lane (chicken-
-    # and-egg: needs an in-tree-soldr bootstrap before it can be the
-    # cross-compile orchestrator). Reverted in v0.7.76 — to be wired
-    # in properly behind a bootstrap step in a future PR.
-    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') }}
+    # darwin lanes are no longer continue-on-error. The
+    # tikv-jemalloc-sys `sys/syscall.h` cross-compile failure is
+    # fixed in v0.7.77 by routing the darwin build step through the
+    # in-tree-built soldr (bootstrapped in the `Bootstrap soldr for
+    # Apple SDK prep` step at line ~337), which has
+    # `blessed_build.rs`'s apple-darwin arm that surfaces the
+    # COMPLETE Apple SDK to cc-rs's per-target CC/CXX/AR + rustc's
+    # linker. jemalloc's `#include <sys/syscall.h>` now resolves to
+    # the real Apple SDK header instead of zig's minimal bundled
+    # one. If darwin breaks, that's a real regression — not a known
+    # skip.
     strategy:
       fail-fast: false
       matrix:
@@ -366,24 +363,24 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
         run: |
-          # soldr#1029 + soldr#917: aarch64-musl and both apple-darwin
-          # lanes route through cargo zigbuild for a hermetic cross-
-          # compile from linux. All other lanes use plain cargo build
-          # on their native runner.
-          #
-          # v0.7.76 reverted the v0.7.75 attempt to route through
-          # `soldr build --target $T` — the setup-soldr-provided
-          # soldr binary predates `Commands::Build` and fell into the
-          # External arm. Wiring the in-tree-built soldr in here
-          # needs a bootstrap step (build soldr host-native first,
-          # then exec it as the cross-compile orchestrator) — that's
-          # a separate PR.
+          # Dispatch matrix:
+          # 1. Darwin Linux-host cross — `soldr build --target $T`.
+          #    The `Bootstrap soldr for Apple SDK prep` step above
+          #    put the in-tree-built soldr (v0.7.77+) on PATH at
+          #    `$RUNNER_TEMP/soldr-bin/soldr`, so `soldr build` here
+          #    invokes `Commands::Build` → blessed_build.rs apple-
+          #    darwin arm → CC=clang+SDKROOT, AR=llvm-ar, etc. Fixes
+          #    the jemalloc `sys/syscall.h` cross-compile (the
+          #    structural fix introduced in #1085 + finally activated
+          #    in v0.7.77 with the bootstrap chain).
+          # 2. `aarch64-unknown-linux-musl` Linux-host cross — keep
+          #    `cargo zigbuild`: zig's bundled musl IS complete.
+          # 3. Everything else — plain `cargo build` on the native
+          #    runner.
           target='${{ matrix.target }}'
-          # Use cargo zigbuild only when cross-compiling from a linux
-          # host. Native macOS runners (aarch64-apple-darwin on
-          # macos-15) use plain cargo build.
-          if [ "$target" = "aarch64-unknown-linux-musl" ] \
-             || { [[ "$target" == *-apple-darwin ]] && [ "$RUNNER_OS" = "Linux" ]; }; then
+          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
+            soldr build --target "$target" --release --locked --package soldr-cli
+          elif [ "$target" = "aarch64-unknown-linux-musl" ]; then
             cargo zigbuild --package soldr-cli --release --locked --target "$target"
           else
             cargo build --package soldr-cli --release --locked --target "$target"
