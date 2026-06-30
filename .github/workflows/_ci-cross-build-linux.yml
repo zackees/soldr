@@ -255,8 +255,14 @@ jobs:
       # through `cargo xwin`, so it can't find MSVC `lib.exe` on
       # linux. Tracked under #1068; will switch to `soldr build`-style
       # blessed env-var injection in a follow-up.
+      # Skip for windows-msvc + apple-darwin: cargo nextest archive
+      # doesn't go through soldr build's blessed env injection, so it
+      # can't find MSVC lib.exe (windows) or Apple SDK CommonCrypto
+      # headers (darwin). The target-run lane falls back to a
+      # `soldr --version` smoke test for these targets. Tracked as
+      # #1068 (windows) and the post-#1112 mimalloc dep tree (darwin).
       - name: Build nextest archive
-        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc')
+        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
         shell: bash
         run: |
           set -euo pipefail

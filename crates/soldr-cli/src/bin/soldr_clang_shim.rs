@@ -392,6 +392,12 @@ mod tests {
             ShimTool::from_argv0("/usr/local/bin/clang"),
             Some(ShimTool::Clang)
         );
+        // The backslash-path case only resolves correctly when `\` is a
+        // path separator — i.e. when std::path::Path uses windows
+        // semantics. Cross-compiled linux binaries see `\` as a regular
+        // char and would treat the whole "C:\\Users\\foo\\bin\\clang.exe"
+        // as a single filename, returning None. Gate accordingly.
+        #[cfg(windows)]
         assert_eq!(
             ShimTool::from_argv0("C:\\Users\\foo\\bin\\clang.exe"),
             Some(ShimTool::Clang)

@@ -709,10 +709,18 @@ fn pick_cross_subcommand_legacy_xwin_returns_none() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn pick_cross_subcommand_legacy_zigbuild_returns_none() {
+fn pick_cross_subcommand_legacy_zigbuild_routes_darwin_to_zigbuild() {
+    // Inverse of the default path covered by
+    // pick_cross_subcommand_darwin_returns_none_by_default: with the
+    // env var set, darwin opts INTO the legacy zigbuild dispatch.
+    // Before #1081 the env var had inverted semantics (opt-OUT); the
+    // test was renamed + reassertioned in the post-#1081 cleanup.
     let _g = ENV_LOCK.lock().unwrap();
     std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
-    assert_eq!(pick_cross_subcommand("aarch64-apple-darwin"), None,);
+    assert_eq!(
+        pick_cross_subcommand("aarch64-apple-darwin"),
+        Some("zigbuild"),
+    );
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
 }
 
