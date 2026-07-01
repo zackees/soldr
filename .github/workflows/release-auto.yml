@@ -1134,19 +1134,84 @@ jobs:
                   raise SystemExit(
                       f"`{script_entry}` in {wheels[0].name} is empty"
                   )
+              # soldr#1140: v0.7.87 shipped 118 KB stubs on
+              # win_amd64 + Linux gnu lanes. Both wheels had every
+              # `.data/scripts/*` entry at ~118 KB / ~332 KB — real
+              # release binaries are 4+ MB. Enforce a floor so the
+              # stub bug can never ship again. On macOS lanes, maturin
+              # uses delocate-style repair: the `.data/scripts/*`
+              # entries are ~450-byte Python launcher stubs that exec
+              # the real binaries under `soldr.scripts/`. We validate
+              # both possible locations and require ONE of them ships
+              # a payload larger than the floor.
+              #
+              # Floor derived from win_arm64 (a known-good release):
+              #   soldr.exe          15074816  ← main CLI
+              #   soldr-daemon.exe    4700672
+              #   soldr-clang-shim    226304
+              #   soldr-shim          226304
+              #   zccache-soldr       945664
+              # Pick 2 MB as the floor for the primary bin (soldr /
+              # soldr.exe). Anything below that means the actual
+              # crate code did not get compiled in.
+              MIN_PRIMARY_BIN_BYTES = 2 * 1024 * 1024
+              soldr_scripts_entry = f"soldr.scripts/{binary_name}"
+              candidates = [
+                  (script_entry, info.file_size),
+              ]
+              if soldr_scripts_entry in names:
+                  candidates.append(
+                      (soldr_scripts_entry, wheel.getinfo(soldr_scripts_entry).file_size)
+                  )
+              largest = max(sz for _, sz in candidates)
+              if largest < MIN_PRIMARY_BIN_BYTES:
+                  layout = "\n".join(
+                      f"  {p}: {sz} bytes" for p, sz in candidates
+                  )
+                  raise SystemExit(
+                      f"wheel ships {binary_name!r} at {largest} bytes across "
+                      f"{len(candidates)} candidate path(s):\n{layout}\n"
+                      f"expected ≥ {MIN_PRIMARY_BIN_BYTES} bytes (2 MiB) — a "
+                      f"real soldr binary compiled from crates/soldr-cli is "
+                      f"~15 MB. Anything below this floor means the crate's "
+                      f"main.rs did not get compiled into the shipped bin "
+                      f"(soldr#1140 — v0.7.87 stub regression). Do NOT ship "
+                      f"this wheel; investigate the maturin cargo invocation."
+                  )
+              # Dump all script entries so post-mortems can see per-bin sizes
+              # even when the assertion above passes.
+              print("=== wheel scripts/ layout ===")
+              for n in sorted(names):
+                  if ".data/scripts/" in n or n.startswith("soldr.scripts/"):
+                      print(f"  {wheel.getinfo(n).file_size:>10}  {n}")
 
           print(
               f"{wheels[0].name} ships {binary_name} at `{script_entry}` "
-              f"({info.file_size} bytes)"
+              f"({info.file_size} bytes); primary-bin payload ≥ "
+              f"{MIN_PRIMARY_BIN_BYTES} bytes OK"
           )
 
       - name: Smoke test wheel
         if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
         run: |
+          set -euo pipefail
           uv venv .venv
           uv pip install --python .venv dist/*.whl
-          .venv/bin/soldr --version || .venv/Scripts/soldr.exe --version
+          # soldr#1140: previously this step only checked exit code. A
+          # stub bin that silently exits 0 (as v0.7.87 shipped on
+          # win_amd64) trivially passed. Capture stdout and require it
+          # to start with "soldr " so a stub can never sneak through.
+          if [ -x .venv/bin/soldr ]; then
+              out="$(.venv/bin/soldr --version)"
+          else
+              out="$(.venv/Scripts/soldr.exe --version)"
+          fi
+          printf 'wheel smoke test — soldr --version output: %s\n' "$out"
+          case "$out" in
+              "soldr "*) ;;
+              *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140)." >&2; exit 1 ;;
+          esac
 
       - name: Smoke test standalone musl binary
         # The wheel smoke test above is unreachable for musl rows (the
