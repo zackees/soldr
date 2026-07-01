@@ -54,7 +54,7 @@ measure::write_cache_report "${CACHE_COLD}" "${WORKDIR}/cold-cache-report.json"
 # Flush + shutdown so the depgraph snapshot is durable before tar.
 SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache flush --json >/dev/null 2>&1 || true
 SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cache shutdown \
-    --shutdown-timeout-seconds 5 --json >"${WORKDIR}/cold-shutdown.json" || true
+    --no-wait --json >"${WORKDIR}/cold-shutdown.json" || true
 
 # Copy zccache's per-session logs out of the cache tree (daemon is
 # now gone) so the upload-artifact glob picks them up.
