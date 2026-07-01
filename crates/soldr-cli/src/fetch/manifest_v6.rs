@@ -69,7 +69,7 @@ const EMBEDDED_MANIFEST_ZST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/m
 
 /// Top-level v6 manifest shape. `schema_version` is a discriminator on
 /// the wire so the parser can fast-fail mismatched schemas, and so
-/// future bumps (v7, …) can co-exist on the manifest branch during
+/// future bumps (v7, …) can co-exist in checked-in snapshots during
 /// migrations.
 #[derive(Debug, Clone, Deserialize)]
 pub struct ManifestV6 {
@@ -367,12 +367,9 @@ mod tests {
     crate::timed_test!(embedded_blob_decompresses, {
         let m = embedded_manifest().expect("embedded blob must parse");
         assert_eq!(m.schema_version, ManifestV6::SCHEMA_VERSION);
-        // As of issue #873 the build script materializes the embed at
-        // compile time from the live asset-index, so the production
-        // build ships a populated blob. Offline / `SOLDR_SKIP_EMBED_REFRESH`
-        // builds can legitimately produce the empty envelope, so we
-        // accept either — the only invariant is "parses + matches the
-        // expected schema version".
+        // The build script compresses the checked-in snapshot, so the
+        // only invariant here is "parses + matches the expected schema
+        // version".
     });
 
     crate::timed_test!(embedded_blob_size_is_under_budget, {

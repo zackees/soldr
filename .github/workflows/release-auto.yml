@@ -390,10 +390,8 @@ jobs:
             sudo ln -sf /usr/bin/lld-18 /usr/bin/ld.lld
 
             # Same URL apple_sdk.rs uses in production (see
-            # MANAGED_APPLE_SDK_URL in fetch/apple_sdk.rs). v0.7.85
-            # used the wrong URL + wrong extension (.tar.xz) and
-            # 404'd — corrected to soldr/manifest deps/mac/sdk.tar.zstd.
-            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/mac/sdk.tar.zstd"
+            # MANAGED_APPLE_SDK_URL in fetch/apple_sdk.rs).
+            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3/darwin-universal2/sdk.tar.zstd"
             mkdir -p "$RUNNER_TEMP/apple-sdk"
             if ! ls "$RUNNER_TEMP/apple-sdk/"MacOSX*.sdk 1>/dev/null 2>&1; then
                 echo "fetching Apple SDK from $APPLE_SDK_URL ..."

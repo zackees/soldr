@@ -5,7 +5,7 @@
 //! target triple:
 //!
 //! - `*-pc-windows-msvc` → ensure cargo-xwin + LLVM toolchain + extract
-//!   the vendored xwin MSVC CRT cache from the manifest branch to
+//!   the vendored xwin MSVC CRT cache from soldr-toolchain assets to
 //!   `~/.cache/cargo-xwin/` so `cargo xwin build` skips the 15-min live
 //!   Microsoft download.
 //! - `*-apple-darwin` → ensure cargo-zigbuild + zig + Apple SDK; print
@@ -31,22 +31,16 @@ use crate::fetch::{ensure_apple_sdk, ensure_llvm_toolchain, ensure_zig};
 use wait_timeout::ChildExt;
 
 /// URL of the vendored cargo-xwin MSVC CRT + Windows SDK cache on
-/// soldr's `manifest` branch. PR #890 packaged 1.08 GiB of MSVC CRT +
+/// soldr-toolchain assets. PR #890 packaged 1.08 GiB of MSVC CRT +
 /// Windows SDK headers/libs as a single 81 MiB zstd-19 tarball; this
 /// extracts into `~/.cache/cargo-xwin/xwin/{crt,sdk}` so subsequent
 /// `cargo xwin build` invocations skip the live Microsoft download.
 pub const XWIN_CACHE_URL: &str =
-    "https://media.githubusercontent.com/media/zackees/soldr/manifest/deps/xwin-cache/2026-06-22b/xwin-cache.tar.zst";
+    "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/xwin-cache/2026-06-22/windows-x86_64-msvc/xwin-cache.tar.zst";
 
 /// Pinned sha256 of the xwin cache tar.zst. Mismatch is a hard error.
-/// `2026-06-22b`: re-vendored to preserve cargo-xwin's case-sensitive
-/// symlinks (`windows.h` → `Windows.h`, etc.) that the prior tarball
-/// dropped when packaged from a Windows-host-mounted docker volume.
-/// Without those symlinks Linux CI's clang-cl can't find lowercased
-/// includes — every Windows lane failed with "windows.h: file not
-/// found" in run 27931497526. See #901.
 pub const XWIN_CACHE_SHA256: &str =
-    "957a51e5738d1352c18bd14caa664a88099e2f4e78afaf94f911f0cb925745fa";
+    "33c04d8026d99dab4d66f39ddbd93d75f64c68063d4ba58e5450626524bf348d";
 
 const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
 const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
@@ -115,6 +109,10 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
     let soldr_marker = cache_root.join(".soldr-xwin-extracted");
 
     if soldr_marker.is_file() && xwin_dir.join("crt").join("include").is_dir() {
+        let aliases = ensure_xwin_case_aliases(&xwin_dir)?;
+        if aliases > 0 {
+            eprintln!("soldr prepare: added {aliases} lowercase xwin cache aliases");
+        }
         eprintln!(
             "soldr prepare: xwin cache already present at {}",
             xwin_dir.display()
@@ -156,6 +154,10 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
     archive
         .unpack(&cache_root)
         .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
+    let aliases = ensure_xwin_case_aliases(&xwin_dir)?;
+    if aliases > 0 {
+        eprintln!("soldr prepare: added {aliases} lowercase xwin cache aliases");
+    }
     // Drop our own marker SIBLING to xwin/, not inside it — see the
     // doc comment above for why clobbering xwin/DONE was a 15-min CI
     // regression.
@@ -166,6 +168,84 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
         bytes.len()
     );
     Ok(xwin_dir)
+}
+
+fn ensure_xwin_case_aliases(xwin_dir: &Path) -> Result<usize, SoldrError> {
+    let roots = [
+        xwin_dir.join("crt").join("include"),
+        xwin_dir.join("crt").join("lib"),
+        xwin_dir.join("sdk").join("include"),
+        xwin_dir.join("sdk").join("lib"),
+    ];
+
+    let mut created = 0;
+    for root in roots {
+        if root.is_dir() {
+            created += ensure_lowercase_file_aliases(&root)?;
+        }
+    }
+    Ok(created)
+}
+
+fn ensure_lowercase_file_aliases(dir: &Path) -> Result<usize, SoldrError> {
+    let mut created = 0;
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| SoldrError::Other(format!("read xwin cache dir {}: {e}", dir.display())))?
+    {
+        let entry = entry.map_err(|e| {
+            SoldrError::Other(format!(
+                "read xwin cache entry under {}: {e}",
+                dir.display()
+            ))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            SoldrError::Other(format!("stat xwin cache entry {}: {e}", path.display()))
+        })?;
+
+        if file_type.is_dir() {
+            created += ensure_lowercase_file_aliases(&path)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let lower = name.to_ascii_lowercase();
+        if lower == name {
+            continue;
+        }
+
+        let alias = path.with_file_name(lower);
+        if alias.exists() {
+            continue;
+        }
+
+        create_xwin_file_alias(&path, &alias)?;
+        created += 1;
+    }
+    Ok(created)
+}
+
+fn create_xwin_file_alias(src: &Path, alias: &Path) -> Result<(), SoldrError> {
+    match std::fs::hard_link(src, alias) {
+        Ok(()) => Ok(()),
+        Err(hardlink_err) => {
+            if alias.exists() {
+                return Ok(());
+            }
+            std::fs::copy(src, alias).map(|_| ()).map_err(|copy_err| {
+                SoldrError::Other(format!(
+                    "create lowercase xwin cache alias {} -> {}: \
+                     hardlink failed: {hardlink_err}; copy failed: {copy_err}",
+                    alias.display(),
+                    src.display()
+                ))
+            })
+        }
+    }
 }
 
 /// Parse the `--target` argument into a list of triples.
@@ -935,6 +1015,28 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let xwin = tmp.path().join("xwin");
+        let lib = xwin.join("sdk").join("lib").join("um").join("x86_64");
+        let include = xwin.join("sdk").join("include").join("um");
+        std::fs::create_dir_all(&lib).expect("mkdir lib");
+        std::fs::create_dir_all(&include).expect("mkdir include");
+        std::fs::write(lib.join("Kernel32.Lib"), b"kernel32").expect("write kernel32");
+        std::fs::write(lib.join("UserEnv.Lib"), b"userenv").expect("write userenv");
+        std::fs::write(include.join("Windows.h"), b"windows").expect("write windows.h");
+
+        let created = ensure_xwin_case_aliases(&xwin).expect("aliases");
+        let expected_created = if cfg!(windows) { 0 } else { 3 };
+        assert_eq!(created, expected_created);
+        assert!(lib.join("kernel32.lib").is_file());
+        assert!(lib.join("userenv.lib").is_file());
+        assert!(include.join("windows.h").is_file());
+
+        let created_again = ensure_xwin_case_aliases(&xwin).expect("aliases are idempotent");
+        assert_eq!(created_again, 0);
     });
 
     crate::timed_test!(rustup_add_target_uses_soldr_managed_rustup_state, {

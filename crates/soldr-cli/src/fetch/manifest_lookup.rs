@@ -8,9 +8,8 @@
 //! https://zackees.github.io/soldr-toolchain/catalogue.v1.json
 //! ```
 //!
-//! Migration (soldr#988): the legacy `manifest` branch origin
-//! (`raw.githubusercontent.com/zackees/soldr/manifest/asset-index.json`)
-//! and its `refresh-manifest.yml` nightly job were retired in Phase 5.
+//! Migration (soldr#988): the legacy manifest-branch origin and its
+//! nightly job were retired in Phase 5.
 //! There is no fallback to a second URL — a catalogue miss degrades
 //! straight to the live GitHub Releases API. Use the catalogue's own
 //! producer (`scripts/build_catalogue_v1.py` on `zackees/soldr-toolchain`)
@@ -52,17 +51,13 @@
 //! * `SOLDR_MANIFEST_DISABLE=1` — skip the catalogue lookup entirely;
 //!   the resolver falls through to the live GitHub Releases API.
 //!
-//! ## Why a separate file from `manifest.json`?
+//! ## Why a separate file from per-tool manifests?
 //!
-//! The `manifest` branch already publishes a hierarchical
-//! `manifest.json` (schema v5: a top-level index pointing at per-tool
-//! `manifest.json` files, each a flat array of releases — see
-//! `.github/scripts/build_manifest.py`). That file is human-friendly
-//! but does NOT carry the per-asset sha256 the trust posture here
-//! demands. `asset-index.json` is a separate, sha-bearing index that
-//! can be regenerated alongside the existing manifest tree without
-//! disturbing it. Until the publish step lands, this lookup returns
-//! no hits and the resolver falls back unchanged.
+//! soldr-toolchain also publishes human-friendly per-tool manifests at
+//! `<origin>/<tool>/manifest.json`. `catalogue.v1.json` is the flat,
+//! sha-bearing index used by runtime fetches that need a single
+//! `(owner, repo, tag, asset)` lookup before falling back to the live
+//! GitHub Releases API.
 
 use std::sync::OnceLock;
 use std::time::Duration;

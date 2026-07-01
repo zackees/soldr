@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fetch_or_build_tool.sh — Try the manifest branch first; fall back to
+# fetch_or_build_tool.sh - Try the soldr-toolchain catalogue first; fall back to
 # a source build only on a miss.
 #
 # Used by `cross-compile-all-targets.yml` to install `crgx` and
@@ -33,8 +33,7 @@ build_tool="${3:?build-tool required (zigbuild|xwin|empty for native)}"
 exe_suffix="${4:-}"
 dest_dir="${5:?dest-dir required}"
 
-# Resolve the pinned tool version out of the source tree (the same
-# files refresh-tool-prebuilts.yml reads).
+# Resolve the pinned tool version out of the source tree.
 case "$tool" in
   crgx)
     version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
@@ -63,8 +62,7 @@ fi
 
 mkdir -p "$dest_dir"
 
-# Map rust target triple -> tool_query.py CLI flags. Keep this in
-# lockstep with TARGET_TO_PLATFORM_KEY in install_prebuilts.py.
+# Map rust target triple -> toolchain asset query CLI flags.
 case "$target" in
   x86_64-pc-windows-msvc)    q="--platform windows --arch x86 --extra msvc" ;;
   aarch64-pc-windows-msvc)   q="--platform windows --arch arm --extra msvc" ;;
@@ -75,19 +73,19 @@ case "$target" in
   x86_64-apple-darwin)       q="--platform mac     --arch x86" ;;
   aarch64-apple-darwin)      q="--platform mac     --arch arm" ;;
   *)
-    echo "fetch_or_build_tool.sh: no manifest mapping for target $target" >&2
+    echo "fetch_or_build_tool.sh: no catalogue mapping for target $target" >&2
     exit 2
     ;;
 esac
 
 asset_url=""
-# tool_query.py exits non-zero on a miss; capture stdout if it
+# toolchain_asset_query.py exits non-zero on a miss; capture stdout if it
 # succeeds. The version we ask for is the soldr-source-tree-pinned
-# version so we can never end up with a manifest hit for some other
+# version so we can never end up with a catalogue hit for some other
 # tag.
-if asset_url=$(python3 .github/scripts/tool_query.py \
+if asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
     $q --version "$version" "$tool" 2>/dev/null); then
-  echo "manifest hit: $tool $version $target -> $asset_url"
+  echo "catalogue hit: $tool $version $target -> $asset_url"
 fi
 
 if [ -n "$asset_url" ]; then
@@ -98,7 +96,7 @@ if [ -n "$asset_url" ]; then
       --max-time "$CURL_MAX_TIME_SECS" \
       --retry 6 --retry-delay 5 --retry-all-errors \
       --output "/tmp/${asset_filename}" "$asset_url"; then
-    echo "manifest URL fetch failed; falling back to source build" >&2
+    echo "catalogue URL fetch failed; falling back to source build" >&2
     asset_url=""
   else
     extract_tmp=$(mktemp -d)
@@ -141,7 +139,7 @@ if [ -n "$asset_url" ]; then
 fi
 
 # Fallback: source build (preserves the previous behavior verbatim).
-echo "manifest miss for $tool $version $target; source-building"
+echo "catalogue miss for $tool $version $target; source-building"
 work_dir="${RUNNER_TEMP:-/tmp}/${tool}-build"
 rm -rf "$work_dir"
 timeout "$GIT_CLONE_TIMEOUT_SECS" \

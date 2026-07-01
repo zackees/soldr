@@ -85,9 +85,9 @@ jobs:
           dest_dir="${RUNNER_TEMP}/cross-bin"
           mkdir -p "$dest_dir"
           asset_url=$(
-              python3 .github/scripts/tool_query.py \
+              python3 .github/scripts/toolchain_asset_query.py \
                   --platform linux --arch x86 --extra gnu cargo-zigbuild \
-              || python3 .github/scripts/tool_query.py \
+              || python3 .github/scripts/toolchain_asset_query.py \
                   --platform linux --arch x86 --extra musl cargo-zigbuild
           )
           asset_filename=$(basename "$asset_url")
