@@ -71,11 +71,10 @@ jobs:
           ref: ${{ inputs.third_party_ref }}
           path: ${{ inputs.third_party_path }}
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.94.1
-          targets: ${{ inputs.target }}
+      # soldr#1178 — dropped dtolnay/rust-toolchain: setup-soldr below
+      # installs the same 1.94.1 toolchain via the `toolchain-file:
+      # rust-toolchain.ci.toml` input (which declares the target too),
+      # so running dtolnay first duplicated ~6-8 s of install work.
 
       - name: Install musl tools
         if: contains(inputs.target, 'musl')

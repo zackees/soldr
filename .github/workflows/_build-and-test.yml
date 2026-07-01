@@ -76,13 +76,13 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
-        with:
-          toolchain: 1.94.1
-          targets: ${{ inputs.target }}
-          components: ${{ inputs.install_components }}
-
+      # soldr#1178 — dropped the dtolnay/rust-toolchain step: setup-soldr
+      # below installs the same 1.94.1 toolchain, so running dtolnay
+      # first duplicated ~8 s of install work per CI run. The host target
+      # (x86_64-unknown-linux-gnu) is rustup's default so no explicit
+      # `rustup target add` is required. Components are installed further
+      # down via the "Install requested Rust components" step.
+      #
       # soldr#1083 follow-up: cache + soldr-cook disabled. Cook
       # rewrites the workspace manifest in ways incompatible with
       # cross-compile lanes; save cost no longer justifies. Pure
