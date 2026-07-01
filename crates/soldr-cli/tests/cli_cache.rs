@@ -22,7 +22,7 @@ fn status_reports_cache_control_defaults() {
     // a stale host pin would otherwise leak into the test as a fetched
     // binary and break the "not fetched yet" assertion below.
     let home_root = unique_temp_dir("status-home");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("status")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -62,7 +62,7 @@ fn status_json_reports_stable_machine_fields() {
     // discovery so the developer's host-side pin (issue #426) can't leak
     // into the test as a "binary already fetched" signal.
     let home_root = unique_temp_dir("status-json-home");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["status", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &home_root)
@@ -153,7 +153,7 @@ fn cache_command_reports_managed_zccache_status() {
     )
     .expect("failed to seed session stats");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("cache")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -223,7 +223,7 @@ fn cache_json_reports_managed_zccache_status() {
     )
     .expect("failed to seed session stats");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -271,7 +271,7 @@ fn cache_json_reports_managed_zccache_status() {
 fn cache_report_json_emits_stable_schema_when_files_missing() {
     let cache_root = unique_temp_dir("cache-report-empty");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "report", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -322,7 +322,7 @@ fn cache_report_json_surfaces_persisted_session_stats() {
     )
     .expect("failed to seed session stats");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "report", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -367,7 +367,7 @@ fn cache_report_json_passes_through_unknown_session_stat_fields() {
     )
     .expect("failed to seed session stats");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "report", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -405,7 +405,7 @@ fn clean_clears_managed_zccache_and_state_dir() {
         .expect("failed to create journal dir");
     fs::write(&journal, "{\"event\":\"hit\"}\n").expect("failed to seed journal");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("clean")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &user_home)
@@ -457,7 +457,7 @@ fn purge_removes_soldr_artifact_dirs_and_keeps_config() {
         .expect("failed to seed zccache state");
     fs::write(&config_file, "cache = true\n").expect("failed to seed config");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("purge")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -497,7 +497,7 @@ fn purge_reports_empty_cache_without_creating_dirs() {
     let bin_dir = cache_root.join("bin");
     let cache_dir = cache_root.join("cache");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("purge")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -530,7 +530,7 @@ fn purge_removes_corrupt_artifact_paths() {
     fs::write(&bin_path, "not a dir").expect("failed to seed corrupt bin path");
     fs::write(&cache_path, "not a dir").expect("failed to seed corrupt cache path");
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .arg("purge")
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -561,7 +561,7 @@ fn purge_removes_corrupt_artifact_paths() {
 
 #[test]
 fn purge_rejects_json_flag() {
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["purge", "--json"])
         .output()
         .expect("failed to run soldr purge --json");
@@ -580,7 +580,7 @@ fn purge_rejects_json_flag() {
 
 #[test]
 fn clean_rejects_json_flag() {
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["clean", "--json"])
         .output()
         .expect("failed to run soldr clean --json");
@@ -606,7 +606,7 @@ fn cache_flush_emits_zccache_stats_on_success() {
     let log_path = cache_root.join("tool.log");
     let (_, _, zccache) = install_fake_toolchain(&log_path);
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -644,7 +644,7 @@ fn cache_flush_handles_unsupported_zccache_gracefully() {
     let log_path = cache_root.join("tool.log");
     let (_, _, zccache) = install_fake_toolchain(&log_path);
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -681,7 +681,7 @@ fn cache_flush_falls_back_when_json_flag_is_unsupported() {
     let log_path = cache_root.join("tool.log");
     let (_, _, zccache) = install_fake_toolchain(&log_path);
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -726,7 +726,7 @@ fn cache_shutdown_waits_for_daemon_to_exit() {
     // Sanity: the marker must not exist before stop runs.
     assert!(!down_marker.exists());
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cache", "shutdown", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
@@ -775,7 +775,7 @@ fn cache_shutdown_times_out_when_daemon_does_not_exit() {
     // Deliberately omit SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER, so the
     // fake `status` always reports the daemon as up. The shutdown
     // poll then has to give up after the deadline.
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args([
             "cache",
             "shutdown",
@@ -812,7 +812,7 @@ fn cache_shutdown_no_wait_skips_polling() {
 
     // Daemon never goes down — without the poll this would hang.
     let start = std::time::Instant::now();
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args([
             "cache",
             "shutdown",

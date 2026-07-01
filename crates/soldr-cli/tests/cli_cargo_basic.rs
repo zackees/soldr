@@ -15,7 +15,7 @@ use std::{
 #[test]
 fn cargo_front_door_runs_real_cargo() {
     let cache_root = unique_temp_dir("cargo-version");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "--version"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -38,7 +38,7 @@ fn cargo_front_door_runs_real_cargo() {
 #[test]
 fn cargo_front_door_consumes_no_cache_flag() {
     let cache_root = unique_temp_dir("cargo-no-cache");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "--version"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -69,7 +69,7 @@ fn cargo_build_warns_when_disk_space_is_low() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -105,7 +105,7 @@ fn cargo_build_ignores_disk_space_detection_failures() {
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["--no-cache", "cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -134,7 +134,7 @@ fn cargo_build_ignores_disk_space_detection_failures() {
 #[test]
 fn cargo_subcommand_rejects_no_cache_flag() {
     let cache_root = unique_temp_dir("cargo-subcommand-no-cache");
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "--no-cache", "--version"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .output()
@@ -169,7 +169,7 @@ fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
     // shells out to the fake cargo for `cargo metadata`, gets back `{}`,
     // and fails with "missing field `packages`". Every fake-toolchain
     // test below clears these the same way for the same reason.
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -273,7 +273,7 @@ fn cargo_front_door_recovers_when_session_start_loses_daemon() {
     let log_path = cache_root.join("tool.log");
     let lost_marker = cache_root.join("session-start-lost");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -323,7 +323,7 @@ fn command_lifetime_cache_stops_zccache_after_successful_cargo() {
     let log_path = cache_root.join("tool.log");
     let down_marker = cache_root.join("zccache-down");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_CACHE_LIFECYCLE", "command")
@@ -370,7 +370,7 @@ fn command_lifetime_cache_stops_zccache_after_failing_cargo() {
     write_fake_script(&rustc, &fake_rustc_script(&log_path));
     write_fake_script(&zccache, &fake_zccache_script(&log_path));
 
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_CACHE_LIFECYCLE", "command")
@@ -479,7 +479,7 @@ fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
     let cargo_home = cache_root.join("cargo-home");
 
-    let first = Command::new(common::soldr_bin())
+    let first = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .current_dir(&repo)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -500,7 +500,7 @@ fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
         String::from_utf8_lossy(&first.stderr)
     );
 
-    let second = Command::new(common::soldr_bin())
+    let second = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .current_dir(&repo)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -558,7 +558,7 @@ fn cargo_front_door_respects_dev_debug_in_cargo_config_toml() {
 
     let log_path = cache_root.join("tool.log");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .current_dir(&repo)
         .env("SOLDR_CACHE_DIR", &cache_root)
