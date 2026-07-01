@@ -70,7 +70,7 @@ fn cargo_front_door_invokes_zccache_rust_plan_when_target_cache_enabled() {
         .expect("write metadata fixture");
 
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build", "--locked"])
         .current_dir(&workspace)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -174,7 +174,7 @@ fn cargo_front_door_warns_when_rust_plan_restore_is_partial() {
         .expect("write metadata fixture");
 
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build", "--locked"])
         .current_dir(&workspace)
         .env("SOLDR_CACHE_DIR", &cache_root)
@@ -217,7 +217,7 @@ fn cargo_front_door_recovers_from_stale_zccache_daemon_start() {
     let log_path = cache_root.join("tool.log");
     let stale_marker = cache_root.join("stale-zccache-start");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("SOLDR_TEST_CARGO_BIN", &cargo)
@@ -265,7 +265,7 @@ fn cargo_front_door_removes_stale_zccache_daemon_lock_before_retry() {
     let log_path = cache_root.join("tool.log");
     let stale_marker = cache_root.join("stale-zccache-lock");
     let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
-    let output = Command::new(common::soldr_bin())
+    let output = common::isolated_soldr_command()
         .args(["cargo", "build"])
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("ZCCACHE_CACHE_DIR", &zccache_session_dir)
