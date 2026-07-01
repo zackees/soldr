@@ -1198,7 +1198,7 @@ jobs:
                   raise SystemExit(
                       f"wheel ships {binary_name!r} at {largest} bytes across "
                       f"{len(candidates)} candidate path(s):\n{layout}\n"
-                      f"expected ≥ {MIN_PRIMARY_BIN_BYTES} bytes (2 MiB) — a "
+                      f"expected >= {MIN_PRIMARY_BIN_BYTES} bytes (2 MiB) — a "
                       f"real soldr binary compiled from crates/soldr-cli is "
                       f"~15 MB. Anything below this floor means the crate's "
                       f"main.rs did not get compiled into the shipped bin "
@@ -1214,7 +1214,7 @@ jobs:
 
           print(
               f"{wheels[0].name} ships {binary_name} at `{script_entry}` "
-              f"({info.file_size} bytes); primary-bin payload ≥ "
+              f"({info.file_size} bytes); primary-bin payload >="
               f"{MIN_PRIMARY_BIN_BYTES} bytes OK"
           )
 
