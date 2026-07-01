@@ -50,9 +50,6 @@ cold_start_ms="$(measure::now_ms)"
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
-# Flush so the depgraph snapshot is durable before the cross-verb pass.
-SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
-
 # Cargo's check fingerprint can short-circuit when it judges build's
 # rmeta as fresh-enough — observed on Linux GHA, NOT on Windows MSVC.
 # A short-circuit means zero rustc invocations and zero zccache hits or
@@ -66,9 +63,14 @@ SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
 # izes the cross-verb cache key (the eventual fix) and returns hits, or
 # it recompiles (status quo). Either way the (hits, misses) pair is
 # populated and the gate has a number to compare.
-find "${FIXTURE_DIR}" -name '*.rs' -exec touch {} +
-find "${FIXTURE_DIR}" -name 'Cargo.toml' -exec touch {} +
-find "${FIXTURE_DIR}" -name 'Cargo.lock' -exec touch {} +
+#
+# One `find` walk with alternation, not three (soldr#1154). Also
+# skipped the `soldr cache flush` here — the daemon stays alive for
+# the next cargo check in the same session, so its in-memory depgraph
+# serves that request directly; on-disk durability isn't needed.
+find "${FIXTURE_DIR}" \
+    \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
+    -exec touch {} +
 
 # --- Cross-verb check pass -----------------------------------------
 # Source mtimes advanced; content identical. cargo refingerprints and

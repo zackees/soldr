@@ -43,9 +43,10 @@ SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
 
 # --- Touch every source file without changing content --------------
 
-find "${FIXTURE_DIR}" -name '*.rs' -exec touch {} +
-find "${FIXTURE_DIR}" -name 'Cargo.toml' -exec touch {} +
-find "${FIXTURE_DIR}" -name 'Cargo.lock' -exec touch {} +
+# One `find` walk with alternation, not three (soldr#1154).
+find "${FIXTURE_DIR}" \
+    \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
+    -exec touch {} +
 
 # Force cargo to re-evaluate freshness. Without `cargo clean` cargo
 # might keep its incremental state and never ask the wrapper at all
