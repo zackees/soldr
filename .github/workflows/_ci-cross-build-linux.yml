@@ -229,14 +229,13 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt -p soldr-cli -- --check
 
-      # Host clippy, NOT `--target ${{ inputs.target }}`. Running
-      # clippy against a cross target requires the C cross-toolchain
-      # for every *-sys / ring build script. The cross-build lane below
-      # dispatches to cargo-xwin / cargo-zigbuild for the actual cross-
-      # compile; clippy only needs the host toolchain to catch
-      # source-level lint issues. soldr#1068.
-      - name: cargo clippy (host)
-        run: cargo clippy --workspace --all-targets
+      # Host clippy is intentionally NOT run here. It's already covered by
+      # the top-level `Lint` job in ci.yml (`soldr cargo clippy --workspace
+      # --all-targets --locked -- -D warnings` — a strict superset of what
+      # this file used to run). Duplicating clippy on every cross-build
+      # lane cost ~90 s × 6 lanes for no additional safety. soldr#1164.
+      # See soldr#1068 for the reason clippy must stay HOST-only (never
+      # `--target X`) on cross-build workflows.
 
       # Stage B — release binary build, tool dispatched per target.
       # Windows MSVC + Apple Darwin: `soldr build` (the blessed cross-
