@@ -284,6 +284,14 @@ jobs:
       - name: Build nextest archive
         if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
         shell: bash
+        env:
+          # soldr#1168 — drop full DWARF from test binaries so the
+          # tar.zst archive shrinks from ~3.4 GB to ~1 GB. `line-tables-
+          # only` keeps enough info for backtraces to show file:line in
+          # the target-run lane, which is the main triage need there.
+          # Env-scoped to this step so local `cargo test` still gets
+          # full debuginfo.
+          CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: |
           set -euo pipefail
           mkdir -p dist
