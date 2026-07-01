@@ -306,6 +306,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             if let Some(target_triple) = extract_target_from_args(&full_args) {
                 let paths = crate::core::SoldrPaths::new()?;
                 let prep = crate::blessed_build::prepare(&paths, &target_triple).await?;
+                let cargo_args = prep.cargo_args.clone();
                 // Apply prep env onto the current process env so the
                 // child cargo invocation (and its sub-rustc + build
                 // scripts) inherit them.
@@ -328,6 +329,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 if let Some(subcmd) = pick_cross_subcommand(&target_triple) {
                     full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
                 }
+                full_args = insert_cargo_config_args(full_args, &cargo_args);
             }
 
             // soldr#1079: ensure native Windows MSVC builds get LIB /
@@ -1151,6 +1153,24 @@ fn rewrite_build_args_for_subcommand(mut args: Vec<String>, subcmd: &str) -> Vec
         }
         _ => args,
     }
+}
+
+fn insert_cargo_config_args(mut args: Vec<String>, cargo_config_args: &[String]) -> Vec<String> {
+    if cargo_config_args.is_empty() {
+        return args;
+    }
+
+    let insert_at = if args.first().is_some_and(|arg| arg == "xwin")
+        && args.get(1).is_some_and(|arg| arg == "build")
+    {
+        2
+    } else if args.is_empty() {
+        0
+    } else {
+        1
+    };
+    args.splice(insert_at..insert_at, cargo_config_args.iter().cloned());
+    args
 }
 
 /// soldr#1079 — bridge between the cargo dispatcher and the MSVC
