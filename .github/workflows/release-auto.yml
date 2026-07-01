@@ -1345,6 +1345,27 @@ jobs:
           echo "--- extracted manifest.json ---"
           cat "$extract/manifest.json"
 
+          # soldr#1202 follow-up to #1206: cross-arch size-floor guard.
+          # The `soldr --version` + `soldr version --json` guards below
+          # only run on native-arch matches (aarch64 archives can't
+          # execute on x86_64 release runners). A stub binary shipped
+          # into a cross-arch archive would slip past every dynamic
+          # check. Enforce a 2 MiB floor here so a shipped `soldr` bin
+          # that got left as a 332 KiB stub is rejected before it
+          # reaches the GH release surface, on every lane. Real soldr
+          # ~13-15 MB on Linux glibc / ~15 MB on Windows / ~15 MB on
+          # darwin; 2 MiB is well below that but far above any
+          # conceivable stub (soldr-shim / soldr-clang-shim / zccache-
+          # soldr all top out around ~850 KiB).
+          MIN_SOLDR_BYTES=$((2 * 1024 * 1024))
+          soldr_size=$(wc -c < "$extract/${{ matrix.binary }}" | tr -d ' ')
+          if [ "$soldr_size" -lt "$MIN_SOLDR_BYTES" ]; then
+              echo "ERROR: '$extract/${{ matrix.binary }}' is ${soldr_size} bytes; expected >= ${MIN_SOLDR_BYTES} (2 MiB)." >&2
+              echo "This is the soldr#1140 / soldr#1202 stub-binary regression — the release archive shipped a placeholder instead of the real soldr binary." >&2
+              exit 1
+          fi
+          echo "archive smoke test — ${{ matrix.binary }} size ${soldr_size} bytes >= ${MIN_SOLDR_BYTES} floor OK"
+
           # Run soldr only when the archive's target matches the runner's
           # native arch. ubuntu-24.04 / windows-2025 are x86_64; the
           # ubuntu-24.04-arm / windows-11-arm runners are aarch64; macOS is
