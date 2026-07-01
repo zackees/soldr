@@ -322,7 +322,15 @@ jobs:
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-unknown-linux-musl ]] \
                || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
-            cargo zigbuild --release --target "$target" \
+            # soldr#1207 — dogfood: route zigbuild through soldr so
+            # RUSTC_WRAPPER=zccache lands on host-side build.rs +
+            # proc-macro compiles. Cross-target rustc calls still
+            # miss the seed (different rustc inputs), but the
+            # HOST-triple compilation surface picks up hits. soldr
+            # defers to the PATH-installed cargo-zigbuild@0.23.0 by
+            # default so the underlying binary is identical to
+            # bare-cargo mode.
+            soldr cargo zigbuild --release --target "$target" \
               --package soldr-cli --bin soldr
           else
             cargo build --release --target "$target" \
