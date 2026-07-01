@@ -8,7 +8,8 @@ Reads:  ./benchmark-stats/history.jsonl
 Writes: ./benchmark-stats/benchmark-trend.png
 
 stdlib + matplotlib only. matplotlib is installed in the workflow via
-`apt-get install -y python3-matplotlib` (small + fast).
+`uv pip install --system --break-system-packages matplotlib Pillow`
+(PyPI wheels — see soldr#1166 for why we no longer apt-install it).
 """
 
 import json
