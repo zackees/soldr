@@ -70,7 +70,7 @@ warm_misses="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" mi
 warm_hit_rate="$(measure::cache_report_stat "${WORKDIR}/warm-cache-report.json" hit_rate)"
 
 SOLDR_CACHE_DIR="${CACHE}" soldr cache shutdown \
-    --shutdown-timeout-seconds 5 --json >"${WORKDIR}/touch-shutdown.json" || true
+    --no-wait --json >"${WORKDIR}/touch-shutdown.json" || true
 
 cache_bytes="$(measure::cache_bytes "${CACHE}")"
 
