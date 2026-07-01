@@ -299,23 +299,22 @@ jobs:
       # headers (darwin). The target-run lane falls back to a
       # `soldr --version` smoke test for these targets. Tracked as
       # #1068 (windows) and the post-#1112 mimalloc dep tree (darwin).
+      # soldr#1168 kept for reference (previous dev-profile config).
+      # soldr#1182 — nextest archive now uses --cargo-profile release
+      # (see command below). Release profile already has debug=false
+      # from Cargo.toml defaults, so the archive is naturally small
+      # without needing CARGO_PROFILE_TEST_DEBUG overrides. Not
+      # setting any CARGO_PROFILE_RELEASE_* overrides here — that
+      # would invalidate the release rlibs the previous step just
+      # cached in target/<t>/release/deps/ (cargo hashes profile
+      # config for freshness).
+      # Test failures still surface the assertion source location
+      # (panic! macro bakes in `file!` / `line!`); only the multi-
+      # frame backtrace loses filenames. Acceptable trade for
+      # eliminating 150 s of dep-recompile per lane.
       - name: Build nextest archive
         if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
         shell: bash
-        env:
-          # soldr#1168 kept for reference (previous dev-profile config).
-          # soldr#1182 — nextest archive now uses --cargo-profile release
-          # (see command below). Release profile already has debug=false
-          # from Cargo.toml defaults, so the archive is naturally small
-          # without needing CARGO_PROFILE_TEST_DEBUG overrides. Not
-          # setting any CARGO_PROFILE_RELEASE_* overrides here — that
-          # would invalidate the release rlibs the previous step just
-          # cached in target/<t>/release/deps/ (cargo hashes profile
-          # config for freshness).
-          # Test failures still surface the assertion source location
-          # (panic! macro bakes in `file!` / `line!`); only the multi-
-          # frame backtrace loses filenames. Acceptable trade for
-          # eliminating 150 s of dep-recompile per lane.
         run: |
           set -euo pipefail
           mkdir -p dist
