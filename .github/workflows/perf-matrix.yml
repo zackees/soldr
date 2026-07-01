@@ -85,6 +85,51 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # soldr#1203 — Perf Matrix on push:main is expensive (~30-60 min per
+  # cell × several cells) and produces per-commit noise that swamps the
+  # between-day trend the matrix is meant to track. This gate skips the
+  # full sweep unless the most recent non-bot commit on main is >=24h
+  # old, so we get one perf sweep per quiet day instead of one per PR
+  # merge.
+  #
+  # Bypassed for `workflow_dispatch` (explicit human request) and for
+  # `perf/**` / `evaluate/**` branch pushes (feature branches where the
+  # dev is iterating and expects every push to run).
+  gate:
+    name: Skip if recent human push (main only)
+    runs-on: ubuntu-24.04
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      reason:     ${{ steps.check.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 250
+      - name: Evaluate quiet-window gate
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Bypass 1: any non-push event (workflow_dispatch).
+          if [ "${{ github.event_name }}" != "push" ]; then
+              echo "Event is ${{ github.event_name }} (not push) — bypassing gate; run unconditionally."
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          # Bypass 2: perf/** or evaluate/** feature-branch pushes. The
+          # dev is iterating and wants every push to run.
+          ref='${{ github.ref }}'
+          case "$ref" in
+            refs/heads/perf/*|refs/heads/evaluate/*)
+              echo "Ref is $ref — perf/eval feature branch bypasses gate; run unconditionally."
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: feature-branch ref=$ref" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+          esac
+          # Main-branch push: consult the quiet-window gate.
+          python3 .github/scripts/perf_gate.py --hours 24
+
   setup:
     # Resolve the effective (platforms, fixtures, scenarios) scope
     # once and pipe the result to every downstream gate via job
@@ -98,6 +143,8 @@ jobs:
     #    `::notice::` so the dev still gets useful data while
     #    iterating on a feature branch.
     name: setup
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
     outputs:
       platforms: ${{ steps.parse.outputs.platforms }}
