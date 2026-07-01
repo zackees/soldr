@@ -48,17 +48,31 @@ jobs:
         working-directory: soldr
         run: bash bench/run_canaries.sh
 
-      - name: Install benchmark rendering and comparison tools
-        # Issues #785/#790: README embeds zccache-style comparison JPGs
-        # rendered with Pillow, and the comparison runner measures a pinned
-        # apt sccache package.
+      # soldr#1166 — the previous "one big apt install" step spent ~15 min
+      # here because Azure's Ubuntu mirror ran at ~62 kB/s and python3-
+      # matplotlib pulled in scipy + numpy + blas + lapack + friends
+      # (~55 MB of debs). Split into two steps: matplotlib/Pillow come
+      # from PyPI wheels via uv (~30 s), sccache stays apt-pinned for
+      # measurement-reproducibility per #785/#790.
+      - name: Install pinned sccache (apt)
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --allow-downgrades --no-install-recommends \
-            python3-matplotlib \
-            python3-pil \
             sccache=0.7.7-2ubuntu0.1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+        with:
+          enable-cache: false
+
+      - name: Install benchmark rendering deps (matplotlib + Pillow) via uv
+        run: |
+          set -euo pipefail
+          # Ubuntu 24.04's system python is PEP 668 "externally managed";
+          # --break-system-packages is required for --system installs.
+          # An ephemeral runner is safe to modify system Python.
+          uv pip install --system --break-system-packages matplotlib Pillow
 
       - name: Run comparison benchmarks
         working-directory: soldr
