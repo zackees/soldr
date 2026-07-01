@@ -100,51 +100,24 @@ jobs:
 
       # soldr#1189 — split apt install per target. The clang stack
       # (clang lld llvm llvm-dev libclang-dev) is only needed by MSVC
-      # (cargo-xwin) and darwin (blessed_build).
-      # soldr#1200 — cache the .deb archive dir so cache-hit runs skip
-      # the Azure apt mirror storm entirely (seen spiking to 433 s on
-      # run 28537700050). Uses raw actions/cache + apt's
-      # `Dir::Cache::Archives` override so nothing breaks the SHA-
-      # pinning policy (unlike reverted #1185).
-      - name: Restore apt archive cache (baseline)
-        id: apt_cache_baseline
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ~/apt-archive-cache
-          key: soldr-apt-baseline-ubuntu-24.04-v1
-
+      # (cargo-xwin) and darwin (blessed_build). Skipping it on musl
+      # + linux-gnu lanes saves ~15-20 s of apt fetch per lane.
       - name: Install apt deps (baseline)
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ~/apt-archive-cache
-          # Redirect apt's archive dir to a user-writable location that
-          # actions/cache can save/restore. -o Dir::Cache::Archives= is
-          # apt's documented override. sudo still needed to write
-          # /var/lib/dpkg on install.
-          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archive-cache" update
-          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archive-cache" \
-            install -y --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config file jq xz-utils bzip2 zip unzip \
             ca-certificates curl git cmake perl \
             musl-tools
-
-      - name: Restore apt archive cache (clang stack)
-        if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
-        id: apt_cache_clang
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ~/apt-archive-cache-clang
-          key: soldr-apt-clang-ubuntu-24.04-v1
 
       - name: Install apt deps (clang stack for MSVC/darwin)
         if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p ~/apt-archive-cache-clang
-          sudo apt-get -o Dir::Cache::Archives="$HOME/apt-archive-cache-clang" \
-            install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends \
             clang lld llvm llvm-dev libclang-dev
 
       # zig + cargo-zigbuild — required for musl, darwin, and aarch64
