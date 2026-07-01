@@ -303,21 +303,37 @@ jobs:
         if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
         shell: bash
         env:
-          # soldr#1168 — drop full DWARF from test binaries so the
-          # tar.zst archive shrinks from ~3.4 GB to ~1 GB. `line-tables-
-          # only` keeps enough info for backtraces to show file:line in
-          # the target-run lane, which is the main triage need there.
-          # Env-scoped to this step so local `cargo test` still gets
-          # full debuginfo.
-          CARGO_PROFILE_TEST_DEBUG: line-tables-only
+          # soldr#1168 kept for reference (previous dev-profile config).
+          # soldr#1182 — nextest archive now uses --cargo-profile release
+          # (see command below). Release profile already has debug=false
+          # from Cargo.toml defaults, so the archive is naturally small
+          # without needing CARGO_PROFILE_TEST_DEBUG overrides. Not
+          # setting any CARGO_PROFILE_RELEASE_* overrides here — that
+          # would invalidate the release rlibs the previous step just
+          # cached in target/<t>/release/deps/ (cargo hashes profile
+          # config for freshness).
+          # Test failures still surface the assertion source location
+          # (panic! macro bakes in `file!` / `line!`); only the multi-
+          # frame backtrace loses filenames. Acceptable trade for
+          # eliminating 150 s of dep-recompile per lane.
         run: |
           set -euo pipefail
           mkdir -p dist
           target='${{ inputs.target }}'
           archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
+          # soldr#1182 — --cargo-profile release lets nextest reuse the
+          # release-mode dep artifacts already sitting in target/<t>/
+          # release/deps/ from the `Cross-build release binary` step.
+          # Cargo's freshness check hits on every dep; only soldr-cli's
+          # test-mode lib + its integration test binaries actually get
+          # compiled. Cuts the archive step from ~200 s to ~50-80 s on
+          # linux cross-build lanes. Tests still run — release-mode
+          # tests are safe because soldr-cli has zero debug_assert! or
+          # cfg(debug_assertions) usage (grep-verified).
           cargo nextest archive \
             --target "$target" \
             --workspace \
+            --cargo-profile release \
             --archive-file "$archive" \
             --archive-format tar-zst
           ls -la "$archive"
