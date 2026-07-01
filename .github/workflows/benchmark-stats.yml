@@ -71,8 +71,11 @@ jobs:
           set -euo pipefail
           # Ubuntu 24.04's system python is PEP 668 "externally managed";
           # --break-system-packages is required for --system installs.
-          # An ephemeral runner is safe to modify system Python.
-          uv pip install --system --break-system-packages matplotlib Pillow
+          # sudo -E preserves PATH so sudo finds uv on the hostedtoolcache
+          # (soldr#1170 — plain `uv pip install --system` hit a permission
+          # error because /usr/local/lib/python3.12/dist-packages is
+          # root-owned). Ephemeral runners are safe to modify system Python.
+          sudo -E env "PATH=$PATH" uv pip install --system --break-system-packages matplotlib Pillow
 
       - name: Run comparison benchmarks
         working-directory: soldr
