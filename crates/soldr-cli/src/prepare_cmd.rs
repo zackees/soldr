@@ -1028,9 +1028,28 @@ mod tests {
         std::fs::write(lib.join("UserEnv.Lib"), b"userenv").expect("write userenv");
         std::fs::write(include.join("Windows.h"), b"windows").expect("write windows.h");
 
+        // soldr#1229 — probe filesystem case-sensitivity. macOS APFS
+        // is case-insensitive by default: `Kernel32.Lib` and
+        // `kernel32.lib` resolve to the same inode, so
+        // `ensure_lowercase_file_aliases`'s `alias.exists()` guard
+        // trips and no aliases are created. That's CORRECT behavior
+        // (aliases aren't needed on case-insensitive FS) — the test
+        // just needs to adjust its expectation.
+        let probe = tmp.path().join("CaseProbe");
+        std::fs::write(&probe, b"").expect("write case probe");
+        let case_insensitive = tmp.path().join("caseprobe").exists();
+        std::fs::remove_file(&probe).ok();
+
         let created = ensure_xwin_case_aliases(&xwin).expect("aliases");
-        let expected_created = if cfg!(windows) { 0 } else { 3 };
+        let expected_created = if cfg!(windows) || case_insensitive {
+            0
+        } else {
+            3
+        };
         assert_eq!(created, expected_created);
+        // These assertions pass on both case-sensitive (real aliases
+        // created) and case-insensitive (same file resolvable under any
+        // case) filesystems.
         assert!(lib.join("kernel32.lib").is_file());
         assert!(lib.join("userenv.lib").is_file());
         assert!(include.join("windows.h").is_file());
