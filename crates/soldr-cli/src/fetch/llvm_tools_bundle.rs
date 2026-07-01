@@ -71,8 +71,13 @@ pub async fn ensure_llvm_tools_bundle(
             LLVM_TOOLS_HOSTS.iter().map(|(t, _)| *t).collect::<Vec<_>>()
         ))
     })?;
-    super::syslib_common::ensure_syslib_bundle(paths, "llvm-tools", MANAGED_LLVM_TOOLS_VERSION, slug)
-        .await
+    super::syslib_common::ensure_syslib_bundle(
+        paths,
+        "llvm-tools",
+        MANAGED_LLVM_TOOLS_VERSION,
+        slug,
+    )
+    .await
 }
 
 #[cfg(test)]
