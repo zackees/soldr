@@ -968,10 +968,27 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     let buf = BufReader::with_capacity(16 * 1024 * 1024, in_file);
     let zstd_reader = zstd::stream::read::Decoder::new(buf).map_err(SaveLoadError::Zstd)?;
     let mut tar_reader = tar::Archive::new(zstd_reader);
-    // We do per-worker mtime restoration via filetime::set_file_mtime, so
-    // tar's own preserve_mtime would be redundant. Permissions are not
-    // preserved (consistent with the previous behavior).
-    tar_reader.set_preserve_mtime(false);
+    // Belt-and-suspenders (soldr#1144): historically we set
+    // preserve_mtime(false) here on the theory that our per-worker
+    // filetime::set_file_mtime path would handle the restore. That
+    // path only runs for the parallel-extract dispatch; if any code
+    // path drains via tar's own unpack (e.g. a future refactor, an
+    // error-recovery fallback, or a mtimes_only load whose payload
+    // grew a cache/ entry) the mtime silently defaults to
+    // extraction-wall-clock. Cargo's incremental fingerprint records
+    // an artifact's mtime at first compile and treats a later
+    // "newer" mtime as evidence of external modification, forcing
+    // re-link + re-fingerprint on every hit — the exact 20x/hit
+    // slowdown seen in perf-matrix run 28497381630 (medium/cold-
+    // tar-untar-warm at 1.22x speedup vs the 3.0x floor). Setting
+    // this to `true` makes tar's built-in mtime restore the
+    // baseline; per-worker restore stays as the fast path.
+    //
+    // Permissions still get restored by the worker (see extract_one
+    // — it chmods from job.mode_bits after write). tar's
+    // preserve_permissions would clobber that on Windows (where
+    // Unix mode bits are meaningless).
+    tar_reader.set_preserve_mtime(true);
     tar_reader.set_preserve_permissions(false);
 
     let mut manifest_bytes: Option<Vec<u8>> = None;
