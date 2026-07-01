@@ -1221,6 +1221,8 @@ jobs:
       - name: Smoke test wheel
         if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           uv venv .venv
@@ -1230,15 +1232,35 @@ jobs:
           # win_amd64) trivially passed. Capture stdout and require it
           # to start with "soldr " so a stub can never sneak through.
           if [ -x .venv/bin/soldr ]; then
-              out="$(.venv/bin/soldr --version)"
+              soldr_bin=".venv/bin/soldr"
           else
-              out="$(.venv/Scripts/soldr.exe --version)"
+              soldr_bin=".venv/Scripts/soldr.exe"
           fi
+          out="$("$soldr_bin" --version)"
           printf 'wheel smoke test — soldr --version output: %s\n' "$out"
           case "$out" in
               "soldr "*) ;;
               *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140)." >&2; exit 1 ;;
           esac
+
+          # soldr#1202: cross-check via `soldr version --json` — the
+          # dispatch-arm code path (Commands::Version) is distinct from
+          # clap's built-in --version and downstream tooling parses the
+          # JSON. v0.7.87 shipped a binary whose `--version` passed
+          # (`soldr 0.0.1`) but whose `version --json` returned empty
+          # stdout, breaking setup-soldr's verify step. Guard both.
+          expected_soldr_version="${EXPECTED_VERSION#v}"
+          json_out="$("$soldr_bin" version --json)"
+          if [ -z "$json_out" ]; then
+              echo "ERROR: 'soldr version --json' produced empty stdout in wheel (soldr#1202)." >&2
+              exit 1
+          fi
+          printf 'wheel smoke test — soldr version --json output: %s\n' "$json_out"
+          compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
+          if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
+              echo "ERROR: wheel's 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
+              exit 1
+          fi
 
       - name: Smoke test standalone musl binary
         # The wheel smoke test above is unreachable for musl rows (the
@@ -1248,12 +1270,30 @@ jobs:
         # executable, otherwise we'd ship an untested artifact.
         if: contains(matrix.target, 'musl')
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           set -euo pipefail
           binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -x "$binary" || { echo "missing release binary: $binary" >&2; exit 1; }
           file "$binary" || true
           "./$binary" --version
+
+          # soldr#1202: guard the `version --json` dispatch-arm code
+          # path — v0.7.87 shipped a stub whose `--version` passed but
+          # whose `version --json` returned empty stdout.
+          expected_soldr_version="${EXPECTED_VERSION#v}"
+          json_out="$("./$binary" version --json)"
+          if [ -z "$json_out" ]; then
+              echo "ERROR: 'soldr version --json' produced empty stdout on musl binary (soldr#1202)." >&2
+              exit 1
+          fi
+          printf 'musl smoke test — soldr version --json output: %s\n' "$json_out"
+          compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
+          if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
+              echo "ERROR: musl 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
+              exit 1
+          fi
 
       - name: Smoke test combined tar.zst archive
         # Round-trip: extract the freshly-packaged combined archive into a
@@ -1313,6 +1353,32 @@ jobs:
           case "$runner_arch:${{ matrix.target }}" in
             x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
               "$extract/${{ matrix.binary }}" --version
+
+              # soldr#1202: `soldr version --json` is a distinct code
+              # path (Commands::Version arm) from `soldr --version`
+              # (clap's built-in --version flag → early exit). v0.7.87
+              # shipped a stub whose `soldr --version` printed
+              # `soldr 0.0.1` — trivially passing the "starts with
+              # soldr " wheel check — while `soldr version --json`
+              # produced empty stdout, breaking every downstream JSON
+              # consumer including setup-soldr's verify step. Guard
+              # both paths here so the class of regression can't
+              # recur.
+              expected_soldr_version="${version#v}"
+              json_out="$("$extract/${{ matrix.binary }}" version --json)"
+              if [ -z "$json_out" ]; then
+                  echo "ERROR: 'soldr version --json' produced empty stdout — likely a stub binary (soldr#1140 / soldr#1202)." >&2
+                  exit 1
+              fi
+              printf 'soldr version --json output: %s\n' "$json_out"
+              # Compact JSON before matching so the pattern survives
+              # any whitespace / newline formatting.
+              compact="$(printf '%s' "$json_out" | tr -d ' \n\r\t')"
+              if ! printf '%s' "$compact" | grep -q "\"soldr_version\":\"${expected_soldr_version}\""; then
+                  echo "ERROR: 'soldr version --json' output does not include soldr_version=${expected_soldr_version} (soldr#1202)." >&2
+                  exit 1
+              fi
+
               # Smoke the bundled crgx too — same arch gate. crgx is
               # self-contained (no daemon, no sidecars), so --version
               # is enough to prove the binary loads and the static
