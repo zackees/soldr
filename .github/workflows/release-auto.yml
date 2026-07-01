@@ -736,6 +736,21 @@ jobs:
           # musl, gnu, windows) still builds fine with bare cargo.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
+            # soldr#1140/#1202 followup: zig-cc's bundled Apple stubs
+            # don't include a standalone libiconv, so `-liconv` (emitted
+            # by ureq / ring / etc.) fails at link:
+            #   error: unable to find dynamic system library 'iconv'
+            # The Apple SDK we fetched has `libiconv.tbd` under
+            # `$SDKROOT/usr/lib` — add that to the linker search path
+            # via RUSTFLAGS so zig-cc finds it. Same reason -F for
+            # Frameworks. SDKROOT lives in $GITHUB_ENV via the
+            # `Prepare Apple SDK` step so it's already exported here.
+            if [ -z "${SDKROOT:-}" ]; then
+              echo "ERROR: SDKROOT is unset — Prepare Apple SDK step should have set it" >&2
+              exit 1
+            fi
+            export RUSTFLAGS="-C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-F${SDKROOT}/System/Library/Frameworks${RUSTFLAGS:+ ${RUSTFLAGS}}"
+            echo "RUSTFLAGS=$RUSTFLAGS"
             cargo zigbuild \
               --release \
               --manifest-path "$work_dir/Cargo.toml" \
@@ -802,10 +817,17 @@ jobs:
           # Same zigbuild switch as the crgx step above: bare `cargo
           # build` fails at link time for Linux → x86_64-apple-darwin
           # (libiconv not findable in the sysroot). Route the Apple x64
-          # cross through cargo-zigbuild; everything else stays on bare
-          # cargo. See the crgx step comment for the full rationale.
+          # cross through cargo-zigbuild + inject SDKROOT into linker
+          # search path so zig-cc can find libiconv.tbd. See the crgx
+          # step comment for the full rationale.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
+            if [ -z "${SDKROOT:-}" ]; then
+              echo "ERROR: SDKROOT is unset — Prepare Apple SDK step should have set it" >&2
+              exit 1
+            fi
+            export RUSTFLAGS="-C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-F${SDKROOT}/System/Library/Frameworks${RUSTFLAGS:+ ${RUSTFLAGS}}"
+            echo "RUSTFLAGS=$RUSTFLAGS"
             cargo zigbuild \
               --release \
               --manifest-path "$work_dir/Cargo.toml" \
