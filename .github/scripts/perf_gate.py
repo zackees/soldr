@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
-"""Skip perf / benchmark workflows if a real user push landed on main recently.
+"""Perf/benchmark workflow gate — two modes, one check on recent main activity.
 
 The perf-matrix and benchmark-stats workflows are expensive (build + bench +
-publish, ~30-60 min a piece). Running them on every push to main during
-active development bursts eats CI capacity that PR pipelines could use, and
-produces no useful signal — the per-commit noise dominates the between-day
-trend the benchmarks are meant to track.
+publish, ~30-60 min a piece). Firing them on every push to main during
+active development produces per-commit noise that swamps the between-day
+trend they're meant to track. Never firing them on quiet-only days means we
+miss the trend entirely. This gate reconciles the two.
 
-This gate looks at recent main commits and skips the run when the most
-recent NON-BOT commit is younger than `--hours` (default 24). The idea is
-that perf-heavy workflows fire only during quiet periods — one benchmark
-run per day of quiet — while active dev bursts stay lean.
+## Modes
 
-The signal is deliberately "commit author is a human", not "the current
-push is from a human" — if a bot pushed 20 minutes ago but the last actual
-person-driven change was 30h ago, we still want the perf run.
+* `push` (default): skip when the last non-bot commit on main is
+  YOUNGER than `--hours` (default 24). Rationale: a busy day is
+  already producing benchmark noise; suppress the per-merge triggers
+  and let the nightly cron capture the day's cumulative trend.
+* `schedule`: run when there WAS at least one non-bot commit on main
+  in the last `--hours`. Rationale: on a day that had activity there
+  is something new to benchmark, so the nightly cron fires; on a
+  quiet day, skip cleanly.
+
+The two modes read the same signal (age of the newest non-bot commit)
+and simply invert its interpretation. Both write `should_run=<bool>` and
+`reason=<text>` to `$GITHUB_OUTPUT`.
 
 ## Bot classifiers
 
@@ -35,20 +41,20 @@ email, not co-author trailers.
 
 ## Usage
 
-    python3 .github/scripts/perf_gate.py --hours 24
+    python3 .github/scripts/perf_gate.py --mode push     --hours 24
+    python3 .github/scripts/perf_gate.py --mode schedule --hours 24
 
-Writes `should_run=<true|false>` and `reason=<text>` to `$GITHUB_OUTPUT`
-when running under GHA. Also prints the reason to stdout so `gh run view`
-lines up with the gate decision. Always exits 0.
+Always exits 0.
 
 ## Bypass rules baked in the caller
 
-This script is only invoked when the workflow's own YAML has decided the
-event might be gate-eligible (e.g. `push` to `main`). Workflow_dispatch
-runs, `perf/**` branch pushes, and `evaluate/**` branch pushes should
-bypass the gate entirely — those are explicit human requests to run.
-Callers wire that bypass in with a plain shell check before invoking the
-script; the script assumes it's being called in a gate-eligible context.
+The workflow YAML is responsible for the trivial bypasses:
+    * `workflow_dispatch` runs bypass the gate entirely (explicit
+      human request).
+    * On perf-matrix, `perf/**` and `evaluate/**` branch pushes also
+      bypass (feature-branch iteration).
+
+The script only handles the `push:main` and `schedule` code paths.
 """
 
 from __future__ import annotations
@@ -101,17 +107,24 @@ def emit_output(should_run: bool, reason: str) -> None:
         return
     with open(out_path, "a", encoding="utf-8") as fh:
         fh.write(f"should_run={'true' if should_run else 'false'}\n")
-        # Escape newlines defensively; the reason is a single line by construction.
+        # Reason is a single line by construction.
         fh.write(f"reason={reason}\n")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     ap.add_argument(
+        "--mode",
+        choices=("push", "schedule"),
+        default="push",
+        help="push (default): skip when there was recent activity. "
+        "schedule: run when there was recent activity.",
+    )
+    ap.add_argument(
         "--hours",
         type=int,
         default=24,
-        help="Skip if the last non-bot commit is younger than this many hours.",
+        help="Size of the recent-activity window.",
     )
     ap.add_argument(
         "--limit",
@@ -123,7 +136,7 @@ def main() -> int:
         "--ref",
         default="HEAD",
         help="Git ref to walk. Defaults to HEAD (which is `main` when the "
-        "workflow triggered on push:main).",
+        "workflow triggered on push:main or schedule with a checkout of main).",
     )
     args = ap.parse_args()
 
@@ -140,31 +153,58 @@ def main() -> int:
         break
 
     if latest_human_ts is None:
-        # No non-bot commit in the walk window. Extremely unlikely in
-        # practice; if it happens, treat as "quiet enough to run" so we
-        # don't silently kill perf runs when the bot-detection heuristic
-        # accidentally overmatches.
-        emit_output(
-            True,
-            f"No non-bot commit in the last {args.limit} main commits — proceeding.",
-        )
+        # No non-bot commit in the walk window — no signal either way.
+        # Push mode: extremely quiet, safe to run.
+        # Schedule mode: nothing new to benchmark, skip.
+        if args.mode == "schedule":
+            emit_output(
+                False,
+                f"No non-bot commit in the last {args.limit} main commits — "
+                "nothing new to benchmark; skipping nightly perf run.",
+            )
+        else:
+            emit_output(
+                True,
+                f"No non-bot commit in the last {args.limit} main commits — "
+                "quiet enough to proceed with perf run.",
+            )
         return 0
 
     hours_ago = (now - latest_human_ts) // 3600
-    if latest_human_ts >= cutoff_ts:
-        emit_output(
-            False,
-            f"Last non-bot commit was {hours_ago}h ago ({latest_human_email}); "
-            f"< {args.hours}h. Skipping perf run to preserve CI capacity for "
-            "active dev.",
-        )
+    had_recent_activity = latest_human_ts >= cutoff_ts
+
+    if args.mode == "schedule":
+        if had_recent_activity:
+            emit_output(
+                True,
+                f"Nightly cron: last non-bot commit was {hours_ago}h ago "
+                f"({latest_human_email}); < {args.hours}h. Day had activity, "
+                "proceeding with perf run.",
+            )
+        else:
+            emit_output(
+                False,
+                f"Nightly cron: last non-bot commit was {hours_ago}h ago "
+                f"({latest_human_email}); >= {args.hours}h. Quiet day, "
+                "nothing new to benchmark; skipping.",
+            )
         return 0
 
-    emit_output(
-        True,
-        f"Last non-bot commit was {hours_ago}h ago ({latest_human_email}); "
-        f">= {args.hours}h. Proceeding with perf run.",
-    )
+    # mode == "push"
+    if had_recent_activity:
+        emit_output(
+            False,
+            f"Push:main: last non-bot commit was {hours_ago}h ago "
+            f"({latest_human_email}); < {args.hours}h. Active burst — "
+            "skipping perf run; the nightly cron will capture today's trend.",
+        )
+    else:
+        emit_output(
+            True,
+            f"Push:main: last non-bot commit was {hours_ago}h ago "
+            f"({latest_human_email}); >= {args.hours}h. Post-quiet window, "
+            "proceeding with perf run.",
+        )
     return 0
 
 
