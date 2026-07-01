@@ -137,6 +137,20 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # soldr#1172 — cargo-xwin re-downloads the ~1 GB MSVC CRT+SDK
+      # every run (~8 min 20 s) even though soldr's blessed_build
+      # extracts an xwin-cache and exports XWIN_CACHE_DIR. The
+      # XWIN_CACHE_DIR handoff isn't being honored (unverified — either
+      # tarball layout mismatch or version-invalidation). Until the
+      # structural fix lands, cache cargo-xwin's own default cache dir
+      # so only the FIRST run per xwin version pays the download.
+      - name: Cache cargo-xwin SDK download
+        if: contains(inputs.target, 'pc-windows-msvc')
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.cache/cargo-xwin
+          key: cargo-xwin-0.18.6-crt-sdk-v1
+
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
       # uses it to drive `soldr build --target X` (the blessed
