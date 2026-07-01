@@ -111,6 +111,11 @@ median_ms() {
     printf '%s\n' "$@" | sort -n | awk 'NF { values[NR] = $1 } END { if (NR == 0) print 0; else print values[int((NR + 1) / 2)] }'
 }
 
+# Directory that holds one canonical extraction of each tarball
+# fixture. Populated lazily by make_fixture_project on first hit; every
+# subsequent cell for the same fixture cp -a's from here. See #1158.
+FIXTURE_SEED_ROOT="${WORK_DIR}/fixture-seeds"
+
 make_fixture_project() {
     local fixture="$1"
     local dest="$2"
@@ -120,7 +125,16 @@ make_fixture_project() {
         WORKTREES_TO_REMOVE+=("${dest}/soldr")
         CREATED_PROJECT="${dest}/soldr"
     else
-        bash "${REPO_ROOT}/perf/lib/extract.sh" "${fixture}" "${dest}" >/dev/null
+        # #1158: extract the tarball once per fixture into a seed dir,
+        # then copy into each cell instead of re-decompressing every
+        # time. 24 calls per Benchmark Stats run -> 22 cp -a's instead
+        # of 22 tar extracts on the hot path.
+        local seed="${FIXTURE_SEED_ROOT}/${fixture}"
+        if [[ ! -d "${seed}/${fixture}" ]]; then
+            mkdir -p "${seed}"
+            bash "${REPO_ROOT}/perf/lib/extract.sh" "${fixture}" "${seed}" >/dev/null
+        fi
+        cp -a "${seed}/${fixture}" "${dest}/"
         CREATED_PROJECT="${dest}/${fixture}"
     fi
 }
