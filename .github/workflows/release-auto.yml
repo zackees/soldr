@@ -1225,20 +1225,35 @@ jobs:
           set -euo pipefail
           uv venv .venv
           uv pip install --python .venv dist/*.whl
-          # soldr#1140: previously this step only checked exit code. A
-          # stub bin that silently exits 0 (as v0.7.87 shipped on
-          # win_amd64) trivially passed. Capture stdout and require it
-          # to start with "soldr " so a stub can never sneak through.
+          # soldr#1140 + soldr#1202: previously this step only checked
+          # exit code. A stub bin that silently exits 0 (as v0.7.87
+          # shipped on win_amd64 + Linux gnu) trivially passed. Capture
+          # stdout for BOTH `--version` and `version --json` and
+          # require they contain the expected markers so no stub can
+          # sneak through. `version --json` is the exact command
+          # setup-soldr's post-install verify parses (soldr#1202).
           if [ -x .venv/bin/soldr ]; then
-              out="$(.venv/bin/soldr --version)"
+              soldr_cmd=".venv/bin/soldr"
           else
-              out="$(.venv/Scripts/soldr.exe --version)"
+              soldr_cmd=".venv/Scripts/soldr.exe"
           fi
+          out="$("$soldr_cmd" --version)"
           printf 'wheel smoke test — soldr --version output: %s\n' "$out"
           case "$out" in
               "soldr "*) ;;
               *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140)." >&2; exit 1 ;;
           esac
+          json="$("$soldr_cmd" version --json)"
+          printf 'wheel smoke test — soldr version --json output: %s\n' "$json"
+          if [ -z "$json" ]; then
+              echo "ERROR: 'soldr version --json' produced empty stdout — the exact soldr#1202 regression." >&2
+              exit 1
+          fi
+          if ! printf '%s' "$json" | grep -q '"soldr_version"'; then
+              echo "ERROR: 'soldr version --json' output missing soldr_version field (soldr#1202)." >&2
+              echo "$json" >&2
+              exit 1
+          fi
 
       - name: Smoke test standalone musl binary
         # The wheel smoke test above is unreachable for musl rows (the
@@ -1253,7 +1268,32 @@ jobs:
           binary="target/${{ matrix.target }}/release/${{ matrix.binary }}"
           test -x "$binary" || { echo "missing release binary: $binary" >&2; exit 1; }
           file "$binary" || true
-          "./$binary" --version
+          # soldr#1202: previously this step only checked exit code. A
+          # stub bin that silently exits 0 (as v0.7.85..v0.7.87 shipped
+          # on Linux gnu/musl lanes) trivially passed. Capture stdout
+          # and require it to start with "soldr " so a stub can never
+          # sneak through. Same guard as the wheel smoke test above.
+          out="$("./$binary" --version)"
+          printf 'musl smoke test — soldr --version output: %s\n' "$out"
+          case "$out" in
+              "soldr "*) ;;
+              *) echo "ERROR: 'soldr --version' output did not start with 'soldr ' — likely shipping a stub binary (soldr#1140 / soldr#1202)." >&2; exit 1 ;;
+          esac
+          # Also exercise `version --json` — the exact regression path
+          # setup-soldr's post-install verify hit in v0.7.87 (soldr#1202).
+          # A stub bin exiting 0 with empty stdout would parse-fail the
+          # JSON reader with `Unexpected end of JSON input`.
+          json="$("./$binary" version --json)"
+          printf 'musl smoke test — soldr version --json output: %s\n' "$json"
+          if [ -z "$json" ]; then
+              echo "ERROR: 'soldr version --json' produced empty stdout (soldr#1202)." >&2
+              exit 1
+          fi
+          if ! printf '%s' "$json" | grep -q '"soldr_version"'; then
+              echo "ERROR: 'soldr version --json' output missing soldr_version field (soldr#1202)." >&2
+              echo "$json" >&2
+              exit 1
+          fi
 
       - name: Smoke test combined tar.zst archive
         # Round-trip: extract the freshly-packaged combined archive into a
@@ -1305,6 +1345,25 @@ jobs:
           echo "--- extracted manifest.json ---"
           cat "$extract/manifest.json"
 
+          # soldr#1202 (follow-on to #1140): size-floor guard. The
+          # aarch64 lanes can't execute their binaries on the x86_64
+          # release runners (cross-arch), so `--version`/`version --json`
+          # smoke tests are gated below to native-arch matches only —
+          # but the stub-binary regression still needs to be caught on
+          # cross-arch lanes. Enforce a 2 MiB floor here so a shipped
+          # `soldr` bin that got left as a 332 KiB stub is rejected
+          # before it ever reaches the GH release surface. Real soldr
+          # ~13-15 MB on Linux glibc; 2 MiB is well below that but far
+          # above any conceivable stub.
+          MIN_SOLDR_BYTES=$((2 * 1024 * 1024))
+          soldr_size=$(wc -c < "$extract/${{ matrix.binary }}" | tr -d ' ')
+          if [ "$soldr_size" -lt "$MIN_SOLDR_BYTES" ]; then
+              echo "ERROR: '$extract/${{ matrix.binary }}' is ${soldr_size} bytes; expected >= ${MIN_SOLDR_BYTES} (2 MiB)." >&2
+              echo "This is the soldr#1140 / soldr#1202 stub-binary regression — the release archive shipped a placeholder instead of the real soldr binary." >&2
+              exit 1
+          fi
+          echo "archive smoke test — ${{ matrix.binary }} size ${soldr_size} bytes >= ${MIN_SOLDR_BYTES} floor OK"
+
           # Run soldr only when the archive's target matches the runner's
           # native arch. ubuntu-24.04 / windows-2025 are x86_64; the
           # ubuntu-24.04-arm / windows-11-arm runners are aarch64; macOS is
@@ -1312,7 +1371,34 @@ jobs:
           runner_arch=$(uname -m)
           case "$runner_arch:${{ matrix.target }}" in
             x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
-              "$extract/${{ matrix.binary }}" --version
+              # soldr#1202 (follow-on to #1140): previously this step
+              # only checked exit code. v0.7.85..v0.7.87 shipped a
+              # stub `soldr` bin that silently exits 0 with no stdout;
+              # that broke setup-soldr's post-install verify (which
+              # parses `soldr version --json`) but the smoke test
+              # trivially passed. Capture stdout for BOTH `--version`
+              # and `version --json` and require they contain the
+              # expected marker so no stub can sneak through again.
+              soldr_bin="$extract/${{ matrix.binary }}"
+              printf -- '--- soldr binary size: %s bytes ---\n' \
+                "$(wc -c < "$soldr_bin")"
+              ver="$("$soldr_bin" --version)"
+              printf 'archive smoke test — soldr --version: %s\n' "$ver"
+              case "$ver" in
+                "soldr "*) ;;
+                *) echo "ERROR: 'soldr --version' did not start with 'soldr ' — stub binary (soldr#1202)." >&2; exit 1 ;;
+              esac
+              json="$("$soldr_bin" version --json)"
+              printf 'archive smoke test — soldr version --json: %s\n' "$json"
+              if [ -z "$json" ]; then
+                echo "ERROR: 'soldr version --json' produced empty stdout (soldr#1202)." >&2
+                exit 1
+              fi
+              if ! printf '%s' "$json" | grep -q '"soldr_version"'; then
+                echo "ERROR: 'soldr version --json' output missing soldr_version field (soldr#1202)." >&2
+                echo "$json" >&2
+                exit 1
+              fi
               # Smoke the bundled crgx too — same arch gate. crgx is
               # self-contained (no daemon, no sidecars), so --version
               # is enough to prove the binary loads and the static
