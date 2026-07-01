@@ -25,8 +25,44 @@ permissions:
   id-token: write
 
 jobs:
+  # soldr#1203 — perf/benchmark workflows are expensive (build + bench +
+  # publish, ~30-60 min) and produce noise when they fire on every merge
+  # during active development bursts. This gate skips the benchmark run
+  # unless the most recent non-bot commit on main is >=24h old, so we
+  # get one benchmark per quiet day instead of one per PR merge.
+  #
+  # Bypassed entirely for `workflow_dispatch` — that's an explicit human
+  # request to run.
+  gate:
+    name: Skip if recent human push
+    runs-on: ubuntu-24.04
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+      reason:     ${{ steps.check.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # perf_gate.py walks up to 200 commits back. Fetch that much so
+          # the check has data to work with. Well above the default
+          # shallow depth of 1.
+          fetch-depth: 250
+      - name: Evaluate quiet-window gate
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "push" ]; then
+              echo "Event is ${{ github.event_name }} (not push) — bypassing gate; run unconditionally."
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          python3 .github/scripts/perf_gate.py --hours 24
+
   benchmark:
     name: Generate + publish benchmark stats
+    needs: gate
+    if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
