@@ -722,19 +722,40 @@ jobs:
           # cargo toolchain is shared with the soldr build step above,
           # so no extra setup-uv / install-musl / install-rust is
           # needed here.
-          cargo build \
-            --release \
-            --manifest-path "$work_dir/Cargo.toml" \
-            --target "${{ matrix.target }}" \
-            --locked
+          #
+          # soldr#1140/#1202 aftermath: on Linux → x86_64-apple-darwin
+          # cross-build, bare `cargo build` fails at link time —
+          # `unable to find dynamic system library 'iconv'` — because
+          # the elaborate SDK cross-env (CC_*, CXX_*, AR_*, CFLAGS_*,
+          # CARGO_TARGET_*_LINKER, ...) set by the soldr build step is
+          # step-scoped and doesn't persist here. Route through
+          # cargo-zigbuild for the darwin-on-Linux lane — zig-cc
+          # handles the sysroot / linker plumbing internally and picks
+          # up SDKROOT from $GITHUB_ENV (populated by the
+          # `Prepare Apple SDK` step). Everything else (native darwin,
+          # musl, gnu, windows) still builds fine with bare cargo.
+          target='${{ matrix.target }}'
+          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
+            cargo zigbuild \
+              --release \
+              --manifest-path "$work_dir/Cargo.toml" \
+              --target "$target" \
+              --locked
+          else
+            cargo build \
+              --release \
+              --manifest-path "$work_dir/Cargo.toml" \
+              --target "$target" \
+              --locked
+          fi
 
           suffix=""
-          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
-          built="$work_dir/target/${{ matrix.target }}/release/crgx${suffix}"
+          built="$work_dir/target/$target/release/crgx${suffix}"
           if [ ! -f "$built" ]; then
             echo "crgx not built at expected path: $built" >&2
-            ls -la "$work_dir/target/${{ matrix.target }}/release/" >&2 || true
+            ls -la "$work_dir/target/$target/release/" >&2 || true
             exit 1
           fi
           file "$built" || true
@@ -778,20 +799,35 @@ jobs:
           echo "cargo_chef_commit=$cargo_chef_commit"
           echo "CARGO_CHEF_SOURCE_COMMIT=$cargo_chef_commit" >> "$GITHUB_ENV"
 
-          cargo build \
-            --release \
-            --manifest-path "$work_dir/Cargo.toml" \
-            --target "${{ matrix.target }}" \
-            --locked \
-            --bin cargo-chef
+          # Same zigbuild switch as the crgx step above: bare `cargo
+          # build` fails at link time for Linux → x86_64-apple-darwin
+          # (libiconv not findable in the sysroot). Route the Apple x64
+          # cross through cargo-zigbuild; everything else stays on bare
+          # cargo. See the crgx step comment for the full rationale.
+          target='${{ matrix.target }}'
+          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
+            cargo zigbuild \
+              --release \
+              --manifest-path "$work_dir/Cargo.toml" \
+              --target "$target" \
+              --locked \
+              --bin cargo-chef
+          else
+            cargo build \
+              --release \
+              --manifest-path "$work_dir/Cargo.toml" \
+              --target "$target" \
+              --locked \
+              --bin cargo-chef
+          fi
 
           suffix=""
-          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
-          built="$work_dir/target/${{ matrix.target }}/release/cargo-chef${suffix}"
+          built="$work_dir/target/$target/release/cargo-chef${suffix}"
           if [ ! -f "$built" ]; then
             echo "cargo-chef not built at expected path: $built" >&2
-            ls -la "$work_dir/target/${{ matrix.target }}/release/" >&2 || true
+            ls -la "$work_dir/target/$target/release/" >&2 || true
             exit 1
           fi
           file "$built" || true
