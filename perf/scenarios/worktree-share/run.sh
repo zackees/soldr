@@ -53,7 +53,11 @@ a_start_ms="$(measure::now_ms)"
 )
 a_elapsed_ms="$(measure::elapsed_ms "${a_start_ms}")"
 
-SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
+# No `soldr cache flush` between A and B — the daemon stays alive for
+# the very next `soldr cargo build` in WORKTREE_B (same SOLDR_CACHE_DIR),
+# so its in-memory depgraph serves the hits directly. On-disk
+# durability is not required for the next command in the same session.
+# See soldr#1156 (and the equivalent #1154 fix for build-then-check).
 
 cache_after_a_bytes="$(measure::cache_bytes "${CACHE}")"
 
