@@ -39,7 +39,10 @@ cold_start_ms="$(measure::now_ms)"
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
-SOLDR_CACHE_DIR="${CACHE}" soldr cache flush --json >/dev/null 2>&1 || true
+# No `soldr cache flush` between cold and warm — the daemon stays
+# alive for the very next `soldr cargo build --release` in the same
+# session, so its in-memory depgraph serves the hits directly.
+# See soldr#1156 (and the equivalent #1154 fix for build-then-check).
 
 # --- Touch every source file without changing content --------------
 
