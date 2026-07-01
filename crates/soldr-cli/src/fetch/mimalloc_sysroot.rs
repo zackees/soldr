@@ -9,18 +9,25 @@
 //! ```
 //!
 //! When `libmimalloc-sys` is in the transitive deps and the catalogue
-//! row is ingested, the blessed path exports:
+//! row is ingested, the blessed path injects Cargo build-script
+//! override config for `links = "mimalloc"`:
 //!
-//!   * `MIMALLOC_OVERRIDE=<sysroot>/lib/libmimalloc.a`
+//!   * `target.<triple>.mimalloc.rustc-link-lib=["static=mimalloc"]`
+//!   * `target.<triple>.mimalloc.rustc-link-search=["<sysroot>/lib"]`
+//!   * `target.<triple>.mimalloc.metadata_include_dir="<sysroot>/include"`
 //!
-//! `libmimalloc-sys`' build.rs (v0.1.49+) honors `MIMALLOC_OVERRIDE`
-//! and skips its cmake compile entirely.
+//! That target-scoped Cargo config skips `libmimalloc-sys`' build.rs
+//! entirely. This is deliberately not an environment variable:
+//! `libmimalloc-sys` v0.1.49 has no `MIMALLOC_OVERRIDE` hook.
 
 use std::path::PathBuf;
 
 use crate::core::{SoldrError, SoldrPaths};
 
-pub const MANAGED_MIMALLOC_VERSION: &str = "3.0.4";
+/// Pinned mimalloc version vendored by `libmimalloc-sys` 0.1.49.
+/// `c_src/mimalloc/v3/include/mimalloc.h` reports MI_MALLOC_VERSION
+/// 30302, i.e. upstream mimalloc 3.3.2.
+pub const MANAGED_MIMALLOC_VERSION: &str = "3.3.2";
 
 pub const MIMALLOC_TARGETS: &[(&str, &str)] = &[
     ("x86_64-pc-windows-msvc", "windows-x64"),
@@ -77,17 +84,12 @@ mod tests {
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_MIMALLOC_VERSION, "windows-x64");
-        assert!(u.contains("/mimalloc/3.0.4/windows-x64/"));
+        assert!(u.contains("/mimalloc/3.3.2/windows-x64/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 
-    crate::timed_test!(ensure_mimalloc_sysroot_returns_not_yet_ingested, {
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(ensure_mimalloc_sysroot(&paths, "aarch64-apple-darwin"));
-        let err = result.expect_err("must error until catalogue row lands");
-        assert!(err.to_string().contains("not yet ingested"));
-    });
+    // No live "not yet ingested" assertion here: mimalloc rows are
+    // expected to appear in the catalogue as part of soldr#1064.
+    // Once they do, ensure_mimalloc_sysroot returns a real sysroot or a
+    // network error, neither of which is a stable unit-test signal.
 }

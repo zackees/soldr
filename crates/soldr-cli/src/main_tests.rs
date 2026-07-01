@@ -769,3 +769,68 @@ fn rewrite_build_args_unknown_subcmd_is_noop() {
     let out = rewrite_build_args_for_subcommand(args.clone(), "gibberish");
     assert_eq!(out, args);
 }
+
+#[test]
+fn insert_cargo_config_args_after_plain_build_verb() {
+    let args = vec![
+        "build".to_string(),
+        "--target".to_string(),
+        "x86_64-unknown-linux-gnu".to_string(),
+    ];
+    let config = vec!["--config".to_string(), "target.x.foo.bar=1".to_string()];
+    let out = insert_cargo_config_args(args, &config);
+    assert_eq!(
+        out,
+        vec![
+            "build",
+            "--config",
+            "target.x.foo.bar=1",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+        ]
+    );
+}
+
+#[test]
+fn insert_cargo_config_args_after_zigbuild_verb() {
+    let args = vec![
+        "zigbuild".to_string(),
+        "--target".to_string(),
+        "x86_64-unknown-linux-musl".to_string(),
+    ];
+    let config = vec!["--config".to_string(), "target.x.foo.bar=1".to_string()];
+    let out = insert_cargo_config_args(args, &config);
+    assert_eq!(
+        out,
+        vec![
+            "zigbuild",
+            "--config",
+            "target.x.foo.bar=1",
+            "--target",
+            "x86_64-unknown-linux-musl",
+        ]
+    );
+}
+
+#[test]
+fn insert_cargo_config_args_after_xwin_build_pair() {
+    let args = vec![
+        "xwin".to_string(),
+        "build".to_string(),
+        "--target".to_string(),
+        "x86_64-pc-windows-msvc".to_string(),
+    ];
+    let config = vec!["--config".to_string(), "target.x.foo.bar=1".to_string()];
+    let out = insert_cargo_config_args(args, &config);
+    assert_eq!(
+        out,
+        vec![
+            "xwin",
+            "build",
+            "--config",
+            "target.x.foo.bar=1",
+            "--target",
+            "x86_64-pc-windows-msvc",
+        ]
+    );
+}
