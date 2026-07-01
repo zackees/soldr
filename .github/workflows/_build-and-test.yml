@@ -31,14 +31,11 @@ on:
         required: false
         type: string
         default: ''
-      run_fetch_test:
-        # The crates.io fetch integration test (tests/fetch_crgx.rs in
-        # the monocrate soldr-cli) is heavy and not platform-
-        # conditional. Disable when a caller only wants the unit-test
-        # sweep.
-        required: false
-        type: boolean
-        default: true
+      # soldr#1218 — `run_fetch_test` input removed. It gated a
+      # dedicated `cargo test --test fetch_crgx` step that duplicated
+      # what `Run CLI smoke tests` already covers via `--tests`. The
+      # separate step never actually skipped the fetch — smoke tests
+      # ran it unconditionally regardless of this toggle.
       install_components:
         # Comma-separated rustup components (e.g. "rustfmt,clippy").
         # Empty by default; Windows callers pass the components they
@@ -224,25 +221,12 @@ jobs:
           SOLDR_EXE: ${{ github.workspace }}\target\${{ inputs.target }}\debug\soldr.exe
         run: bash .github/scripts/windows-msys-default-msvc.sh
 
-      - name: Run fetch integration test
-        if: inputs.run_fetch_test == true
-        shell: pwsh
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
-        run: |
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          & $env:LOCAL_SOLDR cargo test -p soldr-cli --test fetch_crgx --locked --target ${{ inputs.target }}
-          $exitCode = $LASTEXITCODE
-          $timer.Stop()
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
-            [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / Fetch integration test**: {0:F3}s",
-            $timer.Elapsed.TotalSeconds
-          ))
-          exit $exitCode
+      # soldr#1218 — the standalone `Run fetch integration test` step
+      # was removed; the same `tests/fetch_crgx.rs` binary already runs
+      # inside `Run CLI smoke tests` above (which invokes `cargo test
+      # -p soldr-cli --tests` — `--tests` selects every integration test
+      # target). Running it twice wasted ~40 s per CI run for zero
+      # additional coverage.
 
       - name: Upload Windows test PDBs on failure
         if: failure() && runner.os == 'Windows'
