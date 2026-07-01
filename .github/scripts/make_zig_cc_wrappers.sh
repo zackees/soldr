@@ -80,6 +80,26 @@ cxx_path="$out_dir/${target}-c++"
 ar_path="$out_dir/${target}-ar"
 linker_path="$out_dir/${target}-linker"
 
+# soldr#1140/#1202 chain: for *-apple-darwin targets, zig-cc's bundled
+# stubs don't include Apple system frameworks (CommonCrypto, Foundation,
+# Security, etc.) that transitive deps (libmimalloc-sys on darwin,
+# rusty-ssl, and friends) `#include`. Bake an `-isysroot $SDKROOT`
+# (and Frameworks -F) into the wrapper so any consumer of these
+# wrappers picks it up automatically at runtime. $SDKROOT is populated
+# by the `Prepare Apple SDK` step and persisted via $GITHUB_ENV, so it's
+# in the environment by the time this generator runs AND when the
+# wrappers execute.
+darwin_prelude=""
+case "$target" in
+    *-apple-darwin)
+        if [ -n "${SDKROOT:-}" ]; then
+            darwin_prelude="-isysroot \"$SDKROOT\" -F\"$SDKROOT/System/Library/Frameworks\" -iframework \"$SDKROOT/System/Library/Frameworks\""
+        else
+            echo "warning: SDKROOT unset for apple-darwin target $target — wrappers may fail on Foundation/CommonCrypto includes" >&2
+        fi
+        ;;
+esac
+
 cat > "$cc_path" <<EOF
 #!/usr/bin/env bash
 # Auto-generated persistent zig-cc wrapper for $target (soldr#1043).
@@ -94,7 +114,7 @@ for arg in "\$@"; do
         *) filtered+=("\$arg") ;;
     esac
 done
-exec zig cc -target $zig_target "\${filtered[@]}"
+exec zig cc -target $zig_target $darwin_prelude "\${filtered[@]}"
 EOF
 chmod +x "$cc_path"
 
@@ -109,7 +129,7 @@ for arg in "\$@"; do
         *) filtered+=("\$arg") ;;
     esac
 done
-exec zig c++ -target $zig_target "\${filtered[@]}"
+exec zig c++ -target $zig_target $darwin_prelude "\${filtered[@]}"
 EOF
 chmod +x "$cxx_path"
 
@@ -135,7 +155,7 @@ for arg in "\$@"; do
         *) filtered+=("\$arg") ;;
     esac
 done
-exec zig cc -target $zig_target "\${filtered[@]}"
+exec zig cc -target $zig_target $darwin_prelude "\${filtered[@]}"
 EOF
 chmod +x "$linker_path"
 
