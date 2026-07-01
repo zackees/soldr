@@ -166,6 +166,19 @@ jobs:
           path: ${{ runner.temp }}/setup-soldr-soldr/sdk/${{ inputs.target }}/xwin/2026-06-22
           key: soldr-xwin-cache-${{ inputs.target }}-cargo-xwin-0.18.6-v2026-06-22
 
+      # soldr#1227 — cache target/ + ~/.cargo/{registry,git} across runs.
+      # Bootstrap (host x86_64-linux-gnu) + Cross-build (target subtree)
+      # both live under target/ and share Cargo.lock-keyed rlibs. Keyed on
+      # Cargo.lock + rustc + toolchain by Swatinem/rust-cache so a hit
+      # happens even when source code changes (deps stable).
+      #
+      # Setup-soldr's `cache: false` covers only its own zccache seeding;
+      # rust-cache handles the cargo target-dir surface on top.
+      - name: Restore cargo + target caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: cross-build-${{ inputs.target }}
+
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
       # uses it to drive `soldr build --target X` (the blessed
