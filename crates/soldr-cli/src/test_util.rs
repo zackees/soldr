@@ -339,10 +339,19 @@ mod tests {
 
     #[test]
     fn watchdog_returns_for_very_short_timeout_when_body_is_instant() {
-        // 1ms timeout, instantaneous body. Verifies we don't false-fire
+        // 500ms timeout, instantaneous body. Verifies we don't false-fire
         // on legitimately quick work — the channel send/recv path must
         // beat the timer for noop bodies.
-        run_with_watchdog("instant_body", Duration::from_millis(1), || {});
+        //
+        // Was 1ms originally, but that races on shared GHA ubuntu-24.04
+        // runners under parallel test load: worker-thread spawn +
+        // channel setup + first `send` can easily take >1ms when the
+        // scheduler is busy, tripping the watchdog and calling
+        // std::process::abort() on a noop-body test which then bring
+        // the whole test binary down (signal 6 SIGABRT). 500ms still
+        // catches a real hang — the point of this test is "the fast
+        // path exists at all", not µs-precision.
+        run_with_watchdog("instant_body", Duration::from_millis(500), || {});
     }
 
     // -----------------------------------------------------------------
