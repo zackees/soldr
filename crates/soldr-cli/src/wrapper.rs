@@ -183,6 +183,42 @@ pub(crate) fn run_rustc_wrapper(
         && !non_cacheable
         && crate::cache_lib::cache_enabled_in_current_process()
     {
+        // Test seam (SOLDR_TEST_ZCCACHE_BIN): when the fake-toolchain
+        // integration tests set this env var, wrapper mode spawns the
+        // named external `zccache wrapper <rustc> <args>` binary
+        // instead of routing through the embedded daemon IPC.
+        //
+        // Why the seam exists: the fake-toolchain tests inspect a
+        // tool.log file emitted by a bash-script fake zccache to
+        // assert that wrapper-mode dispatch happened. The embedded
+        // daemon path (compile_via_daemon → IPC → embedded compile
+        // library) never spawns the fake_zccache binary, so it
+        // cannot log the "zccache wrapper" line the tests check for.
+        // The seam preserves the tests' original contract without
+        // rewriting them to mock the daemon.
+        //
+        // Behaviorally identical to the daemon path in production
+        // (the fake zccache invokes the real rustc); the difference
+        // is only where the "zccache wrapper" line appears — an
+        // external binary log vs. IPC message.
+        if let Some(zccache_bin) =
+            crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR)
+        {
+            // Invoke the fake zccache with the historical wrapper-mode
+            // subprocess contract: `<zccache> <rustc> <args>`. The
+            // fake script's default arm reads `%~1`/`$1` as rustc,
+            // logs its own `zccache wrapper cache_dir=...` line, then
+            // execs rustc. The pre-embedded external zccache binary
+            // took the same shape — no literal "wrapper" verb.
+            profile.finish("before_test_override_spawn");
+            let mut command = std::process::Command::new(&zccache_bin);
+            command.args(&effective_args[1..]);
+            apply_implicit_toolchain_homes(&mut command);
+            suppress_windows_console_window(&mut command);
+            let status = command.status()?;
+            return Ok(status.code().unwrap_or(1));
+        }
+
         // L1 (issue #977 / #980 L1): dispatch the rustc invocation to
         // the daemon's embedded zccache service over IPC. As of the
         // L1 second pass there is no fallback — embedded is

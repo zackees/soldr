@@ -118,12 +118,6 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
 
 #[cfg(not(windows))]
 #[test]
-#[ignore = "FIXME(ci): same env-race class as the two tests ignored in \
-            cli_cargo_basic.rs (#1128). Fake-toolchain log lacks the \
-            expected `zccache wrapper` line on GHA ubuntu-24.04 shared \
-            runners. Last reproducing run: 28485955478 (Linux x64). \
-            Re-enable after identifying which env var the assertion is \
-            sensitive to."]
 fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
     let cache_root = unique_temp_dir("cargo-jobserver-fds");
     let log_path = cache_root.join("tool.log");
@@ -160,13 +154,6 @@ fn cargo_front_door_preserves_jobserver_fds_into_managed_zccache_wrapper() {
 }
 
 #[test]
-#[ignore = "FIXME(ci): same env-race class as the two tests ignored in \
-            cli_cargo_basic.rs (#1128). Fake-toolchain log lacks the \
-            `zccache wrapper` line the assertion expects on GHA \
-            ubuntu-24.04 shared runners. Last reproducing run: \
-            28485955478 (Linux x64). Re-enable after tracing the \
-            env-var leak that makes the wrapper-mode dispatch skip \
-            zccache."]
 fn cache_enabled_zccache_build_completes_under_20_seconds() {
     let cache_root = unique_temp_dir("cargo-zccache-timing");
     let log_path = cache_root.join("tool.log");

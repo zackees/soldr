@@ -153,12 +153,6 @@ fn cargo_subcommand_rejects_no_cache_flag() {
 }
 
 #[test]
-#[ignore = "FIXME(ci): asserts the wrapper-mode dispatch into zccache by \
-            inspecting a fake-toolchain log, but the log on GHA ubuntu-24.04 \
-            shared runners is missing the `zccache wrapper` line — likely \
-            an env-var leak from a parallel test or a wrapper-mode env race. \
-            Last reproducing run: 28482214568 (Linux x64). Re-enable after \
-            identifying which env var the assertion is sensitive to."]
 fn cargo_front_door_uses_soldr_wrapper_and_managed_zccache_by_default() {
     let cache_root = unique_temp_dir("cargo-default-cache");
     let log_path = cache_root.join("tool.log");
@@ -459,11 +453,6 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
 }
 
 #[test]
-#[ignore = "FIXME(ci): warn-once memoization across subprocess invocations \
-            is environment-sensitive and reliably trips on GHA ubuntu-24.04 \
-            shared runners. Last reproducing run: 28482214568 (Linux x64). \
-            Re-enable after sorting out whether StateDb persistence is \
-            racing or the test's tempdir is the wrong identity key."]
 fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
     let cache_root = unique_temp_dir("cargo-debug-default-off");
     let repo = unique_temp_dir("cargo-debug-default-repo");
