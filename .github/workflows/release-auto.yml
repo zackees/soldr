@@ -346,7 +346,14 @@ jobs:
       - name: Prepare Apple SDK (darwin only)
         if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
         shell: bash
-        run: soldr prepare --target ${{ matrix.target }} --github-env
+        # `--github-env` takes a FILE path (SDKROOT is appended). Point
+        # at $GITHUB_ENV so downstream steps see the export. The bare
+        # `--github-env` invocation errored `a value is required for
+        # '--github-env <FILE>' but none was supplied` on v0.7.89 and
+        # broke the macOS x64 release lane. See the composite action at
+        # .github/actions/prepare-cross-toolchain/action.yml for the
+        # canonical shape.
+        run: soldr prepare --target ${{ matrix.target }} --github-env "$GITHUB_ENV"
 
       - name: Setup persistent zig-cc wrappers (darwin only)
         if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
