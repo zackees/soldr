@@ -1,10 +1,15 @@
 //! Integration tests for the embed-first resolver order (issue #873).
 //!
 //! These tests exercise the env-var-driven [`ResolverOrder`] gate at
-//! the process boundary — they live as an integration test (rather
-//! than unit tests in `src/fetch/mod.rs`) so each `#[test]` runs in
-//! its own process and can set/unset `SOLDR_RESOLVER_ORDER` without
-//! racing other tests.
+//! the process boundary.
+//!
+//! soldr#1211 — cargo test runs every `#[test]` in the same binary in
+//! the SAME process (with `--test-threads=NUM_CPUS` by default). The
+//! two env-var tests below race on `SOLDR_RESOLVER_ORDER` because
+//! `std::env::set_var` mutates a process-global; without serialization
+//! one test's `remove_var` restore can wipe the other test's just-set
+//! value, causing `assert!(!order.try_embed)` to fail against the
+//! default `ResolverOrder`. `ENV_LOCK` below serializes them.
 //!
 //! End-to-end download paths (`try_embedded_manifest_v6` /
 //! `try_manifest_first` driving `archive::download_and_extract_with_pin`)
@@ -12,8 +17,14 @@
 //! file focuses on the in-memory short-circuit semantics so we don't
 //! depend on the live network during CI.
 
+use std::sync::Mutex;
+
 use soldr_cli::fetch::{ResolverOrder, RESOLVER_ORDER_ENV_VAR};
 use soldr_cli::timed_test;
+
+/// Serializes tests that mutate the `SOLDR_RESOLVER_ORDER` env var.
+/// Pure-Rust tests (no env access) skip this and remain parallel.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 timed_test!(embed_hits_short_circuit_live_fetch, {
     // Populate the embed lookup with a synthetic v6 manifest and prove
@@ -79,13 +90,11 @@ timed_test!(embed_miss_falls_through_to_live, {
 });
 
 timed_test!(resolver_order_env_var_skips_embed, {
+    // soldr#1211 — serialize with the sibling env-var test.
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
     // Set SOLDR_RESOLVER_ORDER=live,api and verify the parsed
-    // ResolverOrder reports embed=false. We restore the env var when
-    // the test ends so other tests in the same process aren't affected
-    // (each integration test binary is single-process so this is
-    // sufficient — unit tests in `src/fetch/mod.rs` that touch this
-    // env var would race, which is why those tests use `parse()`
-    // directly instead).
+    // ResolverOrder reports embed=false. Restore on the way out so
+    // the sibling test (below) sees a clean env when its guard drops.
     let prior = std::env::var(RESOLVER_ORDER_ENV_VAR).ok();
     // SAFETY: env mutation; reset on the way out.
     std::env::set_var(RESOLVER_ORDER_ENV_VAR, "live,api");
@@ -101,6 +110,8 @@ timed_test!(resolver_order_env_var_skips_embed, {
 });
 
 timed_test!(resolver_order_env_var_skips_both_manifests, {
+    // soldr#1211 — serialize with the sibling env-var test.
+    let _guard = ENV_LOCK.lock().expect("env lock poisoned");
     let prior = std::env::var(RESOLVER_ORDER_ENV_VAR).ok();
     std::env::set_var(RESOLVER_ORDER_ENV_VAR, "api");
     let order = ResolverOrder::from_env();
