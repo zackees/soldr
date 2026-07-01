@@ -98,15 +98,26 @@ jobs:
         shell: bash
         run: rustup target add ${{ inputs.target }}
 
-      - name: Install apt deps
+      # soldr#1189 — split apt install per target. The clang stack
+      # (clang lld llvm llvm-dev libclang-dev) is only needed by MSVC
+      # (cargo-xwin) and darwin (blessed_build). Skipping it on musl
+      # + linux-gnu lanes saves ~15-20 s of apt fetch per lane.
+      - name: Install apt deps (baseline)
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config file jq xz-utils bzip2 zip unzip \
-            ca-certificates curl git \
-            musl-tools cmake perl \
+            ca-certificates curl git cmake perl \
+            musl-tools
+
+      - name: Install apt deps (clang stack for MSVC/darwin)
+        if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends \
             clang lld llvm llvm-dev libclang-dev
 
       # zig + cargo-zigbuild — required for musl, darwin, and aarch64
