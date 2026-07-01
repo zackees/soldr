@@ -140,16 +140,22 @@ jobs:
             rustup component add $component
           }
 
-      - name: Build workspace
+      # soldr#1176 — build workspace bins AND test binaries in one pass.
+      # Downstream `Run library tests` / `Run CLI smoke tests` steps then
+      # find every artifact fresh in target/deps and skip rustc entirely
+      # (cargo's freshness check hits, no compile). Saves the redundant
+      # test-mode compile that used to happen twice (once here in non-
+      # test mode, once again in each test step in test mode).
+      - name: Build workspace + tests
         shell: pwsh
         run: |
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo build --workspace --locked --target ${{ inputs.target }}
+          soldr cargo build --workspace --tests --bins --locked --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
             [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / Build workspace**: {0:F3}s",
+            "- **${{ inputs.target }} / Build workspace + tests**: {0:F3}s",
             $timer.Elapsed.TotalSeconds
           ))
           exit $exitCode
