@@ -98,16 +98,16 @@ jobs:
         shell: bash
         run: rustup target add ${{ inputs.target }}
 
+      # soldr#1184 — cache the .deb files so first run per key downloads
+      # + saves, subsequent runs restore in ~3-5 s regardless of Azure
+      # mirror weather. Same fix pattern as #1166 for benchmark-stats,
+      # which had spiked to 15 min on Azure mirror. Latest 1170 s spike
+      # observed on run 28530360106 aarch64-linux-gnu lane.
       - name: Install apt deps
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config file jq xz-utils bzip2 zip unzip \
-            ca-certificates curl git \
-            musl-tools cmake perl \
-            clang lld llvm llvm-dev libclang-dev
+        uses: awalsh128/cache-apt-pkgs-action@a6c3917cc929dd0345bfb2d3feaf9101823370ad # v1.5.1
+        with:
+          packages: build-essential pkg-config file jq xz-utils bzip2 zip unzip ca-certificates curl git musl-tools cmake perl clang lld llvm llvm-dev libclang-dev
+          version: soldr-ci-v1
 
       # zig + cargo-zigbuild — required for musl, darwin, and aarch64
       # gnu cross-builds.
