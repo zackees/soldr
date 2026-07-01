@@ -144,8 +144,22 @@ jobs:
       # (~v0.7.42 today) predates both subcommands so we need a fresh
       # binary from main HEAD. Bare cargo build to avoid a chicken-
       # and-egg with the wrapper.
-      - name: Bootstrap soldr for SDK / blessed-build prep
+      # soldr#1162 — cache the host-side bootstrap soldr + soldr-clang-shim.
+      # Same story as #1160 / #1161 for baseline-zero-deps: three CI lanes
+      # (apple-darwin x2 + windows-msvc x1) rebuild the identical host binaries
+      # (~295 s each) with RUSTC_WRAPPER="", so there is no zccache to catch it.
+      # When crates/**, Cargo.toml, Cargo.lock, rust-toolchain.toml are unchanged
+      # a lane hits the cache and skips the 5-minute compile.
+      - name: Restore cached bootstrap soldr binaries
+        id: bootstrap_cache
         if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/soldr-bin
+          key: bootstrap-soldr-blessed-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: Bootstrap soldr for SDK / blessed-build prep
+        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && steps.bootstrap_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           RUSTC_WRAPPER: ""
@@ -160,9 +174,16 @@ jobs:
           # next to the soldr exe. Without it, `soldr build` errors with
           # "soldr-clang-shim binary not found".
           cp target/x86_64-unknown-linux-gnu/release/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
-          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
-          chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
+
+      - name: Expose bootstrap soldr on PATH
+        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -x "$RUNNER_TEMP/soldr-bin/soldr" || chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
+          test -x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim" || chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/soldr-bin/soldr" --version
 
       # Persistent zig-cc wrapper scripts for the zigbuild-driven
       # targets (musl + aarch64-linux-gnu). Darwin is intentionally
