@@ -73,6 +73,13 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+  # soldr#1213 — nightly cron so an active day always produces at least one
+  # perf sweep. The gate below inverts to schedule mode on this trigger:
+  # runs only if there was at least one non-bot commit on main in the last
+  # 24h. 4:23 UTC deliberately staggered from benchmark-stats' 3:17 slot so
+  # the two nightly runs don't collide on shared runners.
+  schedule:
+    - cron: '23 4 * * *'
 
 permissions:
   contents: read
@@ -85,18 +92,21 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # soldr#1203 — Perf Matrix on push:main is expensive (~30-60 min per
-  # cell × several cells) and produces per-commit noise that swamps the
-  # between-day trend the matrix is meant to track. This gate skips the
-  # full sweep unless the most recent non-bot commit on main is >=24h
-  # old, so we get one perf sweep per quiet day instead of one per PR
-  # merge.
+  # soldr#1203 + soldr#1213 — Perf Matrix reconciles two concerns:
   #
-  # Bypassed for `workflow_dispatch` (explicit human request) and for
-  # `perf/**` / `evaluate/**` branch pushes (feature branches where the
-  # dev is iterating and expects every push to run).
+  #   * push:main — active-dev bursts would run the full sweep on every
+  #     merge. Skip when the last non-bot commit on main is < 24h old.
+  #   * schedule — nightly cron. Run when there WAS at least one non-bot
+  #     commit on main in the last 24h (active day → benchmark it).
+  #     Skip on quiet days.
+  #   * workflow_dispatch — explicit human request, always run.
+  #   * perf/** / evaluate/** branch pushes — feature-branch iteration,
+  #     always run (dev is watching each push).
+  #
+  # Net: one perf sweep per day of activity on main, plus every dispatch
+  # and every feature-branch push. Zero per burst, zero per quiet day.
   gate:
-    name: Skip if recent human push (main only)
+    name: Decide whether to run
     runs-on: ubuntu-24.04
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -105,30 +115,45 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 250
-      - name: Evaluate quiet-window gate
+      - name: Evaluate activity gate
         id: check
         shell: bash
         run: |
           set -euo pipefail
-          # Bypass 1: any non-push event (workflow_dispatch).
-          if [ "${{ github.event_name }}" != "push" ]; then
-              echo "Event is ${{ github.event_name }} (not push) — bypassing gate; run unconditionally."
+          # workflow_dispatch: explicit human request → always run.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "workflow_dispatch — bypassing gate; run unconditionally."
               echo "should_run=true" >> "$GITHUB_OUTPUT"
-              echo "reason=bypass: event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: workflow_dispatch" >> "$GITHUB_OUTPUT"
               exit 0
           fi
-          # Bypass 2: perf/** or evaluate/** feature-branch pushes. The
-          # dev is iterating and wants every push to run.
+          # perf/** or evaluate/** feature-branch pushes → always run.
+          # (These branches are only reachable via push, so this check
+          # only applies to that event.)
           ref='${{ github.ref }}'
           case "$ref" in
             refs/heads/perf/*|refs/heads/evaluate/*)
               echo "Ref is $ref — perf/eval feature branch bypasses gate; run unconditionally."
               echo "should_run=true" >> "$GITHUB_OUTPUT"
               echo "reason=bypass: feature-branch ref=$ref" >> "$GITHUB_OUTPUT"
-              exit 0 ;;
+              exit 0
+              ;;
           esac
-          # Main-branch push: consult the quiet-window gate.
-          python3 .github/scripts/perf_gate.py --hours 24
+          # Remaining code paths: main-branch push OR nightly schedule.
+          case "${{ github.event_name }}" in
+            schedule)
+              python3 .github/scripts/perf_gate.py --mode schedule --hours 24
+              ;;
+            push)
+              python3 .github/scripts/perf_gate.py --mode push --hours 24
+              ;;
+            *)
+              echo "Unknown event ${{ github.event_name }} — running to be safe."
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: unknown event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
 
   setup:
     # Resolve the effective (platforms, fixtures, scenarios) scope

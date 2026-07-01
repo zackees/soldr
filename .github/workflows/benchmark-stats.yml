@@ -12,6 +12,13 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
+  # soldr#1213 — nightly cron so an active day always produces at least one
+  # benchmark run. The gate below inverts to schedule mode on this trigger:
+  # runs only if there was at least one non-bot commit in the last 24h.
+  # 3:17 UTC deliberately off-hour to avoid the top-of-hour thundering
+  # herd (see the same nudge in .claude cron guidance).
+  schedule:
+    - cron: '17 3 * * *'
 
 concurrency:
   # Only one publish at a time per ref; cancel a stale in-flight when a
@@ -25,16 +32,22 @@ permissions:
   id-token: write
 
 jobs:
-  # soldr#1203 — perf/benchmark workflows are expensive (build + bench +
-  # publish, ~30-60 min) and produce noise when they fire on every merge
-  # during active development bursts. This gate skips the benchmark run
-  # unless the most recent non-bot commit on main is >=24h old, so we
-  # get one benchmark per quiet day instead of one per PR merge.
+  # soldr#1203 + soldr#1213 — perf/benchmark workflows are expensive
+  # (build + bench + publish, ~30-60 min). The gate reconciles two
+  # concerns:
   #
-  # Bypassed entirely for `workflow_dispatch` — that's an explicit human
-  # request to run.
+  #   * push:main — active-dev bursts would fire this on every merge
+  #     and produce per-commit noise. Skip when the last non-bot
+  #     commit is < 24h old (i.e. burst in progress).
+  #   * schedule — nightly cron. Run when there WAS at least one
+  #     non-bot commit in the last 24h (i.e. active day, something
+  #     new to benchmark). Skip on quiet days.
+  #   * workflow_dispatch — explicit human request, always run.
+  #
+  # Net: one benchmark per day of activity, zero per burst, zero on
+  # quiet days.
   gate:
-    name: Skip if recent human push
+    name: Decide whether to run
     runs-on: ubuntu-24.04
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
@@ -46,18 +59,31 @@ jobs:
           # the check has data to work with. Well above the default
           # shallow depth of 1.
           fetch-depth: 250
-      - name: Evaluate quiet-window gate
+      - name: Evaluate activity gate
         id: check
         shell: bash
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" != "push" ]; then
-              echo "Event is ${{ github.event_name }} (not push) — bypassing gate; run unconditionally."
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              echo "workflow_dispatch — bypassing gate; run unconditionally."
               echo "should_run=true" >> "$GITHUB_OUTPUT"
-              echo "reason=bypass: event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: workflow_dispatch" >> "$GITHUB_OUTPUT"
               exit 0
-          fi
-          python3 .github/scripts/perf_gate.py --hours 24
+              ;;
+            schedule)
+              python3 .github/scripts/perf_gate.py --mode schedule --hours 24
+              ;;
+            push)
+              python3 .github/scripts/perf_gate.py --mode push --hours 24
+              ;;
+            *)
+              echo "Unknown event ${{ github.event_name }} — running to be safe."
+              echo "should_run=true" >> "$GITHUB_OUTPUT"
+              echo "reason=bypass: unknown event=${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
 
   benchmark:
     name: Generate + publish benchmark stats
@@ -168,7 +194,12 @@ jobs:
   deploy-pages:
     name: Deploy benchmark page
     needs: benchmark
-    if: ${{ needs.benchmark.result == 'success' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+    # soldr#1213 — allow nightly schedule to deploy pages too. On
+    # `schedule` GitHub does not populate `github.ref` from a branch push;
+    # scheduled workflows always run against the default branch, so the
+    # ref check still holds implicitly. Skip the branch-format check on
+    # schedule to avoid a false negative.
+    if: ${{ needs.benchmark.result == 'success' && (github.event_name == 'schedule' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch'))) }}
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
