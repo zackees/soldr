@@ -46,6 +46,7 @@ mod common;
 /// stable.
 const LEGACY_ALLOWLIST: &[&str] = &[
     // ----- src/ unit-test modules -----
+    "src/bin/soldr_clang_shim.rs",
     "src/bin/soldr_shim.rs",
     "src/binaries.rs",
     "src/cache/install.rs",
@@ -108,6 +109,7 @@ const LEGACY_ALLOWLIST: &[&str] = &[
     "src/wrapper_target.rs",
     "src/zccache.rs",
     // ----- tests/ integration suites -----
+    "tests/cli_build_alias_parity.rs",
     "tests/cli_cache.rs",
     "tests/cli_cache_prune.rs",
     "tests/cli_cache_trim.rs",
