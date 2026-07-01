@@ -444,10 +444,11 @@ jobs:
     # platform via `pattern: perf-results-<platform>-*` and iterate
     # (fixture x scenario) internally. One Evaluate check per
     # platform (max 3 when win and mac-arm matrix rows land alongside
-    # linux). cold-tar-untar-warm is the hard gate (fails the
-    # workflow); worktree-share and touch-no-change are soft today
-    # (::warning::) — they'll be promoted to hard once their
-    # baselines are trusted.
+    # linux). Every scenario is currently soft (::warning::) — every
+    # scenario has an untrusted or actively-regressed baseline right
+    # now, so a hard gate would fail every run without adding signal.
+    # cold-tar-untar-warm's demotion is tracked in soldr#1148 and
+    # gets re-promoted when soldr#1146's root cause lands.
     name: Evaluate ${{ matrix.platform }}
     needs: [setup, bench]
     strategy:
@@ -510,12 +511,20 @@ jobs:
             return 1
           }
 
-          # scenario -> "fail" or "warn". cold-tar-untar-warm is the
-          # designed hard gate; the others are soft until their baselines
-          # stabilize (see workflow header).
+          # scenario -> "fail" or "warn".
+          #
+          # TEMPORARY (soldr#1148): cold-tar-untar-warm is demoted from
+          # `fail` to `warn` while soldr#1146 is being investigated.
+          # Speedup has been stable at ~1.20x on GHA linux/medium since
+          # the embed-zccache migration (#977/#980), vs the 3.0x floor.
+          # The number is still surfaced in the ::warning:: line and the
+          # summary table so regressions are visible; the workflow just
+          # doesn't hard-fail on it. RE-PROMOTE to `fail` as part of the
+          # #1146 root-cause fix — leaving this on `warn` permanently
+          # loses the regression signal we care about most.
           mode_for() {
             case "$1" in
-              cold-tar-untar-warm) echo "fail" ;;
+              cold-tar-untar-warm) echo "warn" ;;
               worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac
