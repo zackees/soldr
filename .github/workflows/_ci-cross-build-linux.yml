@@ -238,14 +238,14 @@ jobs:
           target_u_upper=$(echo "${{ inputs.target }}" | tr '-' '_' | tr '[:lower:]' '[:upper:]')
           echo "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-self-contained=no" >> "$GITHUB_ENV"
 
-      # Stage A — lint
-      # `-p soldr-cli` instead of `--all`: soldr-cli has a `path`
-      # dependency on `_vender/zccache/crates/zccache`, and although
-      # `_vender/zccache` is in `workspace.exclude`, `cargo fmt --all`
-      # still walks the path-dep target and flags rustfmt drift in
-      # submodule sources we do not own. See soldr#1066.
-      - name: cargo fmt --check
-        run: cargo fmt -p soldr-cli -- --check
+      # Stage A — lint intentionally NOT run here. `cargo fmt --check` and
+      # `cargo clippy --workspace --all-targets` are both covered by the
+      # required top-level Lint job in ci.yml, which is a stricter blocker
+      # (Lint denies warnings via `-D warnings` where the old per-lane
+      # clippy did not). Duplicating them per lane cost ~1-2 s of fmt +
+      # ~90 s of clippy per lane for no additional safety. See soldr#1180
+      # (fmt) + soldr#1164 (clippy).
+      # `-p soldr-cli` scope filter documented in soldr#1066.
 
       # Host clippy is intentionally NOT run here. It's already covered by
       # the top-level `Lint` job in ci.yml (`soldr cargo clippy --workspace
