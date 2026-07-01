@@ -198,65 +198,56 @@ soldr rustfmt src/main.rs
 
 ## How it works
 
-A single `soldr` binary plays three roles. The role is chosen from the first argument at process start:
+soldr is a **chameleon binary**: one executable that picks its role from `argv[1]` on every invocation. Three roles:
 
 ```mermaid
 flowchart TD
-    Start["soldr &lt;first-arg&gt; ..."] --> Q{first-arg shape?}
-    Q -->|"absolute path to rustc"| Cache["<b>Cache mode</b><br/>hash inputs, delegate to<br/>zccache + real rustc"]
-    Q -->|"built-in verb<br/>(cargo, rustup, status, cache, build, ...)"| Dispatch["<b>Dispatch mode</b><br/>run built-in or forward<br/>to cargo / rustup"]
-    Q -->|"anything else<br/>(maturin, cbindgen, cargo-nextest, ...)"| Fetch["<b>Tool fetch mode</b><br/>download pre-built binary,<br/>cache locally, exec"]
+    A["soldr &lt;argv[1]&gt; ..."] --> B{"classify argv[1]"}
+    B -->|"path to rustc"| C["<b>Cache mode</b><br/>invoked as RUSTC_WRAPPER by cargo.<br/>hash inputs, query cache,<br/>forward to real rustc on miss."]
+    B -->|"built-in verb<br/>cargo · rustup · status · cache · ..."| D["<b>Dispatch mode</b><br/>run internal handler,<br/>or exec a toolchain binary<br/>resolved via rustup."]
+    B -->|"anything else<br/>maturin · cargo-nextest · cbindgen · ..."| E["<b>Tool-fetch mode</b><br/>resolve via known_tools,<br/>download from GitHub Releases,<br/>exec the fetched binary."]
 ```
 
-Cache mode is entered *by cargo itself*, not by you — cargo runs `$RUSTC_WRAPPER <path-to-rustc> ...` for every crate, so soldr recursively re-enters itself once per compilation unit. That recursion is how the caching hooks in without any manual wrapper setup.
-
-**`soldr cargo build --release`** — dispatch path, routes through cargo and wires soldr in as the RUSTC_WRAPPER:
-
-```text
-soldr cargo build --release
-  +-- resolve the real cargo binary
-  +-- on Windows, re-run from a soldr-owned runtime copy when needed
-  +-- fetch/start managed zccache when cache is enabled
-  +-- set soldr as the compiler wrapper for this build
-  +-- have soldr wrapper mode delegate to managed zccache
-  +-- delegate to cargo with your existing flags
-```
-
-Zooming in on the handshake between the two soldr invocations (front door + wrapper):
+When you run `soldr cargo build`, the two other modes both come into play. soldr acts as the dispatch-mode front door, then cargo re-invokes soldr once per crate as the RUSTC_WRAPPER — that second soldr is the cache-mode instance that talks to the managed zccache daemon:
 
 ```mermaid
 sequenceDiagram
-    actor User
-    participant Front as soldr (front door)
-    participant Z as managed zccache
-    participant Cargo as cargo
-    participant Wrap as soldr (RUSTC_WRAPPER)
-    participant Rustc as real rustc
+    autonumber
+    participant U as User
+    participant S1 as soldr (front door)
+    participant C as cargo
+    participant S2 as soldr (RUSTC_WRAPPER)
+    participant Z as zccache daemon
+    participant R as real rustc
 
-    User->>Front: soldr cargo build --release
-    Front->>Z: ensure daemon running, open session
-    Front->>Cargo: exec cargo, RUSTC_WRAPPER=soldr
+    U->>S1: soldr cargo build --release
+    S1->>S1: dispatch mode: cargo verb
+    S1->>Z: start managed zccache if needed
+    S1->>C: exec cargo (RUSTC_WRAPPER=soldr)
     loop per crate
-        Cargo->>Wrap: soldr /path/to/rustc &lt;flags&gt;
-        Wrap->>Z: forward invocation
+        C->>S2: soldr [path-to-rustc] [args]
+        S2->>Z: query cache (hash of inputs)
         alt cache hit
-            Z-->>Wrap: cached artifacts
+            Z-->>S2: cached artifact
+            S2-->>C: emit artifact, exit 0
         else cache miss
-            Z->>Rustc: invoke rustc
-            Rustc-->>Z: object files (cached for next time)
-            Z-->>Wrap: fresh artifacts
+            Z->>R: forward to rustc
+            R-->>Z: fresh artifact
+            Z->>Z: store keyed by input hash
+            Z-->>S2: artifact
+            S2-->>C: emit artifact, exit 0
         end
-        Wrap-->>Cargo: rustc output
     end
-    Cargo-->>User: build complete
+    C-->>S1: build complete
+    S1-->>U: exit
 ```
 
-**`soldr maturin build --release`** — tool fetch path, no cargo involved:
+Tool fetches are much simpler — no cargo, no rustc, no wrapper handshake:
 
 ```text
 soldr maturin build --release
-  +-- maturin cached? --> run instantly
-  +-- not cached?     --> download pre-built binary (2s) --> run
+  +-- maturin cached?  --> run instantly
+  +-- not cached?      --> download pre-built binary (2s) --> run
 ```
 
 ## Linker speed (the other half of fast CI)
@@ -303,33 +294,30 @@ If you also have many separate test binaries, consider consolidating them under 
 
 ## Architecture
 
-Single Rust crate `soldr-cli` with four module trees inside it. The historical `soldr-core` / `soldr-fetch` / `soldr-cache` / `soldr-cli` workspace split collapsed into this monocrate in 2026-05; a regression test (`crates/soldr-cli/tests/monocrate_guard.rs`) fails the build if a second crate reappears.
+**Monocrate.** A single Rust crate `soldr-cli` under `crates/soldr-cli/`, with four module trees inside it. The earlier four-crate workspace (`soldr-core` / `soldr-fetch` / `soldr-cache` / `soldr-cli`) was collapsed in 2026-05; the regression guard `crates/soldr-cli/tests/monocrate_guard.rs` fails the build if anyone reintroduces a second crate.
 
 ```
 soldr/
-|-- crates/soldr-cli/
-|   |-- src/
-|   |   |-- core.rs        # Shared types, config, target-triple resolution
-|   |   |-- fetch/         # Binary resolution + download (the crgx half)
-|   |   |-- cache_lib/     # RUSTC_WRAPPER + zccache integration (the zccache half)
-|   |   |-- defender.rs    # Windows Defender exclusion plumbing
-|   |   |-- lib.rs         # Re-exports for integration tests
-|   |   `-- main.rs        # Mode detection + clap CLI + tool-fetch dispatch
-|   `-- tests/             # Per-module integration tests
-|-- src/soldr/             # Python package (maturin bin bindings)
-`-- ...
+|-- crates/
+|   `-- soldr-cli/
+|       |-- src/
+|       |   |-- core/            # Shared types, config, cache paths (formerly soldr-core)
+|       |   |-- fetch/           # Binary resolution + download (formerly soldr-fetch)
+|       |   |-- cache_lib/       # RUSTC_WRAPPER + daemon IPC (formerly soldr-cache)
+|       |   `-- main.rs + cli/   # Mode detection, dispatch, cargo front door
+|       `-- tests/
+|-- src/soldr/                    # Python package (maturin bin bindings)
+`-- tests/
 ```
 
 | Module | Role |
 |---|---|
-| `core` | Cache paths, config (`~/.soldr/config.toml`), target-triple resolution, error types |
-| `fetch` | Known-tools registry, integrity/trust enforcement, resolution chain: local cache → registry → GitHub Releases |
-| `cache_lib` | RUSTC_WRAPPER logic, daemon IPC, managed zccache lifecycle, `soldr save` / `soldr load` archive transport |
-| `main.rs` + cli siblings | Mode detection, cargo front door, built-in commands (`status`, `clean`, `config`, `cache`, `build`, ...), tool-fetch dispatch |
+| `src/core/` | Shared types, config (`~/.soldr/config.toml`), target-triple resolution (MSVC default on Windows), cache paths, error types. No I/O beyond config files. |
+| `src/fetch/` | Binary resolution. `known_tools` registry, `trust` (SHA-256 pins + `SOLDR_TRUST_MODE` enforcement), rustup auto-bootstrap, resolution chain (local cache → repo lookup → GitHub Releases → extract). |
+| `src/cache_lib/` | `RUSTC_WRAPPER` mode: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, `soldr save` / `soldr load` archive transport, auto-GC. |
+| `src/main.rs` + cli/ | Mode detection (chameleon dispatch), clap for built-ins, exec for tool fetch, cargo front door (`soldr cargo ...`). |
 
-Every module reaches into `crate::core::*` for shared types; `fetch` and `cache_lib` each consume `core`; the cli surface consumes all three.
-
-These are implementation details, not a supported public Rust library API. The `soldr` executable is the supported integration boundary — see [docs/API_BOUNDARY.md](./docs/API_BOUNDARY.md).
+A thin `src/lib.rs` re-exports `pub mod core; pub mod fetch; pub mod cache_lib;` so the library integration tests can keep `use soldr_cli::core::*`-style imports. This is not a supported public Rust library API.
 
 ## Prior art
 
