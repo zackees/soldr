@@ -361,6 +361,33 @@ jobs:
         env:
           CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
         run: |
+          # soldr#1140 root-cause fix: restore Cargo.toml + Cargo.lock
+          # + crates/soldr-cli/Cargo.toml BEFORE cargo runs.
+          #
+          # setup-soldr's `cook` step (which fires before this one on any
+          # cache-hit lane) strips [workspace.package] from Cargo.toml
+          # for cache-key stability and compiles soldr-cli as v0.0.1 into
+          # target/. Without a restore + clean here, the subsequent
+          # `cargo build --release` sees a stub target/ + a stripped
+          # manifest, does not detect a version change, and links a
+          # v0.0.1 stub binary (~118K on Windows, ~332K on Linux gnu)
+          # that ships to PyPI as the release binary. Symptom: every
+          # soldr invocation from `pip install soldr` silently exits 0
+          # — see soldr#1140 and the FastLED-side fallback in
+          # FastLED/FastLED#3523 for the downstream impact.
+          #
+          # `git restore` is the same incantation the wheel-build step
+          # below already uses (v0.7.81 lesson); this just moves the
+          # rescue earlier so the tar.zst archive + wheel both start
+          # from the correct workspace.package version.
+          #
+          # `cargo clean -p soldr-cli` purges cook's stub soldr-cli
+          # artifacts specifically; the 200+ transitive deps keep their
+          # cached object code so cold recompile stays ~30-60s, not
+          # multi-minute.
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
+          cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
+
           # Dispatch matrix:
           # 1. Darwin Linux-host cross — `soldr build --target $T`.
           #    The `Bootstrap soldr for Apple SDK prep` step above
