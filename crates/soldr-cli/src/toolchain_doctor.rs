@@ -22,7 +22,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::core::SoldrError;
+use crate::core::{command_output_with_timeout, suppress_windows_console_window, SoldrError};
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -38,6 +38,7 @@ pub(crate) fn run_toolchain_doctor(json: bool) -> Result<i32, SoldrError> {
         probe_musl_cc(&host),
         probe_shared_target_warning(&workspace),
         probe_cargo_on_path_shadowing(),
+        probe_rustlib_integrity(),
     ];
 
     let all_ok = probes.iter().all(|p| p.ok);
@@ -122,6 +123,12 @@ pub(crate) const PROBE_MUSL_CC: &str = "musl-cc";
 pub(crate) const PROBE_SHARED_TARGET_WARNING: &str = "shared-target-warning";
 /// Probe name for the soldr#1059 Chocolatey-cargo-shadowing detector.
 pub(crate) const PROBE_CARGO_ON_PATH_SHADOWING: &str = "cargo-on-path-shadowing";
+/// Probe name for soldr#884 — detect a rustup toolchain whose component
+/// metadata claims a target's rust-std is installed while the on-disk
+/// `lib/rustlib/<target>/lib/` dir is missing or empty. Symptom is a
+/// `can't find crate for core / std` error even though `rustup target
+/// list --installed` reports the target as present.
+pub(crate) const PROBE_RUSTLIB_INTEGRITY: &str = "rustlib-integrity";
 
 /// Detect availability of a musl C compiler on PATH. On non-Linux
 /// hosts the probe is skipped (ok=true, details=`{"skipped": "not-linux"}`)
@@ -230,6 +237,182 @@ pub(crate) fn probe_cargo_on_path_shadowing() -> ProbeResult {
             "would_warn": warning.is_some(),
         }),
     }
+}
+
+/// soldr#884 — cross-check `rustup target list --installed` against the
+/// on-disk `${toolchain_root}/lib/rustlib/<target>/lib/` directory. When
+/// rustup's component metadata claims a target's rust-std is installed
+/// but the on-disk dir is missing or contains no `.rlib` files, cargo
+/// builds targeting that triple fail with `error[E0463]: can't find
+/// crate for core/std` even though `rustup target add <target>` reports
+/// "info: component rust-std is up to date" and takes no action.
+///
+/// This probe surfaces the corruption plus the exact `rustup component
+/// remove` + `rustup target add` commands that force-reinstall the
+/// missing `rust-std`.
+///
+/// Behavior:
+/// * `ok = false` when at least one installed target has a corrupt
+///   rustlib dir. This is the only doctor probe that reports `ok=false`
+///   as a real finding (the others report `ok=true` even when they
+///   flag a would_warn condition) because a corrupt rustlib is a hard
+///   build failure, not an advisory.
+/// * `ok = true` with `details.skipped=<reason>` when the probe cannot
+///   run (no rustc on PATH, no rustup, `rustup which rustc` failed,
+///   etc.) — a probe that cannot execute is not a corruption finding.
+pub(crate) fn probe_rustlib_integrity() -> ProbeResult {
+    let rustc = match crate::binaries::resolve_toolchain_binary("rustc") {
+        Ok(path) => path,
+        Err(err) => {
+            return ProbeResult {
+                name: PROBE_RUSTLIB_INTEGRITY.to_string(),
+                ok: true,
+                details: json!({
+                    "skipped": "no-rustc",
+                    "reason": err.to_string(),
+                }),
+            };
+        }
+    };
+    let Some(toolchain_root) = rustc.parent().and_then(Path::parent).map(Path::to_path_buf) else {
+        return ProbeResult {
+            name: PROBE_RUSTLIB_INTEGRITY.to_string(),
+            ok: true,
+            details: json!({
+                "skipped": "cannot-derive-toolchain-root",
+                "rustc": rustc.display().to_string(),
+            }),
+        };
+    };
+
+    let installed = match rustup_installed_targets_active() {
+        Ok(targets) => targets,
+        Err(err) => {
+            return ProbeResult {
+                name: PROBE_RUSTLIB_INTEGRITY.to_string(),
+                ok: true,
+                details: json!({
+                    "skipped": "rustup-list-failed",
+                    "reason": err.to_string(),
+                    "toolchain_root": toolchain_root.display().to_string(),
+                }),
+            };
+        }
+    };
+
+    let rustlib_root = toolchain_root.join("lib").join("rustlib");
+    let mut targets_report: Vec<Value> = Vec::with_capacity(installed.len());
+    let mut corrupted: Vec<String> = Vec::new();
+    for target in &installed {
+        let lib_dir = rustlib_root.join(target).join("lib");
+        let status = classify_rustlib_lib_dir(&lib_dir);
+        let ok = status == RustlibLibDirStatus::Populated;
+        if !ok {
+            corrupted.push(target.clone());
+        }
+        targets_report.push(json!({
+            "triple": target,
+            "lib_dir": lib_dir.display().to_string(),
+            "status": status.label(),
+            "ok": ok,
+        }));
+    }
+
+    let ok = corrupted.is_empty();
+    let mut details = json!({
+        "toolchain_root": toolchain_root.display().to_string(),
+        "rustlib_root": rustlib_root.display().to_string(),
+        "installed_targets": installed,
+        "targets": targets_report,
+        "corrupted_targets": corrupted.clone(),
+    });
+    if !corrupted.is_empty() {
+        let commands: Vec<String> = corrupted
+            .iter()
+            .map(|t| {
+                format!("rustup component remove rust-std --target {t} && rustup target add {t}")
+            })
+            .collect();
+        if let Some(obj) = details.as_object_mut() {
+            obj.insert("repair_commands".to_string(), json!(commands));
+        }
+    }
+
+    ProbeResult {
+        name: PROBE_RUSTLIB_INTEGRITY.to_string(),
+        ok,
+        details,
+    }
+}
+
+/// Classification of `${toolchain_root}/lib/rustlib/<target>/lib/`.
+///
+/// * `Populated` — dir exists and contains at least one `.rlib`.
+/// * `Missing` — dir does not exist (or is not a directory). This is
+///   the exact symptom soldr#884 filed against.
+/// * `EmptyOrNoRlibs` — dir exists but has no `.rlib` files. Same
+///   symptom class (cargo build will fail with `can't find crate for
+///   core/std`), separately labeled so operators can tell whether the
+///   dir was rm-rf'd vs. partially populated.
+#[derive(Debug, PartialEq, Eq)]
+enum RustlibLibDirStatus {
+    Populated,
+    Missing,
+    EmptyOrNoRlibs,
+}
+
+impl RustlibLibDirStatus {
+    fn label(&self) -> &'static str {
+        match self {
+            RustlibLibDirStatus::Populated => "populated",
+            RustlibLibDirStatus::Missing => "missing",
+            RustlibLibDirStatus::EmptyOrNoRlibs => "empty-or-no-rlibs",
+        }
+    }
+}
+
+fn classify_rustlib_lib_dir(lib_dir: &Path) -> RustlibLibDirStatus {
+    if !lib_dir.is_dir() {
+        return RustlibLibDirStatus::Missing;
+    }
+    let has_rlib = std::fs::read_dir(lib_dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().extension().is_some_and(|ext| ext == "rlib"))
+        })
+        .unwrap_or(false);
+    if has_rlib {
+        RustlibLibDirStatus::Populated
+    } else {
+        RustlibLibDirStatus::EmptyOrNoRlibs
+    }
+}
+
+/// Ask rustup for installed targets on the *active* toolchain (no
+/// explicit `--toolchain <channel>` flag). This lets the probe run
+/// against whichever toolchain `rustup which rustc` just resolved
+/// against — the two calls agree by construction because we let rustup
+/// decide the toolchain in both cases.
+fn rustup_installed_targets_active() -> Result<Vec<String>, SoldrError> {
+    let mut command = std::process::Command::new(crate::binaries::rustup_binary());
+    command.args(["target", "list", "--installed"]);
+    crate::binaries::apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let output = command_output_with_timeout(&mut command, "rustup target list --installed")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(SoldrError::Other(format!(
+            "`rustup target list --installed` failed with exit code {}: {stderr}",
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect())
 }
 
 fn find_on_path(cmd: &str) -> Option<PathBuf> {
@@ -424,6 +607,47 @@ mod tests {
             );
         }
     );
+
+    crate::timed_test!(classify_rustlib_lib_dir_reports_missing_for_absent_dir, {
+        let dir = tempdir("rustlib-missing").join("does-not-exist");
+        assert_eq!(classify_rustlib_lib_dir(&dir), RustlibLibDirStatus::Missing);
+    });
+
+    crate::timed_test!(
+        classify_rustlib_lib_dir_reports_empty_for_dir_without_rlibs,
+        {
+            let dir = tempdir("rustlib-empty");
+            fs::create_dir_all(&dir).expect("mkdir lib");
+            fs::write(dir.join("libstd-abc.rmeta"), b"placeholder").expect("write non-rlib");
+            assert_eq!(
+                classify_rustlib_lib_dir(&dir),
+                RustlibLibDirStatus::EmptyOrNoRlibs,
+                "only .rmeta present → status must be EmptyOrNoRlibs"
+            );
+        }
+    );
+
+    crate::timed_test!(
+        classify_rustlib_lib_dir_reports_populated_when_rlib_present,
+        {
+            let dir = tempdir("rustlib-populated");
+            fs::create_dir_all(&dir).expect("mkdir lib");
+            fs::write(dir.join("libcore-abcdef.rlib"), b"placeholder").expect("write rlib");
+            assert_eq!(
+                classify_rustlib_lib_dir(&dir),
+                RustlibLibDirStatus::Populated
+            );
+        }
+    );
+
+    crate::timed_test!(rustlib_lib_dir_status_label_is_stable, {
+        assert_eq!(RustlibLibDirStatus::Populated.label(), "populated");
+        assert_eq!(RustlibLibDirStatus::Missing.label(), "missing");
+        assert_eq!(
+            RustlibLibDirStatus::EmptyOrNoRlibs.label(),
+            "empty-or-no-rlibs"
+        );
+    });
 
     crate::timed_test!(doctor_output_serializes_schema_version_one, {
         let output = DoctorOutput {
