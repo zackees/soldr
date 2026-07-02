@@ -302,7 +302,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
             // Try to recognize a target from argv so we can prep
             // before invoking cargo. If the user didn't pass `--target`,
-            // blessed prep is a no-op and we forward unchanged.
+            // only the host-side prep (managed cmake/ninja) runs and we
+            // forward otherwise unchanged.
             if let Some(target_triple) = extract_target_from_args(&full_args) {
                 let paths = crate::core::SoldrPaths::new()?;
                 let prep = crate::blessed_build::prepare(&paths, &target_triple).await?;
@@ -315,6 +316,9 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
                 if let Some(shim_dir) = prep.shim_path_dir.as_ref() {
                     prepend_to_path_env(shim_dir);
+                }
+                for dir in &prep.path_dirs {
+                    prepend_to_path_env(dir);
                 }
 
                 // soldr#882: auto-dispatch cargo subcommand based on
@@ -330,6 +334,24 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
                 }
                 full_args = insert_cargo_config_args(full_args, &cargo_args);
+            } else {
+                // Native host build (no --target): the cross-compile
+                // sysroot prep doesn't apply, but the managed cmake +
+                // ninja injection does — cmake-based *-sys build
+                // scripts run on the host regardless of target, and
+                // "use whatever cmake/make PATH serves" is exactly the
+                // failure mode soldr exists to remove (a pip-installed
+                // MSYS make + "MSYS Makefiles" generator broke native
+                // libz-ng-sys builds — see fetch::cmake_tools).
+                let paths = crate::core::SoldrPaths::new()?;
+                let mut prep = crate::blessed_build::BlessedPrep::default();
+                crate::blessed_build::inject_cmake_tooling(&paths, &mut prep).await;
+                for (k, v) in &prep.env {
+                    std::env::set_var(k, v);
+                }
+                for dir in &prep.path_dirs {
+                    prepend_to_path_env(dir);
+                }
             }
 
             // soldr#1079: ensure native Windows MSVC builds get LIB /

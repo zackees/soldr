@@ -52,6 +52,11 @@ pub struct BlessedPrep {
     /// Directory to prepend to `PATH` so the soldr-clang-shim wins
     /// when cc-rs (or ring) does a bare `which("clang")` lookup.
     pub shim_path_dir: Option<PathBuf>,
+    /// Additional directories to prepend to `PATH` on the child cargo
+    /// invocation (after `shim_path_dir`). Used for the managed
+    /// cmake/ninja `bin/` dirs so CMake's Ninja generator resolves the
+    /// managed ninja instead of whatever the system PATH serves.
+    pub path_dirs: Vec<PathBuf>,
     /// Per-target env-var tuples to set on the child cargo
     /// invocation: `[(NAME, VALUE), ...]`. Includes `CC_<t>`,
     /// `CXX_<t>`, `AR_<t>`, `CARGO_TARGET_<T>_LINKER` for MSVC
@@ -258,7 +263,113 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         inject_sys_library_overrides(paths, target_triple, &mut prep).await;
     }
 
+    // ----------------------- managed cmake + ninja ---------------------------
+    // Host-side tooling, independent of the compile target: cmake-based
+    // *-sys build scripts (libz-ng-sys, zstd-sys, ...) must run a
+    // known-good cmake with a sane generator, not whatever the system
+    // PATH resolves. See inject_cmake_tooling for the full contract.
+    inject_cmake_tooling(paths, &mut prep).await;
+
     Ok(prep)
+}
+
+/// Env var that opts out of the managed cmake/ninja injection and
+/// leaves cmake resolution to the system PATH. Set to any non-empty
+/// value (other than `"0"`) to trigger. Mirrors the
+/// `SOLDR_USE_LEGACY_*` env-var contract.
+pub const USE_SYSTEM_CMAKE_ENV_VAR: &str = "SOLDR_USE_SYSTEM_CMAKE";
+
+fn system_cmake_opt_out() -> bool {
+    std::env::var(USE_SYSTEM_CMAKE_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
+/// Inject the managed CMake + Ninja tooling env onto the prep.
+///
+/// What gets set (all only on success — every failure logs and falls
+/// through to system cmake, stub-until-ingested style):
+///
+/// * `CMAKE=<bundle>/bin/cmake` — the cmake-rs crate (used by every
+///   cmake-based *-sys build script) resolves the cmake binary from
+///   this env var before falling back to PATH.
+/// * `CMAKE_GENERATOR=Ninja` — cmake-rs forwards this as `-G`;
+///   only set when the managed ninja materialized. Ninja is immune
+///   to the "MSYS Makefiles + mangled MSVC flags" failure mode that
+///   a stray GNU make on PATH produces, and it needs no VS generator
+///   registry probing.
+/// * `prep.path_dirs` gets both bundles' `bin/` dirs — CMake's Ninja
+///   generator discovers `ninja` via PATH (there is no env-var
+///   equivalent of the `CMAKE_MAKE_PROGRAM` cache variable).
+///
+/// Skips (with no log noise) when the caller already set `CMAKE` or
+/// `CMAKE_GENERATOR` — explicit user env always wins — and when
+/// [`USE_SYSTEM_CMAKE_ENV_VAR`] opts out.
+pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
+    if system_cmake_opt_out() {
+        return;
+    }
+    // Respect explicit user config: a pre-set CMAKE or CMAKE_GENERATOR
+    // means someone already made this decision.
+    for user_var in ["CMAKE", "CMAKE_GENERATOR"] {
+        if std::env::var_os(user_var).is_some_and(|v| !v.is_empty()) {
+            return;
+        }
+    }
+
+    let host = crate::fetch::cmake_tools::current_host_triple();
+
+    let cmake_root = match crate::fetch::cmake_tools::ensure_cmake_bundle(paths, host).await {
+        Ok(root) => root,
+        Err(e) => {
+            log_cmake_unavailable("cmake", host, &e);
+            return;
+        }
+    };
+    let cmake_bin = crate::fetch::cmake_tools::cmake_exe(&cmake_root);
+    if !cmake_bin.is_file() {
+        eprintln!(
+            "soldr build: managed cmake bundle at {} has no {} — \
+             falling back to system cmake",
+            cmake_root.display(),
+            cmake_bin.display()
+        );
+        return;
+    }
+
+    prep.env.push((
+        "CMAKE".to_string(),
+        cmake_bin.to_string_lossy().into_owned(),
+    ));
+    prep.path_dirs.push(cmake_root.join("bin"));
+
+    // Ninja is the generator upgrade, but the managed cmake alone is
+    // already a win — don't tie the two together. Without ninja we
+    // leave the generator choice to cmake-rs (Visual Studio on MSVC
+    // hosts, Unix Makefiles elsewhere).
+    match crate::fetch::cmake_tools::ensure_ninja_bundle(paths, host).await {
+        Ok(ninja_root) => {
+            let ninja_bin = crate::fetch::cmake_tools::ninja_exe(&ninja_root);
+            if ninja_bin.is_file() {
+                prep.env
+                    .push(("CMAKE_GENERATOR".to_string(), "Ninja".to_string()));
+                prep.path_dirs.push(ninja_root.join("bin"));
+            } else {
+                eprintln!(
+                    "soldr build: managed ninja bundle at {} has no {} — \
+                     keeping cmake's default generator",
+                    ninja_root.display(),
+                    ninja_bin.display()
+                );
+            }
+        }
+        Err(e) => log_cmake_unavailable("ninja", host, &e),
+    }
+}
+
+fn log_cmake_unavailable(tool: &str, host: &str, err: &SoldrError) {
+    eprintln!("soldr build: managed {tool} unavailable for host {host}: {err}");
+    eprintln!("soldr build: continuing with system {tool} from PATH");
 }
 
 /// Env var that opts out of the entire `*-sys` catalogue-substitution
@@ -613,19 +724,59 @@ mod tests {
         // soldr#1064 Phase B: syslib catalogue overrides may populate
         // prep.env even on linux targets. The invariant we still want to
         // assert is "linux gets no Windows-xwin and no Apple-SDK prep" —
-        // opt out of catalogue injection to keep this test hermetic.
+        // opt out of catalogue injection (and the managed cmake/ninja
+        // injection, which is host-side and target-independent) to keep
+        // this test hermetic.
         std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
+        std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let result = tokio::runtime::Runtime::new()
             .unwrap()
             .block_on(prepare(&paths, "x86_64-unknown-linux-musl"));
         std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR);
+        std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR);
         let prep = result.expect("linux musl target should not error");
         assert!(prep.xwin_cache_dir.is_none());
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
         assert!(prep.cargo_args.is_empty());
+    });
+
+    crate::timed_test!(cmake_injection_respects_system_opt_out, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let mut prep = BlessedPrep::default();
+
+        std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(inject_cmake_tooling(&paths, &mut prep));
+        std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR);
+
+        assert!(prep.env.is_empty(), "opt-out must inject nothing");
+        assert!(prep.path_dirs.is_empty());
+    });
+
+    crate::timed_test!(cmake_injection_defers_to_user_cmake_env, {
+        // A caller-provided CMAKE (or CMAKE_GENERATOR) means the user
+        // already decided; the managed injection must stand down
+        // entirely — no fetch attempt, no env, no PATH dirs.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        for user_var in ["CMAKE", "CMAKE_GENERATOR"] {
+            let mut prep = BlessedPrep::default();
+            std::env::set_var(user_var, "user-choice");
+            rt.block_on(inject_cmake_tooling(&paths, &mut prep));
+            std::env::remove_var(user_var);
+            assert!(
+                prep.env.is_empty(),
+                "pre-set {user_var} must suppress injection"
+            );
+            assert!(prep.path_dirs.is_empty());
+        }
     });
 
     crate::timed_test!(mimalloc_build_script_override_uses_target_config, {
