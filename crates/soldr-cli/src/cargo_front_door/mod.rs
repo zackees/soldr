@@ -608,9 +608,11 @@ pub(crate) async fn run_cargo_front_door(
         // Cargo front door only: keep startup/low-disk warnings off unrelated
         // commands and out of the rustc-wrapper hot path.
         gc::emit_startup_target_warning_if_due();
-        // Best-effort auto-GC trigger (issue #323). Runs on a detached
-        // background thread; never blocks the build.
-        gc::maybe_kick_auto_gc(&paths);
+        // Issue #1286 (F5): the auto-GC trigger moved to build END (see
+        // `gc::maybe_spawn_auto_gc_sweeper` below). Kicking here — right
+        // after `build_active::set(true)` — always deferred with
+        // `reason=build_active`, so the sweep never ran on machines
+        // that only invoke soldr for builds.
     }
     let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
     path_dirs.push(cargo_bin_dir);
@@ -774,6 +776,13 @@ pub(crate) async fn run_cargo_front_door(
     // (before `post_cargo_result`) lets the post-build target-GC pass
     // run normally without thinking it's still inside the build.
     crate::cache_lib::build_active::set(false);
+    // Issue #1286 (F5): the build just ended — this is the idle
+    // transition, so fire the auto-GC sweep now, as a detached process
+    // that survives this wrapper's imminent exit. Throttled to once
+    // per 5-minute window by the marker inside.
+    if build_like_cargo {
+        gc::maybe_spawn_auto_gc_sweeper(&paths);
+    }
 
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {

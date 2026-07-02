@@ -41,6 +41,10 @@ RUN apt-get update \
        git \
        ca-certificates \
        curl \
+       cmake \
+       ninja-build \
+       jq \
+       zstd \
     && rm -rf /var/lib/apt/lists/*
 
 # soldr's `cargo test` jobs check the system rustc version; pin it here

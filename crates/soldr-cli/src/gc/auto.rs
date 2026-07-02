@@ -28,7 +28,24 @@ const AUTO_GC_DISABLE_ENV_VAR: &str = "SOLDR_AUTO_GC_DISABLED";
 /// dropped by the Tier-0 step of `run_auto_gc_background`.
 const DAEMON_EVENT_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 
-pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
+/// Issue #1286 (F5): spawn the auto-GC sweep as a DETACHED PROCESS at
+/// build end instead of an in-process thread at build start.
+///
+/// The previous design (`maybe_kick_auto_gc`, a detached thread kicked
+/// from the front door right after `build_active::set(true)`) could
+/// never actually sweep: the thread woke up inside an active build,
+/// deferred with `reason=build_active`, and re-armed the marker — on a
+/// machine where soldr only runs during builds, the log showed days of
+/// continuous deferrals and a 36 GB cache. A post-build thread doesn't
+/// work either: the wrapper process exits right after cargo does,
+/// killing the sweep mid-flight. A detached `soldr gc auto-sweep`
+/// child survives the wrapper's exit and starts with
+/// `build_active == false` in its own process.
+///
+/// The 5-minute throttle marker still bounds the spawn frequency, so
+/// steady-state builds pay one `stat` here and at most one process
+/// spawn per throttle window.
+pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
     if auto_gc_env_disabled() {
         return;
     }
@@ -42,17 +59,38 @@ pub(crate) fn maybe_kick_auto_gc(paths: &SoldrPaths) {
     if !auto_gc_throttle_expired(&marker, AUTO_GC_THROTTLE_SECONDS) {
         return;
     }
-    // Touch the marker before spawning so a crashing background thread
-    // doesn't cause us to immediately rerun on the next invocation.
+    // Touch the marker before spawning so a crashing sweeper doesn't
+    // cause us to immediately rerun on the next invocation.
     let _ = touch_auto_gc_marker(&marker);
 
-    let log_path = crate::cache_lib::auto_gc_log_path(paths);
-    let paths_root = paths.root.clone();
-    let _ = std::thread::Builder::new()
-        .name("soldr-auto-gc".to_string())
-        .spawn(move || {
-            run_auto_gc_background(paths_root, log_path);
-        });
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["gc", "auto-sweep"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW —
+        // same detach semantics as daemon::lifecycle::spawn_detached_inner.
+        const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+        cmd.creation_flags(FLAGS);
+    }
+    let _ = cmd.spawn();
+}
+
+/// Issue #1286 (F5): synchronous entry point behind the hidden
+/// `soldr gc auto-sweep` verb. The spawner above already consumed the
+/// throttle marker, so this runs the sweep unconditionally (the
+/// `build_active` preamble check still applies inside).
+pub(crate) fn run_gc_auto_sweep_command() -> Result<(), crate::core::SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let log_path = crate::cache_lib::auto_gc_log_path(&paths);
+    run_auto_gc_background(paths.root.clone(), log_path);
+    Ok(())
 }
 
 fn auto_gc_env_disabled() -> bool {
@@ -115,6 +153,13 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         rearm_auto_gc_marker(&paths);
         return;
     }
+
+    // Issue #1286 (F5): record that a sweep actually STARTED. Before
+    // this line the log could only ever contain deferrals and tier
+    // actions, so "GC ran but found nothing to do" and "GC never ran"
+    // were indistinguishable — which is how days of silent starvation
+    // went unnoticed.
+    let _ = append_auto_gc_log_line(&log_path, "auto-gc status=run stage=start");
 
     // Tier-0 (Phase 2): prune `daemon_events` rows older than 30 days
     // before any disk-pressure tiers run. Bounded, cheap, runs even when
