@@ -82,6 +82,12 @@ jobs:
           path: ${{ runner.temp }}/soldr-bin/soldr
           key: bootstrap-soldr-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
 
+      # soldr#1237 — dropped the custom `--target-dir "$RUNNER_TEMP/
+      # soldr-bootstrap-target"` so cargo writes to workspace `target/`
+      # where rust-cache (added in #1236) saves + restores it. The
+      # subsequent `Build soldr-cli via soldr cargo zigbuild` writes
+      # to `target/<musl-triple>/release/` — different subtree, no
+      # conflict.
       - name: Bootstrap soldr from checkout
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         env:
@@ -89,15 +95,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bootstrap_target="$RUNNER_TEMP/soldr-bootstrap-target"
           "$CARGO_HOME/bin/cargo" build \
             --package soldr-cli \
             --release \
             --locked \
-            --target x86_64-unknown-linux-gnu \
-            --target-dir "$bootstrap_target"
+            --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp "$bootstrap_target/x86_64-unknown-linux-gnu/release/soldr" "$RUNNER_TEMP/soldr-bin/soldr"
+          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
           chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
 
       - name: Expose bootstrap soldr on PATH
