@@ -366,11 +366,12 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v7_after_streaming_compile, {
-        // Bumped from 6 → 7 in #983 Phase 5b when the daemon switched
-        // from a single-frame Response::Compile to streaming
-        // CompileStdoutChunk / CompileStderrChunk / CompileDone.
-        assert_eq!(PROTOCOL_VERSION, 7);
+    crate::timed_test!(protocol_version_is_v8_after_flush_caches, {
+        // Bumped from 7 → 8 in #1286 F1 when Request::FlushCaches was
+        // added so `soldr save` / `cache flush` can checkpoint the
+        // embedded zccache state without a daemon shutdown. (7 came
+        // from #983 Phase 5b's streaming Compile reply.)
+        assert_eq!(PROTOCOL_VERSION, 8);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
