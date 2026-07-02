@@ -92,6 +92,15 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
+      # soldr#1241 — cache ~/.cargo/{registry,git} + target/ so
+      # `Build workspace + tests`, `Run library tests`, `Run CLI
+      # smoke tests` don't recompile ~700 deps from scratch every
+      # run. Same SHA-pinned action as #1228/#1233/#1236/#1238/#1240.
+      - name: Restore cargo + target caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: build-and-test-${{ inputs.target }}
+
       - name: Enable Windows line-table debug symbols
         if: runner.os == 'Windows'
         shell: pwsh
