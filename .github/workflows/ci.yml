@@ -71,6 +71,15 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
+      # soldr#1239 — cache ~/.cargo/{registry,git} + target/ so `cargo
+      # clippy --workspace --all-targets` doesn't recompile ~700 deps
+      # from scratch every CI run. Same SHA-pinned action as #1228/
+      # #1233/#1236/#1238.
+      - name: Restore cargo + target caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: lint
+
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
