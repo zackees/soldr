@@ -156,9 +156,11 @@ jobs:
         with:
           tool: cargo-xwin@0.18.6
 
-      # nextest — required for the test archive output.
+      # nextest — required for the test archive output. soldr#1291 —
+      # matches the archive step's `if:` so MSVC/darwin lanes (which
+      # skip the archive) don't install a tool they never invoke.
       - name: Install cargo-nextest
-        if: inputs.build_test_archive
+        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-nextest
