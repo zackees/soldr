@@ -100,28 +100,35 @@ jobs:
       # msvc lanes. Musl lanes now install only musl-tools; msvc/darwin
       # fold `apt-get update` into the clang-stack install; linux-gnu
       # lanes skip apt entirely.
+      # soldr#1296 — try install-only first; fall back to update+install
+      # if apt cache is stale. ubuntu-24.04 GHA images ship recent apt
+      # metadata, so the fast path almost always works and saves ~5 s
+      # per lane.
       - name: Install musl-tools
         if: contains(inputs.target, 'linux-musl')
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends musl-tools
+          sudo apt-get install -y --no-install-recommends musl-tools \
+            || (sudo apt-get update \
+                && sudo apt-get install -y --no-install-recommends musl-tools)
 
       - name: Install apt deps (clang stack for MSVC/darwin)
         if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
           # soldr#1279 — dropped llvm-dev. It pulled ~150 MB of libLLVM
           # headers + shared library, but no crate in the dep tree links
           # against libLLVM (grep -R llvm-sys Cargo.lock is empty).
           # llvm-ar / llvm-ranlib come from `llvm` alone. libclang-dev
           # stays because zccache's `clang` crate needs libclang.so at
           # build time.
-          sudo apt-get install -y --no-install-recommends \
-            clang lld llvm libclang-dev
+          # soldr#1296 — same install-only fast path as musl-tools above.
+          pkgs="clang lld llvm libclang-dev"
+          sudo apt-get install -y --no-install-recommends $pkgs \
+            || (sudo apt-get update \
+                && sudo apt-get install -y --no-install-recommends $pkgs)
 
       # zig + cargo-zigbuild — required for musl and aarch64-linux-gnu
       # cross-builds. Darwin is intentionally EXCLUDED: since soldr#1081
