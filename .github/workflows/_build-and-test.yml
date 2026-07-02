@@ -108,9 +108,10 @@ jobs:
           "CARGO_PROFILE_DEV_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "CARGO_PROFILE_TEST_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-      - name: Restore checkout after soldr-cook
-        shell: pwsh
-        run: git restore --worktree -- .
+      # soldr#1254 — removed the "Restore checkout after soldr-cook"
+      # step. Same failure pattern as #1252: setup-soldr's `cache: false`
+      # (#1083) disables cook, so nothing rewrites the workspace and
+      # `git restore --worktree -- .` was 4-7 s of dead code.
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. Same rationale as the sibling in _bootstrap-e2e.yml:
