@@ -224,13 +224,12 @@ jobs:
         if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && steps.bootstrap_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
-          # soldr#1270 — route bootstrap through zccache so unchanged
-          # deps hit the cache seeded by setup-soldr instead of
-          # recompiling from scratch on every crates/** change.
-          # zccache is a separate binary from soldr, so there is no
-          # circular dependency here — the old `RUSTC_WRAPPER: ""` was
-          # a wrong-shape defensive from the pre-zccache workflow.
-          RUSTC_WRAPPER: zccache
+          # soldr#1274 reverts soldr#1270: routing bootstrap through
+          # zccache 1.11.6 added ~35 s/lane of per-invocation overhead
+          # AND still reported 0 hits (the 0-hit residual — soldr#400
+          # — is real and bites here). Back to bare rustc until zccache
+          # actually delivers hits on this call pattern.
+          RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
           cargo build --release --locked --package soldr-cli \
