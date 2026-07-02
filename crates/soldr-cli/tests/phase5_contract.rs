@@ -12,12 +12,13 @@
 //!     versions.
 //!
 //!   * **Phase 5c — env filter.** `compile_dispatch::is_compile_env_var`
-//!     keeps the rustc / cc-rs / zccache / MSVC-host (soldr#1079) env
-//!     vars and drops the noisy `CARGO_PKG_*` / `PROMPT` / etc. set.
-//!     The Cold flame chart in #981 measured the daemon's tokio
-//!     runtime burning 10–13% on prost-encoding ~20–50 KB of useless
-//!     env per compile; the filter must keep the per-compile payload
-//!     under ~5 KB for representative workloads.
+//!     forwards the compile-relevant env (rustc / cc-rs / zccache /
+//!     MSVC-host (soldr#1079) vars AND arbitrary build-script
+//!     `cargo:rustc-env` vars — see the linux-arm-musl crgx
+//!     regression) while dropping known interactive-session noise
+//!     (`PROMPT`, `DISPLAY`, `XDG_*`, ...). It is a noise DENYLIST:
+//!     an allowlist can never enumerate `cargo:rustc-env` names, and
+//!     dropping one hard-fails `env!()` in the daemon-spawned rustc.
 //!
 //!   * **Phase 5d — dispatch parallelism contract.** The IPC server
 //!     accepts each connection with a per-connection `tokio::spawn`
@@ -183,26 +184,27 @@ timed_test!(
     is_compile_env_var_drops_cargo_pkg_noise,
     Duration::from_secs(5),
     {
-        // Soldr#981's Phase 5c profile showed CARGO_PKG_* metadata
-        // was ~10-50 KB per compile of useless prost serialization.
-        // The filter must drop the description / authors / homepage
-        // /readme / license set while keeping CARGO_PKG_NAME and
-        // CARGO_PKG_VERSION (cargo treats these as build-script
-        // contract).
+        // The filter must keep cargo's compile contract vars (and, per
+        // the linux-arm-musl crgx regression, any build-script-emitted
+        // `cargo:rustc-env` var — arbitrary names, so the filter is a
+        // noise denylist) while still dropping interactive-session
+        // noise from the per-compile prost payload.
         use soldr_cli::compile_dispatch::is_compile_env_var;
         for kept in [
             "CARGO_PKG_NAME",
             "CARGO_PKG_VERSION",
             "CARGO_CFG_TARGET_ARCH",
+            // build-script `cargo:rustc-env` vars — names are arbitrary
+            "CRGX_TARGET",
+            "VERGEN_GIT_SHA",
         ] {
             assert!(
                 is_compile_env_var(kept),
-                "{kept} must be forwarded (cargo build-script contract)"
+                "{kept} must be forwarded (cargo compile contract / \
+                 build-script rustc-env)"
             );
         }
-        // These CARGO_* vars ARE kept today because the filter is
-        // prefix-based — but the IMPORTANT invariant is that totally
-        // unrelated env doesn't slip through.
+        // Known session-noise vars must stay out of the payload.
         for dropped in [
             "PROMPT",
             "PS1",
