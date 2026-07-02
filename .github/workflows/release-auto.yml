@@ -209,18 +209,23 @@ jobs:
           # aarch64-musl below + the every-commit ci.yml darwin lanes
           # (PR #1052).
           # soldr#1140/#1187/#1220/#1223/#1226/#1231 chain: Linux → x86_64-
-          # apple-darwin cross via zig-cc kept revealing new incomplete-
-          # SDK / archive-format issues (libiconv, CommonCrypto, libz-ng
-          # archive terminator, ...) — every fix uncovered another leaf.
-          # Switch to the native macos-13 (x86_64) runner: Apple's own
-          # toolchain builds natively, no cross-compile fragility. macos-
-          # 13 is the last remaining Intel macOS GHA runner. Cost ~10x
-          # ubuntu-24.04, still measured in cents per release. Same
-          # native-runner shape as the macOS ARM64 lane.
-          - name: macOS x64
-            runner: macos-13
-            target: x86_64-apple-darwin
-            binary: soldr
+          # apple-darwin cross via zig-cc revealed multiple incomplete-SDK
+          # / archive-format issues (libiconv, CommonCrypto, libz-ng archive
+          # terminator, ...). soldr#1234 switched to native `macos-13` to
+          # bypass cross-compile fragility entirely. That worked
+          # correctness-wise but exposed a second issue: GHA's macos-13
+          # Intel runner pool is severely saturated (v0.7.94 release run
+          # 28556957818 sat queued for 3+ hours without ever starting the
+          # macOS x64 job). Every attempt just parks in queue.
+          #
+          # Pragmatic decision: **drop x86_64-apple-darwin from the release
+          # matrix** for the 0.7.9x line. Intel Macs are a shrinking user
+          # segment (Apple stopped shipping them in 2023), and pip users on
+          # Intel Mac can still install via sdist. If/when GHA either
+          # improves macos-13 capacity or provides a hosted Rosetta path
+          # under macos-15, we re-add.
+          #
+          # x86_64-apple-darwin: **intentionally omitted** — see comment above.
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
@@ -1631,9 +1636,10 @@ jobs:
           # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
           pypi_version="${PYPI_VERSION#v}"
           # Expected wheel count == number of non-musl matrix rows in the
-          # `build` job (the musl rows skip wheel build by design). 6 = 2
-          # linux-gnu + 2 darwin + 2 windows-msvc.
-          expected=6
+          # `build` job (the musl rows skip wheel build by design). 5 = 2
+          # linux-gnu + 1 darwin (aarch64-only per soldr#1237 macos-x64
+          # drop) + 2 windows-msvc.
+          expected=5
           deadline=$(( $(date +%s) + 1800 ))
           attempts=0
           max_attempts=60
