@@ -2,6 +2,7 @@ use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
 use std::{
+    ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::Read,
     path::{Path, PathBuf},
@@ -76,12 +77,62 @@ pub(crate) fn ensure_daemon_relocated(
     paths: &SoldrPaths,
     daemon_src: &Path,
 ) -> Result<PathBuf, SoldrError> {
+    // soldr#1300: a maturin-repaired wheel binary loads bundled shared
+    // libraries through a path RELATIVE TO THE BINARY'S OWN LOCATION
+    // (`@loader_path/../<pkg>.dylibs/...` on macOS). Copying just the
+    // executable into the runtime dir strands that reference and dyld
+    // kills the daemon at exec — before main(), before any logging —
+    // so the wrapper saw NotRunning for the full retry budget on every
+    // compile. Run the daemon in place instead; on Unix an upgrade /
+    // uninstall can unlink the running binary without waiting for the
+    // daemon to exit, so the relocation's motivation doesn't apply.
+    if exe_depends_on_bundled_wheel_libs(daemon_src) {
+        return Ok(daemon_src.to_path_buf());
+    }
     let runtime_root = daemon_runtime_root(paths);
     fs::create_dir_all(&runtime_root)?;
     if path_is_under(daemon_src, &runtime_root) {
         return Ok(daemon_src.to_path_buf());
     }
     ensure_relocated_exe_in(&runtime_root, daemon_src)
+}
+
+/// Detect the maturin "repaired wheel" layout (soldr#1300).
+///
+/// From maturin 1.13.2 the macOS `bin`-bindings wheels are repaired
+/// delocate-style: the real executables live under
+/// `<platlib>/<pkg>.scripts/`, bundled external dylibs under the
+/// sibling `<platlib>/<pkg>.dylibs/`, and every executable's
+/// `LC_LOAD_DYLIB` entry for a bundled lib is rewritten to
+/// `@loader_path/../<pkg>.dylibs/<lib>` (soldr 0.7.98's macOS wheel
+/// ships `liblzma` this way). Such a binary only runs from its
+/// original directory — copied anywhere else, dyld aborts it at exec
+/// with "Library not loaded".
+///
+/// The check is pure path logic (parent dir named `<pkg>.scripts`
+/// with a sibling `<pkg>.dylibs` / `<pkg>.libs` directory) so it can
+/// be exercised on every platform. `<pkg>.libs` is auditwheel's
+/// equivalent bundle dir on Linux, covered pre-emptively — today's
+/// Linux wheels ship unrepaired binaries.
+pub(crate) fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
+    let Some(parent) = exe.parent() else {
+        return false;
+    };
+    let Some(dir_name) = parent.file_name().and_then(OsStr::to_str) else {
+        return false;
+    };
+    let Some(pkg) = dir_name.strip_suffix(".scripts") else {
+        return false;
+    };
+    if pkg.is_empty() {
+        return false;
+    }
+    let Some(grandparent) = parent.parent() else {
+        return false;
+    };
+    ["dylibs", "libs"]
+        .iter()
+        .any(|kind| grandparent.join(format!("{pkg}.{kind}")).is_dir())
 }
 
 /// Periodic GC sweep for the daemon-runtime sub-tree. Same cadence and
@@ -473,6 +524,80 @@ mod tests {
         let reused = ensure_daemon_relocated(&paths, &relocated).expect("noop relocation");
         assert_eq!(reused, relocated);
     }
+
+    // soldr#1300 — the maturin-repaired macOS wheel layout: binaries
+    // under `<platlib>/soldr.scripts/` load bundled dylibs via
+    // `@loader_path/../soldr.dylibs/`. Relocating the daemon out of
+    // that directory strands the reference and dyld kills it at exec,
+    // so `ensure_daemon_relocated` must run it in place.
+    crate::timed_test!(daemon_in_repaired_wheel_layout_is_not_relocated, {
+        let temp = TempDir::new().expect("tempdir");
+        let platlib = temp.path().join("site-packages");
+        let scripts = platlib.join("soldr.scripts");
+        fs::create_dir_all(&scripts).expect("scripts dir");
+        fs::create_dir_all(platlib.join("soldr.dylibs")).expect("dylibs dir");
+        let daemon = scripts.join("soldr-daemon");
+        fs::write(&daemon, b"daemon-bin").expect("write daemon");
+
+        assert!(exe_depends_on_bundled_wheel_libs(&daemon));
+
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let resolved = ensure_daemon_relocated(&paths, &daemon).expect("resolve daemon");
+        assert_eq!(
+            resolved, daemon,
+            "repaired-wheel daemon must run in place, not from the runtime copy"
+        );
+        assert!(
+            !daemon_runtime_root(&paths).exists()
+                || fs::read_dir(daemon_runtime_root(&paths))
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(true),
+            "no runtime copy may be materialized for a repaired-wheel daemon"
+        );
+    });
+
+    // The auditwheel spelling (`<pkg>.libs`) is covered pre-emptively.
+    crate::timed_test!(repaired_wheel_detection_accepts_auditwheel_libs_dir, {
+        let temp = TempDir::new().expect("tempdir");
+        let scripts = temp.path().join("soldr.scripts");
+        fs::create_dir_all(&scripts).expect("scripts dir");
+        fs::create_dir_all(temp.path().join("soldr.libs")).expect("libs dir");
+        let daemon = scripts.join("soldr-daemon");
+        fs::write(&daemon, b"daemon-bin").expect("write daemon");
+
+        assert!(exe_depends_on_bundled_wheel_libs(&daemon));
+    });
+
+    crate::timed_test!(plain_layouts_are_still_relocated, {
+        let temp = TempDir::new().expect("tempdir");
+
+        // `.scripts` dir WITHOUT a sibling bundle dir → not repaired
+        // (nothing @loader_path-relative to strand): relocate normally.
+        let scripts_only = temp.path().join("a").join("soldr.scripts");
+        fs::create_dir_all(&scripts_only).expect("scripts dir");
+        let daemon = scripts_only.join("soldr-daemon");
+        fs::write(&daemon, b"daemon-bin").expect("write daemon");
+        assert!(!exe_depends_on_bundled_wheel_libs(&daemon));
+
+        // Bundle dir with a mismatched package prefix → unrelated.
+        let other = temp.path().join("b").join("soldr.scripts");
+        fs::create_dir_all(&other).expect("scripts dir");
+        fs::create_dir_all(temp.path().join("b").join("otherpkg.dylibs")).expect("dylibs dir");
+        let daemon_b = other.join("soldr-daemon");
+        fs::write(&daemon_b, b"daemon-bin").expect("write daemon");
+        assert!(!exe_depends_on_bundled_wheel_libs(&daemon_b));
+
+        // Ordinary sibling layout (dev target/, venv bin/) → relocate.
+        let plain = temp.path().join("bin").join("soldr-daemon");
+        fs::create_dir_all(plain.parent().unwrap()).expect("bin dir");
+        fs::write(&plain, b"daemon-bin").expect("write daemon");
+        assert!(!exe_depends_on_bundled_wheel_libs(&plain));
+
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+        let relocated = ensure_daemon_relocated(&paths, &plain).expect("relocate daemon");
+        assert_ne!(relocated, plain, "plain layout must still relocate");
+        assert!(relocated.starts_with(daemon_runtime_root(&paths)));
+    });
 
     #[test]
     fn runtime_gc_removes_stale_dirs_and_skips_current_and_fresh() {
