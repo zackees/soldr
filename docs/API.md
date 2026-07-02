@@ -1306,6 +1306,20 @@ Commands:
 
 ---
 
+## PEP 517 Build Backend
+
+The `soldr` PyPI package doubles as a PEP 517 build backend (`src/soldr/__init__.py`, soldr#1264). Point your `pyproject.toml` at it and soldr fetches a pinned maturin, drives `soldr maturin pep517 <hook>`, and caches every rustc invocation via `RUSTC_WRAPPER=soldr`:
+
+```toml
+[build-system]
+requires = ["soldr"]
+build-backend = "soldr"
+```
+
+The backend pins `CARGO_TARGET_DIR` to the stable per-user path `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds (pip/uv copy the sdist to a throwaway temp dir, discarding `target/` after every build) keep cargo's incremental cache hot across invocations — ingested from FastLED/fbuild's `setup.py` (fbuild#829). A caller-provided `CARGO_TARGET_DIR` always wins, and `SOLDR_PEP517_STABLE_TARGET_DIR=0` disables the pin entirely.
+
+---
+
 ## Environment Variables
 
 | Variable | Purpose | Default |
@@ -1329,6 +1343,7 @@ Commands:
 | `ZCCACHE_PATH_REMAP` | zccache path-remap mode. soldr seeds `auto` on the child cargo for managed-zccache builds so multiple git worktrees of the same repo share cache hits (issue #352, Tier L1.x). Caller-supplied values are preserved. Requires a real `.git/` checkout — tarball/zip checkouts silently fall back to no remap. | unset (soldr injects `auto`) |
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
 | `SCCACHE_DIR` | sccache cache-root override soldr injects when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has not set it themselves | `~/.soldr/cache/sccache` |
+| `SOLDR_PEP517_STABLE_TARGET_DIR` | PEP 517 backend only: set to `0` / `false` / `no` / `off` to skip pinning `CARGO_TARGET_DIR` to `~/.soldr/cargo-target/wheel-build` for isolated builds (see [PEP 517 Build Backend](#pep-517-build-backend)). A caller-provided `CARGO_TARGET_DIR` always wins regardless. | unset (pin enabled) |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
 | `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` | Default-on: skip `rust-plan restore` when `target/` is already warm from a prior step in the same GitHub Actions job + attempt (issue #229). Set to a falsy value (`0` / `false` / `no` / `off`) to opt out. | unset (on) |

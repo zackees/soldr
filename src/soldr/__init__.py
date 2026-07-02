@@ -30,6 +30,28 @@ def _prep_env() -> "dict[str, str]":
     env = os.environ.copy()
     env.setdefault("RUSTC_WRAPPER", "soldr")
     env.setdefault("ZCCACHE_PATH_REMAP", "auto")
+    # Stable CARGO_TARGET_DIR for PEP 517 isolated builds. When pip/uv
+    # build from an sdist they copy the sources to a throwaway temp dir,
+    # so `<srcdir>/target/` is discarded after every build and cargo
+    # runs cold each time (25-30s+ per `pip install`). Pinning the
+    # target dir to a stable per-user path keeps cargo's incremental
+    # fingerprint cache hot across isolated builds.
+    #
+    # Ingested from FastLED/fbuild's setup.py (`WHEEL_BUILD_TARGET_DIR`,
+    # FastLED/fbuild#829): one shared `wheel-build` dir, deliberately
+    # separate from any dev `<repo>/target/` so `pip install` and the
+    # dev CLI don't invalidate each other's artifacts. Cargo keys
+    # artifacts by package, so sharing one dir across projects is safe.
+    #
+    # Escape hatches: a caller-provided CARGO_TARGET_DIR always wins
+    # (setdefault), and SOLDR_PEP517_STABLE_TARGET_DIR=0 (or false/no/
+    # off) skips the pin entirely.
+    knob = env.get("SOLDR_PEP517_STABLE_TARGET_DIR", "").strip().lower()
+    if knob not in ("0", "false", "no", "off"):
+        env.setdefault(
+            "CARGO_TARGET_DIR",
+            str(Path.home() / ".soldr" / "cargo-target" / "wheel-build"),
+        )
     return env
 
 
