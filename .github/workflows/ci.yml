@@ -103,7 +103,11 @@ jobs:
 
   build-linux-x64:
     name: Linux x64
-    needs: lint
+    # soldr#1258 — dropped `needs: lint`. Every cross-build lane runs in
+    # parallel with Lint; the sequential gate here was inconsistent and
+    # added ~130 s to the CI critical path. Lint remains a required
+    # status check via branch protection, so a Lint failure still blocks
+    # merge — the `needs:` clause was purely a wallclock cost.
     if: github.ref_name == 'main'
     uses: ./.github/workflows/_build-and-test.yml
     with:
