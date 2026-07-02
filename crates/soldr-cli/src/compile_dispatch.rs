@@ -356,6 +356,26 @@ mod tests {
     );
 
     timed_test!(
+        is_compile_env_var_forwards_apple_sdk_vars,
+        Duration::from_secs(5),
+        {
+            // Regression test for the darwin cross-compile lanes (run
+            // 28574600982). The workflow exports SDKROOT
+            // before `soldr cargo zigbuild --target *-apple-darwin`;
+            // rustc reads it to locate the Apple SDK when linking (it
+            // appends `-isysroot <sdk>` to the cc-style linker), and the
+            // zig-cc linker shim reads it again for the SDK library
+            // search path. The daemon replays the filtered env into
+            // rustc (env_clear + replay), so dropping any of these
+            // makes every `-lobjc` / `-framework` link fail with
+            // "unable to find dynamic system library 'objc'".
+            for v in ["SDKROOT", "DEVELOPER_DIR", "MACOSX_DEPLOYMENT_TARGET"] {
+                assert!(is_compile_env_var(v), "{v} must be forwarded to daemon");
+            }
+        }
+    );
+
+    timed_test!(
         is_compile_env_var_drops_common_noise,
         Duration::from_secs(5),
         {
