@@ -28,13 +28,6 @@ on:
         type: string
         required: true
         description: Name to use for the uploaded artifact.
-      build_test_archive:
-        type: boolean
-        default: true
-        description: |
-          Build a `cargo nextest archive` of test binaries alongside
-          the release binary. Set false to skip — useful for lanes
-          that don't run tests downstream.
       source_ref:
         type: string
         default: ""
@@ -160,7 +153,7 @@ jobs:
       # matches the archive step's `if:` so MSVC/darwin lanes (which
       # skip the archive) don't install a tool they never invoke.
       - name: Install cargo-nextest
-        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
+        if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-nextest
@@ -368,7 +361,7 @@ jobs:
       # `soldr --version` smoke test for these targets. Tracked as
       # #1068 (windows) and the post-#1112 mimalloc dep tree (darwin).
       - name: Build nextest archive
-        if: inputs.build_test_archive && !contains(inputs.target, 'pc-windows-msvc') && !contains(inputs.target, 'apple-darwin')
+        if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
         shell: bash
         env:
           # soldr#1168 — drop full DWARF from test binaries so the
