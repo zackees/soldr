@@ -326,8 +326,19 @@ jobs:
       # for both darwin lanes (cross-compile from linux replaces
       # macos-runner builds). Same pinned versions as the every-commit
       # _ci-cross-build-linux.yml workflow.
-      - name: Setup zig (zigbuild lanes)
-        if: matrix.target == 'aarch64-unknown-linux-musl' || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
+      # soldr#1005 / fbuild ingestion: zig is ALSO needed on the two
+      # linux-gnu lanes so `maturin build --zig` can link the wheel's
+      # embedded soldr binary against a glibc 2.17 floor and tag the
+      # wheel manylinux_2_17. Without zig, maturin links against the
+      # runner's glibc (2.39 on ubuntu-24.04) and auto-tags
+      # manylinux_2_39 — pip on any older glibc (ubuntu-22.04 CI,
+      # enterprise containers) then falls back to the ancient 0.1.0
+      # placeholder sdist, breaking soldr as a PEP 517
+      # `requires=["soldr"]` backend org-wide. Same glibc-floor pattern
+      # as FastLED/fbuild's .github/workflows/template_native_build.yml
+      # (`cargo zigbuild --target <arch>-unknown-linux-gnu.2.17`).
+      - name: Setup zig (zigbuild + manylinux_2_17 wheel lanes)
+        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'unknown-linux-gnu') || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
@@ -1125,10 +1136,32 @@ jobs:
           fi
 
           uv tool install "maturin>=1.7,<2"
+
+          # soldr#1005 / fbuild ingestion: on the linux-gnu lanes,
+          # build the wheel with maturin's zig integration so the
+          # embedded soldr binary links against a glibc 2.17 floor and
+          # the wheel is tagged manylinux_2_17. `--compatibility pypi`
+          # alone lets maturin auto-tag from the runner glibc
+          # (manylinux_2_39 on ubuntu-24.04), which excludes every
+          # glibc<2.39 consumer and triggers pip's fallback to the
+          # 0.1.0 placeholder sdist. Reference implementation:
+          # FastLED/fbuild .github/workflows/template_native_build.yml
+          # (`cargo zigbuild --target <arch>-unknown-linux-gnu.2.17`);
+          # maturin --zig routes through the same cargo-zigbuild
+          # machinery (zig cc as linker + TARGET_CC for cc-rs build
+          # scripts) internally. macOS / Windows lanes keep
+          # `--compatibility pypi` untouched.
+          compat_args=(--compatibility pypi)
+          case "${{ matrix.target }}" in
+            *-unknown-linux-gnu)
+              compat_args=(--zig --compatibility manylinux_2_17)
+              ;;
+          esac
+
           maturin build \
             --release \
             --locked \
-            --compatibility pypi \
+            "${compat_args[@]}" \
             --auditwheel repair \
             --target "${{ matrix.target }}" \
             --target-dir target \
@@ -1185,6 +1218,49 @@ jobs:
           print(
               f"wheel version lint OK: {len(wheels)} wheel(s) all tagged {expected!r}:"
           )
+          for w in wheels:
+              print(f"  - {w.name}")
+
+      - name: Assert linux-gnu wheels are tagged manylinux_2_17
+        if: contains(matrix.target, 'unknown-linux-gnu')
+        shell: python
+        run: |
+          # soldr#1005 / fbuild ingestion: hard assertion-gate in the
+          # spirit of FastLED/fbuild's `NO CHEATING` artifact gates
+          # (cf. fbuild ci/docker-mac-cross/build.sh:77-84, where
+          # file(1) must report Mach-O for every cross-built artifact
+          # or the lane fails loudly — a silently host-linked binary
+          # must never ship). Here the equivalent silent failure mode
+          # is maturin quietly falling back to the runner glibc and
+          # tagging manylinux_2_39: the wheel still builds, still
+          # smoke-tests on the 2.39 runner, and only breaks downstream
+          # when pip on glibc<2.39 skips it and installs the 0.1.0
+          # placeholder sdist instead. Fail the lane at build time if
+          # any linux wheel filename is not manylinux_2_17-tagged.
+          import sys
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheels in dist/ — maturin produced nothing?")
+          bad = [w.name for w in wheels if "manylinux_2_17" not in w.name]
+          if bad:
+              msg = ["manylinux_2_17 tag assertion FAILED:"]
+              for name in bad:
+                  msg.append(f"  - {name}")
+              msg.append("")
+              msg.append(
+                  "Every linux-gnu wheel must carry the manylinux_2_17 "
+                  "platform tag (glibc 2.17 floor via `maturin build "
+                  "--zig --compatibility manylinux_2_17`). A higher tag "
+                  "(e.g. manylinux_2_39 from the runner glibc) makes "
+                  "`pip install soldr` on older glibc fall back to the "
+                  "0.1.0 placeholder sdist — the soldr#1005 trap. Check "
+                  "that zig is on PATH and the maturin invocation kept "
+                  "the --zig/--compatibility args for this lane."
+              )
+              sys.exit("\n".join(msg))
+          print(f"manylinux_2_17 tag assertion OK: {len(wheels)} wheel(s):")
           for w in wheels:
               print(f"  - {w.name}")
 
