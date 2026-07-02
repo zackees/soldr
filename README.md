@@ -196,6 +196,45 @@ soldr cargo-dylint check
 soldr rustfmt src/main.rs
 ```
 
+## Use soldr as your PEP 517 build backend (instead of maturin)
+
+For Rust+Python packages, point `pyproject.toml` at soldr instead of
+maturin and `pip install .` / `uv pip install .` route the whole build
+through soldr:
+
+```toml
+[build-system]
+requires = ["soldr"]
+build-backend = "soldr"
+
+# Your existing [tool.maturin] section stays exactly as it is —
+# soldr drives a pinned maturin under the hood, so all maturin
+# configuration keeps working unchanged.
+[tool.maturin]
+manifest-path = "crates/my-crate/Cargo.toml"
+module-name = "my_pkg._native"
+python-source = "src"
+```
+
+That is the entire change — no `maturin` entry in `requires`, no other
+files touched. What you get over `build-backend = "maturin"`:
+
+- **Pinned maturin, fetched on demand** — soldr downloads a pinned
+  maturin binary (or provisions the PyPI wheel in an isolated
+  uv-managed env if the binary fetch misses). Reproducible across
+  machines; nothing to add to your dependencies.
+- **Toolchain pinning** — the build uses the rustup toolchain your
+  `rust-toolchain.toml` declares (MSVC on Windows), even when a stray
+  GNU cargo or mingw shadows it on `PATH`.
+- **Managed cmake + ninja** — cmake-based `*-sys` crates
+  (`libz-ng-sys`, `zstd-sys`, ...) configure with pinned tools from the
+  soldr toolchain archive instead of whatever `cmake`/`make` your
+  `PATH` happens to serve.
+- **Compilation caching** — rustc invocations run under soldr's
+  `RUSTC_WRAPPER`, so repeat builds hit the cache.
+
+soldr's own wheel is built this way (see this repo's `pyproject.toml`).
+
 ## How it works
 
 soldr is a **chameleon binary**: one executable that picks its role from `argv[1]` on every invocation. Three roles:
