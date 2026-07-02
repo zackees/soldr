@@ -355,7 +355,7 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 // =========================================================================
 //
 // As of issue #1081 the `compile_via_daemon` body and the
-// `is_compile_env_var` allowlist were lifted into
+// `is_compile_env_var` env filter were lifted into
 // `crate::compile_dispatch` so the new `zccache-soldr` shim binary
 // can share them. The wrapper-entry dispatch site above now calls
 // `compile_dispatch::compile_via_daemon` directly. Nothing remains in

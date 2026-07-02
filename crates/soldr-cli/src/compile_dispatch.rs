@@ -6,8 +6,9 @@
 //!
 //! 1. Build a `CompileRequest` from the rustc-style argv they were
 //!    invoked with.
-//! 2. Filter the current process env down to the compile-relevant
-//!    subset (see [`is_compile_env_var`]).
+//! 2. Forward the current process env minus known session noise
+//!    (see [`is_compile_env_var`]) — build-script-emitted
+//!    `cargo:rustc-env` vars have arbitrary names and MUST survive.
 //! 3. Connect to the soldr-daemon IPC socket / Windows named pipe.
 //! 4. On failure to connect, spawn the daemon detached and retry
 //!    within a configurable budget (default 30s for production —
@@ -56,79 +57,75 @@ pub const DEFAULT_SPAWN_RETRY_BUDGET_MS: u64 = 30_000;
 /// socket starts accepting.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Predicate for the env-var filter (Phase 5c from #981). Returns
-/// `true` for env vars that rustc, cargo build scripts (cc-rs /
-/// bindgen / proc-macro setup), or zccache's internal machinery
-/// actually read. Everything else is dropped from the
-/// `Request::Compile` payload to keep the daemon's tokio runtime out
-/// of prost serialization of ~10-50 KB of useless `CARGO_PKG_*`
-/// metadata per compile.
+/// Predicate for the env-var filter (Phase 5c from #981, reworked for
+/// correctness after the `cargo:rustc-env` regression that broke the
+/// linux-arm-musl cross-compile lane — run 28574600982).
+///
+/// Returns `true` for env vars that must be forwarded in the
+/// `Request::Compile` payload so the daemon-spawned rustc sees the
+/// same environment cargo gave the wrapper process.
+///
+/// ## Why this is a noise DENYLIST, not an allowlist
+///
+/// Cargo forwards `cargo:rustc-env=<NAME>=<value>` lines emitted by a
+/// crate's build script as environment variables **on the rustc
+/// invocation only** — and `<NAME>` is arbitrary (crgx sets
+/// `CRGX_TARGET`, vergen sets `VERGEN_*`, shadow-rs sets `SHADOW_*`,
+/// ...). The crate then reads them back with `env!()` at compile
+/// time. An allowlist can never enumerate those names, and dropping
+/// one turns into a hard `error: environment variable ... not defined
+/// at compile time` inside the daemon-spawned rustc. That is exactly
+/// what broke the `linux-arm-musl` cross-compile lane: the crgx
+/// source-build fallback died on `env!("CRGX_TARGET")` because the
+/// old allowlist filtered the var out of the compile request.
+///
+/// So the filter now drops only *known* interactive-session noise
+/// (shell prompt state, desktop-session plumbing) that no compiler,
+/// build script, or proc-macro legitimately reads. Everything else —
+/// including vars we have never heard of — is forwarded. The
+/// standalone zccache wrapper client forwards its **entire** env
+/// (see `_vender/zccache/crates/zccache/src/cli/commands/wrap/env.rs`),
+/// so this keeps the embedded-daemon path consistent with the managed
+/// binary path. The Phase 5c payload-size concern is preserved by the
+/// denylist (session noise still never crosses the wire) and by the
+/// fact that zccache's fingerprint only hashes `CARGO_*` vars, so the
+/// extra forwarded vars do not churn cache keys.
 pub fn is_compile_env_var(name: &str) -> bool {
-    // Prefix matches first — order roughly by hit rate so the common
-    // case short-circuits early on the per-call hot path.
-    const PREFIXES: &[&str] = &[
-        "CARGO_",   // CARGO_PKG_*, CARGO_CFG_*, CARGO_MANIFEST_DIR, etc.
-        "RUSTC_",   // RUSTC, RUSTC_WRAPPER, RUSTC_BOOTSTRAP, ...
-        "RUST",     // RUSTFLAGS, RUSTDOC*, RUSTFMT, RUSTUP*, RUST_BACKTRACE
-        "SOLDR_",   // SOLDR_ZCCACHE_BIN, SOLDR_CACHE_*, SOLDR_BUILD_SESSION_*
-        "ZCCACHE_", // ZCCACHE_CACHE_DIR, ZCCACHE_PATH_REMAP, ZCCACHE_SESSION_ID
-        "CC_",      // cc-rs cc_PROFILE_TARGET style
-        "CXX_",     // ditto for C++
-        "AR_", "LD_",  // LD_LIBRARY_PATH, LD_PRELOAD — both meaningful to subprocesses
-        "DEP_", // build-script-emitted DEP_<pkg>_<key> env vars
-        "OUT_", // OUT_DIR (build script working dir)
+    // Desktop / login-session plumbing. Prefix matches.
+    const NOISE_PREFIXES: &[&str] = &[
+        "XDG_",     // XDG_SESSION_TYPE, XDG_RUNTIME_DIR, ...
+        "GNOME_",   // GNOME_TERMINAL_SERVICE, ...
+        "GDM",      // GDM_LANG, GDMSESSION
+        "DESKTOP_", // DESKTOP_SESSION-adjacent
     ];
-    if PREFIXES.iter().any(|p| name.starts_with(p)) {
-        return true;
+    if NOISE_PREFIXES.iter().any(|p| name.starts_with(p)) {
+        return false;
     }
-    // Exact matches for shorter vars rustc / cc-rs / linker need.
-    matches!(
+    // Shell-prompt / terminal-session state. Exact matches.
+    !matches!(
         name,
-        "HOME"
-            | "USER"
-            | "PATH"
-            | "LANG"
-            | "LC_ALL"
-            | "TARGET"
-            | "HOST"
-            | "TMPDIR"
-            | "TMP"
-            | "TEMP"
-            | "USERPROFILE"
-            | "APPDATA"
-            | "LOCALAPPDATA"
-            | "PROGRAMFILES"
-            | "PROGRAMDATA"
-            | "WINDIR"
-            | "SYSTEMROOT"
-            | "SYSTEMDRIVE"
-            | "COMSPEC"
-            | "PATHEXT"
-            | "TERM"
-            | "RUSTUP_HOME"
-            | "RUSTUP_TOOLCHAIN"
-            | "CARGO"
-            | "CARGO_HOME"
-            | "CC"
-            | "CXX"
-            | "AR"
-            | "LD"
-            | "NM"
-            | "OBJCOPY"
-            | "OBJDUMP"
-            | "STRIP"
-            | "RANLIB"
-            | "CFLAGS"
-            | "CXXFLAGS"
-            | "LDFLAGS"
-            | "MSYSTEM"
-            | "VCINSTALLDIR"
-            | "VSINSTALLDIR"
-            | "VCToolsInstallDir"
-            | "WindowsSdkDir"
-            | "INCLUDE"
-            | "LIB"
-            | "LIBPATH"
+        "PROMPT"
+            | "PS1"
+            | "PS2"
+            | "PS4"
+            | "OLDPWD"
+            | "SHLVL"
+            | "DISPLAY"
+            | "WAYLAND_DISPLAY"
+            | "DBUS_SESSION_BUS_ADDRESS"
+            | "SESSION_MANAGER"
+            | "LS_COLORS"
+            | "LSCOLORS"
+            | "PSModulePath"
+            | "ChocolateyInstall"
+            | "ChocolateyLastPathUpdate"
+            | "WSL_DISTRO_NAME"
+            | "WSL_INTEROP"
+            | "WT_SESSION"
+            | "WT_PROFILE_ID"
+            | "WINDOWID"
+            | "COLORTERM"
+            | "VTE_VERSION"
     )
 }
 
@@ -325,6 +322,35 @@ mod tests {
             // gets the same env. Regression-test that explicitly.
             for v in ["LIB", "INCLUDE", "LIBPATH", "PATH"] {
                 assert!(is_compile_env_var(v), "{v} must be forwarded to daemon");
+            }
+        }
+    );
+
+    timed_test!(
+        is_compile_env_var_forwards_build_script_rustc_env_vars,
+        Duration::from_secs(5),
+        {
+            // Regression test for the linux-arm-musl cross-compile lane
+            // failure (run 28574600982): crgx's build.rs emits
+            // `cargo:rustc-env=CRGX_TARGET=<triple>` and reads it back
+            // with `env!("CRGX_TARGET")`. Cargo sets such vars only on
+            // the rustc process env; if the dispatch filter drops them,
+            // the daemon-spawned rustc fails with `error: environment
+            // variable ... not defined at compile time`. The names are
+            // arbitrary, so the filter must be a noise denylist that
+            // forwards anything it does not recognize.
+            for v in [
+                "CRGX_TARGET",
+                "VERGEN_GIT_SHA",
+                "SHADOW_RS",
+                "SOME_CRATE_CUSTOM_COMPILE_TIME_VAR",
+            ] {
+                assert!(
+                    is_compile_env_var(v),
+                    "{v} must be forwarded to the daemon — build-script \
+                     `cargo:rustc-env` vars have arbitrary names and dropping \
+                     them breaks `env!()` in daemon-spawned rustc"
+                );
             }
         }
     );
