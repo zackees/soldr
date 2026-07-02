@@ -31,8 +31,9 @@ pub(super) fn ensure_zig_wrappers(
     let ar = dir.join(format!("ar{ext}"));
     let ranlib = dir.join(format!("ranlib{ext}"));
 
-    write_wrapper(&cc, &render_cc_wrapper("cc", zig_target))?;
-    write_wrapper(&cxx, &render_cc_wrapper("c++", zig_target))?;
+    let is_darwin = triple.ends_with("-apple-darwin");
+    write_wrapper(&cc, &render_cc_wrapper("cc", zig_target, is_darwin))?;
+    write_wrapper(&cxx, &render_cc_wrapper("c++", zig_target, is_darwin))?;
     write_wrapper(&ar, &render_tool_wrapper("ar"))?;
     write_wrapper(&ranlib, &render_tool_wrapper("ranlib"))?;
 
@@ -58,11 +59,74 @@ fn rust_target_to_zig_target(triple: &str) -> Result<&'static str, SoldrError> {
     }
 }
 
-fn render_cc_wrapper(subcommand: &str, zig_target: &str) -> String {
+fn render_cc_wrapper(subcommand: &str, zig_target: &str, is_darwin: bool) -> String {
+    if is_darwin {
+        return render_darwin_cc_wrapper(subcommand, zig_target);
+    }
     if cfg!(windows) {
         format!("@echo off\r\ncargo-zigbuild zig {subcommand} -- -target {zig_target} %*\r\n",)
     } else {
         format!("#!/bin/sh\nexec cargo-zigbuild zig {subcommand} -- -target {zig_target} \"$@\"\n",)
+    }
+}
+
+/// Darwin cc/c++ wrapper — sidesteps cargo-zigbuild's broken
+/// `--sysroot` handling on zig < 0.15 (darwin lanes of run 28574600982).
+///
+/// When `SDKROOT` is set, cargo-zigbuild's `zig cc` proxy (v0.23.0,
+/// zig < 0.15 branch of `add_macos_specific_args`) passes BOTH
+/// `--sysroot=$SDKROOT` and absolute `-L$SDKROOT/usr/lib` /
+/// `-F$SDKROOT/System/Library/Frameworks` args. zig 0.14's Mach-O
+/// linker interprets every `-L` path as *relative to the sysroot*, so
+/// each search dir doubles up (`$SDKROOT$SDKROOT/usr/lib`,
+/// `$SDKROOT/<build-out-dir>`, …) and no system library resolves:
+///
+///   error: unable to find dynamic system library 'objc'
+///           using strategy 'paths_first'. searched paths: none
+///
+/// cargo-zigbuild's own fix only engages on zig >= 0.15 (SDKROOT env
+/// var instead of `--sysroot`). Since soldr pins zig 0.14.1, the shim
+/// clears `SDKROOT` before exec'ing cargo-zigbuild (so it never adds
+/// `--sysroot`) and passes the SDK include/library/framework search
+/// paths explicitly — the exact arg shape cargo-zigbuild's zig >= 0.15
+/// branch would produce. Non-darwin targets keep the plain wrapper.
+fn render_darwin_cc_wrapper(subcommand: &str, zig_target: &str) -> String {
+    if cfg!(windows) {
+        format!(
+            "@echo off\r\n\
+             setlocal\r\n\
+             set \"SOLDR_APPLE_SDK=%SDKROOT%\"\r\n\
+             set \"SDKROOT=\"\r\n\
+             if defined SOLDR_APPLE_SDK (\r\n\
+               cargo-zigbuild zig {subcommand} -- -target {zig_target} \
+             -isystem \"%SOLDR_APPLE_SDK%\\usr\\include\" \
+             \"-L%SOLDR_APPLE_SDK%\\usr\\lib\" \
+             \"-F%SOLDR_APPLE_SDK%\\System\\Library\\Frameworks\" \
+             -iframework \"%SOLDR_APPLE_SDK%\\System\\Library\\Frameworks\" \
+             -DTARGET_OS_IPHONE=0 %*\r\n\
+             ) else (\r\n\
+               cargo-zigbuild zig {subcommand} -- -target {zig_target} %*\r\n\
+             )\r\n"
+        )
+    } else {
+        format!(
+            "#!/bin/sh\n\
+             # soldr zig shim (darwin): see zig_shim.rs — clears SDKROOT so\n\
+             # cargo-zigbuild (zig < 0.15) does not emit --sysroot, which\n\
+             # makes zig resolve every -L path relative to the SDK. The SDK\n\
+             # search paths are passed explicitly instead.\n\
+             if [ -n \"${{SDKROOT:-}}\" ]; then\n\
+               SOLDR_APPLE_SDK=\"$SDKROOT\"\n\
+               unset SDKROOT\n\
+               exec cargo-zigbuild zig {subcommand} -- -target {zig_target} \\\n\
+                 -isystem \"$SOLDR_APPLE_SDK/usr/include\" \\\n\
+                 \"-L$SOLDR_APPLE_SDK/usr/lib\" \\\n\
+                 \"-F$SOLDR_APPLE_SDK/System/Library/Frameworks\" \\\n\
+                 -iframework \"$SOLDR_APPLE_SDK/System/Library/Frameworks\" \\\n\
+                 -DTARGET_OS_IPHONE=0 \"$@\"\n\
+             fi\n\
+             exec cargo-zigbuild zig {subcommand} -- -target {zig_target} \"$@\"\n"
+        )
     }
 }
 
@@ -119,11 +183,39 @@ mod tests {
         if cfg!(windows) {
             return;
         }
-        let body = render_cc_wrapper("cc", "aarch64-linux-musl");
+        let body = render_cc_wrapper("cc", "aarch64-linux-musl", false);
         assert!(body.starts_with("#!/bin/sh\n"));
         assert!(body.contains("cargo-zigbuild zig cc -- -target aarch64-linux-musl"));
         assert!(body.contains("\"$@\""));
+        // Non-darwin wrappers must NOT carry the SDKROOT workaround.
+        assert!(!body.contains("SDKROOT"));
     });
+
+    crate::timed_test!(
+        darwin_cc_wrapper_clears_sdkroot_and_adds_explicit_sdk_paths,
+        {
+            if cfg!(windows) {
+                return;
+            }
+            // Run 28574600982: with SDKROOT set, cargo-zigbuild (zig < 0.15)
+            // passes `--sysroot=$SDKROOT` and zig 0.14 then resolves every
+            // -L path relative to the sysroot — no system library resolves.
+            // The darwin wrapper must clear SDKROOT before exec'ing
+            // cargo-zigbuild and pass the SDK search paths explicitly.
+            let body = render_cc_wrapper("cc", "x86_64-macos-none", true);
+            assert!(body.starts_with("#!/bin/sh\n"));
+            assert!(body.contains("unset SDKROOT"));
+            assert!(body.contains("-L$SOLDR_APPLE_SDK/usr/lib"));
+            assert!(body.contains("-F$SOLDR_APPLE_SDK/System/Library/Frameworks"));
+            assert!(body.contains("-isystem \"$SOLDR_APPLE_SDK/usr/include\""));
+            assert!(body.contains("cargo-zigbuild zig cc -- -target x86_64-macos-none"));
+            assert!(body.contains("\"$@\""));
+            // Fallback branch (no SDKROOT in env) keeps the plain invocation.
+            assert!(
+                body.ends_with("exec cargo-zigbuild zig cc -- -target x86_64-macos-none \"$@\"\n")
+            );
+        }
+    );
 
     crate::timed_test!(tool_wrapper_routes_through_cargo_zigbuild, {
         if cfg!(windows) {
