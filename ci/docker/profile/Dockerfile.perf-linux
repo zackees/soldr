@@ -47,6 +47,7 @@ RUN apt-get update \
         dwarves \
         linux-perf \
         bpftrace \
+        python3 \
  && rm -rf /var/lib/apt/lists/*
 
 # Brendan Gregg's FlameGraph — pinned via depth=1 + the upstream main.
@@ -62,6 +63,8 @@ RUN which perf && perf --version
 WORKDIR /work
 
 COPY ci/docker/profile/run_profile.sh /usr/local/bin/run_profile.sh
-RUN chmod +x /usr/local/bin/run_profile.sh
+COPY ci/docker/profile/scripts/run_scenario.sh /usr/local/bin/run_scenario.sh
+COPY ci/docker/profile/scripts/aggregate_top5.py /usr/local/bin/aggregate_top5.py
+RUN chmod +x /usr/local/bin/run_profile.sh /usr/local/bin/run_scenario.sh /usr/local/bin/aggregate_top5.py
 
 ENTRYPOINT ["/usr/local/bin/run_profile.sh"]

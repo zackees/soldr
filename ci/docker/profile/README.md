@@ -1,15 +1,28 @@
 # soldr Linux profile harness
 
-Captures on-CPU + off-CPU flame charts for **soldr's full cargo build
-pipeline** — argv parsing → cargo front door → wrapper exec → zccache
-shellout. Three scenarios per run let you triangulate where the time
-goes:
+Runs the **perf-matrix cycle** (`PERF.md`) inside a Linux Docker
+container under simultaneous on-CPU (linux-perf) and off-CPU
+(bpftrace / perf-sched fallback) samplers, folds every scenario's
+stacks with FlameGraph, and produces a **top-5 slowest items**
+markdown table plus per-scenario SVG flame graphs.
 
-| Scenario | What runs | What it measures |
-|---|---|---|
-| `cold` | `soldr cargo build` against a freshly-extracted fixture with empty cache + empty target | Worst case — soldr's full dispatch overhead is in frame |
-| `warm` | Same fixture, **primed cache + cleared target**, then sampled on the second build | Steady-state cache-hit cost. Should approach bare cargo's incremental overhead. |
-| `bare` | `cargo build` directly, no soldr, no zccache | Theoretical-max anchor. `cold - bare` and `warm - bare` give honest soldr-overhead numbers. |
+## What runs
+
+The four authoritative perf-matrix scenarios against `perf/fixtures/medium`:
+
+| Scenario | What it measures |
+|---|---|
+| `cold-tar-untar-warm` | cold build → tar compress → untar into fresh cache → warm build (gates soldr save/load fidelity) |
+| `worktree-share` | primary checkout build → `git worktree add` second-checkout build sharing the cache (gates `ZCCACHE_PATH_REMAP=auto`) |
+| `touch-no-change` | cold build → touch every source file (fresh mtimes, same content) → cargo clean → rebuild (gates content-hash freshness) |
+| `build-then-check` | `cargo build --release` → `cargo check` on the same sources (gates cross-verb cache reuse) |
+
+Each scenario is invoked as `bash perf/scenarios/<name>/run.sh <fixture-dir>`
+inside the container, wrapped by `scripts/run_scenario.sh`.
+
+Tokio-events profiling is deliberately out of scope for this iteration;
+soldr-daemon has zero `console-subscriber` wiring today. Adding it is a
+separate follow-up (mirror the pattern in `_vender/zccache/crates/zccache/src/bin/zccache-daemon.rs`).
 
 ## How to run
 
@@ -35,83 +48,75 @@ bpftrace stack-id lookups; the harness falls back to `perf record
 sched:sched_switch` for the off-CPU pass when bpftrace produces no
 data.
 
-## What we changed and why
-
-The perf fixtures (`perf/fixtures/medium/Cargo.toml` and
-`perf/fixtures/sqlite-link/Cargo.toml`) now pin
-`[profile.dev] debug = false` and `incremental = false`. soldr's
-managed-cargo path already forces `debug = false` on the cold
-scenario, so before this change bare cargo was silently running with
-`debug = true` (the dev-profile default) and paying for debuginfo
-codegen the cold scenario never did. That inflated bare's wall-clock
-and made the `cold - bare` gap (24.6 s in the 2026-06-26-1534 bundle)
-a *lower bound* on real soldr overhead rather than an honest
-measurement. Pinning the profile in the fixture itself brings cold /
-warm / bare to like-for-like settings so future profile bundles
-measure soldr's dispatch overhead instead of debuginfo asymmetry.
-See L8 in soldr#980.
-
 ## Output layout
 
 ```
 <OUT>/
 ├── run.log                      # top-level driver log
-├── build.log                    # soldr cargo build (the soldr-cli build, not the workload)
-├── cold/
+├── build.log                    # soldr-cli release build (for the SOLDR_BIN)
+├── top5.md                      # aggregated top-5 slowest items across scenarios
+├── cold-tar-untar-warm/
+│   ├── scenario.log             # per-scenario driver log
 │   ├── perf.data                # raw on-CPU samples
 │   ├── perf-sched.data          # raw sched_switch samples
 │   ├── oncpu.folded             # stackcollapse-perf.pl output
-│   ├── oncpu.svg                # Brendan Gregg flame chart
+│   ├── oncpu.svg                # Brendan Gregg flame graph
 │   ├── offcpu.folded            # bpftrace OR perf-sched fallback
 │   ├── offcpu.svg               # same renderer, --color=io
-│   ├── workload.stdout.log
-│   ├── workload.stderr.log
+│   ├── scenario.stdout.log
+│   ├── scenario.stderr.log
 │   ├── perf.log
-│   └── perf-sched.log
-├── warm/  ... same shape ...
-└── bare/  ... same shape ...
+│   ├── perf-sched.log
+│   └── offcpu.bpftrace.log
+├── worktree-share/ ... same shape ...
+├── touch-no-change/ ... same shape ...
+└── build-then-check/ ... same shape ...
 ```
+
+`top5.md` renders as:
+
+```
+| Rank | Function | On-CPU samples | Off-CPU samples | Total | Dominant scenario |
+|------|----------|----------------|-----------------|-------|-------------------|
+| 1    | `rustc_middle::ty::TyCtxt::lookup` | 12,401 | 340 | 12,741 | build-then-check |
+| ...  | ...                                | ...    | ... | ...    | ...              |
+```
+
+Leaf frames are normalized (address offsets stripped so `foo+0x12` and
+`foo+0x40` bucket together) before ranking.
 
 ## Tunables
 
 | Env var | Default | Effect |
 |---|---|---|
 | `SOLDR_PROFILE_HZ` | `99` | `perf record -F` rate. Higher = finer-grained but bigger `perf.data` |
-| `SOLDR_PROFILE_SCENARIOS` | `cold warm bare` | Space-separated scenario list. Drop tokens to skip cases. |
-| `SOLDR_PROFILE_FIXTURE` | `/work/perf/fixtures/medium.tar.gz` | Tarball that contains the cargo workspace to profile against |
-| `SOLDR_PROFILE_FIXTURE_DIR` | `medium` | Subdirectory inside the tarball that contains the `Cargo.toml` |
+| `SOLDR_PROFILE_SCENARIOS` | `cold-tar-untar-warm worktree-share touch-no-change build-then-check` | Space-separated scenario list. Drop tokens to skip cases. |
+| `SOLDR_PROFILE_FIXTURE_NAME` | `medium` | Fixture name (extracted via `perf/lib/extract.sh`) |
 
-The fixture defaults to soldr's `perf/fixtures/medium` (the same one
-the Perf Matrix uses), so the profile data lines up with the
-gate-workflow numbers.
+The fixture defaults to `perf/fixtures/medium` (the same one the Perf
+Matrix uses), so the profile data lines up with the gate-workflow numbers.
 
-## Why three runs
+## Why the perf-matrix scenarios (vs. the earlier cold/warm/bare loop)
 
-- **`cold - bare`** = soldr's worst-case overhead on a fresh checkout.
-  This number is the headline cost a new contributor pays.
-- **`warm - bare`** = soldr's steady-state overhead. Should be small.
-  If it isn't, the daemon / wrapper / IPC chain is doing real work
-  when it shouldn't be.
-- **`cold - warm`** = the value soldr delivers — the gap that
-  caching closes. The bigger this is, the more justified the
-  per-build overhead is.
+The prior version of this harness ran three ad-hoc scenarios
+(`cold` / `warm` / `bare`) that were a straight `soldr cargo build`
+against an extracted fixture. Useful for anchoring soldr's dispatch
+overhead against a bare-cargo baseline, but not the same measurements
+the gate workflow (`perf-matrix.yml`) uses. That mismatch made it hard
+to tie profile findings back to regression signal.
 
-The five-subagent analysis pass that consumes this bundle uses all
-three numbers; the gap analysis specifically anchors against `bare`.
+The current harness runs the SAME scenarios as `perf-matrix.yml`, so a
+flame graph hot spot corresponds directly to a scenario the gate would
+flag.
 
 ## Comparison to zccache's profile harness
 
-This rig is a direct adaptation of `zccache/ci/docker/profile/`.
-Differences:
+Same base image, same profiler stack (linux-perf + bpftrace + FlameGraph),
+same SVG style. Differences:
 
-- **Workload**: `soldr cargo build` instead of `cargo test perf_rustc_zccache_vs_sccache`.
-- **Three scenarios per run** instead of one; the existing zccache
-  rig was designed for diffing across zccache PR landings, not for
-  diffing across scenarios within one run.
-- **Same toolchain pin, same samplers, same SVG style** so the two
-  bundles are directly comparable side-by-side.
-
-The intent is that an operator can run both rigs and overlay the
-results — soldr's flame chart shows the dispatch chain; zccache's
-shows the compile-cache hot path; together they explain the full
-wall-clock cost of a `soldr cargo build`.
+- **Workload**: perf-matrix scenarios (`bash perf/scenarios/*/run.sh`)
+  instead of `cargo test perf_rustc_zccache_vs_sccache`.
+- **Top-5 aggregation**: `aggregate_top5.py` post-processes the folded
+  stacks and produces `top5.md` — the zccache harness has no equivalent.
+- **Same toolchain pin, same samplers** so the two bundles are directly
+  comparable side-by-side.
