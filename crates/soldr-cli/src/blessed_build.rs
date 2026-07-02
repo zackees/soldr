@@ -556,6 +556,20 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     // released install, it's at `<exe-dir>/soldr-clang-shim(.exe)`.
     let shim_src = locate_shim_binary()?;
 
+    // soldr#1265 — preserve the source binary's mtime on the installed
+    // shim. cc-rs uses the CC binary's mtime in some build-script paths;
+    // without preservation every `soldr build` invocation looked like a
+    // fresh compiler → cargo invalidated cc-rs-touched deps on darwin/
+    // MSVC CI lanes. Preserving mtime keeps the shim's timestamp aligned
+    // with the source (stable when bootstrap cache HITs).
+    let src_mtime = std::fs::metadata(&shim_src)
+        .and_then(|meta| meta.modified())
+        .map_err(|e| {
+            SoldrError::Other(format!(
+                "failed to read source mtime for soldr-clang-shim: {e}"
+            ))
+        })?;
+
     for name in clang_shim_names() {
         let dst = shim_dir.join(&name);
         // Best-effort remove first; ignore errors (file may not exist).
@@ -569,6 +583,18 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
                 dst.display()
             ))
         })?;
+
+        // Preserve source mtime — see block comment above the loop.
+        std::fs::File::options()
+            .write(true)
+            .open(&dst)
+            .and_then(|f| f.set_modified(src_mtime))
+            .map_err(|e| {
+                SoldrError::Other(format!(
+                    "failed to preserve mtime on installed soldr-clang-shim {}: {e}",
+                    dst.display()
+                ))
+            })?;
 
         #[cfg(unix)]
         {
