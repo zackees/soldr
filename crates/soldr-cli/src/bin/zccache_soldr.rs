@@ -50,14 +50,33 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
-    match soldr_cli::compile_dispatch::dispatch_compile(
+    match soldr_cli::compile_dispatch::dispatch_compile_detailed(
         &rustc_argv,
         std::io::stdout(),
         std::io::stderr(),
     ) {
         Ok(code) => exit_code_from_i32(code),
-        Err(err) => {
-            eprintln!("zccache-soldr: dispatch failed: {err}");
+        // soldr#1300 — daemon unavailable after the retry budget:
+        // degrade to a direct uncached rustc exec instead of failing
+        // the build. Compile failures from a healthy daemon arrive as
+        // `Ok(exit_code != 0)` and are propagated above; only
+        // transport/availability failures land here.
+        // `SOLDR_DAEMON_REQUIRED=1` restores the hard-fail.
+        Err(failure) if soldr_cli::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
+            soldr_cli::compile_dispatch::log_direct_exec_fallback_once(&failure);
+            match soldr_cli::compile_dispatch::direct_exec_rustc(&rustc_argv) {
+                Ok(code) => exit_code_from_i32(code),
+                Err(err) => {
+                    eprintln!("zccache-soldr: direct rustc fallback failed: {err}");
+                    ExitCode::from(101)
+                }
+            }
+        }
+        Err(failure) => {
+            eprintln!(
+                "zccache-soldr: dispatch failed: {}",
+                failure.into_soldr_error()
+            );
             // Use 101 so cargo treats it as a compile failure (matches
             // rustc's own panic exit code convention).
             ExitCode::from(101)
