@@ -967,7 +967,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
 
             eprintln!("soldr: fetching {crate_name}...");
-            let result = crate::fetch::fetch_tool(&crate_name, &version).await?;
+            // soldr#1264 follow-on: maturin gets a provisioning ladder
+            // instead of the bare fetch — prebuilt binary from GitHub
+            // Releases first, manual uv-provisioned isolated env as
+            // the fallback (SOLDR_MATURIN_PROVISIONER=auto|binary|uv).
+            // Everything else keeps the plain fetch_tool path.
+            let result = if crate_name == "maturin" {
+                fetch_maturin_with_provisioner(&version).await?
+            } else {
+                crate::fetch::fetch_tool(&crate_name, &version).await?
+            };
 
             if result.cached {
                 eprintln!("soldr: using cached {crate_name} v{}", result.version);
@@ -1105,6 +1114,49 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
 fn should_use_managed_zccache_external(crate_name: &str, version: &VersionSpec) -> bool {
     crate_name == "zccache" && matches!(version, VersionSpec::Latest)
+}
+
+/// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)
+/// tries the prebuilt GitHub-Releases binary and falls back to the
+/// manual uv-provisioned isolated env; `binary` / `uv` force one rung.
+/// See `fetch::maturin_env` for the env-var contract.
+async fn fetch_maturin_with_provisioner(
+    version: &VersionSpec,
+) -> Result<crate::fetch::FetchResult, SoldrError> {
+    use crate::fetch::maturin_env::MaturinProvisioner;
+
+    let pinned = match version {
+        VersionSpec::Exact(v) => v.clone(),
+        VersionSpec::Latest => crate::fetch::MANAGED_MATURIN_VERSION.to_string(),
+    };
+
+    match MaturinProvisioner::from_env() {
+        MaturinProvisioner::Binary => crate::fetch::fetch_tool("maturin", version).await,
+        MaturinProvisioner::Uv => provisioned_maturin_fetch_result(&pinned).await,
+        MaturinProvisioner::Auto => match crate::fetch::fetch_tool("maturin", version).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                eprintln!("soldr: prebuilt maturin fetch failed: {err}");
+                eprintln!("soldr: falling back to the uv-provisioned maturin env...");
+                provisioned_maturin_fetch_result(&pinned).await
+            }
+        },
+    }
+}
+
+async fn provisioned_maturin_fetch_result(
+    version: &str,
+) -> Result<crate::fetch::FetchResult, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let cached = crate::fetch::maturin_env::env_is_complete(
+        &crate::fetch::maturin_env::env_dir_for(&paths, version),
+    );
+    let binary_path = crate::fetch::maturin_env::provision_maturin_via_uv(&paths, version).await?;
+    Ok(crate::fetch::FetchResult {
+        binary_path,
+        version: version.to_string(),
+        cached,
+    })
 }
 
 fn report_and_exit(error: SoldrError) -> i32 {
