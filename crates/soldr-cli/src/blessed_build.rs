@@ -347,23 +347,52 @@ pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
     // already a win — don't tie the two together. Without ninja we
     // leave the generator choice to cmake-rs (Visual Studio on MSVC
     // hosts, Unix Makefiles elsewhere).
-    match crate::fetch::cmake_tools::ensure_ninja_bundle(paths, host).await {
+    //
+    // Acquisition ladder (mirrors the maturin provisioning ladder):
+    // catalogue bundle first, then the PyPI `ninja` wheel provisioned
+    // into a manual uv-managed isolated env. The fallback covers
+    // hosts whose ninja bundle is missing or not yet ingested (e.g.
+    // musl hosts — the uv bundle exists there, ninja's doesn't).
+    let ninja_bin = match crate::fetch::cmake_tools::ensure_ninja_bundle(paths, host).await {
         Ok(ninja_root) => {
-            let ninja_bin = crate::fetch::cmake_tools::ninja_exe(&ninja_root);
-            if ninja_bin.is_file() {
-                prep.env
-                    .push(("CMAKE_GENERATOR".to_string(), "Ninja".to_string()));
-                prep.path_dirs.push(ninja_root.join("bin"));
+            let bin = crate::fetch::cmake_tools::ninja_exe(&ninja_root);
+            if bin.is_file() {
+                Some(bin)
             } else {
                 eprintln!(
                     "soldr build: managed ninja bundle at {} has no {} — \
-                     keeping cmake's default generator",
+                     trying the uv-provisioned ninja fallback",
                     ninja_root.display(),
-                    ninja_bin.display()
+                    bin.display()
                 );
+                ninja_via_uv_fallback(paths).await
             }
         }
-        Err(e) => log_cmake_unavailable("ninja", host, &e),
+        Err(e) => {
+            log_cmake_unavailable("ninja", host, &e);
+            ninja_via_uv_fallback(paths).await
+        }
+    };
+    if let Some(ninja_bin) = ninja_bin {
+        prep.env
+            .push(("CMAKE_GENERATOR".to_string(), "Ninja".to_string()));
+        if let Some(dir) = ninja_bin.parent() {
+            prep.path_dirs.push(dir.to_path_buf());
+        }
+    }
+}
+
+/// PyPI-ninja-via-uv fallback rung. Returns the ninja exe on success;
+/// logs + returns `None` on failure (the caller keeps cmake's default
+/// generator — never fatal).
+async fn ninja_via_uv_fallback(paths: &SoldrPaths) -> Option<PathBuf> {
+    match crate::fetch::uv_env::provision_ninja_via_uv(paths).await {
+        Ok(ninja) => Some(ninja),
+        Err(e) => {
+            eprintln!("soldr build: uv-provisioned ninja fallback unavailable: {e}");
+            eprintln!("soldr build: keeping cmake's default generator");
+            None
+        }
     }
 }
 

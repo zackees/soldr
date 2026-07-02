@@ -70,6 +70,20 @@ pub async fn ensure_syslib_bundle(
         return Ok(sysroot);
     }
 
+    // Cross-process install guard: cargo fans out build scripts and CI
+    // fans out jobs, so several soldr processes can miss the stamp
+    // simultaneously and race the remove_dir_all + extract below.
+    // Blocking exclusive lock — the winner installs, waiters re-check
+    // the stamp after acquiring and short-circuit. Held (via the
+    // returned handle) until this function returns.
+    let _install_lock = acquire_install_lock(
+        &paths.bin.join("syslib"),
+        &format!("{lib}-{version}-{slug}"),
+    )?;
+    if stamp.is_file() && sysroot.is_dir() {
+        return Ok(sysroot);
+    }
+
     // Resolve sha256 from the toolchain catalogue. The catalogue is
     // process-cached; the first call inside soldr's run fetches the
     // document, subsequent ones hit the OnceLock.
@@ -129,6 +143,32 @@ pub async fn ensure_syslib_bundle(
     Ok(sysroot)
 }
 
+/// Acquire a **blocking** exclusive cross-process lock for an install
+/// keyed by `key`, creating `lock_dir` if needed. The lock lives in a
+/// dotfile next to the install tree and releases when the returned
+/// handle drops. Callers MUST re-check their completion stamp after
+/// acquiring — a waiter usually finds the winner already finished.
+///
+/// Blocking (not `try_lock`) on purpose: the right behavior for a
+/// second `soldr` process is to wait for the first install to finish
+/// and then reuse it, not to fail or duplicate the download.
+pub(crate) fn acquire_install_lock(
+    lock_dir: &Path,
+    key: &str,
+) -> Result<std::fs::File, SoldrError> {
+    use fs2::FileExt;
+    std::fs::create_dir_all(lock_dir)?;
+    let lock_path = lock_dir.join(format!(".{key}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    file.lock_exclusive()?;
+    Ok(file)
+}
+
 /// Look up a catalogue entry whose `url` field exactly matches `url`.
 /// The v1 catalogue is keyed by `(owner, repo, tag, asset)` but the
 /// asset names for our bundles collide across libs (`bundle.tar.zst`),
@@ -170,5 +210,47 @@ mod tests {
         let a = asset_url_for("sqlite", "3.46.0", "windows-x64");
         let b = asset_url_for("sqlite", "3.46.0", "linux-arm64-musl");
         assert_ne!(a, b);
+    });
+
+    timed_test!(install_lock_serializes_racing_threads, {
+        // 8 threads race the same install key and each performs a
+        // deliberately non-atomic read-modify-write on a shared file
+        // inside the critical section. Without mutual exclusion the
+        // lost-update race makes the final count < 8; with the lock
+        // it is exactly 8. (fs2 advisory locks are per-handle, so
+        // same-process threads contend just like separate processes.)
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let lock_dir = tmp.path().to_path_buf();
+        let counter = tmp.path().join("counter");
+        std::fs::write(&counter, "0").unwrap();
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let lock_dir = lock_dir.clone();
+                let counter = counter.clone();
+                std::thread::spawn(move || {
+                    let _lock = acquire_install_lock(&lock_dir, "race-key").expect("lock");
+                    let n: u32 = std::fs::read_to_string(&counter)
+                        .unwrap()
+                        .trim()
+                        .parse()
+                        .unwrap();
+                    // Widen the race window so a broken lock actually
+                    // loses updates rather than passing by luck.
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::fs::write(&counter, format!("{}", n + 1)).unwrap();
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let final_count: u32 = std::fs::read_to_string(&counter)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(final_count, 8, "install lock must serialize writers");
     });
 }

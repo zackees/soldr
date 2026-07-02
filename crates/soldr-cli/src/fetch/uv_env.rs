@@ -1,16 +1,16 @@
-//! Manual uv-provisioned maturin environment — soldr#1264 follow-on.
+//! Manual uv-provisioned PyPI tool environments — soldr#1264 follow-on.
 //!
-//! The primary maturin acquisition is the pinned prebuilt binary from
-//! PyO3/maturin GitHub Releases (`fetch_tool("maturin", pinned)`).
-//! This module is the guarantee behind "maturin is always invocable":
-//! when the binary fetch misses (rate limit, missing asset for a
-//! platform, upstream release shape change), soldr provisions maturin
-//! into a manually-managed isolated environment using the managed
-//! `uv` from the soldr-toolchain archive:
+//! Some managed tools have a second acquisition path via PyPI: the
+//! `maturin` and `ninja` wheels ship the actual native executables.
+//! When the primary source misses (GitHub Releases rate limit /
+//! missing asset for maturin, a not-yet-ingested or unsupported-host
+//! catalogue bundle for ninja), soldr provisions the tool into a
+//! manually-managed isolated environment using the managed `uv` from
+//! the soldr-toolchain archive:
 //!
 //! ```text
-//! uv venv --python 3.12 ~/.soldr/bin/maturin-uv-<ver>/
-//! uv pip install --python <env python> maturin==<ver>
+//! uv venv --python 3.12 ~/.soldr/bin/<package>-uv-<ver>/
+//! uv pip install --python <env python> <package>==<ver>
 //! ```
 //!
 //! Deliberately hand-rolled rather than depending on the `uv-iso-env`
@@ -35,10 +35,17 @@ use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 /// Selects how `soldr maturin` acquires the maturin executable.
 pub const MATURIN_PROVISIONER_ENV_VAR: &str = "SOLDR_MATURIN_PROVISIONER";
 
-/// Python version the isolated maturin env is created with. uv
-/// downloads its managed CPython on demand when the host has none —
-/// pinned so the env is reproducible across machines.
-pub const MATURIN_ENV_PYTHON: &str = "3.12";
+/// Python version the isolated envs are created with. uv downloads
+/// its managed CPython on demand when the host has none — pinned so
+/// the envs are reproducible across machines.
+pub const UV_ENV_PYTHON: &str = "3.12";
+
+/// PyPI `ninja` version used by the ninja fallback. The PyPI package
+/// (scikit-build's repackaging of upstream ninja) trails the upstream
+/// release line — 1.13.0 is the newest 1.13.x wheel, vs the 1.13.2
+/// catalogue bundle. Fine for a fallback: any Ninja >= 1.11 satisfies
+/// CMake's generator.
+pub const NINJA_PYPI_FALLBACK_VERSION: &str = "1.13.0";
 
 /// Sentinel filename marking a fully-provisioned env. Written last;
 /// its absence means a previous attempt died mid-way and the dir is
@@ -72,26 +79,26 @@ impl MaturinProvisioner {
     }
 }
 
-/// Directory of the isolated maturin env for `version`.
-pub fn env_dir_for(paths: &SoldrPaths, version: &str) -> PathBuf {
-    paths.bin.join(format!("maturin-uv-{version}"))
+/// Directory of the isolated env for `(package, version)`.
+pub fn env_dir_for(paths: &SoldrPaths, package: &str, version: &str) -> PathBuf {
+    paths.bin.join(format!("{package}-uv-{version}"))
 }
 
-/// Path of the maturin executable inside an isolated env dir.
-pub fn maturin_exe_in_env(env_dir: &Path) -> PathBuf {
+/// Path of a tool executable inside an isolated env dir.
+pub fn tool_exe_in_env(env_dir: &Path, exe_base: &str) -> PathBuf {
     if cfg!(windows) {
-        env_dir.join("Scripts").join("maturin.exe")
+        env_dir.join("Scripts").join(format!("{exe_base}.exe"))
     } else {
-        env_dir.join("bin").join("maturin")
+        env_dir.join("bin").join(exe_base)
     }
 }
 
-/// A provisioned env counts as complete only when BOTH the maturin
+/// A provisioned env counts as complete only when BOTH the tool
 /// executable and the sentinel exist — the sentinel is written last,
 /// so its absence means a prior attempt died mid-way and the dir must
 /// be rebuilt rather than served.
-pub(crate) fn env_is_complete(env_dir: &Path) -> bool {
-    maturin_exe_in_env(env_dir).is_file() && env_dir.join(COMPLETE_SENTINEL).is_file()
+pub(crate) fn env_is_complete(env_dir: &Path, exe_base: &str) -> bool {
+    tool_exe_in_env(env_dir, exe_base).is_file() && env_dir.join(COMPLETE_SENTINEL).is_file()
 }
 
 fn python_exe_in_env(env_dir: &Path) -> PathBuf {
@@ -103,16 +110,47 @@ fn python_exe_in_env(env_dir: &Path) -> PathBuf {
 }
 
 /// Provision maturin `version` into an isolated uv-managed env and
-/// return the maturin executable path. Idempotent: a completed env is
-/// a couple of stat calls; a half-built one is wiped and rebuilt.
+/// return the maturin executable path.
 pub async fn provision_maturin_via_uv(
     paths: &SoldrPaths,
     version: &str,
 ) -> Result<PathBuf, SoldrError> {
-    let env_dir = env_dir_for(paths, version);
-    let maturin = maturin_exe_in_env(&env_dir);
-    if env_is_complete(&env_dir) {
-        return Ok(maturin);
+    provision_pypi_tool_via_uv(paths, "maturin", version, "maturin").await
+}
+
+/// Provision the PyPI `ninja` wheel (pinned
+/// [`NINJA_PYPI_FALLBACK_VERSION`]) into an isolated uv-managed env
+/// and return the ninja executable path. Fallback for hosts whose
+/// catalogue ninja bundle is missing or not yet ingested.
+pub async fn provision_ninja_via_uv(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
+    provision_pypi_tool_via_uv(paths, "ninja", NINJA_PYPI_FALLBACK_VERSION, "ninja").await
+}
+
+/// Provision PyPI `package==version` into an isolated uv-managed env
+/// and return the path of its `exe_base` executable. Idempotent: a
+/// completed env is a couple of stat calls; a half-built one is wiped
+/// and rebuilt.
+pub async fn provision_pypi_tool_via_uv(
+    paths: &SoldrPaths,
+    package: &str,
+    version: &str,
+    exe_base: &str,
+) -> Result<PathBuf, SoldrError> {
+    let env_dir = env_dir_for(paths, package, version);
+    let tool = tool_exe_in_env(&env_dir, exe_base);
+    if env_is_complete(&env_dir, exe_base) {
+        return Ok(tool);
+    }
+
+    // Cross-process guard: parallel soldr invocations (cargo build
+    // scripts, fanned-out CI jobs) must not race the wipe + venv +
+    // install sequence below. Blocking exclusive lock — the winner
+    // provisions, waiters re-check the sentinel after acquiring and
+    // short-circuit. Held until this function returns.
+    let _install_lock =
+        super::syslib_common::acquire_install_lock(&paths.bin, &format!("{package}-uv-{version}"))?;
+    if env_is_complete(&env_dir, exe_base) {
+        return Ok(tool);
     }
 
     let host = super::cmake_tools::current_host_triple();
@@ -132,8 +170,8 @@ pub async fn provision_maturin_via_uv(
     }
 
     eprintln!(
-        "soldr: provisioning maturin {version} via managed uv \
-         ({MATURIN_ENV_PYTHON} isolated env)..."
+        "soldr: provisioning {package} {version} via managed uv \
+         ({UV_ENV_PYTHON} isolated env)..."
     );
 
     run_uv(
@@ -142,14 +180,14 @@ pub async fn provision_maturin_via_uv(
         &[
             "venv".as_ref(),
             "--python".as_ref(),
-            MATURIN_ENV_PYTHON.as_ref(),
+            UV_ENV_PYTHON.as_ref(),
             env_dir.as_os_str(),
         ],
         "uv venv",
     )?;
 
     let env_python = python_exe_in_env(&env_dir);
-    let spec = format!("maturin=={version}");
+    let spec = format!("{package}=={version}");
     run_uv(
         &uv,
         paths,
@@ -160,17 +198,17 @@ pub async fn provision_maturin_via_uv(
             env_python.as_os_str(),
             spec.as_str().as_ref(),
         ],
-        "uv pip install maturin",
+        "uv pip install",
     )?;
 
-    if !maturin.is_file() {
+    if !tool.is_file() {
         return Err(SoldrError::Other(format!(
             "uv reported success but {} does not exist",
-            maturin.display()
+            tool.display()
         )));
     }
     std::fs::write(env_dir.join(COMPLETE_SENTINEL), b"ok\n")?;
-    Ok(maturin)
+    Ok(tool)
 }
 
 /// Run one uv command with soldr-scoped uv state dirs. Inherits
@@ -229,9 +267,12 @@ mod tests {
     crate::timed_test!(env_layout_is_versioned_and_platform_correct, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let dir = env_dir_for(&paths, "1.14.1");
+        let dir = env_dir_for(&paths, "maturin", "1.14.1");
         assert!(dir.ends_with("maturin-uv-1.14.1"));
-        let exe = maturin_exe_in_env(&dir);
+        let ninja_dir = env_dir_for(&paths, "ninja", NINJA_PYPI_FALLBACK_VERSION);
+        assert!(ninja_dir.ends_with("ninja-uv-1.13.0"));
+
+        let exe = tool_exe_in_env(&dir, "maturin");
         if cfg!(windows) {
             assert!(exe.ends_with("Scripts/maturin.exe") || exe.ends_with("Scripts\\maturin.exe"));
         } else {
@@ -240,20 +281,22 @@ mod tests {
     });
 
     crate::timed_test!(completed_env_short_circuits_without_uv, {
-        // A maturin exe + sentinel must satisfy the provisioner with
+        // A tool exe + sentinel must satisfy the provisioner with
         // zero network / uv-bundle work — proven by pointing at a
         // synthetic root where no uv bundle could possibly exist.
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let env_dir = env_dir_for(&paths, "9.9.9");
-        let exe = maturin_exe_in_env(&env_dir);
+        let env_dir = env_dir_for(&paths, "maturin", "9.9.9");
+        let exe = tool_exe_in_env(&env_dir, "maturin");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::write(&exe, b"stub").unwrap();
         std::fs::write(env_dir.join(COMPLETE_SENTINEL), b"ok\n").unwrap();
 
         let got = tokio::runtime::Runtime::new()
             .unwrap()
-            .block_on(provision_maturin_via_uv(&paths, "9.9.9"))
+            .block_on(provision_pypi_tool_via_uv(
+                &paths, "maturin", "9.9.9", "maturin",
+            ))
             .expect("completed env must short-circuit");
         assert_eq!(got, exe);
     });
@@ -262,16 +305,27 @@ mod tests {
         // Exe without sentinel = half-built env → NOT complete, must
         // be rebuilt rather than served. Sentinel without exe likewise.
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let env_dir = tmp.path().join("maturin-uv-9.9.9");
-        let exe = maturin_exe_in_env(&env_dir);
+        let env_dir = tmp.path().join("ninja-uv-9.9.9");
+        let exe = tool_exe_in_env(&env_dir, "ninja");
         std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
         std::fs::write(&exe, b"stub").unwrap();
-        assert!(!env_is_complete(&env_dir), "no sentinel → incomplete");
+        assert!(
+            !env_is_complete(&env_dir, "ninja"),
+            "no sentinel → incomplete"
+        );
 
         std::fs::write(env_dir.join(COMPLETE_SENTINEL), b"ok\n").unwrap();
-        assert!(env_is_complete(&env_dir));
+        assert!(env_is_complete(&env_dir, "ninja"));
 
         std::fs::remove_file(&exe).unwrap();
-        assert!(!env_is_complete(&env_dir), "no exe → incomplete");
+        assert!(!env_is_complete(&env_dir, "ninja"), "no exe → incomplete");
+    });
+
+    crate::timed_test!(ninja_fallback_version_well_formed, {
+        let parts: Vec<&str> = NINJA_PYPI_FALLBACK_VERSION.split('.').collect();
+        assert!(parts.len() >= 2);
+        for p in parts {
+            assert!(p.chars().all(|c| c.is_ascii_digit()));
+        }
     });
 }

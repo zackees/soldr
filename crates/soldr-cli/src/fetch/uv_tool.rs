@@ -3,7 +3,7 @@
 //! `uv` (astral-sh/uv) joins the soldr-toolchain archive as a managed
 //! host tool so soldr can provision Python tooling in manually-managed
 //! isolated environments — first consumer: the maturin fallback in
-//! [`super::maturin_env`], which does `uv venv` + `uv pip install
+//! [`super::uv_env`], which does `uv venv` + `uv pip install
 //! maturin==<pin>` when the prebuilt maturin binary fetch misses.
 //! Deliberately NOT the `uv-iso-env` PyPI package: the whole point is
 //! zero Python-level dependencies in soldr's build backend, so the
