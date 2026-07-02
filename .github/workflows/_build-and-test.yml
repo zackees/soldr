@@ -112,28 +112,12 @@ jobs:
         shell: pwsh
         run: git restore --worktree -- .
 
-      - name: Reset stale cache fallback artifacts
-        if: >-
-          ${{
-            steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit' ||
-            steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'
-          }}
-        shell: pwsh
-        run: |
-          Write-Host "Disabling target-cache for later steps after a fallback setup-soldr restore."
-          "SOLDR_TARGET_CACHE_MODE=off" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          $targetTripleDir = Join-Path "target" "${{ inputs.target }}"
-          if (Test-Path -LiteralPath $targetTripleDir) {
-            Write-Host "Removing restored target artifacts from $targetTripleDir"
-            Remove-Item -LiteralPath $targetTripleDir -Recurse -Force
-          }
-
-          $artifactDir = Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"
-          if (Test-Path -LiteralPath $artifactDir) {
-            Write-Host "Removing restored zccache artifacts from $artifactDir"
-            Remove-Item -LiteralPath $artifactDir -Recurse -Force
-          }
+      # soldr#1252 — removed the "Reset stale cache fallback artifacts"
+      # step. Same rationale as the sibling in _bootstrap-e2e.yml:
+      # setup-soldr's `cache: false` (#1083) makes its restore-status
+      # never `exact-hit`, so the guard tripped every run and the step
+      # deleted `target/<triple>/` right after Swatinem/rust-cache
+      # (#1242) restored it. rust-cache's own restore is authoritative.
 
       - name: Install requested Rust components
         if: inputs.install_components != ''
