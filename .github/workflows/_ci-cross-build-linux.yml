@@ -124,16 +124,21 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm llvm-dev libclang-dev
 
-      # zig + cargo-zigbuild — required for musl, darwin, and aarch64
-      # gnu cross-builds.
+      # zig + cargo-zigbuild — required for musl and aarch64-linux-gnu
+      # cross-builds. Darwin is intentionally EXCLUDED: since soldr#1081
+      # `pick_cross_subcommand` returns None for `*-apple-darwin` (unless
+      # `SOLDR_USE_LEGACY_ZIGBUILD=1` — never set in CI), so `soldr build`
+      # invokes plain `cargo build` with clang + Apple SDK from
+      # blessed_build::prepare. Installing zig here saved 14 s restore +
+      # 9 s post-save = ~23 s of pure waste per darwin lane. See #1262.
       - name: Setup zig
-        if: contains(inputs.target, 'musl') || contains(inputs.target, 'apple-darwin') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
+        if: contains(inputs.target, 'musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
 
       - name: Install cargo-zigbuild
-        if: contains(inputs.target, 'musl') || contains(inputs.target, 'apple-darwin') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
+        if: contains(inputs.target, 'musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with:
           tool: cargo-zigbuild@0.23.0
