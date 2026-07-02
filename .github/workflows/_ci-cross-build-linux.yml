@@ -203,7 +203,13 @@ jobs:
       - name: Restore cargo + target caches
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: cross-build-${{ inputs.target }}
+          # soldr#1287 — v2 suffix bumped after #1283 added
+          # [profile.ci-bootstrap]. Swatinem/rust-cache keys on Cargo.lock,
+          # not Cargo.toml — the pre-#1283 primary key still HIT and served
+          # stale (release-only) cache, and Swatinem never re-saves once the
+          # primary key exists. Bumping the shared-key forces a MISS →
+          # fresh save with the ci-bootstrap/ subdir included.
+          shared-key: cross-build-${{ inputs.target }}-v2
 
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
