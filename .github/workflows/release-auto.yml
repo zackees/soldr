@@ -1552,16 +1552,34 @@ jobs:
       # creating the tag first lets the subsequent release-create see an
       # existing tag and skip the implicit-tag-creation that was the
       # source of the 403.
+      #
+      # soldr#1252: both endpoints started returning 403 for v0.7.95 even
+      # on push runs. Owner may need to pre-populate the tag out-of-band
+      # with a PAT. Make the step idempotent: check if the tag already
+      # exists first (owner may have pre-populated it), skip if so, else
+      # attempt the create. The check-first flow also makes reruns after
+      # a partial success safe.
       - name: Pre-create release tag
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -X POST \
-            -f "ref=refs/tags/${{ needs.prepare.outputs.version }}" \
-            -f "sha=${{ needs.prepare.outputs.commit_sha }}"
+          tag='${{ needs.prepare.outputs.version }}'
+          sha='${{ needs.prepare.outputs.commit_sha }}'
+          if gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${tag}" >/dev/null 2>&1; then
+              echo "tag ${tag} already exists — skipping create"
+              exit 0
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -X POST \
+              -f "ref=refs/tags/${tag}" \
+              -f "sha=${sha}"; then
+              echo "::warning::GITHUB_TOKEN could not create tag ${tag} via /git/refs — the repo owner must pre-create the tag out-of-band. See soldr#1252."
+              echo "Repro from a local shell with owner PAT:"
+              echo "  gh api repos/${GITHUB_REPOSITORY}/git/refs -X POST -f ref=refs/tags/${tag} -f sha=${sha}"
+              exit 1
+          fi
 
       - name: Create draft GitHub Release
         env:
