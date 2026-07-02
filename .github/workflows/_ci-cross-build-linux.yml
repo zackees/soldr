@@ -98,25 +98,29 @@ jobs:
         shell: bash
         run: rustup target add ${{ inputs.target }}
 
-      # soldr#1189 — split apt install per target. The clang stack
-      # (clang lld llvm llvm-dev libclang-dev) is only needed by MSVC
-      # (cargo-xwin) and darwin (blessed_build). Skipping it on musl
-      # + linux-gnu lanes saves ~15-20 s of apt fetch per lane.
-      - name: Install apt deps (baseline)
+      # soldr#1260 — the previous "Install apt deps (baseline)" step
+      # installed build-essential + pkg-config + file + jq + xz-utils +
+      # bzip2 + zip + unzip + ca-certificates + curl + git + cmake +
+      # perl + musl-tools on every lane. Every package except musl-tools
+      # is already preinstalled on ubuntu-24.04, so the step was ~13 s
+      # of apt fetch producing zero installed packages on gnu/darwin/
+      # msvc lanes. Musl lanes now install only musl-tools; msvc/darwin
+      # fold `apt-get update` into the clang-stack install; linux-gnu
+      # lanes skip apt entirely.
+      - name: Install musl-tools
+        if: contains(inputs.target, 'linux-musl')
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config file jq xz-utils bzip2 zip unzip \
-            ca-certificates curl git cmake perl \
-            musl-tools
+          sudo apt-get install -y --no-install-recommends musl-tools
 
       - name: Install apt deps (clang stack for MSVC/darwin)
         if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
         shell: bash
         run: |
           set -euo pipefail
+          sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang lld llvm llvm-dev libclang-dev
 
