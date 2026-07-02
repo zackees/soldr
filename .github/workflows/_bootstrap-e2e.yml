@@ -146,29 +146,14 @@ jobs:
           shared-key: bootstrap-e2e-${{ inputs.target }}
           workspaces: soldr
 
-      - name: Reset stale cache fallback artifacts
-        if: >-
-          ${{
-            steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit' ||
-            steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'
-          }}
-        shell: pwsh
-        working-directory: soldr
-        run: |
-          Write-Host "Disabling target-cache for later steps after a fallback setup-soldr restore."
-          "SOLDR_TARGET_CACHE_MODE=off" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-          $targetTripleDir = Join-Path "target" "${{ inputs.target }}"
-          if (Test-Path -LiteralPath $targetTripleDir) {
-            Write-Host "Removing restored target artifacts from $targetTripleDir"
-            Remove-Item -LiteralPath $targetTripleDir -Recurse -Force
-          }
-
-          $artifactDir = Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"
-          if (Test-Path -LiteralPath $artifactDir) {
-            Write-Host "Removing restored zccache artifacts from $artifactDir"
-            Remove-Item -LiteralPath $artifactDir -Recurse -Force
-          }
+      # soldr#1252 — removed the "Reset stale cache fallback artifacts"
+      # step. It guarded on `setup_soldr.outputs.*-cache-restore-status
+      # != 'exact-hit'`, but with setup-soldr's `cache: false` (set in
+      # #1083 to disable soldr-cook), that condition trips EVERY run —
+      # so the step was deleting `target/<triple>/` right after
+      # Swatinem/rust-cache (added in #1233) restored it, nuking all
+      # rust-cache benefit. rust-cache's own restore is authoritative
+      # now; no separate "fallback reset" is needed.
 
       - name: Build soldr-cli
         shell: pwsh
