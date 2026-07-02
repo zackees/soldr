@@ -116,6 +116,24 @@ pub struct LoadArgs {
     pub auto_defender_exclude: bool,
 }
 
+/// Issue #1286 (F1): before archiving a cache tree, ask the ambient
+/// soldr-daemon to checkpoint its embedded zccache state (artifact
+/// index, depgraph snapshot, metadata cache) to disk. Without this,
+/// `soldr save` taken while the daemon is alive archives a tree whose
+/// rustc-side index is memory-only — the restored cache then serves
+/// zero rustc hits (the cold-tar-untar-warm 1.00x-speedup bug).
+/// Best-effort: an unreachable daemon means disk state is already the
+/// best available.
+fn flush_embedded_state_before_save() {
+    let Ok(paths) = crate::core::SoldrPaths::new() else {
+        return;
+    };
+    let sock = crate::daemon::server::server_sock_path(&paths);
+    if crate::daemon::client::flush_caches(&sock).is_ok() {
+        eprintln!("soldr save: embedded zccache state flushed via soldr-daemon");
+    }
+}
+
 pub fn run_save(args: SaveArgs) -> i32 {
     let args = match apply_private_session_cache_dir_default(
         args,
@@ -128,6 +146,9 @@ pub fn run_save(args: SaveArgs) -> i32 {
             return 1;
         }
     };
+    if args.cache_dir.is_some() {
+        flush_embedded_state_before_save();
+    }
     if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
         let Some(cache_dir) = args.cache_dir.as_deref() else {
             eprintln!("soldr save: --delta-from-manifest requires --cache-dir");

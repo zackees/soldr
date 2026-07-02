@@ -47,7 +47,13 @@ use thiserror::Error;
 ///   v6 `CompileResponse` slot is kept on the wire for one release
 ///   cycle so cross-version traffic still errors as a clean version
 ///   mismatch instead of a silent oneof mis-decode.
-pub const PROTOCOL_VERSION: u32 = 7;
+/// * v8 (#1286 F1): adds `Request::FlushCaches` so `soldr save` /
+///   `soldr cache flush` can checkpoint the embedded zccache state
+///   (artifact index, depgraph snapshot, metadata cache) to disk
+///   without shutting the daemon down. Before v8 that state was
+///   memory-only until a graceful daemon exit, so archives taken from
+///   a live daemon restored with zero rustc hits.
+pub const PROTOCOL_VERSION: u32 = 8;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -178,6 +184,13 @@ pub enum Request {
     /// embedded-service failure. There is no longer a wrapper-side
     /// fallback to forking `zccache.exe` — embedded is mandatory.
     Compile(CompileRequest),
+    /// Request-response: checkpoint the embedded zccache service's
+    /// in-memory state (artifact index, depgraph snapshot, metadata
+    /// cache, pending writes) to disk WITHOUT shutting down. Issued by
+    /// `soldr save` and `soldr cache flush` before archiving so the
+    /// on-disk cache tree is complete (#1286 F1). Replies with
+    /// [`Response::Ack`].
+    FlushCaches,
 }
 
 /// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
