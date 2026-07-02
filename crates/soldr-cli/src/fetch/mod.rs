@@ -70,6 +70,11 @@ pub mod xwin_cache;
 // _SYSTEM / _OVERRIDE env vars onto the child cargo invocation so
 // the *-sys crate's build.rs skips its vendored compile.
 pub mod bzip2_sysroot;
+/// Managed CMake + Ninja host-tool bundles — blessed builds export
+/// `CMAKE` / `CMAKE_GENERATOR=Ninja` from these instead of trusting
+/// whatever cmake/make the system PATH resolves. Stub-until-ingested
+/// consumer like the *-sys sysroots below.
+pub mod cmake_tools;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
 pub mod sqlite_sysroot;
