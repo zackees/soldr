@@ -724,8 +724,16 @@ fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize tests that mutate process env vars. `std::env::set_var`
+    /// / `remove_var` mutate global state, and cargo runs tests in
+    /// parallel within a single process — without a barrier the tests
+    /// race and intermittently fail (soldr#1267).
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     crate::timed_test!(opt_out_env_var_recognized, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
 
         std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
@@ -747,6 +755,7 @@ mod tests {
     });
 
     crate::timed_test!(linux_targets_get_no_xwin_or_sdk_prep, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // soldr#1064 Phase B: syslib catalogue overrides may populate
         // prep.env even on linux targets. The invariant we still want to
         // assert is "linux gets no Windows-xwin and no Apple-SDK prep" —
@@ -770,6 +779,7 @@ mod tests {
     });
 
     crate::timed_test!(cmake_injection_respects_system_opt_out, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().expect("tmpdir");
         let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
         let mut prep = BlessedPrep::default();
@@ -785,6 +795,7 @@ mod tests {
     });
 
     crate::timed_test!(cmake_injection_defers_to_user_cmake_env, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         // A caller-provided CMAKE (or CMAKE_GENERATOR) means the user
         // already decided; the managed injection must stand down
         // entirely — no fetch attempt, no env, no PATH dirs.
