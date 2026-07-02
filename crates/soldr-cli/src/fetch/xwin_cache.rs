@@ -31,6 +31,7 @@
 //! at runtime, but the immediate goal of this PR is "win-arm64
 //! works"; hardcoded sha256s are the minimum-blast-radius first cut.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
@@ -103,6 +104,13 @@ pub async fn ensure_xwin_cache(
     let cache_dir = install_dir.join("xwin");
 
     if stamp.is_file() && cache_dir.is_dir() {
+        // Repair pass for caches extracted by older soldr versions (or
+        // restored from a CI cache) that predate the case-alias fix —
+        // idempotent and cheap once the aliases exist (cross-run 28574600982 fix).
+        let aliases = ensure_xwin_case_aliases(&cache_dir)?;
+        if aliases > 0 {
+            eprintln!("soldr: added {aliases} xwin-cache case aliases");
+        }
         return Ok(cache_dir);
     }
 
@@ -153,12 +161,262 @@ pub async fn ensure_xwin_cache(
         )));
     }
 
+    // Case-sensitivity repair (cross-run 28574600982 fix): the catalogue bundle ships
+    // one file per header with whatever casing the recipe splatted, but
+    // Windows SDK headers cross-reference each other with inconsistent
+    // casing (`kernelspecs.h` does `#include "DriverSpecs.h"` while the
+    // file on disk is `driverspecs.h`). On the case-sensitive Linux CI
+    // filesystems that include fails fatally. Materialize the aliases
+    // both directions before declaring the cache usable.
+    let aliases = ensure_xwin_case_aliases(&cache_dir)?;
+    if aliases > 0 {
+        eprintln!("soldr: added {aliases} xwin-cache case aliases");
+    }
+
     std::fs::write(&stamp, MANAGED_XWIN_CACHE_VERSION)?;
     eprintln!(
         "soldr: extracted xwin-cache to {} (set XWIN_CACHE_DIR there)",
         cache_dir.display()
     );
     Ok(cache_dir)
+}
+
+/// Create the case-variant file aliases that make an xwin splat usable
+/// on a case-sensitive filesystem. Returns the number of aliases
+/// created (0 on a case-insensitive filesystem or when everything is
+/// already materialized — the pass is idempotent).
+///
+/// Two passes:
+///
+/// 1. **Lowercase aliases** — for every mixed-case file under
+///    `crt/{include,lib}` + `sdk/{include,lib}`, hardlink a lowercase
+///    sibling (`Kernel32.Lib` → `kernel32.lib`). Covers lowercase
+///    `#include <windows.h>` / `-lkernel32`-style references to
+///    mixed-case files.
+/// 2. **Include-referenced aliases** (cross-run 28574600982 fix) — scan every file
+///    under the include trees for `#include` directives and, for each
+///    referenced name that only matches an on-disk file
+///    case-INsensitively, hardlink an alias with the referenced casing
+///    (`driverspecs.h` → `DriverSpecs.h`, referenced by
+///    `kernelspecs.h` which winnt.h pulls into every `windows.h`
+///    compile). This is the reverse direction of pass 1 and is what
+///    xwin's own `--symlinks` mode does at splat time.
+pub fn ensure_xwin_case_aliases(xwin_dir: &Path) -> Result<usize, SoldrError> {
+    let roots = [
+        xwin_dir.join("crt").join("include"),
+        xwin_dir.join("crt").join("lib"),
+        xwin_dir.join("sdk").join("include"),
+        xwin_dir.join("sdk").join("lib"),
+    ];
+
+    let mut created = 0;
+    for root in roots {
+        if root.is_dir() {
+            created += ensure_lowercase_file_aliases(&root)?;
+        }
+    }
+    created += ensure_include_referenced_aliases(xwin_dir)?;
+    Ok(created)
+}
+
+fn ensure_lowercase_file_aliases(dir: &Path) -> Result<usize, SoldrError> {
+    let mut created = 0;
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| SoldrError::Other(format!("read xwin cache dir {}: {e}", dir.display())))?
+    {
+        let entry = entry.map_err(|e| {
+            SoldrError::Other(format!(
+                "read xwin cache entry under {}: {e}",
+                dir.display()
+            ))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            SoldrError::Other(format!("stat xwin cache entry {}: {e}", path.display()))
+        })?;
+
+        if file_type.is_dir() {
+            created += ensure_lowercase_file_aliases(&path)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let lower = name.to_ascii_lowercase();
+        if lower == name {
+            continue;
+        }
+
+        let alias = path.with_file_name(lower);
+        if alias.exists() {
+            continue;
+        }
+
+        create_xwin_file_alias(&path, &alias)?;
+        created += 1;
+    }
+    Ok(created)
+}
+
+/// Pass 2 of [`ensure_xwin_case_aliases`]: alias every include-directive
+/// referenced name whose on-disk file only matches case-insensitively.
+fn ensure_include_referenced_aliases(xwin_dir: &Path) -> Result<usize, SoldrError> {
+    let include_roots = [
+        xwin_dir.join("crt").join("include"),
+        xwin_dir.join("sdk").join("include"),
+    ];
+
+    // (dir, lowercase-name → actual-name) per directory, plus the set
+    // of basenames referenced by any `#include` directive anywhere in
+    // the splat. Quoted includes resolve relative to the includer's
+    // directory and angle includes against every `/imsvc` root, so an
+    // alias is created in EVERY directory holding a case-insensitive
+    // match — a superset of what resolution needs, and harmless.
+    let mut dir_maps: Vec<(PathBuf, HashMap<String, String>)> = Vec::new();
+    let mut referenced: HashSet<String> = HashSet::new();
+    for root in &include_roots {
+        if root.is_dir() {
+            collect_names_and_includes(root, &mut dir_maps, &mut referenced)?;
+        }
+    }
+
+    let mut created = 0;
+    for (dir, names) in &dir_maps {
+        for reference in &referenced {
+            let Some(actual) = names.get(&reference.to_ascii_lowercase()) else {
+                continue;
+            };
+            if actual == reference {
+                continue;
+            }
+            let alias = dir.join(reference);
+            // `exists()` is the case-insensitive-filesystem guard: on
+            // such filesystems the alias name already resolves to the
+            // actual file, so nothing needs materializing.
+            if alias.exists() {
+                continue;
+            }
+            create_xwin_file_alias(&dir.join(actual), &alias)?;
+            created += 1;
+        }
+    }
+    Ok(created)
+}
+
+fn collect_names_and_includes(
+    dir: &Path,
+    dir_maps: &mut Vec<(PathBuf, HashMap<String, String>)>,
+    referenced: &mut HashSet<String>,
+) -> Result<(), SoldrError> {
+    let mut names: HashMap<String, String> = HashMap::new();
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| SoldrError::Other(format!("read xwin include dir {}: {e}", dir.display())))?
+    {
+        let entry = entry.map_err(|e| {
+            SoldrError::Other(format!(
+                "read xwin include entry under {}: {e}",
+                dir.display()
+            ))
+        })?;
+        let path = entry.path();
+        let file_type = entry.file_type().map_err(|e| {
+            SoldrError::Other(format!("stat xwin include entry {}: {e}", path.display()))
+        })?;
+
+        if file_type.is_dir() {
+            collect_names_and_includes(&path, dir_maps, referenced)?;
+            continue;
+        }
+        if !file_type.is_file() {
+            continue;
+        }
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue; // non-UTF8 names can't appear in #include directives
+        };
+        // First name wins on case-insensitive filesystems where two
+        // casings can't coexist anyway; on case-sensitive filesystems
+        // duplicates only differ by case and either works as a source.
+        names.entry(name.to_ascii_lowercase()).or_insert(name);
+
+        // Every file under the include trees is a text header (SDK
+        // headers, MSVC STL extensionless headers, .inl bodies). Scan
+        // them all rather than maintaining an extension allowlist.
+        if let Ok(content) = std::fs::read(&path) {
+            scan_include_directives(&content, referenced);
+        }
+    }
+    dir_maps.push((dir.to_path_buf(), names));
+    Ok(())
+}
+
+/// Collect the basename of every `#include "..."` / `#include <...>`
+/// directive in `content` into `referenced`. Tolerant line-oriented
+/// parse — a false positive only risks creating an unnecessary alias.
+fn scan_include_directives(content: &[u8], referenced: &mut HashSet<String>) {
+    for line in content.split(|&b| b == b'\n') {
+        let s = trim_ascii_start(line);
+        let Some(s) = s.strip_prefix(b"#") else {
+            continue;
+        };
+        let s = trim_ascii_start(s);
+        let Some(s) = s.strip_prefix(b"include") else {
+            continue;
+        };
+        let s = trim_ascii_start(s);
+        let close = match s.first() {
+            Some(b'"') => b'"',
+            Some(b'<') => b'>',
+            _ => continue,
+        };
+        let inner = &s[1..];
+        let Some(end) = inner.iter().position(|&b| b == close) else {
+            continue;
+        };
+        let name = &inner[..end];
+        let base = name
+            .rsplit(|&b| b == b'/' || b == b'\\')
+            .next()
+            .unwrap_or(name);
+        if base.is_empty() {
+            continue;
+        }
+        if let Ok(base) = std::str::from_utf8(base) {
+            referenced.insert(base.to_string());
+        }
+    }
+}
+
+fn trim_ascii_start(mut s: &[u8]) -> &[u8] {
+    while let Some((first, rest)) = s.split_first() {
+        if first.is_ascii_whitespace() {
+            s = rest;
+        } else {
+            break;
+        }
+    }
+    s
+}
+
+fn create_xwin_file_alias(src: &Path, alias: &Path) -> Result<(), SoldrError> {
+    match std::fs::hard_link(src, alias) {
+        Ok(()) => Ok(()),
+        Err(hardlink_err) => {
+            if alias.exists() {
+                return Ok(());
+            }
+            std::fs::copy(src, alias).map(|_| ()).map_err(|copy_err| {
+                SoldrError::Other(format!(
+                    "create xwin cache case alias {} -> {}: \
+                     hardlink failed: {hardlink_err}; copy failed: {copy_err}",
+                    alias.display(),
+                    src.display()
+                ))
+            })
+        }
+    }
 }
 
 fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
@@ -213,6 +471,92 @@ mod tests {
         assert!(
             msg.contains("not yet ingested") || msg.contains("TBD"),
             "expected 'not yet ingested' or 'TBD' in error, got: {msg}"
+        );
+    });
+
+    /// Probe whether `dir`'s filesystem resolves names case-insensitively
+    /// (macOS APFS default, Windows NTFS). On such filesystems no aliases
+    /// are needed (or creatable) — tests adjust expectations accordingly.
+    fn is_case_insensitive_fs(dir: &Path) -> bool {
+        let probe = dir.join("CaseProbe");
+        std::fs::write(&probe, b"").expect("write case probe");
+        let insensitive = dir.join("caseprobe").exists();
+        std::fs::remove_file(&probe).ok();
+        insensitive
+    }
+
+    crate::timed_test!(include_referenced_case_alias_materializes_driverspecs, {
+        // cross-run 28574600982 regression fixture: the catalogue xwin bundle ships
+        // `driverspecs.h` (lowercase) while `kernelspecs.h` references
+        // `#include "DriverSpecs.h"` — every `windows.h` compile on a
+        // case-sensitive filesystem died with "file not found".
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let xwin = tmp.path().join("xwin");
+        let shared = xwin.join("sdk").join("include").join("shared");
+        std::fs::create_dir_all(&shared).expect("mkdir shared");
+        std::fs::write(
+            shared.join("kernelspecs.h"),
+            b"#pragma once\n#include \"DriverSpecs.h\"\n",
+        )
+        .expect("write kernelspecs");
+        std::fs::write(shared.join("driverspecs.h"), b"#pragma once\n").expect("write driverspecs");
+
+        let case_insensitive = is_case_insensitive_fs(tmp.path());
+        let created = ensure_xwin_case_aliases(&xwin).expect("aliases");
+        let expected = if case_insensitive { 0 } else { 1 };
+        assert_eq!(created, expected, "DriverSpecs.h alias count");
+        // Resolvable under the referenced casing either way.
+        assert!(shared.join("DriverSpecs.h").is_file());
+
+        // Idempotent on re-run.
+        let again = ensure_xwin_case_aliases(&xwin).expect("aliases again");
+        assert_eq!(again, 0);
+    });
+
+    crate::timed_test!(include_scan_handles_angle_subdir_and_whitespace, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let xwin = tmp.path().join("xwin");
+        let um = xwin.join("sdk").join("include").join("um");
+        std::fs::create_dir_all(&um).expect("mkdir um");
+        // Angle include, subdir-qualified reference, and whitespace
+        // between `#` and `include` — all must resolve to basenames.
+        std::fs::write(
+            um.join("consumer.h"),
+            b"  #  include <foo/BarBaz.h>\n#include \"QuuxThing.h\"\nint x;\n",
+        )
+        .expect("write consumer");
+        std::fs::write(um.join("barbaz.h"), b"x").expect("write barbaz");
+        std::fs::write(um.join("quuxthing.h"), b"y").expect("write quuxthing");
+
+        let case_insensitive = is_case_insensitive_fs(tmp.path());
+        let created = ensure_xwin_case_aliases(&xwin).expect("aliases");
+        let expected = if case_insensitive { 0 } else { 2 };
+        assert_eq!(created, expected);
+        assert!(um.join("BarBaz.h").is_file());
+        assert!(um.join("QuuxThing.h").is_file());
+    });
+
+    crate::timed_test!(scan_include_directives_parses_directive_shapes, {
+        let mut refs = HashSet::new();
+        scan_include_directives(
+            b"#include <a/b/Name.h>\n\
+              # include \"Other.H\"\n\
+              #include<NoSpace.h>\n\
+              // #include commented is still fine to over-collect\n\
+              #define X 1\n\
+              #include \"backslash\\Sub\\Deep.h\"\n\
+              #include \"\"\n\
+              #include <unclosed\n",
+            &mut refs,
+        );
+        assert!(refs.contains("Name.h"), "{refs:?}");
+        assert!(refs.contains("Other.H"), "{refs:?}");
+        assert!(refs.contains("NoSpace.h"), "{refs:?}");
+        assert!(refs.contains("Deep.h"), "{refs:?}");
+        assert!(!refs.contains(""), "empty names must be dropped: {refs:?}");
+        assert!(
+            !refs.iter().any(|r| r.contains("unclosed")),
+            "unclosed directives must be ignored: {refs:?}"
         );
     });
 

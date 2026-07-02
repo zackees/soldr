@@ -170,83 +170,14 @@ async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
     Ok(xwin_dir)
 }
 
-fn ensure_xwin_case_aliases(xwin_dir: &Path) -> Result<usize, SoldrError> {
-    let roots = [
-        xwin_dir.join("crt").join("include"),
-        xwin_dir.join("crt").join("lib"),
-        xwin_dir.join("sdk").join("include"),
-        xwin_dir.join("sdk").join("lib"),
-    ];
-
-    let mut created = 0;
-    for root in roots {
-        if root.is_dir() {
-            created += ensure_lowercase_file_aliases(&root)?;
-        }
-    }
-    Ok(created)
-}
-
-fn ensure_lowercase_file_aliases(dir: &Path) -> Result<usize, SoldrError> {
-    let mut created = 0;
-    for entry in std::fs::read_dir(dir)
-        .map_err(|e| SoldrError::Other(format!("read xwin cache dir {}: {e}", dir.display())))?
-    {
-        let entry = entry.map_err(|e| {
-            SoldrError::Other(format!(
-                "read xwin cache entry under {}: {e}",
-                dir.display()
-            ))
-        })?;
-        let path = entry.path();
-        let file_type = entry.file_type().map_err(|e| {
-            SoldrError::Other(format!("stat xwin cache entry {}: {e}", path.display()))
-        })?;
-
-        if file_type.is_dir() {
-            created += ensure_lowercase_file_aliases(&path)?;
-            continue;
-        }
-        if !file_type.is_file() {
-            continue;
-        }
-
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let lower = name.to_ascii_lowercase();
-        if lower == name {
-            continue;
-        }
-
-        let alias = path.with_file_name(lower);
-        if alias.exists() {
-            continue;
-        }
-
-        create_xwin_file_alias(&path, &alias)?;
-        created += 1;
-    }
-    Ok(created)
-}
-
-fn create_xwin_file_alias(src: &Path, alias: &Path) -> Result<(), SoldrError> {
-    match std::fs::hard_link(src, alias) {
-        Ok(()) => Ok(()),
-        Err(hardlink_err) => {
-            if alias.exists() {
-                return Ok(());
-            }
-            std::fs::copy(src, alias).map(|_| ()).map_err(|copy_err| {
-                SoldrError::Other(format!(
-                    "create lowercase xwin cache alias {} -> {}: \
-                     hardlink failed: {hardlink_err}; copy failed: {copy_err}",
-                    alias.display(),
-                    src.display()
-                ))
-            })
-        }
-    }
-}
+/// Case-alias materialization is shared with the blessed
+/// `fetch::xwin_cache` path — same bundle shape, same case-sensitivity
+/// problem, one implementation (cross-run 28574600982 fix). Covers both the lowercase
+/// pass (`Kernel32.Lib` → `kernel32.lib`) and the include-referenced
+/// pass (`driverspecs.h` → `DriverSpecs.h`, which `kernelspecs.h`
+/// references as `#include "DriverSpecs.h"` from every `windows.h`
+/// compile).
+use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
 
 /// Parse the `--target` argument into a list of triples.
 ///
