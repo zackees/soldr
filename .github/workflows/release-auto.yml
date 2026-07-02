@@ -1575,26 +1575,62 @@ jobs:
               -X POST \
               -f "ref=refs/tags/${tag}" \
               -f "sha=${sha}"; then
-              echo "::warning::GITHUB_TOKEN could not create tag ${tag} via /git/refs — the repo owner must pre-create the tag out-of-band. See soldr#1252."
-              echo "Repro from a local shell with owner PAT:"
-              echo "  gh api repos/${GITHUB_REPOSITORY}/git/refs -X POST -f ref=refs/tags/${tag} -f sha=${sha}"
-              exit 1
+              # soldr#1252 escalation (observed live on v0.7.97, run
+              # 28574025652): the 403 also hits `gh release create`
+              # even with `Contents: write` granted, and blocking here
+              # used to strand PyPI + npm (they `needs:` this job).
+              # Degrade: warn + continue; the release-create step below
+              # has its own fallback, and PyPI/npm — the outputs users
+              # actually install — still publish. Recovery commands are
+              # collected in the step summary.
+              echo "::warning::GITHUB_TOKEN could not create tag ${tag} via /git/refs — the repo owner must create it out-of-band. See soldr#1252."
+              {
+                echo "## Manual release recovery needed (tag)"
+                echo '```'
+                echo "gh api repos/${GITHUB_REPOSITORY}/git/refs -X POST -f ref=refs/tags/${tag} -f sha=${sha}"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Create draft GitHub Release
+        id: create_release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          gh release create "${{ needs.prepare.outputs.version }}" dist/* \
+          tag='${{ needs.prepare.outputs.version }}'
+          # Idempotent: reruns after a partial success (or an owner-side
+          # manual create) must not fail on "release already exists".
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              echo "release ${tag} already exists — skipping create"
+              echo "created=true" >> "$GITHUB_OUTPUT"
+              exit 0
+          fi
+          if gh release create "${tag}" dist/* \
             --repo "${GITHUB_REPOSITORY}" \
             --draft \
             --generate-notes \
             --target "${{ needs.prepare.outputs.commit_sha }}" \
-            --title "${{ needs.prepare.outputs.version }}"
+            --title "${tag}"; then
+              echo "created=true" >> "$GITHUB_OUTPUT"
+          else
+              # soldr#1252: degrade instead of stranding PyPI/npm. The
+              # build artifacts stay attached to this workflow run; the
+              # owner re-creates the GH release from them out-of-band.
+              echo "created=false" >> "$GITHUB_OUTPUT"
+              echo "::warning::GITHUB_TOKEN could not create the GitHub release for ${tag} — owner must create it out-of-band from this run's artifacts. See soldr#1252."
+              {
+                echo "## Manual release recovery needed (GitHub release)"
+                echo '```'
+                echo "gh run download ${GITHUB_RUN_ID} --repo ${GITHUB_REPOSITORY} --pattern 'release-soldr-*' --dir dist"
+                echo "gh release create ${tag} dist/* --repo ${GITHUB_REPOSITORY} --generate-notes --target ${{ needs.prepare.outputs.commit_sha }} --title ${tag}"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Publish GitHub Release
+        if: steps.create_release.outputs.created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
