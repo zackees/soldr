@@ -208,8 +208,17 @@ jobs:
           # ubuntu-24.04 + cargo zigbuild. Same pattern proven for
           # aarch64-musl below + the every-commit ci.yml darwin lanes
           # (PR #1052).
+          # soldr#1140/#1187/#1220/#1223/#1226/#1231 chain: Linux → x86_64-
+          # apple-darwin cross via zig-cc kept revealing new incomplete-
+          # SDK / archive-format issues (libiconv, CommonCrypto, libz-ng
+          # archive terminator, ...) — every fix uncovered another leaf.
+          # Switch to the native macos-13 (x86_64) runner: Apple's own
+          # toolchain builds natively, no cross-compile fragility. macos-
+          # 13 is the last remaining Intel macOS GHA runner. Cost ~10x
+          # ubuntu-24.04, still measured in cents per release. Same
+          # native-runner shape as the macOS ARM64 lane.
           - name: macOS x64
-            runner: ubuntu-24.04
+            runner: macos-13
             target: x86_64-apple-darwin
             binary: soldr
           - name: macOS ARM64
