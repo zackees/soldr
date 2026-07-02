@@ -131,6 +131,35 @@ soldr cargo clean              # explicitly route `clean` to cargo (NOT soldr's 
 soldr cargo config get profile.dev
 ```
 
+### PEP 517 Build Backend
+
+soldr ships a PEP 517 build backend (`src/soldr/__init__.py` in the
+wheel), so Rust+Python packages can build through soldr instead of
+raw maturin:
+
+```toml
+[build-system]
+requires = ["soldr"]
+build-backend = "soldr"
+```
+
+The existing `[tool.maturin]` configuration is honored unchanged — the
+backend delegates to `soldr maturin pep517 <hook>` with a pinned
+maturin. The dispatch pins the child's toolchain before exec:
+
+| Pin | Effect |
+|---|---|
+| `CARGO` / `RUSTC` | rustup-resolved cargo + its sibling rustc — `rust-toolchain.toml` wins over PATH-shadowing standalones (chocolatey/scoop GNU installs). |
+| `CARGO_BUILD_TARGET` | runtime MSVC-default triple on Windows (same policy as the cargo front door). |
+| `CMAKE` / `CMAKE_GENERATOR=Ninja` | managed cmake + ninja from the soldr toolchain archive for cmake-based `*-sys` crates. |
+| `RUSTC_WRAPPER=soldr` | compilation caching (set by the Python backend). |
+
+Every pin defers to a pre-set user env var. Maturin acquisition is a
+ladder controlled by `SOLDR_MATURIN_PROVISIONER` (`auto` default:
+pinned prebuilt binary from GitHub Releases, falling back to the PyPI
+maturin wheel provisioned into an isolated uv-managed env under
+`~/.soldr/bin/maturin-uv-<ver>/`; `binary` and `uv` force one rung).
+
 ### Mode 3: Internal Wrapper Mode
 
 Wrapper mode is entered when Cargo invokes soldr as the configured `RUSTC_WRAPPER`.

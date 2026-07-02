@@ -5,6 +5,8 @@
 # managed cmake/ninja env for cmake-based *-sys deps, and
 # RUSTC_WRAPPER=soldr caching. Direct `maturin build` invocations
 # (release CI) are unaffected — maturin as a CLI ignores [build-system].
+# User-facing walkthrough: README "Use soldr as your PEP 517 build
+# backend" + docs/API.md "PEP 517 Build Backend".
 [build-system]
 requires = ["soldr"]
 build-backend = "soldr"
