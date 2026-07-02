@@ -108,6 +108,19 @@ lto = "thin"
 # clean builds further; release-only, so acceptable.
 codegen-units = 1
 
+# soldr#1282 — fast-compile profile for the CI bootstrap step.
+# `Bootstrap soldr for SDK / blessed-build prep` builds a throwaway
+# host-side soldr binary used only inside the same cross-build lane —
+# it never ships to a user, never gets downloaded via setup-soldr, and
+# never survives past post-step cleanup. Optimising it for size buys
+# nothing. Dropping LTO + cu=1 saves ~100–130 s per lane on the three
+# darwin/MSVC lanes where bootstrap dominates the critical path.
+[profile.ci-bootstrap]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = "none"
+
 [workspace.lints.rust]
 unused_mut = "deny"
 

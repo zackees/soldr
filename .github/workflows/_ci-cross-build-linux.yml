@@ -238,15 +238,20 @@ jobs:
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
-          cargo build --release --locked --package soldr-cli \
+          # soldr#1282 — --profile ci-bootstrap drops LTO + codegen-units=1
+          # from the throwaway host-side soldr build. The shipped release
+          # binary keeps profile.release; this only affects the bootstrap
+          # binary that lives inside the same lane and is deleted at
+          # post-step cleanup.
+          cargo build --profile ci-bootstrap --locked --package soldr-cli \
             --bin soldr --bin soldr-clang-shim \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
+          cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr "$RUNNER_TEMP/soldr-bin/soldr"
           # blessed_build::install_clang_shim looks for soldr-clang-shim
           # next to the soldr exe. Without it, `soldr build` errors with
           # "soldr-clang-shim binary not found".
-          cp target/x86_64-unknown-linux-gnu/release/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
+          cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
 
       - name: Expose bootstrap soldr on PATH
         if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
