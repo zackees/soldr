@@ -1271,10 +1271,103 @@ async fn append_subcommand_transitive_bin_dirs(
                     }
                     Err(err) => return Err(err),
                 }
+
+                // zlib-ng's ARM optimizations are unbuildable under
+                // clang-cl — chain a toolchain-file wrapper that turns
+                // them off for the aarch64 lane. See
+                // `ensure_zlib_ng_arm_cmake_wrapper` for the full
+                // root-cause writeup (cross-run 28574600982 fix).
+                if let Some((key, value)) = ensure_zlib_ng_arm_cmake_wrapper(paths, triple)? {
+                    if std::env::var_os(&key).is_none() {
+                        extra_env.push((key, value));
+                    }
+                }
             }
         }
     }
     Ok(())
+}
+
+/// Write the cmake toolchain-file WRAPPER that disables zlib-ng's ARM
+/// optimizations for `aarch64-pc-windows-msvc` cross-compiles, and
+/// return the `(env var, path)` pair to export on the child cargo.
+/// Returns `Ok(None)` for every other triple.
+///
+/// ## Why (run 28574600982, windows-arm lane)
+///
+/// libz-ng-sys builds vendored zlib-ng via cmake. Under clang-cl
+/// (`_MSC_VER` defined, but none of MSVC's compiler intrinsics exist),
+/// zlib-ng's ARM feature detection is self-INCONSISTENT:
+///
+/// * `HAVE_ARMV8_INTRIN` probes `__crc32w` from `<intrin.h>` — an
+///   MSVC-only declaration clang-cl doesn't ship → probe fails. But
+///   the GNU-asm probe `HAVE_ARMV8_INLINE_ASM` passes, so cmake
+///   enables `ARM_CRC32` anyway — and `acle_intrins.h`'s `_MSC_VER`
+///   code path then requires exactly the missing `__crc32b/h/w/d`
+///   intrinsics: `crc32_armv8.c` fails with "call to undeclared
+///   function '__crc32b'".
+/// * The NEON path includes MSVC's `arm64_neon.h`, whose
+///   `vld1q_*_x4` macros expand to `neon_ld1m4_*` compiler magic that
+///   clang-cl neither declares nor lowers. The `NEON_HAS_LD4` probe
+///   dies at link ("undefined symbol: neon_ld1m4_q32"), and the
+///   fallback inline functions zlib-ng then compiles collide with the
+///   still-defined macros ("type specifier missing" in
+///   `adler32_neon.c` via `neon_intrins.h`).
+///
+/// Turning `WITH_NEON` / `WITH_ARMV8` / `WITH_ARMV6` off makes
+/// zlib-ng build its portable C fallbacks — the only combination
+/// clang-cl can actually compile until upstream zlib-ng grows real
+/// clang-cl ARM64 support.
+///
+/// ## How the wrapper reaches cmake
+///
+/// cargo-xwin exports `CMAKE_TOOLCHAIN_FILE_<underscore-triple>` on
+/// the child cargo. The `cmake` crate (used by libz-ng-sys's
+/// build.rs) checks the DASH-triple form of that variable FIRST
+/// (`getenv_target_os` in cmake-rs), so soldr exports
+/// `CMAKE_TOOLCHAIN_FILE_aarch64-pc-windows-msvc` pointing at this
+/// wrapper. The wrapper chain-includes cargo-xwin's real clang-cl
+/// toolchain file via `$ENV{...}` (still present in the build-script
+/// environment) so compiler/linker setup is byte-identical, then
+/// force-caches the three `WITH_*` toggles.
+fn ensure_zlib_ng_arm_cmake_wrapper(
+    paths: &SoldrPaths,
+    triple: &str,
+) -> Result<Option<(String, String)>, SoldrError> {
+    if !(triple.starts_with("aarch64-") && triple.ends_with("-pc-windows-msvc")) {
+        return Ok(None);
+    }
+    let dir = paths.root.join("cmake").join(triple);
+    std::fs::create_dir_all(&dir).map_err(|e| {
+        SoldrError::Other(format!("create cmake wrapper dir {}: {e}", dir.display()))
+    })?;
+    let wrapper = dir.join("clang-cl-arm-toolchain.cmake");
+    let underscore = triple.replace('-', "_");
+    let content = format!(
+        r#"# Written by soldr (cross-run 28574600982 fix) — do not edit; regenerated each run.
+# Chain-include cargo-xwin's generated clang-cl toolchain file (it
+# exports the underscore-form env var on the child cargo) so the
+# compiler/linker setup is unchanged.
+if(DEFINED ENV{{CMAKE_TOOLCHAIN_FILE_{underscore}}})
+    include("$ENV{{CMAKE_TOOLCHAIN_FILE_{underscore}}}")
+endif()
+
+# zlib-ng's ARM optimizations require MSVC-only compiler intrinsics
+# (__crc32*, neon_ld1m4_*) that clang-cl does not implement; its cmake
+# feature detection half-enables them anyway and the build dies in
+# crc32_armv8.c / adler32_neon.c. Force the portable C fallbacks.
+set(WITH_NEON OFF CACHE BOOL "soldr: MSVC-intrinsic-only under clang-cl" FORCE)
+set(WITH_ARMV8 OFF CACHE BOOL "soldr: MSVC-intrinsic-only under clang-cl" FORCE)
+set(WITH_ARMV6 OFF CACHE BOOL "soldr: MSVC-intrinsic-only under clang-cl" FORCE)
+"#
+    );
+    std::fs::write(&wrapper, content).map_err(|e| {
+        SoldrError::Other(format!("write cmake wrapper {}: {e}", wrapper.display()))
+    })?;
+    Ok(Some((
+        format!("CMAKE_TOOLCHAIN_FILE_{triple}"),
+        wrapper.to_string_lossy().into_owned(),
+    )))
 }
 
 fn append_zigbuild_env_overrides(

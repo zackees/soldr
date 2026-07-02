@@ -861,3 +861,41 @@ fn non_xwin_subcommand_does_not_inject_anything() {
         "bare cargo build shouldn't inject xwin env: {env:?}"
     );
 }
+
+crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(dir.path().join("soldr"));
+
+    // Non-arm / non-msvc triples: no wrapper, no env.
+    for triple in [
+        "x86_64-pc-windows-msvc",
+        "aarch64-unknown-linux-musl",
+        "aarch64-apple-darwin",
+    ] {
+        let got = ensure_zlib_ng_arm_cmake_wrapper(&paths, triple).unwrap();
+        assert!(got.is_none(), "{triple} must not get the wrapper");
+    }
+
+    // The arm-msvc lane gets the DASH-triple env var (the form the
+    // cmake crate checks before cargo-xwin's underscore form) plus a
+    // wrapper that chain-includes cargo-xwin's file and disables the
+    // clang-cl-incompatible zlib-ng ARM toggles.
+    let (key, value) = ensure_zlib_ng_arm_cmake_wrapper(&paths, "aarch64-pc-windows-msvc")
+        .unwrap()
+        .expect("aarch64-pc-windows-msvc gets the wrapper");
+    assert_eq!(key, "CMAKE_TOOLCHAIN_FILE_aarch64-pc-windows-msvc");
+    let body = std::fs::read_to_string(&value).expect("wrapper file exists");
+    assert!(
+        body.contains("$ENV{CMAKE_TOOLCHAIN_FILE_aarch64_pc_windows_msvc}"),
+        "wrapper must chain-include cargo-xwin's underscore-form toolchain file: {body}"
+    );
+    for toggle in ["WITH_NEON OFF", "WITH_ARMV8 OFF", "WITH_ARMV6 OFF"] {
+        assert!(body.contains(toggle), "wrapper must force {toggle}: {body}");
+    }
+
+    // Idempotent: second call rewrites the same path.
+    let (key2, value2) = ensure_zlib_ng_arm_cmake_wrapper(&paths, "aarch64-pc-windows-msvc")
+        .unwrap()
+        .expect("second call still yields the wrapper");
+    assert_eq!((key, value), (key2, value2));
+});
