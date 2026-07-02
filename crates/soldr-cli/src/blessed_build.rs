@@ -379,6 +379,88 @@ pub async fn inject_cmake_tooling(paths: &SoldrPaths, prep: &mut BlessedPrep) {
         if let Some(dir) = ninja_bin.parent() {
             prep.path_dirs.push(dir.to_path_buf());
         }
+        // #1257 fallout guard: a target/ tree cached from BEFORE the
+        // managed-Ninja switch (restored CI caches, existing dev
+        // checkouts) holds cmake build dirs configured with a
+        // different generator ("Unix Makefiles" / "Visual Studio").
+        // cmake-rs re-runs configure in the same `-B` dir (it emits
+        // rerun-if-env-changed for CMAKE_GENERATOR, so the build
+        // script re-fires the moment we inject Ninja) and CMake
+        // hard-errors "Does not match the generator used previously".
+        // Sweep those dirs away up front — they would error anyway,
+        // and a deleted build dir just means a fresh configure.
+        // Observed live on the aarch64/x86_64-apple-darwin CI lanes
+        // (run 28574946937).
+        sweep_mismatched_cmake_build_dirs(&cargo_target_root(), "Ninja");
+    }
+}
+
+/// Resolve the cargo target root the upcoming child build will use:
+/// `CARGO_TARGET_DIR` when set, else `./target` under the cwd.
+fn cargo_target_root() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("target"))
+}
+
+/// Delete every cmake-rs build dir under `target_root` whose cached
+/// generator differs from `generator`. Layouts scanned (both the host
+/// and the per-triple trees, any profile name):
+///
+/// ```text
+/// target/<profile>/build/<crate-hash>/out/build/CMakeCache.txt
+/// target/<triple>/<profile>/build/<crate-hash>/out/build/CMakeCache.txt
+/// ```
+///
+/// Only the `out/build` dir is removed — cargo's fingerprint for the
+/// build script is invalidated by the CMAKE_GENERATOR env change
+/// anyway, so the script re-runs and configures the fresh dir.
+fn sweep_mismatched_cmake_build_dirs(target_root: &std::path::Path, generator: &str) {
+    let needle = format!("CMAKE_GENERATOR:INTERNAL={generator}");
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let Ok(level1) = std::fs::read_dir(target_root) else {
+        return;
+    };
+    for entry in level1.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        // `p` is either a profile dir (has build/) or a triple dir
+        // (whose children are profile dirs).
+        roots.push(p.clone());
+        if let Ok(level2) = std::fs::read_dir(&p) {
+            roots.extend(
+                level2
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|c| c.is_dir() && c.join("build").is_dir()),
+            );
+        }
+    }
+
+    for profile_dir in roots {
+        let build_dir = profile_dir.join("build");
+        let Ok(crates) = std::fs::read_dir(&build_dir) else {
+            continue;
+        };
+        for crate_dir in crates.flatten() {
+            let out_build = crate_dir.path().join("out").join("build");
+            let cache = out_build.join("CMakeCache.txt");
+            let Ok(contents) = std::fs::read_to_string(&cache) else {
+                continue;
+            };
+            let mismatch = contents
+                .lines()
+                .any(|l| l.starts_with("CMAKE_GENERATOR:INTERNAL=") && l.trim() != needle);
+            if mismatch {
+                eprintln!(
+                    "soldr build: sweeping stale cmake build dir (generator != {generator}): {}",
+                    out_build.display()
+                );
+                let _ = std::fs::remove_dir_all(&out_build);
+            }
+        }
     }
 }
 
@@ -805,6 +887,52 @@ mod tests {
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
         assert!(prep.cargo_args.is_empty());
+    });
+
+    crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {
+        // Simulate a pre-Ninja cached target tree: one Unix Makefiles
+        // cache in the host-profile layout, one Ninja cache in the
+        // per-triple layout, one Visual Studio cache in the per-triple
+        // layout. Sweep for Ninja: the mismatched two vanish, the
+        // Ninja one survives.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let target = tmp.path();
+
+        let mk = |rel: &str, generator: &str| {
+            let out_build = target.join(rel).join("out").join("build");
+            std::fs::create_dir_all(&out_build).unwrap();
+            std::fs::write(
+                out_build.join("CMakeCache.txt"),
+                format!("SOMEVAR:BOOL=ON\nCMAKE_GENERATOR:INTERNAL={generator}\n"),
+            )
+            .unwrap();
+            out_build
+        };
+
+        let stale_host = mk("release/build/libz-ng-sys-aaa", "Unix Makefiles");
+        let ninja_triple = mk(
+            "aarch64-apple-darwin/release/build/libz-ng-sys-bbb",
+            "Ninja",
+        );
+        let stale_triple = mk(
+            "x86_64-pc-windows-msvc/debug/build/zstd-sys-ccc",
+            "Visual Studio 16 2019",
+        );
+
+        sweep_mismatched_cmake_build_dirs(target, "Ninja");
+
+        assert!(!stale_host.exists(), "Unix Makefiles dir must be swept");
+        assert!(!stale_triple.exists(), "Visual Studio dir must be swept");
+        assert!(ninja_triple.exists(), "matching Ninja dir must survive");
+        assert!(
+            ninja_triple.join("CMakeCache.txt").is_file(),
+            "surviving cache intact"
+        );
+    });
+
+    crate::timed_test!(cmake_generator_sweep_tolerates_missing_target, {
+        // A nonexistent target root is a no-op, not an error.
+        sweep_mismatched_cmake_build_dirs(std::path::Path::new("Z:/does/not/exist"), "Ninja");
     });
 
     crate::timed_test!(cmake_injection_respects_system_opt_out, {
