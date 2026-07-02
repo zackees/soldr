@@ -1,6 +1,13 @@
+# soldr#1264: dogfood soldr's own PEP 517 backend (src/soldr/__init__.py).
+# The published soldr wheel installs into the isolated build env and
+# drives the build via `soldr maturin pep517 <hook>` — pinned maturin,
+# rustup-resolved CARGO (MSVC on Windows regardless of PATH junk),
+# managed cmake/ninja env for cmake-based *-sys deps, and
+# RUSTC_WRAPPER=soldr caching. Direct `maturin build` invocations
+# (release CI) are unaffected — maturin as a CLI ignores [build-system].
 [build-system]
-requires = ["maturin>=1.7,<2"]
-build-backend = "maturin"
+requires = ["soldr"]
+build-backend = "soldr"
 
 [project]
 name = "soldr"

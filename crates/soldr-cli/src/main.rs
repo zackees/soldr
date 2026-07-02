@@ -967,7 +967,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
 
             eprintln!("soldr: fetching {crate_name}...");
-            let result = crate::fetch::fetch_tool(&crate_name, &version).await?;
+            // soldr#1264 follow-on: maturin gets a provisioning ladder
+            // instead of the bare fetch — prebuilt binary from GitHub
+            // Releases first, manual uv-provisioned isolated env as
+            // the fallback (SOLDR_MATURIN_PROVISIONER=auto|binary|uv).
+            // Everything else keeps the plain fetch_tool path.
+            let result = if crate_name == "maturin" {
+                fetch_maturin_with_provisioner(&version).await?
+            } else {
+                crate::fetch::fetch_tool(&crate_name, &version).await?
+            };
 
             if result.cached {
                 eprintln!("soldr: using cached {crate_name} v{}", result.version);
@@ -977,6 +986,97 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
             let mut command = std::process::Command::new(&result.binary_path);
             command.args(tool_args);
+
+            // soldr#1264: `soldr maturin ...` is the engine behind the
+            // PEP 517 build backend (src/soldr/__init__.py). maturin
+            // spawns `cargo` itself, and on Windows the #493 `.cmd`
+            // PATH shims below are invisible to Rust-spawned children
+            // (CreateProcess resolves only `cargo.exe`, never `.cmd`),
+            // so on a PATH-poisoned machine (e.g. a chocolatey GNU
+            // cargo ahead of rustup's proxies) maturin silently builds
+            // the wrong toolchain and cmake-based *-sys deps explode
+            // in "MSYS Makefiles" flag mangling. Pin the child's
+            // toolchain + build tools before exec:
+            //   * `CARGO` → soldr's resolved rustup cargo (honors
+            //     rust-toolchain.toml + MSVC-on-Windows). maturin
+            //     reads `CARGO` before falling back to bare PATH
+            //     lookup. A caller-provided CARGO always wins.
+            //   * managed cmake/ninja env (`CMAKE`,
+            //     `CMAKE_GENERATOR=Ninja`, PATH prepends) via the same
+            //     `inject_cmake_tooling` the blessed `soldr build`
+            //     surface uses (#1257). Same opt-outs apply.
+            if crate_name == "maturin" {
+                if std::env::var_os("CARGO").is_none() {
+                    match resolve_toolchain_binary("cargo") {
+                        Ok(cargo) => {
+                            // A direct (non-rustup-proxy) toolchain
+                            // cargo spawns `rustc` from PATH — on the
+                            // poisoned-fixture machine that's the GNU
+                            // standalone, which lacks the msvc std and
+                            // dies with E0463. Pin RUSTC to the
+                            // sibling rustc of the resolved cargo so
+                            // cargo and rustc always come from the
+                            // same toolchain; fall back to the
+                            // resolver when there is no sibling.
+                            if std::env::var_os("RUSTC").is_none() {
+                                let sibling = cargo.parent().map(|dir| {
+                                    dir.join(if cfg!(windows) { "rustc.exe" } else { "rustc" })
+                                });
+                                match sibling.filter(|p| p.is_file()) {
+                                    Some(rustc) => {
+                                        command.env("RUSTC", rustc);
+                                    }
+                                    None => match resolve_toolchain_binary("rustc") {
+                                        Ok(rustc) => {
+                                            command.env("RUSTC", rustc);
+                                        }
+                                        Err(err) => eprintln!(
+                                            "soldr warning: could not resolve \
+                                             toolchain rustc for maturin: {err}"
+                                        ),
+                                    },
+                                }
+                            }
+                            command.env("CARGO", &cargo);
+                        }
+                        Err(err) => eprintln!(
+                            "soldr warning: could not resolve toolchain cargo for \
+                             maturin; child falls back to PATH lookup: {err}"
+                        ),
+                    }
+                }
+                // CARGO alone is not enough: resolve_toolchain_binary's
+                // last-resort probe is a PATH lookup, and on the
+                // poisoned-fixture machine a GNU-host rustup resolves
+                // the pinned channel to its GNU variant. Force the
+                // TARGET too — same runtime MSVC-default policy the
+                // cargo front door applies via CARGO_BUILD_TARGET
+                // (Windows-only; explicit user env always wins). Both
+                // cargo and maturin honor CARGO_BUILD_TARGET, so even
+                // a wrong-host cargo emits the right-target wheel.
+                if cfg!(windows) && std::env::var_os("CARGO_BUILD_TARGET").is_none() {
+                    match crate::core::TargetTriple::detect() {
+                        Ok(triple) => {
+                            command.env("CARGO_BUILD_TARGET", triple.triple());
+                        }
+                        Err(err) => eprintln!(
+                            "soldr warning: could not detect default target for \
+                             maturin; child builds for its cargo's host: {err}"
+                        ),
+                    }
+                }
+                let paths = SoldrPaths::new()?;
+                let mut prep = crate::blessed_build::BlessedPrep::default();
+                crate::blessed_build::inject_cmake_tooling(&paths, &mut prep).await;
+                // Mutate our own env (inherited by the child) so the
+                // shim-dir PATH prepend below composes on top.
+                for (k, v) in &prep.env {
+                    std::env::set_var(k, v);
+                }
+                for dir in &prep.path_dirs {
+                    prepend_to_path_env(dir);
+                }
+            }
 
             // Issue #493: when the user runs `soldr <external-tool>`,
             // install a transient PATH shim so any nested `cargo` /
@@ -1014,6 +1114,49 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
 
 fn should_use_managed_zccache_external(crate_name: &str, version: &VersionSpec) -> bool {
     crate_name == "zccache" && matches!(version, VersionSpec::Latest)
+}
+
+/// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)
+/// tries the prebuilt GitHub-Releases binary and falls back to the
+/// manual uv-provisioned isolated env; `binary` / `uv` force one rung.
+/// See `fetch::maturin_env` for the env-var contract.
+async fn fetch_maturin_with_provisioner(
+    version: &VersionSpec,
+) -> Result<crate::fetch::FetchResult, SoldrError> {
+    use crate::fetch::maturin_env::MaturinProvisioner;
+
+    let pinned = match version {
+        VersionSpec::Exact(v) => v.clone(),
+        VersionSpec::Latest => crate::fetch::MANAGED_MATURIN_VERSION.to_string(),
+    };
+
+    match MaturinProvisioner::from_env() {
+        MaturinProvisioner::Binary => crate::fetch::fetch_tool("maturin", version).await,
+        MaturinProvisioner::Uv => provisioned_maturin_fetch_result(&pinned).await,
+        MaturinProvisioner::Auto => match crate::fetch::fetch_tool("maturin", version).await {
+            Ok(result) => Ok(result),
+            Err(err) => {
+                eprintln!("soldr: prebuilt maturin fetch failed: {err}");
+                eprintln!("soldr: falling back to the uv-provisioned maturin env...");
+                provisioned_maturin_fetch_result(&pinned).await
+            }
+        },
+    }
+}
+
+async fn provisioned_maturin_fetch_result(
+    version: &str,
+) -> Result<crate::fetch::FetchResult, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let cached = crate::fetch::maturin_env::env_is_complete(
+        &crate::fetch::maturin_env::env_dir_for(&paths, version),
+    );
+    let binary_path = crate::fetch::maturin_env::provision_maturin_via_uv(&paths, version).await?;
+    Ok(crate::fetch::FetchResult {
+        binary_path,
+        version: version.to_string(),
+        cached,
+    })
 }
 
 fn report_and_exit(error: SoldrError) -> i32 {
