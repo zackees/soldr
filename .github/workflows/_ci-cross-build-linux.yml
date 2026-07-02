@@ -121,8 +121,14 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
+          # soldr#1279 — dropped llvm-dev. It pulled ~150 MB of libLLVM
+          # headers + shared library, but no crate in the dep tree links
+          # against libLLVM (grep -R llvm-sys Cargo.lock is empty).
+          # llvm-ar / llvm-ranlib come from `llvm` alone. libclang-dev
+          # stays because zccache's `clang` crate needs libclang.so at
+          # build time.
           sudo apt-get install -y --no-install-recommends \
-            clang lld llvm llvm-dev libclang-dev
+            clang lld llvm libclang-dev
 
       # zig + cargo-zigbuild — required for musl and aarch64-linux-gnu
       # cross-builds. Darwin is intentionally EXCLUDED: since soldr#1081
