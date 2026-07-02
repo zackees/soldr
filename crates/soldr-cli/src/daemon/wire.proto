@@ -40,6 +40,10 @@ message WireRequest {
     // zccache service to run a rustc invocation instead of forking
     // zccache.exe. v6 protocol.
     WireCompileRequest compile = 13;
+    // #1286 F1 — checkpoint the embedded zccache state (artifact
+    // index, depgraph snapshot, metadata cache) to disk without
+    // shutting down. Replies with ack. v8 protocol.
+    WireUnit flush_caches = 14;
   }
 }
 

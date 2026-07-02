@@ -104,6 +104,20 @@ pub fn shutdown(sock_path: &Path) -> Result<(), ClientError> {
     }
 }
 
+/// Issue #1286 (F1): ask the daemon to checkpoint the embedded zccache
+/// state (artifact index, depgraph snapshot, metadata cache) to disk
+/// without shutting down. Used by `soldr save` / `soldr cache flush`
+/// before archiving the cache tree.
+pub fn flush_caches(sock_path: &Path) -> Result<(), ClientError> {
+    match submit_request(sock_path, &Request::FlushCaches)? {
+        Response::Ack => Ok(()),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
 pub fn list_builds(
     sock_path: &Path,
     limit: u32,

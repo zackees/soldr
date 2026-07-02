@@ -966,6 +966,12 @@ pub(crate) enum GcSubcommand {
     /// (issue #574). Designed for cross-repo `target/` reclamation —
     /// independent of the per-repo `target/` taxonomy walks above.
     Target(Box<GcTargetArgs>),
+    /// Issue #1286 (F5): run the auto-GC sweep synchronously in this
+    /// process. Internal — the cargo front door spawns this detached at
+    /// build end so the sweep survives the wrapper process exiting; the
+    /// spawner owns the throttle, so this verb runs unconditionally.
+    #[command(name = "auto-sweep", hide = true)]
+    AutoSweep,
 }
 
 #[derive(clap::Args)]

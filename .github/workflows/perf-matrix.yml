@@ -585,18 +585,17 @@ jobs:
 
           # scenario -> "fail" or "warn".
           #
-          # TEMPORARY (soldr#1148): cold-tar-untar-warm is demoted from
-          # `fail` to `warn` while soldr#1146 is being investigated.
-          # Speedup has been stable at ~1.20x on GHA linux/medium since
-          # the embed-zccache migration (#977/#980), vs the 3.0x floor.
-          # The number is still surfaced in the ::warning:: line and the
-          # summary table so regressions are visible; the workflow just
-          # doesn't hard-fail on it. RE-PROMOTE to `fail` as part of the
-          # #1146 root-cause fix — leaving this on `warn` permanently
-          # loses the regression signal we care about most.
+          # cold-tar-untar-warm re-promoted to `fail` (#1286, closing
+          # out the #1146/#1148 demotion): the ~1.20x plateau was the
+          # embedded zccache's artifact index + depgraph being
+          # memory-only in soldr-daemon when `soldr save` archived the
+          # cache tree — the restored cache served zero rustc hits.
+          # `soldr save` / `cache flush` / `cache shutdown` now
+          # checkpoint the embedded state (Request::FlushCaches), so a
+          # sub-threshold speedup here is a real regression again.
           mode_for() {
             case "$1" in
-              cold-tar-untar-warm) echo "warn" ;;
+              cold-tar-untar-warm) echo "fail" ;;
               worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac

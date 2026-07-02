@@ -4315,7 +4315,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.12.11"
+version = "1.12.12"
 dependencies = [
  "arc-swap",
  "bincode",

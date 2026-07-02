@@ -323,6 +323,25 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
             signal_state.shutdown.notify_waiters();
         }
     });
+    // Issue #1286 (F1): SIGTERM previously killed the daemon without
+    // the graceful-drain path below, silently discarding the embedded
+    // zccache's in-memory artifact index + depgraph — a full cold
+    // cache on the next daemon start. `pkill soldr-daemon`, container
+    // stop, and service managers all send TERM, not INT.
+    #[cfg(unix)]
+    {
+        let term_state = state.clone();
+        tokio::spawn(async move {
+            let Ok(mut term) =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            else {
+                return;
+            };
+            if term.recv().await.is_some() {
+                term_state.shutdown.notify_waiters();
+            }
+        });
+    }
 
     state.shutdown.notified().await;
     accept_handle.abort();
@@ -469,6 +488,20 @@ where
         Request::Shutdown => {
             let _ = write_frame_async(&mut stream, &Response::ShuttingDown).await;
             state.shutdown.notify_waiters();
+        }
+        Request::FlushCaches => {
+            // Issue #1286 (F1): checkpoint the embedded zccache state
+            // (artifact index, depgraph snapshot, metadata cache) to
+            // disk without shutting down. `soldr save` / `soldr cache
+            // flush` call this before archiving — otherwise the state
+            // is memory-only until a graceful daemon exit and archives
+            // taken from a live daemon restore with zero rustc hits.
+            state.event_batcher.flush().await;
+            let response = match state.compile_service.flush().await {
+                Ok(_) => Response::Ack,
+                Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::BuildSessionStart {
             session_id,

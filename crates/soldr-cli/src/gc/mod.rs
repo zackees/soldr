@@ -28,7 +28,7 @@ mod walks;
 
 // Re-export the public CLI surface so `crate::gc::*` keeps matching
 // the call sites in `main.rs` and `cargo_front_door.rs`.
-pub(crate) use auto::maybe_kick_auto_gc;
+pub(crate) use auto::{maybe_spawn_auto_gc_sweeper, run_gc_auto_sweep_command};
 pub(crate) use cargo_native::{
     run_gc_cargo_command, run_gc_locations_command, run_gc_sweep_command,
 };

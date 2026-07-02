@@ -45,7 +45,7 @@ pub mod proto {
 
     #[derive(Clone, PartialEq, Message)]
     pub struct WireRequest {
-        #[prost(oneof = "WireRequestKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13")]
+        #[prost(oneof = "WireRequestKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14")]
         pub kind: Option<WireRequestKind>,
     }
 
@@ -78,6 +78,9 @@ pub mod proto {
         /// #977 Phase 5 / #980 L1 — wrapper-to-daemon Compile dispatch.
         #[prost(message, tag = "13")]
         Compile(WireCompileRequest),
+        /// #1286 F1 — checkpoint embedded zccache state to disk.
+        #[prost(message, tag = "14")]
+        FlushCaches(WireUnit),
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -686,6 +689,7 @@ impl From<&Request> for proto::WireRequest {
             }
             Request::Status => proto::WireRequestKind::Status(proto::WireUnit {}),
             Request::Shutdown => proto::WireRequestKind::Shutdown(proto::WireUnit {}),
+            Request::FlushCaches => proto::WireRequestKind::FlushCaches(proto::WireUnit {}),
             Request::BuildSessionStart {
                 session_id,
                 repo_root,
@@ -823,6 +827,7 @@ impl TryFrom<proto::WireRequest> for Request {
             },
             proto::WireRequestKind::Status(_) => Request::Status,
             proto::WireRequestKind::Shutdown(_) => Request::Shutdown,
+            proto::WireRequestKind::FlushCaches(_) => Request::FlushCaches,
             proto::WireRequestKind::BuildSessionStart(m) => Request::BuildSessionStart {
                 session_id: m.session_id,
                 repo_root: m.repo_root,
@@ -1047,6 +1052,14 @@ mod tests {
         assert!(matches!(
             decode_request(&bytes).expect("decode"),
             Request::Status
+        ));
+    });
+
+    crate::timed_test!(flush_caches_request_round_trips, {
+        let bytes = encode_request(&Request::FlushCaches);
+        assert!(matches!(
+            decode_request(&bytes).expect("decode"),
+            Request::FlushCaches
         ));
     });
 

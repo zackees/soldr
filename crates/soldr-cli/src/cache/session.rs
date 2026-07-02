@@ -411,6 +411,25 @@ pub(crate) async fn run_cache_shutdown_command(
         notes.push("polling disabled via --no-wait; daemon exit not confirmed".into());
     }
 
+    // Step 5 (#1286 F1): the steps above only quiesce the MANAGED
+    // zccache daemon (the C/C++ side). The rustc side lives in the
+    // soldr-daemon's embedded zccache service, whose artifact index +
+    // depgraph were memory-only until a graceful daemon exit — the
+    // exact same zero-warm-hit archive race soldr#383 fixed for the
+    // managed daemon, one layer up. FlushCaches is synchronous: when
+    // it returns, the embedded state is durable and a following
+    // `soldr save` / tar sees a complete cache tree.
+    {
+        let sock = crate::daemon::server::server_sock_path(&paths);
+        match crate::daemon::client::flush_caches(&sock) {
+            Ok(()) => notes.push("embedded zccache state flushed via soldr-daemon".into()),
+            Err(err) => notes.push(format!(
+                "soldr-daemon embedded flush unavailable ({err:?}); on-disk \
+                 state is whatever the daemon last persisted"
+            )),
+        }
+    }
+
     output.notes = notes;
 
     let timed_out = polled_for_exit && !output.daemon_exited;
@@ -472,6 +491,24 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         stats: None,
         notes: Vec::new(),
     };
+
+    // Issue #1286 (F1): also checkpoint the soldr-daemon's EMBEDDED
+    // zccache state (the rustc side). The managed-zccache flush below
+    // only covers the C/C++ daemon; without this, archives taken after
+    // `cache flush` were missing the embedded artifact index + depgraph
+    // and restored with zero rustc hits.
+    {
+        let sock = crate::daemon::server::server_sock_path(&paths);
+        match crate::daemon::client::flush_caches(&sock) {
+            Ok(()) => output
+                .notes
+                .push("embedded zccache state flushed via soldr-daemon".into()),
+            Err(err) => output.notes.push(format!(
+                "soldr-daemon embedded flush unavailable ({err:?}); on-disk \
+                 state is whatever the daemon last persisted"
+            )),
+        }
+    }
 
     let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
         fetch
