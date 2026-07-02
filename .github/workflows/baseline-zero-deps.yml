@@ -58,6 +58,18 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ matrix.target }}
 
+      # soldr#1235 — cache ~/.cargo/{registry,git} + target/ so the
+      # `Build soldr-cli via soldr cargo zigbuild` step below doesn't
+      # recompile ~700 crate deps from scratch on every run. Same
+      # SHA-pinned action already in #1228/#1233. The workflow's zero-
+      # deps mandate covers only the DOCKER CONTAINER (used by the
+      # Bootstrap test acceptance jobs); runner-side compile is a
+      # normal build with no such constraint.
+      - name: Restore cargo + target caches
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: baseline-zero-deps-${{ matrix.target }}
+
       # soldr#1160 — cache the host-side bootstrap soldr binary.
       # Both matrix jobs (glibc + musl) rebuild the same x86_64-unknown-linux-gnu
       # release binary here (~305s each) with RUSTC_WRAPPER="", so there is no
