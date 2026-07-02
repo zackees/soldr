@@ -1119,11 +1119,11 @@ fn should_use_managed_zccache_external(crate_name: &str, version: &VersionSpec) 
 /// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)
 /// tries the prebuilt GitHub-Releases binary and falls back to the
 /// manual uv-provisioned isolated env; `binary` / `uv` force one rung.
-/// See `fetch::maturin_env` for the env-var contract.
+/// See `fetch::uv_env` for the env-var contract.
 async fn fetch_maturin_with_provisioner(
     version: &VersionSpec,
 ) -> Result<crate::fetch::FetchResult, SoldrError> {
-    use crate::fetch::maturin_env::MaturinProvisioner;
+    use crate::fetch::uv_env::MaturinProvisioner;
 
     let pinned = match version {
         VersionSpec::Exact(v) => v.clone(),
@@ -1148,10 +1148,11 @@ async fn provisioned_maturin_fetch_result(
     version: &str,
 ) -> Result<crate::fetch::FetchResult, SoldrError> {
     let paths = SoldrPaths::new()?;
-    let cached = crate::fetch::maturin_env::env_is_complete(
-        &crate::fetch::maturin_env::env_dir_for(&paths, version),
+    let cached = crate::fetch::uv_env::env_is_complete(
+        &crate::fetch::uv_env::env_dir_for(&paths, "maturin", version),
+        "maturin",
     );
-    let binary_path = crate::fetch::maturin_env::provision_maturin_via_uv(&paths, version).await?;
+    let binary_path = crate::fetch::uv_env::provision_maturin_via_uv(&paths, version).await?;
     Ok(crate::fetch::FetchResult {
         binary_path,
         version: version.to_string(),

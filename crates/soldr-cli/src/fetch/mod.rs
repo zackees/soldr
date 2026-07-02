@@ -76,18 +76,18 @@ pub mod bzip2_sysroot;
 /// consumer like the *-sys sysroots below.
 pub mod cmake_tools;
 pub mod lzma_sysroot;
-/// soldr#1264 follow-on — manual uv-provisioned maturin env (fallback
-/// when the prebuilt maturin binary fetch misses). Hand-rolled on
-/// purpose; see module doc for why not the `uv-iso-env` package.
-pub mod maturin_env;
 pub mod mimalloc_sysroot;
 pub mod sqlite_sysroot;
 /// soldr#1064 Phase B — shared download + extract for the six
 /// *-sys C library catalogue bundles. The per-lib modules each
 /// call this helper with their own `(lib, version, slug)` tuple.
 pub mod syslib_common;
+/// soldr#1264 follow-on — manual uv-provisioned maturin env (fallback
+/// when the prebuilt maturin binary fetch misses). Hand-rolled on
+/// purpose; see module doc for why not the `uv-iso-env` package.
+pub mod uv_env;
 /// soldr#1264 follow-on — managed `uv` bundle from the soldr-toolchain
-/// archive. First consumer: [`maturin_env`].
+/// archive. First consumer: [`uv_env`].
 pub mod uv_tool;
 pub mod zccache;
 pub mod zccache_install;
