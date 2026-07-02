@@ -160,6 +160,14 @@ pinned prebuilt binary from GitHub Releases, falling back to the PyPI
 maturin wheel provisioned into an isolated uv-managed env under
 `~/.soldr/bin/maturin-uv-<ver>/`; `binary` and `uv` force one rung).
 
+The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
+`~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
+(pip/uv copy the sdist to a throwaway temp dir, discarding `target/`
+after every build) keep cargo's incremental cache hot across
+invocations — ingested from FastLED/fbuild's `setup.py` (fbuild#829).
+A caller-provided `CARGO_TARGET_DIR` always wins, and
+`SOLDR_PEP517_STABLE_TARGET_DIR=0` disables the pin entirely.
+
 ### Mode 3: Internal Wrapper Mode
 
 Wrapper mode is entered when Cargo invokes soldr as the configured `RUSTC_WRAPPER`.
@@ -1303,20 +1311,6 @@ Commands:
   version  Show version
   gc       Review reclaimable Cargo target/ directories; use gc purge to delete
 ```
-
----
-
-## PEP 517 Build Backend
-
-The `soldr` PyPI package doubles as a PEP 517 build backend (`src/soldr/__init__.py`, soldr#1264). Point your `pyproject.toml` at it and soldr fetches a pinned maturin, drives `soldr maturin pep517 <hook>`, and caches every rustc invocation via `RUSTC_WRAPPER=soldr`:
-
-```toml
-[build-system]
-requires = ["soldr"]
-build-backend = "soldr"
-```
-
-The backend pins `CARGO_TARGET_DIR` to the stable per-user path `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds (pip/uv copy the sdist to a throwaway temp dir, discarding `target/` after every build) keep cargo's incremental cache hot across invocations — ingested from FastLED/fbuild's `setup.py` (fbuild#829). A caller-provided `CARGO_TARGET_DIR` always wins, and `SOLDR_PEP517_STABLE_TARGET_DIR=0` disables the pin entirely.
 
 ---
 
