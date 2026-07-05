@@ -73,8 +73,30 @@ if [[ ! -x "${SOLDR_BIN}" ]]; then
 fi
 log "soldr binary : ${SOLDR_BIN}"
 
-# Ensure soldr is on PATH so its env-detection wins over any host soldr.
-export PATH="/tmp/soldr-target/release:${PATH}"
+# Install soldr + soldr-daemon into a stable PATH location that is NOT
+# under CARGO_TARGET_DIR. Previously the harness put the binary's own
+# dir (/tmp/soldr-target/release) on PATH, but CARGO_TARGET_DIR was
+# also /tmp/soldr-target and got INHERITED by the scenario builds — so
+# the first `soldr cargo build <fixture>` rebuilt an unrelated
+# workspace into that shared target dir and cargo deleted the soldr
+# binary. The warm build (and every subsequent scenario) then died
+# with "soldr: command not found" / "No such file or directory",
+# leaving the flamegraphs + hit-rate data empty. Copying the binaries
+# out to /usr/local/bin decouples the driver from fixture target-dir
+# churn.
+install -m 0755 "${SOLDR_BIN}" /usr/local/bin/soldr
+install -m 0755 /tmp/soldr-target/release/soldr-daemon /usr/local/bin/soldr-daemon 2>/dev/null || true
+SOLDR_BIN=/usr/local/bin/soldr
+log "soldr installed to : ${SOLDR_BIN} ($("${SOLDR_BIN}" --version 2>/dev/null | head -1))"
+
+# CRITICAL: stop exporting CARGO_TARGET_DIR into the scenarios. It was
+# only needed to build the soldr driver above (already done). If the
+# scenarios inherit it, every fixture builds into ONE shared target
+# dir — which both clobbers the soldr binary (above) AND destroys the
+# cold/warm isolation the hit-rate measurements depend on (scenario 2's
+# "cold" build would reuse scenario 1's artifacts). Each scenario must
+# build its fixture into its own default (fixture-local) target dir.
+unset CARGO_TARGET_DIR
 
 log "rustc        : $(command -v rustc) ($(rustc --version))"
 log "cargo        : $(command -v cargo) ($(cargo --version))"
