@@ -233,6 +233,33 @@ impl<'a> ZccacheResolver<'a> {
             ));
         }
 
+        // Home-mirror fast path: if this machine already fetched this
+        // managed zccache under a different SOLDR_CACHE_DIR, seed the
+        // per-cache-dir bin/ from the home mirror with a ~0.1 s local copy
+        // instead of the ~6 s GitHub download. No-op when SOLDR_CACHE_DIR
+        // is unset (home dir == cache-dir bin).
+        let cache_dir = managed_runtime_dir(self.paths);
+        let home_dir = managed_home_dir(self.paths);
+        if cache_dir != home_dir && managed_binaries_present(&home_dir, &self.target) {
+            match clone_managed_dir(&home_dir, &cache_dir, &self.target) {
+                Ok(()) => {
+                    if let Some(result) = self.managed_cached_fetch_result()? {
+                        return Ok(ZccacheRuntime::from_fetch_result(
+                            ZccacheRuntimeSource::ManagedCached,
+                            result,
+                            None,
+                            &self.target,
+                        ));
+                    }
+                }
+                Err(err) => {
+                    eprintln!(
+                        "soldr: zccache home-mirror seed failed ({err}); downloading instead"
+                    );
+                }
+            }
+        }
+
         let release_version = VersionSpec::Exact(MANAGED_ZCCACHE_VERSION.to_string());
         let repo = managed_zccache_repo();
         let release_outcome = fetch_repo_binary_with_paths(
@@ -250,6 +277,15 @@ impl<'a> ZccacheResolver<'a> {
                 let source = if result.cached {
                     ZccacheRuntimeSource::ManagedCached
                 } else {
+                    // Mirror the fresh download into the home-anchored dir so
+                    // the next distinct SOLDR_CACHE_DIR on this machine reuses
+                    // it without re-downloading. Best-effort — a failed mirror
+                    // only forfeits the optimization, never the build.
+                    if cache_dir != home_dir {
+                        if let Err(err) = clone_managed_dir(&cache_dir, &home_dir, &self.target) {
+                            eprintln!("soldr: zccache home-mirror write failed ({err}); non-fatal");
+                        }
+                    }
                     ZccacheRuntimeSource::ManagedDownloaded
                 };
                 Ok(ZccacheRuntime::from_fetch_result(
@@ -412,6 +448,64 @@ fn managed_runtime_dir(paths: &SoldrPaths) -> PathBuf {
     paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"))
 }
 
+/// Home-anchored mirror of the managed zccache binaries. Unlike
+/// [`managed_runtime_dir`] (which lives under `SOLDR_CACHE_DIR/bin` and is
+/// re-created for every distinct cache dir), this sits in the
+/// home-anchored `pinned_bin`, so the ~6 s GitHub download is paid once
+/// per machine instead of once per `SOLDR_CACHE_DIR`. Equal to
+/// `managed_runtime_dir` when `SOLDR_CACHE_DIR` is unset — seeding and
+/// mirroring then collapse to a no-op.
+fn managed_home_dir(paths: &SoldrPaths) -> PathBuf {
+    paths
+        .pinned_bin
+        .join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"))
+}
+
+/// All three managed zccache binaries (with the platform ext) exist in `dir`.
+fn managed_binaries_present(dir: &Path, target: &TargetTriple) -> bool {
+    let ext = target.binary_ext();
+    ["zccache", "zccache-daemon", "zccache-fp"]
+        .iter()
+        .all(|name| dir.join(format!("{name}{ext}")).exists())
+}
+
+/// Copy the managed zccache version dir `src` -> `dst` atomically: stage
+/// into a temp sibling of `dst`, copy every regular file (`fs::copy` keeps
+/// the +x mode on Unix), then rename into place. A pre-existing complete
+/// `dst` (including one produced by a concurrent racer) short-circuits to
+/// `Ok`. On error no partial `dst` is left behind.
+fn clone_managed_dir(src: &Path, dst: &Path, target: &TargetTriple) -> std::io::Result<()> {
+    if managed_binaries_present(dst, target) {
+        return Ok(());
+    }
+    let parent = dst.parent().unwrap_or(dst);
+    std::fs::create_dir_all(parent)?;
+    let staging = parent.join(format!(
+        ".zccache-{MANAGED_ZCCACHE_VERSION}.tmp-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), staging.join(entry.file_name()))?;
+        }
+    }
+    match std::fs::rename(&staging, dst) {
+        Ok(()) => Ok(()),
+        // A concurrent build may have populated `dst` first; that's fine.
+        Err(_) if managed_binaries_present(dst, target) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            Err(e)
+        }
+    }
+}
+
 /// Build the two-line "stale pinned zccache" warning. Pure so the
 /// color-on / color-off forms can be asserted from a unit test;
 /// mirrors `cargo_front_door::disk::low_disk_warning_for_free_bytes`.
@@ -486,4 +580,49 @@ mod tests {
             "remediation recommendation missing in plain form: {plain}"
         );
     });
+
+    crate::timed_test!(
+        clone_managed_dir_copies_binaries_and_sidecars_idempotently,
+        {
+            let target = TargetTriple::detect().expect("detect host target");
+            let ext = target.binary_ext();
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let src = tmp.path().join("src");
+            let dst = tmp
+                .path()
+                .join("bin")
+                .join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
+            std::fs::create_dir_all(&src).unwrap();
+            for name in ["zccache", "zccache-daemon", "zccache-fp"] {
+                std::fs::write(src.join(format!("{name}{ext}")), b"binary").unwrap();
+            }
+            // Debug-info sidecars (.dwp / .pdb / .dSYM) must ride along too.
+            std::fs::write(src.join("zccache.dwp"), b"debug").unwrap();
+
+            assert!(!managed_binaries_present(&dst, &target));
+            clone_managed_dir(&src, &dst, &target).expect("clone into fresh dst");
+            assert!(
+                managed_binaries_present(&dst, &target),
+                "all three managed binaries present after clone"
+            );
+            assert!(
+                dst.join("zccache.dwp").exists(),
+                "sidecar files are mirrored"
+            );
+
+            // A second clone over a complete dst short-circuits to Ok (idempotent).
+            clone_managed_dir(&src, &dst, &target).expect("idempotent second clone");
+            assert!(managed_binaries_present(&dst, &target));
+            // No leftover staging dir beside dst.
+            let staging: Vec<_> = std::fs::read_dir(dst.parent().unwrap())
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name().to_string_lossy().starts_with(".zccache-"))
+                .collect();
+            assert!(
+                staging.is_empty(),
+                "no staging tmp dir left behind: {staging:?}"
+            );
+        }
+    );
 }
