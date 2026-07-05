@@ -24,32 +24,15 @@ on:
         # (e.g. "windows-x86_64-msvc").
         required: true
         type: string
-      cache_key:
-        # Optional extra key segment so two callers on the same
-        # platform (e.g. workspace build vs. lint) don't collide
-        # inside the same shared-key bucket.
-        required: false
-        type: string
-        default: ''
       # soldr#1218 — `run_fetch_test` input removed. It gated a
       # dedicated `cargo test --test fetch_crgx` step that duplicated
       # what `Run CLI smoke tests` already covers via `--tests`. The
       # separate step never actually skipped the fetch — smoke tests
       # ran it unconditionally regardless of this toggle.
-      install_components:
-        # Comma-separated rustup components (e.g. "rustfmt,clippy").
-        # Empty by default; Windows callers pass the components they
-        # need on the build runner.
-        required: false
-        type: string
-        default: ''
-      verify_windows_msys_default_msvc:
-        # Windows-x64 only: regression guard from
-        # .github/scripts/windows-msys-default-msvc.sh. Other
-        # platforms have no equivalent.
-        required: false
-        type: boolean
-        default: false
+      # soldr#1313 — `install_components` + `verify_windows_msys_default_msvc`
+      # inputs removed. Only caller (build-linux-x64 in ci.yml) uses
+      # ubuntu-24.04 and never set either input — both steps were dead.
+      # If a future Windows caller lands, re-thread these inputs then.
 
 permissions:
   contents: read
@@ -119,17 +102,6 @@ jobs:
       # never `exact-hit`, so the guard tripped every run and the step
       # deleted `target/<triple>/` right after Swatinem/rust-cache
       # (#1242) restored it. rust-cache's own restore is authoritative.
-
-      - name: Install requested Rust components
-        if: inputs.install_components != ''
-        shell: pwsh
-        run: |
-          $components = "${{ inputs.install_components }}" -split "," |
-            ForEach-Object { $_.Trim() } |
-            Where-Object { $_ }
-          foreach ($component in $components) {
-            rustup component add $component
-          }
 
       # soldr#1176 — build workspace bins AND test binaries in one pass.
       # Downstream `Run library tests` / `Run CLI smoke tests` steps then
@@ -203,17 +175,6 @@ jobs:
             $timer.Elapsed.TotalSeconds
           ))
           exit $exitCode
-
-      - name: Verify Windows defaults to MSVC under Git Bash
-        if: inputs.verify_windows_msys_default_msvc == true && runner.os == 'Windows'
-        shell: bash
-        env:
-          # The build step above passes `--target ${{ inputs.target }}`, so cargo
-          # writes the binary to `target/<triple>/debug/`, not `target/debug/`.
-          # The script defaults to the no-target path; point it at the
-          # matrix-aware location explicitly. See issue #418.
-          SOLDR_EXE: ${{ github.workspace }}\target\${{ inputs.target }}\debug\soldr.exe
-        run: bash .github/scripts/windows-msys-default-msvc.sh
 
       # soldr#1218 — the standalone `Run fetch integration test` step
       # was removed; the same `tests/fetch_crgx.rs` binary already runs
