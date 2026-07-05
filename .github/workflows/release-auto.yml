@@ -364,7 +364,7 @@ jobs:
 
       - name: Install cargo-zigbuild (zigbuild lanes)
         if: matrix.target == 'aarch64-unknown-linux-musl' || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
-        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.82.9
+        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
         with:
           tool: cargo-zigbuild@0.23.0
 
