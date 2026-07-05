@@ -168,14 +168,14 @@ jobs:
 
       - name: Install cargo-zigbuild
         if: contains(inputs.target, 'musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.82.9
         with:
           tool: cargo-zigbuild@0.23.0
 
       # cargo-xwin — required for *-pc-windows-msvc.
       - name: Install cargo-xwin
         if: contains(inputs.target, 'pc-windows-msvc')
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.82.9
         with:
           tool: cargo-xwin@0.18.6
 
@@ -184,7 +184,7 @@ jobs:
       # skip the archive) don't install a tool they never invoke.
       - name: Install cargo-nextest
         if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        uses: taiki-e/install-action@899b013517f9e7774591216672bf75a46bb9a481 # v2.82.9
         with:
           tool: cargo-nextest
 
