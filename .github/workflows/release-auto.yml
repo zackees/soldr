@@ -436,65 +436,26 @@ jobs:
           #    runner.
           target='${{ matrix.target }}'
           if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # v0.7.84 lesson: `soldr prepare --target X
-            # --github-env` does NOT actually export SDKROOT to
-            # $GITHUB_ENV in this runner context (bootstrapped
-            # soldr may not have that flag, or fetch failed
-            # silently). Bypass soldr entirely AND fetch the
-            # Apple SDK ourselves with curl. Pin to the same
-            # MacOSX11.3.sdk that apple_sdk.rs uses in production.
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq clang-18 llvm-18 lld-18
-            sudo ln -sf /usr/bin/llvm-ar-18 /usr/bin/llvm-ar
-            sudo ln -sf /usr/bin/lld-18 /usr/bin/ld.lld
-
-            # Same URL apple_sdk.rs uses in production (see
-            # MANAGED_APPLE_SDK_URL in fetch/apple_sdk.rs).
-            APPLE_SDK_URL="https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/apple-sdk/MacOSX11.3/darwin-universal2/sdk.tar.zstd"
-            mkdir -p "$RUNNER_TEMP/apple-sdk"
-            if ! ls "$RUNNER_TEMP/apple-sdk/"MacOSX*.sdk 1>/dev/null 2>&1; then
-                echo "fetching Apple SDK from $APPLE_SDK_URL ..."
-                sudo apt-get update -qq && sudo apt-get install -y -qq zstd
-                curl -fsSL "$APPLE_SDK_URL" -o /tmp/sdk.tar.zstd
-                zstd -dc /tmp/sdk.tar.zstd | tar -xf - -C "$RUNNER_TEMP/apple-sdk"
-                rm /tmp/sdk.tar.zstd
-            fi
-            # Discover whatever MacOSXXX.X.sdk dir landed (the
-            # tarball's top-level name is the SDK version).
-            SDKROOT="$(ls -d "$RUNNER_TEMP/apple-sdk/"MacOSX*.sdk 2>/dev/null | head -1)"
-            export SDKROOT
-            echo "resolved SDKROOT=$SDKROOT"
-            if [ -z "$SDKROOT" ] || [ ! -f "$SDKROOT/usr/include/sys/syscall.h" ]; then
-                echo "ERROR: Apple SDK did not contain usr/include/sys/syscall.h" >&2
-                echo "RUNNER_TEMP/apple-sdk contents:" >&2
-                ls -la "$RUNNER_TEMP/apple-sdk" >&2 || true
-                find "$RUNNER_TEMP/apple-sdk" -maxdepth 4 -type d | head -30 >&2
-                exit 1
-            fi
-            target_u="${target//-/_}"
-            target_u_upper="$(echo "$target_u" | tr '[:lower:]' '[:upper:]')"
-            case "$target" in
-              x86_64-apple-darwin)   clang_arch=x86_64-apple-darwin ;;
-              aarch64-apple-darwin)  clang_arch=arm64-apple-darwin ;;
-              *) echo "unsupported darwin target: $target" >&2 ; exit 1 ;;
-            esac
-            # v0.7.86 lesson: cmake's CMakeTestCCompiler probe
-            # invoked the system /usr/bin/ld (GNU) instead of lld
-            # for the test-link step, hit "unrecognised emulation
-            # mode: llvm". `-fuse-ld=lld` MUST be in CFLAGS/CXXFLAGS
-            # (not just RUSTFLAGS) so any compile-link sequence
-            # cmake-rs runs uses lld and can link Mach-O.
-            export "CC_${target_u}=clang --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
-            export "CXX_${target_u}=clang++ --target=${clang_arch} -isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
-            export "AR_${target_u}=llvm-ar"
-            export "CFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -fuse-ld=lld"
-            export "CXXFLAGS_${target_u}=-isysroot ${SDKROOT} -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
-            export "CARGO_TARGET_${target_u_upper}_LINKER=clang"
-            export "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-arg=--target=${clang_arch} -C link-arg=-isysroot -C link-arg=${SDKROOT} -C link-arg=-mmacosx-version-min=11.0 -C link-arg=-fuse-ld=lld"
-            echo "=== inline darwin env ==="
-            env | grep -E "^(SDKROOT|CC_|CXX_|AR_|CFLAGS_|CARGO_TARGET_)" | grep -E "${target_u}|${target_u_upper}|SDKROOT" | sort
-            echo "========================="
-            cargo build --package soldr-cli --release --locked --target "$target"
+            # soldr#1309: `soldr build --target <darwin>` self-provisions
+            # the ENTIRE cross toolchain — Apple SDK + LLVM (clang /
+            # llvm-ar / lld, from zackees/clang-tool-chain-bins) +
+            # cmake/ninja from the catalogue. NO host `apt install clang
+            # lld llvm`, no curl SDK fetch, no inline CC/CXX/AR/CFLAGS.
+            # The in-tree soldr on PATH (from the "Bootstrap soldr for
+            # Apple SDK prep" step) carries the self-provisioning fix
+            # (#1310), validated in ci/docker-selfhost-cross producing a
+            # Mach-O binary in a bare image.
+            #
+            # This RESTORES the originally-intended `soldr build`
+            # dispatch that the v0.7.84 lesson had reverted to bare
+            # cargo + apt: that revert existed because the old `soldr
+            # prepare --github-env` didn't export SDKROOT, so cc-rs
+            # couldn't find the SDK/llvm-ar. `soldr build` no longer
+            # depends on that — blessed_build.rs calls ensure_apple_sdk
+            # + ensure_llvm_toolchain directly and sets the env on the
+            # child cargo itself.
+            soldr build --release --locked --target "$target" \
+              --package soldr-cli --bin soldr
             echo "=== post-build diagnostic: target/$target/release/ ==="
             ls -la "target/$target/release/" 2>&1 | head -20 || true
             echo "==================================================="
