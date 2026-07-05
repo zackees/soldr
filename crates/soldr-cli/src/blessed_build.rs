@@ -96,6 +96,11 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         let shim_dir = install_clang_shim(paths)?;
         prep.shim_path_dir = Some(shim_dir);
 
+        // Put the managed LLVM binutils (clang-cl / lld-link / llvm-lib,
+        // from zackees/clang-tool-chain-bins) on PATH so the AR /
+        // linker picks below resolve without a host `apt install llvm`.
+        ensure_llvm_on_path(paths, &mut prep, target_triple).await;
+
         prep.env
             .push((format!("CC_{target_u}"), "clang".to_string()));
         prep.env
@@ -165,6 +170,16 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
 
     // ------------------------------ Apple Darwin -----------------------------
     if target_triple.ends_with("-apple-darwin") && !legacy_zigbuild_opt_out() {
+        // soldr is a bootstrapping tool: it must provision the cross
+        // toolchain itself, never lean on a host `apt install clang lld
+        // llvm`. The darwin arm sets AR=llvm-ar / RANLIB=llvm-ranlib /
+        // CC=clang / linker=clang -fuse-ld=lld — put the managed LLVM
+        // binutils (from zackees/clang-tool-chain-bins) on PATH so those
+        // resolve on a bare Linux runner. (msvc gets LLVM via its
+        // downstream `cargo xwin` subcommand; darwin dispatches to plain
+        // cargo, so without this it never gets llvm-ar — soldr#1309.)
+        ensure_llvm_on_path(paths, &mut prep, target_triple).await;
+
         // Apple SDK fetch is the same code path `soldr prepare` uses,
         // so this is reuse rather than new logic.
         match crate::fetch::apple_sdk::ensure_apple_sdk(paths).await {
@@ -656,6 +671,35 @@ fn legacy_zigbuild_opt_out() -> bool {
 ///
 /// Returns the directory the shim was installed into, ready for
 /// PATH prepending.
+/// Fetch the managed LLVM toolchain (clang / clang++ / clang-cl / lld /
+/// ld.lld / lld-link / llvm-ar / llvm-lib / llvm-ranlib, from
+/// `zackees/clang-tool-chain-bins`) and prepend its `bin/` to the child
+/// cargo's PATH via `prep.path_dirs`.
+///
+/// This is what lets `soldr build --target {*-apple-darwin,
+/// *-pc-windows-msvc}` run on a bare Linux runner with **no host
+/// `apt install clang lld llvm`** — soldr is a bootstrapping tool, so it
+/// uses the right toolchain rather than requiring the host to
+/// pre-install it (soldr#1309).
+///
+/// Non-fatal on miss: logs and falls through so a host-provided LLVM
+/// still works if the catalogue asset is unavailable for the host arch.
+async fn ensure_llvm_on_path(paths: &SoldrPaths, prep: &mut BlessedPrep, target_triple: &str) {
+    match crate::fetch::ensure_llvm_toolchain(paths).await {
+        Ok(bin_dir) => {
+            // Prepend so the managed clang/llvm-ar/lld win over any host
+            // copies; the clang shim (msvc) is prepended even earlier by
+            // the caller and only shadows `clang`/`clang++`, so clang-cl
+            // / lld-link / llvm-lib still resolve here.
+            prep.path_dirs.insert(0, bin_dir);
+        }
+        Err(e) => {
+            eprintln!("soldr build: managed LLVM toolchain unavailable for {target_triple}: {e}");
+            eprintln!("soldr build: continuing — relying on any host clang/llvm/lld on PATH");
+        }
+    }
+}
+
 fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     paths.ensure_dirs()?;
 
