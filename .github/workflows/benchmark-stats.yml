@@ -104,6 +104,21 @@ jobs:
           submodules: recursive
           path: soldr
 
+      # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
+      # setup-soldr uses it (Setup soldr build cache drops from ~22 s
+      # to ~2-7 s on cache HIT). Same pattern as #1341/#1342/#1343/
+      # #1345/#1346.
+      - name: Cache rustup 1.94.1 in ~/.rustup
+        id: rustup_cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ~/.rustup/toolchains/1.94.1-x86_64-unknown-linux-gnu
+          key: rustup-1.94.1-linux-x64-v1
+
+      - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
+        if: steps.rustup_cache.outputs.cache-hit != 'true'
+        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
+
       - name: Setup soldr build cache
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         env:
