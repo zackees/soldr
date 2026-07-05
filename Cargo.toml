@@ -57,7 +57,16 @@ blake3 = "1"
 sha2 = "0.10"
 hex = "0.4"
 fs2 = "0.4"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+# soldr#1356 prep — reqwest features made explicit. Historically only
+# `rustls-tls` was listed; the code in fetch/forge_dispatch.rs +
+# fetch/manifest_lookup.rs uses `Response::text()` (`charset`),
+# `Response::json()` (`json`), and Response streaming (`stream`).
+# Those methods compile on main today because some other crate in
+# the graph implicitly enables the underlying reqwest features via
+# unification. Declaring them explicitly makes soldr's build
+# self-sufficient — dep-trim work (#1356) no longer risks breaking
+# the fetch path when feature-unification changes.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "stream"] }
 tempfile = "3"
 zip = "2"
 flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
