@@ -1,0 +1,150 @@
+name: Build all targets from Linux (pinned soldr driver, no bootstrap)
+
+# soldr#1309 — the self-hosting proof.
+#
+# Unlike `cross-compile-all-targets.yml` (which bare-`cargo`-bootstraps
+# a fresh soldr from THIS checkout in stage 1, then drives the cross
+# jobs with that in-tree binary), this workflow installs a PINNED,
+# previously-released soldr from PyPI and uses it as the sole build
+# driver for every target via the BLESSED `soldr build --target X`
+# surface (catalogue-driven cmake/ninja + xwin-cache + Apple SDK prep
+# per CLAUDE.md "Two build paths").
+#
+# This is the "N-1 builds N" ratchet: a released soldr compiles the
+# next soldr. No lane runs `cargo build -p soldr-cli` to make the
+# driver — the driver is a wheel from PyPI. The single seed cost
+# (building the pinned release itself) is already paid: 0.7.99 ships
+# wheels for all target platforms AND contains the blessed-build
+# machinery (soldr#1257/#1269/#1273).
+#
+# Dry-run: builds the binary for every target and verifies the
+# artifact; it does NOT package or publish. Its job is to prove the
+# pinned-driver-builds-all-8-targets model green before the release
+# pipeline (`release-auto.yml`) is converted to it.
+#
+# Trigger: workflow_dispatch (dispatch against a branch to validate a
+# change before merge — `gh workflow run build-all-linux-pinned.yml
+# --ref <branch>`).
+
+on:
+  workflow_dispatch:
+    inputs:
+      soldr_version:
+        description: "Pinned soldr version from PyPI to drive the builds"
+        required: false
+        default: "0.7.99"
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-all:
+    name: ${{ matrix.friendly }} (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - friendly: linux-x86
+            target: x86_64-unknown-linux-gnu
+            exe_suffix: ""
+          - friendly: linux-arm
+            target: aarch64-unknown-linux-gnu
+            exe_suffix: ""
+          - friendly: linux-x86-musl
+            target: x86_64-unknown-linux-musl
+            exe_suffix: ""
+          - friendly: linux-arm-musl
+            target: aarch64-unknown-linux-musl
+            exe_suffix: ""
+          - friendly: macos-x86
+            target: x86_64-apple-darwin
+            exe_suffix: ""
+          - friendly: macos-arm
+            target: aarch64-apple-darwin
+            exe_suffix: ""
+          - friendly: windows-x86
+            target: x86_64-pc-windows-msvc
+            exe_suffix: ".exe"
+          - friendly: windows-arm
+            target: aarch64-pc-windows-msvc
+            exe_suffix: ".exe"
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # Rust std for the cross target. soldr's cargo front door resolves
+      # this system rustup toolchain; the pinned soldr drives cargo, but
+      # cargo still needs the target's std to be installed.
+      - name: Install Rust toolchain + cross target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      # The pinned driver. A dedicated venv sidesteps PEP 668
+      # externally-managed errors on ubuntu-24.04 and puts soldr's
+      # console entry point on a PATH dir we control. This is the ONLY
+      # way soldr enters this workflow — no in-tree `cargo build`.
+      - name: Install pinned soldr from PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/soldr-venv"
+          "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
+            "soldr==${{ inputs.soldr_version }}"
+          echo "$RUNNER_TEMP/soldr-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/soldr-venv/bin/soldr" --version
+
+      - name: Verify zstd present
+        shell: bash
+        run: zstd --version | head -n1
+
+      # The whole point: ONE uniform command for every target. soldr's
+      # `Commands::Build` dispatches internally per triple — xwin for
+      # *-pc-windows-msvc, zigbuild for musl + aarch64-linux-gnu, and
+      # blessed native (Apple SDK + clang + lld) for *-apple-darwin —
+      # while blessed_build::prepare materializes the managed toolchain
+      # (cmake/ninja/uv, xwin-cache, Apple SDK) from the live
+      # soldr-toolchain catalogue. No per-target branching in YAML.
+      - name: Build soldr — soldr build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::soldr build --target ${{ matrix.target }}"
+          soldr build --release \
+            --target "${{ matrix.target }}" \
+            --package soldr-cli \
+            --bin soldr
+          echo "::endgroup::"
+
+      - name: Verify cross-compiled binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.exe_suffix }}"
+          built="target/${{ matrix.target }}/release/soldr${suffix}"
+          if [ ! -f "$built" ]; then
+            echo "expected soldr binary not found at $built" >&2
+            ls -la "target/${{ matrix.target }}/release/" >&2 || true
+            exit 1
+          fi
+          ls -la "$built"
+          file "$built"
+          # Sanity: the produced file's format must match the target so
+          # a silent host-target fallthrough (the exact bug the pinned
+          # driver exists to prevent) fails loudly here.
+          fmt="$(file -b "$built")"
+          case "${{ matrix.target }}" in
+            *-pc-windows-msvc)  echo "$fmt" | grep -qiE "PE32|MS Windows"     || { echo "NOT a PE binary: $fmt" >&2; exit 1; } ;;
+            *-apple-darwin)     echo "$fmt" | grep -qiE "Mach-O"              || { echo "NOT a Mach-O binary: $fmt" >&2; exit 1; } ;;
+            *-unknown-linux-*)  echo "$fmt" | grep -qiE "ELF"                 || { echo "NOT an ELF binary: $fmt" >&2; exit 1; } ;;
+          esac
+          echo "OK: ${{ matrix.target }} -> $fmt"
