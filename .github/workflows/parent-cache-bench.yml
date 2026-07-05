@@ -54,6 +54,10 @@ jobs:
     env:
       TARGET: ${{ inputs.target || 'self' }}
       THRESHOLD: ${{ inputs.threshold_ratio || '5' }}
+      # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
+      # for authenticated GitHub Releases lookups (5,000/hr) instead of
+      # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323.
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
