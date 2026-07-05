@@ -59,10 +59,14 @@ jobs:
       # present (per the `--workspace-remap` docs) even when all binaries
       # come from the archive. Shallow checkout is enough; we don't run
       # cargo build here.
+      # soldr#1350 — dropped `submodules: recursive`. _vender/zccache is
+      # `exclude = ["_vender/zccache"]` in the workspace root Cargo.toml,
+      # so `cargo metadata` doesn't walk into the submodule. Nextest
+      # runs pre-built test binaries from the archive; no cargo build
+      # here. Saves ~4-5 s per target-run.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 1
-          submodules: recursive
 
       - name: Download cross-build artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
