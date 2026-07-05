@@ -57,10 +57,20 @@ blake3 = "1"
 sha2 = "0.10"
 hex = "0.4"
 fs2 = "0.4"
-reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
+# soldr#1356 prep — reqwest features made explicit for robustness.
+# fetch/forge_dispatch.rs + fetch/manifest_lookup.rs use Response::text()
+# (`charset`), Response::json() (`json`), and Response streaming
+# (`stream`). Previously these were pulled in by feature-unification
+# through other deps; declaring them explicitly makes soldr's build
+# self-sufficient against dep-trim churn.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "charset", "stream"] }
 tempfile = "3"
-zip = "2"
-flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
+# soldr#1356 A4 — default-features=false + deflate only. Drops bzip2-sys
+# (C build) + aes + sha1 + lzma + deflate64 + zopfli + zip's own zstd copy.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# soldr#1356 A3 — rust_backend replaces zlib-ng. Drops libz-ng-sys
+# (C build) + the `cmake` build-dependency needed to compile it.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
 # .tar.xz support — cargo-zigbuild and other rust-cross prebuilts ship
 # their per-triple binary tarballs in xz, not gzip. Without this, soldr
@@ -71,7 +81,8 @@ toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
 prost = "0.13"
-walkdir = "2"
+# soldr#1356 A2 — walkdir workspace dep removed; jwalk is the sole
+# directory walker used in soldr-cli.
 jwalk = "0.8"
 wait-timeout = "0.2"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
