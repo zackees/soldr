@@ -31,6 +31,13 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
+  # for authenticated GitHub Releases lookups (5,000/hr) instead of
+  # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323 /
+  # #1326 / #1328 / #1329 / #1330.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   # soldr#1203 + soldr#1213 — perf/benchmark workflows are expensive
   # (build + bench + publish, ~30-60 min). The gate reconciles two
