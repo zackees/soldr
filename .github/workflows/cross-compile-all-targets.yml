@@ -50,6 +50,12 @@ env:
   FORCE_COLOR: "1"
   CLICOLOR_FORCE: "1"
   PY_COLORS: "1"
+  # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN for
+  # authenticated GitHub Releases lookups (5,000/hr) instead of
+  # unauthenticated (60/hr per runner IP). Without this a busy CI window
+  # pushes a lane into the `cargo install zccache` fallback (~700 s of
+  # source compile). See soldr#1319 for the CI-lane fix.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   bootstrap-and-linux-x86:
