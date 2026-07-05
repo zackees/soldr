@@ -25,11 +25,33 @@ const HOT_PATH_TIMEOUT: Duration = Duration::from_millis(50);
 /// CLI returns quickly even if the daemon is unresponsive.
 const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 
-/// Compile dispatch timeout — rustc may take minutes for a release build
-/// of a large crate. Cap at 30 minutes so a stuck rustc cannot wedge the
-/// wrapper forever, but anything inside that bound is allowed to run to
-/// completion. Issue #977 Phase 5 / #980 L1.
-const COMPILE_REPLY_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Default compile-dispatch timeout — rustc may take minutes for a release
+/// build of a large crate, so the default stays generous (30 minutes): a
+/// stuck rustc cannot wedge the wrapper forever, but any legitimate compile
+/// inside that bound runs to completion. Issue #977 Phase 5 / #980 L1.
+const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// Env override for [`compile_reply_timeout`] (issue #1364). Lets an
+/// operator fail fast on a wedged cache without waiting out the 30-minute
+/// backstop, e.g. `SOLDR_compile_reply_timeout()_SECS=30`. `0`, empty, or an
+/// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
+const REPLY_TIMEOUT_ENV: &str = "SOLDR_compile_reply_timeout()_SECS";
+
+/// Compile-dispatch timeout, resolved once from the environment.
+fn compile_reply_timeout() -> Duration {
+    static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| parse_reply_timeout(std::env::var(REPLY_TIMEOUT_ENV).ok().as_deref()))
+}
+
+/// Pure policy for [`compile_reply_timeout`] so the parse/fallback matrix
+/// is unit-testable without mutating the process env.
+fn parse_reply_timeout(value: Option<&str>) -> Duration {
+    let secs = value
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|s| *s > 0)
+        .unwrap_or(DEFAULT_REPLY_TIMEOUT_SECS);
+    Duration::from_secs(secs)
+}
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -437,7 +459,7 @@ where
     }
     #[cfg(unix)]
     {
-        let mut stream = connect(sock_path, COMPILE_REPLY_TIMEOUT)?;
+        let mut stream = connect(sock_path, compile_reply_timeout())?;
         write_frame_sync(&mut stream, &Request::Compile(req))?;
         loop {
             let frame: Response = read_frame_sync(&mut stream)?;
@@ -709,12 +731,12 @@ where
                 };
                 let request = Request::Compile(req);
                 if let Err(e) = timeout(
-                    COMPILE_REPLY_TIMEOUT,
+                    compile_reply_timeout(),
                     write_frame_async(&mut stream, &request),
                 )
                 .await
                 .map_err(|_| {
-                    windows_timeout_error("daemon IPC compile write", COMPILE_REPLY_TIMEOUT)
+                    windows_timeout_error("daemon IPC compile write", compile_reply_timeout())
                 })
                 .and_then(|res| res)
                 {
@@ -723,7 +745,7 @@ where
                 }
                 loop {
                     let frame = match timeout(
-                        COMPILE_REPLY_TIMEOUT,
+                        compile_reply_timeout(),
                         read_frame_async::<_, Response>(&mut stream),
                     )
                     .await
@@ -737,7 +759,7 @@ where
                             let _ =
                                 tx.send(StreamMsg::Err(ClientError::Io(windows_timeout_error(
                                     "daemon IPC compile read",
-                                    COMPILE_REPLY_TIMEOUT,
+                                    compile_reply_timeout(),
                                 ))));
                             return;
                         }
@@ -834,5 +856,28 @@ pub fn default_sock_path(paths: &SoldrPaths) -> PathBuf {
     {
         use crate::cache_lib::daemon_pipe_name;
         PathBuf::from(format!(r"\\.\pipe\{}", daemon_pipe_name(paths)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reply_timeout_defaults_to_30_min() {
+        // Unset / empty / non-numeric / zero all fall back to the generous
+        // default so a legitimate slow release compile is never cut off.
+        let default = Duration::from_secs(DEFAULT_REPLY_TIMEOUT_SECS);
+        assert_eq!(parse_reply_timeout(None), default);
+        assert_eq!(parse_reply_timeout(Some("")), default);
+        assert_eq!(parse_reply_timeout(Some("nope")), default);
+        assert_eq!(parse_reply_timeout(Some("0")), default);
+    }
+
+    #[test]
+    fn reply_timeout_env_override_fails_fast() {
+        // #1364: an operator can opt into a short fail-fast budget.
+        assert_eq!(parse_reply_timeout(Some("30")), Duration::from_secs(30));
+        assert_eq!(parse_reply_timeout(Some("  5 ")), Duration::from_secs(5));
     }
 }
