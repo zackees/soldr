@@ -12,10 +12,6 @@ on:
       binary_name:
         required: true
         type: string
-      save_cache:
-        required: false
-        type: boolean
-        default: false
       source_ref:
         required: true
         type: string
