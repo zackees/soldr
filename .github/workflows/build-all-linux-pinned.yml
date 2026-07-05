@@ -22,9 +22,11 @@ name: Build all targets from Linux (pinned soldr driver, no bootstrap)
 # pinned-driver-builds-all-8-targets model green before the release
 # pipeline (`release-auto.yml`) is converted to it.
 #
-# Trigger: workflow_dispatch (dispatch against a branch to validate a
-# change before merge — `gh workflow run build-all-linux-pinned.yml
-# --ref <branch>`).
+# Triggers: `workflow_dispatch` for on-demand runs once merged, plus
+# `pull_request` scoped to this workflow's own path so a change to the
+# self-hosting build proof validates itself on the PR before merge
+# (GitHub only exposes workflow_dispatch on the default branch, so the
+# path-scoped pull_request trigger is how we prove a branch green).
 
 on:
   workflow_dispatch:
@@ -34,6 +36,9 @@ on:
         required: false
         default: "0.7.99"
         type: string
+  pull_request:
+    paths:
+      - ".github/workflows/build-all-linux-pinned.yml"
 
 permissions:
   contents: read
@@ -97,9 +102,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # `inputs.*` is empty on pull_request events — fall back to
+          # the seed version so the self-validating PR run has a pin.
+          soldr_version="${{ inputs.soldr_version || '0.7.99' }}"
+          echo "pinned soldr driver version: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
-            "soldr==${{ inputs.soldr_version }}"
+            "soldr==${soldr_version}"
           echo "$RUNNER_TEMP/soldr-venv/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/soldr-venv/bin/soldr" --version
 
