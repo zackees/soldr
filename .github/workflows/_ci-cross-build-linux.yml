@@ -49,6 +49,12 @@ jobs:
       # run (and fall back to vendored compile if it fails). Required
       # after PR #1111 expanded the transitive *-sys dep tree.
       PKG_CONFIG_ALLOW_CROSS: "1"
+      # soldr#1319 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
+      # for authenticated GitHub Releases lookups (5,000/hr) instead of
+      # unauthenticated (60/hr per runner IP). Without this a busy CI
+      # window can push a lane into the `cargo install zccache` fallback
+      # (~700 s of source compile) — observed in run 28731872479.
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
