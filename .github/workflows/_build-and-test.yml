@@ -84,12 +84,11 @@ jobs:
         with:
           shared-key: build-and-test-${{ inputs.target }}
 
-      - name: Enable Windows line-table debug symbols
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          "CARGO_PROFILE_DEV_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-          "CARGO_PROFILE_TEST_DEBUG=line-tables-only" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      # soldr#1335 — removed `Enable Windows line-table debug symbols`
+      # + `Upload Windows test PDBs on failure`. Both gated on
+      # `runner.os == 'Windows'`; the only caller (build-linux-x64 in
+      # ci.yml) uses ubuntu-24.04, so both were dead. If a Windows
+      # caller returns, both come back in one PR.
 
       # soldr#1254 — removed the "Restore checkout after soldr-cook"
       # step. Same failure pattern as #1252: setup-soldr's `cache: false`
@@ -126,8 +125,11 @@ jobs:
       - name: Resolve built soldr binary
         shell: pwsh
         run: |
-          $exeName = if ($IsWindows) { "soldr.exe" } else { "soldr" }
-          $soldrPath = Join-Path $env:GITHUB_WORKSPACE "target/${{ inputs.target }}/debug/$exeName"
+          # soldr#1335 — dropped the `$IsWindows` branch; the only
+          # caller (build-linux-x64) uses ubuntu-24.04 so soldr binary
+          # is unsuffixed. When a Windows caller returns, restore the
+          # conditional here alongside the Windows-only steps above.
+          $soldrPath = Join-Path $env:GITHUB_WORKSPACE "target/${{ inputs.target }}/debug/soldr"
           if (-not (Test-Path -LiteralPath $soldrPath)) {
             throw "built soldr binary not found at $soldrPath"
           }
@@ -169,16 +171,6 @@ jobs:
       # -p soldr-cli --tests` — `--tests` selects every integration test
       # target). Running it twice wasted ~40 s per CI run for zero
       # additional coverage.
-
-      - name: Upload Windows test PDBs on failure
-        if: failure() && runner.os == 'Windows'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: windows-test-pdbs-${{ inputs.target }}
-          path: |
-            target/${{ inputs.target }}/debug/**/*.pdb
-            target/debug/**/*.pdb
-          if-no-files-found: warn
 
       - name: Stop isolated test cache
         if: always()
