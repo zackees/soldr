@@ -59,8 +59,13 @@ hex = "0.4"
 fs2 = "0.4"
 reqwest = { version = "0.12", features = ["rustls-tls"], default-features = false }
 tempfile = "3"
-zip = "2"
-flate2 = { version = "1", default-features = false, features = ["zlib-ng"] }
+# soldr#1356 A4 — default-features=false + deflate only. Drops bzip2-sys
+# (C build), aes, sha1, lzma, deflate64, zopfli, zip's own zstd copy.
+# Only Deflate reads are used by soldr-cli.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# soldr#1356 A3 — rust_backend replaces zlib-ng. Drops the libz-ng-sys
+# C build + the `cmake` build-dependency needed to compile it.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 tar = "0.4"
 # .tar.xz support — cargo-zigbuild and other rust-cross prebuilts ship
 # their per-triple binary tarballs in xz, not gzip. Without this, soldr
@@ -71,7 +76,8 @@ toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
 prost = "0.13"
-walkdir = "2"
+# soldr#1356 A2 — walkdir workspace dep removed; jwalk is the sole
+# directory walker used in soldr-cli.
 jwalk = "0.8"
 wait-timeout = "0.2"
 zstd = { version = "0.13", default-features = false, features = ["zstdmt"] }
