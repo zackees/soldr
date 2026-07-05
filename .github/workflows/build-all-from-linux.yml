@@ -1,0 +1,124 @@
+name: Build all targets from Linux (pinned soldr, zero host toolchain)
+
+# soldr#1309 — the self-hosting proof, now with a real pinned driver.
+#
+# One ubuntu runner installs a PINNED, previously-released soldr from
+# PyPI and drives `soldr build --release --target X` for all 8 targets.
+# No in-tree `cargo build` of the driver (the "N-1 builds N" ratchet:
+# a released soldr compiles the next one), and — because soldr 0.7.100+
+# self-provisions the entire cross toolchain (LLVM from
+# zackees/clang-tool-chain-bins, Apple SDK + xwin-cache + cmake/ninja
+# from the soldr-toolchain catalogue) — NO host `apt install clang lld
+# llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
+# only rust + the pinned soldr wheel.
+#
+# The pin MUST be >= 0.7.100 (the release that shipped the darwin/msvc
+# LLVM-bootstrap fix, soldr#1310). An older pin fails the darwin lane
+# with "cc-rs: failed to find tool llvm-ar".
+#
+# Dry-run: builds + format-verifies each binary; no packaging/publish.
+#
+# Triggers: workflow_dispatch (on-demand, choose the pin) + a
+# path-scoped pull_request so a change to this workflow validates
+# itself before merge.
+
+on:
+  workflow_dispatch:
+    inputs:
+      soldr_version:
+        description: "Pinned soldr version from PyPI (>= 0.7.100)"
+        required: false
+        default: "0.7.100"
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/build-all-from-linux.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-all:
+    name: ${{ matrix.friendly }} (${{ matrix.target }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { friendly: linux-x86,      target: x86_64-unknown-linux-gnu,    exe_suffix: "" }
+          - { friendly: linux-arm,      target: aarch64-unknown-linux-gnu,   exe_suffix: "" }
+          - { friendly: linux-x86-musl, target: x86_64-unknown-linux-musl,   exe_suffix: "" }
+          - { friendly: linux-arm-musl, target: aarch64-unknown-linux-musl,  exe_suffix: "" }
+          - { friendly: macos-x86,      target: x86_64-apple-darwin,         exe_suffix: "" }
+          - { friendly: macos-arm,      target: aarch64-apple-darwin,        exe_suffix: "" }
+          - { friendly: windows-x86,    target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
+          - { friendly: windows-arm,    target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      # Rust std for the cross target. (This is the rust toolchain, not
+      # a cross C toolchain — soldr provisions the latter itself.)
+      - name: Install Rust toolchain + cross target
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: 1.94.1
+          targets: ${{ matrix.target }}
+
+      # The pinned driver — the ONLY way soldr enters this workflow.
+      # A venv sidesteps PEP 668 and exposes soldr's console entry point.
+      - name: Install pinned soldr from PyPI
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr_version="${{ inputs.soldr_version || '0.7.100' }}"
+          echo "pinned soldr driver: $soldr_version"
+          python3 -m venv "$RUNNER_TEMP/soldr-venv"
+          "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
+            "soldr==${soldr_version}"
+          echo "$RUNNER_TEMP/soldr-venv/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/soldr-venv/bin/soldr" --version
+
+      # Deliberately NO `apt install clang lld llvm musl-tools`. If this
+      # build needs a host cross toolchain, soldr isn't provisioning the
+      # right assets — that is the bug this workflow guards against.
+      - name: Build soldr — soldr build --release --target ${{ matrix.target }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::group::soldr build --target ${{ matrix.target }}"
+          soldr build --release \
+            --target "${{ matrix.target }}" \
+            --package soldr-cli \
+            --bin soldr
+          echo "::endgroup::"
+
+      - name: Verify cross-compiled binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix="${{ matrix.exe_suffix }}"
+          built="target/${{ matrix.target }}/release/soldr${suffix}"
+          if [ ! -f "$built" ]; then
+            echo "expected soldr binary not found at $built" >&2
+            ls -la "target/${{ matrix.target }}/release/" >&2 || true
+            exit 1
+          fi
+          ls -la "$built"
+          # Magic-byte format check (no file(1) dependency) — a silent
+          # host-target fallthrough (the bug the pinned driver prevents)
+          # fails loudly here.
+          magic="$(head -c4 "$built" | od -An -tx1 | tr -d ' \n')"
+          echo "magic: $magic"
+          case "${{ matrix.target }}" in
+            *-pc-windows-msvc)  [ "${magic:0:4}" = "4d5a" ] || { echo "NOT a PE binary (magic=$magic)" >&2; exit 1; } ;;
+            *-apple-darwin)     case "$magic" in cffaedfe|feedfacf|cafebabe) : ;; *) echo "NOT a Mach-O binary (magic=$magic)" >&2; exit 1 ;; esac ;;
+            *-unknown-linux-*)  [ "$magic" = "7f454c46" ] || { echo "NOT an ELF binary (magic=$magic)" >&2; exit 1; } ;;
+          esac
+          echo "OK: ${{ matrix.target }} built by pinned soldr with zero host cross toolchain"
