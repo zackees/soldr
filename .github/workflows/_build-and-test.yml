@@ -136,7 +136,13 @@ jobs:
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@cca74625e75e70b56f1805fa6eeee9069f945d48
 
-      - name: Run library tests
+      # soldr#1324 — combined `Run library tests` + `Run CLI smoke tests`
+      # into one cargo invocation. Workspace has one member (soldr-cli),
+      # so `--workspace --lib` ≡ `-p soldr-cli --lib`. Merging with
+      # `--tests` lets cargo's libtest scheduler interleave lib-tests
+      # and integration binaries — no wasted cargo-startup +
+      # freshness-check pass between the two former steps.
+      - name: Run library + CLI smoke tests
         shell: pwsh
         env:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
@@ -147,31 +153,12 @@ jobs:
           Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          & $env:LOCAL_SOLDR cargo test --workspace --lib --locked --target ${{ inputs.target }}
+          & $env:LOCAL_SOLDR cargo test -p soldr-cli --lib --tests --locked --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
             [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / Library tests**: {0:F3}s",
-            $timer.Elapsed.TotalSeconds
-          ))
-          exit $exitCode
-
-      - name: Run CLI smoke tests
-        shell: pwsh
-        env:
-          SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
-          SOLDR_CACHE_LIFECYCLE: command
-          SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS: "30"
-          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
-        run: |
-          $timer = [Diagnostics.Stopwatch]::StartNew()
-          & $env:LOCAL_SOLDR cargo test -p soldr-cli --tests --locked --target ${{ inputs.target }}
-          $exitCode = $LASTEXITCODE
-          $timer.Stop()
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
-            [Globalization.CultureInfo]::InvariantCulture,
-            "- **${{ inputs.target }} / CLI smoke tests**: {0:F3}s",
+            "- **${{ inputs.target }} / Library + smoke tests**: {0:F3}s",
             $timer.Elapsed.TotalSeconds
           ))
           exit $exitCode
