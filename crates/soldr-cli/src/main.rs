@@ -276,7 +276,9 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
 }
 
 async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
-    let cache_enabled = !cli.no_cache;
+    // #1364: a truthy `ZCCACHE_DISABLE` acts like `--no-cache` so the
+    // standard zccache kill-switch actually bypasses the wrapper/daemon.
+    let cache_enabled = !cli.no_cache && !cargo_front_door::zccache_disable_requested();
     let zccache_source = cli.zccache;
     let trust_inherited_soldr_env = cli.trust_inherited_soldr_env;
 

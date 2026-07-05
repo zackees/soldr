@@ -255,6 +255,19 @@ fn env_flag_truthy(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Issue #1364: a truthy `ZCCACHE_DISABLE` in the caller's environment is
+/// treated as `--no-cache`.
+///
+/// `ZCCACHE_DISABLE` is the standard zccache kill-switch, but soldr never
+/// consulted it, so users who set it saw no effect (the build still went
+/// through the wrapper/daemon). Mapping it onto the existing `--no-cache`
+/// path fully bypasses the wrapper + daemon (and propagates
+/// `SOLDR_CACHE_ENABLED=0` to the child cargo), which is also the
+/// recovery path when a build hangs on a wedged cache.
+pub(crate) fn zccache_disable_requested() -> bool {
+    env_flag_truthy("ZCCACHE_DISABLE")
+}
+
 /// Remove soldr-private `--no-gc-target*` flags from the arg vector and
 /// return the cleaned slice plus which passes the caller asked to skip.
 /// Flags after the `--` separator are passed through untouched.
