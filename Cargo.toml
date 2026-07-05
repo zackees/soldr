@@ -80,7 +80,7 @@ xz2 = "0.1"
 toml = "0.8"
 redb = "4.1.0"
 rayon = "1"
-prost = "0.13"
+prost = "0.14"
 # soldr#1356 A2 — walkdir workspace dep removed; jwalk is the sole
 # directory walker used in soldr-cli.
 jwalk = "0.8"

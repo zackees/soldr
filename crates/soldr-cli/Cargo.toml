@@ -18,7 +18,6 @@ fs2 = { workspace = true }
 hex = { workspace = true }
 jwalk = { workspace = true }
 prost = { workspace = true }
-prost14 = { package = "prost", version = "0.14" }
 rayon = { workspace = true }
 redb = { workspace = true }
 reqwest = { workspace = true }

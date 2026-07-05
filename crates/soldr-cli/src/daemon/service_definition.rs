@@ -7,7 +7,7 @@
 use crate::daemon::backend_handle_adoption::{
     SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION,
 };
-use prost14::Message as _;
+use prost::Message as _;
 use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
 use running_process::broker::server::{
     ensure_service_definition_dir, service_definition_dir, service_definition_path,
