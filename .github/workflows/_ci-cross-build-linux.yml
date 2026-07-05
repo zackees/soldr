@@ -363,22 +363,26 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
+          # soldr#1357 — --profile ci-release drops LTO + codegen-units=1
+          # from CI-only cross-build artifacts (soldr-ci-e2e-*), saving
+          # 1-2 min per MSVC/darwin lane. Shipped release-soldr-* /
+          # pypi-soldr-* artifacts in release-auto.yml stay on --release.
           if [[ "$target" == *-pc-windows-msvc ]] \
              || [[ "$target" == *-apple-darwin ]]; then
-            soldr build --release --target "$target" \
+            soldr build --profile ci-release --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-unknown-linux-musl ]] \
                || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
-            cargo zigbuild --release --target "$target" \
+            cargo zigbuild --profile ci-release --target "$target" \
               --package soldr-cli --bin soldr
           else
-            cargo build --release --target "$target" \
+            cargo build --profile ci-release --target "$target" \
               --package soldr-cli --bin soldr
           fi
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
-          ls -la "target/$target/release/soldr$suffix"
-          file "target/$target/release/soldr$suffix"
+          ls -la "target/$target/ci-release/soldr$suffix"
+          file "target/$target/ci-release/soldr$suffix"
 
       # Stage C — test binary archive (consumed by _ci-target-run.yml).
       # Skipped for windows-msvc: `cargo nextest archive` doesn't go
@@ -423,7 +427,7 @@ jobs:
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
           mkdir -p dist/package
-          cp "target/$target/release/soldr$suffix" "dist/package/soldr$suffix"
+          cp "target/$target/ci-release/soldr$suffix" "dist/package/soldr$suffix"
           chmod +x "dist/package/soldr$suffix" 2>/dev/null || true
           # Fixtures go alongside the binary so the target-run job can
           # set SOLDR_TEST_FIXTURES_DIR via the helper from #1040.

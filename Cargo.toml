@@ -125,6 +125,22 @@ lto = false
 codegen-units = 16
 strip = "none"
 
+# soldr#1357 — fast-compile profile for CI cross-build lanes. Same
+# rationale as ci-bootstrap but applied to Stage B of
+# `_ci-cross-build-linux.yml` where `soldr build --release --target X`
+# spends 5+ min per lane, most of it in single-threaded LLVM codegen +
+# link for the soldr-cli monocrate. CI cross-build artifacts are
+# `soldr-ci-e2e-*` — consumed only by `_ci-target-run.yml` for
+# nextest smoke runs; NOT the shipped `release-soldr-*` /
+# `pypi-soldr-*` artifacts produced by `release-auto.yml` (which
+# stays on `--release` for shipped-binary quality). Keeps
+# `strip = "symbols"` so archive size stays comparable.
+[profile.ci-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+strip = "symbols"
+
 [workspace.lints.rust]
 unused_mut = "deny"
 
