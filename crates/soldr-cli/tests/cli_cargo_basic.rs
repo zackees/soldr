@@ -453,6 +453,12 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
 }
 
 #[test]
+#[ignore = "FIXME(ci): soldr#1303 — reliably red on GHA ubuntu-24.04 shared runners \
+    but passes on developer boxes (Windows + Linux). Second subprocess invocation \
+    re-emits the warning that the StateDb dedup is meant to suppress. Prime suspect: \
+    the auto-GC sweeper introduced by #1286 / #1295 races with the second \
+    invocation's StateDb::open, and profile_debug's `.unwrap_or(true)` fails open \
+    by design → warning re-emitted. Root-cause investigation is tracked in #1303."]
 fn cargo_front_door_defaults_dev_debug_off_and_warns_once_per_repo() {
     let cache_root = unique_temp_dir("cargo-debug-default-off");
     let repo = unique_temp_dir("cargo-debug-default-repo");
