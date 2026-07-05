@@ -68,7 +68,6 @@ jobs:
       # cross-compile lanes; save cost no longer justifies. Pure
       # toolchain install via setup-soldr.
       - name: Setup soldr build cache
-        id: setup_soldr
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           toolchain: 1.94.1

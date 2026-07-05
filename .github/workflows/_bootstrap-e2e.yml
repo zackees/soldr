@@ -122,7 +122,6 @@ jobs:
       # ways incompatible with cross-compile lanes. Save cost no
       # longer offsets savings. Toolchain install only.
       - name: Setup soldr build cache
-        id: setup_soldr
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
