@@ -39,6 +39,11 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
+  # for authenticated GitHub Releases lookups (5,000/hr) instead of
+  # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323 /
+  # #1326 / #1328.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
   build-all:
