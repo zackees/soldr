@@ -92,6 +92,8 @@ Leaf frames are normalized (address offsets stripped so `foo+0x12` and
 | `SOLDR_PROFILE_HZ` | `99` | `perf record -F` rate. Higher = finer-grained but bigger `perf.data` |
 | `SOLDR_PROFILE_SCENARIOS` | `cold-tar-untar-warm worktree-share touch-no-change build-then-check` | Space-separated scenario list. Drop tokens to skip cases. |
 | `SOLDR_PROFILE_FIXTURE_NAME` | `medium` | Fixture name (extracted via `perf/lib/extract.sh`) |
+| `SOLDR_PROFILE_CALL_GRAPH` | `fp` | On-CPU unwind method. `fp` = frame pointers (soldr is built with `-C force-frame-pointers`; fast fold, but leaves soldr's own Rust frames as `[soldr]`). `dwarf` = `.debug_frame` unwind, which resolves soldr's function symbols — **but the `perf script` fold is very heavy on large captures and can take ~1 h+ on WSL2**, so use it only on a capable runner (and see `SOLDR_PROFILE_FOLD_TIMEOUT`). |
+| `SOLDR_PROFILE_FOLD_TIMEOUT` | `600` | Seconds the on-CPU `perf script` fold may run before it is killed and that scenario's chart is skipped (a slow fold degrades gracefully instead of hanging the whole harness). `0` disables the bound. |
 
 The fixture defaults to `perf/fixtures/medium` (the same one the Perf
 Matrix uses), so the profile data lines up with the gate-workflow numbers.

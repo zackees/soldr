@@ -26,6 +26,13 @@ FIXTURE_DIR="$2"
 OUT_DIR="$3"
 
 SAMPLE_HZ=${SOLDR_PROFILE_HZ:-99}
+# Call-graph unwind method for the on-CPU sampler. Default `fp` (frame
+# pointers — soldr is built with -C force-frame-pointers). Set
+# `SOLDR_PROFILE_CALL_GRAPH=dwarf` to unwind via .debug_frame instead,
+# which resolves soldr's own Rust frames (the `[soldr]` leaves that FP
+# unwinds leave unresolved) at the cost of larger perf.data + slower
+# folding. `dwarf,<N>` sets the stack-dump size (default 8192).
+CALL_GRAPH=${SOLDR_PROFILE_CALL_GRAPH:-fp}
 SCENARIO_SCRIPT="/work/perf/scenarios/${SCENARIO_NAME}/run.sh"
 
 if [[ ! -x "${SCENARIO_SCRIPT}" ]] && [[ ! -f "${SCENARIO_SCRIPT}" ]]; then
@@ -81,7 +88,8 @@ sleep 2
 
 # On-CPU sampler — perf record wrapping the scenario invocation.
 log "==> starting on-CPU sampler wrapping ${SCENARIO_SCRIPT}"
-perf record -F "${SAMPLE_HZ}" -g --call-graph fp \
+log "on-CPU call-graph : ${CALL_GRAPH}"
+perf record -F "${SAMPLE_HZ}" -g --call-graph "${CALL_GRAPH}" \
     -o "/tmp/perf-${SCENARIO_NAME}.data" \
     -- bash "${SCENARIO_SCRIPT}" "${FIXTURE_DIR}" \
     > "${OUT_DIR}/scenario.stdout.log" 2> "${OUT_DIR}/scenario.stderr.log" || true
@@ -101,10 +109,23 @@ sleep 2
 [[ -s "/tmp/perf-sched-${SCENARIO_NAME}.data" ]] && cp "/tmp/perf-sched-${SCENARIO_NAME}.data" "${OUT_DIR}/perf-sched.data"
 
 # --- on-CPU flame chart --------------------------------------------
-log "==> rendering on-CPU flame chart"
+# `perf script` unwinding a DWARF capture (SOLDR_PROFILE_CALL_GRAPH=dwarf)
+# can take enormous time/memory on large captures — on WSL2 it has been
+# observed to churn for ~1 h on a single scenario without finishing.
+# Bound it so a slow fold degrades to "no on-CPU chart for this scenario"
+# instead of hanging the whole harness. Override with
+# SOLDR_PROFILE_FOLD_TIMEOUT (seconds; 0 disables the bound).
+FOLD_TIMEOUT=${SOLDR_PROFILE_FOLD_TIMEOUT:-600}
+if [[ "${FOLD_TIMEOUT}" -gt 0 ]]; then
+    FOLD_GUARD=(timeout --signal=KILL "${FOLD_TIMEOUT}")
+else
+    FOLD_GUARD=()
+fi
+log "==> rendering on-CPU flame chart (fold timeout: ${FOLD_TIMEOUT}s)"
 if [[ -s "${OUT_DIR}/perf.data" ]]; then
-    perf script -i "${OUT_DIR}/perf.data" > "/tmp/perf-${SCENARIO_NAME}.script" \
-        2>> "${OUT_DIR}/perf.log" || log "warn: perf script failed"
+    "${FOLD_GUARD[@]}" perf script -i "${OUT_DIR}/perf.data" > "/tmp/perf-${SCENARIO_NAME}.script" \
+        2>> "${OUT_DIR}/perf.log" \
+        || log "warn: perf script failed or timed out after ${FOLD_TIMEOUT}s (try SOLDR_PROFILE_CALL_GRAPH=fp, or a longer SOLDR_PROFILE_FOLD_TIMEOUT)"
     stackcollapse-perf.pl "/tmp/perf-${SCENARIO_NAME}.script" > "${OUT_DIR}/oncpu.folded" \
         2>> "${OUT_DIR}/perf.log" || log "warn: collapse failed"
     flamegraph.pl --title "soldr on-CPU (${SCENARIO_NAME})" \
