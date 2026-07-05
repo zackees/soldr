@@ -3028,6 +3028,7 @@ version = "0.7.100"
 dependencies = [
  "blake3",
  "clap",
+ "console-subscriber",
  "filetime",
  "flate2",
  "fs2",

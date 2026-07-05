@@ -209,7 +209,56 @@ async fn shutdown_compile_service(state: &Arc<State>) {
 /// Synchronous entry point used by both the `soldr-daemon` bin target
 /// and `soldr daemon start --foreground`. Builds a tokio runtime and
 /// blocks until the daemon exits.
+/// Env var that turns on the tokio-console layer for the daemon:
+/// `SOLDR_DAEMON_TOKIO_CONSOLE=1`. Only functional when the daemon is
+/// built with `RUSTFLAGS="--cfg tokio_unstable"`; otherwise it degrades
+/// to a warning (see [`maybe_init_tokio_console`]).
+pub const TOKIO_CONSOLE_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE";
+
+/// Install the tokio-console subscriber layer when
+/// [`TOKIO_CONSOLE_ENV_VAR`] is truthy, so `tokio-console` can attach to
+/// the daemon's runtime and expose per-task poll/idle time and worker
+/// behaviour — the tooling needed to pin down the daemon-worker
+/// `sched_yield` spin from soldr#1334 at the async-task level.
+///
+/// `console_subscriber::spawn()` panics unless the crate was compiled
+/// with `--cfg tokio_unstable` (the tokio task instrumentation is
+/// otherwise absent). We `catch_unwind` that so a normal release build
+/// simply logs a hint instead of crashing the daemon. Mirrors the
+/// established `zccache-daemon` pattern. No-op (and no subscriber
+/// installed — daemon stays silent as before) when the env var is unset.
+fn maybe_init_tokio_console() {
+    let enabled = std::env::var(TOKIO_CONSOLE_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    if !enabled {
+        return;
+    }
+    match std::panic::catch_unwind(console_subscriber::spawn) {
+        Ok(console_layer) => {
+            use tracing_subscriber::prelude::*;
+            let _ = tracing_subscriber::registry()
+                .with(console_layer)
+                .try_init();
+            tracing::info!(
+                "tokio-console enabled for soldr-daemon; connect with `tokio-console` \
+                 (default 127.0.0.1:6669)"
+            );
+        }
+        Err(_) => {
+            eprintln!(
+                "soldr-daemon: {TOKIO_CONSOLE_ENV_VAR} set but console-subscriber is \
+                 inert — rebuild with RUSTFLAGS=\"--cfg tokio_unstable\" to use tokio-console"
+            );
+        }
+    }
+}
+
 pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
+    // Opt-in async-runtime instrumentation. Must run before the runtime
+    // is built so console-subscriber's aggregator is in place.
+    maybe_init_tokio_console();
+
     // L6 (soldr#980): cap the daemon Tokio runtime to a small fixed
     // worker count so it doesn't oversubscribe the CPU during cargo
     // builds. The daemon handles IPC + bookkeeping; rustc is the CPU

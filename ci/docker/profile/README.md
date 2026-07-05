@@ -20,9 +20,15 @@ The four authoritative perf-matrix scenarios against `perf/fixtures/medium`:
 Each scenario is invoked as `bash perf/scenarios/<name>/run.sh <fixture-dir>`
 inside the container, wrapped by `scripts/run_scenario.sh`.
 
-Tokio-events profiling is deliberately out of scope for this iteration;
-soldr-daemon has zero `console-subscriber` wiring today. Adding it is a
-separate follow-up (mirror the pattern in `_vender/zccache/crates/zccache/src/bin/zccache-daemon.rs`).
+This on/off-CPU flame-graph harness does not itself drive tokio-console.
+soldr-daemon now supports it directly, though: set
+`SOLDR_DAEMON_TOKIO_CONSOLE=1` and build the daemon with
+`RUSTFLAGS="--cfg tokio_unstable"`, then attach with `tokio-console`
+(default `127.0.0.1:6669`) to inspect per-task poll/idle time and worker
+behaviour — the async-task view needed to pin down the daemon-worker
+`sched_yield` spin (soldr#1334). Without `--cfg tokio_unstable` the env
+var degrades to a one-line hint and the daemon runs normally. See
+`daemon::server::maybe_init_tokio_console`.
 
 ## How to run
 
