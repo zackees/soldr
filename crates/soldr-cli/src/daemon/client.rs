@@ -33,9 +33,9 @@ const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Env override for [`compile_reply_timeout`] (issue #1364). Lets an
 /// operator fail fast on a wedged cache without waiting out the 30-minute
-/// backstop, e.g. `SOLDR_compile_reply_timeout()_SECS=30`. `0`, empty, or an
+/// backstop, e.g. `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=30`. `0`, empty, or an
 /// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
-const REPLY_TIMEOUT_ENV: &str = "SOLDR_compile_reply_timeout()_SECS";
+const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
 
 /// Compile-dispatch timeout, resolved once from the environment.
 fn compile_reply_timeout() -> Duration {
