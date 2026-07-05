@@ -24,13 +24,6 @@ on:
         # (e.g. "windows-x86_64-msvc").
         required: true
         type: string
-      cache_key:
-        # Optional extra key segment so two callers on the same
-        # platform (e.g. workspace build vs. lint) don't collide
-        # inside the same shared-key bucket.
-        required: false
-        type: string
-        default: ''
       # soldr#1218 — `run_fetch_test` input removed. It gated a
       # dedicated `cargo test --test fetch_crgx` step that duplicated
       # what `Run CLI smoke tests` already covers via `--tests`. The
