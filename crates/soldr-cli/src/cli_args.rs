@@ -70,10 +70,13 @@ help                   Print this message or the help of the given subcommand\n\
     max_term_width = 80
 )]
 pub(crate) struct Cli {
-    /// Disable soldr's compilation cache for this run (bypasses the
-    /// wrapper + daemon; also the recovery path if a build hangs on a
-    /// wedged cache). A truthy `ZCCACHE_DISABLE` env var is equivalent.
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Disable soldr's compilation cache for this run",
+        long_help = "Disable soldr's compilation cache for this run (bypasses the \
+wrapper + daemon; also the recovery path if a build hangs on a wedged cache). \
+A truthy `ZCCACHE_DISABLE` env var is equivalent."
+    )]
     pub(crate) no_cache: bool,
     /// Trust inherited soldr/zccache workspace environment for cargo runs
     #[arg(
