@@ -84,6 +84,14 @@ on:
 permissions:
   contents: read
 
+env:
+  # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
+  # for authenticated GitHub Releases lookups (5,000/hr) instead of
+  # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323 /
+  # #1326 / #1328 / #1329. Every step in this perf harness that
+  # invokes soldr (build-soldr, benchmark, evaluate) inherits it.
+  SOLDR_GITHUB_TOKEN: ${{ github.token }}
+
 concurrency:
   # Never cancel a perf run in flight — every measurement is a data
   # point we want to keep, even if a follow-up push lands before this
