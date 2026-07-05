@@ -232,10 +232,15 @@ jobs:
           # subdir; soldr#1315 → v3 forces another fresh save because
           # the v2 primary key stuck with a cargo registry snapshot
           # where libz-ng-sys-1.1.29's src/zlib-ng was missing
-          # zlib-ng.map.in + test/. Every darwin run inherited that
-          # broken extraction (rust-cache only saves on primary-key
-          # miss). Bumping to v3 forces a clean re-fetch.
-          shared-key: cross-build-${{ inputs.target }}-v3
+          # zlib-ng.map.in + test/. soldr#1357 → v4 forces a fresh save
+          # after Stage B switched from --release to --profile ci-release:
+          # rust-cache's meta-hash doesn't include Cargo.toml profile
+          # additions, so the v3 primary key kept hitting with only
+          # target/<triple>/release/ deps cached — Stage B's cold
+          # ci-release/ subdir added ~5 min per lane in run 28750573776.
+          # Bumping to v4 forces one cache-miss cycle that saves the
+          # ci-release/ deps for every subsequent run.
+          shared-key: cross-build-${{ inputs.target }}-v4
 
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
