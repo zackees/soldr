@@ -195,6 +195,49 @@ fn read_session_baseline(
     serde_json::from_str(&raw).ok()
 }
 
+/// soldr#1368 observability restore — build-start half. Snapshot the
+/// embedded zccache compile counters (via the soldr-daemon) so
+/// [`finalize_build_session_stats`] can diff them into per-build
+/// hit/miss figures. Best-effort: if the daemon isn't up yet no baseline
+/// is written, and the finalize step then treats the baseline as all
+/// zero — correct because a daemon that starts fresh for this build has
+/// cumulative counters equal to this build's stats.
+pub(crate) fn capture_build_baseline(zccache_dir: &std::path::Path, session_id: &str) {
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    if let Some(baseline) = embedded_compile_stats(&paths) {
+        let _ = write_session_baseline(zccache_dir, session_id, &baseline);
+    }
+}
+
+/// soldr#1368 observability restore — build-end half. Diff the embedded
+/// zccache compile counters against the build-start baseline and write
+/// the per-build hit/miss summary to `last-session-stats.json`, the
+/// artifact `soldr cache report` (and the perf harness) read. Restores
+/// the reporting the pre-#1368 managed `zccache session-end` path used
+/// to produce. A missing baseline is treated as all-zero (fresh daemon).
+/// No-op when the daemon is unreachable at end (nothing to report).
+pub(crate) fn finalize_build_session_stats(zccache_dir: &std::path::Path, session_id: &str) {
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    let Some(current) = embedded_compile_stats(&paths) else {
+        return;
+    };
+    let baseline = read_session_baseline(zccache_dir, session_id).unwrap_or_default();
+    if let Some(stats) = compute_session_stats(Some(&baseline), Some(&current)) {
+        let path = crate::cache_lib::session_stats_path(zccache_dir);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_string(&stats) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+    let _ = std::fs::remove_file(session_baseline_path(zccache_dir, session_id));
+}
+
 /// Diff a session-end stats snapshot against the session-start baseline
 /// into per-session `hits`/`misses`/`hit_rate`/… JSON. `None` when the
 /// daemon was unreachable at end (no current snapshot to diff).

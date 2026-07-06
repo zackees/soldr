@@ -219,6 +219,16 @@ impl CargoCachePlan {
                 );
             }
         }
+        // soldr#1368 observability restore: diff the embedded zccache
+        // compile counters against the build-start baseline and write the
+        // per-build hit/miss summary to `last-session-stats.json` so
+        // `soldr cache report` (and the perf harness) surface the hit rate
+        // again. The pre-#1368 managed `zccache session-end` path used to
+        // produce this artifact; the embedded service does not, so soldr
+        // writes it from the daemon's live `CompileStats`.
+        if let Some(session) = self.zccache_session() {
+            crate::cache::finalize_build_session_stats(&session.cache_dir, &session.session_id);
+        }
         Ok(())
     }
 
