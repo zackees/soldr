@@ -1,6 +1,9 @@
-//! `soldr archive` — bundle a built `soldr` binary plus its managed-
-//! tool sidecars (`zccache`, `zccache-daemon`, `zccache-fp`, `crgx`,
-//! `cargo-chef`) into a single deployable `.tar.zst` archive.
+//! `soldr archive` — bundle a built `soldr` binary plus its optional
+//! tool sidecars (`crgx`, `cargo-chef`) into a single deployable
+//! `.tar.zst` archive. As of soldr#1368 the zccache CLI is compiled
+//! into `soldr`'s own `[[bin]]`, so the archive no longer stages an
+//! externally-downloaded `zccache` / `zccache-daemon` / `zccache-fp`
+//! trio.
 //!
 //! Issue #858 (sub-issue of #853): the release workflow currently
 //! hand-rolls this packaging in a long YAML shell step that fetches the
@@ -23,24 +26,19 @@
 //! root (every entry is intentionally one level deep — matches the
 //! release-workflow contract `setup-soldr` already consumes):
 //!
-//! - `soldr` / `soldr.exe`                  — the staged binary.
-//! - `zccache`, `zccache-daemon`, `zccache-fp` (+ `.exe` on Windows) —
-//!   the managed zccache trio for the target.
+//! - `soldr` / `soldr.exe`                  — the staged binary (also
+//!   carries the compiled-in zccache CLI via its `zccache` `[[bin]]`).
 //! - `crgx` / `crgx.exe`                    — bundled crgx (optional).
 //! - `cargo-chef` / `cargo-chef.exe`        — bundled cargo-chef (optional).
 //! - `manifest.json`                        — minimal descriptor (soldr
-//!   version + target + zccache version + entry list).
+//!   version + target + embedded zccache version + entry list).
 //!
 //! ## Sidecar resolution
 //!
-//! By default the command pulls each sidecar from
-//! `<SoldrPaths::bin>/zccache-<managed-download version>/` (the same dir
-//! `fetch_zccache_with_paths` populates). When the sidecar is missing
-//! from the local cache the command errors with a directive naming the
-//! exact warm-up command, instead of attempting a network fetch — this
-//! keeps `soldr archive` hermetic and testable. `crgx` and `cargo-chef`
-//! are looked up via the same managed-cache pattern; both are optional
-//! (missing entry just isn't included).
+//! Only `crgx` and `cargo-chef` are staged, each looked up under the
+//! managed-cache layout `<SoldrPaths::bin>/<crate>-<version>/<binary>`.
+//! Both are optional — a missing sidecar is simply omitted, never
+//! network-fetched, which keeps `soldr archive` hermetic and testable.
 //!
 //! Tests inject fake binaries via the `ArchiveSources` struct so the
 //! whole pipeline can be exercised without touching `~/.soldr`.

@@ -757,6 +757,13 @@ pub(crate) async fn run_cargo_front_door(
         Some(WorkspaceVerb::Clippy)
     );
     let capture_for_diagnostics = !needs_clippy_capture && !std::io::stderr().is_terminal();
+    // soldr#1368 observability restore: snapshot the embedded zccache
+    // compile counters just before cargo runs so `finish_zccache_session`
+    // can diff start-vs-end into the per-build hit/miss summary written to
+    // `last-session-stats.json`.
+    if let Some(session) = cache_plan.zccache_session() {
+        crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
+    }
     let (status, clippy_capture, diagnostic_capture) = if needs_clippy_capture {
         let (status, capture) = run_command_capturing_clippy(&mut command)?;
         (status, Some(capture), None)
