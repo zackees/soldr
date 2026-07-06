@@ -64,6 +64,93 @@ fn cargo_front_door_consumes_no_cache_flag() {
 }
 
 #[test]
+fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
+    let cache_root = unique_temp_dir("cargo-plus-toolchain");
+    let tool_dir = unique_temp_dir("cargo-plus-toolchain-bin");
+    let log_path = cache_root.join("cargo.log");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    let rustc = fake_script_path(&tool_dir, "rustc");
+
+    write_fake_script(&cargo, &fake_cargo_toolchain_recorder_script(&log_path));
+    write_fake_script(&rustc, &fake_rustc_script(&log_path));
+
+    let output = common::isolated_soldr_command()
+        .args([
+            "--no-cache",
+            "cargo",
+            "+nightly-2026-03-26",
+            "test",
+            "--manifest-path",
+            "dylints/ban_manual_slash_normalize/Cargo.toml",
+        ])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .output()
+        .expect("failed to run soldr cargo +toolchain test");
+
+    assert!(
+        output.status.success(),
+        "cargo +toolchain front door failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake cargo log");
+    assert!(
+        log.contains("toolchain=nightly-2026-03-26"),
+        "front door should map +toolchain to RUSTUP_TOOLCHAIN: {log}"
+    );
+    assert!(
+        log.contains(
+            "args=test\u{1f}--manifest-path\u{1f}dylints/ban_manual_slash_normalize/Cargo.toml"
+        ),
+        "front door should strip +toolchain before execing concrete cargo: {log}"
+    );
+}
+
+fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             setlocal enabledelayedexpansion\n\
+             set \"args=\"\n\
+             :loop\n\
+             if \"%~1\"==\"\" goto done\n\
+             if defined args (set \"args=!args!\u{1f}%~1\") else (set \"args=%~1\")\n\
+             shift\n\
+             goto loop\n\
+             :done\n\
+             echo toolchain=%RUSTUP_TOOLCHAIN% args=!args!>>\"{}\"\n\
+             exit /b 0\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             sep=$(printf '\\037')\n\
+             out=\"\"\n\
+             first=1\n\
+             for arg in \"$@\"; do\n\
+               if [ $first -eq 1 ]; then\n\
+                 out=\"$arg\"\n\
+                 first=0\n\
+               else\n\
+                 out=\"$out${{sep}}$arg\"\n\
+               fi\n\
+             done\n\
+             printf 'toolchain=%s args=%s\\n' \"${{RUSTUP_TOOLCHAIN:-}}\" \"$out\" >> \"{}\"\n\
+             exit 0\n",
+            log_path.display()
+        )
+    }
+}
+
+#[test]
 fn cargo_build_warns_when_disk_space_is_low() {
     let cache_root = unique_temp_dir("cargo-low-disk");
     let log_path = cache_root.join("tool.log");

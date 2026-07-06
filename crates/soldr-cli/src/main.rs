@@ -111,7 +111,8 @@ use crate::fetch::VersionSpec;
 #[allow(unused_imports)]
 pub(crate) use binaries::{
     apply_implicit_toolchain_homes, current_soldr_binary, non_empty_env_path, parse_tool_spec,
-    resolve_toolchain_binary, rustup_binary, rustup_resolution_failure,
+    resolve_toolchain_binary, resolve_toolchain_binary_for_channel, rustup_binary,
+    rustup_resolution_failure,
 };
 
 // soldr#1368 — argv/cross-compile dispatch helpers extracted from this

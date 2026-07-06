@@ -20,11 +20,42 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
         return Ok(path);
     }
 
+    resolve_toolchain_binary_with_optional_channel(tool, None, start_dir.as_deref())
+}
+
+pub(crate) fn resolve_toolchain_binary_for_channel(
+    tool: &str,
+    channel: Option<&str>,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let Some(channel) = channel.map(str::trim).filter(|channel| !channel.is_empty()) else {
+        return resolve_toolchain_binary(tool);
+    };
+
+    if let Some(path) = toolchain_binary_override(tool) {
+        return Ok(path);
+    }
+
+    resolve_toolchain_binary_with_optional_channel(tool, Some(channel), None)
+}
+
+fn resolve_toolchain_binary_with_optional_channel(
+    tool: &str,
+    channel: Option<&str>,
+    fallback_start_dir: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, SoldrError> {
     let mut command = std::process::Command::new(rustup_binary());
-    command.args(["which", tool]);
+    command.arg("which");
+    if let Some(channel) = channel {
+        command.args(["--toolchain", channel]);
+    }
+    command.arg(tool);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command_output_with_timeout(&mut command, &format!("rustup which {tool}"));
+    let context = match channel {
+        Some(channel) => format!("rustup which --toolchain {channel} {tool}"),
+        None => format!("rustup which {tool}"),
+    };
+    let output = command_output_with_timeout(&mut command, &context);
 
     match output {
         Ok(output) if output.status.success() => {
@@ -34,14 +65,18 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
             }
         }
         Ok(output) => {
-            if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
-                return Ok(path);
+            if channel.is_none() {
+                if let Some(path) = crate::core::probe_toolchain_binary(tool, fallback_start_dir) {
+                    return Ok(path);
+                }
             }
             return Err(rustup_resolution_failure(tool, &output.stderr));
         }
         Err(err) => {
-            if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
-                return Ok(path);
+            if channel.is_none() {
+                if let Some(path) = crate::core::probe_toolchain_binary(tool, fallback_start_dir) {
+                    return Ok(path);
+                }
             }
             return Err(SoldrError::Other(format!(
                 "failed to invoke rustup while resolving {tool}: {err}"
@@ -49,8 +84,10 @@ pub(crate) fn resolve_toolchain_binary(tool: &str) -> Result<std::path::PathBuf,
         }
     }
 
-    if let Some(path) = crate::core::probe_toolchain_binary(tool, start_dir.as_deref()) {
-        return Ok(path);
+    if channel.is_none() {
+        if let Some(path) = crate::core::probe_toolchain_binary(tool, fallback_start_dir) {
+            return Ok(path);
+        }
     }
 
     Err(SoldrError::Other(format!(

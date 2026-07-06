@@ -28,7 +28,9 @@ use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{apply_implicit_toolchain_homes, gc, resolve_toolchain_binary, ZccacheSourceArg};
+use crate::{
+    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg,
+};
 use std::ffi::OsString;
 use std::io::Write;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -374,6 +376,8 @@ pub(crate) async fn run_cargo_front_door(
     // never sees them. The env-var fallback is unioned in below.
     let (args_owned, gc_opt_out) = strip_no_gc_target_flags(args);
     let gc_opt_out = gc_opt_out.merged_with_env();
+    let (args_owned, explicit_toolchain) = subcommand::strip_cargo_toolchain_directive(&args_owned);
+    let explicit_toolchain = explicit_toolchain.as_deref();
     let args: &[String] = &args_owned;
 
     // `cargo run` trampoline (issue #344). When the binary is already
@@ -431,8 +435,8 @@ pub(crate) async fn run_cargo_front_door(
         (None, None) => args,
     };
 
-    let cargo = resolve_toolchain_binary("cargo")?;
-    let rustc = resolve_toolchain_binary("rustc")?;
+    let cargo = resolve_toolchain_binary_for_channel("cargo", explicit_toolchain)?;
+    let rustc = resolve_toolchain_binary_for_channel("rustc", explicit_toolchain)?;
     let cargo_bin_dir = cargo
         .parent()
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
@@ -518,7 +522,9 @@ pub(crate) async fn run_cargo_front_door(
     // For users who genuinely need rustfmt / clippy at build time,
     // `soldr cargo fmt` / `clippy` still self-install via
     // `component_install::maybe_install_component_for_subcommand`.
-    if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
+    if let Some(toolchain) = explicit_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    } else if std::env::var_os("RUSTUP_TOOLCHAIN").is_none() {
         let manifest_dir =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         if let Ok(manifest) = crate::core::read_rust_toolchain_manifest(&manifest_dir) {
