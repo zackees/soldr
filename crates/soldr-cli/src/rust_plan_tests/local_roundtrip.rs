@@ -55,7 +55,10 @@ fn full_mode_plan(workspace: &std::path::Path, target_dir: &std::path::Path) -> 
     }
 }
 
-fn context_for(plan_path: &std::path::Path, cache_dir: &std::path::Path) -> RustArtifactPlanContext {
+fn context_for(
+    plan_path: &std::path::Path,
+    cache_dir: &std::path::Path,
+) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: plan_path.to_path_buf(),
         // Retained for struct compatibility; the in-process path never
@@ -117,8 +120,8 @@ fn run_zccache_rust_plan_errors_on_missing_plan_file() {
     // missing plan file surfaces as a soldr error, not a spawn failure.
     let cache_dir = unique_dir("rustplan-missing-cache");
     let ctx = context_for(&cache_dir.join("does-not-exist.pb"), &cache_dir);
-    let err = run_zccache_rust_plan(&ctx, "restore", false)
-        .expect_err("missing plan file must error");
+    let err =
+        run_zccache_rust_plan(&ctx, "restore", false).expect_err("missing plan file must error");
     assert!(
         err.to_string().contains("load rust-plan"),
         "error should come from the in-process plan load, got: {err}"

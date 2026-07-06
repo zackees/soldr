@@ -207,7 +207,9 @@ fn compute_session_stats(
     let misses = cur.cache_misses.saturating_sub(base.cache_misses);
     let non_cacheable = cur.non_cacheable.saturating_sub(base.non_cacheable);
     let errors = cur.compile_errors.saturating_sub(base.compile_errors);
-    let compilations = cur.total_compilations.saturating_sub(base.total_compilations);
+    let compilations = cur
+        .total_compilations
+        .saturating_sub(base.total_compilations);
     let time_saved_ms = cur.time_saved_ms.saturating_sub(base.time_saved_ms);
     let denom = hits + misses;
     let hit_rate = if denom > 0 {
@@ -503,7 +505,6 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     }
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {

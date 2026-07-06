@@ -1161,7 +1161,6 @@ fn report_and_exit(error: SoldrError) -> i32 {
     1
 }
 
-
 async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrError> {
     if let Ok(prior) = std::env::var(SOLDR_TRAMPOLINING_ENV_VAR) {
         return Err(SoldrError::Other(format!(

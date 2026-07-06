@@ -367,4 +367,3 @@ fn inject_uses_shim_wrapper_and_absolute_compiler() {
         "CC_KNOWN_WRAPPER_CUSTOM must name the shim stem"
     );
 }
-

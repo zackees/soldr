@@ -551,7 +551,6 @@ fn print_soldr_debug_info_human(summary: &DoctorSoldrDebugInfo) {
     println!("  symbol path:   {}", summary.symbol_path);
 }
 
-
 fn component_is_installed(declared: &str, installed: &[String]) -> bool {
     let prefix = format!("{declared}-");
     installed

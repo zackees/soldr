@@ -142,7 +142,10 @@ pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str>
 /// pair — prepend `xwin` keeping the `build` verb. So
 /// `["build", "--target", X, ...]` becomes
 /// `["xwin", "build", "--target", X, ...]`.
-pub(crate) fn rewrite_build_args_for_subcommand(mut args: Vec<String>, subcmd: &str) -> Vec<String> {
+pub(crate) fn rewrite_build_args_for_subcommand(
+    mut args: Vec<String>,
+    subcmd: &str,
+) -> Vec<String> {
     match subcmd {
         "zigbuild" => {
             if let Some(first) = args.first_mut() {

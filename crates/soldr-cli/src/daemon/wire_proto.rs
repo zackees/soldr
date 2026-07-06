@@ -9,7 +9,10 @@ use prost::{Message, Oneof};
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WireRequest {
-    #[prost(oneof = "WireRequestKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15")]
+    #[prost(
+        oneof = "WireRequestKind",
+        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
+    )]
     pub kind: Option<WireRequestKind>,
 }
 

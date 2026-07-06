@@ -61,8 +61,7 @@ crate::timed_test!(compile_stats_verb_round_trips, {
         compile_errors: 2,
         time_saved_ms: 123_456,
     };
-    match decode_response(&encode_response(&Response::CompileStats(info.clone())))
-        .expect("decode")
+    match decode_response(&encode_response(&Response::CompileStats(info.clone()))).expect("decode")
     {
         Response::CompileStats(decoded) => assert_eq!(decoded, info),
         other => panic!("expected CompileStats, got {other:?}"),
