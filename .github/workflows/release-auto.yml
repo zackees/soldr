@@ -290,8 +290,8 @@ jobs:
       # rely on cargo's native incremental + zccache for build
       # acceleration.
       # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
-      # setup-soldr uses it (Setup soldr build cache drops from ~22 s
-      # to ~2 s on cache HIT). Same pattern as #1341/#1342/#1343/#1345.
+      # setup-soldr uses it without spending the release lane on a fresh
+      # rustup install. Same pattern as #1341/#1342/#1343/#1345.
       - name: Cache rustup 1.94.1 in ~/.rustup
         id: rustup_cache
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
@@ -303,7 +303,7 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
-      - name: Setup soldr build cache (Rust toolchain only)
+      - name: Setup released soldr bootstrap and Rust toolchain
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
           # Release CI needs a soldr bootstrap that already recognizes
@@ -314,7 +314,11 @@ jobs:
           version: v0.7.104
           toolchain: 1.94.1
           cache: false
-          zccache-seed-strict: true
+          build-cache: false
+          target-cache: false
+          cargo-registry-cache: false
+          prebuild-deps: none
+          zccache-seed-strict: false
 
       - name: Add cross-compile target
         shell: bash
