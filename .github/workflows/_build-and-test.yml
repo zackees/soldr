@@ -137,19 +137,6 @@ jobs:
           ))
           exit $exitCode
 
-      - name: Resolve built soldr binary
-        shell: pwsh
-        run: |
-          # soldr#1335 — dropped the `$IsWindows` branch; the only
-          # caller (build-linux-x64) uses ubuntu-24.04 so soldr binary
-          # is unsuffixed. When a Windows caller returns, restore the
-          # conditional here alongside the Windows-only steps above.
-          $soldrPath = Join-Path $env:GITHUB_WORKSPACE "target/${{ inputs.target }}/debug/soldr"
-          if (-not (Test-Path -LiteralPath $soldrPath)) {
-            throw "built soldr binary not found at $soldrPath"
-          }
-          "LOCAL_SOLDR=$soldrPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@cca74625e75e70b56f1805fa6eeee9069f945d48
 
@@ -159,6 +146,18 @@ jobs:
       # `--tests` lets cargo's libtest scheduler interleave lib-tests
       # and integration binaries — no wasted cargo-startup +
       # freshness-check pass between the two former steps.
+      #
+      # NOTE: this step uses setup-soldr's `soldr` (from PATH), the
+      # same wrapper as `Build workspace + tests` above. Historically
+      # it invoked the just-built `target/<triple>/debug/soldr` binary
+      # to dogfood the fresh build, but that swapped `RUSTC_WRAPPER` to
+      # a different path than step 1 used. cargo hashes the wrapper
+      # path into per-crate fingerprints, so the swap invalidated every
+      # rlib and forced a full recompile (~1m 27s on the linux-x64
+      # lane, main run 28760796620). Keeping the wrapper stable lets
+      # cargo's freshness check hit and skip rustc entirely. The
+      # isolated SOLDR_CACHE_DIR / ZCCACHE_CACHE_DIR still land via
+      # the env block, so tests stay isolated from the shared CI seed.
       - name: Run library + CLI smoke tests
         shell: pwsh
         env:
@@ -170,7 +169,7 @@ jobs:
           Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          & $env:LOCAL_SOLDR cargo test -p soldr-cli --lib --tests --locked --target ${{ inputs.target }}
+          soldr cargo test -p soldr-cli --lib --tests --locked --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(
@@ -195,7 +194,7 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-self-tests/${{ inputs.target }}/cache/zccache
         run: |
-          & $env:LOCAL_SOLDR cache shutdown --shutdown-timeout-seconds 30
+          soldr cache shutdown --shutdown-timeout-seconds 30
           if ($LASTEXITCODE -ne 0) {
             zccache stop
           }
