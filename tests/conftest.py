@@ -16,22 +16,35 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "require docker + ~1 GB image pulls."
         ),
     )
-
-
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
-    if config.getoption("--act-integration"):
-        return
-    selected_via_marker_expression = "act_integration" in (config.getoption("-m") or "")
-    if selected_via_marker_expression:
-        return
-    skip_marker = pytest.mark.skip(
-        reason=(
-            "act_integration tests are opt-in. Re-run with --act-integration "
-            "or `-m act_integration` to execute them."
-        )
+    parser.addoption(
+        "--cacheability-integration",
+        action="store_true",
+        default=False,
+        help=(
+            "Run Docker-based cacheability integration tests (marked "
+            "@pytest.mark.cacheability_integration). Skipped by default "
+            "because they build the full nextest archive twice."
+        ),
     )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    marker_options = {
+        "act_integration": "--act-integration",
+        "cacheability_integration": "--cacheability-integration",
+    }
+    marker_expression = config.getoption("-m") or ""
     for item in items:
-        if "act_integration" in item.keywords:
-            item.add_marker(skip_marker)
+        for marker, option in marker_options.items():
+            if marker not in item.keywords:
+                continue
+            if config.getoption(option) or marker in marker_expression:
+                continue
+            item.add_marker(
+                pytest.mark.skip(
+                    reason=(
+                        f"{marker} tests are opt-in. Re-run with {option} "
+                        f"or `-m {marker}` to execute them."
+                    )
+                )
+            )

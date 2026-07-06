@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+"""Assert the full nextest archive test build is warm-cacheable.
+
+This is intentionally a Docker harness. The source tree is bind-mounted,
+but Cargo's target dir, CARGO_HOME, and soldr home live on Linux Docker
+volumes so Cargo mtimes and zccache state are not distorted by Windows
+bind-mount behavior.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from collections import deque
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+IMAGE = "soldr-cook-dev"
+DOCKERFILE = REPO_ROOT / "docker" / "cook-shared-cache" / "Dockerfile"
+
+BASH_SCRIPT = r"""
+set -euo pipefail
+
+export CARGO_HOME=/root/.cargo
+export CARGO_TERM_COLOR=always
+export RUST_BACKTRACE=1
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS="${SOLDR_CARGO_WAIT_TIMEOUT_SECS:-3600}"
+
+echo "## environment"
+rustc --version
+cargo --version
+
+echo "## bootstrap soldr"
+export CARGO_TARGET_DIR=/tmp/soldr-bootstrap-target
+cargo build -p soldr-cli --bin soldr --locked
+SOLDR_BIN=/tmp/soldr-bootstrap-target/debug/soldr
+"$SOLDR_BIN" --version
+
+CACHE=/tmp/soldr-cacheability/root
+ARCHIVE_DIR=/tmp/soldr-cacheability/archives
+export SOLDR_CACHE_DIR="$CACHE"
+rm -rf "$CACHE" "$ARCHIVE_DIR" /tmp/cold-report.json /tmp/warm-report.json
+mkdir -p "$CACHE" "$ARCHIVE_DIR"
+
+export CARGO_TARGET_DIR=/work/target
+clean_target() {
+  # Cargo tries to remove the target-dir root. In this Docker harness that
+  # root is a volume mount point, so Docker Desktop can report EBUSY after
+  # Cargo has removed the contents. Keep the cleanup deterministic by
+  # emptying the mount point without deleting the mount point itself.
+  cargo clean || true
+  find "$CARGO_TARGET_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+}
+
+clean_target
+
+echo "## cold nextest archive build"
+cold_start=$(date +%s%3N)
+"$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  --archive-file "$ARCHIVE_DIR/cold-tests.tar.zst" \
+  --archive-format tar-zst
+cold_end=$(date +%s%3N)
+"$SOLDR_BIN" cache flush --json
+"$SOLDR_BIN" cache report --json > /tmp/cold-report.json
+ls -lh "$ARCHIVE_DIR/cold-tests.tar.zst"
+"$SOLDR_BIN" cache shutdown --no-wait --json || true
+
+echo "## warm nextest archive build after cargo clean and daemon restart"
+clean_target
+warm_start=$(date +%s%3N)
+"$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  --archive-file "$ARCHIVE_DIR/warm-tests.tar.zst" \
+  --archive-format tar-zst
+warm_end=$(date +%s%3N)
+"$SOLDR_BIN" cache flush --json
+"$SOLDR_BIN" cache report --json > /tmp/warm-report.json
+ls -lh "$ARCHIVE_DIR/warm-tests.tar.zst"
+"$SOLDR_BIN" cache shutdown --no-wait --json || true
+
+stat_json() {
+  local report="$1"
+  local key="$2"
+  jq -r --arg k "$key" '.last_session.stats[$k] // .last_session[$k] // 0' "$report"
+}
+
+cold_hits="$(stat_json /tmp/cold-report.json hits)"
+cold_misses="$(stat_json /tmp/cold-report.json misses)"
+cold_non_cacheable="$(stat_json /tmp/cold-report.json non_cacheable)"
+cold_hit_rate="$(stat_json /tmp/cold-report.json hit_rate)"
+warm_hits="$(stat_json /tmp/warm-report.json hits)"
+warm_misses="$(stat_json /tmp/warm-report.json misses)"
+warm_non_cacheable="$(stat_json /tmp/warm-report.json non_cacheable)"
+warm_hit_rate="$(stat_json /tmp/warm-report.json hit_rate)"
+
+result="$(
+  jq -cn \
+    --argjson cold_hits "$cold_hits" \
+    --argjson cold_misses "$cold_misses" \
+    --argjson cold_non_cacheable "$cold_non_cacheable" \
+    --argjson cold_hit_rate "$cold_hit_rate" \
+    --argjson warm_hits "$warm_hits" \
+    --argjson warm_misses "$warm_misses" \
+    --argjson warm_non_cacheable "$warm_non_cacheable" \
+    --argjson warm_hit_rate "$warm_hit_rate" \
+    '{
+      cold_hits: $cold_hits,
+      cold_misses: $cold_misses,
+      cold_non_cacheable: $cold_non_cacheable,
+      cold_hit_rate: $cold_hit_rate,
+      warm_hits: $warm_hits,
+      warm_misses: $warm_misses,
+      warm_non_cacheable: $warm_non_cacheable,
+      warm_hit_rate: $warm_hit_rate
+    }'
+)"
+echo "CACHEABILITY_RESULT $result"
+
+if (( warm_hits <= 0 )); then
+  echo "CACHEABILITY_FAILURE warm run reported zero hits" >&2
+  exit 2
+fi
+if (( warm_misses != 0 )); then
+  echo "CACHEABILITY_FAILURE warm run had misses; expected zero" >&2
+  exit 3
+fi
+
+echo "CACHEABILITY_OK warm run had hits and zero misses"
+echo "TIMING_MS cold=$((cold_end - cold_start)) warm=$((warm_end - warm_start))"
+"""
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run a Docker/Linux cold-clean-warm nextest archive build and "
+            "fail if the warm zccache report has any misses."
+        )
+    )
+    parser.add_argument(
+        "--image",
+        default=IMAGE,
+        help=f"Docker image tag to build/use (default: {IMAGE})",
+    )
+    parser.add_argument(
+        "--keep-volumes",
+        action="store_true",
+        help="keep the temporary Docker volumes for post-failure inspection",
+    )
+    parser.add_argument(
+        "--suffix",
+        default=None,
+        help="override the Docker volume suffix; default is timestamp + pid",
+    )
+    return parser.parse_args(argv)
+
+
+def docker_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=20,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def build_image(image: str) -> int:
+    return subprocess.run(
+        ["docker", "build", "-f", str(DOCKERFILE), "-t", image, str(REPO_ROOT)],
+        check=False,
+    ).returncode
+
+
+def run_harness(image: str, volumes: list[str]) -> tuple[int, dict[str, object] | None]:
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--init",
+        "-i",
+        "-v",
+        f"{REPO_ROOT}:/work",
+        "-v",
+        f"{volumes[0]}:/work/target",
+        "-v",
+        f"{volumes[1]}:/root/.cargo",
+        "-v",
+        f"{volumes[2]}:/root/.soldr",
+        "-w",
+        "/work",
+        image,
+        "bash",
+        "-s",
+    ]
+    print("+ " + " ".join(cmd), flush=True)
+    process = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+
+    try:
+        payload = BASH_SCRIPT.replace("\r\n", "\n").replace("\r", "\n")
+        process.stdin.write(payload.encode("utf-8"))
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+
+    result: dict[str, object] | None = None
+    tail: deque[str] = deque(maxlen=80)
+    for raw_line in process.stdout:
+        line = raw_line.decode("utf-8", errors="replace")
+        print(line, end="", flush=True)
+        tail.append(line)
+        if line.startswith("CACHEABILITY_RESULT "):
+            payload = line.removeprefix("CACHEABILITY_RESULT ").strip()
+            result = json.loads(payload)
+
+    code = process.wait()
+    if code != 0:
+        print("\nlast harness output:", file=sys.stderr)
+        for line in tail:
+            print(line, end="", file=sys.stderr)
+    return code, result
+
+
+def remove_volumes(volumes: list[str]) -> None:
+    subprocess.run(["docker", "volume", "rm", "--force", *volumes], check=False)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    if not docker_available():
+        print("error: docker is not available or the daemon is not reachable", file=sys.stderr)
+        return 2
+
+    suffix = args.suffix or f"{int(time.time())}-{os.getpid()}"
+    volumes = [
+        f"soldr-nextest-cacheability-target-{suffix}",
+        f"soldr-nextest-cacheability-cargo-{suffix}",
+        f"soldr-nextest-cacheability-home-{suffix}",
+    ]
+    print("Docker volumes:")
+    for volume in volumes:
+        print(f"  {volume}")
+
+    try:
+        image_code = build_image(args.image)
+        if image_code != 0:
+            return image_code
+        code, result = run_harness(args.image, volumes)
+        if code != 0:
+            return code
+        if result is None:
+            print("error: harness did not emit CACHEABILITY_RESULT", file=sys.stderr)
+            return 4
+        if int(result.get("warm_hits", 0)) <= 0:
+            print("error: warm run reported zero hits", file=sys.stderr)
+            return 5
+        if int(result.get("warm_misses", 0)) != 0:
+            print(f"error: warm run had misses: {result}", file=sys.stderr)
+            return 6
+        return 0
+    finally:
+        if args.keep_volumes:
+            print("Keeping Docker volumes for inspection.")
+        else:
+            remove_volumes(volumes)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
