@@ -1,0 +1,48 @@
+name: Nextest Cacheability
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/nextest-cacheability.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "ci/assert_nextest_archive_cacheability.py"
+      - "crates/**"
+      - "docker/cook-shared-cache/Dockerfile"
+      - "rust-toolchain.toml"
+      - "tests/conftest.py"
+      - "tests/test_nextest_archive_cacheability.py"
+      - "_vender/zccache"
+      - "_vender/zccache/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/nextest-cacheability.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "ci/assert_nextest_archive_cacheability.py"
+      - "crates/**"
+      - "docker/cook-shared-cache/Dockerfile"
+      - "rust-toolchain.toml"
+      - "tests/conftest.py"
+      - "tests/test_nextest_archive_cacheability.py"
+      - "_vender/zccache"
+      - "_vender/zccache/**"
+
+permissions:
+  contents: read
+
+jobs:
+  nextest-cacheability:
+    name: full nextest archive warm cacheability
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Assert zero warm misses
+        run: python3 ci/assert_nextest_archive_cacheability.py

@@ -11,6 +11,18 @@ and `crates/*/src/**_tests.rs`.
 uv run pytest tests/
 ```
 
+Heavy Docker checks are opt-in:
+
+```bash
+uv run --no-sync pytest tests/test_nextest_archive_cacheability.py --cacheability-integration
+```
+
+That check runs `ci/assert_nextest_archive_cacheability.py`, which builds
+the full `soldr cargo nextest archive --workspace --locked` path twice in
+Linux Docker. It forces the warm pass with `cargo clean` and a soldr cache
+daemon restart, then fails unless the warm zccache report has positive hits
+and zero misses.
+
 ## Layout
 
 - `test_setup_soldr_action.py` — exercises `resolve_setup.py` end-to-end

@@ -53,6 +53,7 @@ minversion = "8.0"
 testpaths = ["tests"]
 markers = [
     "act_integration: Docker-based integration tests that reproduce the nektos/act bootstrap path (deselect with '-m \"not act_integration\"'); skipped unless explicitly selected via '-m act_integration' or '--act-integration'.",
+    "cacheability_integration: Docker-based cacheability tests that build the full nextest archive twice; skipped unless explicitly selected via '-m cacheability_integration' or '--cacheability-integration'.",
 ]
 
 [tool.ruff]
