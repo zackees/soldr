@@ -99,6 +99,36 @@ pub(crate) fn native_cache_decision() -> NativeCacheDecision {
     NativeCacheDecision::Inject
 }
 
+/// True when the shim binary is reachable — either as an existing file
+/// at the resolved path, or as a bare basename that can plausibly be
+/// found via PATH lookup. The bare-basename branch preserves the
+/// pre-#1374 `sibling_binary` fallback that yields "zccache-soldr" when
+/// no sibling exists next to the running exe; callers that build via
+/// setup-soldr's pinned soldr (which has no shim sibling AND no shim on
+/// PATH) skip injection instead of letting cc-rs ENOENT.
+fn shim_is_available(shim: &Path) -> bool {
+    if shim.is_file() {
+        return true;
+    }
+    let is_bare_basename = shim
+        .file_name()
+        .map(|n| Path::new(n) == shim)
+        .unwrap_or(false);
+    if !is_bare_basename {
+        return false;
+    }
+    let Some(basename) = shim.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some(path_env) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_env).any(|dir| {
+        let candidate = dir.join(basename);
+        candidate.is_file()
+    })
+}
+
 /// True when the env value resolves to "the user opted out". Empty /
 /// missing returns false (default-on). The set of opt-out strings
 /// mirrors the soldr convention used by `SOLDR_NO_GC_TARGET` etc.
@@ -144,6 +174,20 @@ pub(crate) fn inject_native_cache_env(
         NativeCacheDecision::InjectExistingOnly => false,
         NativeCacheDecision::UserDisabled => return Ok(()),
     };
+
+    // soldr#1374 / #1368 followup: skip injection when the shim isn't
+    // present next to the running soldr and isn't discoverable on PATH.
+    // The CI cross-build lanes run via setup-soldr's pinned soldr binary
+    // (v0.7.42), which ships without a `zccache-soldr` sibling. Setting
+    // `CC="zccache-soldr <cc>"` in that layout makes cc-rs try to spawn
+    // a nonexistent binary and fail every -sys crate's build.rs with
+    // `failed to find tool "zccache-soldr": No such file or directory
+    // (os error 2)` — observed on every cross-build lane of main run
+    // 28763731448. Skipping cleanly falls back to bare cc-rs; native-C
+    // caching is a perf enhancement, not a correctness requirement.
+    if !shim_is_available(wrapper_shim) {
+        return Ok(());
+    }
 
     let wrapper = wrapper_shim.as_os_str().to_os_string();
 
