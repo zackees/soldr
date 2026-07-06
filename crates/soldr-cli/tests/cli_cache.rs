@@ -48,9 +48,11 @@ fn status_reports_cache_control_defaults() {
         stdout.contains("soldr zccache cache dir:"),
         "status missing effective zccache cache dir: {stdout}"
     );
+    // soldr#1368: the zccache CLI is compiled-in, so status always reports
+    // the embedded backend rather than an "unfetched managed" state.
     assert!(
-        stdout.contains("not fetched yet"),
-        "status should explain unfetched managed zccache state: {stdout}"
+        stdout.contains("(source: embedded)"),
+        "status should report the embedded zccache backend: {stdout}"
     );
 }
 
@@ -89,7 +91,9 @@ fn status_json_reports_stable_machine_fields() {
         json["cache_dir"],
         cache_root.join("cache").display().to_string()
     );
-    assert_eq!(json["zccache"]["binary_fetched"], false);
+    // soldr#1368: the compiled-in zccache is always present.
+    assert_eq!(json["zccache"]["binary_fetched"], true);
+    assert_eq!(json["zccache"]["binary_source"], "embedded");
     assert_eq!(json["zccache"]["session_log_present"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
     assert_eq!(json["zccache"]["session_stats_present"], false);
@@ -191,7 +195,7 @@ fn cache_command_reports_managed_zccache_status() {
     // soldr#1368: rustc compile caching lives in the embedded daemon;
     // `soldr cache` no longer spawns an external `zccache status`.
     assert!(
-        stdout.contains("zccache binary: embedded"),
+        stdout.contains("(source: embedded)"),
         "cache command should report the embedded zccache backend: {stdout}"
     );
 }
