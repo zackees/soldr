@@ -2881,7 +2881,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.7.102"
+version = "0.7.103"
 dependencies = [
  "blake3",
  "clap",
@@ -3959,7 +3959,7 @@ dependencies = [
 
 [[package]]
 name = "zccache"
-version = "1.12.13"
+version = "1.12.14"
 dependencies = [
  "arc-swap",
  "bincode",
