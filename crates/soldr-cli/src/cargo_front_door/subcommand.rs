@@ -79,6 +79,55 @@ pub(crate) fn cargo_args_use_reserved_no_cache(args: &[String]) -> bool {
     false
 }
 
+/// Strip Cargo's rustup-proxy `+toolchain` directive from the leading global
+/// arg region and return the selected toolchain without the `+`.
+///
+/// soldr resolves and execs a concrete cargo binary instead of rustup's cargo
+/// proxy, so forwarding `+nightly` would make cargo treat it as a subcommand.
+/// The front door maps the directive to `RUSTUP_TOOLCHAIN` instead.
+pub(super) fn strip_cargo_toolchain_directive(args: &[String]) -> (Vec<String>, Option<String>) {
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut toolchain = None;
+    let mut skip_next = false;
+    let mut before_subcommand = true;
+
+    for arg in args {
+        if !before_subcommand {
+            cleaned.push(arg.clone());
+            continue;
+        }
+        if skip_next {
+            skip_next = false;
+            cleaned.push(arg.clone());
+            continue;
+        }
+        if arg == "--" {
+            before_subcommand = false;
+            cleaned.push(arg.clone());
+            continue;
+        }
+        if let Some(rest) = arg.strip_prefix('+').filter(|rest| !rest.is_empty()) {
+            if toolchain.is_none() {
+                toolchain = Some(rest.to_string());
+                continue;
+            }
+        }
+        if cargo_global_arg_takes_value(arg) {
+            skip_next = !arg.contains('=');
+            cleaned.push(arg.clone());
+            continue;
+        }
+        if arg.starts_with('-') {
+            cleaned.push(arg.clone());
+            continue;
+        }
+        before_subcommand = false;
+        cleaned.push(arg.clone());
+    }
+
+    (cleaned, toolchain)
+}
+
 pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
     let Some(subcommand) = first_cargo_subcommand(args) else {
         return false;
