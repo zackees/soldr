@@ -416,11 +416,26 @@ jobs:
           mkdir -p dist
           target='${{ inputs.target }}'
           archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
+          # soldr#1376 followup — filter at archive time so binaries the
+          # target-run lane will never execute are excluded from the
+          # .tar.zst before upload. Archive-filter expressions only
+          # accept `binary(...)` predicates (test-name filters like
+          # `test(/cook_/)` need per-test metadata resolved at run time
+          # and are rejected with "predicate not allowed in
+          # `archive-filter` expressions"). The test-name filters still
+          # apply at target-run time via _ci-target-run.yml's default
+          # skip_filter.
+          #
+          # On main run 28761911568 the linux-x64-musl archive was
+          # 1.034 GB with 63 binaries; the four binary(...) excludes
+          # below are already skipped at target-run time so archiving
+          # them was pure wasted upload + download bytes.
           cargo nextest archive \
             --target "$target" \
             --workspace \
             --archive-file "$archive" \
-            --archive-format tar-zst
+            --archive-format tar-zst \
+            -E '!binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/) and !binary(/cli_zccache_contract/)'
           ls -la "$archive"
 
       # Stage D — stage + upload artifact bundle
