@@ -330,10 +330,16 @@ fn inject_uses_shim_wrapper_and_absolute_compiler() {
     let _gcxx = EnvGuard::remove("CXX");
     let _gkw = EnvGuard::remove(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR);
 
-    // The shim is an arbitrary absolute path for this unit test; the
-    // point is that whatever we pass becomes the CC wrapper token and
-    // the underlying compiler is absolute.
-    let shim = std::path::PathBuf::from("/opt/soldr/bin/zccache-soldr");
+    // The shim must be a REAL file for `inject_native_cache_env` to
+    // inject (soldr#1377): the availability precheck now skips injection
+    // when the shim is neither an existing file nor a bare PATH name, so
+    // CI cross-build lanes running via setup-soldr's pinned soldr (no
+    // shim sibling) don't ENOENT every -sys crate. Create it inside a
+    // tempdir so this test still exercises the injection path.
+    let tmp = tempfile::tempdir().unwrap();
+    let shim = tmp.path().join("zccache-soldr");
+    std::fs::write(&shim, b"#!/bin/sh\nexec \"$@\"\n").unwrap();
+    let shim_str = shim.to_string_lossy().to_string();
     let mut cmd = std::process::Command::new("echo");
     inject_native_cache_env(&mut cmd, &shim, None).unwrap();
 
@@ -349,7 +355,7 @@ fn inject_uses_shim_wrapper_and_absolute_compiler() {
     let mut toks = cc_str.split(' ');
     assert_eq!(
         toks.next(),
-        Some("/opt/soldr/bin/zccache-soldr"),
+        Some(shim_str.as_str()),
         "CC wrapper token must be the zccache-soldr shim, got: {cc_str}"
     );
     let compiler = toks.next().expect("CC must carry an underlying compiler");
