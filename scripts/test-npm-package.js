@@ -128,11 +128,9 @@ assert.deepStrictEqual(
   install.BUNDLED_BINARIES,
   zccacheContract.RELEASE_BUNDLED_BINARIES,
 );
-assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, [
-  "zccache",
-  "zccache-daemon",
-  "zccache-fp",
-]);
+// zccache is compiled into soldr (soldr#1368) — the standalone trio is no
+// longer bundled or downloaded.
+assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, []);
 assert.strictEqual(zccacheContract.CRGX_BUNDLED_BINARY, "crgx");
 assert.strictEqual(zccacheContract.CARGO_CHEF_BUNDLED_BINARY, "cargo-chef");
 assert.deepStrictEqual(
@@ -167,21 +165,15 @@ for (const [key, target] of Object.entries(install.TARGETS || {})) {
   );
 }
 
-// BUNDLED_BINARIES must include soldr, the zccache trio, crgx, and cargo-chef.
-// Locks the per-archive layout contract so a future bundling
+// BUNDLED_BINARIES must include soldr, crgx, and cargo-chef. zccache is
+// compiled into soldr (soldr#1368), so the standalone trio is no longer
+// bundled. Locks the per-archive layout contract so a future bundling
 // refactor can't quietly drop a binary.
 assert.ok(
   Array.isArray(install.BUNDLED_BINARIES),
   "install.BUNDLED_BINARIES must be exported as an array",
 );
-for (const required of [
-  "soldr",
-  "zccache",
-  "zccache-daemon",
-  "zccache-fp",
-  "crgx",
-  "cargo-chef",
-]) {
+for (const required of ["soldr", "crgx", "cargo-chef"]) {
   assert.ok(
     install.BUNDLED_BINARIES.includes(required),
     `BUNDLED_BINARIES must include "${required}" (got ${JSON.stringify(install.BUNDLED_BINARIES)})`,

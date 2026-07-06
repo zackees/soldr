@@ -123,8 +123,13 @@ impl CargoCachePlan {
 
         if let Some(wrapper) = self.rustc_wrapper.as_ref() {
             wrapper.apply_to_command(command)?;
-            if let Some(session) = wrapper.session() {
-                native_cc::inject_native_cache_env(command, &session.binary_path, explicit_target)?;
+            if wrapper.session().is_some() {
+                // soldr#1368: native C/C++ caching wraps CC/CXX with the
+                // `zccache-soldr` shim (not the removed managed binary),
+                // so build-script compiles route to the soldr-daemon
+                // embedded zccache service over the Compile IPC verb.
+                let shim = crate::binaries::zccache_soldr_shim_binary();
+                native_cc::inject_native_cache_env(command, &shim, explicit_target)?;
             }
         }
         Ok(())
@@ -196,17 +201,24 @@ impl CargoCachePlan {
         &self,
         command_lifetime_shutdown_timeout: Option<std::time::Duration>,
     ) -> Result<(), SoldrError> {
-        let Some(session) = self.zccache_session() else {
+        if self.zccache_session().is_none() {
             return Ok(());
-        };
-        let finish_result = finish_zccache_build(session);
-        let shutdown_result = if let Some(timeout) = command_lifetime_shutdown_timeout {
-            stop_zccache_after_command(session, timeout)
-        } else {
-            Ok(())
-        };
-        finish_result?;
-        shutdown_result?;
+        }
+        // soldr#1368: rustc compiles are cached by the soldr-daemon
+        // embedded service — there is no external managed zccache session
+        // to end or daemon to stop. For command-lifetime mode (the
+        // setup-soldr "flush before archiving" contract, soldr#383), ask
+        // the embedded daemon to make its state durable on disk.
+        if command_lifetime_shutdown_timeout.is_some() {
+            let paths = SoldrPaths::new()?;
+            let sock = crate::daemon::server::server_sock_path(&paths);
+            if let Err(err) = crate::daemon::client::flush_caches(&sock) {
+                eprintln!(
+                    "soldr: embedded zccache flush unavailable ({err:?}); on-disk state is \
+                     whatever the daemon last persisted"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -310,13 +322,15 @@ mod tests {
         assert!(command_env_override(&command, "RUSTC_WRAPPER")
             .and_then(|value| value)
             .is_some());
+        // soldr#1368: the front door no longer plumbs an external zccache
+        // binary or managed session — those env vars are cleared, not set.
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
-            Some(Some(OsString::from("/tmp/zccache")))
+            Some(None)
         );
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
-            Some(Some(OsString::from("session-1")))
+            Some(None)
         );
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR),

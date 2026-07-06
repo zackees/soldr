@@ -2,11 +2,11 @@
 //! recent zccache session, including the optional `zccache analyze` rollup.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache::{managed_zccache_cache_dir, run_zccache_command_raw_in_cache_dir};
-use crate::{cached_active_zccache, JSON_SCHEMA_VERSION};
+use crate::zccache::managed_zccache_cache_dir;
+use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
 
-use super::{print_json, zccache_output_snippet, zccache_subcommand_unsupported};
+use super::{print_json, zccache_output_snippet, EMBEDDED_ZCCACHE_VERSION};
 
 #[derive(Serialize)]
 pub(super) struct CacheReportOutput {
@@ -51,12 +51,9 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
 fn collect_cache_report_output_for_paths(
     paths: &SoldrPaths,
 ) -> Result<CacheReportOutput, SoldrError> {
-    let default_zccache_dir = managed_zccache_cache_dir(paths)?;
-    let linked_private = super::session::linked_private_zccache_lifecycle(paths);
-    let zccache_dir = linked_private
-        .as_ref()
-        .map(|(_, cache_dir)| cache_dir.clone())
-        .unwrap_or_else(|| default_zccache_dir.clone());
+    // soldr#1368: no private managed-zccache daemon any more — report on
+    // the shared soldr-managed zccache dir.
+    let zccache_dir = managed_zccache_cache_dir(paths)?;
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
@@ -85,66 +82,28 @@ fn collect_cache_report_output_for_paths(
         None
     };
 
-    let rollups = if journal_present {
-        let journal_arg = journal_path.display().to_string();
-        let result = if let Some((lifecycle, _)) = linked_private.as_ref() {
-            Some(lifecycle.run_raw(&["analyze", &journal_arg, "--json"])?)
-        } else {
-            match cached_active_zccache(paths)? {
-                Some(fetch) => Some(run_zccache_command_raw_in_cache_dir(
-                    &fetch.binary_path,
-                    &["analyze", &journal_arg, "--json"],
-                    &zccache_dir,
-                )?),
-                None => {
-                    notes.push(
-                        "rollups: managed zccache binary not yet fetched (no builds run yet)"
-                            .to_string(),
-                    );
-                    None
-                }
-            }
-        };
-        match result {
-            Some(result) => {
-                if result.status.success() {
-                    let stdout = String::from_utf8_lossy(&result.stdout);
-                    match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            notes
-                                .push(format!("rollups: zccache analyze stdout unparseable ({e})"));
-                            None
-                        }
-                    }
-                } else if zccache_subcommand_unsupported(&result, "analyze") {
-                    notes.push(format!(
-                        "rollups: managed zccache {} does not yet support `analyze` — upgrade to 1.5.0+",
-                        crate::fetch::MANAGED_ZCCACHE_VERSION
-                    ));
-                    None
-                } else {
-                    notes.push(zccache_analyze_failure_note(
-                        result.status.code(),
-                        &result.stdout,
-                        &result.stderr,
-                    ));
-                    None
-                }
-            }
-            None => None,
-        }
+    // soldr#1368: `zccache analyze` rollups required an externally
+    // resolved zccache binary, which no longer exists — rustc compile
+    // caching runs through the soldr-daemon embedded service. The
+    // per-session `last_session` stats above are still read from disk
+    // when present; the analyze rollup is dropped.
+    let _ = &zccache_dir;
+    let rollups: Option<serde_json::Value> = None;
+    if journal_present {
+        notes.push(
+            "rollups: `zccache analyze` is unavailable — compile caching runs through the              soldr-daemon embedded zccache service (see `soldr daemon status`)"
+                .to_string(),
+        );
     } else {
         notes
             .push("rollups: journal missing — soldr writes it on cache-enabled builds".to_string());
-        None
-    };
+    }
 
     Ok(CacheReportOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache report",
         soldr_version: crate::core::version().to_string(),
-        managed_zccache_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
+        managed_zccache_version: EMBEDDED_ZCCACHE_VERSION,
         session_stats_path: session_stats_path.display().to_string(),
         session_stats_present,
         journal_path: journal_path.display().to_string(),
@@ -239,49 +198,21 @@ fn print_cache_report_output(output: &CacheReportOutput) {
 mod tests {
     use super::collect_cache_report_output_for_paths;
     use crate::core::SoldrPaths;
-    use crate::daemon::db;
-    use crate::daemon::protocol::ZccacheDaemonLink;
 
-    crate::timed_test!(cache_report_follows_linked_private_zccache_dir, {
+    crate::timed_test!(cache_report_reads_session_stats_from_shared_zccache_dir, {
+        // soldr#1368: the report reads the last-session stats file from the
+        // shared soldr-managed zccache dir (no private-daemon dir any more).
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
-        let private_dir = paths
-            .cache
-            .join("zccache")
-            .join("private")
-            .join("soldr-dev-test");
-        let stats_path = private_dir.join("logs").join("last-session-stats.json");
+        let zccache_dir = crate::zccache::managed_zccache_cache_dir(&paths).expect("zccache dir");
+        let stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
         std::fs::create_dir_all(stats_path.parent().expect("stats parent"))
-            .expect("create private logs");
+            .expect("create logs dir");
         std::fs::write(
             &stats_path,
-            r#"{"status":"ok","session_id":"private","hits":17,"misses":2,"hit_rate":0.89}"#,
+            r#"{"status":"ok","session_id":"shared","hits":17,"misses":2,"hit_rate":0.89}"#,
         )
         .expect("write stats");
-
-        let fake_zccache = paths.bin.join(if cfg!(windows) {
-            "zccache.exe"
-        } else {
-            "zccache"
-        });
-        std::fs::create_dir_all(fake_zccache.parent().expect("fake parent"))
-            .expect("create fake parent");
-        std::fs::write(&fake_zccache, b"fake").expect("write fake binary");
-
-        db::set_linked_zccache(
-            &db::db_path(&paths),
-            Some(&ZccacheDaemonLink {
-                binary_path: fake_zccache.display().to_string(),
-                cache_dir: private_dir.display().to_string(),
-                session_id: Some("private".into()),
-                source: "managed".into(),
-                private_daemon: true,
-                daemon_name: Some("soldr-dev-test".into()),
-                owner_pid: Some(std::process::id()),
-                private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
-            }),
-        )
-        .expect("link private zccache");
 
         let report = collect_cache_report_output_for_paths(&paths).expect("collect report");
         assert_eq!(report.session_stats_path, stats_path.display().to_string());

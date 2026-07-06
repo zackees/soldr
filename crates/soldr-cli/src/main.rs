@@ -27,6 +27,7 @@ mod cargo_metadata_soldr;
 /// per-crate `rust-toolchain.toml` overrides for subprocess invocations.
 mod cargo_path_check;
 mod cli_args;
+mod cli_dispatch;
 mod compile_dispatch;
 mod cook;
 mod core;
@@ -109,11 +110,16 @@ use crate::fetch::VersionSpec;
 
 #[allow(unused_imports)]
 pub(crate) use binaries::{
-    apply_implicit_toolchain_homes, cached_active_zccache, cached_active_zccache_runtime,
-    current_soldr_binary, fetch_active_zccache, fetch_active_zccache_runtime, non_empty_env_path,
-    parse_tool_spec, resolve_toolchain_binary, rustup_binary, rustup_resolution_failure,
-    zccache_binary_override,
+    apply_implicit_toolchain_homes, current_soldr_binary, non_empty_env_path, parse_tool_spec,
+    resolve_toolchain_binary, rustup_binary, rustup_resolution_failure,
 };
+
+// soldr#1368 — argv/cross-compile dispatch helpers extracted from this
+// file to stay under the LOC guard. Re-exported at the crate root so
+// existing bare-name call sites (and `main_tests.rs` via `use super::*`)
+// keep resolving.
+#[allow(unused_imports)]
+pub(crate) use cli_dispatch::*;
 
 pub(crate) const TEST_CARGO_BIN_ENV_VAR: &str = "SOLDR_TEST_CARGO_BIN";
 pub(crate) const TEST_RUSTC_BIN_ENV_VAR: &str = "SOLDR_TEST_RUSTC_BIN";
@@ -477,14 +483,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::DefenderExclusions { subcommand } => {
             std::process::exit(optimize::run_defender_exclusions(subcommand)?);
-        }
-        Commands::InstallZccache {
-            source,
-            remove,
-            status,
-            json,
-        } => {
-            cache::run_install_zccache(source, remove, status, json).await?;
         }
         Commands::Save(args) => {
             std::process::exit(save_load::run_save(args));
@@ -943,17 +941,13 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 );
             }
 
-            if should_use_managed_zccache_external(&crate_name, &version) {
-                eprintln!("soldr: fetching managed zccache...");
-                let paths = SoldrPaths::new()?;
-                let result = fetch_active_zccache(&paths).await?;
-                if result.cached {
-                    eprintln!("soldr: using cached zccache v{}", result.version);
-                } else {
-                    eprintln!("soldr: downloaded zccache v{}", result.version);
-                }
-
-                let mut command = std::process::Command::new(&result.binary_path);
+            // soldr#1368: `soldr zccache <args>` runs the compiled-in
+            // zccache CLI trampoline that ships alongside soldr — no
+            // managed-binary download. The trampoline forwards straight
+            // into `zccache::cli::commands::run()`.
+            if crate_name == "zccache" && matches!(version, VersionSpec::Latest) {
+                let trampoline = crate::binaries::embedded_zccache_binary();
+                let mut command = std::process::Command::new(&trampoline);
                 command.args(tool_args);
                 suppress_windows_console_window(&mut command);
                 let status = command.status()?;
@@ -1118,10 +1112,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     Ok(())
 }
 
-fn should_use_managed_zccache_external(crate_name: &str, version: &VersionSpec) -> bool {
-    crate_name == "zccache" && matches!(version, VersionSpec::Latest)
-}
-
 /// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)
 /// tries the prebuilt GitHub-Releases binary and falls back to the
 /// manual uv-provisioned isolated env; `binary` / `uv` force one rung.
@@ -1169,302 +1159,6 @@ async fn provisioned_maturin_fetch_result(
 fn report_and_exit(error: SoldrError) -> i32 {
     eprintln!("soldr: {error}");
     1
-}
-
-fn should_self_relocate_for_invocation(raw_args: &[String]) -> bool {
-    let user_args = raw_args.get(1..).unwrap_or(&[]);
-    let Ok((_, args)) = extract_as_pin(user_args) else {
-        return false;
-    };
-
-    let mut cache_enabled = true;
-    let mut idx = 0usize;
-    while idx < args.len() {
-        match args[idx].as_str() {
-            "--no-cache" => {
-                cache_enabled = false;
-                idx += 1;
-            }
-            "--zccache" => {
-                // Value lives in the next token; skip both so the
-                // subcommand check below lands on `cargo` instead of
-                // the value.
-                idx += 2;
-            }
-            "--" => return false,
-            arg if arg.starts_with('-') => idx += 1,
-            "cargo" => {
-                return cache_enabled
-                    && cargo_front_door::cargo_args_are_cacheable(&args[idx + 1..])
-                    && matches!(
-                        zccache::rustc_wrapper_mode(),
-                        zccache::RustcWrapperMode::ManagedZccache
-                    );
-            }
-            _ => return false,
-        }
-    }
-
-    false
-}
-
-/// Extract `--as <version>` or `--as=<version>` from the leading flag
-/// region of the user's argv. Stops scanning at the first non-flag
-/// positional (conventionally the subcommand), so a `--as` appearing
-/// after `cargo` belongs to cargo and is left alone.
-/// soldr#1012 PR 5 — scan `args` for `--target X` (two-arg form) or
-/// `--target=X` (single-arg form). Returns the FIRST occurrence; if
-/// both forms are present the single-arg form wins by virtue of
-/// appearing first in a left-to-right scan (cargo behavior is
-/// "last --target wins", but for prep purposes any match is enough
-/// because the prep is target-keyed and cargo handles the final
-/// dispatch).
-fn extract_target_from_args(args: &[String]) -> Option<String> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if let Some(triple) = arg.strip_prefix("--target=") {
-            if !triple.is_empty() {
-                return Some(triple.to_string());
-            }
-        }
-        if arg == "--target" {
-            if let Some(next) = iter.next() {
-                if !next.is_empty() {
-                    return Some(next.clone());
-                }
-            }
-        }
-    }
-    None
-}
-
-/// soldr#882: pick the cargo subcommand to dispatch for a given
-/// cross-target. Only fires on Linux hosts — native macos/windows
-/// host builds keep using plain `cargo build`.
-///
-/// Returns:
-/// * `Some("xwin")` for `*-pc-windows-msvc` (unless `SOLDR_USE_LEGACY_XWIN`
-///   is set in env — escape hatch for callers who want the plain
-///   `cargo build` fallback)
-/// * `Some("zigbuild")` for `*-apple-darwin`, `*-unknown-linux-musl`,
-///   and aarch64 `*-unknown-linux-gnu` (cross from x86_64), unless
-///   `SOLDR_USE_LEGACY_ZIGBUILD` is set
-/// * `None` for everything else
-fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
-    if !cfg!(target_os = "linux") {
-        return None;
-    }
-
-    let legacy_xwin = std::env::var_os(crate::blessed_build::USE_LEGACY_XWIN_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
-    let legacy_zigbuild = std::env::var_os(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
-
-    if target_triple.ends_with("-pc-windows-msvc") {
-        return if legacy_xwin { None } else { Some("xwin") };
-    }
-    // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
-    // cargo-zigbuild. The blessed-build apple-darwin arm in
-    // `blessed_build.rs` now exports the COMPLETE Apple SDK to cc-rs +
-    // rustc's linker, so plain `cargo build --target X` produces a
-    // Mach-O binary from a Linux host without the
-    // tikv-jemalloc-sys/zig-minimal-sysroot mismatch that broke the
-    // release lane. `SOLDR_USE_LEGACY_ZIGBUILD=1` re-routes darwin
-    // through zigbuild for diagnostic comparison.
-    if target_triple.ends_with("-apple-darwin") {
-        return if legacy_zigbuild {
-            Some("zigbuild")
-        } else {
-            None
-        };
-    }
-    if target_triple.ends_with("-unknown-linux-musl") {
-        return if legacy_zigbuild {
-            None
-        } else {
-            Some("zigbuild")
-        };
-    }
-    // Cross from x86_64 host to aarch64 linux — needs zigbuild for
-    // the bundled libc.
-    if target_triple == "aarch64-unknown-linux-gnu" && cfg!(target_arch = "x86_64") {
-        return if legacy_zigbuild {
-            None
-        } else {
-            Some("zigbuild")
-        };
-    }
-    None
-}
-
-/// soldr#882: rewrite the args vector for the picked cargo subcommand.
-///
-/// For `zigbuild`: cargo-zigbuild IS the build verb — replace the
-/// leading `build` with `zigbuild`. So `["build", "--target", X, ...]`
-/// becomes `["zigbuild", "--target", X, ...]`.
-///
-/// For `xwin`: cargo-xwin uses `xwin build ...` as a subcommand
-/// pair — prepend `xwin` keeping the `build` verb. So
-/// `["build", "--target", X, ...]` becomes
-/// `["xwin", "build", "--target", X, ...]`.
-fn rewrite_build_args_for_subcommand(mut args: Vec<String>, subcmd: &str) -> Vec<String> {
-    match subcmd {
-        "zigbuild" => {
-            if let Some(first) = args.first_mut() {
-                if first == "build" {
-                    *first = "zigbuild".to_string();
-                }
-            }
-            args
-        }
-        "xwin" => {
-            args.insert(0, "xwin".to_string());
-            args
-        }
-        _ => args,
-    }
-}
-
-fn insert_cargo_config_args(mut args: Vec<String>, cargo_config_args: &[String]) -> Vec<String> {
-    if cargo_config_args.is_empty() {
-        return args;
-    }
-
-    let insert_at = if args.first().is_some_and(|arg| arg == "xwin")
-        && args.get(1).is_some_and(|arg| arg == "build")
-    {
-        2
-    } else if args.is_empty() {
-        0
-    } else {
-        1
-    };
-    args.splice(insert_at..insert_at, cargo_config_args.iter().cloned());
-    args
-}
-
-/// soldr#1079 — bridge between the cargo dispatcher and the MSVC
-/// host-discovery module. Resolves the target triple (explicit
-/// `--target` first, then `TargetTriple::detect()` for the implicit
-/// native default) and asks [`crate::msvc_host`] to inject the
-/// vcvars-equivalent env vars when relevant.
-///
-/// All branches are silent on success / no-op. Discovery errors are
-/// printed as a single warning line so the user gets a hint about
-/// `SOLDR_MSVC_DISCOVERY=off` if the auto-probe trips on an unusual
-/// install — the underlying cargo invocation still runs and emits
-/// its own (better) error if it actually needs the env.
-fn ensure_msvc_host_env_for_native(args: &[String]) {
-    if !cfg!(target_os = "windows") {
-        return;
-    }
-    let target = match extract_target_from_args(args) {
-        Some(t) => t,
-        None => match crate::core::TargetTriple::detect() {
-            Ok(t) => t.triple(),
-            Err(_) => return,
-        },
-    };
-    match crate::msvc_host::ensure_msvc_env_for_native(&target) {
-        Ok(true) => {
-            tracing::debug!(
-                target: "soldr::msvc_host",
-                target_triple = %target,
-                "injected host MSVC env (LIB/INCLUDE/PATH/LIBPATH) for native build"
-            );
-        }
-        Ok(false) => {
-            // Skipped — non-windows, non-msvc, opt-out, or already-set.
-            // Nothing to log; this is the steady-state branch in dev
-            // command prompts.
-        }
-        Err(err) => {
-            eprintln!(
-                "soldr: MSVC host discovery failed for {target}: {err}\n\
-                 soldr: cargo will still run; set SOLDR_MSVC_DISCOVERY=off to silence this probe."
-            );
-        }
-    }
-}
-
-/// soldr#1012 PR 5 — prepend `dir` to the current process's `PATH`
-/// env var. Idempotent in the sense that if `dir` is already first
-/// on PATH, the value is unchanged (PATH stays clean).
-fn prepend_to_path_env(dir: &std::path::Path) {
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
-    if existing.first().is_some_and(|p| p == dir) {
-        return;
-    }
-    existing.insert(0, dir.to_path_buf());
-    if let Ok(joined) = std::env::join_paths(existing) {
-        std::env::set_var("PATH", joined);
-    }
-}
-
-fn extract_as_pin(args: &[String]) -> Result<(Option<String>, Vec<String>), SoldrError> {
-    let mut out: Vec<String> = Vec::with_capacity(args.len());
-    let mut version: Option<String> = None;
-    let mut before_subcommand = true;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if !before_subcommand {
-            out.push(arg.clone());
-            continue;
-        }
-        if arg == "--as" {
-            let value = iter.next().ok_or_else(|| {
-                SoldrError::Other("--as requires a version argument, e.g. --as 0.5.2".into())
-            })?;
-            if version.is_some() {
-                return Err(SoldrError::Other("--as specified more than once".into()));
-            }
-            if value.is_empty() {
-                return Err(SoldrError::Other(
-                    "--as version argument must not be empty".into(),
-                ));
-            }
-            version = Some(value.clone());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--as=") {
-            if version.is_some() {
-                return Err(SoldrError::Other("--as specified more than once".into()));
-            }
-            if value.is_empty() {
-                return Err(SoldrError::Other(
-                    "--as= requires a version, e.g. --as=0.5.2".into(),
-                ));
-            }
-            version = Some(value.to_string());
-            continue;
-        }
-        if arg == "--" {
-            before_subcommand = false;
-            out.push(arg.clone());
-            continue;
-        }
-        if arg.starts_with('-') {
-            out.push(arg.clone());
-            continue;
-        }
-        before_subcommand = false;
-        out.push(arg.clone());
-    }
-    Ok((version, out))
-}
-
-/// True when the requested version is different from this binary's. A match
-/// short-circuits the trampoline so the current in-process soldr handles it.
-fn should_trampoline(requested: &str) -> bool {
-    let current = env!("CARGO_PKG_VERSION");
-    normalize_version(requested) != normalize_version(current)
-}
-
-fn normalize_version(v: &str) -> String {
-    v.trim().trim_start_matches('v').to_string()
 }
 
 async fn run_trampoline(version: &str, args: &[String]) -> Result<i32, SoldrError> {

@@ -36,6 +36,18 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Expected `wrap_compiler_env` output: `<wrapper> <abs-compiler>` where
+/// the compiler is resolved via the same PATH lookup the code uses
+/// (soldr#1368). Computing the expectation through `resolve_compiler_to_abs`
+/// keeps these assertions deterministic regardless of whether `cc` / `clang`
+/// happen to be installed on the test machine.
+fn expect_wrapped(wrapper: &str, compiler: &str) -> OsString {
+    let mut e = OsString::from(wrapper);
+    e.push(" ");
+    e.push(resolve_compiler_to_abs(compiler));
+    e
+}
+
 // -------------------------------------------------------------------------
 // env_is_falsy — opt-out parsing
 // -------------------------------------------------------------------------
@@ -110,7 +122,7 @@ fn wraps_default_compiler_when_env_unset() {
     let _g = EnvGuard::remove("SOLDR_TEST_FAKE_CC");
     let wrapper = OsString::from("/tmp/zccache");
     let wrapped = wrap_compiler_env("SOLDR_TEST_FAKE_CC", "cc", &wrapper, true).unwrap();
-    assert_eq!(wrapped, OsString::from("/tmp/zccache cc"));
+    assert_eq!(wrapped, expect_wrapped("/tmp/zccache", "cc"));
 }
 
 #[test]
@@ -119,7 +131,7 @@ fn wraps_user_supplied_compiler() {
     let _g = EnvGuard::set("SOLDR_TEST_FAKE_CC", "clang -O2");
     let wrapper = OsString::from("/tmp/zccache");
     let wrapped = wrap_compiler_env("SOLDR_TEST_FAKE_CC", "cc", &wrapper, true).unwrap();
-    assert_eq!(wrapped, OsString::from("/tmp/zccache clang -O2"));
+    assert_eq!(wrapped, expect_wrapped("/tmp/zccache", "clang -O2"));
 }
 
 #[test]
@@ -148,7 +160,7 @@ fn empty_env_value_falls_back_to_default() {
     let _g = EnvGuard::set("SOLDR_TEST_FAKE_CC", "   ");
     let wrapper = OsString::from("/tmp/zccache");
     let wrapped = wrap_compiler_env("SOLDR_TEST_FAKE_CC", "c++", &wrapper, true).unwrap();
-    assert_eq!(wrapped, OsString::from("/tmp/zccache c++"));
+    assert_eq!(wrapped, expect_wrapped("/tmp/zccache", "c++"));
 }
 
 #[test]
@@ -171,7 +183,7 @@ fn set_var_with_synthesize_disabled_still_wraps() {
     let _g = EnvGuard::set("SOLDR_TEST_FAKE_CC", "clang");
     let wrapper = OsString::from("/tmp/zccache");
     let wrapped = wrap_compiler_env("SOLDR_TEST_FAKE_CC", "cc", &wrapper, false).unwrap();
-    assert_eq!(wrapped, OsString::from("/tmp/zccache clang"));
+    assert_eq!(wrapped, expect_wrapped("/tmp/zccache", "clang"));
 }
 
 #[test]
@@ -206,7 +218,7 @@ fn wraps_musl_target_default_with_musl_gcc() {
         true,
     )
     .unwrap();
-    assert_eq!(wrapped, OsString::from("/tmp/zccache musl-gcc"));
+    assert_eq!(wrapped, expect_wrapped("/tmp/zccache", "musl-gcc"));
 }
 
 // -------------------------------------------------------------------------
@@ -300,6 +312,58 @@ fn inject_wraps_target_specific_when_user_set_them() {
     let wrapper = OsString::from("/tmp/zccache");
     let cc_wrapped = wrap_compiler_env(cc_var, "cc", &wrapper, true).unwrap();
     let cxx_wrapped = wrap_compiler_env(cxx_var, "c++", &wrapper, true).unwrap();
-    assert_eq!(cc_wrapped, OsString::from("/tmp/zccache clang"));
-    assert_eq!(cxx_wrapped, OsString::from("/tmp/zccache clang++"));
+    assert_eq!(cc_wrapped, expect_wrapped("/tmp/zccache", "clang"));
+    assert_eq!(cxx_wrapped, expect_wrapped("/tmp/zccache", "clang++"));
+}
+
+// -------------------------------------------------------------------------
+// soldr#1368 — inject uses the zccache-soldr shim + an absolute compiler
+// -------------------------------------------------------------------------
+
+#[cfg(not(target_os = "windows"))]
+#[test]
+fn inject_uses_shim_wrapper_and_absolute_compiler() {
+    use std::ffi::OsStr;
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _gn = EnvGuard::remove(NATIVE_CACHE_ENV_VAR);
+    let _gcc = EnvGuard::remove("CC");
+    let _gcxx = EnvGuard::remove("CXX");
+    let _gkw = EnvGuard::remove(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR);
+
+    // The shim is an arbitrary absolute path for this unit test; the
+    // point is that whatever we pass becomes the CC wrapper token and
+    // the underlying compiler is absolute.
+    let shim = std::path::PathBuf::from("/opt/soldr/bin/zccache-soldr");
+    let mut cmd = std::process::Command::new("echo");
+    inject_native_cache_env(&mut cmd, &shim, None).unwrap();
+
+    let get = |key: &str| -> Option<OsString> {
+        cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(key))
+            .and_then(|(_, v)| v.map(OsString::from))
+    };
+
+    // CC = "<shim> <abs-cc>": first token is the shim, second is absolute.
+    let cc = get("CC").expect("CC must be injected when native cache is on");
+    let cc_str = cc.to_string_lossy();
+    let mut toks = cc_str.split(' ');
+    assert_eq!(
+        toks.next(),
+        Some("/opt/soldr/bin/zccache-soldr"),
+        "CC wrapper token must be the zccache-soldr shim, got: {cc_str}"
+    );
+    let compiler = toks.next().expect("CC must carry an underlying compiler");
+    // On a machine with `cc` on PATH this is absolute; if `cc` is not
+    // installed it falls back to the bare name — assert whichever the
+    // resolver itself produced so the test is deterministic.
+    let expected_compiler = resolve_compiler_to_abs("cc");
+    assert_eq!(OsStr::new(compiler), expected_compiler.as_os_str());
+
+    // cc-rs must be told the wrapper stem so it strips the shim when
+    // classifying the compiler family.
+    assert_eq!(
+        get(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR).as_deref(),
+        Some(OsStr::new("zccache-soldr")),
+        "CC_KNOWN_WRAPPER_CUSTOM must name the shim stem"
+    );
 }

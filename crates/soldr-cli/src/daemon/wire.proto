@@ -44,6 +44,9 @@ message WireRequest {
     // index, depgraph snapshot, metadata cache) to disk without
     // shutting down. Replies with ack. v8 protocol.
     WireUnit flush_caches = 14;
+    // soldr#1368 — read the embedded zccache service's cumulative
+    // compile counters (for `soldr session start/end` stats).
+    WireUnit compile_stats = 15;
   }
 }
 
@@ -154,7 +157,18 @@ message WireResponse {
     WireCompileStdoutChunk compile_stdout_chunk = 9;
     WireCompileStderrChunk compile_stderr_chunk = 10;
     WireCompileDone compile_done = 11;
+    // soldr#1368 — reply to compile_stats.
+    WireCompileStats compile_stats = 12;
   }
+}
+
+message WireCompileStats {
+  uint64 total_compilations = 1;
+  uint64 cache_hits = 2;
+  uint64 cache_misses = 3;
+  uint64 non_cacheable = 4;
+  uint64 compile_errors = 5;
+  uint64 time_saved_ms = 6;
 }
 
 message WireCompileResponse {

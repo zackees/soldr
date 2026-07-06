@@ -68,7 +68,7 @@ use zccache::embedded::{
 };
 
 use crate::core::SoldrPaths;
-use crate::daemon::protocol::{CompileRequest, CompileResponseBody};
+use crate::daemon::protocol::{CompileRequest, CompileResponseBody, CompileStatsInfo};
 
 /// Soldr-side handle around a started [`ZccacheService`]. Cheap to
 /// clone (the inner handle is `Arc`-shared).
@@ -90,6 +90,8 @@ pub enum EmbeddedServiceError {
     Shutdown(String),
     #[error("zccache embedded flush failed: {0}")]
     Flush(String),
+    #[error("zccache embedded stats failed: {0}")]
+    Stats(String),
     /// Issue #977 Phase 5 / #980 L1 — surfaced by [`SoldrZccacheService::compile`].
     /// Maps to a soldr-side `Response::Error` so the wrapper falls back
     /// to the legacy `zccache.exe` fork path.
@@ -216,6 +218,25 @@ impl SoldrZccacheService {
             .await
             .map(|_| ())
             .map_err(|e| EmbeddedServiceError::Flush(e.to_string()))
+    }
+
+    /// Return the embedded service's cumulative compile counters as the
+    /// soldr-daemon protocol type (soldr#1368). Keeps `zccache::embedded::*`
+    /// types out of `daemon::server` — the conversion lives here.
+    pub async fn stats(&self) -> Result<CompileStatsInfo, EmbeddedServiceError> {
+        let s = self
+            .inner
+            .stats()
+            .await
+            .map_err(|e| EmbeddedServiceError::Stats(e.to_string()))?;
+        Ok(CompileStatsInfo {
+            total_compilations: s.total_compilations,
+            cache_hits: s.cache_hits,
+            cache_misses: s.cache_misses,
+            non_cacheable: s.non_cacheable,
+            compile_errors: s.compile_errors,
+            time_saved_ms: s.time_saved_ms,
+        })
     }
 
     /// Graceful shutdown — called from the daemon's normal exit path

@@ -191,7 +191,7 @@ jobs:
           # below. zccache-on-Linux ships musl-only upstream, so the
           # Linux gnu rows pull the musl zccache (statically linked, runs
           # on glibc) — same target-mapping shorthand the runtime
-          # `MANAGED_ZCCACHE_VERSION` resolution path uses.
+          # the embedded zccache library uses.
           - name: Linux x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -527,17 +527,16 @@ jobs:
       - name: Fetch matched zccache release for combined archive
         # Pulls the matching-target zccache binaries from
         # github.com/zackees/zccache's release for whichever version soldr
-        # currently pins (`MANAGED_ZCCACHE_VERSION` in
-        # `crates/soldr-cli/src/fetch/mod.rs`). The Linux gnu / Linux musl
+        # ships compiled-in (embedded library from `_vender/zccache`). The Linux gnu / Linux musl
         # rows both pull the musl zccache because that's the only Linux
         # asset upstream publishes; statically linked, runs on glibc.
         shell: bash
         run: |
           set -euo pipefail
-          zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
+            _vender/zccache/Cargo.toml | head -n1)
           if [ -z "$zccache_version" ]; then
-            echo "could not read MANAGED_ZCCACHE_VERSION from fetch/mod.rs" >&2
+            echo "could not read embedded zccache version from _vender/zccache/Cargo.toml" >&2
             exit 1
           fi
           echo "zccache_version=$zccache_version"
@@ -876,8 +875,8 @@ jobs:
           version="${{ needs.prepare.outputs.version }}"
           commit_sha="${{ needs.prepare.outputs.commit_sha }}"
           soldr_target="${{ matrix.target }}"
-          zccache_version=$(sed -n 's/.*MANAGED_ZCCACHE_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
+            _vender/zccache/Cargo.toml | head -n1)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \

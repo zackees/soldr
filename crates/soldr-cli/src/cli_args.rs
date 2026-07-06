@@ -52,8 +52,7 @@ daemon                 Manage the long-lived soldr-daemon process\n  \
 session-start          Start a zccache session and print its id\n  \
 session-end            End a zccache session and emit its stats\n  \
 optimize               Apply platform-specific hot-cache tuning\n  \
-defender-exclusions    Manage Windows Defender exclusions for soldr caches\n  \
-install-zccache        Pin local zccache binaries (skip managed fetch)\n\n  \
+defender-exclusions    Manage Windows Defender exclusions for soldr caches\n\n  \
 help                   Print this message or the help of the given subcommand\n\n";
 
 #[derive(clap::Parser)]
@@ -225,8 +224,6 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "env",
     "session-start",
     "session-end",
-    "install-zccache",
-    "update-zccache", // alias of `install-zccache`
     "save",
     "load",
     "archive",
@@ -616,30 +613,6 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         subcommand: DefenderExclusionsSubcommand,
     },
-    /// Pin local zccache binaries (skip managed fetch)
-    #[command(
-        name = "install-zccache",
-        alias = "update-zccache",
-        long_about = "Install zccache binaries into soldr's private dir so soldr stops fetching the managed GitHub release. Pins a user-supplied set of three zccache binaries (`zccache`, `zccache-daemon`, `zccache-fp`) into `<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...` invocations resolve the pinned binaries automatically.\n\nExactly one of `<source>`, `--remove`, or `--status` must be provided. `<source>` accepts `system`, a directory or archive path (`.zip` / `.tar.gz` / `.tar.zst`), or an `http(s)://` URL pointing at such an archive."
-    )]
-    InstallZccache {
-        /// Source for the three zccache binaries. Mutually exclusive
-        /// with `--remove` / `--status`.
-        #[arg(value_name = "SOURCE", conflicts_with_all = ["remove", "status"])]
-        source: Option<String>,
-        /// Delete the pinned install and fall back to the managed
-        /// fetch on next run. Idempotent.
-        #[arg(long, conflicts_with_all = ["source", "status"])]
-        remove: bool,
-        /// Print the install dir, source, version, and per-binary
-        /// sha256s of the pinned install (if any).
-        #[arg(long, conflicts_with_all = ["source", "remove"])]
-        status: bool,
-        /// Emit the stable machine-facing JSON form for this command.
-        #[arg(long)]
-        json: bool,
-    },
-
     /// Show version
     #[command(hide = true)]
     Version {

@@ -11,7 +11,9 @@ use crate::daemon::db;
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
-use crate::daemon::protocol::{BuildRecord, CompileRequest, Request, Response, StatusInfo};
+use crate::daemon::protocol::{
+    BuildRecord, CompileRequest, CompileStatsInfo, Request, Response, StatusInfo,
+};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -109,6 +111,20 @@ pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, Clien
 pub fn status(sock_path: &Path) -> Result<StatusInfo, ClientError> {
     match submit_request(sock_path, &Request::Status)? {
         Response::Status(info) => Ok(info),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected response: {other:?}"
+        ))),
+    }
+}
+
+/// soldr#1368: read the embedded zccache service's cumulative compile
+/// counters. `soldr session start` captures a baseline and `soldr
+/// session end` diffs against it to report per-session hit/miss stats —
+/// replacing the removed managed `zccache session-end` subprocess.
+pub fn compile_stats(sock_path: &Path) -> Result<CompileStatsInfo, ClientError> {
+    match submit_request(sock_path, &Request::CompileStats)? {
+        Response::CompileStats(info) => Ok(info),
         Response::Error(msg) => Err(ClientError::Protocol(msg)),
         other => Err(ClientError::Protocol(format!(
             "unexpected response: {other:?}"

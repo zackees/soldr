@@ -68,7 +68,7 @@ const CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR: &str = "CC_KNOWN_WRAPPER_CUSTOM";
 /// Basenames of compiler-cache wrappers we recognize. Used to avoid
 /// double-wrapping a `CC="<wrapper> <real-compiler>"` value that the
 /// user (or another tool) already set.
-const KNOWN_WRAPPERS: &[&str] = &["zccache", "sccache", "ccache", "cachepot"];
+const KNOWN_WRAPPERS: &[&str] = &["zccache", "zccache-soldr", "sccache", "ccache", "cachepot"];
 
 /// Outcome of evaluating the opt-outs. The variants drive what the
 /// caller does: `Inject` runs the full wrapping pass, including the
@@ -117,14 +117,25 @@ fn env_is_falsy(value: Option<&OsStr>) -> bool {
 /// instead of `<real-cc>` directly. Idempotent: re-running with already-
 /// wrapped values is a no-op.
 ///
-/// `zccache_binary` must be the absolute path to the resolved zccache
-/// binary — the same one the caller just plumbed into `RUSTC_WRAPPER`.
+/// `wrapper_shim` must be the path to the `zccache-soldr` shim
+/// (soldr#1368) — the stable RUSTC_WRAPPER/CC shim that forwards a
+/// compile to the soldr-daemon embedded zccache service over the
+/// `Request::Compile` IPC verb. cc-rs will spawn
+/// `zccache-soldr <abs-compiler> <args>`; the shim strips its own argv[0]
+/// and dispatches `[<abs-compiler>, ...args]` to the daemon, which detects
+/// the C/C++ compiler family by basename.
+///
+/// The underlying compiler is resolved to an ABSOLUTE path here because
+/// the daemon invokes it with `Command::new(compiler)` under an
+/// env_clear + replay, so a bare `cc` on the child's PATH is not reliably
+/// found.
+///
 /// `target` is the active cargo build target (`x86_64-unknown-linux-gnu`,
 /// etc.) when known; passed through to discover target-specific
 /// `CC_<triple>` / `CXX_<triple>` values cc-rs honors.
 pub(crate) fn inject_native_cache_env(
     cargo: &mut std::process::Command,
-    zccache_binary: &Path,
+    wrapper_shim: &Path,
     target: Option<&str>,
 ) -> Result<(), SoldrError> {
     let decision = native_cache_decision();
@@ -134,7 +145,7 @@ pub(crate) fn inject_native_cache_env(
         NativeCacheDecision::UserDisabled => return Ok(()),
     };
 
-    let wrapper = zccache_binary.as_os_str().to_os_string();
+    let wrapper = wrapper_shim.as_os_str().to_os_string();
 
     // Generic CC / CXX.
     for (var, default_compiler) in [("CC", "cc"), ("CXX", "c++")] {
@@ -169,16 +180,55 @@ pub(crate) fn inject_native_cache_env(
     }
 
     // Let cc-rs strip the wrapper when classifying the real compiler
-    // beneath it. Without this, cc-rs may decide that `CC="zccache cc"`
-    // names a compiler called `zccache`, not a wrapper. Honor an
+    // beneath it. Without this, cc-rs may decide that
+    // `CC="zccache-soldr cc"` names a compiler called `zccache-soldr`,
+    // not a wrapper. The value must be the wrapper's file stem. Honor an
     // existing user value — they may already have CC_KNOWN_WRAPPER_CUSTOM
     // set to a different wrapper (sccache, etc.) and we don't want to
     // clobber it.
     if std::env::var_os(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR).is_none() {
-        cargo.env(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR, "zccache");
+        let stem = wrapper_shim
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .unwrap_or("zccache-soldr");
+        cargo.env(CC_KNOWN_WRAPPER_CUSTOM_ENV_VAR, stem);
     }
 
     Ok(())
+}
+
+/// Resolve a bare compiler name (`cc`, `c++`, `musl-gcc`, …) to an
+/// absolute path via a PATH lookup in the current process (soldr#1368).
+/// The daemon spawns the compiler with `Command::new(compiler)` under an
+/// env_clear + replay, so bare names are not reliably resolved on the
+/// child side — resolve here where soldr's own PATH still holds. Returns
+/// the input unchanged when it is already absolute or cannot be found
+/// (best-effort; the daemon still gets a well-formed request).
+fn resolve_compiler_to_abs(name: &str) -> OsString {
+    let candidate = Path::new(name);
+    if candidate.is_absolute() {
+        return OsString::from(name);
+    }
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".bat", ".cmd"]
+    } else {
+        &[""]
+    };
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            for ext in exts {
+                let file = if ext.is_empty() {
+                    dir.join(name)
+                } else {
+                    dir.join(format!("{name}{ext}"))
+                };
+                if file.is_file() {
+                    return file.into_os_string();
+                }
+            }
+        }
+    }
+    OsString::from(name)
 }
 
 fn default_c_compiler_for_target(triple: &str) -> &'static str {
@@ -246,12 +296,14 @@ fn wrap_compiler_env(
         }
     };
 
-    // Build `<wrapper> <underlying>`. Use OsString throughout so we
+    // Build `<wrapper> <abs-underlying>`. Use OsString throughout so we
     // don't lose non-UTF8 bytes from the wrapper path on Linux/macOS.
+    // The underlying compiler is resolved to an absolute path so the
+    // daemon's `Command::new(compiler)` (env_clear + replay) finds it.
     let mut wrapped = OsString::new();
     wrapped.push(wrapper);
     wrapped.push(" ");
-    wrapped.push(underlying);
+    wrapped.push(resolve_compiler_to_abs(&underlying));
     Some(wrapped)
 }
 

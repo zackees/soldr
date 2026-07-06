@@ -34,7 +34,7 @@
 //! ## Sidecar resolution
 //!
 //! By default the command pulls each sidecar from
-//! `<SoldrPaths::bin>/zccache-<MANAGED_ZCCACHE_VERSION>/` (the same dir
+//! `<SoldrPaths::bin>/zccache-<managed-download version>/` (the same dir
 //! `fetch_zccache_with_paths` populates). When the sidecar is missing
 //! from the local cache the command errors with a directive naming the
 //! exact warm-up command, instead of attempting a network fetch — this
@@ -58,7 +58,12 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths, TargetTriple};
-use crate::fetch::MANAGED_ZCCACHE_VERSION;
+
+/// Version of the compiled-in embedded zccache library, recorded in the
+/// archive manifest (soldr#1368). The externally-downloaded managed
+/// zccache trio is no longer staged — soldr ships the zccache CLI as a
+/// compiled-in `[[bin]]` — so this is informational only.
+const EMBEDDED_ZCCACHE_VERSION: &str = zccache::core::VERSION;
 
 /// zstd compression level for `soldr archive` output. Matches the
 /// release-workflow setting documented in `.github/workflows/release-auto.yml`
@@ -147,40 +152,13 @@ pub fn resolve_sources(
         )));
     }
 
-    // Probe two candidate dirs: the managed cache populated by
-    // `fetch_zccache_with_paths` (versioned by `MANAGED_ZCCACHE_VERSION`)
-    // and the pinned-install dir written by `soldr install-zccache`.
-    // The pinned dir wins when present — that's the workflow setup-soldr
-    // uses to lock the trio at a specific version, and on hosts that
-    // installed via pin, the managed dir may only carry the cli binary.
-    let pinned_dir = paths.bin.join("zccache-pinned");
-    let managed_dir = paths.bin.join(format!("zccache-{MANAGED_ZCCACHE_VERSION}"));
-    let stems = ["zccache", "zccache-daemon", "zccache-fp"];
-    let zccache_dir = if stems
-        .iter()
-        .all(|s| pinned_dir.join(format!("{s}{exe_suffix}")).is_file())
-    {
-        pinned_dir
-    } else {
-        managed_dir.clone()
-    };
-    let mut required = Vec::new();
-    for stem in stems {
-        let name = format!("{stem}{exe_suffix}");
-        let source = zccache_dir.join(&name);
-        if !source.is_file() {
-            return Err(SoldrError::Other(format!(
-                "managed zccache sidecar missing at {} — run `soldr cargo build` once to populate {}/zccache-{MANAGED_ZCCACHE_VERSION}/, or pre-install with `soldr install-zccache`",
-                source.display(),
-                paths.bin.display(),
-            )));
-        }
-        required.push(ArchiveEntry {
-            archive_name: name,
-            source,
-            sha256: None,
-        });
-    }
+    // soldr#1368: the archive no longer stages the externally-downloaded
+    // managed `zccache` / `zccache-daemon` / `zccache-fp` trio — the
+    // zccache CLI is compiled into soldr's own build (the `zccache`
+    // `[[bin]]`), and rustc compile caching runs through the soldr-daemon
+    // embedded service. The archive ships only `soldr` plus any
+    // non-zccache optional sidecars.
+    let required = Vec::new();
 
     // Optional sidecars: crgx + cargo-chef are looked up under the
     // same managed-cache layout (`<bin>/<crate>-<version>/<binary>`).
@@ -361,7 +339,7 @@ fn render_manifest(sources: &ArchiveSources, entries: &[ArchiveEntry]) -> String
     ));
     json.push_str(&format!(
         "  \"zccache_version\": \"{}\",\n",
-        json_escape(MANAGED_ZCCACHE_VERSION),
+        json_escape(EMBEDDED_ZCCACHE_VERSION),
     ));
     json.push_str("  \"entries\": [\n");
     for (i, entry) in entries.iter().enumerate() {

@@ -770,44 +770,49 @@ pub(crate) fn dropped_artifact_classes(
 pub(crate) fn run_zccache_rust_plan(
     plan: &RustArtifactPlanContext,
     operation: &'static str,
-    include_session: bool,
+    _include_session: bool,
 ) -> Result<(), SoldrError> {
-    let plan_path = path_string(&plan.path);
-    let cache_dir = path_string(&plan.cache_dir);
-    let journal_path = path_string(&plan.journal_path);
-    let mut args = vec![
-        "rust-plan".to_string(),
-        operation.to_string(),
-        "--plan".to_string(),
-        plan_path,
-        "--json".to_string(),
-        "--backend".to_string(),
-        plan.backend.clone(),
-        "--cache-dir".to_string(),
-        cache_dir,
-        "--journal".to_string(),
-        journal_path,
-    ];
-    if include_session {
-        args.push("--session-id".to_string());
-        args.push(plan.session_id.clone());
+    // soldr#1368: rust-plan save/restore runs in-process against the
+    // compiled-in zccache artifact library — no `zccache rust-plan`
+    // subprocess and no managed daemon. The library exposes the LOCAL
+    // backend only; `gha` / `auto` resolve to local (the GHA rust-plan
+    // path lives in zccache's CLI, not its library — see the #1368
+    // report's GHA verdict). The journal + session id ride in the plan
+    // file itself, so the old `--journal` / `--session-id` / `--backend`
+    // plumbing is dropped for the local path.
+    if plan.backend == "gha" {
+        eprintln!(
+            "soldr: rust-plan `gha` backend is unavailable in-process (the embedded \
+             zccache library exposes only the local backend); using local for {operation}."
+        );
     }
 
-    let output = run_zccache_command_strings_in_cache_dir_with_daemon_name(
-        &plan.zccache_binary,
-        &args,
-        &plan.zccache_daemon_cache_dir,
-        plan.zccache_daemon_cache_dir_env,
-        plan.zccache_daemon_name.as_deref(),
-    )?;
-    let stdout = output.stdout.trim();
-    if !stdout.is_empty() {
-        eprintln!("soldr: zccache rust-plan {operation} summary");
-        eprintln!("{stdout}");
-        if operation == "restore" {
-            warn_if_rust_plan_restore_incomplete(stdout);
+    let loaded = zccache::artifact::RustArtifactPlanV1::load(&plan.path).map_err(|e| {
+        SoldrError::Other(format!(
+            "failed to load rust-plan {}: {e}",
+            plan.path.display()
+        ))
+    })?;
+
+    let summary = match operation {
+        "save" => zccache::artifact::save_rust_plan_local(&loaded, &plan.cache_dir),
+        "restore" => zccache::artifact::restore_rust_plan_local(&loaded, &plan.cache_dir),
+        other => {
+            return Err(SoldrError::Other(format!(
+                "unknown rust-plan operation {other:?}"
+            )))
         }
     }
+    .map_err(|e| SoldrError::Other(format!("zccache rust-plan {operation} failed: {e}")))?;
+
+    if let Ok(rendered) = serde_json::to_string(&summary) {
+        eprintln!("soldr: zccache rust-plan {operation} summary");
+        eprintln!("{rendered}");
+    }
+    if operation == "restore" {
+        warn_if_rust_plan_restore_incomplete(&summary);
+    }
+
     if operation == "save" && plan.cache_profile == Some("thin-v2") {
         if let Err(e) = write_thin_manifest(&plan.cache_dir, plan.cache_profile) {
             // Manifest emission is diagnostic; never fail the build because
@@ -1030,22 +1035,19 @@ fn collect_bundle_file_paths(
     Ok(())
 }
 
-fn warn_if_rust_plan_restore_incomplete(stdout: &str) {
-    let Ok(summary) = serde_json::from_str::<serde_json::Value>(stdout) else {
-        return;
-    };
+fn warn_if_rust_plan_restore_incomplete(summary: &zccache::artifact::RustPlanSummary) {
+    // soldr#1368: read the in-process summary directly. The
+    // "artifact absent from the restored plan" signal is tracked as a
+    // skip reason in the library summary.
     let absent = summary
+        .skipped_reasons
         .get("artifact_absent_from_restored_plan")
-        .and_then(serde_json::Value::as_u64)
+        .copied()
         .unwrap_or(0);
     if absent == 0 {
         return;
     }
-    let restored = summary
-        .get("restored_file_count")
-        .and_then(serde_json::Value::as_u64)
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "?".to_string());
+    let restored = summary.restored_file_count.to_string();
     eprintln!(
         "soldr warning: rust-plan restore is partial \
          (artifact_absent_from_restored_plan={absent}, restored_file_count={restored}); \

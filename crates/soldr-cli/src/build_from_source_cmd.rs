@@ -16,7 +16,7 @@
 //! soldr build-from-source cargo-chef --target aarch64-apple-darwin
 //! ```
 //!
-//! Modelled on `fetch::install_zccache::install_zccache_from_source` for
+//! Modelled on the former managed-zccache source-build path for
 //! the retry budget, staging dir handling, and sha256 sidecar shape.
 //!
 //! ## Hard rules
@@ -42,8 +42,12 @@ use std::time::Duration;
 use crate::binaries::resolve_toolchain_binary;
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths, TargetTriple};
 use crate::fetch::known_tools;
-use crate::fetch::MANAGED_ZCCACHE_INSTALL_ATTEMPTS;
 use wait_timeout::ChildExt;
+
+/// Retry budget for the source-build install loop. Previously borrowed
+/// from the (now-deleted) managed-zccache install constants (soldr#1368);
+/// this build path is generic (forge tool builds), so it keeps its own.
+const SOURCE_BUILD_INSTALL_ATTEMPTS: u32 = 3;
 
 /// Tools `soldr build-from-source <tool>` accepts. Kept tiny on purpose
 /// (see module doc): generic crate source-build belongs in
@@ -52,7 +56,7 @@ use wait_timeout::ChildExt;
 pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef"];
 
 /// Initial back-off between failed `cargo install` retries. Mirrors
-/// `MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF`'s 10s baseline so callers
+/// the previous managed-install 10s baseline so callers
 /// don't see one retry budget here that disagrees with the rest of
 /// soldr. Re-declared instead of imported so the cargo-chef / crgx
 /// source-build path stays decoupled from zccache's constants.
@@ -230,7 +234,7 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
         if status.success() {
             break;
         }
-        if attempt >= MANAGED_ZCCACHE_INSTALL_ATTEMPTS {
+        if attempt >= SOURCE_BUILD_INSTALL_ATTEMPTS {
             return Err(SoldrError::Other(format!(
                 "build-from-source: cargo install {}@{} --target {} failed with status {status}",
                 plan.tool, plan.version, plan.target,
@@ -238,7 +242,7 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
         }
         eprintln!(
             "soldr build-from-source: cargo install {}@{} --target {} failed (attempt {attempt}/{}); retrying in {:?}",
-            plan.tool, plan.version, plan.target, MANAGED_ZCCACHE_INSTALL_ATTEMPTS, backoff,
+            plan.tool, plan.version, plan.target, SOURCE_BUILD_INSTALL_ATTEMPTS, backoff,
         );
         std::thread::sleep(backoff);
         backoff = backoff.saturating_mul(2);

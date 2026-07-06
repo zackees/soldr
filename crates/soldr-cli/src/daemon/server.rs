@@ -552,6 +552,16 @@ where
             };
             let _ = write_frame_async(&mut stream, &response).await;
         }
+        Request::CompileStats => {
+            // soldr#1368: return the embedded zccache service's cumulative
+            // compile counters so `soldr session start/end` can diff two
+            // snapshots into per-session hit/miss stats.
+            let response = match state.compile_service.stats().await {
+                Ok(info) => Response::CompileStats(info),
+                Err(err) => Response::Error(format!("embedded zccache stats failed: {err}")),
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
+        }
         Request::BuildSessionStart {
             session_id,
             repo_root,

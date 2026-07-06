@@ -267,11 +267,6 @@ pub(crate) fn rustup_binary() -> std::path::PathBuf {
     "rustup".into()
 }
 
-pub(crate) fn zccache_binary_override() -> Option<std::path::PathBuf> {
-    non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR)
-        .or_else(|| non_empty_env_path(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR))
-}
-
 pub(crate) fn non_empty_env_path(env_var: &str) -> Option<std::path::PathBuf> {
     let value = std::env::var_os(env_var)?;
     if value.is_empty() {
@@ -284,59 +279,47 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
-/// Resolve the active zccache binary, honoring the
-/// `SOLDR_ZCCACHE_LOCAL_DIR` -> pinned-install -> managed-cache ->
-/// managed-download precedence chain implemented by
-/// [`crate::fetch::fetch_zccache_with_paths`]. Despite the historical
-/// "managed" name on its callers (see issue #420), the resolution path
-/// already honors `soldr install-zccache` pins ahead of the managed
-/// download — this helper just adds the `SOLDR_TEST_ZCCACHE_BIN` test
-/// override on top.
-pub(crate) async fn fetch_active_zccache(
-    paths: &SoldrPaths,
-) -> Result<crate::fetch::FetchResult, SoldrError> {
-    fetch_active_zccache_runtime(paths).await?.to_fetch_result()
+/// Resolve the compiled-in `zccache` CLI trampoline that ships alongside
+/// `soldr` (soldr#1368). The trampoline is a soldr-cli `[[bin]]` named
+/// `zccache` (`src/bin/zccache_embedded.rs`), installed as a sibling of
+/// the running `soldr` executable. `soldr zccache <args>` execs it
+/// instead of downloading a managed zccache release.
+///
+/// Resolution: sibling of the current executable named `zccache`
+/// (`zccache.exe` on Windows); falls back to a bare `zccache` name so a
+/// PATH lookup can still find it in unusual install layouts.
+pub(crate) fn embedded_zccache_binary() -> std::path::PathBuf {
+    sibling_binary("zccache")
 }
 
-pub(crate) async fn fetch_active_zccache_runtime(
-    paths: &SoldrPaths,
-) -> Result<crate::fetch::ZccacheRuntime, SoldrError> {
-    if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return crate::fetch::ZccacheRuntime::from_test_override(binary_path);
-    }
-
-    crate::fetch::ZccacheResolver::new(paths)?
-        .materialize_default()
-        .await
+/// Resolve the `zccache-soldr` RUSTC_WRAPPER/CC shim (soldr#1081) that
+/// ships alongside `soldr`. Used by native-C caching (soldr#1368): it is
+/// injected into `CC`/`CXX` as the compiler wrapper so cc-rs build-script
+/// compiles route through the soldr-daemon embedded zccache service over
+/// the `Request::Compile` IPC verb (same shim RUSTC_WRAPPER uses). Sibling
+/// of the current exe; falls back to a bare name for a PATH lookup.
+pub(crate) fn zccache_soldr_shim_binary() -> std::path::PathBuf {
+    sibling_binary("zccache-soldr")
 }
 
-/// Same precedence chain as [`fetch_active_zccache`] but only reports
-/// what is already on disk — never triggers a managed download. Returns
-/// `Ok(None)` when nothing has been fetched yet AND no pin / local
-/// override is in effect.
-pub(crate) fn cached_active_zccache(
-    paths: &SoldrPaths,
-) -> Result<Option<crate::fetch::FetchResult>, SoldrError> {
-    cached_active_zccache_runtime(paths)?
-        .map(|runtime| runtime.to_fetch_result())
-        .transpose()
-}
-
-pub(crate) fn cached_active_zccache_runtime(
-    paths: &SoldrPaths,
-) -> Result<Option<crate::fetch::ZccacheRuntime>, SoldrError> {
-    if let Some(binary_path) = non_empty_env_path(TEST_ZCCACHE_BIN_ENV_VAR) {
-        return Ok(Some(crate::fetch::ZccacheRuntime::from_test_override(
-            binary_path,
-        )?));
-    }
-
-    let runtime = crate::fetch::ZccacheResolver::new(paths)?.inspect_default()?;
-    if runtime.is_missing() {
-        Ok(None)
+/// Resolve `<stem>` as a sibling of the running executable (adding
+/// `.exe` on Windows), falling back to the bare stem when the sibling
+/// is absent so a PATH lookup can still find it.
+fn sibling_binary(stem: &str) -> std::path::PathBuf {
+    let file = if cfg!(windows) {
+        format!("{stem}.exe")
     } else {
-        Ok(Some(runtime))
+        stem.to_string()
+    };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join(&file);
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
     }
+    std::path::PathBuf::from(stem)
 }
 
 #[cfg(test)]

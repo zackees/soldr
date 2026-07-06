@@ -4,6 +4,7 @@
 //! `rust_plan.rs`.
 
 mod bundle_walk;
+mod local_roundtrip;
 mod manifest;
 mod orphan_rmeta;
 mod plan_build;
