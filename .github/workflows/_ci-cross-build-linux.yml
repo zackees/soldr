@@ -435,7 +435,7 @@ jobs:
             --workspace \
             --archive-file "$archive" \
             --archive-format tar-zst \
-            -E '!binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/) and !binary(/cli_zccache_contract/)'
+            -E '!binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/)'
           ls -la "$archive"
 
       # Stage D — stage + upload artifact bundle
