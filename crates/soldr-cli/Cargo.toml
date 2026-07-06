@@ -133,3 +133,12 @@ path = "src/bin/soldr_clang_shim.rs"
 # separate zccache binaries.
 name = "zccache-soldr"
 path = "src/bin/zccache_soldr.rs"
+
+[[bin]]
+# soldr#1368 — compiled-in `zccache` CLI trampoline. Forwards straight
+# into `zccache::cli::commands::run()` from the in-tree `_vender/zccache`
+# library dep, so `soldr zccache <args>` needs no externally downloaded
+# managed zccache binary. This replaces the deleted MANAGED_ZCCACHE_*
+# download/fetch subsystem.
+name = "zccache"
+path = "src/bin/zccache_embedded.rs"
