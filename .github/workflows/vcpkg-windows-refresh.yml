@@ -22,7 +22,7 @@ name: Refresh vcpkg Windows triplet bundles
 #
 # The pin list lives at `.github/vcpkg-pin.txt` (one port per
 # line). Bumping it is a manual PR — same pattern as the
-# `MANAGED_ZCCACHE_VERSION` constant in CLAUDE.md's lockstep
+# managed crgx / cargo-chef pins in CLAUDE.md's lockstep
 # bookkeeping.
 
 on:

@@ -256,10 +256,9 @@ When all `[[deltas]]` upstream PRs are **merged AND released** in a
 new zccache version:
 
 ```bash
-# 1. Bump the four lockstep files per CLAUDE.md "Bumping
-#    managed_zccache_version" (MANAGED_ZCCACHE_VERSION,
-#    contracts/zccache-runtime.v1.json, src/zccache.rs cosmetic
-#    strings, and the embed/manifest.json regeneration).
+# 1. Bump the vendored zccache submodule commit (soldr#1368 removed the
+#    MANAGED_ZCCACHE_VERSION managed-binary download; the zccache CLI is
+#    now a compiled-in soldr [[bin]] built from _vender/zccache).
 $EDITOR crates/soldr-cli/src/fetch/mod.rs
 $EDITOR contracts/zccache-runtime.v1.json
 # Regenerate embed/manifest.json with the new release URLs + sha256s
@@ -303,16 +302,14 @@ Two interactions matter:
 2. **Managed-zccache version bump while vendor is active**: legal
    but informational only. The standalone `zccache.exe` binary
    that soldr fetches for the perf cluster, broker, and
-   `soldr update-zccache` paths is a *different* artifact from the
-   in-process embedded zccache. Bumping
-   `MANAGED_ZCCACHE_VERSION` only affects the binary fetch; the
-   vendored library is unaffected. This rarely happens during a
-   vendor window, but the orthogonality is the point: there are
-   two zccache surfaces, and the vendor only owns one of them.
+   As of soldr#1368 there is no separate `soldr update-zccache` /
+   managed-binary artifact — the embedded library IS the zccache CLI
+   (compiled-in `[[bin]]`). There is now a single zccache surface: the
+   vendored library.
 
 When the vendor ends and we restore the released git/crates.io pin,
-the `MANAGED_ZCCACHE_VERSION` bump and the library pin bump happen
-together — they're the same release.
+only the library pin moves — there is no separate managed-binary
+version to bump alongside it (soldr#1368).
 
 ## CI enforcement
 

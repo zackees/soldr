@@ -170,37 +170,27 @@ The regression guard at `crates/soldr-cli/tests/version_lockstep.rs` reads all t
 
 A pre-merge `cargo metadata --frozen` would also catch the trap (it refuses to run when the lockfile is stale relative to manifests) but adds a separate workflow. The in-tree test covers the same ground with no CI plumbing.
 
-### Why a separate checklist for this
+### zccache is embedded (no managed-version pin)
 
-The 'Bumping managed_zccache_version' section below documents the four-file lockstep for the *zccache* pin (`MANAGED_ZCCACHE_VERSION` + the contract file + a cosmetic test fixture + the `zccache = { git = ... }` rev). That's an internal dependency pin — orthogonal to soldr's own release version. Both lockstep checklists live in this file because both have surfaced bugs in the past, and both need to be in front of an agent's eyes when it goes to open a PR that touches versions.
+soldr#1368 removed the externally-downloaded managed zccache binary: the zccache CLI now ships as a compiled-in soldr `[[bin]]` built from the `_vender/zccache` submodule library dep. There is no longer a `MANAGED_ZCCACHE_VERSION` pin to keep in lockstep — the only zccache pin is the `_vender/zccache` submodule commit.
 
-## Bumping managed_zccache_version
+## Bumping the vendored zccache pin
 
-When pulling in a new managed zccache release, **four files must be updated in lockstep** or `zccache_runtime_contract_matches_rust_constants` (or a `./test` run) will fail:
-
-1. `crates/soldr-cli/src/fetch/mod.rs` — bump `MANAGED_ZCCACHE_VERSION`.
-2. `contracts/zccache-runtime.v1.json` — bump `zccache.managed_version` to the same value.
-3. `crates/soldr-cli/src/zccache.rs` — bump the two cosmetic test-fixture paths that embed the version (won't break the contract test, but drifts if not updated).
-4. `crates/soldr-cli/Cargo.toml` — bump the mandatory `zccache = { git = "...", rev = "<sha>" }` dep (the embedded service backing — issue #977 / #980 L1). The rev should point at the commit SHA of the matching upstream tag so the embedded library and the managed binary stay on the same release. Look up the SHA with: `gh api repos/zackees/zccache/git/refs/tags/<VERSION> --jq '.object.sha'`. NOTE (#980 L1 second pass): the dep is no longer optional and the `embedded` Cargo feature has been deleted — embedded is the only compile backend.
-
-If you bump only #1, the contract test now panics with a directive message naming both files. Same procedure applies for `MANAGED_CRGX_VERSION` and `CARGO_CHEF_PINNED_VERSION` — see the matching `crgx.managed_version` / `cargo_chef.managed_version` entries in the contract.
-
-### Bumps are manual — no watcher exists (and that's the friction)
-
-Upstream `zackees/zccache` ships on an **automated release pipeline** — six releases in ~28 hours during the 1.12.0 → 1.12.5 window. The consumer side here has **no GitHub Action, bot, or scheduled job** that watches it (nor `zackees/crgx`, nor `LukeMathWalker/cargo-chef`). The `chore(deps): bump managed zccache ...` PRs are all hand-authored by a human running Claude Code. The asymmetry is the bug: a fast auto-publisher feeding a hand-driven consumer guarantees lag. 1.12.2 was skipped entirely (1.12.1 → 1.12.3 in #730), and 1.12.5 dropped ~6 hours after the 1.12.4 bump landed and sat invisible locally until a manual check.
-
-When working in this area, or before claiming the pin is current, run the check yourself:
+soldr#1368 deleted the `MANAGED_ZCCACHE_VERSION` managed-binary download.
+The zccache CLI (`zccache`, and the daemon/fingerprint helpers) is compiled
+into soldr from the `_vender/zccache` submodule via the
+`zccache = { path = "../../_vender/zccache/crates/zccache" }` dep. To move to a
+newer zccache, bump the submodule commit:
 
 ```bash
-# Current local pin vs. upstream latest:
-grep MANAGED_ZCCACHE_VERSION crates/soldr-cli/src/fetch/mod.rs
-gh release list --repo zackees/zccache --limit 5
-# Same shape for crgx and cargo-chef:
-gh release list --repo zackees/crgx --limit 5
-gh release list --repo LukeMathWalker/cargo-chef --limit 5
+cd _vender/zccache && git fetch && git checkout <commit>
+cd - && git add _vender/zccache
 ```
 
-If upstream is ahead, open a bump PR per the lockstep instructions above. Do not assume a bot has it covered.
+There is no separate managed-version constant, contract `managed_version`, or
+download staging to keep in lockstep any more. `zccache::core::VERSION` (the
+vendored crate's own version) is what `soldr status` / `soldr doctor` /
+`soldr cache` report. The crgx / cargo-chef managed pins are unaffected.
 
 ## Reference Docs
 
