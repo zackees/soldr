@@ -284,6 +284,28 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
+/// Resolve the compiled-in `zccache` CLI trampoline that ships alongside
+/// `soldr` (soldr#1368). The trampoline is a soldr-cli `[[bin]]` named
+/// `zccache` (`src/bin/zccache_embedded.rs`), installed as a sibling of
+/// the running `soldr` executable. `soldr zccache <args>` execs it
+/// instead of downloading a managed zccache release.
+///
+/// Resolution: sibling of the current executable named `zccache`
+/// (`zccache.exe` on Windows); falls back to a bare `zccache` name so a
+/// PATH lookup can still find it in unusual install layouts.
+pub(crate) fn embedded_zccache_binary() -> std::path::PathBuf {
+    let file = if cfg!(windows) { "zccache.exe" } else { "zccache" };
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let sibling = dir.join(file);
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    std::path::PathBuf::from("zccache")
+}
+
 /// Resolve the active zccache binary, honoring the
 /// `SOLDR_ZCCACHE_LOCAL_DIR` -> pinned-install -> managed-cache ->
 /// managed-download precedence chain implemented by
