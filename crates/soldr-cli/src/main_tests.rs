@@ -161,22 +161,6 @@ fn cli_parses_zccache_flag_values() {
 }
 
 #[test]
-fn bare_zccache_external_uses_managed_runtime_by_default() {
-    assert!(should_use_managed_zccache_external(
-        "zccache",
-        &VersionSpec::Latest
-    ));
-    assert!(
-        !should_use_managed_zccache_external("zccache", &VersionSpec::Exact("1.12.10".to_string())),
-        "explicit zccache@version keeps the generic external-tool fetch path"
-    );
-    assert!(!should_use_managed_zccache_external(
-        "zccache-daemon",
-        &VersionSpec::Latest
-    ));
-}
-
-#[test]
 fn cli_parses_trust_inherited_soldr_env_flag() {
     let default = Cli::try_parse_from(["soldr", "cargo", "build"]).unwrap();
     assert!(!default.trust_inherited_soldr_env);

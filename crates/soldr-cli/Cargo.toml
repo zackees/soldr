@@ -53,10 +53,9 @@ zstd = { workspace = true }
 # (or git checkout <commit>), then `git add _vender/zccache` from
 # the soldr root commits the new submodule pointer.
 #
-# The managed zccache binary (MANAGED_ZCCACHE_VERSION in
-# src/fetch/mod.rs) is still tracked separately — that's the
-# `soldr update-zccache` workflow + perf-cluster harness pin and
-# does not need to match the embedded library commit.
+# soldr#1368: there is no longer a separately-downloaded managed zccache
+# binary — the `zccache` CLI ships as a compiled-in soldr-cli `[[bin]]`
+# (`src/bin/zccache_embedded.rs`) built from this same library dep.
 zccache = { path = "../../_vender/zccache/crates/zccache", default-features = false }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))

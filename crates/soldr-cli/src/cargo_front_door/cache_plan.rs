@@ -265,22 +265,8 @@ mod tests {
             .map(|(_, value)| value.map(OsString::from))
     }
 
-    fn fake_session() -> ZccacheBuildSession {
-        ZccacheBuildSession {
-            binary_path: std::path::PathBuf::from("/tmp/zccache"),
-            cache_dir: std::path::PathBuf::from("/tmp/soldr-zccache"),
-            cache_dir_env: true,
-            session_id: "session-1".into(),
-            session_log_path: std::path::PathBuf::from("/tmp/soldr-zccache/log"),
-            journal_path: std::path::PathBuf::from("/tmp/soldr-zccache/journal"),
-            session_stats_path: std::path::PathBuf::from("/tmp/soldr-zccache/stats.json"),
-            private_daemon: None,
-        }
-    }
-
     fn managed_wrapper_plan() -> RustcWrapperPlan {
         RustcWrapperPlan::ManagedZccache(Box::new(ManagedZccacheWrapperPlan {
-            session: fake_session(),
             child_env: ZccacheChildEnv {
                 path_remap: Some("auto"),
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
@@ -310,13 +296,15 @@ mod tests {
         assert!(command_env_override(&command, "RUSTC_WRAPPER")
             .and_then(|value| value)
             .is_some());
+        // soldr#1368: the front door no longer plumbs an external zccache
+        // binary or managed session — those env vars are cleared, not set.
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_BINARY_ENV_VAR),
-            Some(Some(OsString::from("/tmp/zccache")))
+            Some(None)
         );
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR),
-            Some(Some(OsString::from("session-1")))
+            Some(None)
         );
         assert_eq!(
             command_env_override(&command, crate::cache_lib::ZCCACHE_PATH_REMAP_ENV_VAR),
