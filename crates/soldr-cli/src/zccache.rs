@@ -2,14 +2,12 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::fetch::{ZccacheRuntime, ZccacheRuntimeSource};
 use crate::zccache_lifecycle::{
     zccache_command_failure_message, zccache_json_flag_unsupported, ZccacheLifecycle,
-    ZccachePrivateEnv, ZccacheSessionStartOptions,
+    ZccachePrivateEnv,
 };
 use crate::{
-    current_soldr_binary, fetch_active_zccache_runtime, non_empty_env_path, ZccacheSourceArg,
-    RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
+    current_soldr_binary, non_empty_env_path, ZccacheSourceArg, RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
 use std::ffi::OsStr;
 
@@ -281,7 +279,6 @@ impl ZccacheChildEnv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ManagedZccacheWrapperPlan {
-    pub(crate) session: ZccacheBuildSession,
     pub(crate) child_env: ZccacheChildEnv,
 }
 
@@ -297,10 +294,10 @@ pub(crate) enum RustcWrapperPlan {
 
 impl RustcWrapperPlan {
     pub(crate) fn session(&self) -> Option<&ZccacheBuildSession> {
-        match self {
-            Self::ManagedZccache(plan) => Some(&plan.session),
-            Self::Custom { .. } | Self::Disabled => None,
-        }
+        // soldr#1368: the front door no longer opens a managed zccache
+        // session — rustc compiles are cached by the soldr-daemon's
+        // embedded service over the RUSTC_WRAPPER=soldr IPC path.
+        None
     }
 
     pub(crate) fn apply_to_command(
@@ -309,35 +306,16 @@ impl RustcWrapperPlan {
     ) -> Result<(), SoldrError> {
         match self {
             Self::ManagedZccache(plan) => {
-                let session = &plan.session;
+                // soldr#1368: point cargo's RUSTC_WRAPPER at soldr so
+                // rustc invocations route to the daemon's embedded
+                // zccache service. There is no externally-resolved
+                // zccache binary or managed session to plumb, so clear
+                // the legacy session env and only seed the parent-cache
+                // path-remap vars.
                 cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
-                cargo.env(
-                    crate::cache_lib::ZCCACHE_BINARY_ENV_VAR,
-                    &session.binary_path,
-                );
-                cargo.env(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR, &session.cache_dir);
-                if session.cache_dir_env {
-                    cargo.env(
-                        crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
-                        &session.cache_dir,
-                    );
-                    cargo.env(
-                        crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
-                        &session.cache_dir,
-                    );
-                } else {
-                    cargo.env_remove(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR);
-                    cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
-                }
-                cargo.env(
-                    crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR,
-                    &session.session_id,
-                );
-                if let Some(private) = session.private_daemon.as_ref() {
-                    cargo.env(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR, &private.daemon_name);
-                } else {
-                    cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
-                }
+                remove_managed_zccache_env(cargo);
+                cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
+                cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
                 plan.child_env.apply_to_command(cargo);
             }
             Self::Custom {
@@ -363,17 +341,6 @@ fn remove_managed_zccache_env(cargo: &mut std::process::Command) {
     cargo.env_remove(crate::cache_lib::ZCCACHE_BINARY_ENV_VAR);
     cargo.env_remove(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR);
     cargo.env_remove(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR);
-}
-
-pub(crate) async fn prepare_rustc_wrapper(
-    cargo: &mut std::process::Command,
-    paths: &SoldrPaths,
-    zccache_source: ZccacheSourceArg,
-) -> Result<Option<ZccacheBuildSession>, SoldrError> {
-    let plan = prepare_rustc_wrapper_plan(paths, zccache_source).await?;
-    let session = plan.session().cloned();
-    plan.apply_to_command(cargo)?;
-    Ok(session)
 }
 
 pub(crate) async fn prepare_rustc_wrapper_plan(
@@ -410,166 +377,21 @@ pub(crate) fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
 }
 
 async fn prepare_zccache_build(
-    paths: &SoldrPaths,
-    zccache_source: ZccacheSourceArg,
+    _paths: &SoldrPaths,
+    _zccache_source: ZccacheSourceArg,
 ) -> Result<ManagedZccacheWrapperPlan, SoldrError> {
-    let zccache_base_dir = managed_zccache_cache_dir(paths)?;
-    let runtime = match zccache_source {
-        ZccacheSourceArg::Managed => fetch_active_zccache_runtime(paths).await?,
-        ZccacheSourceArg::System => {
-            crate::fetch::ZccacheResolver::new(paths)?.materialize_system()?
-        }
-    };
-    let fetch = runtime.to_fetch_result()?;
-
-    // Source-aware diagnostic (issue #420). The old "soldr: using
-    // managed zccache 1.8.1" line printed even when the pinned install
-    // won resolution, which sent three perf-cluster runs chasing the
-    // wrong binary. Print exactly one line that names the actual
-    // source, runtime dir, and version of the binary we just resolved.
-    print_zccache_runtime_diagnostic(&runtime);
-
+    // soldr#1368: rustc compiles are cached by the soldr-daemon's
+    // embedded zccache service over the RUSTC_WRAPPER=soldr IPC path
+    // (see `wrapper.rs` + `compile_dispatch.rs`). The front door no
+    // longer downloads a managed zccache binary, spawns a separate
+    // zccache daemon, or opens a managed session. All it does now is
+    // seed the parent-cache path-remap env (Tier L1.x, issue #352) on
+    // the child cargo so multiple worktrees of the same repo share
+    // embedded-cache hits through normalized keys — honoring
+    // user-supplied `ZCCACHE_*` values and the `SOLDR_PATH_REMAP=off`
+    // escape hatch.
     let child_env = ZccacheChildEnv::from_current_process()?;
-    let inherited_soldr_managed_dir =
-        non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
-            .map(|path| normalize_path_for_compare(&path))
-            .transpose()?;
-    let explicit_zccache_cache_dir =
-        non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
-            .map(|path| normalize_path_for_compare(&path))
-            .transpose()?
-            .filter(|path| inherited_soldr_managed_dir.as_ref() != Some(path));
-    // Private session opt-in (`SOLDR_ZCCACHE_PRIVATE`): when the user has
-    // not set ZCCACHE_CACHE_DIR explicitly, route the cache directory to
-    // `<cwd>/.zccache` so build artifacts stay local to the workspace
-    // and don't pollute the shared soldr-managed cache. The user can
-    // still override by setting ZCCACHE_CACHE_DIR — explicit wins.
-    let private_override = if explicit_zccache_cache_dir.is_none() && private_session_requested() {
-        Some(normalize_path_for_compare(&private_session_cache_dir()?)?)
-    } else {
-        None
-    };
-    let cache_dir_env = explicit_zccache_cache_dir.is_some() || private_override.is_some();
-    let zccache_dir = explicit_zccache_cache_dir
-        .or(private_override)
-        .unwrap_or(zccache_base_dir);
-    std::fs::create_dir_all(&zccache_dir)?;
-    std::fs::create_dir_all(zccache_dir.join("logs"))?;
-
-    // When the resolved zccache CLI binary differs from the one a
-    // previous soldr invocation started the daemon with, the live
-    // daemon is stale relative to what we just resolved. This matters
-    // most for `SOLDR_ZCCACHE_LOCAL_DIR` debugging (issue #365): the
-    // user expects `cargo` invocations to actually run their freshly
-    // built daemon, but `zccache start` is a no-op when any daemon
-    // is already alive, so a managed daemon from a previous build
-    // would keep handling requests. Evict it explicitly here.
-    evict_zccache_daemon_if_binary_changed_scoped(
-        &fetch.binary_path,
-        &zccache_dir,
-        cache_dir_env,
-        None,
-    )?;
-
-    // Refresh stale `runtime-binaries/` from a previous pinned zccache
-    // version. The namespace key is `(soldr-binary-path,
-    // zccache-binary-path)` and stays stable across `pip install -U
-    // soldr` bumps that flip `MANAGED_ZCCACHE_VERSION` while keeping
-    // the soldr binary at the same on-disk path; without this check
-    // zccache's own "directory already populated -> skip copy"
-    // short-circuit keeps the old daemon binary forever. Issue #714.
-    refresh_runtime_binaries_if_version_changed_scoped(
-        &fetch.binary_path,
-        &zccache_dir,
-        cache_dir_env,
-        None,
-        &runtime.version,
-    )?;
-
-    let session_log_path = crate::cache_lib::session_log_path(&zccache_dir);
-    let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
-    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
-    let mut lifecycle =
-        ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir).with_cache_dir_env(cache_dir_env);
-    let session = lifecycle.start_session(ZccacheSessionStartOptions {
-        id: None,
-        session_log_path,
-        journal_path,
-        session_stats_path,
-    })?;
-
-    // Tell the soldr-daemon which concrete zccache runtime/cache/session
-    // this build owns so daemon shutdown can stop only that scoped daemon.
-    crate::daemon::client::link_zccache(
-        paths,
-        crate::daemon::protocol::ZccacheDaemonLink {
-            binary_path: session.binary_path.display().to_string(),
-            cache_dir: session.cache_dir.display().to_string(),
-            session_id: Some(session.session_id.clone()),
-            source: runtime.source.summary_source().as_str().to_string(),
-            private_daemon: session.private_daemon.is_some(),
-            daemon_name: session
-                .private_daemon
-                .as_ref()
-                .map(|private| private.daemon_name.clone()),
-            owner_pid: session
-                .private_daemon
-                .as_ref()
-                .and_then(|private| private.owner_pid),
-            private_env_keys: session
-                .private_daemon
-                .as_ref()
-                .map(|private| private.private_env_keys.clone())
-                .unwrap_or_default(),
-        },
-    );
-
-    Ok(ManagedZccacheWrapperPlan {
-        session,
-        // Parent-cache (Tier L1.x, issue #352): seed ZCCACHE_PATH_REMAP=auto
-        // and a logical worktree root so multiple worktrees of the same repo
-        // share zccache hits through normalized keys. Honor user-supplied
-        // ZCCACHE_* values, and the SOLDR_PATH_REMAP=off escape hatch.
-        child_env,
-    })
-}
-
-fn print_zccache_runtime_diagnostic(runtime: &ZccacheRuntime) {
-    let runtime_dir = runtime.runtime_dir.display();
-    match runtime.source {
-        ZccacheRuntimeSource::Pinned => eprintln!(
-            "soldr: zccache source: pinned ({runtime_dir}) version={}",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::Local => eprintln!(
-            "soldr: zccache source: local ({runtime_dir}) version={}",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::ManagedCached => eprintln!(
-            "soldr: zccache source: managed ({runtime_dir}) version={} (cached)",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::ManagedDownloaded => eprintln!(
-            "soldr: zccache source: managed ({runtime_dir}) version={} (downloaded)",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::ManagedFallback => eprintln!(
-            "soldr: zccache source: managed ({runtime_dir}) version={} (cargo-install fallback)",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::System => eprintln!(
-            "soldr: zccache source: system ({runtime_dir}) version={}",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::TestOverride => eprintln!(
-            "soldr: zccache source: test-override ({runtime_dir}) version={}",
-            runtime.version
-        ),
-        ZccacheRuntimeSource::Missing => eprintln!(
-            "soldr: zccache source: missing ({runtime_dir}) version={}",
-            runtime.version
-        ),
-    }
+    Ok(ManagedZccacheWrapperPlan { child_env })
 }
 
 pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
@@ -899,220 +721,6 @@ pub(crate) fn normalize_path_for_compare(
         Ok(path.to_path_buf())
     } else {
         Ok(std::env::current_dir()?.join(path))
-    }
-}
-
-/// Name of the marker file inside the zccache cache dir that records
-/// which CLI binary path soldr last started a daemon with. When the
-/// resolved binary path changes between runs (e.g. user toggled
-/// `SOLDR_ZCCACHE_LOCAL_DIR`, bumped `MANAGED_ZCCACHE_VERSION`, or
-/// rebuilt zccache locally so its content-hashed dir name changed),
-/// soldr evicts the live daemon before starting so the next
-/// `zccache start` actually spawns the new binary. Issue #365.
-pub(crate) const ZCCACHE_LAST_CLI_BINARY_SENTINEL: &str = "soldr-last-cli-binary";
-
-/// Pure decision: should soldr evict the running zccache daemon
-/// before starting a fresh one?
-///
-/// `current` is the absolute path of the CLI binary the current
-/// invocation just resolved. `previous` is the contents of the
-/// sentinel file from the last invocation (already trimmed), or
-/// `None` if the sentinel is absent or unreadable.
-///
-/// First run (no sentinel) returns `false` — nothing to evict.
-/// Path change returns `true`. Same path returns `false`.
-pub(crate) fn should_evict_zccache_daemon(current: &str, previous: Option<&str>) -> bool {
-    match previous {
-        None => false,
-        Some(prev) if prev == current => false,
-        Some(_) => true,
-    }
-}
-
-/// If a previous invocation recorded a different CLI binary path,
-/// run `zccache stop` to evict the stale daemon. Best-effort: any
-/// I/O failure is logged but not propagated, because the start path
-/// below has its own stale-daemon recovery.
-pub(crate) fn evict_zccache_daemon_if_binary_changed(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-) -> Result<(), SoldrError> {
-    evict_zccache_daemon_if_binary_changed_scoped(binary, cache_dir, true, None)
-}
-
-pub(crate) fn evict_zccache_daemon_if_binary_changed_scoped(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-    cache_dir_env: bool,
-    daemon_name: Option<&str>,
-) -> Result<(), SoldrError> {
-    let sentinel = cache_dir.join(ZCCACHE_LAST_CLI_BINARY_SENTINEL);
-    let resolved = binary.display().to_string();
-    let prev = std::fs::read_to_string(&sentinel)
-        .ok()
-        .map(|s| s.trim().to_string());
-
-    if should_evict_zccache_daemon(&resolved, prev.as_deref()) {
-        eprintln!(
-            "soldr: zccache CLI binary changed since last build; stopping stale daemon to force a fresh spawn (issue #365)",
-        );
-        if let Err(err) = run_zccache_command_raw_in_cache_dir_with_daemon_name(
-            binary,
-            &["stop"],
-            cache_dir,
-            cache_dir_env,
-            daemon_name,
-        ) {
-            // Stop failures shouldn't block the build — the start
-            // path below has its own stale-daemon recovery.
-            eprintln!("soldr: zccache stop reported {err}; continuing");
-        }
-    }
-
-    // Record the current resolution so future invocations can detect
-    // the next change. Best-effort write — failure here is non-fatal.
-    if let Err(err) = std::fs::write(&sentinel, &resolved) {
-        eprintln!(
-            "soldr: failed to record current zccache CLI binary at {}: {err}",
-            sentinel.display()
-        );
-    }
-    Ok(())
-}
-
-/// Name of the JSON manifest soldr writes alongside the
-/// `runtime-binaries/` subdir that zccache populates inside a
-/// private-daemon namespace. Records the zccache version that was
-/// current the last time soldr (re)established the dir. The
-/// namespace key is `(soldr-binary-path, zccache-binary-path)`,
-/// which stays stable across `pip install -U soldr` bumps that flip
-/// `MANAGED_ZCCACHE_VERSION` without moving the soldr binary on
-/// disk. Without this marker, zccache's own "directory already
-/// populated -> skip copy" short-circuit keeps the OLD daemon
-/// binary in place forever. Issue #714.
-pub(crate) const RUNTIME_BINARIES_MANIFEST_FILENAME: &str = "soldr-runtime-binaries.manifest.json";
-
-/// Pure decision: should soldr refresh the namespace's
-/// `runtime-binaries/` subdir before starting a fresh daemon?
-///
-/// - `current` is the zccache version soldr just resolved
-///   (`ZccacheRuntime::version`).
-/// - `previous` is the version recorded in the manifest from the
-///   last refresh, or `None` if absent / unreadable.
-/// - `runtime_binaries_exists` is whether `runtime-binaries/`
-///   currently exists inside the namespace dir.
-///
-/// Returns `true` when the dir exists and either (a) the recorded
-/// version differs from the current one, or (b) the manifest is
-/// missing — we cannot prove the dir is current, so refresh
-/// defensively. This handles the pre-fix migration: namespaces that
-/// existed before this manifest was introduced all refresh exactly
-/// once on the first post-fix soldr invocation.
-///
-/// Returns `false` when there is no `runtime-binaries/` dir to
-/// refresh (zccache will populate it on first session-start) OR
-/// when the recorded version matches.
-pub(crate) fn should_refresh_runtime_binaries(
-    current: &str,
-    previous: Option<&str>,
-    runtime_binaries_exists: bool,
-) -> bool {
-    if !runtime_binaries_exists {
-        return false;
-    }
-    match previous {
-        None => true,
-        Some(prev) if prev == current => false,
-        Some(_) => true,
-    }
-}
-
-/// If the `runtime-binaries/` subdir under `cache_dir` was populated
-/// by a previous soldr invocation pinned to a different zccache
-/// version, stop the running daemon and delete the dir so the next
-/// `zccache session-start` repopulates from the current
-/// `~/.soldr/bin/zccache-<VERSION>/`. Always (re)writes the
-/// manifest so future invocations can detect the next drift.
-/// Best-effort: I/O failures log and continue. Issue #714.
-pub(crate) fn refresh_runtime_binaries_if_version_changed_scoped(
-    binary: &std::path::Path,
-    cache_dir: &std::path::Path,
-    cache_dir_env: bool,
-    daemon_name: Option<&str>,
-    current_version: &str,
-) -> Result<(), SoldrError> {
-    let manifest_path = cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME);
-    let runtime_binaries_dir = cache_dir.join("runtime-binaries");
-    let previous_version = read_runtime_binaries_manifest_version(&manifest_path);
-    let exists = runtime_binaries_dir.exists();
-
-    if should_refresh_runtime_binaries(current_version, previous_version.as_deref(), exists) {
-        eprintln!(
-            "soldr: refreshing stale zccache runtime-binaries (had={}, want={}) — issue #714",
-            previous_version.as_deref().unwrap_or("<no manifest>"),
-            current_version,
-        );
-        if let Err(err) = run_zccache_command_raw_in_cache_dir_with_daemon_name(
-            binary,
-            &["stop"],
-            cache_dir,
-            cache_dir_env,
-            daemon_name,
-        ) {
-            // Daemon may already be dead; the subsequent file removal
-            // is what actually unblocks the refresh.
-            eprintln!(
-                "soldr: zccache stop reported {err}; continuing with runtime-binaries refresh"
-            );
-        }
-        if let Err(err) = std::fs::remove_dir_all(&runtime_binaries_dir) {
-            eprintln!(
-                "soldr: failed to remove stale runtime-binaries at {}: {err}; manifest not updated, will retry on next invocation",
-                runtime_binaries_dir.display(),
-            );
-            // Bail before writing the manifest so next run retries.
-            return Ok(());
-        }
-    }
-
-    write_runtime_binaries_manifest(&manifest_path, current_version);
-    Ok(())
-}
-
-fn read_runtime_binaries_manifest_version(path: &std::path::Path) -> Option<String> {
-    let raw = std::fs::read_to_string(path).ok()?;
-    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    value
-        .get("zccache_version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn write_runtime_binaries_manifest(path: &std::path::Path, version: &str) {
-    let now_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let body = serde_json::json!({
-        "zccache_version": version,
-        "refreshed_at_unix_secs": now_unix,
-    });
-    let pretty =
-        serde_json::to_string_pretty(&body).expect("constructed json value always serializes");
-    if let Some(parent) = path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            eprintln!(
-                "soldr: failed to create runtime-binaries manifest parent {}: {err}",
-                parent.display(),
-            );
-            return;
-        }
-    }
-    if let Err(err) = std::fs::write(path, pretty) {
-        eprintln!(
-            "soldr: failed to record runtime-binaries manifest at {}: {err}",
-            path.display(),
-        );
     }
 }
 
@@ -1454,197 +1062,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
-
-    // ---------------------------------------------------------------
-    // Stale-daemon eviction when the resolved CLI binary changes
-    // between soldr invocations (issue #365).
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn evict_decision_skips_first_run_with_no_sentinel() {
-        // Nothing recorded yet — no daemon to evict.
-        assert!(!should_evict_zccache_daemon(
-            "/path/zccache-1.8.1/zccache.exe",
-            None
-        ));
-    }
-
-    #[test]
-    fn evict_decision_skips_when_path_unchanged() {
-        let current = "/path/zccache-1.8.1/zccache.exe";
-        assert!(!should_evict_zccache_daemon(current, Some(current)));
-    }
-
-    #[test]
-    fn evict_decision_triggers_when_local_dir_overrides_managed() {
-        // The user just exported SOLDR_ZCCACHE_LOCAL_DIR but a stale
-        // managed daemon is still alive. Issue #365 acceptance: the
-        // next soldr invocation must evict.
-        let previous = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
-        let current = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
-        assert!(should_evict_zccache_daemon(current, Some(previous)));
-    }
-
-    #[test]
-    fn evict_decision_triggers_when_local_dir_rebuilt() {
-        // User rebuilt zccache; content hash changed; the resolved
-        // CLI path is a different `zccache-local-<hash>` directory.
-        let previous = "/home/u/.soldr/bin/zccache-local-aaaaaaaaaaaa/zccache.exe";
-        let current = "/home/u/.soldr/bin/zccache-local-bbbbbbbbbbbb/zccache.exe";
-        assert!(should_evict_zccache_daemon(current, Some(previous)));
-    }
-
-    #[test]
-    fn evict_decision_triggers_when_local_dir_reverts_to_managed() {
-        // User unset SOLDR_ZCCACHE_LOCAL_DIR — switching back to the
-        // managed path must also evict the stale local daemon.
-        let previous = "/home/u/.soldr/bin/zccache-local-219d33e77197/zccache.exe";
-        let current = "/home/u/.soldr/bin/zccache-1.8.1/zccache.exe";
-        assert!(should_evict_zccache_daemon(current, Some(previous)));
-    }
-
-    // ---------------------------------------------------------------
-    // Stale `runtime-binaries/` refresh on managed-zccache version
-    // bump (issue #714). Namespace key is (soldr-binary-path,
-    // zccache-binary-path) and stays stable when MANAGED_ZCCACHE_VERSION
-    // flips under a `pip install -U soldr` bump that doesn't move
-    // the soldr binary; zccache's own "directory populated -> skip"
-    // short-circuit then keeps the old daemon binary forever.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn refresh_decision_skips_when_runtime_binaries_dir_missing() {
-        // Fresh namespace, no `runtime-binaries/` yet -> nothing to
-        // refresh. zccache populates it on the first session-start;
-        // the manifest write that follows establishes the baseline.
-        assert!(!should_refresh_runtime_binaries("1.12.4", None, false));
-        assert!(!should_refresh_runtime_binaries(
-            "1.12.4",
-            Some("1.11.8"),
-            false
-        ));
-    }
-
-    #[test]
-    fn refresh_decision_skips_when_versions_match() {
-        // Steady state: manifest matches what we just resolved.
-        assert!(!should_refresh_runtime_binaries(
-            "1.12.4",
-            Some("1.12.4"),
-            true
-        ));
-    }
-
-    #[test]
-    fn refresh_decision_triggers_when_versions_differ() {
-        // The actual #714 scenario: user upgraded soldr; namespace
-        // already has 1.11.8 binaries copied; soldr now pins 1.12.4.
-        assert!(should_refresh_runtime_binaries(
-            "1.12.4",
-            Some("1.11.8"),
-            true
-        ));
-    }
-
-    #[test]
-    fn refresh_decision_triggers_when_manifest_missing_but_dir_exists() {
-        // Migration case: namespace was populated by a pre-#714
-        // soldr that didn't write the manifest. We can't prove the
-        // dir is current, so refresh defensively on the first
-        // post-fix invocation. After that the manifest establishes
-        // a baseline and subsequent runs become no-ops.
-        assert!(should_refresh_runtime_binaries("1.12.4", None, true));
-    }
-
-    #[test]
-    fn refresh_writes_manifest_for_fresh_namespace() {
-        // Fresh namespace: no runtime-binaries/, no daemon. The call
-        // should be a no-op aside from establishing the manifest so
-        // subsequent invocations recognize the baseline.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cache_dir = tmp.path();
-        // Point the (unused) binary at our own current_exe so the
-        // zccache stop branch — which won't fire — has a valid path
-        // if anything regresses.
-        let dummy_binary = std::env::current_exe().expect("current_exe");
-
-        refresh_runtime_binaries_if_version_changed_scoped(
-            &dummy_binary,
-            cache_dir,
-            true,
-            Some("soldr-dev-test"),
-            "1.12.4",
-        )
-        .expect("fresh-namespace refresh is best-effort and Ok(())");
-
-        let manifest = cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME);
-        assert!(manifest.exists(), "manifest must be created on first run");
-        let recorded = read_runtime_binaries_manifest_version(&manifest);
-        assert_eq!(recorded.as_deref(), Some("1.12.4"));
-    }
-
-    #[test]
-    fn refresh_no_op_when_manifest_matches_current_version() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let cache_dir = tmp.path();
-        let runtime_binaries = cache_dir.join("runtime-binaries");
-        std::fs::create_dir_all(&runtime_binaries).expect("create runtime-binaries");
-        // Drop a sentinel file so we can prove the refresh path
-        // didn't delete the directory contents on a no-op.
-        let sentinel_inside = runtime_binaries.join("untouched-marker");
-        std::fs::write(&sentinel_inside, b"keep").expect("write sentinel");
-
-        // Pre-write a matching manifest.
-        write_runtime_binaries_manifest(
-            &cache_dir.join(RUNTIME_BINARIES_MANIFEST_FILENAME),
-            "1.12.4",
-        );
-
-        let dummy_binary = std::env::current_exe().expect("current_exe");
-        refresh_runtime_binaries_if_version_changed_scoped(
-            &dummy_binary,
-            cache_dir,
-            true,
-            Some("soldr-dev-test"),
-            "1.12.4",
-        )
-        .expect("matching-version refresh is Ok(())");
-
-        assert!(
-            sentinel_inside.exists(),
-            "matching-version refresh must not touch runtime-binaries/"
-        );
-    }
-
-    #[test]
-    fn manifest_round_trip_records_version_field() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(RUNTIME_BINARIES_MANIFEST_FILENAME);
-        write_runtime_binaries_manifest(&path, "1.12.4");
-        assert_eq!(
-            read_runtime_binaries_manifest_version(&path).as_deref(),
-            Some("1.12.4")
-        );
-    }
-
-    #[test]
-    fn manifest_read_returns_none_for_missing_file() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("never-existed.json");
-        assert!(read_runtime_binaries_manifest_version(&path).is_none());
-    }
-
-    #[test]
-    fn manifest_read_returns_none_for_corrupt_json() {
-        // A corrupt manifest must be treated the same as missing —
-        // refresh_decision then triggers a defensive refresh, which
-        // is the safe outcome.
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join(RUNTIME_BINARIES_MANIFEST_FILENAME);
-        std::fs::write(&path, b"{ not valid json").expect("write garbage");
-        assert!(read_runtime_binaries_manifest_version(&path).is_none());
-    }
-
     // ---------------------------------------------------------------
     // RUST_LOG injection on daemon spawn (issue #416). The daemon
     // inherits the env of the `zccache start` invocation; without a

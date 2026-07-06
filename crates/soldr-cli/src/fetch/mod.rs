@@ -18,16 +18,6 @@ pub use trust::{
     CHECKSUMS_FILE_ENV_VAR, TRUST_MODE_ENV_VAR,
 };
 
-pub mod install_zccache;
-
-pub use install_zccache::{
-    install_zccache_from_source, pinned_version_drift_from_managed, pinned_zccache_dir,
-    read_pinned_sidecar, remove_pinned_zccache, resolve_pinned_zccache, InstallReport,
-    InstallSource, PinnedBinaryRecord, PinnedResolution, PinnedSidecar, PINNED_ZCCACHE_DIRNAME,
-    PINNED_ZCCACHE_SIDECAR_FILENAME, PINNED_ZCCACHE_SIDECAR_SCHEMA_VERSION,
-    ZCCACHE_PINNED_BINARY_NAMES,
-};
-
 pub mod rustup_init;
 
 pub use rustup_init::{
@@ -89,9 +79,6 @@ pub mod uv_env;
 /// soldr#1264 follow-on — managed `uv` bundle from the soldr-toolchain
 /// archive. First consumer: [`uv_env`].
 pub mod uv_tool;
-pub mod zccache;
-pub mod zccache_install;
-pub mod zccache_runtime;
 pub mod zig;
 pub mod zlib_ng_sysroot;
 pub mod zstd_sysroot;
@@ -108,18 +95,6 @@ pub use manifest_v6::{
     V6Leaf,
 };
 pub use zig::{ensure_zig, MANAGED_ZIG_VERSION};
-
-#[cfg(test)]
-mod zccache_contract_tests;
-
-pub use zccache::{
-    classify_zccache_source, managed_only_zccache_summary, pinned_zccache_summary,
-    resolve_local_zccache, zccache_binary_summary, ZccacheBinarySummary, ZccacheSource,
-};
-pub use zccache_install::{
-    cached_zccache_binary, fetch_zccache_with_paths, resolve_system_zccache,
-};
-pub use zccache_runtime::{ZccacheResolver, ZccacheRuntime, ZccacheRuntimeSource};
 
 pub(crate) use github::http_client;
 
@@ -153,32 +128,11 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-pub const MANAGED_ZCCACHE_VERSION: &str = "1.12.12";
-
 /// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
 /// state. Source of truth for `SoldrPaths::versioned_root` and
 /// `SoldrPaths::versioned_shims_dir`. See zackees/soldr#743 for the
 /// layout RFC and zackees/soldr#742 for the first consumer.
 pub const MANAGED_SHIM_VERSION: &str = env!("CARGO_PKG_VERSION");
-// After the Wave 7 monocrate rename in zccache (`zccache-monocrate` -> `zccache`),
-// all three native binaries (`zccache`, `zccache-daemon`, `zccache-fp`) are
-// `[[bin]]` targets inside the umbrella `zccache` crate on crates.io. The
-// sibling crates `zccache-cli`, `zccache-watcher`, and `zccache-fingerprint`
-// are pyo3 cdylibs only; `cargo install` rejects them with
-// "no bin target named X in <pkg>" when soldr asks for an executable.
-// Each tuple is `(crates.io package, --bin name)`.
-pub(crate) const MANAGED_ZCCACHE_PACKAGES: [(&str, &str); 3] = [
-    ("zccache", "zccache"),
-    ("zccache", "zccache-daemon"),
-    ("zccache", "zccache-fp"),
-];
-
-/// Override the managed-zccache resolution entirely: instead of
-/// fetching from GitHub Releases (or installing from crates.io), use
-/// the locally-built binaries in this directory. See
-/// `resolve_local_zccache` for the resolution contract.
-pub const ZCCACHE_LOCAL_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_LOCAL_DIR";
-
 /// Pinned crgx version that soldr's release pipeline source-builds and
 /// bundles into the combined `.tar.zst` archive (see PR follow-up to
 /// #434 — combined archive now ships zccache + crgx). Also surfaced
@@ -227,9 +181,6 @@ pub const CARGO_CHEF_LOCAL_DIR_ENV_VAR: &str = "SOLDR_CARGO_CHEF_LOCAL_DIR";
 /// GitHub API hiccups.
 const REPO_FETCH_ATTEMPTS: u32 = 4;
 const REPO_FETCH_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(5);
-pub(crate) const MANAGED_ZCCACHE_INSTALL_ATTEMPTS: u32 = 3;
-pub(crate) const MANAGED_ZCCACHE_INSTALL_INITIAL_BACKOFF: std::time::Duration =
-    std::time::Duration::from_secs(10);
 
 /// Fetch a tool binary for the current platform.
 pub async fn fetch_tool(
@@ -343,11 +294,6 @@ fn resolve_local_single_binary(
         version: format!("local-{version}"),
         cached: true,
     })
-}
-
-pub async fn fetch_zccache() -> Result<FetchResult, SoldrError> {
-    let paths = SoldrPaths::new()?;
-    fetch_zccache_with_paths(&paths).await
 }
 
 pub(crate) fn non_empty_env_path(env_var: &str) -> Option<PathBuf> {

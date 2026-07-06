@@ -1,7 +1,7 @@
 //! `zccache` — compiled-in zccache CLI trampoline (issue #1368).
 //!
 //! Before #1368 soldr shipped an *externally downloaded* managed
-//! `zccache` binary (the `MANAGED_ZCCACHE_VERSION` trio). That download
+//! `zccache` binary (the managed-download trio). That download
 //! path is gone: soldr already links the whole zccache library in-tree
 //! (`_vender/zccache`, the `zccache = { path = ... }` dep), so the CLI
 //! surface can be exposed as a normal soldr-cli `[[bin]]` that forwards

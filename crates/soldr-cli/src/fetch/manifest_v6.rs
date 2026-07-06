@@ -44,8 +44,8 @@
 //! envelope so the runtime path exists end-to-end without committing to
 //! a specific manifest snapshot. A follow-up sub-issue under #853 will
 //! wire the materialization pipeline that pulls the latest snapshot off
-//! the `manifest` branch at release time (analogous to how
-//! `MANAGED_ZCCACHE_VERSION` is bumped).
+//! the `manifest` branch at release time (analogous to how a managed
+//! tool pin is bumped).
 //!
 //! ## Prerelease filtering
 //!

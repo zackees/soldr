@@ -484,14 +484,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::DefenderExclusions { subcommand } => {
             std::process::exit(optimize::run_defender_exclusions(subcommand)?);
         }
-        Commands::InstallZccache {
-            source,
-            remove,
-            status,
-            json,
-        } => {
-            cache::run_install_zccache(source, remove, status, json).await?;
-        }
         Commands::Save(args) => {
             std::process::exit(save_load::run_save(args));
         }

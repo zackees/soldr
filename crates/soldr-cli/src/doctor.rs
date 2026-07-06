@@ -6,10 +6,9 @@ use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
 };
 use crate::defender_probe::{self, DefenderProbeState, DefenderVerdict, SCANNED_THRESHOLD_MS};
-use crate::fetch::{ZccacheBinarySummary, ZccacheSource};
 use crate::{apply_implicit_toolchain_homes, rustup_binary, JSON_SCHEMA_VERSION};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize)]
@@ -46,20 +45,8 @@ struct DoctorOutput {
     drift: bool,
     missing_components: Vec<String>,
     missing_targets: Vec<String>,
-    /// Which source `soldr cargo build` would actually invoke right
-    /// now: `"pinned"`, `"local"`, `"managed"`, or `"none"`. Added in
-    /// issue #420 so JSON consumers don't have to derive it by
-    /// inspecting `pinned_zccache_active`.
-    active_zccache_source: &'static str,
-    /// Managed zccache state on disk. Always reports the managed-path
-    /// view even when the active source is a pinned install; the
-    /// pinned section below explains the override.
-    managed_zccache: DoctorManagedZccache,
-    /// `Some` when `soldr install-zccache` has been run.
-    pinned_zccache: Option<DoctorPinnedZccache>,
-    /// `true` when the active resolution is the pinned install (i.e.
-    /// the managed path is superseded for the next `soldr cargo ...`).
-    pinned_zccache_active: bool,
+    /// Embedded zccache backend + version (soldr#1368).
+    zccache: DoctorZccache,
     /// Debug-info sidecar state for the running soldr binary. On
     /// Windows this points at the matching PDB directory for dump
     /// symbolication.
@@ -115,66 +102,14 @@ struct DoctorDefenderProbe {
     refreshed_this_run: bool,
 }
 
-#[derive(Serialize)]
-struct DoctorManagedZccache {
-    /// `managed`, `local`, or `none` (nothing fetched yet).
-    source: &'static str,
-    /// Version label. Empty when source is `none`.
-    version: String,
-    /// Directory whose binaries are actually executed.
-    runtime_dir: String,
-    /// For local builds, the path the user set in
-    /// `SOLDR_ZCCACHE_LOCAL_DIR`. Null for managed builds.
-    source_dir: Option<String>,
-    /// Absolute path to the active CLI binary, if present.
-    cli_path: Option<String>,
-    /// Absolute path to the active daemon binary, if present.
-    daemon_path: Option<String>,
-    /// Absolute path to the active fingerprint binary, if present.
-    fp_path: Option<String>,
-    /// Number of debug-info sidecars present (PDBs on Windows, DWPs
-    /// on Linux, dSYMs on macOS).
-    debug_info_found: usize,
-    /// Number of binaries we expected debug-info for (always 3).
-    debug_info_expected: usize,
-    /// Path to pass to `cdb -y` / `_NT_SYMBOL_PATH` when attaching.
-    symbol_path: String,
-}
-
-impl DoctorManagedZccache {
-    fn from_summary(summary: &ZccacheBinarySummary) -> Self {
-        Self {
-            source: summary.source.as_str(),
-            version: summary.version.clone(),
-            runtime_dir: summary.runtime_dir.display().to_string(),
-            source_dir: summary.source_dir.as_ref().map(|p| p.display().to_string()),
-            cli_path: summary.cli_path.as_ref().map(|p| p.display().to_string()),
-            daemon_path: summary
-                .daemon_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
-            fp_path: summary.fp_path.as_ref().map(|p| p.display().to_string()),
-            debug_info_found: summary.debug_info_found,
-            debug_info_expected: summary.debug_info_expected,
-            symbol_path: summary.symbol_path.display().to_string(),
-        }
-    }
-}
-
 #[derive(Serialize, Clone)]
-struct DoctorPinnedZccache {
-    install_dir: String,
-    source_kind: String,
-    source_value: String,
-    version: String,
-    cli_path: Option<String>,
-    daemon_path: Option<String>,
-    fp_path: Option<String>,
-    debug_info_found: usize,
-    debug_info_expected: usize,
-    symbol_path: String,
-    drift_from_managed: bool,
-    managed_version: &'static str,
+struct DoctorZccache {
+    /// Always "embedded" — rustc compile caching runs through the
+    /// soldr-daemon's in-process zccache service; there is no
+    /// externally-downloaded managed binary (soldr#1368).
+    backend: &'static str,
+    /// Compiled-in `zccache::core::VERSION`.
+    version: &'static str,
 }
 
 #[derive(Serialize, Clone)]
@@ -209,10 +144,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
                 drift: false,
                 missing_components: Vec::new(),
                 missing_targets: Vec::new(),
-                active_zccache_source: bundle.active.source.as_str(),
-                managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
-                pinned_zccache: bundle.pinned_doctor.clone(),
-                pinned_zccache_active: bundle.pinned_active,
+                zccache: bundle.clone(),
                 soldr_debug_info: soldr_debug_info.clone(),
                 defender_probe: defender_for_json(defender.as_ref()),
                 cook: cook.clone(),
@@ -305,10 +237,7 @@ pub(crate) fn run_doctor(json: bool, refresh_defender_probe: bool) -> Result<i32
             drift,
             missing_components,
             missing_targets,
-            active_zccache_source: bundle.active.source.as_str(),
-            managed_zccache: DoctorManagedZccache::from_summary(&bundle.managed),
-            pinned_zccache: bundle.pinned_doctor.clone(),
-            pinned_zccache_active: bundle.pinned_active,
+            zccache: bundle.clone(),
             soldr_debug_info: soldr_debug_info.clone(),
             defender_probe: defender_for_json(defender.as_ref()),
             cook: cook.clone(),
@@ -402,14 +331,29 @@ fn collect_cook_stats() -> Option<DoctorCookStats> {
     })
 }
 
+/// Count debug-info sidecars next to the soldr binary (soldr#1368
+/// replacement for the deleted count_debug_info_sidecars helper). On
+/// Windows soldr ships a `.pdb`; elsewhere there is no separate sidecar.
+fn count_soldr_debug_sidecars(binary: &Path) -> (usize, usize) {
+    #[cfg(windows)]
+    {
+        let pdb = binary.with_extension("pdb");
+        (usize::from(pdb.is_file()), 1)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = binary;
+        (0, 0)
+    }
+}
+
 fn collect_soldr_debug_info() -> DoctorSoldrDebugInfo {
     let binary_path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("soldr"));
     let symbol_path = binary_path
         .parent()
         .map(|path| path.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
-    let (debug_info_found, debug_info_expected) =
-        crate::fetch::zccache::count_debug_info_sidecars(&[binary_path.as_path()]);
+    let (debug_info_found, debug_info_expected) = count_soldr_debug_sidecars(&binary_path);
 
     DoctorSoldrDebugInfo {
         binary_path: binary_path.display().to_string(),
@@ -575,93 +519,20 @@ fn format_age(probed_at_unix: u64) -> String {
     format!("{days} d ago")
 }
 
-/// Collect zccache binary resolution info for doctor output. Read-only:
-/// honors `SOLDR_ZCCACHE_LOCAL_DIR` but doesn't trigger a managed
-/// fetch. The bundle includes the managed-only view (independent of
-/// resolution priority) plus an optional pinned snapshot so the human
-/// printer can surface both sections.
-struct ZccacheDoctorBundle {
-    /// Active resolution (what `soldr cargo` would use right now).
-    /// Now surfaced as the leading "active zccache source:" diagnostic
-    /// line so users can see at a glance which source wins resolution
-    /// before reading the per-section detail (issue #420).
-    active: ZccacheBinarySummary,
-    /// Managed-path-only state for the "managed zccache:" section. Always
-    /// reports the GitHub-Releases view, even when the pinned dir wins
-    /// resolution.
-    managed: ZccacheBinarySummary,
-    /// Pinned-install snapshot, when `soldr install-zccache`
-    /// has been run.
-    pinned: Option<ZccacheBinarySummary>,
-    /// JSON-friendly form of the pinned section.
-    pinned_doctor: Option<DoctorPinnedZccache>,
-    /// True when the active source is the pinned install.
-    pinned_active: bool,
-    /// Pinned sidecar (when present). Used to render source-kind / source-value.
-    pinned_sidecar: Option<crate::fetch::PinnedSidecar>,
-}
-
-fn collect_zccache_bundle() -> Result<ZccacheDoctorBundle, SoldrError> {
-    let paths = SoldrPaths::new()?;
-    let active = crate::fetch::zccache_binary_summary(&paths)?;
-    // `managed` shows whichever source the next `soldr cargo` would
-    // actually use. When the pinned install is the active source the
-    // human/JSON output annotates it with "(superseded by pinned)" so
-    // users understand the precedence; the dedicated pinned section
-    // surfaces the install dir / drift warning.
-    let managed = if matches!(active.source, ZccacheSource::Pinned) {
-        crate::fetch::managed_only_zccache_summary(&paths)?
-    } else {
-        active.clone()
-    };
-    let pinned = crate::fetch::pinned_zccache_summary(&paths)?;
-    let pinned_sidecar = crate::fetch::read_pinned_sidecar(&paths)?;
-    let pinned_active = matches!(active.source, ZccacheSource::Pinned);
-    let pinned_doctor = match (pinned.as_ref(), pinned_sidecar.as_ref()) {
-        (Some(summary), Some(sidecar)) => Some(DoctorPinnedZccache {
-            install_dir: crate::fetch::pinned_zccache_dir(&paths)
-                .display()
-                .to_string(),
-            source_kind: sidecar.source_kind.clone(),
-            source_value: sidecar.source_value.clone(),
-            version: summary.version.clone(),
-            cli_path: summary.cli_path.as_ref().map(|p| p.display().to_string()),
-            daemon_path: summary
-                .daemon_path
-                .as_ref()
-                .map(|p| p.display().to_string()),
-            fp_path: summary.fp_path.as_ref().map(|p| p.display().to_string()),
-            debug_info_found: summary.debug_info_found,
-            debug_info_expected: summary.debug_info_expected,
-            symbol_path: summary.symbol_path.display().to_string(),
-            drift_from_managed: crate::fetch::pinned_version_drift_from_managed(sidecar),
-            managed_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
-        }),
-        _ => None,
-    };
-    Ok(ZccacheDoctorBundle {
-        active,
-        managed,
-        pinned,
-        pinned_doctor,
-        pinned_active,
-        pinned_sidecar,
+/// Collect embedded-zccache info for doctor output (soldr#1368). There
+/// is no externally-resolved zccache binary any more — compile caching
+/// runs through the soldr-daemon embedded service — so this just reports
+/// the compiled-in backend + version.
+fn collect_zccache_bundle() -> Result<DoctorZccache, SoldrError> {
+    Ok(DoctorZccache {
+        backend: "embedded",
+        version: zccache::core::VERSION,
     })
 }
 
-fn print_zccache_sections(bundle: &ZccacheDoctorBundle) {
-    // Issue #420: lead with a one-liner naming the source that
-    // `soldr cargo build` will actually invoke, so users debugging
-    // pin-related issues don't have to cross-reference the "pinned
-    // zccache:" and "managed zccache:" sections to figure out which
-    // one is live.
+fn print_zccache_sections(bundle: &DoctorZccache) {
     println!();
-    println!("active zccache source: {}", bundle.active.source.as_str());
-    if let (Some(summary), Some(sidecar)) = (bundle.pinned.as_ref(), bundle.pinned_sidecar.as_ref())
-    {
-        print_pinned_zccache_human(summary, sidecar);
-    }
-    print_managed_zccache_human(&bundle.managed, bundle.pinned_active);
+    println!("zccache: {} (version {})", bundle.backend, bundle.version);
 }
 
 fn print_soldr_debug_info_human(summary: &DoctorSoldrDebugInfo) {
@@ -680,123 +551,6 @@ fn print_soldr_debug_info_human(summary: &DoctorSoldrDebugInfo) {
     println!("  symbol path:   {}", summary.symbol_path);
 }
 
-fn print_pinned_zccache_human(
-    summary: &ZccacheBinarySummary,
-    sidecar: &crate::fetch::PinnedSidecar,
-) {
-    println!();
-    println!("pinned zccache:");
-    println!("  install dir:   {}", summary.runtime_dir.display());
-    println!("  source kind:   {}", sidecar.source_kind);
-    println!("  source value:  {}", sidecar.source_value);
-    println!("  version:       {}", summary.version);
-    match &summary.cli_path {
-        Some(p) => println!("  active cli:    {}", p.display()),
-        None => println!("  active cli:    <not present>"),
-    }
-    match &summary.daemon_path {
-        Some(p) => println!("  active daemon: {}", p.display()),
-        None => println!("  active daemon: <not present>"),
-    }
-    match &summary.fp_path {
-        Some(p) => println!("  active fp:     {}", p.display()),
-        None => println!("  active fp:     <not present>"),
-    }
-    println!("  symbol path:   {}", summary.symbol_path.display());
-    if crate::fetch::pinned_version_drift_from_managed(sidecar) {
-        println!(
-            "  warning:       pinned version {} differs from soldr's managed default {} — \
-consider `soldr install-zccache --remove` to switch back to the managed version",
-            sidecar.version,
-            crate::fetch::MANAGED_ZCCACHE_VERSION
-        );
-    }
-}
-
-fn print_managed_zccache_human(summary: &ZccacheBinarySummary, superseded_by_pinned: bool) {
-    println!();
-    println!("managed zccache:");
-    let suffix = if superseded_by_pinned {
-        " (superseded by pinned)"
-    } else {
-        ""
-    };
-    match summary.source {
-        ZccacheSource::Local => {
-            println!(
-                "  source:        local ({}){suffix}",
-                crate::fetch::ZCCACHE_LOCAL_DIR_ENV_VAR
-            );
-            if let Some(dir) = &summary.source_dir {
-                println!("  source dir:    {}", dir.display());
-            }
-            if !summary.version.is_empty() {
-                println!("  version:       {}", summary.version);
-            }
-        }
-        ZccacheSource::Pinned => {
-            // Shouldn't happen for the managed-only summary, but cover
-            // it so the match is exhaustive and the rendering is sane
-            // if the surface evolves.
-            println!(
-                "  source:        pinned ({}){suffix}",
-                crate::fetch::PINNED_ZCCACHE_DIRNAME
-            );
-            if !summary.version.is_empty() {
-                println!("  version:       {}", summary.version);
-            }
-        }
-        ZccacheSource::System => {
-            println!("  source:        system{suffix}");
-            if !summary.version.is_empty() {
-                println!("  version:       {}", summary.version);
-            }
-        }
-        ZccacheSource::TestOverride => {
-            println!("  source:        test-override{suffix}");
-            if !summary.version.is_empty() {
-                println!("  version:       {}", summary.version);
-            }
-        }
-        ZccacheSource::Managed => {
-            println!(
-                "  source:        managed ({}){suffix}",
-                crate::fetch::MANAGED_ZCCACHE_VERSION
-            );
-        }
-        ZccacheSource::None => {
-            println!(
-                "  source:        managed ({}, not fetched yet){suffix}",
-                crate::fetch::MANAGED_ZCCACHE_VERSION
-            );
-        }
-    }
-    println!("  runtime dir:   {}", summary.runtime_dir.display());
-    match &summary.cli_path {
-        Some(p) => println!("  active cli:    {}", p.display()),
-        None => println!("  active cli:    <not present>"),
-    }
-    match &summary.daemon_path {
-        Some(p) => println!("  active daemon: {}", p.display()),
-        None => println!("  active daemon: <not present>"),
-    }
-    match &summary.fp_path {
-        Some(p) => println!("  active fp:     {}", p.display()),
-        None => println!("  active fp:     <not present>"),
-    }
-    let pdb_hint = if summary.debug_info_found == 0 {
-        "no PDBs present; build zccache with `[profile.release] debug = \"line-tables-only\"` to get them"
-    } else if summary.debug_info_found < summary.debug_info_expected {
-        "partial — some sidecars missing"
-    } else {
-        "complete"
-    };
-    println!(
-        "  pdbs found:    {}/{} ({})",
-        summary.debug_info_found, summary.debug_info_expected, pdb_hint
-    );
-    println!("  symbol path:   {}", summary.symbol_path.display());
-}
 
 fn component_is_installed(declared: &str, installed: &[String]) -> bool {
     let prefix = format!("{declared}-");
@@ -819,7 +573,7 @@ fn print_doctor_human(
     missing_components: &[String],
     missing_targets: &[String],
     drift: bool,
-    bundle: &ZccacheDoctorBundle,
+    bundle: &DoctorZccache,
     soldr_debug_info: &DoctorSoldrDebugInfo,
     defender: Option<&DefenderProbeOutcome>,
     cook: Option<&DoctorCookStats>,

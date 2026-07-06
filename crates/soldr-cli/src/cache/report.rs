@@ -2,11 +2,11 @@
 //! recent zccache session, including the optional `zccache analyze` rollup.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache::{managed_zccache_cache_dir, run_zccache_command_raw_in_cache_dir};
-use crate::{cached_active_zccache, JSON_SCHEMA_VERSION};
+use crate::zccache::managed_zccache_cache_dir;
+use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
 
-use super::{print_json, zccache_output_snippet, zccache_subcommand_unsupported};
+use super::{print_json, zccache_output_snippet, EMBEDDED_ZCCACHE_VERSION};
 
 #[derive(Serialize)]
 pub(super) struct CacheReportOutput {
@@ -85,66 +85,28 @@ fn collect_cache_report_output_for_paths(
         None
     };
 
-    let rollups = if journal_present {
-        let journal_arg = journal_path.display().to_string();
-        let result = if let Some((lifecycle, _)) = linked_private.as_ref() {
-            Some(lifecycle.run_raw(&["analyze", &journal_arg, "--json"])?)
-        } else {
-            match cached_active_zccache(paths)? {
-                Some(fetch) => Some(run_zccache_command_raw_in_cache_dir(
-                    &fetch.binary_path,
-                    &["analyze", &journal_arg, "--json"],
-                    &zccache_dir,
-                )?),
-                None => {
-                    notes.push(
-                        "rollups: managed zccache binary not yet fetched (no builds run yet)"
-                            .to_string(),
-                    );
-                    None
-                }
-            }
-        };
-        match result {
-            Some(result) => {
-                if result.status.success() {
-                    let stdout = String::from_utf8_lossy(&result.stdout);
-                    match serde_json::from_str::<serde_json::Value>(stdout.trim()) {
-                        Ok(v) => Some(v),
-                        Err(e) => {
-                            notes
-                                .push(format!("rollups: zccache analyze stdout unparseable ({e})"));
-                            None
-                        }
-                    }
-                } else if zccache_subcommand_unsupported(&result, "analyze") {
-                    notes.push(format!(
-                        "rollups: managed zccache {} does not yet support `analyze` — upgrade to 1.5.0+",
-                        crate::fetch::MANAGED_ZCCACHE_VERSION
-                    ));
-                    None
-                } else {
-                    notes.push(zccache_analyze_failure_note(
-                        result.status.code(),
-                        &result.stdout,
-                        &result.stderr,
-                    ));
-                    None
-                }
-            }
-            None => None,
-        }
+    // soldr#1368: `zccache analyze` rollups required an externally
+    // resolved zccache binary, which no longer exists — rustc compile
+    // caching runs through the soldr-daemon embedded service. The
+    // per-session `last_session` stats above are still read from disk
+    // when present; the analyze rollup is dropped.
+    let _ = &zccache_dir;
+    let rollups: Option<serde_json::Value> = None;
+    if journal_present {
+        notes.push(
+            "rollups: `zccache analyze` is unavailable — compile caching runs through the              soldr-daemon embedded zccache service (see `soldr daemon status`)"
+                .to_string(),
+        );
     } else {
         notes
             .push("rollups: journal missing — soldr writes it on cache-enabled builds".to_string());
-        None
-    };
+    }
 
     Ok(CacheReportOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache report",
         soldr_version: crate::core::version().to_string(),
-        managed_zccache_version: crate::fetch::MANAGED_ZCCACHE_VERSION,
+        managed_zccache_version: EMBEDDED_ZCCACHE_VERSION,
         session_stats_path: session_stats_path.display().to_string(),
         session_stats_present,
         journal_path: journal_path.display().to_string(),

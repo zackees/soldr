@@ -8,8 +8,10 @@ use crate::zccache_lifecycle::{
     ZccacheDaemonExitPollResult, ZccacheLifecycle, ZccachePrivateDaemonConfig,
     ZccacheSessionStartOptions,
 };
-use crate::{cached_active_zccache, fetch_active_zccache, JSON_SCHEMA_VERSION};
+use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
+
+use super::EMBEDDED_ZCCACHE_VERSION;
 
 #[derive(Serialize)]
 struct SessionStartOutput {
@@ -126,8 +128,10 @@ pub(crate) async fn run_session_start_command(
         }
     }
 
-    let fetch = fetch_active_zccache(&paths).await?;
-    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    // soldr#1368: use the compiled-in zccache trampoline instead of an
+    // externally-downloaded managed binary.
+    let binary_path = crate::binaries::embedded_zccache_binary();
+    let mut lifecycle = ZccacheLifecycle::new(&binary_path, &zccache_dir);
     let session = lifecycle.start_session(ZccacheSessionStartOptions {
         id,
         session_log_path: session_log_path.clone(),
@@ -190,13 +194,9 @@ pub(crate) fn run_session_end_command(
 
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let fetch = cached_active_zccache(&paths)?.ok_or_else(|| {
-        SoldrError::Other(
-            "managed zccache binary not yet fetched — run a cache-enabled build first".into(),
-        )
-    })?;
+    let binary_path = crate::binaries::embedded_zccache_binary();
 
-    let mut lifecycle = ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir);
+    let mut lifecycle = ZccacheLifecycle::new(&binary_path, &zccache_dir);
     let result = lifecycle.end_session_json(&session_id)?;
     let (stats, already_ended) = if result.already_ended {
         (None, true)
@@ -285,7 +285,9 @@ pub(crate) async fn run_cache_shutdown_command(
         .unwrap_or_else(|| zccache_dir.clone());
     let mut notes: Vec<String> = Vec::new();
 
-    let fetch = cached_active_zccache(&paths)?;
+    // soldr#1368: back the lifecycle with the compiled-in zccache
+    // trampoline instead of a downloaded managed binary.
+    let embedded_binary = crate::binaries::embedded_zccache_binary();
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache shutdown",
@@ -302,9 +304,7 @@ pub(crate) async fn run_cache_shutdown_command(
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
     let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
-        fetch
-            .as_ref()
-            .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir))
+        Some(ZccacheLifecycle::new(&embedded_binary, &zccache_dir))
     });
 
     // Step 1: end the active session so zccache flushes the per-session
@@ -481,7 +481,9 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         .as_ref()
         .map(|(_, cache_dir)| cache_dir.clone())
         .unwrap_or_else(|| zccache_dir.clone());
-    let fetch = cached_active_zccache(&paths)?;
+    // soldr#1368: back the lifecycle with the compiled-in zccache
+    // trampoline instead of a downloaded managed binary.
+    let embedded_binary = crate::binaries::embedded_zccache_binary();
 
     let mut output = CacheFlushOutput {
         schema_version: JSON_SCHEMA_VERSION,
@@ -511,9 +513,7 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     }
 
     let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
-        fetch
-            .as_ref()
-            .map(|fetch| ZccacheLifecycle::new(&fetch.binary_path, &zccache_dir))
+        Some(ZccacheLifecycle::new(&embedded_binary, &zccache_dir))
     });
 
     if let Some(lifecycle) = lifecycle.as_mut() {
@@ -534,13 +534,13 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
         if result.json_unsupported && result.flushed {
             output.notes.push(format!(
                 "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
-                crate::fetch::MANAGED_ZCCACHE_VERSION
+                EMBEDDED_ZCCACHE_VERSION
             ));
         }
         if result.subcommand_unsupported {
             output.notes.push(format!(
                 "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
-                crate::fetch::MANAGED_ZCCACHE_VERSION
+                EMBEDDED_ZCCACHE_VERSION
             ));
         } else if result.already_stopped {
             output.notes.push(
