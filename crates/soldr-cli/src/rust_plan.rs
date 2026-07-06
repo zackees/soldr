@@ -772,19 +772,17 @@ pub(crate) fn run_zccache_rust_plan(
     operation: &'static str,
     _include_session: bool,
 ) -> Result<(), SoldrError> {
-    // soldr#1368: rust-plan save/restore runs in-process against the
-    // compiled-in zccache artifact library — no `zccache rust-plan`
-    // subprocess and no managed daemon. The library exposes the LOCAL
-    // backend only; `gha` / `auto` resolve to local (the GHA rust-plan
-    // path lives in zccache's CLI, not its library — see the #1368
-    // report's GHA verdict). The journal + session id ride in the plan
-    // file itself, so the old `--journal` / `--session-id` / `--backend`
-    // plumbing is dropped for the local path.
-    if plan.backend == "gha" {
-        eprintln!(
-            "soldr: rust-plan `gha` backend is unavailable in-process (the embedded \
-             zccache library exposes only the local backend); using local for {operation}."
-        );
+    // soldr#1368 + zccache#960: rust-plan save/restore runs in-process
+    // against the compiled-in zccache artifact library — no `zccache
+    // rust-plan` subprocess and no managed daemon. `gha`/`auto` use the
+    // library's GHA backend (GitHub Actions cache) and fall back to local
+    // when GHA is not configured (e.g. outside CI). The journal + session
+    // id ride in the plan file itself, so the old `--journal` /
+    // `--session-id` plumbing is dropped.
+    if !matches!(operation, "save" | "restore") {
+        return Err(SoldrError::Other(format!(
+            "unknown rust-plan operation {operation:?}"
+        )));
     }
 
     let loaded = zccache::artifact::RustArtifactPlanV1::load(&plan.path).map_err(|e| {
@@ -794,16 +792,67 @@ pub(crate) fn run_zccache_rust_plan(
         ))
     })?;
 
-    let summary = match operation {
+    let run_local = |op: &str| match op {
         "save" => zccache::artifact::save_rust_plan_local(&loaded, &plan.cache_dir),
-        "restore" => zccache::artifact::restore_rust_plan_local(&loaded, &plan.cache_dir),
-        other => {
-            return Err(SoldrError::Other(format!(
-                "unknown rust-plan operation {other:?}"
-            )))
+        _ => zccache::artifact::restore_rust_plan_local(&loaded, &plan.cache_dir),
+    };
+
+    let summary = if plan.backend == "gha" || plan.backend == "auto" {
+        // GHA save/restore is async and `run_zccache_rust_plan` may run
+        // inside a tokio runtime (the cargo front door), so run it on a
+        // dedicated scoped thread with its own runtime — creating/entering
+        // a runtime inline would panic ("cannot start a runtime from within
+        // a runtime"). The scope keeps the `loaded`/`plan` borrows valid.
+        let gha_res: Result<_, zccache::artifact::RustPlanGhaError> = std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                let rt = match tokio::runtime::Runtime::new() {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        return Err(zccache::artifact::RustPlanGhaError::Failure(format!(
+                            "failed to create runtime for gha rust-plan: {e}"
+                        )))
+                    }
+                };
+                match operation {
+                    "save" => rt.block_on(zccache::artifact::save_rust_plan_gha(
+                        &loaded,
+                        &plan.cache_dir,
+                    )),
+                    _ => rt.block_on(zccache::artifact::restore_rust_plan_gha(
+                        &loaded,
+                        &plan.cache_dir,
+                    )),
+                }
+            });
+            match handle.join() {
+                Ok(r) => r,
+                Err(_) => Err(zccache::artifact::RustPlanGhaError::Failure(
+                    "gha rust-plan worker thread panicked".to_string(),
+                )),
+            }
+        });
+        match gha_res {
+            Ok(s) => s,
+            // GHA not configured (no ACTIONS_CACHE_URL, e.g. local dev) —
+            // fall back to the local backend, matching `auto` semantics.
+            Err(zccache::artifact::RustPlanGhaError::Unavailable(msg)) => {
+                eprintln!(
+                    "soldr: rust-plan gha backend unavailable ({msg}); using local for {operation}."
+                );
+                run_local(operation).map_err(|e| {
+                    SoldrError::Other(format!("zccache rust-plan {operation} failed: {e}"))
+                })?
+            }
+            Err(e) => {
+                return Err(SoldrError::Other(format!(
+                    "zccache rust-plan gha {operation} failed: {e}"
+                )))
+            }
         }
-    }
-    .map_err(|e| SoldrError::Other(format!("zccache rust-plan {operation} failed: {e}")))?;
+    } else {
+        run_local(operation)
+            .map_err(|e| SoldrError::Other(format!("zccache rust-plan {operation} failed: {e}")))?
+    };
 
     if let Ok(rendered) = serde_json::to_string(&summary) {
         eprintln!("soldr: zccache rust-plan {operation} summary");
