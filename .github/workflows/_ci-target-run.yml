@@ -29,7 +29,7 @@ on:
         description: Name of the artifact produced by _ci-cross-build-linux.yml.
       skip_filter:
         type: string
-        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/) and !binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/) and !binary(/cli_zccache_contract/)"
+        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/) and !binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/)"
         description: |
           nextest filter expression. Default skips:
           - test names matching cook_/_real_toolchain/fetch_crgx (#1038
