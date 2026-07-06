@@ -14,12 +14,11 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
 // Every release ships a single .tar.zst per target that bundles soldr
-// alongside its matching-target zccache trio (zccache, zccache-daemon,
-// zccache-fp), same-target crgx, and same-target cargo-chef. One fetch
-// installs everything, and `bin/soldr.js` wires SOLDR_ZCCACHE_LOCAL_DIR,
-// SOLDR_CRGX_LOCAL_DIR, and SOLDR_CARGO_CHEF_LOCAL_DIR
-// to the install dir so soldr's runtime resolver finds the sibling binaries
-// without going through the managed-download path.
+// alongside soldr-owned sidecars, same-target crgx, and same-target
+// cargo-chef. One fetch installs everything, and `bin/soldr.js` wires
+// SOLDR_CRGX_LOCAL_DIR and SOLDR_CARGO_CHEF_LOCAL_DIR to the install dir
+// so soldr's runtime resolver finds those bundled tools without going
+// through the managed-download path.
 const ARCHIVE_EXT = zccacheContract.ARCHIVE_EXT;
 
 const TARGETS = {
@@ -35,9 +34,8 @@ const TARGETS = {
 
 // Files we expect to find at the root of every extracted release
 // archive. Names line up with what `release-auto.yml`'s
-// `Fetch matched zccache release`, `Stage soldr binary`, and
-// `Build crgx from pinned source`, and `Build cargo-chef from pinned
-// source` steps drop into `dist/package/`
+// `Stage soldr release binaries`, `Build crgx from pinned source`, and
+// `Build cargo-chef from pinned source` steps drop into `dist/package/`
 // before the tar.zst is built. `.exe` suffix is appended at install
 // time based on `target.binary`.
 const BUNDLED_BINARIES = zccacheContract.RELEASE_BUNDLED_BINARIES;
@@ -250,9 +248,9 @@ async function install() {
     fs.rmSync(nativeDir, { recursive: true, force: true });
     fs.mkdirSync(nativeDir, { recursive: true });
 
-    // Copy every bundled binary so soldr's runtime resolver can find
-    // its sibling zccache via SOLDR_ZCCACHE_LOCAL_DIR, crgx via
-    // SOLDR_CRGX_LOCAL_DIR, and cargo-chef via SOLDR_CARGO_CHEF_LOCAL_DIR.
+    // Copy every bundled binary so soldr has its sidecars and can find
+    // crgx via SOLDR_CRGX_LOCAL_DIR and cargo-chef via
+    // SOLDR_CARGO_CHEF_LOCAL_DIR.
     // `bin/soldr.js` wires these env vars before exec. The archive
     // layout is flat: all bundled binaries live at the archive root.
     const binaryExt = target.binary.endsWith(".exe") ? ".exe" : "";
@@ -298,7 +296,7 @@ async function install() {
     fs.copyFileSync(manifestSrc, path.join(nativeDir, zccacheContract.MANIFEST_NAME));
 
     console.log(
-      `soldr: installed ${target.triple} (soldr + zccache trio + crgx + cargo-chef) into ${nativeDir}`,
+      `soldr: installed ${target.triple} (soldr + sidecars + crgx + cargo-chef) into ${nativeDir}`,
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

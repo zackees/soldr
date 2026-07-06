@@ -126,7 +126,7 @@ jobs:
 - The normal path provisions Rust with `rustup`, bootstrapping `rustup` when it is absent.
 - The action rehydrates `SOLDR_CACHE_DIR`, `CARGO_HOME`, and `RUSTUP_HOME` under the selected cache root.
 - The action restores the Soldr-owned zccache cache root by default so child branches can reuse parent-branch build state.
-- Released archives are validated against the versioned zccache runtime contract before setup-soldr exports `SOLDR_ZCCACHE_LOCAL_DIR`.
+- Released archives are validated against the versioned zccache runtime contract before setup-soldr exports bundled-tool paths.
 - The default target cache mode is `thin`, which avoids action-owned `target/` snapshots by having soldr pass a bounded Rust artifact plan to zccache. Use `target-cache-mode: full` only for tightly scoped jobs where the whole target directory is known to stay bounded.
 - The action exports `ZCCACHE_CACHE_DIR` to keep managed zccache artifact storage under `SOLDR_CACHE_DIR`.
 - Native C/C++ compiler caching is on by default. Build-script work (bundled SQLite, ring, etc.) runs through zccache without any extra wiring. Set `native-cache: false` to opt out of just the native wrapping while keeping Rust caching intact, or use `soldr --no-cache cargo ...` at command time to disable both layers.

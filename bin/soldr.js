@@ -21,25 +21,8 @@ if (!fs.existsSync(binaryPath)) {
   process.exit(1);
 }
 
-// Wire the bundled zccache trio (zccache, zccache-daemon, zccache-fp,
-// shipped alongside soldr in `bin/native/` since the combined-archive
-// release format landed) into soldr's local-zccache resolution path.
-// Soldr's ZccacheResolver checks SOLDR_ZCCACHE_LOCAL_DIR ahead of the
-// pinned and managed-download chain, so this turns the bundled
-// binaries into the active zccache automatically — no manual env
-// setup, no managed fetch over the network. Users who explicitly set
-// the env var themselves keep their override.
 const exeExt = process.platform === "win32" ? ".exe" : "";
 const childEnv = { ...process.env };
-const zccacheLocalDirEnv = zccacheContract.CONTRACT.zccache.local_dir_env;
-if (
-  !childEnv[zccacheLocalDirEnv] &&
-  zccacheContract.ZCCACHE_BUNDLED_BINARIES.every((baseName) =>
-    fs.existsSync(path.join(nativeDir, `${baseName}${exeExt}`)),
-  )
-) {
-  childEnv[zccacheLocalDirEnv] = nativeDir;
-}
 
 // Same wiring for the bundled crgx binary (shipped alongside soldr
 // since the crgx-bundling follow-up to the combined-archive release

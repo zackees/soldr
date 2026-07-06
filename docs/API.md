@@ -58,7 +58,9 @@ Current cache-control behavior:
 - caching is enabled by default for `soldr cargo ...`
 - `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
-- `soldr --zccache=system cargo ...` uses the `zccache` already on PATH instead of fetching the pinned managed release. The `zccache-daemon` and `zccache-fp` sibling binaries must live in the same directory as `zccache`. `--zccache=managed` (the default) restores the managed-fetch behavior.
+- `soldr --zccache=system cargo ...` uses the `zccache` already on PATH for
+  explicit external-zccache experiments. The default `--zccache=managed` path
+  uses soldr's embedded zccache runtime.
 - zccache integration currently targets Rust builds through the cargo front door
 - managed zccache session logs, journals, and reports live under Soldr's cache
   root; zccache cache and daemon state use zccache's normal default location
@@ -489,11 +491,11 @@ will never be raced.
 
 ### `soldr install-zccache`
 
-Install zccache binaries into soldr's private dir so soldr stops
-fetching the managed GitHub release. Pins a user-supplied set of three
-zccache binaries (`zccache`, `zccache-daemon`, `zccache-fp`) into
-`<SoldrPaths::bin>/zccache-pinned/`. Subsequent `soldr cargo ...`
-invocations resolve the pinned binaries automatically.
+Legacy override surface for experiments with an external zccache install.
+Normal `soldr cargo ...` uses the zccache runtime embedded into soldr and
+does not fetch or stage standalone zccache binaries. This command pins a
+user-supplied external zccache install into `<SoldrPaths::bin>/zccache-pinned/`
+for compatibility checks that explicitly opt into external zccache mode.
 
 ```bash
 soldr install-zccache <SOURCE>   # system | <path> | <url>
@@ -504,19 +506,18 @@ soldr install-zccache --json     # structured output
 
 `<SOURCE>` accepts:
 
-- `system` — copy the `zccache`, `zccache-daemon`, `zccache-fp`
-  binaries already on `PATH`.
-- A directory path containing the three binaries.
+- `system` — copy the `zccache` binary already on `PATH`.
+- A directory path containing the external zccache binary.
 - An archive file (`.zip` / `.tar.gz` / `.tgz` / `.tar.zst`) — recursive
   search for binaries handles nested release layouts like
   `zccache-vX.Y.Z/`.
 - An `http(s)://` URL pointing at such an archive.
 
-Resolution chain becomes:
+External-zccache resolution chain becomes:
 
 1. `SOLDR_ZCCACHE_LOCAL_DIR` env var (unchanged, highest priority).
 2. Pinned install at `<SoldrPaths::bin>/zccache-pinned/` (this command).
-3. Managed GitHub Releases fetch (unchanged, default).
+3. System/path fallback for explicit external-zccache mode.
 
 Exactly one of `<SOURCE>`, `--remove`, or `--status` must be provided.
 
@@ -1322,8 +1323,8 @@ Commands:
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
 | `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable wrapper injection with `none` / empty | unset |
 | `SOLDR_REAL_CARGO`, `SOLDR_REAL_RUSTC`, ... | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
-| `SOLDR_ZCCACHE_BIN` | Managed zccache binary path passed from soldr front door into wrapper mode | unset |
-| `SOLDR_ZCCACHE_LOCAL_DIR` | Override the managed-zccache resolution: instead of fetching from GitHub Releases (or installing from crates.io), use the locally-built binaries in this directory. Expected to contain `zccache.exe`, `zccache-daemon.exe`, and `zccache-fp.exe` (or no-extension equivalents on Unix). Adjacent `.pdb` files (Windows), `.dwp` files (Linux), or `.dSYM` directories (macOS) are copied alongside so debuggers can resolve symbols. Used to chase the zccache daemon-stdio hang on Windows where the released binary ships without easily discoverable PDBs. Run `soldr doctor` to confirm the resolved `symbol path`. | unset |
+| `SOLDR_ZCCACHE_BIN` | External zccache binary path used only when an explicit external-zccache override is active. Normal `soldr cargo ...` uses embedded zccache. | unset |
+| `SOLDR_ZCCACHE_LOCAL_DIR` | Directory for an explicit external-zccache override. Normal release archives do not set this because zccache is embedded into soldr/soldr-daemon. | unset |
 | `SOLDR_CACHE_DIR` | Override cache directory | `~/.soldr` |
 | `SOLDR_CACHE_LIFECYCLE` | zccache daemon lifetime for `soldr cargo ...`. `job` keeps the scoped daemon alive for later soldr invocations in the same job. `command` ends the zccache session and stops the scoped daemon before `soldr cargo ...` exits; intended for self-build CI where later tests must not inherit the builder daemon. | `job` |
 | `SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS` | Maximum seconds to wait for command-lifetime zccache shutdown confirmation after `zccache stop`. | `30` |

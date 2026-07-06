@@ -56,19 +56,21 @@ def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, o
             "target": "x86_64-unknown-linux-gnu",
             "binary": f"soldr{suffix}",
             "sha256": _sha256(payloads[f"soldr{suffix}"]),
-            "debug_info": soldr_debug_info,
-            "commit_sha": "abc123",
-        },
-        "zccache": {
-            "version": module.CONTRACT["zccache"]["managed_version"],
-            "target": "x86_64-unknown-linux-musl",
-            "binaries": [
+            "sidecars": [
                 {
                     "name": f"{base}{suffix}",
                     "sha256": _sha256(payloads[f"{base}{suffix}"]),
                 }
-                for base in module.ZCCACHE_BUNDLED_BINARIES
+                for base in module.RELEASE_BUNDLED_BINARIES
+                if base not in {"soldr", "crgx", "cargo-chef"}
             ],
+            "debug_info": soldr_debug_info,
+            "commit_sha": "abc123",
+        },
+        "zccache": {
+            "version": "embedded",
+            "target": "x86_64-unknown-linux-gnu",
+            "embedded": True,
         },
         "crgx": {
             "version": module.CONTRACT["crgx"]["managed_version"],
@@ -100,12 +102,8 @@ def test_contract_json_has_expected_shape() -> None:
     assert contract["schema_version"] == 1
     assert contract["release_archive"]["extension"] == "tar.zst"
     assert contract["release_archive"]["manifest_min_schema_version"] == 3
-    assert contract["zccache"]["local_dir_env"] == "SOLDR_ZCCACHE_LOCAL_DIR"
-    assert contract["zccache"]["required_binaries"] == [
-        "zccache",
-        "zccache-daemon",
-        "zccache-fp",
-    ]
+    assert contract["zccache"]["embedded"] is True
+    assert "required_binaries" not in contract["zccache"]
     assert contract["crgx"]["local_dir_env"] == "SOLDR_CRGX_LOCAL_DIR"
     assert contract["crgx"]["required_binaries"] == ["crgx"]
     assert contract["cargo_chef"]["local_dir_env"] == "SOLDR_CARGO_CHEF_LOCAL_DIR"
@@ -123,7 +121,7 @@ def test_python_contract_validates_release_manifest_sha256s(tmp_path: Path) -> N
         extract_dir=tmp_path,
     )
 
-    manifest["zccache"]["binaries"][0]["sha256"] = "0" * 64
+    manifest["soldr"]["sidecars"][0]["sha256"] = "0" * 64
     with pytest.raises(RuntimeError, match="sha256 mismatch"):
         module.validate_release_manifest(
             manifest,
@@ -188,7 +186,7 @@ def test_python_action_helpers_import_contract_constants() -> None:
     ensure_spec.loader.exec_module(ensure_soldr)
 
     assert ensure_soldr.ARCHIVE_EXT == module.ARCHIVE_EXT
-    assert ensure_soldr.ZCCACHE_BUNDLED_BINARIES == module.ZCCACHE_BUNDLED_BINARIES
+    assert ensure_soldr.RELEASE_BUNDLED_BINARIES == module.RELEASE_BUNDLED_BINARIES
     assert ensure_soldr.CRGX_BUNDLED_BINARY == module.CRGX_BUNDLED_BINARY
     assert ensure_soldr.CARGO_CHEF_BUNDLED_BINARY == module.CARGO_CHEF_BUNDLED_BINARY
 

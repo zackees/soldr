@@ -5,15 +5,16 @@ runtime soldr ships and wires through setup-soldr and npm.
 
 The contract fixes these cross-runtime expectations:
 
-- Release archives are `.tar.zst` bundles containing `soldr`, `zccache`,
-  `zccache-daemon`, `zccache-fp`, `crgx`, `cargo-chef`, and `manifest.json`.
-  Windows archives also carry soldr's matching PDB sidecar (`soldr.pdb` or
-  `soldr_cli.pdb`) so crash dumps can resolve file/line frames.
+- Release archives are `.tar.zst` bundles containing `soldr`, soldr-owned
+  sidecars (`soldr-daemon`, `soldr-shim`, `soldr-clang-shim`), `crgx`,
+  `cargo-chef`, and `manifest.json`. Windows archives also carry soldr's
+  matching PDB sidecar (`soldr.pdb` or `soldr_cli.pdb`) so crash dumps can
+  resolve file/line frames.
 - `manifest.json` is the authoritative per-archive descriptor for schema
-  version, archive format, soldr target, zccache target, bundled binary names,
-  soldr debug-info sidecars, and per-file `sha256` values.
-- Setup-soldr and npm install must stage the same zccache trio and export
-  `SOLDR_ZCCACHE_LOCAL_DIR` only when that trio is present.
+  version, archive format, soldr target, embedded zccache status, bundled
+  binary names, soldr debug-info sidecars, and per-file `sha256` values.
+- zccache is embedded into soldr/soldr-daemon; release archives do not bundle
+  standalone `zccache`, `zccache-daemon`, or `zccache-fp` binaries.
 - Setup-soldr and npm must use the same local crgx env var:
   `SOLDR_CRGX_LOCAL_DIR`.
 - Setup-soldr and npm must use the same local cargo-chef env var:
@@ -22,6 +23,6 @@ The contract fixes these cross-runtime expectations:
   fixtures, release workflow manifest generation, and docs are covered by tests
   against the same contract file.
 
-Linux soldr archives are still split by glibc/musl target. The bundled zccache
-target recorded in `manifest.json` is musl for Linux because upstream zccache
-ships the static musl variant used by both Linux archive families.
+Linux soldr archives are still split by glibc/musl target. The zccache block in
+`manifest.json` records the soldr target and `"embedded": true`; there is no
+separate Linux zccache target mapping.

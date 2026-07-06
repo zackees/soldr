@@ -21,8 +21,7 @@ from zccache_contract import (  # noqa: E402
     CRGX_LOCAL_DIR_ENV,
     CRGX_BUNDLED_BINARY,
     MANIFEST_NAME,
-    ZCCACHE_BUNDLED_BINARIES,
-    ZCCACHE_LOCAL_DIR_ENV,
+    RELEASE_BUNDLED_BINARIES,
     locate_extracted_file,
     soldr_debug_info_entries,
     validate_release_manifest,
@@ -179,11 +178,6 @@ def _export_bundle_env(install_dir: Path) -> None:
     if not github_env:
         return
     with open(github_env, "a", encoding="utf-8") as fh:
-        if not os.environ.get(ZCCACHE_LOCAL_DIR_ENV) and _bundled_files_present(
-            install_dir,
-            ZCCACHE_BUNDLED_BINARIES,
-        ):
-            fh.write(f"{ZCCACHE_LOCAL_DIR_ENV}={install_dir}\n")
         if not os.environ.get(CRGX_LOCAL_DIR_ENV) and _bundled_files_present(
             install_dir,
             (CRGX_BUNDLED_BINARY,),
@@ -249,16 +243,21 @@ def main() -> None:
             debug_src = _locate_binary(extract_dir, str(entry["name"]))
             shutil.copy2(debug_src, install_dir / str(entry["name"]))
 
-        # Stage the bundled zccache trio next to soldr so the install
-        # dir works as a self-contained SOLDR_ZCCACHE_LOCAL_DIR.
-        for base in ZCCACHE_BUNDLED_BINARIES:
+        # Stage soldr-owned sidecars next to soldr. zccache itself is
+        # embedded; there is no standalone zccache binary to copy.
+        sidecar_bases = (
+            base
+            for base in RELEASE_BUNDLED_BINARIES
+            if base not in {"soldr", CRGX_BUNDLED_BINARY, CARGO_CHEF_BUNDLED_BINARY}
+        )
+        for base in sidecar_bases:
             file_name = f"{base}{binary_ext}"
-            zccache_src = _locate_binary(extract_dir, file_name)
-            zccache_dst = install_dir / file_name
-            shutil.copy2(zccache_src, zccache_dst)
+            sidecar_src = _locate_binary(extract_dir, file_name)
+            sidecar_dst = install_dir / file_name
+            shutil.copy2(sidecar_src, sidecar_dst)
             if os.name != "nt":
-                zccache_dst.chmod(
-                    zccache_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                sidecar_dst.chmod(
+                    sidecar_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
                 )
 
         # Stage the bundled crgx next to soldr so the install dir

@@ -77,9 +77,8 @@
       "gate": "hard",
       "covers": [
         "SOLDR_TEST_ZCCACHE_BIN override",
-        "SOLDR_ZCCACHE_LOCAL_DIR override",
-        "pinned managed runtime",
-        "managed cached/runtime fallback",
+        "embedded soldr/soldr-daemon runtime",
+        "managed cache directory selection",
         "system fallback diagnostics"
       ],
       "test_files": [
@@ -221,7 +220,7 @@
       "gate": "hard",
       "covers": [
         "release archive manifest",
-        "zccache binary trio",
+        "embedded zccache runtime",
         "crgx binary",
         "setup-soldr manifest validation",
         "npm bundled contract files"

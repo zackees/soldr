@@ -42,6 +42,7 @@ jobs:
       should_publish_pypi: ${{ steps.validate.outputs.should_publish_pypi }}
       should_publish_npm: ${{ steps.validate.outputs.should_publish_npm }}
       tag_exists: ${{ steps.validate.outputs.tag_exists }}
+      github_release_complete: ${{ steps.validate.outputs.github_release_complete }}
       pypi_has_version: ${{ steps.validate.outputs.pypi_has_version }}
       pypi_file_count: ${{ steps.validate.outputs.pypi_file_count }}
       npm_has_version: ${{ steps.validate.outputs.npm_has_version }}
@@ -97,6 +98,44 @@ jobs:
             tag_exists=true
           fi
 
+          github_release_complete=false
+          github_release_missing_assets="release-not-found"
+          expected_assets=(
+            "soldr-${version}-x86_64-unknown-linux-gnu.tar.zst"
+            "soldr-${version}-aarch64-unknown-linux-gnu.tar.zst"
+            "soldr-${version}-x86_64-unknown-linux-musl.tar.zst"
+            "soldr-${version}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${version}-aarch64-apple-darwin.tar.zst"
+            "soldr-${version}-x86_64-pc-windows-msvc.tar.zst"
+            "soldr-${version}-aarch64-pc-windows-msvc.tar.zst"
+            "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-win_amd64.whl"
+            "soldr-${cargo_version}-py3-none-win_arm64.whl"
+            "soldr-${version}-SHA256SUMS.txt"
+          )
+          release_json="$(gh release view "$version" --repo "$GITHUB_REPOSITORY" --json assets,isDraft 2>/dev/null || true)"
+          if [[ -n "$release_json" ]]; then
+            is_draft="$(jq -r '.isDraft' <<< "$release_json")"
+            mapfile -t actual_assets < <(jq -r '.assets[].name' <<< "$release_json" | sort)
+            missing=()
+            for asset in "${expected_assets[@]}"; do
+              if ! printf '%s\n' "${actual_assets[@]}" | grep -Fx "$asset" >/dev/null; then
+                missing+=("$asset")
+              fi
+            done
+            if [[ "$is_draft" == "false" && ${#missing[@]} -eq 0 ]]; then
+              github_release_complete=true
+              github_release_missing_assets=""
+            else
+              github_release_missing_assets="$(IFS=,; echo "${missing[*]}")"
+              if [[ "$is_draft" != "false" ]]; then
+                github_release_missing_assets="draft-release${github_release_missing_assets:+,$github_release_missing_assets}"
+              fi
+            fi
+          fi
+
           pypi_json="$(curl -fsSL --max-time 30 --connect-timeout 10 https://pypi.org/pypi/soldr/json)"
           pypi_version="$(jq -r '.info.version // ""' <<< "$pypi_json")"
 
@@ -121,7 +160,7 @@ jobs:
           fi
 
           should_publish_github_release=false
-          if [[ "$tag_exists" != "true" ]]; then
+          if [[ "$github_release_complete" != "true" ]]; then
             should_publish_github_release=true
           fi
 
@@ -149,6 +188,8 @@ jobs:
             echo "- npm package: \`$npm_package_name@$npm_package_version\`"
             echo "- npm has candidate: \`$npm_has_version\`"
             echo "- GitHub tag exists: \`$tag_exists\`"
+            echo "- GitHub release complete: \`$github_release_complete\`"
+            echo "- GitHub release missing assets: \`${github_release_missing_assets:-none}\`"
             echo "- force PyPI publish: \`$force_pypi_publish\`"
             echo "- publish GitHub release assets: \`$should_publish_github_release\`"
             echo "- publish PyPI wheels: \`$should_publish_pypi\`"
@@ -161,6 +202,7 @@ jobs:
             echo "should_publish_pypi=$should_publish_pypi"
             echo "should_publish_npm=$should_publish_npm"
             echo "tag_exists=$tag_exists"
+            echo "github_release_complete=$github_release_complete"
             echo "pypi_has_version=$pypi_has_version"
             echo "pypi_file_count=$pypi_file_count"
             echo "npm_has_version=$npm_has_version"
@@ -173,25 +215,19 @@ jobs:
     needs: prepare
     if: needs.prepare.outputs.should_release == 'true'
     runs-on: ${{ matrix.runner }}
-    # Both darwin x64 (jemalloc-syscall structural issue, fix
-    # WIP) and aarch64-pc-windows-msvc (chocolatey-zstd install
-    # flake on windows-11-arm) are continue-on-error so transient
-    # / structural issues on those lanes don't block PyPI + npm +
-    # GitHub Release publishes for the 6+ working lanes.
-    continue-on-error: ${{ contains(matrix.target, 'apple-darwin') || matrix.target == 'aarch64-pc-windows-msvc' }}
+    # Every release lane is required. Registry publishes are gated on a
+    # verified GitHub Release asset set, so a missing target must stop the
+    # release instead of silently shipping PyPI/npm only.
+    continue-on-error: false
     strategy:
       fail-fast: false
       matrix:
         include:
           # All targets now produce a single `.tar.zst` archive that
-          # bundles the soldr binary alongside the matching-target zccache
-          # trio (zccache, zccache-daemon, zccache-fp). One fetch from
-          # GitHub Releases gives you both — see the `Stage soldr + zccache
-          # trio` and `Package combined archive (tar.zst level 19)` steps
-          # below. zccache-on-Linux ships musl-only upstream, so the
-          # Linux gnu rows pull the musl zccache (statically linked, runs
-          # on glibc) — same target-mapping shorthand the runtime
-          # the embedded zccache library uses.
+          # bundles the soldr binary alongside same-target soldr-owned
+          # sidecars, crgx, and cargo-chef. One fetch from
+          # GitHub Releases installs the full runtime surface; registry
+          # publishes are gated on that GitHub asset set being complete.
           - name: Linux x64
             runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
@@ -208,20 +244,10 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             binary: soldr
-          # soldr#917 / #1053: darwin release builds moved from
-          # macos-15-intel / macos-15 (10× billing multiplier) to
-          # ubuntu-24.04 + cargo zigbuild. Same pattern proven for
-          # aarch64-musl below + the every-commit ci.yml darwin lanes
-          # (PR #1052).
-          # soldr#1140/#1187/#1220/#1223/#1226/#1231 chain: Linux → x86_64-
-          # apple-darwin cross via zig-cc revealed multiple incomplete-SDK
-          # / archive-format issues (libiconv, CommonCrypto, libz-ng archive
-          # terminator, ...). soldr#1234 switched to native `macos-13` to
-          # bypass cross-compile fragility entirely. That worked
-          # correctness-wise but exposed a second issue: GHA's macos-13
-          # Intel runner pool is severely saturated (v0.7.94 release run
-          # 28556957818 sat queued for 3+ hours without ever starting the
-          # macOS x64 job). Every attempt just parks in queue.
+          # x86_64-apple-darwin is intentionally omitted. Native Intel
+          # macOS hosted capacity has been unreliable for release runs,
+          # and the current release surface keeps macOS ARM64 as the
+          # shipped macOS archive target.
           #
           # Pragmatic decision: **drop x86_64-apple-darwin from the release
           # matrix** for the 0.7.9x line. Intel Macs are a shrinking user
@@ -325,84 +351,16 @@ jobs:
           dpkg-query -W -f='cmake installed version: ${Version}\n' cmake
           dpkg-query -W -f='perl installed version: ${Version}\n' perl
 
-      # soldr#1029: aarch64-unknown-linux-musl uses cargo-zigbuild instead
-      # of the legacy musl.cc cross-toolchain. Background: musl.cc ships
-      # statically-linked 32-bit i386 host binaries; GHA ubuntu-24.04's
-      # `linux-azure` kernel has CONFIG_IA32_EMULATION_DEFAULT_DISABLED=y
-      # since Linux 6.7, so any attempt to exec those binaries ENOEXECs
-      # with `os error 8`. cargo-zigbuild bundles a hermetic x86_64-native
-      # musl toolchain via zig — no kernel exec-format dependency, no
-      # third-party CDN beyond ziglang.org. Same pattern as
-      # rust-cross/cargo-zigbuild's own CI, maturin, and fbuild's
-      # template_native_build.yml.
-      #
-      # Validated 2026-06-29 in `ci/docker-aarch64-musl-cross/` against
-      # a vanilla ubuntu:24.04 container with `docker build
-      # --add-host musl.cc:127.0.0.1` (musl.cc blackholed): produced
-      # a valid `ELF 64-bit LSB executable, ARM aarch64, version 1
-      # (SYSV), statically linked, stripped` binary.
-      # soldr#917 / #1053: zig + cargo-zigbuild for aarch64-musl AND
-      # for both darwin lanes (cross-compile from linux replaces
-      # macos-runner builds). Same pinned versions as the every-commit
-      # _ci-cross-build-linux.yml workflow.
-      # soldr#1005 / fbuild ingestion: zig is ALSO needed on the two
-      # linux-gnu lanes so `maturin build --zig` can link the wheel's
-      # embedded soldr binary against a glibc 2.17 floor and tag the
-      # wheel manylinux_2_17. Without zig, maturin links against the
-      # runner's glibc (2.39 on ubuntu-24.04) and auto-tags
-      # manylinux_2_39 — pip on any older glibc (ubuntu-22.04 CI,
-      # enterprise containers) then falls back to the ancient 0.1.0
-      # placeholder sdist, breaking soldr as a PEP 517
-      # `requires=["soldr"]` backend org-wide. Same glibc-floor pattern
-      # as FastLED/fbuild's .github/workflows/template_native_build.yml
-      # (`cargo zigbuild --target <arch>-unknown-linux-gnu.2.17`).
-      - name: Setup zig (zigbuild + manylinux_2_17 wheel lanes)
-        if: matrix.target == 'aarch64-unknown-linux-musl' || contains(matrix.target, 'unknown-linux-gnu') || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
+      # soldr#1005 / fbuild ingestion: Zig remains needed only for the
+      # linux-gnu wheel lanes where `maturin build --zig` links the
+      # wheel's embedded soldr binary against a glibc 2.17 floor and
+      # tags the wheel manylinux_2_17. Release binary cross-compilation
+      # itself is owned by `soldr build` below.
+      - name: Setup zig for manylinux_2_17 wheel lanes
+        if: contains(matrix.target, 'unknown-linux-gnu')
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.15.2
-
-      - name: Install cargo-zigbuild (zigbuild lanes)
-        if: matrix.target == 'aarch64-unknown-linux-musl' || (contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04')
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
-        with:
-          tool: cargo-zigbuild@0.23.0
-
-      # Bootstrap soldr from this checkout (bare cargo, host-arch) so
-      # subsequent steps can call `soldr prepare --target <darwin>
-      # --github-env` to materialize the Apple SDK + export SDKROOT.
-      # Mirrors the proven pattern in _ci-cross-build-linux.yml (PR
-      # #1052). Darwin-only — no SDK fetch needed for other lanes.
-      - name: Bootstrap soldr for Apple SDK prep (darwin only)
-        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
-        shell: bash
-        env:
-          RUSTC_WRAPPER: ""
-        run: |
-          set -euo pipefail
-          cargo build --release --locked --package soldr-cli --bin soldr \
-            --target x86_64-unknown-linux-gnu
-          mkdir -p "$RUNNER_TEMP/soldr-bin"
-          cp target/x86_64-unknown-linux-gnu/release/soldr "$RUNNER_TEMP/soldr-bin/soldr"
-          chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
-          echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
-
-      - name: Prepare Apple SDK (darwin only)
-        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
-        shell: bash
-        # `--github-env` takes a FILE path (SDKROOT is appended). Point
-        # at $GITHUB_ENV so downstream steps see the export. The bare
-        # `--github-env` invocation errored `a value is required for
-        # '--github-env <FILE>' but none was supplied` on v0.7.89 and
-        # broke the macOS x64 release lane. See the composite action at
-        # .github/actions/prepare-cross-toolchain/action.yml for the
-        # canonical shape.
-        run: soldr prepare --target ${{ matrix.target }} --github-env "$GITHUB_ENV"
-
-      - name: Setup persistent zig-cc wrappers (darwin only)
-        if: contains(matrix.target, 'apple-darwin') && matrix.runner == 'ubuntu-24.04'
-        shell: bash
-        run: bash .github/scripts/make_zig_cc_wrappers.sh "${{ matrix.target }}"
 
       # (Cargo registry + target cache is handled by setup-soldr's
       # `cache: true` input above per soldr#1061.)
@@ -439,164 +397,39 @@ jobs:
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
           cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
 
-          # Dispatch matrix:
-          # 1. Darwin Linux-host cross — `soldr build --target $T`.
-          #    The `Bootstrap soldr for Apple SDK prep` step above
-          #    put the in-tree-built soldr (v0.7.77+) on PATH at
-          #    `$RUNNER_TEMP/soldr-bin/soldr`, so `soldr build` here
-          #    invokes `Commands::Build` → blessed_build.rs apple-
-          #    darwin arm → CC=clang+SDKROOT, AR=llvm-ar, etc. Fixes
-          #    the jemalloc `sys/syscall.h` cross-compile (the
-          #    structural fix introduced in #1085 + finally activated
-          #    in v0.7.77 with the bootstrap chain).
-          # 2. `aarch64-unknown-linux-musl` Linux-host cross — keep
-          #    `cargo zigbuild`: zig's bundled musl IS complete.
-          # 3. Everything else — plain `cargo build` on the native
-          #    runner.
           target='${{ matrix.target }}'
-          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # soldr#1309: `soldr build --target <darwin>` self-provisions
-            # the ENTIRE cross toolchain — Apple SDK + LLVM (clang /
-            # llvm-ar / lld, from zackees/clang-tool-chain-bins) +
-            # cmake/ninja from the catalogue. NO host `apt install clang
-            # lld llvm`, no curl SDK fetch, no inline CC/CXX/AR/CFLAGS.
-            # The in-tree soldr on PATH (from the "Bootstrap soldr for
-            # Apple SDK prep" step) carries the self-provisioning fix
-            # (#1310), validated in ci/docker-selfhost-cross producing a
-            # Mach-O binary in a bare image.
-            #
-            # This RESTORES the originally-intended `soldr build`
-            # dispatch that the v0.7.84 lesson had reverted to bare
-            # cargo + apt: that revert existed because the old `soldr
-            # prepare --github-env` didn't export SDKROOT, so cc-rs
-            # couldn't find the SDK/llvm-ar. `soldr build` no longer
-            # depends on that — blessed_build.rs calls ensure_apple_sdk
-            # + ensure_llvm_toolchain directly and sets the env on the
-            # child cargo itself.
-            soldr build --release --locked --target "$target" \
-              --package soldr-cli --bin soldr
-            echo "=== post-build diagnostic: target/$target/release/ ==="
-            ls -la "target/$target/release/" 2>&1 | head -20 || true
-            echo "==================================================="
-          elif [ "$target" = "aarch64-unknown-linux-musl" ]; then
-            cargo zigbuild --package soldr-cli --release --locked --target "$target"
-          else
-            cargo build --package soldr-cli --release --locked --target "$target"
-          fi
+          # Release CI calls the already-installed soldr bootstrap
+          # binary from setup-soldr and lets `soldr build` own all
+          # target-specific toolchain dispatch. The workflow must not
+          # install or invoke lower-level cross-build helpers directly.
+          soldr build --release --locked --target "$target" \
+            --package soldr-cli \
+            --bin soldr \
+            --bin soldr-daemon \
+            --bin soldr-shim \
+            --bin soldr-clang-shim
+          echo "=== post-build diagnostic: target/$target/release/ ==="
+          ls -la "target/$target/release/" 2>&1 | head -20 || true
+          echo "==================================================="
 
-      - name: Install zstd
+      - name: Stage soldr release binaries
         shell: bash
         run: |
           set -euo pipefail
-          if command -v zstd >/dev/null 2>&1; then
-            echo "zstd already on PATH: $(zstd --version | head -n1)"
-            exit 0
-          fi
-          case "$RUNNER_OS" in
-            Linux)
-              sudo apt-get update
-              sudo apt-get install -y --no-install-recommends zstd
-              ;;
-            macOS)
-              brew install zstd
-              ;;
-            Windows)
-              # Chocolatey-zstandard is flaky on windows-11-arm
-              # (v0.7.83 + v0.7.84 lost the Windows ARM64 lane to
-              # `chocolatey: zstd: command not found`). Retry up to
-              # 3 times before declaring failure.
-              for attempt in 1 2 3; do
-                if choco install zstandard --no-progress -y; then
-                  break
-                fi
-                echo "choco install zstandard attempt $attempt failed; retrying in 5s..." >&2
-                sleep 5
-              done
-              # Chocolatey installs to `C:\ProgramData\chocolatey\bin` which
-              # may not be on PATH for the current step. Add it for any
-              # follow-on bash/pwsh that needs zstd.
-              echo "C:\\ProgramData\\chocolatey\\bin" >> "$GITHUB_PATH"
-              ;;
-            *)
-              echo "unsupported RUNNER_OS=$RUNNER_OS for zstd install" >&2
-              exit 1
-              ;;
-          esac
-          zstd --version | head -n1
-
-      - name: Fetch matched zccache release for combined archive
-        # Pulls the matching-target zccache binaries from
-        # github.com/zackees/zccache's release for whichever version soldr
-        # ships compiled-in (embedded library from `_vender/zccache`). The Linux gnu / Linux musl
-        # rows both pull the musl zccache because that's the only Linux
-        # asset upstream publishes; statically linked, runs on glibc.
-        shell: bash
-        run: |
-          set -euo pipefail
-          zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
-            _vender/zccache/Cargo.toml | head -n1)
-          if [ -z "$zccache_version" ]; then
-            echo "could not read embedded zccache version from _vender/zccache/Cargo.toml" >&2
-            exit 1
-          fi
-          echo "zccache_version=$zccache_version"
-
-          case "${{ matrix.target }}" in
-            x86_64-unknown-linux-*)
-              zccache_target=x86_64-unknown-linux-musl; ext=tar.gz ;;
-            aarch64-unknown-linux-*)
-              zccache_target=aarch64-unknown-linux-musl; ext=tar.gz ;;
-            x86_64-apple-darwin|aarch64-apple-darwin)
-              zccache_target="${{ matrix.target }}"; ext=tar.gz ;;
-            x86_64-pc-windows-msvc|aarch64-pc-windows-msvc)
-              zccache_target="${{ matrix.target }}"; ext=zip ;;
-            *)
-              echo "no zccache target mapping for ${{ matrix.target }}" >&2
-              exit 1 ;;
-          esac
-          echo "zccache_target=$zccache_target ext=$ext"
-
-          asset="zccache-v${zccache_version}-${zccache_target}.${ext}"
-          url="https://github.com/zackees/zccache/releases/download/${zccache_version}/${asset}"
-          mkdir -p dist/package dist/zccache-stage
-          # Generous retry budget — the same release-propagation 404 window
-          # that motivated the soldr-side retry refactor (#432) applies
-          # here too, and on the release runner we can't fall back to
-          # cargo install.
-          curl --fail --location --connect-timeout 10 --max-time 120 \
-            --retry 6 --retry-delay 5 --retry-all-errors \
-            --output "/tmp/${asset}" "${url}"
-
-          case "$ext" in
-            tar.gz) tar -xzf "/tmp/${asset}" -C dist/zccache-stage ;;
-            zip)    unzip -oq "/tmp/${asset}" -d dist/zccache-stage ;;
-          esac
-
+          mkdir -p dist/package
           suffix=""
-          if [ "$ext" = "zip" ]; then suffix=".exe"; fi
-          # zccache release archives nest binaries under
-          # `zccache-v<version>-<target>/`. Older releases were flat, and
-          # nothing in the contract guarantees future archives won't
-          # change shape again — so locate each binary by name anywhere
-          # inside the staging tree instead of hard-coding a prefix.
-          for b in zccache zccache-daemon zccache-fp; do
-            src=$(find dist/zccache-stage -type f -name "${b}${suffix}" -print -quit)
-            if [ -z "$src" ] || [ ! -f "$src" ]; then
-              echo "expected ${b}${suffix} in extracted zccache archive; got:" >&2
-              find dist/zccache-stage -maxdepth 3 -print >&2
+          case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
+
+          for stem in soldr soldr-daemon soldr-shim soldr-clang-shim; do
+            src="target/${{ matrix.target }}/release/${stem}${suffix}"
+            if [ ! -f "$src" ]; then
+              echo "expected ${stem}${suffix} in target dir; observed release dir:" >&2
+              ls -la "target/${{ matrix.target }}/release" >&2 || true
               exit 1
             fi
-            cp "$src" "dist/package/${b}${suffix}"
-            chmod +x "dist/package/${b}${suffix}" 2>/dev/null || true
+            cp "$src" "dist/package/${stem}${suffix}"
+            chmod +x "dist/package/${stem}${suffix}" 2>/dev/null || true
           done
-
-      - name: Stage soldr binary alongside zccache trio
-        shell: bash
-        run: |
-          set -euo pipefail
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
-             "dist/package/${{ matrix.binary }}"
-          chmod +x "dist/package/${{ matrix.binary }}" 2>/dev/null || true
 
           # soldr#1032 bug 2: ship soldr-clang-shim next to soldr.
           # The shim is a tiny clang/clang++ wrapper installed by
@@ -607,16 +440,6 @@ jobs:
           # archive — so every archive must include it. Including it on
           # every target keeps the archive layout uniform; it's a no-op
           # binary on non-MSVC lanes.
-          shim_suffix=""
-          case "${{ matrix.target }}" in *-pc-windows-msvc) shim_suffix=".exe" ;; esac
-          shim_src="target/${{ matrix.target }}/release/soldr-clang-shim${shim_suffix}"
-          if [ ! -f "$shim_src" ]; then
-            echo "expected soldr-clang-shim${shim_suffix} in target dir; observed release dir:" >&2
-            ls -la "target/${{ matrix.target }}/release" >&2 || true
-            exit 1
-          fi
-          cp "$shim_src" "dist/package/soldr-clang-shim${shim_suffix}"
-          chmod +x "dist/package/soldr-clang-shim${shim_suffix}" 2>/dev/null || true
           case "${{ matrix.target }}" in
             *-pc-windows-msvc)
               # Windows MSVC always emits a `.pdb` next to the binary
@@ -673,193 +496,160 @@ jobs:
           esac
           ls -la dist/package/
 
-      - name: Build crgx from pinned source
-        # Source-build crgx instead of fetching an upstream release asset:
-        # crgx upstream (yfedoseev/crgx) currently doesn't ship
-        # aarch64-unknown-linux-musl or aarch64-pc-windows-msvc binaries,
-        # and building from a pinned tag gives soldr full control over
-        # provenance — the combined archive's manifest.json carries the
-        # crgx source commit + per-target sha256 so downstream consumers
-        # can verify exactly what shipped.
-        #
-        # The toolchain installed at the top of the job
-        # (dtolnay/rust-toolchain @ 1.94.1 with the target added) and,
-        # for musl rows, musl-tools already on PATH, are sufficient — no
-        # extra docker / cross step needed. Crgx requires edition 2024
-        # which 1.94.1 supports.
+      - name: Fetch support binaries from soldr-toolchain
         shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+          SUPPORT_ISSUE_URL: https://github.com/zackees/soldr-toolchain/issues/47
         run: |
           set -euo pipefail
-          crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
-          if [ -z "$crgx_version" ]; then
-            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-cli/src/fetch/mod.rs" >&2
-            exit 1
-          fi
-          echo "crgx_version=$crgx_version"
+          python - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          import subprocess
+          import sys
+          import tarfile
+          import tempfile
+          import urllib.request
+          from urllib.parse import urljoin
+          import zipfile
+          from pathlib import Path
 
-          work_dir="${RUNNER_TEMP}/crgx-build"
-          rm -rf "$work_dir"
-          # Pin to the exact tag — depth 1 keeps the clone small. The
-          # tag → commit sha lookup is recorded in manifest.json below
-          # so a re-build is exactly reproducible from the manifest.
-          # `timeout` is GNU-only; on macOS coreutils ships it as
-          # `gtimeout` (via brew install coreutils, which is on every
-          # GHA macOS runner image by default). soldr#1012 followup.
-          if command -v timeout >/dev/null 2>&1; then
-            TIMEOUT_CMD="timeout 300"
-          elif command -v gtimeout >/dev/null 2>&1; then
-            TIMEOUT_CMD="gtimeout 300"
-          else
-            echo "warning: no timeout / gtimeout available; running git clone unwrapped" >&2
-            TIMEOUT_CMD=""
-          fi
-          $TIMEOUT_CMD git clone --depth 1 --branch "v${crgx_version}" \
-            https://github.com/yfedoseev/crgx.git "$work_dir"
-          crgx_commit=$(git -C "$work_dir" rev-parse HEAD)
-          echo "crgx_commit=$crgx_commit"
-          echo "CRGX_SOURCE_COMMIT=$crgx_commit" >> "$GITHUB_ENV"
+          ORIGIN = os.environ.get("SOLDR_TOOLCHAIN_ORIGIN", "https://zackees.github.io/soldr-toolchain").rstrip("/")
+          TARGET = os.environ["TARGET_TRIPLE"]
+          ISSUE = os.environ["SUPPORT_ISSUE_URL"]
+          OUT = Path("dist/package")
+          OUT.mkdir(parents=True, exist_ok=True)
 
-          # `--locked` honors crgx's Cargo.lock so the build is
-          # byte-for-byte reproducible across release runs. Use the
-          # same target the soldr binary was just built for — the
-          # cargo toolchain is shared with the soldr build step above,
-          # so no extra setup-uv / install-musl / install-rust is
-          # needed here.
-          #
-          # soldr#1140/#1202 aftermath: on Linux → x86_64-apple-darwin
-          # cross-build, bare `cargo build` fails at link time —
-          # `unable to find dynamic system library 'iconv'` — because
-          # the elaborate SDK cross-env (CC_*, CXX_*, AR_*, CFLAGS_*,
-          # CARGO_TARGET_*_LINKER, ...) set by the soldr build step is
-          # step-scoped and doesn't persist here. Route through
-          # cargo-zigbuild for the darwin-on-Linux lane — zig-cc
-          # handles the sysroot / linker plumbing internally and picks
-          # up SDKROOT from $GITHUB_ENV (populated by the
-          # `Prepare Apple SDK` step). Everything else (native darwin,
-          # musl, gnu, windows) still builds fine with bare cargo.
-          target='${{ matrix.target }}'
-          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            # soldr#1140/#1202 followup: zig-cc's bundled Apple stubs
-            # don't include a standalone libiconv, so `-liconv` (emitted
-            # by ureq / ring / etc.) fails at link:
-            #   error: unable to find dynamic system library 'iconv'
-            # The Apple SDK we fetched has `libiconv.tbd` under
-            # `$SDKROOT/usr/lib` — add that to the linker search path
-            # via RUSTFLAGS so zig-cc finds it. Same reason -F for
-            # Frameworks. SDKROOT lives in $GITHUB_ENV via the
-            # `Prepare Apple SDK` step so it's already exported here.
-            if [ -z "${SDKROOT:-}" ]; then
-              echo "ERROR: SDKROOT is unset — Prepare Apple SDK step should have set it" >&2
-              exit 1
-            fi
-            export RUSTFLAGS="-C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-F${SDKROOT}/System/Library/Frameworks${RUSTFLAGS:+ ${RUSTFLAGS}}"
-            echo "RUSTFLAGS=$RUSTFLAGS"
-            cargo zigbuild \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "$target" \
-              --locked
-          else
-            cargo build \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "$target" \
-              --locked
-          fi
+          def read_constant(path: str, name: str) -> str:
+              import re
+              text = Path(path).read_text(encoding="utf-8")
+              m = re.search(rf'{name}\\s*:\\s*&str\\s*=\\s*"([^"]+)"', text)
+              if not m:
+                  raise SystemExit(f"could not read {name} from {path}")
+              return m.group(1)
 
-          suffix=""
-          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          def platform_for_target(target: str) -> dict[str, str]:
+              table = {
+                  "x86_64-unknown-linux-gnu": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
+                  "aarch64-unknown-linux-gnu": {"os": "linux", "arch": "aarch64", "libc": "glibc"},
+                  "x86_64-unknown-linux-musl": {"os": "linux", "arch": "x86_64", "libc": "musl"},
+                  "aarch64-unknown-linux-musl": {"os": "linux", "arch": "aarch64", "libc": "musl"},
+                  "aarch64-apple-darwin": {"os": "darwin", "arch": "aarch64"},
+                  "x86_64-pc-windows-msvc": {"os": "windows", "arch": "x86_64", "abi": "msvc"},
+                  "aarch64-pc-windows-msvc": {"os": "windows", "arch": "aarch64", "abi": "msvc"},
+              }
+              try:
+                  return table[target]
+              except KeyError:
+                  raise SystemExit(f"no soldr-toolchain platform mapping for {target}")
 
-          built="$work_dir/target/$target/release/crgx${suffix}"
-          if [ ! -f "$built" ]; then
-            echo "crgx not built at expected path: $built" >&2
-            ls -la "$work_dir/target/$target/release/" >&2 || true
-            exit 1
-          fi
-          file "$built" || true
+          def read_url(url: str, timeout: int) -> bytes:
+              with urllib.request.urlopen(url, timeout=timeout) as resp:
+                  return resp.read()
 
-          cp "$built" "dist/package/crgx${suffix}"
-          chmod +x "dist/package/crgx${suffix}" 2>/dev/null || true
-          ls -la dist/package/
+          def load_json(url: str):
+              return json.loads(read_url(url, timeout=60).decode("utf-8"))
 
-      - name: Build cargo-chef from pinned source
-        # Source-build cargo-chef instead of fetching upstream release
-        # assets. Upstream v0.1.73 has no aarch64-apple-darwin archive,
-        # which made `soldr cook` retry a live GitHub lookup for ~36s on
-        # macOS arm64 before giving up. Bundling the pinned binary makes
-        # setup-soldr cook deterministic on every soldr release target.
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
-          if [ -z "$cargo_chef_version" ]; then
-            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-cli/src/fetch/known_tools.rs" >&2
-            exit 1
-          fi
-          echo "cargo_chef_version=$cargo_chef_version"
+          def download(url: str, dest: Path) -> None:
+              dest.write_bytes(read_url(url, timeout=600))
 
-          work_dir="${RUNNER_TEMP}/cargo-chef-build"
-          rm -rf "$work_dir"
-          # `timeout` GNU-only; fall back to `gtimeout` on macOS (see
-          # the symmetric crgx step above for the rationale).
-          if command -v timeout >/dev/null 2>&1; then
-            TIMEOUT_CMD="timeout 300"
-          elif command -v gtimeout >/dev/null 2>&1; then
-            TIMEOUT_CMD="gtimeout 300"
-          else
-            echo "warning: no timeout / gtimeout available; running git clone unwrapped" >&2
-            TIMEOUT_CMD=""
-          fi
-          $TIMEOUT_CMD git clone --depth 1 --branch "v${cargo_chef_version}" \
-            https://github.com/LukeMathWalker/cargo-chef.git "$work_dir"
-          cargo_chef_commit=$(git -C "$work_dir" rev-parse HEAD)
-          echo "cargo_chef_commit=$cargo_chef_commit"
-          echo "CARGO_CHEF_SOURCE_COMMIT=$cargo_chef_commit" >> "$GITHUB_ENV"
+          def sha256(path: Path) -> str:
+              h = hashlib.sha256()
+              with path.open("rb") as fh:
+                  for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
 
-          # Same zigbuild switch as the crgx step above: bare `cargo
-          # build` fails at link time for Linux → x86_64-apple-darwin
-          # (libiconv not findable in the sysroot). Route the Apple x64
-          # cross through cargo-zigbuild + inject SDKROOT into linker
-          # search path so zig-cc can find libiconv.tbd. See the crgx
-          # step comment for the full rationale.
-          target='${{ matrix.target }}'
-          if [[ "$target" == *-apple-darwin && "$RUNNER_OS" = "Linux" ]]; then
-            if [ -z "${SDKROOT:-}" ]; then
-              echo "ERROR: SDKROOT is unset — Prepare Apple SDK step should have set it" >&2
-              exit 1
-            fi
-            export RUSTFLAGS="-C link-arg=-L${SDKROOT}/usr/lib -C link-arg=-F${SDKROOT}/System/Library/Frameworks${RUSTFLAGS:+ ${RUSTFLAGS}}"
-            echo "RUSTFLAGS=$RUSTFLAGS"
-            cargo zigbuild \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "$target" \
-              --locked \
-              --bin cargo-chef
-          else
-            cargo build \
-              --release \
-              --manifest-path "$work_dir/Cargo.toml" \
-              --target "$target" \
-              --locked \
-              --bin cargo-chef
-          fi
+          def sha256_bytes(data: bytes) -> str:
+              return hashlib.sha256(data).hexdigest()
 
-          suffix=""
-          case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
+          INDEX_URL = f"{ORIGIN}/manifest.json"
+          INDEX = load_json(INDEX_URL)
 
-          built="$work_dir/target/$target/release/cargo-chef${suffix}"
-          if [ ! -f "$built" ]; then
-            echo "cargo-chef not built at expected path: $built" >&2
-            ls -la "$work_dir/target/$target/release/" >&2 || true
-            exit 1
-          fi
-          file "$built" || true
+          def load_tool_catalog(tool: str):
+              entry = (INDEX.get("tools") or {}).get(tool)
+              descriptor = (entry or {}).get("descriptor") or {}
+              descriptor_url = descriptor.get("url")
+              if not descriptor_url:
+                  raise SystemExit(f"{INDEX_URL} has no descriptor URL for {tool}; support coverage is tracked in {ISSUE}")
+              catalog_url = urljoin(f"{ORIGIN}/", descriptor_url)
+              raw = read_url(catalog_url, timeout=60)
+              expected_sha = str(descriptor.get("sha256") or "").lower()
+              if expected_sha and sha256_bytes(raw) != expected_sha:
+                  raise SystemExit(f"{catalog_url} sha256 mismatch against {INDEX_URL} descriptor")
+              return catalog_url, json.loads(raw.decode("utf-8"))
 
-          cp "$built" "dist/package/cargo-chef${suffix}"
-          chmod +x "dist/package/cargo-chef${suffix}" 2>/dev/null || true
+          def extract_archive(archive: Path, extract_dir: Path) -> None:
+              name = archive.name
+              if name.endswith(".tar.zst"):
+                  subprocess.run(
+                      ["soldr", "archive", "--input", str(archive), "--extract-dir", str(extract_dir)],
+                      check=True,
+                  )
+              elif name.endswith(".zip"):
+                  with zipfile.ZipFile(archive) as zf:
+                      zf.extractall(extract_dir)
+              elif name.endswith(".tar.gz") or name.endswith(".tgz"):
+                  with tarfile.open(archive, "r:gz") as tf:
+                      tf.extractall(extract_dir)
+              else:
+                  raise SystemExit(f"unsupported support archive format: {archive}")
+
+          def fetch_tool(tool: str, version: str) -> None:
+              release_version = version if version.startswith("v") else f"v{version}"
+              catalog_url, catalog = load_tool_catalog(tool)
+              release = next((r for r in catalog.get("releases", []) if r.get("version") == release_version), None)
+              if release is None:
+                  raise SystemExit(
+                      f"{catalog_url} has no release {release_version}; support coverage is tracked in {ISSUE}"
+                  )
+              platform = platform_for_target(TARGET)
+              platform_entry = next((p for p in release.get("platforms", []) if p.get("platform") == platform), None)
+              if platform_entry is None:
+                  raise SystemExit(
+                      f"{catalog_url} release {release_version} has no asset for {TARGET} ({platform}); "
+                      f"support coverage is tracked in {ISSUE}"
+                  )
+              asset = platform_entry["asset"]
+              urls = asset.get("urls") or []
+              expected_sha = str(asset.get("sha256", "")).lower()
+              if not urls or len(expected_sha) != 64:
+                  raise SystemExit(f"{catalog_url} release {release_version} asset for {TARGET} lacks url/sha256")
+              suffix = ".exe" if TARGET.endswith("pc-windows-msvc") else ""
+              with tempfile.TemporaryDirectory(prefix=f"{tool}-support-") as td:
+                  tmp = Path(td)
+                  archive = tmp / asset["filename"]
+                  print(f"fetching {tool} {release_version} for {TARGET}: {urls[0]}")
+                  download(urls[0], archive)
+                  actual_sha = sha256(archive)
+                  if actual_sha != expected_sha:
+                      raise SystemExit(f"{tool} sha256 mismatch: expected {expected_sha}, got {actual_sha}")
+                  extract_dir = tmp / "extract"
+                  extract_dir.mkdir()
+                  extract_archive(archive, extract_dir)
+                  binary_name = f"{tool}{suffix}"
+                  matches = [p for p in extract_dir.rglob(binary_name) if p.is_file()]
+                  if not matches:
+                      raise SystemExit(f"{tool} support archive did not contain {binary_name}")
+                  matches.sort(key=lambda p: (0 if p.parent.name == "bin" else 1, len(p.parts), str(p)))
+                  dest = OUT / binary_name
+                  shutil.copy2(matches[0], dest)
+                  dest.chmod(dest.stat().st_mode | 0o755)
+                  env_name = "CRGX_SOURCE_COMMIT" if tool == "crgx" else "CARGO_CHEF_SOURCE_COMMIT"
+                  with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as fh:
+                      fh.write(f"{env_name}=soldr-toolchain:{release_version}\\n")
+                  print(f"staged {dest} from {matches[0]}")
+
+          versions = {
+              "crgx": read_constant("crates/soldr-cli/src/fetch/mod.rs", "MANAGED_CRGX_VERSION"),
+              "cargo-chef": read_constant("crates/soldr-cli/src/fetch/known_tools.rs", "CARGO_CHEF_PINNED_VERSION"),
+          }
+          fetch_tool("crgx", versions["crgx"])
+          fetch_tool("cargo-chef", versions["cargo-chef"])
+          PY
           ls -la dist/package/
 
       - name: Write manifest.json
@@ -887,11 +677,7 @@ jobs:
           fi
           crgx_commit="${CRGX_SOURCE_COMMIT:-unknown}"
           cargo_chef_commit="${CARGO_CHEF_SOURCE_COMMIT:-unknown}"
-          case "$soldr_target" in
-            x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
-            aarch64-unknown-linux-*) zccache_target=aarch64-unknown-linux-musl ;;
-            *)                       zccache_target="$soldr_target" ;;
-          esac
+          zccache_target="$soldr_target"
           suffix=""
           case "$soldr_target" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
@@ -954,9 +740,9 @@ jobs:
           else
             soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
           fi
-          zccache_sha=$(sha256_of "dist/package/zccache${suffix}")
-          zccache_daemon_sha=$(sha256_of "dist/package/zccache-daemon${suffix}")
-          zccache_fp_sha=$(sha256_of "dist/package/zccache-fp${suffix}")
+          soldr_daemon_sha=$(sha256_of "dist/package/soldr-daemon${suffix}")
+          soldr_shim_sha=$(sha256_of "dist/package/soldr-shim${suffix}")
+          soldr_clang_shim_sha=$(sha256_of "dist/package/soldr-clang-shim${suffix}")
           crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
           cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -972,17 +758,18 @@ jobs:
               "target": "${soldr_target}",
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
+              "sidecars": [
+                { "name": "soldr-daemon${suffix}",       "sha256": "${soldr_daemon_sha}" },
+                { "name": "soldr-shim${suffix}",         "sha256": "${soldr_shim_sha}" },
+                { "name": "soldr-clang-shim${suffix}",   "sha256": "${soldr_clang_shim_sha}" }
+              ],
               "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
             },
             "zccache": {
               "version": "${zccache_version}",
               "target": "${zccache_target}",
-              "binaries": [
-                { "name": "zccache${suffix}",        "sha256": "${zccache_sha}" },
-                { "name": "zccache-daemon${suffix}", "sha256": "${zccache_daemon_sha}" },
-                { "name": "zccache-fp${suffix}",     "sha256": "${zccache_fp_sha}" }
-              ]
+              "embedded": true
             },
             "crgx": {
               "version": "${crgx_version}",
@@ -1010,18 +797,16 @@ jobs:
           cat dist/package/manifest.json
 
       - name: Package combined archive (tar.zst level 19)
-        # zstd level 19 hits the recommended sweet spot per agent
-        # guidance: substantially smaller than tar.gz (~40-50% reduction
-        # observed on similar 4-binary bundles) without the memory /
-        # build-time blow-up of --ultra 22. `-T0` uses all cores so the
-        # extra CPU work doesn't dominate the release step's wall time.
+        # Use soldr's in-process Rust zstd encoder rather than depending
+        # on a runner-local `zstd` executable. The command uses level 19
+        # and all available cores.
         shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
-          tar -cf - -C dist/package . \
-            | zstd -19 -T0 -o "dist/${name}.tar.zst"
+          cargo run --release --locked --package soldr-cli --bin soldr -- \
+            archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
 
@@ -1125,11 +910,9 @@ jobs:
           # glibc<2.39 consumer and triggers pip's fallback to the
           # 0.1.0 placeholder sdist. Reference implementation:
           # FastLED/fbuild .github/workflows/template_native_build.yml
-          # (`cargo zigbuild --target <arch>-unknown-linux-gnu.2.17`);
-          # maturin --zig routes through the same cargo-zigbuild
-          # machinery (zig cc as linker + TARGET_CC for cc-rs build
-          # scripts) internally. macOS / Windows lanes keep
-          # `--compatibility pypi` untouched.
+          # with a Zig-linked manylinux floor; `maturin --zig` owns its
+          # internal linker setup for wheel tagging. macOS / Windows
+          # lanes keep `--compatibility pypi` untouched.
           compat_args=(--compatibility pypi)
           case "${{ matrix.target }}" in
             *-unknown-linux-gnu)
@@ -1311,7 +1094,6 @@ jobs:
               #   soldr-daemon.exe    4700672
               #   soldr-clang-shim    226304
               #   soldr-shim          226304
-              #   zccache-soldr       945664
               # Pick 2 MB as the floor for the primary bin (soldr /
               # soldr.exe). Anything below that means the actual
               # crate code did not get compiled in.
@@ -1433,7 +1215,7 @@ jobs:
         # Round-trip: extract the freshly-packaged combined archive into a
         # scratch dir, list its contents, and run soldr from there. Catches
         # mistakes in the tar layout / file modes / zstd compression /
-        # bundled-zccache binary names before the artifact reaches the GH
+        # sidecar binary names before the artifact reaches the GH
         # release. Cross-arch archives can't be executed (e.g. aarch64
         # build on x86_64 host) so the `--version` step is gated to
         # native-arch combinations.
@@ -1445,25 +1227,21 @@ jobs:
           test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
 
           extract=$(mktemp -d)
-          # Use `zstd -d` rather than the `unzstd` symlink: Chocolatey's
-          # `zstandard` package on Windows ships zstd.exe only, not the
-          # POSIX-style `unzstd` alias, so the symlink form fails on the
-          # Windows release runners with `Cannot exec`.
-          tar --use-compress-program='zstd -d' -xf "$archive" -C "$extract"
+          cargo run --release --locked --package soldr-cli --bin soldr -- \
+            archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship the 6 expected binaries (soldr,
-          # zccache, zccache-daemon, zccache-fp, crgx, cargo-chef) with their
-          # platform extension, plus a manifest.json describing the
-          # bundle. Windows archives must also ship soldr's PDB sidecar.
+          # Every archive must ship soldr, soldr-owned sidecars, crgx,
+          # cargo-chef, and a manifest.json describing the bundle.
+          # Windows archives must also ship soldr's PDB sidecar.
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
           for required in \
             "${{ matrix.binary }}" \
-            "zccache${suffix}" \
-            "zccache-daemon${suffix}" \
-            "zccache-fp${suffix}" \
+            "soldr-daemon${suffix}" \
+            "soldr-shim${suffix}" \
+            "soldr-clang-shim${suffix}" \
             "crgx${suffix}" \
             "cargo-chef${suffix}" \
             "manifest.json"; do
@@ -1489,8 +1267,7 @@ jobs:
           # reaches the GH release surface, on every lane. Real soldr
           # ~13-15 MB on Linux glibc / ~15 MB on Windows / ~15 MB on
           # darwin; 2 MiB is well below that but far above any
-          # conceivable stub (soldr-shim / soldr-clang-shim / zccache-
-          # soldr all top out around ~850 KiB).
+          # conceivable stub (soldr-shim / soldr-clang-shim).
           MIN_SOLDR_BYTES=$((2 * 1024 * 1024))
           soldr_size=$(wc -c < "$extract/${{ matrix.binary }}" | tr -d ' ')
           if [ "$soldr_size" -lt "$MIN_SOLDR_BYTES" ]; then
@@ -1538,6 +1315,8 @@ jobs:
               # self-contained (no daemon, no sidecars), so --version
               # is enough to prove the binary loads and the static
               # linkage works on the host.
+              "$extract/soldr-daemon${suffix}" --help >/dev/null
+              "$extract/soldr-shim${suffix}" --help >/dev/null || true
               "$extract/crgx${suffix}" --version
               "$extract/cargo-chef${suffix}" --version
               ;;
@@ -1562,7 +1341,7 @@ jobs:
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.prepare.outputs.tag_exists == 'false'
+    if: needs.prepare.outputs.should_publish_github_release == 'true'
     runs-on: ubuntu-24.04
 
     steps:
@@ -1630,21 +1409,14 @@ jobs:
               -X POST \
               -f "ref=refs/tags/${tag}" \
               -f "sha=${sha}"; then
-              # soldr#1252 escalation (observed live on v0.7.97, run
-              # 28574025652): the 403 also hits `gh release create`
-              # even with `Contents: write` granted, and blocking here
-              # used to strand PyPI + npm (they `needs:` this job).
-              # Degrade: warn + continue; the release-create step below
-              # has its own fallback, and PyPI/npm — the outputs users
-              # actually install — still publish. Recovery commands are
-              # collected in the step summary.
-              echo "::warning::GITHUB_TOKEN could not create tag ${tag} via /git/refs — the repo owner must create it out-of-band. See soldr#1252."
+              echo "::error::GITHUB_TOKEN could not create tag ${tag} via /git/refs. Registry publishes are blocked until the GitHub release tag/assets can be created. See soldr#1252."
               {
                 echo "## Manual release recovery needed (tag)"
                 echo '```'
                 echo "gh api repos/${GITHUB_REPOSITORY}/git/refs -X POST -f ref=refs/tags/${tag} -f sha=${sha}"
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
           fi
 
       - name: Create draft GitHub Release
@@ -1658,7 +1430,8 @@ jobs:
           # Idempotent: reruns after a partial success (or an owner-side
           # manual create) must not fail on "release already exists".
           if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-              echo "release ${tag} already exists — skipping create"
+              echo "release ${tag} already exists; uploading/replacing assets"
+              gh release upload "${tag}" dist/* --repo "${GITHUB_REPOSITORY}" --clobber
               echo "created=true" >> "$GITHUB_OUTPUT"
               exit 0
           fi
@@ -1670,11 +1443,8 @@ jobs:
             --title "${tag}"; then
               echo "created=true" >> "$GITHUB_OUTPUT"
           else
-              # soldr#1252: degrade instead of stranding PyPI/npm. The
-              # build artifacts stay attached to this workflow run; the
-              # owner re-creates the GH release from them out-of-band.
               echo "created=false" >> "$GITHUB_OUTPUT"
-              echo "::warning::GITHUB_TOKEN could not create the GitHub release for ${tag} — owner must create it out-of-band from this run's artifacts. See soldr#1252."
+              echo "::error::GITHUB_TOKEN could not create the GitHub release for ${tag}. Registry publishes are blocked until the GitHub release exists with the expected assets. See soldr#1252."
               {
                 echo "## Manual release recovery needed (GitHub release)"
                 echo '```'
@@ -1682,6 +1452,7 @@ jobs:
                 echo "gh release create ${tag} dist/* --repo ${GITHUB_REPOSITORY} --generate-notes --target ${{ needs.prepare.outputs.commit_sha }} --title ${tag}"
                 echo '```'
               } >> "$GITHUB_STEP_SUMMARY"
+              exit 1
           fi
 
       - name: Publish GitHub Release
@@ -1695,19 +1466,73 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --draft=false
 
+  verify_github_release:
+    name: Verify GitHub Release assets
+    needs:
+      - prepare
+      - build
+      - publish
+    if: always() && needs.prepare.outputs.should_release == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Verify expected release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag='${{ needs.prepare.outputs.version }}'
+          cargo_version="${tag#v}"
+          release_json="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets,isDraft)"
+          if [[ "$(jq -r '.isDraft' <<< "$release_json")" != "false" ]]; then
+            echo "GitHub release $tag is still a draft" >&2
+            exit 1
+          fi
+          expected_assets=(
+            "soldr-${tag}-x86_64-unknown-linux-gnu.tar.zst"
+            "soldr-${tag}-aarch64-unknown-linux-gnu.tar.zst"
+            "soldr-${tag}-x86_64-unknown-linux-musl.tar.zst"
+            "soldr-${tag}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${tag}-aarch64-apple-darwin.tar.zst"
+            "soldr-${tag}-x86_64-pc-windows-msvc.tar.zst"
+            "soldr-${tag}-aarch64-pc-windows-msvc.tar.zst"
+            "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-win_amd64.whl"
+            "soldr-${cargo_version}-py3-none-win_arm64.whl"
+            "soldr-${tag}-SHA256SUMS.txt"
+          )
+          missing=()
+          for asset in "${expected_assets[@]}"; do
+            size="$(jq --arg name "$asset" -r '.assets[] | select(.name == $name) | .size' <<< "$release_json" | head -n1)"
+            if [[ -z "$size" || "$size" == "null" ]]; then
+              missing+=("$asset")
+              continue
+            fi
+            if (( size <= 0 )); then
+              echo "GitHub release asset $asset has invalid size $size" >&2
+              exit 1
+            fi
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'GitHub release %s is missing expected assets:\n' "$tag" >&2
+            printf ' - %s\n' "${missing[@]}" >&2
+            exit 1
+          fi
+          echo "GitHub release $tag has all ${#expected_assets[@]} expected assets."
+
   publish-pypi:
     name: Publish hardened PyPI wheels
     needs:
       - prepare
       - build
-      - publish
-    # Mirror publish-npm: only publish to PyPI if the GitHub Release
-    # for this version is in place (or wasn't needed because the tag
-    # already exists from a prior partial run). This avoids the
-    # "0.7.29 lost the GH release but landed on PyPI" failure mode
-    # where consumers can `pip install` a version whose source-of-truth
-    # release URL 404s.
-    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && ((needs.prepare.outputs.should_publish_github_release == 'true' && needs.publish.result == 'success') || (needs.prepare.outputs.should_publish_github_release != 'true' && needs.build.result == 'success'))
+      - verify_github_release
+    # Registry publishes must happen only after the GitHub Release has
+    # all expected binary/wheel assets. An existing tag or release is not
+    # enough; verify_github_release checks the actual asset set.
+    if: always() && needs.prepare.outputs.should_publish_pypi == 'true' && needs.verify_github_release.result == 'success'
     runs-on: ubuntu-24.04
 
     steps:
@@ -1778,8 +1603,9 @@ jobs:
     needs:
       - prepare
       - build
-      - publish
-    if: always() && needs.prepare.outputs.should_publish_npm == 'true' && ((needs.prepare.outputs.should_publish_github_release == 'true' && needs.publish.result == 'success') || (needs.prepare.outputs.should_publish_github_release != 'true' && needs.build.result == 'success'))
+      - verify_github_release
+      - publish-pypi
+    if: always() && needs.prepare.outputs.should_publish_npm == 'true' && needs.verify_github_release.result == 'success' && (needs.publish-pypi.result == 'success' || needs.publish-pypi.result == 'skipped')
     runs-on: ubuntu-24.04
     environment: release
     permissions:

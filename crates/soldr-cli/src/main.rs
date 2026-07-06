@@ -491,8 +491,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Load(args) => {
             std::process::exit(save_load::run_load(args));
         }
-        Commands::Archive { target, output } => {
-            archive_cmd::run(target, output)?;
+        Commands::Archive {
+            target,
+            stage_dir,
+            input,
+            extract_dir,
+            output,
+        } => {
+            archive_cmd::run(target, output, stage_dir, input, extract_dir)?;
         }
         Commands::Prepare {
             target,

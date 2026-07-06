@@ -19,11 +19,10 @@ CONTRACT = load_contract()
 ARCHIVE_EXT = str(CONTRACT["release_archive"]["extension"])
 MANIFEST_NAME = str(CONTRACT["release_archive"]["manifest_name"])
 MANIFEST_MIN_SCHEMA_VERSION = int(CONTRACT["release_archive"]["manifest_min_schema_version"])
-ZCCACHE_BUNDLED_BINARIES = tuple(CONTRACT["zccache"]["required_binaries"])
+ZCCACHE_BUNDLED_BINARIES = tuple(CONTRACT.get("zccache", {}).get("required_binaries", ()))
 CRGX_BUNDLED_BINARY = str(CONTRACT["crgx"]["required_binaries"][0])
 CARGO_CHEF_BUNDLED_BINARY = str(CONTRACT["cargo_chef"]["required_binaries"][0])
 RELEASE_BUNDLED_BINARIES = tuple(CONTRACT["release_archive"]["required_binaries"])
-ZCCACHE_LOCAL_DIR_ENV = str(CONTRACT["zccache"]["local_dir_env"])
 CRGX_LOCAL_DIR_ENV = str(CONTRACT["crgx"]["local_dir_env"])
 CARGO_CHEF_LOCAL_DIR_ENV = str(CONTRACT["cargo_chef"]["local_dir_env"])
 
@@ -37,6 +36,8 @@ def release_binary_names(*, windows: bool) -> tuple[str, ...]:
 
 
 def zccache_target_for_soldr_target(soldr_target: str) -> str:
+    if bool(CONTRACT.get("zccache", {}).get("embedded")):
+        return soldr_target
     if "-unknown-linux-" not in soldr_target:
         return soldr_target
     arch, _, _ = soldr_target.partition("-unknown-linux-")
@@ -60,6 +61,15 @@ def _manifest_binaries(manifest: dict[str, Any]) -> dict[str, str]:
         sha = soldr.get("sha256")
         if isinstance(binary, str) and isinstance(sha, str):
             binaries[binary] = sha
+        sidecars = soldr.get("sidecars", [])
+        if isinstance(sidecars, list):
+            for entry in sidecars:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                sha = entry.get("sha256")
+                if isinstance(name, str) and isinstance(sha, str):
+                    binaries[name] = sha
     zccache = manifest.get("zccache", {})
     if isinstance(zccache, dict):
         for entry in zccache.get("binaries", []):
