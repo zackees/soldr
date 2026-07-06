@@ -35,9 +35,8 @@ on:
           - test names matching cook_/_real_toolchain/fetch_crgx (#1038
             Q2) — those need cargo/rustup on the runner
           - integration test BINARIES (i.e. the .rs files under tests/)
-            named cli_cargo_*, cli_daemon_*, cli_rust_plan,
-            cli_zccache_contract_* — those need cargo + zccache-daemon
-            binaries on PATH, but the cross-build artifact ships only
+            named cli_cargo_*, cli_daemon_*, cli_rust_plan — those need
+            cargo on PATH, but the cross-build artifact ships only
             `soldr` + `soldr-clang-shim`. Their behavior is already
             covered by unit tests on the cross-build linux-host side.
             (nextest distinguishes `test(...)` for test names from
