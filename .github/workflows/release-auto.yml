@@ -306,6 +306,12 @@ jobs:
       - name: Setup soldr build cache (Rust toolchain only)
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
+          # Release CI needs a soldr bootstrap that already recognizes
+          # `soldr build`. Pin the latest completed GitHub binary
+          # release instead of relying on "latest" resolution, which can
+          # lag just enough for the bootstrap to treat `build` as an
+          # external tool name.
+          version: v0.7.104
           toolchain: 1.94.1
           cache: false
           zccache-seed-strict: true
