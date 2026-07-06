@@ -51,12 +51,9 @@ fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
 fn collect_cache_report_output_for_paths(
     paths: &SoldrPaths,
 ) -> Result<CacheReportOutput, SoldrError> {
-    let default_zccache_dir = managed_zccache_cache_dir(paths)?;
-    let linked_private = super::session::linked_private_zccache_lifecycle(paths);
-    let zccache_dir = linked_private
-        .as_ref()
-        .map(|(_, cache_dir)| cache_dir.clone())
-        .unwrap_or_else(|| default_zccache_dir.clone());
+    // soldr#1368: no private managed-zccache daemon any more — report on
+    // the shared soldr-managed zccache dir.
+    let zccache_dir = managed_zccache_cache_dir(paths)?;
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
@@ -201,49 +198,21 @@ fn print_cache_report_output(output: &CacheReportOutput) {
 mod tests {
     use super::collect_cache_report_output_for_paths;
     use crate::core::SoldrPaths;
-    use crate::daemon::db;
-    use crate::daemon::protocol::ZccacheDaemonLink;
 
-    crate::timed_test!(cache_report_follows_linked_private_zccache_dir, {
+    crate::timed_test!(cache_report_reads_session_stats_from_shared_zccache_dir, {
+        // soldr#1368: the report reads the last-session stats file from the
+        // shared soldr-managed zccache dir (no private-daemon dir any more).
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
-        let private_dir = paths
-            .cache
-            .join("zccache")
-            .join("private")
-            .join("soldr-dev-test");
-        let stats_path = private_dir.join("logs").join("last-session-stats.json");
+        let zccache_dir = crate::zccache::managed_zccache_cache_dir(&paths).expect("zccache dir");
+        let stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
         std::fs::create_dir_all(stats_path.parent().expect("stats parent"))
-            .expect("create private logs");
+            .expect("create logs dir");
         std::fs::write(
             &stats_path,
-            r#"{"status":"ok","session_id":"private","hits":17,"misses":2,"hit_rate":0.89}"#,
+            r#"{"status":"ok","session_id":"shared","hits":17,"misses":2,"hit_rate":0.89}"#,
         )
         .expect("write stats");
-
-        let fake_zccache = paths.bin.join(if cfg!(windows) {
-            "zccache.exe"
-        } else {
-            "zccache"
-        });
-        std::fs::create_dir_all(fake_zccache.parent().expect("fake parent"))
-            .expect("create fake parent");
-        std::fs::write(&fake_zccache, b"fake").expect("write fake binary");
-
-        db::set_linked_zccache(
-            &db::db_path(&paths),
-            Some(&ZccacheDaemonLink {
-                binary_path: fake_zccache.display().to_string(),
-                cache_dir: private_dir.display().to_string(),
-                session_id: Some("private".into()),
-                source: "managed".into(),
-                private_daemon: true,
-                daemon_name: Some("soldr-dev-test".into()),
-                owner_pid: Some(std::process::id()),
-                private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
-            }),
-        )
-        .expect("link private zccache");
 
         let report = collect_cache_report_output_for_paths(&paths).expect("collect report");
         assert_eq!(report.session_stats_path, stats_path.display().to_string());

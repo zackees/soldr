@@ -53,7 +53,12 @@ use thiserror::Error;
 ///   without shutting the daemon down. Before v8 that state was
 ///   memory-only until a graceful daemon exit, so archives taken from
 ///   a live daemon restored with zero rustc hits.
-pub const PROTOCOL_VERSION: u32 = 8;
+/// * v9 (soldr#1368): adds `Request::CompileStats` so `soldr session
+///   end` can read the embedded zccache service's cumulative
+///   hit/miss/time-saved counters over IPC and diff them against a
+///   session-start baseline — replacing the old `zccache session-end`
+///   subprocess against the (removed) managed binary.
+pub const PROTOCOL_VERSION: u32 = 9;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -191,6 +196,12 @@ pub enum Request {
     /// on-disk cache tree is complete (#1286 F1). Replies with
     /// [`Response::Ack`].
     FlushCaches,
+    /// Request-response: return the embedded zccache service's cumulative
+    /// compile counters (hits/misses/time-saved/…). Used by `soldr
+    /// session start` to capture a baseline and `soldr session end` to
+    /// diff against it (soldr#1368). Replies with
+    /// [`Response::CompileStats`].
+    CompileStats,
 }
 
 /// Body of [`Request::Compile`]. Carries the full `rustc` argv plus the
@@ -290,6 +301,25 @@ pub enum Response {
         cache_outcome: i32,
         compile_id: String,
     },
+    /// Reply to [`Request::CompileStats`] (soldr#1368): the embedded
+    /// zccache service's cumulative compile counters.
+    CompileStats(CompileStatsInfo),
+}
+
+/// Cumulative compile counters from the embedded zccache service
+/// (soldr#1368). A monotonic snapshot; `soldr session end` diffs two
+/// snapshots (start baseline vs. end) to report per-session hit/miss
+/// figures. Mirrors the fields of `zccache::embedded::ServiceStats` that
+/// soldr surfaces; kept as a plain struct so the daemon layer never has
+/// to import `zccache::embedded::*`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompileStatsInfo {
+    pub total_compilations: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub non_cacheable: u64,
+    pub compile_errors: u64,
+    pub time_saved_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,12 +396,13 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v8_after_flush_caches, {
-        // Bumped from 7 → 8 in #1286 F1 when Request::FlushCaches was
-        // added so `soldr save` / `cache flush` can checkpoint the
-        // embedded zccache state without a daemon shutdown. (7 came
-        // from #983 Phase 5b's streaming Compile reply.)
-        assert_eq!(PROTOCOL_VERSION, 8);
+    crate::timed_test!(protocol_version_is_v9_after_compile_stats, {
+        // Bumped from 8 → 9 in soldr#1368 when Request::CompileStats was
+        // added so `soldr session end` can read the embedded zccache
+        // service's cumulative counters over IPC (replacing the removed
+        // managed `zccache session-end` subprocess). (8 came from #1286
+        // F1's Request::FlushCaches.)
+        assert_eq!(PROTOCOL_VERSION, 9);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {

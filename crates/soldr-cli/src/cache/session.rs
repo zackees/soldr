@@ -2,16 +2,10 @@
 //! lifecycle commands for the zccache daemon and its per-session journal.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::daemon::db;
+use crate::daemon::protocol::CompileStatsInfo;
 use crate::zccache::managed_zccache_cache_dir;
-use crate::zccache_lifecycle::{
-    ZccacheDaemonExitPollResult, ZccacheLifecycle, ZccachePrivateDaemonConfig,
-    ZccacheSessionStartOptions,
-};
 use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
-
-use super::EMBEDDED_ZCCACHE_VERSION;
 
 #[derive(Serialize)]
 struct SessionStartOutput {
@@ -128,21 +122,19 @@ pub(crate) async fn run_session_start_command(
         }
     }
 
-    // soldr#1368: use the compiled-in zccache trampoline instead of an
-    // externally-downloaded managed binary.
-    let binary_path = crate::binaries::embedded_zccache_binary();
-    let mut lifecycle = ZccacheLifecycle::new(&binary_path, &zccache_dir);
-    let session = lifecycle.start_session(ZccacheSessionStartOptions {
-        id,
-        session_log_path: session_log_path.clone(),
-        journal_path: journal_path.clone(),
-        session_stats_path: session_stats_path.clone(),
-    })?;
+    // soldr#1368: sessions are no longer external zccache-daemon sessions.
+    // Mint a local id and capture a baseline of the soldr-daemon embedded
+    // zccache service's cumulative compile counters so `soldr session end`
+    // can diff against it. Best-effort: if the daemon isn't up yet, record
+    // a zero baseline (this session's compiles all count against it).
+    let session_id = id.unwrap_or_else(mint_session_id);
+    let baseline = embedded_compile_stats(&paths).unwrap_or_default();
+    write_session_baseline(&zccache_dir, &session_id, &baseline)?;
 
     let output = SessionStartOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "session-start",
-        session_id: session.session_id,
+        session_id,
         log_path: session_log_path.display().to_string(),
         journal_path: journal_path.display().to_string(),
         stats_path: session_stats_path.display().to_string(),
@@ -151,6 +143,88 @@ pub(crate) async fn run_session_start_command(
     };
     emit_session_start(&output, json)?;
     Ok(())
+}
+
+/// Generate a local build-session id (soldr#1368). No longer a zccache
+/// daemon session id — a blake3 of (pid, monotonic nanos) suffices.
+fn mint_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&nanos.to_le_bytes());
+    hex::encode(&hasher.finalize().as_bytes()[..12])
+}
+
+/// Query the soldr-daemon embedded zccache service for its cumulative
+/// compile counters. `None` when the daemon is not reachable.
+fn embedded_compile_stats(paths: &SoldrPaths) -> Option<CompileStatsInfo> {
+    let sock = crate::daemon::server::server_sock_path(paths);
+    crate::daemon::client::compile_stats(&sock).ok()
+}
+
+fn session_baseline_path(zccache_dir: &std::path::Path, session_id: &str) -> std::path::PathBuf {
+    zccache_dir
+        .join("logs")
+        .join(format!("session-{session_id}.baseline.json"))
+}
+
+fn write_session_baseline(
+    zccache_dir: &std::path::Path,
+    session_id: &str,
+    stats: &CompileStatsInfo,
+) -> Result<(), SoldrError> {
+    let path = session_baseline_path(zccache_dir, session_id);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let json = serde_json::to_string(stats)
+        .map_err(|e| SoldrError::Other(format!("failed to serialize session baseline: {e}")))?;
+    std::fs::write(&path, json)?;
+    Ok(())
+}
+
+fn read_session_baseline(
+    zccache_dir: &std::path::Path,
+    session_id: &str,
+) -> Option<CompileStatsInfo> {
+    let raw = std::fs::read_to_string(session_baseline_path(zccache_dir, session_id)).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+/// Diff a session-end stats snapshot against the session-start baseline
+/// into per-session `hits`/`misses`/`hit_rate`/… JSON. `None` when the
+/// daemon was unreachable at end (no current snapshot to diff).
+fn compute_session_stats(
+    baseline: Option<&CompileStatsInfo>,
+    current: Option<&CompileStatsInfo>,
+) -> Option<serde_json::Value> {
+    let (base, cur) = (baseline?, current?);
+    let hits = cur.cache_hits.saturating_sub(base.cache_hits);
+    let misses = cur.cache_misses.saturating_sub(base.cache_misses);
+    let non_cacheable = cur.non_cacheable.saturating_sub(base.non_cacheable);
+    let errors = cur.compile_errors.saturating_sub(base.compile_errors);
+    let compilations = cur.total_compilations.saturating_sub(base.total_compilations);
+    let time_saved_ms = cur.time_saved_ms.saturating_sub(base.time_saved_ms);
+    let denom = hits + misses;
+    let hit_rate = if denom > 0 {
+        hits as f64 / denom as f64
+    } else {
+        0.0
+    };
+    Some(serde_json::json!({
+        "status": "ok",
+        "hits": hits,
+        "misses": misses,
+        "non_cacheable": non_cacheable,
+        "errors": errors,
+        "compilations": compilations,
+        "time_saved_ms": time_saved_ms,
+        "hit_rate": hit_rate,
+    }))
 }
 
 fn emit_session_start(output: &SessionStartOutput, json: bool) -> Result<(), SoldrError> {
@@ -194,20 +268,22 @@ pub(crate) fn run_session_end_command(
 
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let binary_path = crate::binaries::embedded_zccache_binary();
 
-    let mut lifecycle = ZccacheLifecycle::new(&binary_path, &zccache_dir);
-    let result = lifecycle.end_session_json(&session_id)?;
-    let (stats, already_ended) = if result.already_ended {
-        (None, true)
+    // soldr#1368: diff the embedded zccache compile counters against the
+    // baseline captured at `session start`. A missing baseline means the
+    // session was never started here (or was already ended — the baseline
+    // is consumed on end), so this is a no-op idempotent second call.
+    let baseline = read_session_baseline(&zccache_dir, &session_id);
+    let already_ended = baseline.is_none();
+    let stats = if already_ended {
+        None
     } else {
-        let parsed = if result.stdout.trim().is_empty() {
-            None
-        } else {
-            serde_json::from_str::<serde_json::Value>(result.stdout.trim()).ok()
-        };
-        (parsed, false)
+        let current = embedded_compile_stats(&paths);
+        compute_session_stats(baseline.as_ref(), current.as_ref())
     };
+    // Consume the baseline so a second `session end` is a clean no-op
+    // (soldr#379 idempotency contract).
+    let _ = std::fs::remove_file(session_baseline_path(&zccache_dir, &session_id));
 
     let cleared = if clear {
         clear_session_artifacts(&zccache_dir)?
@@ -271,27 +347,24 @@ fn clear_session_artifacts(zccache_dir: &std::path::Path) -> Result<bool, SoldrE
 
 pub(crate) async fn run_cache_shutdown_command(
     archive_logs: Option<std::path::PathBuf>,
-    no_depgraph_save: bool,
-    shutdown_timeout_seconds: u64,
-    wait: bool,
+    _no_depgraph_save: bool,
+    _shutdown_timeout_seconds: u64,
+    _wait: bool,
     json: bool,
 ) -> Result<(), SoldrError> {
+    // soldr#1368: there is no separate managed zccache daemon to stop or
+    // poll. Durability of the soldr-daemon embedded zccache state is the
+    // real soldr#383 guarantee, delivered by FlushCaches. The legacy
+    // managed-daemon knobs (`--no-depgraph-save` / `--wait` / timeout) are
+    // accepted for CLI compatibility but no longer drive an external stop.
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let linked_private = linked_private_zccache_lifecycle(&paths);
-    let active_zccache_dir = linked_private
-        .as_ref()
-        .map(|(_, cache_dir)| cache_dir.clone())
-        .unwrap_or_else(|| zccache_dir.clone());
     let mut notes: Vec<String> = Vec::new();
 
-    // soldr#1368: back the lifecycle with the compiled-in zccache
-    // trampoline instead of a downloaded managed binary.
-    let embedded_binary = crate::binaries::embedded_zccache_binary();
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache shutdown",
-        cache_dir: active_zccache_dir.display().to_string(),
+        cache_dir: zccache_dir.display().to_string(),
         session_id: None,
         daemon_stopped: false,
         daemon_exited: false,
@@ -303,21 +376,15 @@ pub(crate) async fn run_cache_shutdown_command(
         .ok()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
-        Some(ZccacheLifecycle::new(&embedded_binary, &zccache_dir))
-    });
 
-    // Step 1: end the active session so zccache flushes the per-session
-    // journal before the daemon stops.
-    if let (Some(session_id), Some(lifecycle)) = (env_session_id.as_deref(), lifecycle.as_mut()) {
-        match lifecycle.end_session_json(session_id) {
-            Ok(_) => output.session_id = Some(session_id.to_string()),
-            Err(err) => notes.push(format!("session-end {session_id} failed: {err}")),
-        }
+    // End the active session (consume its stats baseline) so a following
+    // `session end` is a clean no-op.
+    if let Some(session_id) = env_session_id.as_deref() {
+        let _ = std::fs::remove_file(session_baseline_path(&zccache_dir, session_id));
+        output.session_id = Some(session_id.to_string());
     }
 
-    // Step 2: archive the session log/journal/stats into a per-session
-    // subdirectory so future runs do not overwrite the history.
+    // Archive the session log/journal/stats into a per-session subdir.
     if let Some(archive_root) = archive_logs.as_ref() {
         let session_id = output
             .session_id
@@ -328,16 +395,15 @@ pub(crate) async fn run_cache_shutdown_command(
         std::fs::create_dir_all(&target)?;
         let mut copied = 0u32;
         for path in [
-            crate::cache_lib::session_log_path(&active_zccache_dir),
-            crate::cache_lib::session_journal_path(&active_zccache_dir),
-            crate::cache_lib::session_stats_path(&active_zccache_dir),
+            crate::cache_lib::session_log_path(&zccache_dir),
+            crate::cache_lib::session_journal_path(&zccache_dir),
+            crate::cache_lib::session_stats_path(&zccache_dir),
         ] {
             if !path.exists() {
                 continue;
             }
             if let Some(filename) = path.file_name() {
-                let dest = target.join(filename);
-                std::fs::copy(&path, &dest)?;
+                std::fs::copy(&path, target.join(filename))?;
                 copied += 1;
             }
         }
@@ -348,91 +414,21 @@ pub(crate) async fn run_cache_shutdown_command(
         ));
     }
 
-    // Step 3: graceful daemon stop (triggers depgraph flush in zccache
-    // 1.8.x). `zccache stop` is synchronous and returns once the daemon
-    // process has exited.
-    if let Some(lifecycle) = lifecycle.as_mut() {
-        let stop_result = lifecycle.stop(no_depgraph_save)?;
-        if stop_result.unsupported_no_depgraph_save {
-            notes.push(
-                "zccache stop does not support --no-depgraph-save; retrying with default flush"
-                    .into(),
-            );
-        }
-        if stop_result.stopped {
+    // Make the embedded zccache state durable on disk (soldr#383 / #1286).
+    let sock = crate::daemon::server::server_sock_path(&paths);
+    match crate::daemon::client::flush_caches(&sock) {
+        Ok(()) => {
             output.daemon_stopped = true;
-        } else if stop_result.already_stopped {
-            notes.push("daemon was already stopped".into());
-        } else if let Some(failure) = stop_result.failure {
-            notes.push(format!("zccache stop failed: {failure}"));
+            output.daemon_exited = true;
+            notes.push("embedded zccache state flushed via soldr-daemon".into());
         }
-    } else {
-        notes.push("managed zccache binary not yet fetched; nothing to stop".into());
-    }
-
-    // Step 4 (soldr#383): block until the daemon process has actually
-    // exited. `zccache stop` returns before the OS has reaped the
-    // daemon, so without this poll the caller (setup-soldr's post step)
-    // races the daemon's still-in-flight depgraph save with its
-    // `tar | zstd` of the cache directory. The result reproduced in
-    // soldr#383's evidence: zero warm-run cache hits because the
-    // depgraph file was never durable on disk by the time the tar
-    // started.
-    //
-    // Poll `zccache status` (the same surface the user runs by hand)
-    // every 100ms until it reports the daemon is gone, or until the
-    // shutdown deadline elapses. We deliberately use the existing
-    // `daemon not running` heuristic so the polling code does not need
-    // to know zccache's IPC layout.
-    let mut polled_for_exit = false;
-    if wait && output.daemon_stopped {
-        if let Some(lifecycle) = lifecycle.as_ref() {
-            polled_for_exit = true;
-            match lifecycle
-                .poll_daemon_exit(std::time::Duration::from_secs(shutdown_timeout_seconds))
-            {
-                ZccacheDaemonExitPollResult::Exited => {
-                    output.daemon_exited = true;
-                }
-                ZccacheDaemonExitPollResult::TimedOut => {
-                    notes.push(format!(
-                        "daemon did not exit within {shutdown_timeout_seconds}s after `zccache stop`; depgraph state may not be durable on disk"
-                    ));
-                }
-                ZccacheDaemonExitPollResult::PollFailed(err) => {
-                    notes.push(format!(
-                        "could not confirm daemon exit (polling `zccache status` failed): {err}"
-                    ));
-                }
-            }
-        }
-    }
-    if !wait {
-        notes.push("polling disabled via --no-wait; daemon exit not confirmed".into());
-    }
-
-    // Step 5 (#1286 F1): the steps above only quiesce the MANAGED
-    // zccache daemon (the C/C++ side). The rustc side lives in the
-    // soldr-daemon's embedded zccache service, whose artifact index +
-    // depgraph were memory-only until a graceful daemon exit — the
-    // exact same zero-warm-hit archive race soldr#383 fixed for the
-    // managed daemon, one layer up. FlushCaches is synchronous: when
-    // it returns, the embedded state is durable and a following
-    // `soldr save` / tar sees a complete cache tree.
-    {
-        let sock = crate::daemon::server::server_sock_path(&paths);
-        match crate::daemon::client::flush_caches(&sock) {
-            Ok(()) => notes.push("embedded zccache state flushed via soldr-daemon".into()),
-            Err(err) => notes.push(format!(
-                "soldr-daemon embedded flush unavailable ({err:?}); on-disk \
-                 state is whatever the daemon last persisted"
-            )),
-        }
+        Err(err) => notes.push(format!(
+            "soldr-daemon embedded flush unavailable ({err:?}); on-disk state is \
+             whatever the daemon last persisted"
+        )),
     }
 
     output.notes = notes;
-
-    let timed_out = polled_for_exit && !output.daemon_exited;
 
     if json {
         let line = serde_json::to_string(&output)
@@ -447,28 +443,16 @@ pub(crate) async fn run_cache_shutdown_command(
             println!("  archive: {archive}");
         }
         println!(
-            "  daemon: {}",
-            if output.daemon_exited {
-                "exited"
-            } else if output.daemon_stopped {
-                "signalled (exit not confirmed)"
+            "  embedded zccache: {}",
+            if output.daemon_stopped {
+                "flushed"
             } else {
-                "no-op"
+                "flush unavailable"
             }
         );
         for note in &output.notes {
             println!("  note: {note}");
         }
-    }
-
-    if timed_out {
-        // soldr#383: surface a non-zero exit when the daemon outlives
-        // the polling deadline so the caller (CI) can fail loud
-        // instead of racing the depgraph flush with a `tar`. The
-        // human-readable note above already explains what happened.
-        return Err(SoldrError::Other(format!(
-            "cache shutdown: daemon process did not exit within {shutdown_timeout_seconds}s"
-        )));
     }
     Ok(())
 }
@@ -476,89 +460,31 @@ pub(crate) async fn run_cache_shutdown_command(
 pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError> {
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
-    let linked_private = linked_private_zccache_lifecycle(&paths);
-    let active_zccache_dir = linked_private
-        .as_ref()
-        .map(|(_, cache_dir)| cache_dir.clone())
-        .unwrap_or_else(|| zccache_dir.clone());
-    // soldr#1368: back the lifecycle with the compiled-in zccache
-    // trampoline instead of a downloaded managed binary.
-    let embedded_binary = crate::binaries::embedded_zccache_binary();
-
     let mut output = CacheFlushOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache flush",
-        cache_dir: active_zccache_dir.display().to_string(),
+        cache_dir: zccache_dir.display().to_string(),
         flushed: false,
         stats: None,
         notes: Vec::new(),
     };
 
-    // Issue #1286 (F1): also checkpoint the soldr-daemon's EMBEDDED
-    // zccache state (the rustc side). The managed-zccache flush below
-    // only covers the C/C++ daemon; without this, archives taken after
-    // `cache flush` were missing the embedded artifact index + depgraph
-    // and restored with zero rustc hits.
-    {
-        let sock = crate::daemon::server::server_sock_path(&paths);
-        match crate::daemon::client::flush_caches(&sock) {
-            Ok(()) => output
+    // soldr#1368: flush the soldr-daemon embedded zccache state to disk
+    // (artifact index, depgraph snapshot, metadata cache) so archives taken
+    // afterwards restore with warm rustc hits. There is no separate managed
+    // zccache daemon to flush any more.
+    let sock = crate::daemon::server::server_sock_path(&paths);
+    match crate::daemon::client::flush_caches(&sock) {
+        Ok(()) => {
+            output.flushed = true;
+            output
                 .notes
-                .push("embedded zccache state flushed via soldr-daemon".into()),
-            Err(err) => output.notes.push(format!(
-                "soldr-daemon embedded flush unavailable ({err:?}); on-disk \
-                 state is whatever the daemon last persisted"
-            )),
+                .push("embedded zccache state flushed via soldr-daemon".into());
         }
-    }
-
-    let mut lifecycle = linked_private.map(|(lifecycle, _)| lifecycle).or_else(|| {
-        Some(ZccacheLifecycle::new(&embedded_binary, &zccache_dir))
-    });
-
-    if let Some(lifecycle) = lifecycle.as_mut() {
-        // soldr#383 contract: ask zccache to fsync its in-memory
-        // depgraph (and any other state) to disk and return only once
-        // the bytes are durable. Prefer the JSON form so we can
-        // re-emit the upstream stats verbatim; fall back to plain
-        // `zccache flush` when the build does not yet support
-        // `--json`.
-        let result = lifecycle.flush()?;
-        output.flushed = result.flushed;
-        output.stats = result.stats;
-        if let Some(snippet) = result.invalid_json {
-            output.notes.push(format!(
-                "zccache flush --json stdout was not valid JSON: {snippet}"
-            ));
-        }
-        if result.json_unsupported && result.flushed {
-            output.notes.push(format!(
-                "zccache flush --json not supported by managed zccache {}; ran `zccache flush` instead",
-                EMBEDDED_ZCCACHE_VERSION
-            ));
-        }
-        if result.subcommand_unsupported {
-            output.notes.push(format!(
-                "managed zccache {} does not yet implement the `flush` subcommand; upgrade for soldr#383 CI checkpointing",
-                EMBEDDED_ZCCACHE_VERSION
-            ));
-        } else if result.already_stopped {
-            output.notes.push(
-                "daemon was not running; nothing to flush (state on disk is already durable)"
-                    .into(),
-            );
-        } else if let Some(failure) = result.failure {
-            let command = if result.json_unsupported {
-                "zccache flush"
-            } else {
-                "zccache flush --json"
-            };
-            return Err(SoldrError::Other(format!("{command} failed: {failure}")));
-        }
-    } else {
-        output
-            .notes
-            .push("managed zccache binary not yet fetched; nothing to flush".into());
+        Err(err) => output.notes.push(format!(
+            "soldr-daemon embedded flush unavailable ({err:?}); on-disk state is \
+             whatever the daemon last persisted"
+        )),
     }
 
     if json {
@@ -571,14 +497,6 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
             "  status: {}",
             if output.flushed { "flushed" } else { "no-op" }
         );
-        if let Some(stats) = &output.stats {
-            if let Some(bytes) = stats.get("bytes_written").and_then(|v| v.as_u64()) {
-                println!("  bytes_written: {bytes}");
-            }
-            if let Some(secs) = stats.get("duration_ms").and_then(|v| v.as_u64()) {
-                println!("  duration_ms: {secs}");
-            }
-        }
         for note in &output.notes {
             println!("  note: {note}");
         }
@@ -586,25 +504,6 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     Ok(())
 }
 
-pub(super) fn linked_private_zccache_lifecycle(
-    paths: &SoldrPaths,
-) -> Option<(ZccacheLifecycle, std::path::PathBuf)> {
-    let link = db::get_linked_zccache(&db::db_path(paths)).ok().flatten()?;
-    if !link.private_daemon {
-        return None;
-    }
-    let daemon_name = link.daemon_name?;
-    let binary_path = std::path::PathBuf::from(link.binary_path);
-    if !binary_path.exists() {
-        return None;
-    }
-    let cache_dir = std::path::PathBuf::from(link.cache_dir);
-    let mut private_daemon = ZccachePrivateDaemonConfig::new(daemon_name);
-    private_daemon.owner_pid = link.owner_pid;
-    let lifecycle =
-        ZccacheLifecycle::new(binary_path, &cache_dir).with_private_daemon(private_daemon);
-    Some((lifecycle, cache_dir))
-}
 
 #[cfg(test)]
 mod tests {
