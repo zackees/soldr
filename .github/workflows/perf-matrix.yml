@@ -578,6 +578,13 @@ jobs:
         if: steps.gate.outputs.selected == 'true'
         env:
           MIN_SPEEDUP:   ${{ matrix.min_speedup }}
+          # Minimum warm Rust hit rate for the C-floored `sqlite-link`
+          # cold-tar-untar-warm cell (see mode_for + the hit-rate gate
+          # below). soldr is RUSTC_WRAPPER-only, so the bundled-libsqlite3
+          # C compile is never cached and caps that fixture's speedup near
+          # ~1.2x — the Rust hit rate, not speedup, is what proves the
+          # restored cache still serves. Healthy runs sit at ~0.93-1.0.
+          MIN_HIT_RATE:  "0.80"
           REQ_FIXTURES:  ${{ needs.setup.outputs.fixtures }}
           REQ_SCENARIOS: ${{ needs.setup.outputs.scenarios }}
           M_PLATFORM:    ${{ matrix.platform }}
@@ -601,9 +608,21 @@ jobs:
           # `soldr save` / `cache flush` / `cache shutdown` now
           # checkpoint the embedded state (Request::FlushCaches), so a
           # sub-threshold speedup here is a real regression again.
+          # cold-tar-untar-warm is hard-gated on SPEEDUP for the Rust-only
+          # `medium` fixture: a sub-MIN_SPEEDUP result there means the
+          # restored cache stopped serving rustc hits (the #1146/#1148
+          # "zero rustc hits" regression). For `sqlite-link` the warm build
+          # is FLOORED by the ~40s bundled-libsqlite3 C compile (cc-rs ->
+          # gcc, NOT wrapped by zccache, which is RUSTC_WRAPPER-only), so
+          # even a 100%-Rust-hit warm build tops out near ~1.2x
+          # (touch-no-change: 100% hits, still 1.16x). Speedup is the wrong
+          # metric there — that cell is gated on the Rust HIT RATE instead
+          # (see the MIN_HIT_RATE block below) and speedup is informational.
           mode_for() {
-            case "$1" in
-              cold-tar-untar-warm) echo "fail" ;;
+            local fixture="$1" scenario="$2"
+            case "${scenario}" in
+              cold-tar-untar-warm)
+                if [[ "${fixture}" == "sqlite-link" ]]; then echo "warn"; else echo "fail"; fi ;;
               worktree-share|touch-no-change|build-then-check) echo "warn" ;;
               *) echo "warn" ;;
             esac
@@ -664,7 +683,7 @@ jobs:
                 continue
               fi
 
-              mode="$(mode_for "${scenario}")"
+              mode="$(mode_for "${fixture}" "${scenario}")"
               cold_key="$(cold_key_for "${scenario}")"
               warm_key="$(warm_key_for "${scenario}")"
               hits_key="$(hits_key_for "${scenario}")"
@@ -745,6 +764,25 @@ jobs:
                 else
                   echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | >= ${MIN_SPEEDUP}x | warn | WARN |" >> "$GITHUB_STEP_SUMMARY"
                   echo "::warning::${fixture}/${scenario} only ${speedup}x faster (need >= ${MIN_SPEEDUP}x); soft gate — not failing today"
+                fi
+              fi
+
+              # Hard hit-rate gate for the C-floored sqlite-link cell. Its
+              # speedup can't reach MIN_SPEEDUP (uncached bundled-libsqlite3
+              # C compile dominates warm_ms), so speedup is warn-only above —
+              # but the restored Rust cache MUST still serve. If it stops
+              # (the #1146/#1148 "zero rustc hits" regression) the hit rate
+              # craters, and that we DO hard-fail on.
+              if [[ "${fixture}" == "sqlite-link" && "${scenario}" == "cold-tar-untar-warm" ]]; then
+                hit_rate="$(awk -v h="${hits}" -v m="${misses}" 'BEGIN { t=h+m; printf "%.4f", (t>0)? h/t : 0 }')"
+                hr_pass="$(awk -v r="${hit_rate}" -v t="${MIN_HIT_RATE}" 'BEGIN { print (r >= t) ? "1" : "0" }')"
+                if [[ "${hr_pass}" == "1" ]]; then
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | hit-rate >= ${MIN_HIT_RATE} | fail | PASS |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "${fixture}/${scenario}: Rust hit-rate ${hit_rate} >= ${MIN_HIT_RATE} — PASS (speedup ${speedup}x C-floored, informational)"
+                else
+                  echo "| ${fixture} | ${scenario} | ${cold_ms} | ${warm_ms} | ${speedup}x | ${hits}/${misses} | hit-rate >= ${MIN_HIT_RATE} | fail | FAIL |" >> "$GITHUB_STEP_SUMMARY"
+                  echo "::error::${fixture}/${scenario} Rust hit-rate ${hit_rate} < ${MIN_HIT_RATE} — restored cache is not serving rustc hits (regression)"
+                  status=1
                 fi
               fi
             done
