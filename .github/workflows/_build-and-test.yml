@@ -43,10 +43,9 @@ jobs:
     runs-on: ${{ inputs.runner }}
     env:
       GH_TOKEN: ${{ github.token }}
-      # Managed zccache is fetched from zackees/zccache, which is a
-      # cross-repo GitHub Releases lookup from this workflow. Use soldr's
-      # explicit opt-in token env so release metadata requests are
-      # authenticated without weakening the generic GITHUB_TOKEN guard.
+      # soldr still fetches managed support tools from GitHub Releases.
+      # Use soldr's explicit opt-in token env so release metadata requests
+      # are authenticated without weakening the generic GITHUB_TOKEN guard.
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always

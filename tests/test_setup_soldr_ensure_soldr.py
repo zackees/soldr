@@ -70,21 +70,16 @@ def test_export_bundle_env_writes_local_dirs_when_bundle_present(
     github_env = tmp_path / "github.env"
     suffix = ".exe" if module.os.name == "nt" else ""
 
-    for base in module.ZCCACHE_BUNDLED_BINARIES + (
-        module.CRGX_BUNDLED_BINARY,
-        module.CARGO_CHEF_BUNDLED_BINARY,
-    ):
+    for base in (module.CRGX_BUNDLED_BINARY, module.CARGO_CHEF_BUNDLED_BINARY):
         install_dir.joinpath(f"{base}{suffix}").write_text("binary", encoding="utf-8")
 
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
-    monkeypatch.delenv(module.ZCCACHE_LOCAL_DIR_ENV, raising=False)
     monkeypatch.delenv(module.CRGX_LOCAL_DIR_ENV, raising=False)
     monkeypatch.delenv(module.CARGO_CHEF_LOCAL_DIR_ENV, raising=False)
 
     module._export_bundle_env(install_dir)
 
     assert github_env.read_text(encoding="utf-8") == (
-        f"{module.ZCCACHE_LOCAL_DIR_ENV}={install_dir}\n"
         f"{module.CRGX_LOCAL_DIR_ENV}={install_dir}\n"
         f"{module.CARGO_CHEF_LOCAL_DIR_ENV}={install_dir}\n"
     )
@@ -100,14 +95,10 @@ def test_export_bundle_env_preserves_explicit_overrides(
     github_env = tmp_path / "github.env"
     suffix = ".exe" if module.os.name == "nt" else ""
 
-    for base in module.ZCCACHE_BUNDLED_BINARIES + (
-        module.CRGX_BUNDLED_BINARY,
-        module.CARGO_CHEF_BUNDLED_BINARY,
-    ):
+    for base in (module.CRGX_BUNDLED_BINARY, module.CARGO_CHEF_BUNDLED_BINARY):
         install_dir.joinpath(f"{base}{suffix}").write_text("binary", encoding="utf-8")
 
     monkeypatch.setenv("GITHUB_ENV", str(github_env))
-    monkeypatch.setenv(module.ZCCACHE_LOCAL_DIR_ENV, str(tmp_path / "zccache-override"))
     monkeypatch.setenv(module.CRGX_LOCAL_DIR_ENV, str(tmp_path / "crgx-override"))
     monkeypatch.setenv(module.CARGO_CHEF_LOCAL_DIR_ENV, str(tmp_path / "chef-override"))
 

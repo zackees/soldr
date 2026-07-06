@@ -9,6 +9,9 @@
     "sha256_algorithm": "sha256",
     "required_binaries": [
       "soldr",
+      "soldr-daemon",
+      "soldr-shim",
+      "soldr-clang-shim",
       "crgx",
       "cargo-chef"
     ],
@@ -16,7 +19,7 @@
   },
   "zccache": {
     "embedded": true,
-    "note": "zccache ships as a compiled-in soldr `[[bin]]` (soldr#1368); no managed download.",
+    "note": "zccache is embedded into soldr/soldr-daemon (soldr#1368); no standalone zccache binaries are bundled or downloaded.",
     "cache_dir_env": "ZCCACHE_CACHE_DIR"
   },
   "crgx": {

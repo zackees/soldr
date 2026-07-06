@@ -454,18 +454,28 @@ pub(crate) enum Commands {
     )]
     Load(save_load::LoadArgs),
 
-    /// Bundle the built soldr binary + managed sidecars into a deployable .tar.zst
+    /// Bundle or extract a soldr release .tar.zst archive
     #[command(
-        long_about = "Bundle a previously-built `soldr` release binary together with its managed-tool sidecars (zccache trio + bundled crgx/cargo-chef when cached) into a single `.tar.zst` archive that can be dropped onto a CI runner and unpacked.\n\nThis is the in-tree counterpart to the multi-step packaging the release workflow performs in `.github/workflows/release-auto.yml`. The release pipeline still owns its own staging step today; `soldr archive` is the local/developer-facing path that produces an equivalent archive layout without leaving the host.\n\nResolution:\n  * `--target` defaults to the auto-detected host triple.\n  * The soldr binary is expected at `target/<triple>/release/soldr[.exe]`. If missing, the command errors with a directive to run `soldr cargo build --release --target <triple>` first.\n  * Sidecars are pulled from the same managed cache `soldr cargo ...` populates (`~/.soldr/bin/zccache-<version>/`, etc.). Missing required sidecars (the zccache trio) are a hard error; missing optional sidecars (crgx, cargo-chef) are silently skipped.\n\nThe output is a flat `.tar.zst` (zstd level 19) — every entry sits at the archive root."
+        long_about = "Bundle a previously-built `soldr` release binary together with its sidecars into a single `.tar.zst` archive, or extract one for validation.\n\nBy default, `soldr archive` resolves the built soldr binary from `target/<triple>/release/` and optional managed tool sidecars from the soldr cache. In release CI, pass `--stage-dir <DIR>` to compress an already-validated staging directory with soldr's in-process zstd encoder instead of shelling out to `tar | zstd`. For smoke tests, pass `--input <FILE> --extract-dir <DIR>` to extract through soldr's in-process zstd decoder.\n\nThe output is a flat `.tar.zst` (zstd level 19) — every entry sits at the archive root unless `--stage-dir` contains a nested sidecar directory such as a dSYM bundle."
     )]
     Archive {
         /// Target triple to bundle for. Defaults to the auto-detected
         /// host triple.
         #[arg(long, value_name = "TRIPLE")]
         target: Option<String>,
+        /// Existing staging directory to archive as-is. Used by release
+        /// CI after it has staged and validated every required binary.
+        #[arg(long, value_name = "DIR")]
+        stage_dir: Option<std::path::PathBuf>,
+        /// Existing soldr release archive to extract.
+        #[arg(long, value_name = "FILE")]
+        input: Option<std::path::PathBuf>,
+        /// Destination directory for `--input` extraction.
+        #[arg(long, value_name = "DIR")]
+        extract_dir: Option<std::path::PathBuf>,
         /// Destination archive path. Suggest the `.tar.zst` suffix.
         #[arg(long, value_name = "FILE")]
-        output: std::path::PathBuf,
+        output: Option<std::path::PathBuf>,
     },
 
     /// Prepare the cross-compile toolchain for a target triple

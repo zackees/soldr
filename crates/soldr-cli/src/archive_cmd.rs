@@ -1,14 +1,11 @@
-//! `soldr archive` — bundle a built `soldr` binary plus its optional
-//! tool sidecars (`crgx`, `cargo-chef`) into a single deployable
-//! `.tar.zst` archive. As of soldr#1368 the zccache CLI is compiled
-//! into `soldr`'s own `[[bin]]`, so the archive no longer stages an
-//! externally-downloaded `zccache` / `zccache-daemon` / `zccache-fp`
-//! trio.
+//! `soldr archive` - bundle a built `soldr` binary plus its soldr-owned
+//! sidecars and bundled tools (`crgx`, `cargo-chef`) into
+//! a single deployable `.tar.zst` archive.
 //!
-//! Issue #858 (sub-issue of #853): the release workflow currently
-//! hand-rolls this packaging in a long YAML shell step that fetches the
-//! matching zccache release, source-builds crgx + cargo-chef, stages
-//! everything under `dist/package/`, and pipes a `tar` into `zstd -19`.
+//! Issue #858 (sub-issue of #853): the release workflow used to hand-roll
+//! this packaging in a long YAML shell step that fetched the matching
+//! zccache release, source-built crgx + cargo-chef, staged everything
+//! under `dist/package/`, and piped a `tar` into `zstd -19`.
 //! That logic is brittle (cross-platform `find`/`sed`/`tar` flag drift)
 //! and hard to test outside CI. This subcommand ports the staging +
 //! compression half into Rust so any developer can locally produce a
@@ -26,19 +23,21 @@
 //! root (every entry is intentionally one level deep — matches the
 //! release-workflow contract `setup-soldr` already consumes):
 //!
-//! - `soldr` / `soldr.exe`                  — the staged binary (also
-//!   carries the compiled-in zccache CLI via its `zccache` `[[bin]]`).
-//! - `crgx` / `crgx.exe`                    — bundled crgx (optional).
-//! - `cargo-chef` / `cargo-chef.exe`        — bundled cargo-chef (optional).
-//! - `manifest.json`                        — minimal descriptor (soldr
-//!   version + target + embedded zccache version + entry list).
+//! - `soldr` / `soldr.exe` - the staged binary.
+//! - `soldr-daemon`, `soldr-shim`, and `soldr-clang-shim` - soldr-owned
+//!   sidecar binaries.
+//! - `crgx` / `crgx.exe` - bundled crgx (optional).
+//! - `cargo-chef` / `cargo-chef.exe` - bundled cargo-chef (optional).
+//! - `manifest.json` - minimal descriptor (soldr version + target +
+//!   embedded zccache version + entry list).
 //!
 //! ## Sidecar resolution
 //!
-//! Only `crgx` and `cargo-chef` are staged, each looked up under the
+//! The soldr-owned sidecars are resolved from the same build target
+//! directory as `soldr`. `crgx` and `cargo-chef` are looked up under the
 //! managed-cache layout `<SoldrPaths::bin>/<crate>-<version>/<binary>`.
-//! Both are optional — a missing sidecar is simply omitted, never
-//! network-fetched, which keeps `soldr archive` hermetic and testable.
+//! Both bundled tools are optional: a missing tool is simply omitted,
+//! never network-fetched, which keeps `soldr archive` hermetic and testable.
 //!
 //! Tests inject fake binaries via the `ArchiveSources` struct so the
 //! whole pipeline can be exercised without touching `~/.soldr`.
@@ -59,9 +58,10 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 
 /// Version of the compiled-in embedded zccache library, recorded in the
 /// archive manifest (soldr#1368). The externally-downloaded managed
-/// zccache trio is no longer staged — soldr ships the zccache CLI as a
-/// compiled-in `[[bin]]` — so this is informational only.
+/// zccache trio is no longer staged. zccache itself is embedded into
+/// soldr/soldr-daemon, so this is informational only.
 const EMBEDDED_ZCCACHE_VERSION: &str = zccache::core::VERSION;
+const SOLDR_SIDECAR_ARCHIVE_BINARIES: &[&str] = &["soldr-daemon", "soldr-shim", "soldr-clang-shim"];
 
 /// zstd compression level for `soldr archive` output. Matches the
 /// release-workflow setting documented in `.github/workflows/release-auto.yml`
@@ -109,7 +109,48 @@ pub struct ArchiveReport {
 }
 
 /// Top-level CLI dispatch. Wired from `Commands::Archive` in `main.rs`.
-pub fn run(target: Option<String>, output: PathBuf) -> Result<(), SoldrError> {
+pub fn run(
+    target: Option<String>,
+    output: Option<PathBuf>,
+    stage_dir: Option<PathBuf>,
+    input: Option<PathBuf>,
+    extract_dir: Option<PathBuf>,
+) -> Result<(), SoldrError> {
+    match (input, extract_dir) {
+        (Some(input), Some(extract_dir)) => {
+            let count = extract_archive(&input, &extract_dir)?;
+            println!(
+                "soldr archive: extracted {} into {} ({} entries)",
+                input.display(),
+                extract_dir.display(),
+                count,
+            );
+            return Ok(());
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err(SoldrError::Other(
+                "`soldr archive --input` requires `--extract-dir`".into(),
+            ));
+        }
+        (None, None) => {}
+    }
+
+    let output = output.ok_or_else(|| {
+        SoldrError::Other("`soldr archive` requires `--output` when not extracting".into())
+    })?;
+
+    if let Some(stage_dir) = stage_dir {
+        let report = build_stage_dir_archive(&stage_dir, &output)?;
+        println!(
+            "soldr archive: wrote {} from {} ({} bytes, {} entries)",
+            report.output.display(),
+            stage_dir.display(),
+            report.bytes,
+            report.entries.len(),
+        );
+        return Ok(());
+    }
+
     let paths = SoldrPaths::new()?;
     let target = match target {
         Some(t) => TargetTriple::from_triple(&t)?,
@@ -150,13 +191,24 @@ pub fn resolve_sources(
         )));
     }
 
-    // soldr#1368: the archive no longer stages the externally-downloaded
-    // managed `zccache` / `zccache-daemon` / `zccache-fp` trio — the
-    // zccache CLI is compiled into soldr's own build (the `zccache`
-    // `[[bin]]`), and rustc compile caching runs through the soldr-daemon
-    // embedded service. The archive ships only `soldr` plus any
-    // non-zccache optional sidecars.
-    let required = Vec::new();
+    let release_dir = cwd.join("target").join(&triple).join("release");
+    let mut required = Vec::new();
+    for stem in SOLDR_SIDECAR_ARCHIVE_BINARIES {
+        let binary_name = format!("{stem}{exe_suffix}");
+        let source = release_dir.join(&binary_name);
+        if !source.is_file() {
+            return Err(SoldrError::Other(format!(
+                "soldr sidecar binary not found at {} - run `soldr cargo build --release --target {} --package soldr-cli --bins` first",
+                source.display(),
+                triple,
+            )));
+        }
+        required.push(ArchiveEntry {
+            archive_name: binary_name,
+            source,
+            sha256: None,
+        });
+    }
 
     // Optional sidecars: crgx + cargo-chef are looked up under the
     // same managed-cache layout (`<bin>/<crate>-<version>/<binary>`).
@@ -297,6 +349,163 @@ pub fn build_archive(sources: &ArchiveSources, output: &Path) -> Result<ArchiveR
     })
 }
 
+/// Compress an already-staged release directory into a deterministic
+/// `.tar.zst` archive using soldr's in-process zstd encoder.
+pub fn build_stage_dir_archive(
+    stage_dir: &Path,
+    output: &Path,
+) -> Result<ArchiveReport, SoldrError> {
+    if !stage_dir.is_dir() {
+        return Err(SoldrError::Other(format!(
+            "stage directory not found: {}",
+            stage_dir.display(),
+        )));
+    }
+    if let Some(parent) = output.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(SoldrError::Io)?;
+        }
+    }
+
+    let staged = collect_stage_files(stage_dir)?;
+    if staged.is_empty() {
+        return Err(SoldrError::Other(format!(
+            "stage directory is empty: {}",
+            stage_dir.display(),
+        )));
+    }
+
+    let out_file = File::create(output)
+        .map_err(|e| SoldrError::Other(format!("create {}: {e}", output.display())))?;
+    let out_buf = BufWriter::with_capacity(4 * 1024 * 1024, out_file);
+    let mut encoder = zstd::stream::write::Encoder::new(out_buf, ARCHIVE_ZSTD_LEVEL)
+        .map_err(|e| SoldrError::Other(format!("zstd init: {e}")))?;
+    let workers = std::thread::available_parallelism()
+        .map(|n| n.get() as u32)
+        .unwrap_or(1);
+    encoder
+        .multithread(workers)
+        .map_err(|e| SoldrError::Other(format!("zstd multithread: {e}")))?;
+
+    let mut entries = Vec::with_capacity(staged.len());
+    {
+        let mut builder = tar::Builder::new(&mut encoder);
+        builder.mode(tar::HeaderMode::Deterministic);
+        for (archive_name, source) in &staged {
+            append_stage_file(&mut builder, source, archive_name)?;
+            entries.push(ArchiveEntry {
+                archive_name: archive_name.clone(),
+                source: source.clone(),
+                sha256: None,
+            });
+        }
+        builder
+            .finish()
+            .map_err(|e| SoldrError::Other(format!("tar finish: {e}")))?;
+    }
+
+    let writer = encoder
+        .finish()
+        .map_err(|e| SoldrError::Other(format!("zstd finish: {e}")))?;
+    writer
+        .into_inner()
+        .map_err(|e| SoldrError::Other(format!("flush archive: {}", e.into_error())))?;
+
+    let bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
+    Ok(ArchiveReport {
+        output: output.to_path_buf(),
+        bytes,
+        entries,
+    })
+}
+
+pub fn extract_archive(input: &Path, extract_dir: &Path) -> Result<usize, SoldrError> {
+    std::fs::create_dir_all(extract_dir)
+        .map_err(|e| SoldrError::Other(format!("create {}: {e}", extract_dir.display())))?;
+    let file = File::open(input)
+        .map_err(|e| SoldrError::Other(format!("open {}: {e}", input.display())))?;
+    let decoder = zstd::stream::read::Decoder::new(file)
+        .map_err(|e| SoldrError::Other(format!("zstd decode {}: {e}", input.display())))?;
+    let mut archive = tar::Archive::new(decoder);
+    let mut count = 0usize;
+    for entry in archive
+        .entries()
+        .map_err(|e| SoldrError::Other(format!("read tar {}: {e}", input.display())))?
+    {
+        let mut entry = entry.map_err(|e| SoldrError::Other(format!("read tar entry: {e}")))?;
+        entry.unpack_in(extract_dir).map_err(|e| {
+            SoldrError::Other(format!("extract into {}: {e}", extract_dir.display()))
+        })?;
+        count += 1;
+    }
+    Ok(count)
+}
+
+fn collect_stage_files(stage_dir: &Path) -> Result<Vec<(String, PathBuf)>, SoldrError> {
+    let mut out = Vec::new();
+    collect_stage_files_inner(stage_dir, stage_dir, &mut out)?;
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+fn collect_stage_files_inner(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<(), SoldrError> {
+    let read = std::fs::read_dir(dir)
+        .map_err(|e| SoldrError::Other(format!("read dir {}: {e}", dir.display())))?;
+    for entry in read {
+        let entry =
+            entry.map_err(|e| SoldrError::Other(format!("read dir {}: {e}", dir.display())))?;
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|e| SoldrError::Other(format!("stat {}: {e}", path.display())))?;
+        if file_type.is_dir() {
+            collect_stage_files_inner(root, &path, out)?;
+        } else if file_type.is_file() {
+            let rel = path
+                .strip_prefix(root)
+                .map_err(|e| SoldrError::Other(format!("stage path escape: {e}")))?;
+            let archive_name = rel
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            out.push((archive_name, path));
+        }
+    }
+    Ok(())
+}
+
+fn append_stage_file<W: Write>(
+    builder: &mut tar::Builder<W>,
+    source: &Path,
+    archive_name: &str,
+) -> Result<(), SoldrError> {
+    let meta = std::fs::metadata(source)
+        .map_err(|e| SoldrError::Other(format!("stat {}: {e}", source.display())))?;
+    let mut file = File::open(source)
+        .map_err(|e| SoldrError::Other(format!("open {}: {e}", source.display())))?;
+    let mut header = tar::Header::new_gnu();
+    header.set_size(meta.len());
+    header.set_mode(stage_file_mode(archive_name));
+    header.set_mtime(0);
+    header.set_cksum();
+    builder
+        .append_data(&mut header, archive_name, &mut file)
+        .map_err(|e| SoldrError::Other(format!("append {archive_name}: {e}")))?;
+    Ok(())
+}
+
+fn stage_file_mode(archive_name: &str) -> u32 {
+    let lower = archive_name.to_ascii_lowercase();
+    if lower == "manifest.json" || lower.ends_with(".pdb") {
+        0o644
+    } else {
+        0o755
+    }
+}
+
 fn append_file<W: Write>(
     builder: &mut tar::Builder<W>,
     source: &Path,
@@ -398,27 +607,27 @@ mod tests {
 
     fn synthesize_sources(stage: &Path, target: &str) -> ArchiveSources {
         let soldr = write_fake(stage, "soldr", b"fake-soldr-bin");
-        let zcc = write_fake(stage, "zccache", b"fake-zccache");
-        let zccd = write_fake(stage, "zccache-daemon", b"fake-zccache-daemon");
-        let zccfp = write_fake(stage, "zccache-fp", b"fake-zccache-fp");
+        let daemon = write_fake(stage, "soldr-daemon", b"fake-soldr-daemon");
+        let shim = write_fake(stage, "soldr-shim", b"fake-soldr-shim");
+        let clang_shim = write_fake(stage, "soldr-clang-shim", b"fake-soldr-clang-shim");
         let crgx = write_fake(stage, "crgx", b"fake-crgx");
         let chef = write_fake(stage, "cargo-chef", b"fake-cargo-chef");
         ArchiveSources {
             soldr_binary: soldr,
             required: vec![
                 ArchiveEntry {
-                    archive_name: "zccache".into(),
-                    source: zcc,
+                    archive_name: "soldr-daemon".into(),
+                    source: daemon,
                     sha256: None,
                 },
                 ArchiveEntry {
-                    archive_name: "zccache-daemon".into(),
-                    source: zccd,
+                    archive_name: "soldr-shim".into(),
+                    source: shim,
                     sha256: None,
                 },
                 ArchiveEntry {
-                    archive_name: "zccache-fp".into(),
-                    source: zccfp,
+                    archive_name: "soldr-clang-shim".into(),
+                    source: clang_shim,
                     sha256: None,
                 },
             ],
@@ -525,9 +734,9 @@ mod tests {
         let entries = list_archive_entries(&out);
         for expected in [
             "soldr",
-            "zccache",
-            "zccache-daemon",
-            "zccache-fp",
+            "soldr-daemon",
+            "soldr-shim",
+            "soldr-clang-shim",
             "crgx",
             "cargo-chef",
             "manifest.json",
@@ -585,6 +794,70 @@ mod tests {
         assert!(
             entries.iter().any(|e| e == "soldr.exe"),
             "windows archive must contain soldr.exe, got: {entries:?}",
+        );
+    });
+
+    crate::timed_test!(stage_dir_archive_preserves_existing_manifest, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stage = tmp.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        write_fake(&stage, "soldr", b"fake-soldr-bin");
+        write_fake(&stage, "manifest.json", br#"{"schema_version":3}"#);
+        let out = tmp.path().join("stage.tar.zst");
+
+        let report = build_stage_dir_archive(&stage, &out).expect("stage archive");
+        assert_eq!(report.entries.len(), 2);
+        let entries = list_archive_entries(&out);
+        assert_eq!(
+            entries,
+            vec!["manifest.json".to_string(), "soldr".to_string()]
+        );
+        let manifest = read_archive_file(&out, "manifest.json").expect("manifest");
+        assert_eq!(manifest, br#"{"schema_version":3}"#);
+    });
+
+    crate::timed_test!(stage_dir_archive_includes_nested_sidecar_files, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stage = tmp.path().join("stage");
+        let nested = stage
+            .join("soldr.dSYM")
+            .join("Contents")
+            .join("Resources")
+            .join("DWARF");
+        std::fs::create_dir_all(&nested).unwrap();
+        write_fake(&stage, "soldr", b"fake-soldr-bin");
+        write_fake(&nested, "soldr", b"fake-dsym");
+        let out = tmp.path().join("stage.tar.zst");
+
+        build_stage_dir_archive(&stage, &out).expect("stage archive");
+        let entries = list_archive_entries(&out);
+        assert!(
+            entries
+                .iter()
+                .any(|e| e == "soldr.dSYM/Contents/Resources/DWARF/soldr"),
+            "archive must contain nested dSYM payload, got: {entries:?}",
+        );
+    });
+
+    crate::timed_test!(extract_archive_round_trips_stage_dir_archive, {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let stage = tmp.path().join("stage");
+        std::fs::create_dir_all(&stage).unwrap();
+        write_fake(&stage, "soldr", b"fake-soldr-bin");
+        write_fake(&stage, "manifest.json", br#"{"schema_version":3}"#);
+        let out = tmp.path().join("stage.tar.zst");
+        build_stage_dir_archive(&stage, &out).expect("stage archive");
+
+        let extract = tmp.path().join("extract");
+        let count = extract_archive(&out, &extract).expect("extract");
+        assert_eq!(count, 2);
+        assert_eq!(
+            std::fs::read(extract.join("soldr")).expect("soldr"),
+            b"fake-soldr-bin",
+        );
+        assert_eq!(
+            std::fs::read(extract.join("manifest.json")).expect("manifest"),
+            br#"{"schema_version":3}"#,
         );
     });
 }

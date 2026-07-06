@@ -13,10 +13,10 @@ const ARCHIVE_EXT = CONTRACT.release_archive.extension;
 const MANIFEST_NAME = CONTRACT.release_archive.manifest_name;
 const MANIFEST_MIN_SCHEMA_VERSION = CONTRACT.release_archive.manifest_min_schema_version;
 const RELEASE_BUNDLED_BINARIES = Object.freeze([...CONTRACT.release_archive.required_binaries]);
-// zccache is compiled into soldr (soldr#1368); no standalone zccache
-// binaries are bundled or downloaded, so this list is empty.
+// zccache is embedded into soldr/soldr-daemon; no standalone zccache
+// binaries are bundled or downloaded.
 const ZCCACHE_BUNDLED_BINARIES = Object.freeze([
-  ...(CONTRACT.zccache.required_binaries || []),
+  ...((CONTRACT.zccache && CONTRACT.zccache.required_binaries) || []),
 ]);
 const CRGX_BUNDLED_BINARY = CONTRACT.crgx.required_binaries[0];
 const CARGO_CHEF_BUNDLED_BINARY = CONTRACT.cargo_chef.required_binaries[0];
@@ -30,6 +30,9 @@ function releaseBinaryNames(platform = process.platform) {
 }
 
 function zccacheTargetForSoldrTarget(soldrTarget) {
+  if (CONTRACT.zccache && CONTRACT.zccache.embedded === true) {
+    return soldrTarget;
+  }
   if (!soldrTarget.includes("-unknown-linux-")) {
     return soldrTarget;
   }
@@ -45,6 +48,12 @@ function collectManifestBinaries(manifest) {
   const binaries = new Map();
   if (manifest.soldr && manifest.soldr.binary && manifest.soldr.sha256) {
     binaries.set(manifest.soldr.binary, manifest.soldr.sha256);
+  }
+  const soldrSidecars = (manifest.soldr && manifest.soldr.sidecars) || [];
+  for (const entry of soldrSidecars) {
+    if (entry && entry.name && entry.sha256) {
+      binaries.set(entry.name, entry.sha256);
+    }
   }
   const zccacheBinaries = (manifest.zccache && manifest.zccache.binaries) || [];
   for (const entry of zccacheBinaries) {
@@ -79,8 +88,10 @@ function validateReleaseManifest(manifest, options) {
   if (!manifest.soldr || manifest.soldr.target !== soldrTarget) {
     throw new Error(`release manifest soldr.target must be ${soldrTarget}`);
   }
-  // zccache is compiled into soldr (soldr#1368) — no standalone zccache
-  // block is required in the release manifest anymore.
+  const expectedZccacheTarget = zccacheTargetForSoldrTarget(soldrTarget);
+  if (!manifest.zccache || manifest.zccache.target !== expectedZccacheTarget) {
+    throw new Error(`release manifest zccache.target must be ${expectedZccacheTarget}`);
+  }
   if (!manifest.crgx || manifest.crgx.target !== soldrTarget) {
     throw new Error(`release manifest crgx.target must be ${soldrTarget}`);
   }
