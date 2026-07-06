@@ -48,9 +48,11 @@ fn status_reports_cache_control_defaults() {
         stdout.contains("soldr zccache cache dir:"),
         "status missing effective zccache cache dir: {stdout}"
     );
+    // soldr#1368: the zccache CLI is compiled-in, so status always reports
+    // the embedded backend rather than an "unfetched managed" state.
     assert!(
-        stdout.contains("not fetched yet"),
-        "status should explain unfetched managed zccache state: {stdout}"
+        stdout.contains("(source: embedded)"),
+        "status should report the embedded zccache backend: {stdout}"
     );
 }
 
@@ -89,7 +91,9 @@ fn status_json_reports_stable_machine_fields() {
         json["cache_dir"],
         cache_root.join("cache").display().to_string()
     );
-    assert_eq!(json["zccache"]["binary_fetched"], false);
+    // soldr#1368: the compiled-in zccache is always present.
+    assert_eq!(json["zccache"]["binary_fetched"], true);
+    assert_eq!(json["zccache"]["binary_source"], "embedded");
     assert_eq!(json["zccache"]["session_log_present"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
     assert_eq!(json["zccache"]["session_stats_present"], false);
@@ -130,8 +134,6 @@ fn status_json_reports_stable_machine_fields() {
 #[test]
 fn cache_command_reports_managed_zccache_status() {
     let cache_root = unique_temp_dir("cache-command");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
     let journal = cache_root
         .join("cache")
         .join("zccache")
@@ -160,7 +162,6 @@ fn cache_command_reports_managed_zccache_status() {
     let output = common::isolated_soldr_command()
         .arg("cache")
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr cache");
 
@@ -191,17 +192,17 @@ fn cache_command_reports_managed_zccache_status() {
         stdout.contains(&format!("{}", session_log.display())) && stdout.contains("(present)"),
         "cache command should report present session log: {stdout}"
     );
+    // soldr#1368: rustc compile caching lives in the embedded daemon;
+    // `soldr cache` no longer spawns an external `zccache status`.
     assert!(
-        stdout.contains("zccache: hits=7"),
-        "cache command should surface managed zccache status output: {stdout}"
+        stdout.contains("(source: embedded)"),
+        "cache command should report the embedded zccache backend: {stdout}"
     );
 }
 
 #[test]
 fn cache_json_reports_managed_zccache_status() {
     let cache_root = unique_temp_dir("cache-command-json");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
     let journal = cache_root
         .join("cache")
         .join("zccache")
@@ -230,7 +231,6 @@ fn cache_json_reports_managed_zccache_status() {
     let output = common::isolated_soldr_command()
         .args(["cache", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr cache --json");
 
@@ -270,10 +270,8 @@ fn cache_json_reports_managed_zccache_status() {
         json["zccache"]["session_stats_path"],
         session_stats.display().to_string()
     );
-    assert_eq!(
-        json["zccache"]["status_lines"][0],
-        Value::String("hits=7".to_string())
-    );
+    // soldr#1368: the embedded backend reports no external status lines.
+    assert_eq!(json["zccache"]["binary_source"], "embedded");
 }
 
 #[test]
@@ -406,8 +404,6 @@ fn cache_report_json_passes_through_unknown_session_stat_fields() {
 #[test]
 fn clean_clears_managed_zccache_and_state_dir() {
     let cache_root = unique_temp_dir("clean-command");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
     let state_dir = cache_root.join("cache").join("zccache");
     let user_home = cache_root.join("user-home");
     let user_global_zccache = user_home.join(".zccache");
@@ -424,7 +420,6 @@ fn clean_clears_managed_zccache_and_state_dir() {
         .env("SOLDR_CACHE_DIR", &cache_root)
         .env("HOME", &user_home)
         .env("USERPROFILE", &user_home)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr clean");
 
@@ -440,20 +435,12 @@ fn clean_clears_managed_zccache_and_state_dir() {
         user_global_zccache.display()
     );
 
+    // soldr#1368: `clean` just removes soldr's on-disk zccache state dir;
+    // there is no managed `zccache clear` subprocess any more.
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("cleared zccache artifact cache"),
-        "clean should report artifact cache cleanup: {stdout}"
-    );
     assert!(
         stdout.contains("removed soldr zccache state dir:"),
         "clean should report state dir cleanup: {stdout}"
-    );
-
-    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
-    assert!(
-        log.contains("zccache clear"),
-        "clean should call managed zccache clear: {log}"
     );
 }
 
@@ -611,258 +598,70 @@ fn clean_rejects_json_flag() {
     );
 }
 
-/// soldr#383 (part 1): `cache flush` synchronously persists the
-/// depgraph + in-memory state without stopping the daemon. We assert
-/// the JSON output shape so CI consumers (setup-soldr) can rely on it.
+/// soldr#1368: `cache flush` checkpoints the soldr-daemon EMBEDDED zccache
+/// state. With no daemon reachable, soldr reports a graceful
+/// "unavailable" note (flushed=false) instead of erroring — the managed
+/// `zccache flush` subprocess is gone.
 #[test]
-fn cache_flush_emits_zccache_stats_on_success() {
-    let cache_root = unique_temp_dir("cache-flush-ok");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-
+fn cache_flush_reports_embedded_unavailable_without_daemon() {
+    let cache_root = unique_temp_dir("cache-flush-embedded");
     let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
         .output()
         .expect("failed to run soldr cache flush --json");
-
     assert!(
         output.status.success(),
-        "cache flush --json failed\nstdout:\n{}\nstderr:\n{}",
+        "cache flush --json must succeed even with no daemon
+stdout:
+{}
+stderr:
+{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-
     let json: Value = serde_json::from_slice(&output.stdout)
         .expect("cache flush --json must produce parseable JSON");
-    assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "cache flush");
-    assert_eq!(json["flushed"], true);
-    assert_eq!(json["stats"]["status"], "ok");
-    assert_eq!(json["stats"]["bytes_written"], 4096);
-
-    let log = fs::read_to_string(&log_path).expect("read tool log");
-    assert!(
-        log.contains("zccache flush args="),
-        "flush must shell out to `zccache flush`: {log}"
-    );
-}
-
-/// soldr#383 (part 1): when the running zccache predates the `flush`
-/// subcommand, `cache flush` returns 0 with a note so CI does not
-/// fail the post step on older daemons.
-#[test]
-fn cache_flush_handles_unsupported_zccache_gracefully() {
-    let cache_root = unique_temp_dir("cache-flush-unsupported");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-
-    let output = common::isolated_soldr_command()
-        .args(["cache", "flush", "--json"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .env("SOLDR_TEST_ZCCACHE_FLUSH_UNSUPPORTED", "1")
-        .output()
-        .expect("failed to run soldr cache flush --json");
-
-    assert!(
-        output.status.success(),
-        "cache flush should succeed-with-note when zccache lacks flush\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .expect("cache flush --json must produce parseable JSON");
     assert_eq!(json["flushed"], false);
-    let notes = json["notes"].as_array().expect("notes array");
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.as_str().unwrap_or("").contains("does not yet implement")),
-        "expected upgrade-hint note, got: {notes:?}"
-    );
-}
-
-/// soldr#383 (part 1): older zccache builds that have `flush` but not
-/// `flush --json` should still produce a durable on-disk snapshot.
-/// soldr retries with the bare form and surfaces a note explaining
-/// the JSON form was unavailable.
-#[test]
-fn cache_flush_falls_back_when_json_flag_is_unsupported() {
-    let cache_root = unique_temp_dir("cache-flush-no-json");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-
-    let output = common::isolated_soldr_command()
-        .args(["cache", "flush", "--json"])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .env("SOLDR_TEST_ZCCACHE_FLUSH_NO_JSON", "1")
-        .output()
-        .expect("failed to run soldr cache flush --json");
-
-    assert!(
-        output.status.success(),
-        "cache flush should retry without --json\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .expect("cache flush --json must produce parseable JSON");
-    assert_eq!(json["flushed"], true);
-    assert!(
-        json["stats"].is_null(),
-        "no upstream JSON should mean stats is null"
-    );
     let notes = json["notes"].as_array().expect("notes array");
     assert!(
         notes.iter().any(|n| {
             let s = n.as_str().unwrap_or("");
-            s.contains("flush --json not supported")
+            s.contains("embedded") && s.contains("unavailable")
         }),
-        "expected fallback note, got: {notes:?}"
+        "expected an embedded-flush-unavailable note, got: {notes:?}"
     );
 }
 
-/// soldr#383 (part 2): `cache shutdown` must block until the daemon
-/// process has actually exited. The fake zccache here marks the
-/// daemon as "stopped" only after `zccache stop` runs, so the poll
-/// proves we are checking status *after* the signal.
+/// soldr#1368: `cache shutdown` no longer stops an external managed
+/// zccache daemon or polls it — it flushes the embedded state for
+/// durability and returns promptly. With no daemon it still succeeds.
 #[test]
-fn cache_shutdown_waits_for_daemon_to_exit() {
-    let cache_root = unique_temp_dir("cache-shutdown-wait");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-    let down_marker = cache_root.join("daemon.down");
-    // Sanity: the marker must not exist before stop runs.
-    assert!(!down_marker.exists());
-
+fn cache_shutdown_flushes_embedded_and_returns_fast() {
+    let cache_root = unique_temp_dir("cache-shutdown-embedded");
+    let start = std::time::Instant::now();
     let output = common::isolated_soldr_command()
         .args(["cache", "shutdown", "--json"])
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .env("SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER", &down_marker)
         .output()
         .expect("failed to run soldr cache shutdown --json");
-
-    assert!(
-        output.status.success(),
-        "cache shutdown --json failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let json: Value = serde_json::from_slice(&output.stdout)
-        .expect("cache shutdown --json must produce parseable JSON");
-    assert_eq!(json["daemon_stopped"], true);
-    assert_eq!(
-        json["daemon_exited"], true,
-        "shutdown must confirm daemon exit before returning"
-    );
-
-    // The fake script logs every zccache invocation. After stop we
-    // should see at least one status probe (the polling loop's
-    // confirmation that the daemon is gone).
-    let log = fs::read_to_string(&log_path).expect("read tool log");
-    let stop_idx = log
-        .find("zccache stop")
-        .expect("zccache stop must have run");
-    let after_stop = &log[stop_idx..];
-    // status writes to stderr/stdout but not to the tool log; the
-    // log on its own only confirms stop ran. The daemon_exited flag
-    // above proves the polling loop observed the down-marker.
-    let _ = after_stop;
-}
-
-/// soldr#383 (part 2): when the daemon outlives the shutdown timeout
-/// (the prod-bug case from the issue), soldr must exit non-zero so CI
-/// fails loud instead of racing the depgraph flush with a tarball.
-#[test]
-fn cache_shutdown_times_out_when_daemon_does_not_exit() {
-    let cache_root = unique_temp_dir("cache-shutdown-timeout");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-
-    // Deliberately omit SOLDR_TEST_ZCCACHE_DAEMON_DOWN_MARKER, so the
-    // fake `status` always reports the daemon as up. The shutdown
-    // poll then has to give up after the deadline.
-    let output = common::isolated_soldr_command()
-        .args([
-            "cache",
-            "shutdown",
-            "--shutdown-timeout-seconds",
-            "1",
-            "--json",
-        ])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .output()
-        .expect("failed to run soldr cache shutdown --shutdown-timeout-seconds 1");
-
-    assert!(
-        !output.status.success(),
-        "cache shutdown must fail when daemon outlives the timeout\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("did not exit within"),
-        "stderr should explain the timeout: {stderr}"
-    );
-}
-
-/// soldr#383 (part 2): `--no-wait` opts out of the polling loop and
-/// returns immediately so interactive shells are not blocked. The
-/// JSON output must still note that exit was not confirmed.
-#[test]
-fn cache_shutdown_no_wait_skips_polling() {
-    let cache_root = unique_temp_dir("cache-shutdown-no-wait");
-    let log_path = cache_root.join("tool.log");
-    let (_, _, zccache) = install_fake_toolchain(&log_path);
-
-    // Daemon never goes down — without the poll this would hang.
-    let start = std::time::Instant::now();
-    let output = common::isolated_soldr_command()
-        .args([
-            "cache",
-            "shutdown",
-            "--no-wait",
-            "--shutdown-timeout-seconds",
-            "60",
-            "--json",
-        ])
-        .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .output()
-        .expect("failed to run soldr cache shutdown --no-wait");
-
     let elapsed = start.elapsed();
     assert!(
         output.status.success(),
-        "--no-wait must succeed\nstdout:\n{}\nstderr:\n{}",
+        "cache shutdown --json must succeed
+stdout:
+{}
+stderr:
+{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "--no-wait must return fast, took {elapsed:?}"
+        elapsed < std::time::Duration::from_secs(10),
+        "cache shutdown must not poll/hang, took {elapsed:?}"
     );
     let json: Value = serde_json::from_slice(&output.stdout)
         .expect("cache shutdown --json must produce parseable JSON");
-    assert_eq!(json["daemon_stopped"], true);
-    assert_eq!(
-        json["daemon_exited"], false,
-        "no-wait should leave daemon_exited=false"
-    );
-    let notes = json["notes"].as_array().expect("notes array");
-    assert!(
-        notes
-            .iter()
-            .any(|n| n.as_str().unwrap_or("").contains("--no-wait")),
-        "expected --no-wait note, got: {notes:?}"
-    );
+    assert_eq!(json["command"], "cache shutdown");
 }

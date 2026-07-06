@@ -385,8 +385,8 @@ timed_test!(
         // the wrapper when classifying the real compiler underneath.
         assert_eq!(
             env.get("CC_KNOWN_WRAPPER_CUSTOM").map(String::as_str),
-            Some("zccache"),
-            "CC_KNOWN_WRAPPER_CUSTOM should be set to 'zccache'; got: {:?}",
+            Some("zccache-soldr"),
+            "CC_KNOWN_WRAPPER_CUSTOM should be the zccache-soldr shim stem; got: {:?}",
             env.get("CC_KNOWN_WRAPPER_CUSTOM")
         );
 
@@ -409,8 +409,8 @@ timed_test!(
                 .and_then(|s| s.to_str())
                 .unwrap_or(first_token);
             assert!(
-                stem.eq_ignore_ascii_case("zccache"),
-                "CC should be wrapped with zccache; got: {cc:?}"
+                stem.eq_ignore_ascii_case("zccache-soldr"),
+                "CC should be wrapped with the zccache-soldr shim; got: {cc:?}"
             );
             let cxx = env.get("CXX").cloned().unwrap_or_default();
             let cxx_first = cxx.split_whitespace().next().unwrap_or("");
@@ -419,8 +419,8 @@ timed_test!(
                 .and_then(|s| s.to_str())
                 .unwrap_or(cxx_first);
             assert!(
-                cxx_stem.eq_ignore_ascii_case("zccache"),
-                "CXX should be wrapped with zccache; got: {cxx:?}"
+                cxx_stem.eq_ignore_ascii_case("zccache-soldr"),
+                "CXX should be wrapped with the zccache-soldr shim; got: {cxx:?}"
             );
         }
     }
@@ -455,7 +455,7 @@ timed_test!(
             .unwrap_or("")
             .to_string();
         assert!(
-            !first_stem.eq_ignore_ascii_case("zccache"),
+            !first_stem.eq_ignore_ascii_case("zccache-soldr"),
             "opt-out should leave CC unwrapped; got: {cc:?}"
         );
     }
@@ -490,8 +490,8 @@ timed_test!(
             .unwrap_or("")
             .to_string();
         assert!(
-            first_stem.eq_ignore_ascii_case("zccache"),
-            "CC should be wrapped with zccache when user set it; got: {cc:?}"
+            first_stem.eq_ignore_ascii_case("zccache-soldr"),
+            "CC should be wrapped with the zccache-soldr shim when user set it; got: {cc:?}"
         );
     }
 );
@@ -548,7 +548,7 @@ timed_test!(
             .unwrap_or("")
             .to_string();
         assert!(
-            !stem.eq_ignore_ascii_case("zccache"),
+            !stem.eq_ignore_ascii_case("zccache-soldr"),
             "--no-cache should leave CC unwrapped; got: {cc:?}"
         );
     }

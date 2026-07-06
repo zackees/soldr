@@ -76,13 +76,11 @@ fn cargo_front_door_keeps_cache_enabled_for_non_build_subcommands() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    // soldr#1368: the managed session subprocess is gone; the front door
+    // just keeps the compile cache enabled for unmodeled subcommands.
     assert!(
         log.contains("cache=1"),
         "cargo front door should keep cache enabled for unmodeled subcommands: {log}"
-    );
-    assert!(
-        log.contains("zccache session-start") && log.contains("zccache session-end"),
-        "managed zccache session should wrap unmodeled subcommands: {log}"
     );
 }
 
@@ -110,9 +108,11 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    // soldr#1368: rustc compiles route to the soldr-daemon embedded
+    // service via RUSTC_WRAPPER=soldr, not a managed `zccache start`.
     assert!(
-        log.contains("cache=1") && log.contains("zccache start"),
-        "build after global cargo options should still use managed zccache: {log}"
+        log.contains("cache=1") && log.contains("cargo wrapper="),
+        "build after global cargo options should still enable caching + wrap rustc: {log}"
     );
 }
 
@@ -184,12 +184,12 @@ fn cache_enabled_zccache_build_completes_under_20_seconds() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    // soldr#1368: the compile still routes through the zccache wrapper
+    // seam (soldr-daemon embedded service in production); the managed
+    // start/session lifecycle is gone.
     assert!(
-        log.contains("zccache start")
-            && log.contains("zccache session-start")
-            && log.contains("zccache wrapper")
-            && log.contains("zccache session-end test-session"),
-        "timed build should exercise the managed zccache path: {log}"
+        log.contains("zccache wrapper"),
+        "timed build should still route rustc through the zccache wrapper: {log}"
     );
 }
 
