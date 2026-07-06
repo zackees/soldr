@@ -29,6 +29,7 @@ export CARGO_HOME=/root/.cargo
 export CARGO_TERM_COLOR=always
 export RUST_BACKTRACE=1
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS="${SOLDR_CARGO_WAIT_TIMEOUT_SECS:-3600}"
+export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS="${SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS:-120000}"
 
 echo "## environment"
 rustc --version
@@ -47,6 +48,53 @@ rm -rf "$CACHE" "$ARCHIVE_DIR" /tmp/cold-report.json /tmp/warm-report.json
 mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
+
+print_daemon_diagnostics() {
+  echo "## soldr daemon diagnostics" >&2
+  cat /tmp/soldr-daemon-status.json >&2 || true
+  cat /tmp/soldr-daemon-status.err >&2 || true
+  if [ -f "$CACHE/daemon-spawn.log" ]; then
+    echo "## daemon-spawn.log tail" >&2
+    tail -n 200 "$CACHE/daemon-spawn.log" >&2 || true
+  fi
+}
+
+ensure_soldr_daemon() {
+  echo "## ensure soldr daemon"
+  "$SOLDR_BIN" daemon start || true
+  for _ in $(seq 1 120); do
+    "$SOLDR_BIN" daemon status --json \
+      > /tmp/soldr-daemon-status.json \
+      2> /tmp/soldr-daemon-status.err || true
+    if jq -e '.running == true' /tmp/soldr-daemon-status.json > /dev/null 2>&1; then
+      cat /tmp/soldr-daemon-status.json
+      return 0
+    fi
+    sleep 1
+  done
+  echo "soldr daemon did not report running" >&2
+  print_daemon_diagnostics
+  return 1
+}
+
+stop_soldr_daemon() {
+  echo "## stop soldr daemon"
+  "$SOLDR_BIN" daemon stop || true
+  for _ in $(seq 1 60); do
+    "$SOLDR_BIN" daemon status --json \
+      > /tmp/soldr-daemon-status.json \
+      2> /tmp/soldr-daemon-status.err || true
+    if jq -e '.running == false' /tmp/soldr-daemon-status.json > /dev/null 2>&1; then
+      cat /tmp/soldr-daemon-status.json
+      return 0
+    fi
+    sleep 1
+  done
+  echo "soldr daemon did not stop" >&2
+  print_daemon_diagnostics
+  return 1
+}
+
 clean_target() {
   # Cargo tries to remove the target-dir root. In this Docker harness that
   # root is a volume mount point, so Docker Desktop can report EBUSY after
@@ -57,6 +105,7 @@ clean_target() {
 }
 
 clean_target
+ensure_soldr_daemon
 
 echo "## cold nextest archive build"
 cold_start=$(date +%s%3N)
@@ -68,9 +117,11 @@ cold_end=$(date +%s%3N)
 "$SOLDR_BIN" cache report --json > /tmp/cold-report.json
 ls -lh "$ARCHIVE_DIR/cold-tests.tar.zst"
 "$SOLDR_BIN" cache shutdown --no-wait --json || true
+stop_soldr_daemon
 
 echo "## warm nextest archive build after cargo clean and daemon restart"
 clean_target
+ensure_soldr_daemon
 warm_start=$(date +%s%3N)
 "$SOLDR_BIN" cargo nextest archive --workspace --locked \
   --archive-file "$ARCHIVE_DIR/warm-tests.tar.zst" \
@@ -80,6 +131,7 @@ warm_end=$(date +%s%3N)
 "$SOLDR_BIN" cache report --json > /tmp/warm-report.json
 ls -lh "$ARCHIVE_DIR/warm-tests.tar.zst"
 "$SOLDR_BIN" cache shutdown --no-wait --json || true
+stop_soldr_daemon
 
 stat_json() {
   local report="$1"
