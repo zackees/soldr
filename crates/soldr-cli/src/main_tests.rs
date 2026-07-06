@@ -357,17 +357,20 @@ fn fuzzy_match_with_soldr_verbs_recognizes_issue_412_examples() {
     // const → suggestion contract end-to-end.
     use crate::fuzzy_match::suggest_close_match;
 
-    let typo = "update-zccacheee";
+    // soldr#1368 removed `install-zccache`; use surviving multi-word
+    // verbs to exercise the same fuzzy-match contract.
+    let typo = "session-startt";
     let suggestion = suggest_close_match(typo, SOLDR_BUILTIN_VERBS);
-    assert!(
-        matches!(suggestion, Some("update-zccache" | "install-zccache")),
-        "expected install-zccache (or alias) for {typo:?}; got {suggestion:?}",
+    assert_eq!(
+        suggestion,
+        Some("session-start"),
+        "expected session-start for {typo:?}; got {suggestion:?}",
     );
 
-    let typo = "installzccache";
+    let typo = "sessionend";
     assert_eq!(
         suggest_close_match(typo, SOLDR_BUILTIN_VERBS),
-        Some("install-zccache"),
+        Some("session-end"),
     );
 
     // Acceptance criterion: completely-different verb produces no
@@ -581,19 +584,15 @@ fn cargo_builtin_shorthand_skips_when_user_pinned_a_version() {
 
 #[test]
 fn cargo_builtin_shorthand_includes_borderline_install_verb() {
-    // `install` is the borderline case: `soldr install-zccache`
-    // already exists as a soldr built-in (different name, different
-    // verb). Bare `soldr install <crate>` is documented to route to
+    // Bare `soldr install <crate>` is documented to route to
     // `cargo install <crate>` because that's the far more common
-    // interpretation. The const-level expectation is asserted here.
+    // interpretation. (soldr#1368 removed the former `install-zccache`
+    // built-in — zccache now ships compiled-in — so there is no longer a
+    // competing soldr `install`-prefixed verb.)
     assert!(
         is_cargo_builtin_verb("install"),
-        "bare `soldr install` must route to `cargo install` (zccache install is install-zccache)"
+        "bare `soldr install` must route to `cargo install`"
     );
-    // Sanity: the clap built-in keeps its long name and is NOT
-    // remapped.
-    assert!(SOLDR_BUILTIN_VERBS.contains(&"install-zccache"));
-    assert!(!is_cargo_builtin_verb("install-zccache"));
 }
 
 #[test]

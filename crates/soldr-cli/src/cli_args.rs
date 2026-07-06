@@ -52,8 +52,7 @@ daemon                 Manage the long-lived soldr-daemon process\n  \
 session-start          Start a zccache session and print its id\n  \
 session-end            End a zccache session and emit its stats\n  \
 optimize               Apply platform-specific hot-cache tuning\n  \
-defender-exclusions    Manage Windows Defender exclusions for soldr caches\n  \
-install-zccache        Pin local zccache binaries (skip managed fetch)\n\n  \
+defender-exclusions    Manage Windows Defender exclusions for soldr caches\n\n  \
 help                   Print this message or the help of the given subcommand\n\n";
 
 #[derive(clap::Parser)]
@@ -225,8 +224,6 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "env",
     "session-start",
     "session-end",
-    "install-zccache",
-    "update-zccache", // alias of `install-zccache`
     "save",
     "load",
     "archive",

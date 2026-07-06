@@ -289,16 +289,37 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
 /// (`zccache.exe` on Windows); falls back to a bare `zccache` name so a
 /// PATH lookup can still find it in unusual install layouts.
 pub(crate) fn embedded_zccache_binary() -> std::path::PathBuf {
-    let file = if cfg!(windows) { "zccache.exe" } else { "zccache" };
+    sibling_binary("zccache")
+}
+
+/// Resolve the `zccache-soldr` RUSTC_WRAPPER/CC shim (soldr#1081) that
+/// ships alongside `soldr`. Used by native-C caching (soldr#1368): it is
+/// injected into `CC`/`CXX` as the compiler wrapper so cc-rs build-script
+/// compiles route through the soldr-daemon embedded zccache service over
+/// the `Request::Compile` IPC verb (same shim RUSTC_WRAPPER uses). Sibling
+/// of the current exe; falls back to a bare name for a PATH lookup.
+pub(crate) fn zccache_soldr_shim_binary() -> std::path::PathBuf {
+    sibling_binary("zccache-soldr")
+}
+
+/// Resolve `<stem>` as a sibling of the running executable (adding
+/// `.exe` on Windows), falling back to the bare stem when the sibling
+/// is absent so a PATH lookup can still find it.
+fn sibling_binary(stem: &str) -> std::path::PathBuf {
+    let file = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    };
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let sibling = dir.join(file);
+            let sibling = dir.join(&file);
             if sibling.is_file() {
                 return sibling;
             }
         }
     }
-    std::path::PathBuf::from("zccache")
+    std::path::PathBuf::from(stem)
 }
 
 #[cfg(test)]

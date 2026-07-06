@@ -279,6 +279,14 @@ impl ZccacheChildEnv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ManagedZccacheWrapperPlan {
+    /// Parent-side build session carrier (soldr#1368). It no longer
+    /// tracks an external zccache daemon — rustc compiles are cached by
+    /// the soldr-daemon embedded service — but it still carries the
+    /// zccache cache dir + per-build paths that the in-process rust-plan
+    /// save/restore (rust_plan.rs) and native-C caching (native_cc.rs)
+    /// need. `binary_path` is the compiled-in trampoline and is retained
+    /// only for struct compatibility; nothing spawns it.
+    pub(crate) session: ZccacheBuildSession,
     pub(crate) child_env: ZccacheChildEnv,
 }
 
@@ -294,10 +302,10 @@ pub(crate) enum RustcWrapperPlan {
 
 impl RustcWrapperPlan {
     pub(crate) fn session(&self) -> Option<&ZccacheBuildSession> {
-        // soldr#1368: the front door no longer opens a managed zccache
-        // session — rustc compiles are cached by the soldr-daemon's
-        // embedded service over the RUSTC_WRAPPER=soldr IPC path.
-        None
+        match self {
+            Self::ManagedZccache(plan) => Some(&plan.session),
+            Self::Custom { .. } | Self::Disabled => None,
+        }
     }
 
     pub(crate) fn apply_to_command(
@@ -377,21 +385,72 @@ pub(crate) fn is_sccache_wrapper(wrapper: &std::ffi::OsStr) -> bool {
 }
 
 async fn prepare_zccache_build(
-    _paths: &SoldrPaths,
+    paths: &SoldrPaths,
     _zccache_source: ZccacheSourceArg,
 ) -> Result<ManagedZccacheWrapperPlan, SoldrError> {
     // soldr#1368: rustc compiles are cached by the soldr-daemon's
     // embedded zccache service over the RUSTC_WRAPPER=soldr IPC path
     // (see `wrapper.rs` + `compile_dispatch.rs`). The front door no
-    // longer downloads a managed zccache binary, spawns a separate
-    // zccache daemon, or opens a managed session. All it does now is
-    // seed the parent-cache path-remap env (Tier L1.x, issue #352) on
-    // the child cargo so multiple worktrees of the same repo share
-    // embedded-cache hits through normalized keys — honoring
-    // user-supplied `ZCCACHE_*` values and the `SOLDR_PATH_REMAP=off`
-    // escape hatch.
+    // longer downloads a managed zccache binary or spawns a separate
+    // zccache daemon. It still builds a lightweight build *session*
+    // carrier so the in-process rust-plan save/restore and native-C
+    // caching keep working against the shared zccache cache dir.
+    let zccache_base_dir = managed_zccache_cache_dir(paths)?;
     let child_env = ZccacheChildEnv::from_current_process()?;
-    Ok(ManagedZccacheWrapperPlan { child_env })
+
+    // Cache-dir resolution mirrors the pre-#1368 logic: an explicit
+    // ZCCACHE_CACHE_DIR wins; otherwise `SOLDR_ZCCACHE_PRIVATE` routes to
+    // `<cwd>/.zccache`; otherwise the shared soldr-managed zccache dir.
+    let inherited_soldr_managed_dir =
+        non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
+            .map(|path| normalize_path_for_compare(&path))
+            .transpose()?;
+    let explicit_zccache_cache_dir =
+        non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
+            .map(|path| normalize_path_for_compare(&path))
+            .transpose()?
+            .filter(|path| inherited_soldr_managed_dir.as_ref() != Some(path));
+    let private_override = if explicit_zccache_cache_dir.is_none() && private_session_requested() {
+        Some(normalize_path_for_compare(&private_session_cache_dir()?)?)
+    } else {
+        None
+    };
+    let cache_dir_env = explicit_zccache_cache_dir.is_some() || private_override.is_some();
+    let zccache_dir = explicit_zccache_cache_dir
+        .or(private_override)
+        .unwrap_or(zccache_base_dir);
+    std::fs::create_dir_all(&zccache_dir)?;
+    std::fs::create_dir_all(zccache_dir.join("logs"))?;
+
+    let session = ZccacheBuildSession {
+        // Retained for struct compatibility only — nothing spawns it now.
+        binary_path: crate::binaries::embedded_zccache_binary(),
+        cache_dir: zccache_dir.clone(),
+        cache_dir_env,
+        session_id: synthetic_build_session_id(),
+        session_log_path: crate::cache_lib::session_log_path(&zccache_dir),
+        journal_path: crate::cache_lib::session_journal_path(&zccache_dir),
+        session_stats_path: crate::cache_lib::session_stats_path(&zccache_dir),
+        private_daemon: None,
+    };
+
+    Ok(ManagedZccacheWrapperPlan { session, child_env })
+}
+
+/// Generate a short, unique-enough id for a front-door build session
+/// (soldr#1368). It is no longer a real zccache daemon session id — it's
+/// a cosmetic correlation handle — so a blake3 of (pid, monotonic nanos)
+/// is plenty and avoids a `uuid` dependency.
+fn synthetic_build_session_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&std::process::id().to_le_bytes());
+    hasher.update(&nanos.to_le_bytes());
+    hex::encode(&hasher.finalize().as_bytes()[..12])
 }
 
 pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
