@@ -157,11 +157,38 @@ fn install_fake_cargo_doc_toolchain(
     (rustup, cargo, rustc, rustdoc, zccache)
 }
 
+fn install_fake_direct_rustc_like_toolchain(
+    log_path: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let (rustup, _cargo, rustc, _rustfmt) = install_fake_rustup_toolchain(log_path);
+    let tool_dir = rustc
+        .parent()
+        .expect("fake rustc should live in a tool dir")
+        .to_path_buf();
+    let clippy_driver = fake_script_path(&tool_dir, "clippy-driver");
+    let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(
+        &clippy_driver,
+        &fake_version_tool_script(log_path, "clippy-driver"),
+    );
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (rustup, rustc, clippy_driver, zccache, tool_dir)
+}
+
 fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
     let src_dir = cache_root.join("src");
     fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
     let source_path = src_dir.join("lib.rs");
     fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
+    source_path
+}
+
+fn write_rustc_like_source(cache_root: &Path) -> PathBuf {
+    let src_dir = cache_root.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create rustc-like source dir");
+    let source_path = src_dir.join("lib.rs");
+    fs::write(&source_path, "pub fn value() -> usize { 42 }\n")
+        .expect("failed to write rustc-like source");
     source_path
 }
 
@@ -207,6 +234,28 @@ fn assert_zccache_wrapped_rustc_compile(log: &str, rustc: &Path, crate_name: &st
             .iter()
             .any(|path| zccache_line.contains(path)),
         "zccache wrapper should receive rustc for crate {crate_name}: {log}"
+    );
+}
+
+fn assert_zccache_wrapped_compiler(log: &str, compiler: &Path, crate_name: &str) {
+    let zccache_line = log
+        .lines()
+        .find(|line| line.contains("zccache wrapper") && line.contains(crate_name))
+        .unwrap_or_else(|| {
+            panic!("expected zccache wrapper line for compiler crate {crate_name}: {log}")
+        });
+    let compiler_name = compiler
+        .file_name()
+        .and_then(|name| name.to_str())
+        .expect("fake compiler should have a utf-8 file name");
+    assert!(
+        path_display_variants(compiler)
+            .iter()
+            .any(|path| zccache_line.contains(path))
+            || zccache_line
+                .split_whitespace()
+                .any(|word| word == compiler_name),
+        "zccache wrapper should receive compiler for crate {crate_name}: {log}"
     );
 }
 
@@ -369,6 +418,177 @@ timed_test!(
         );
     }
 );
+
+#[test]
+fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flags() {
+    for tool in ["rustc", "clippy-driver"] {
+        for (label, prefix_args) in [
+            ("plain", vec![tool]),
+            ("global-zccache", vec!["--zccache", "system", tool]),
+        ] {
+            let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-zccache"));
+            let log_path = cache_root.join("tool.log");
+            let source_path = write_rustc_like_source(&cache_root);
+            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+                install_fake_direct_rustc_like_toolchain(&log_path);
+            let compiler = if tool == "rustc" {
+                rustc.as_path()
+            } else {
+                clippy_driver.as_path()
+            };
+
+            let mut args = prefix_args;
+            args.extend(["--crate-name", "direct_demo", "--emit", "metadata,link"]);
+            let mut command = isolated_soldr_command();
+            command.args(args).arg(&source_path);
+            let output = command
+                .current_dir(&cache_root)
+                .env("SOLDR_CACHE_DIR", &cache_root)
+                .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
+                .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+                .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+                .env("PATH", prepend_to_path(&tool_dir))
+                .env_remove("CARGO_HOME")
+                .env_remove("RUSTUP_HOME")
+                .env_remove("RUSTUP_TOOLCHAIN")
+                .env_remove("ZCCACHE_CACHE_DIR")
+                .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+                .env_remove("ZCCACHE_DISABLE")
+                .output()
+                .unwrap_or_else(|_| panic!("failed to run direct {tool} route {label}"));
+
+            assert!(
+                output.status.success(),
+                "direct {tool} route {label} failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+            assert_zccache_wrapped_compiler(&log, compiler, "direct_demo");
+            assert!(
+                log.lines().any(|line| line.starts_with(tool)),
+                "direct {tool} should still invoke the real compiler after zccache: {log}"
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_rustc_like_cache_disable_modes_remain_direct() {
+    for tool in ["rustc", "clippy-driver"] {
+        for (label, prefix_args, zccache_disable) in [
+            (
+                "no-cache-global",
+                vec!["--no-cache", "--zccache", "system", tool],
+                false,
+            ),
+            ("zccache-disable", vec!["--zccache", "system", tool], true),
+        ] {
+            let cache_root = unique_temp_dir(&format!("direct-{tool}-{label}-direct"));
+            let log_path = cache_root.join("tool.log");
+            let source_path = write_rustc_like_source(&cache_root);
+            let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+                install_fake_direct_rustc_like_toolchain(&log_path);
+
+            let mut args = prefix_args;
+            args.extend(["--crate-name", "direct_bypass", "--emit", "metadata,link"]);
+            let mut command = isolated_soldr_command();
+            command.args(args).arg(&source_path);
+            command
+                .current_dir(&cache_root)
+                .env("SOLDR_CACHE_DIR", &cache_root)
+                .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
+                .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+                .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+                .env("PATH", prepend_to_path(&tool_dir))
+                .env_remove("CARGO_HOME")
+                .env_remove("RUSTUP_HOME")
+                .env_remove("RUSTUP_TOOLCHAIN")
+                .env_remove("ZCCACHE_CACHE_DIR")
+                .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR");
+            if zccache_disable {
+                command.env("ZCCACHE_DISABLE", "1");
+            } else {
+                command.env_remove("ZCCACHE_DISABLE");
+            }
+
+            let output = command.output().unwrap_or_else(|_| {
+                panic!("failed to run direct {tool} cache-disable route {label}")
+            });
+
+            assert!(
+                output.status.success(),
+                "direct {tool} cache-disable route {label} failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+
+            let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+            assert!(
+                !log.contains("zccache wrapper"),
+                "direct {tool} cache-disable route {label} should not use zccache: {log}"
+            );
+            assert!(
+                log.lines().any(|line| line.starts_with(tool)),
+                "direct {tool} cache-disable route {label} should invoke compiler directly: {log}"
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_rustc_non_cacheable_print_probe_stays_direct() {
+    for (label, args) in [
+        ("plain", vec!["rustc", "--print", "cfg"]),
+        (
+            "global-zccache",
+            vec!["--zccache", "system", "rustc", "--print", "cfg"],
+        ),
+    ] {
+        let cache_root = unique_temp_dir(&format!("direct-rustc-print-{label}"));
+        let log_path = cache_root.join("tool.log");
+        let (rustup, rustc, clippy_driver, zccache, tool_dir) =
+            install_fake_direct_rustc_like_toolchain(&log_path);
+
+        let output = isolated_soldr_command()
+            .args(args)
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("SOLDR_REAL_CLIPPY_DRIVER", &clippy_driver)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env("PATH", prepend_to_path(&tool_dir))
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("ZCCACHE_CACHE_DIR")
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run direct rustc print probe {label}"));
+
+        assert!(
+            output.status.success(),
+            "direct rustc print probe {label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+        assert!(
+            !log.contains("zccache wrapper"),
+            "direct rustc print probe {label} should bypass zccache: {log}"
+        );
+        assert!(
+            log.lines().any(|line| line.starts_with("rustc ")),
+            "direct rustc print probe {label} should invoke rustc directly: {log}"
+        );
+    }
+}
 
 #[test]
 fn rustdoc_driver_is_intentionally_direct_without_zccache() {
