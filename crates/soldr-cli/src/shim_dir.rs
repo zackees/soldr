@@ -66,7 +66,7 @@ pub(crate) fn should_install_shims() -> bool {
 /// with one shim per `SHIMMED_TOOLS` entry. Each shim execs the parent
 /// soldr binary with the corresponding verb.
 pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
-    let soldr_bin = crate::current_soldr_binary()?;
+    let soldr_bin = std::env::current_exe().map_err(SoldrError::from)?;
     let dir = tempfile::Builder::new()
         .prefix("soldr-shims-")
         .tempdir()

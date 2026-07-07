@@ -56,6 +56,7 @@ pub mod multicall;
 pub mod pyo3_detect;
 pub mod release_sidecar;
 pub mod self_relocate;
+pub mod shim_dir;
 pub mod shim_materialize;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
