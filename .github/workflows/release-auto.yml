@@ -377,6 +377,9 @@ jobs:
         shell: bash
         env:
           CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
+          # Native Windows release builds can exceed soldr's default
+          # 30-minute cargo child watchdog on cold hosted runners.
+          SOLDR_CARGO_WAIT_TIMEOUT_SECS: ${{ contains(matrix.target, 'pc-windows-msvc') && '7200' || '1800' }}
         run: |
           # soldr#1140 root-cause fix: restore Cargo.toml + Cargo.lock
           # + crates/soldr-cli/Cargo.toml BEFORE cargo runs.
