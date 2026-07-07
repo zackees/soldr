@@ -396,6 +396,47 @@ pub(crate) fn fake_cargo_script(log_path: &Path) -> String {
     }
 }
 
+pub(crate) fn fake_cargo_clippy_script(log_path: &Path, clippy_driver: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo wrapper=%RUSTC_WRAPPER% workspace_wrapper={1} rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID% zccache_dir=%ZCCACHE_CACHE_DIR%>>\"{0}\"\n\
+             if \"%~1\"==\"clippy\" (\n\
+               if defined RUSTC_WRAPPER (\n\
+                 call \"%RUSTC_WRAPPER%\" \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+               ) else (\n\
+                 call \"{1}\" \"%RUSTC%\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+               )\n\
+               exit /b %ERRORLEVEL%\n\
+             )\n\
+             echo unsupported fake cargo invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display(),
+            clippy_driver.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} workspace_wrapper={1} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}} zccache_dir=${{ZCCACHE_CACHE_DIR:-}}\" >> \"{0}\"\n\
+             if [ \"$1\" = \"clippy\" ]; then\n\
+               if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
+                 \"$RUSTC_WRAPPER\" \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+               else\n\
+                 \"{1}\" \"$RUSTC\" --crate-name demo --crate-type lib --emit metadata,dep-info src/lib.rs\n\
+               fi\n\
+               exit $?\n\
+             fi\n\
+             echo \"unsupported fake cargo invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display(),
+            clippy_driver.display()
+        )
+    }
+}
+
 #[cfg(not(windows))]
 pub(crate) fn fake_cargo_with_jobserver_script(log_path: &Path) -> String {
     format!(
@@ -437,6 +478,39 @@ pub(crate) fn fake_rustc_script(log_path: &Path) -> String {
                exit 0\n\
              fi\n\
              echo \"rustc $*\" >> \"{}\"\n",
+            log_path.display()
+        )
+    }
+}
+
+pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"rustc=%~1\"\n\
+             shift\n\
+             set \"args=\"\n\
+             :collect_args\n\
+             if \"%~1\"==\"\" goto run_clippy\n\
+             set args=%args% \"%~1\"\n\
+             shift\n\
+             goto collect_args\n\
+             :run_clippy\n\
+             echo clippy-driver %rustc% %args%>>\"{}\"\n\
+             call \"%rustc%\" %args%\n\
+             exit /b %ERRORLEVEL%\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             rustc=\"$1\"\n\
+             shift\n\
+             echo \"clippy-driver $rustc $*\" >> \"{}\"\n\
+             \"$rustc\" \"$@\"\n",
             log_path.display()
         )
     }
@@ -838,6 +912,21 @@ pub(crate) fn install_fake_toolchain(log_path: &Path) -> (PathBuf, PathBuf, Path
     write_fake_script(&rustc, &fake_rustc_script(log_path));
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (cargo, rustc, zccache)
+}
+
+pub(crate) fn install_fake_clippy_toolchain(
+    log_path: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+    let dir = unique_temp_dir("fake-clippy-toolchain");
+    let cargo = fake_script_path(&dir, "cargo");
+    let rustc = fake_script_path(&dir, "rustc");
+    let zccache = fake_script_path(&dir, "zccache");
+    let clippy_driver = fake_script_path(&dir, "clippy-driver");
+    write_fake_script(&cargo, &fake_cargo_clippy_script(log_path, &clippy_driver));
+    write_fake_script(&rustc, &fake_rustc_script(log_path));
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    write_fake_script(&clippy_driver, &fake_clippy_driver_script(log_path));
+    (cargo, rustc, zccache, clippy_driver)
 }
 
 #[cfg(not(windows))]
