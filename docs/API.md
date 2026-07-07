@@ -1321,7 +1321,7 @@ Commands:
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
-| `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable wrapper injection with `none` / empty | unset |
+| `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable rustc wrapper injection with `none` / empty while leaving other soldr front-door behavior intact | unset |
 | `SOLDR_REAL_CARGO`, `SOLDR_REAL_RUSTC`, ... | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
 | `SOLDR_ZCCACHE_BIN` | External zccache binary path used only when an explicit external-zccache override is active. Normal `soldr cargo ...` uses embedded zccache. | unset |
 | `SOLDR_ZCCACHE_LOCAL_DIR` | Directory for an explicit external-zccache override. Normal release archives do not set this because zccache is embedded into soldr/soldr-daemon. | unset |
@@ -1336,6 +1336,7 @@ Commands:
 | `ZCCACHE_CACHE_DIR` | zccache cache-root override. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `ZCCACHE_DISABLE` | The standard zccache kill-switch. Truthy values (`1`/`true`/`yes`/`on`) are treated as `--no-cache` for `soldr cargo ...`: the wrapper + daemon are bypassed and rustc runs directly (uncached). Use this — or `soldr --no-cache cargo ...` — to recover if a build hangs on a wedged cache. | unset |
+| `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |
 | `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` | Overrides the compile-dispatch reply timeout. Default is 30 min so a legitimate slow release compile is never cut off; set a small value (e.g. `30`) to fail fast instead of waiting out the backstop if the daemon stops responding. `0`/empty/unparseable falls back to the default. | 1800 |
 | `ZCCACHE_PATH_REMAP` | zccache path-remap mode. soldr seeds `auto` on the child cargo for managed-zccache builds so multiple git worktrees of the same repo share cache hits (issue #352, Tier L1.x). Caller-supplied values are preserved. Requires a real `.git/` checkout — tarball/zip checkouts silently fall back to no remap. | unset (soldr injects `auto`) |
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
