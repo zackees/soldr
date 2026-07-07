@@ -440,10 +440,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             std::process::exit(toolchain::run_toolchain_passthrough("rust-lldb", &args)?);
         }
         Commands::RustAnalyzer { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough(
-                "rust-analyzer",
-                &args,
-            )?);
+            std::process::exit(toolchain::run_rust_analyzer(&args, cache_enabled)?);
         }
         Commands::Rustup { args } => {
             std::process::exit(toolchain::run_rustup_passthrough(&args)?);

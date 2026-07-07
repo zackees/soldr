@@ -1370,6 +1370,8 @@ When soldr manages zccache itself, `soldr cargo ...` resolves a fresh soldr work
 
 `rustdoc` is intentionally not a zccache driver route today. Direct `soldr rustdoc ...` invocations and `rustdoc` PATH shims resolve the toolchain `rustdoc` binary and run it directly. `soldr cargo doc`, `soldr doc`, and doc tests still run with `RUSTC_WRAPPER=soldr`, so rustc dependency compile units remain cached; only the rustdoc driver phase itself is uncached because the embedded zccache runtime has no rustdoc parser/route.
 
+`rust-analyzer` is also launched as the real toolchain language server, not as a zccache-wrapped compiler. When caching is enabled, `soldr rust-analyzer ...` gives the server process Soldr's cache policy plus a scoped child PATH shim so rust-analyzer-spawned `cargo check` / `rustc` work can re-enter `soldr cargo ...` and the embedded zccache route. `soldr --no-cache rust-analyzer ...`, `ZCCACHE_DISABLE=1`, or `SOLDR_DISABLE_CHILD_SHIMS=1` keep the language server as a direct passthrough for editor/LSP setups that want to own their own cargo environment.
+
 Set `SOLDR_CACHE_LIFECYCLE=command` for self-build jobs that use soldr only as
 the builder and then run tests against zccache or soldr itself. The command
 lifetime mode finalizes zccache session stats first, then runs `zccache stop`
