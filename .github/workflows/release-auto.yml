@@ -376,7 +376,11 @@ jobs:
       - name: Build release binary
         shell: bash
         env:
-          CARGO_PROFILE_RELEASE_DEBUG: ${{ contains(matrix.target, 'pc-windows-msvc') && 'line-tables-only' || '0' }}
+          CARGO_PROFILE_RELEASE_DEBUG: "0"
+          # Native MSVC release links are too slow with the workspace's
+          # size-optimized thin-LTO/single-CGU profile on hosted runners.
+          CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
           # Native Windows release builds can exceed soldr's default
           # 30-minute cargo child watchdog on cold hosted runners.
           SOLDR_CARGO_WAIT_TIMEOUT_SECS: ${{ contains(matrix.target, 'pc-windows-msvc') && '7200' || '1800' }}
