@@ -417,7 +417,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             )?);
         }
         Commands::Rustdoc { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough("rustdoc", &args)?);
+            std::process::exit(toolchain::run_rustdoc(&args)?);
         }
         Commands::RustGdb { args } => {
             std::process::exit(toolchain::run_toolchain_passthrough("rust-gdb", &args)?);

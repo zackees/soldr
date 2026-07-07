@@ -1365,6 +1365,8 @@ When soldr manages zccache itself, `soldr cargo ...` resolves a fresh soldr work
 
 `soldr cargo ...` only starts the managed build cache for compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`, `clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and `cargo --version` pass through without starting zccache.
 
+`rustdoc` is intentionally not a zccache driver route today. Direct `soldr rustdoc ...` invocations and `rustdoc` PATH shims resolve the toolchain `rustdoc` binary and run it directly. `soldr cargo doc`, `soldr doc`, and doc tests still run with `RUSTC_WRAPPER=soldr`, so rustc dependency compile units remain cached; only the rustdoc driver phase itself is uncached because the embedded zccache runtime has no rustdoc parser/route.
+
 Set `SOLDR_CACHE_LIFECYCLE=command` for self-build jobs that use soldr only as
 the builder and then run tests against zccache or soldr itself. The command
 lifetime mode finalizes zccache session stats first, then runs `zccache stop`

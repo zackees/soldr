@@ -42,6 +42,14 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     Ok(status.code().unwrap_or(1))
 }
 
+/// Run rustdoc directly. zccache currently has rustc/clippy-driver
+/// compile routes and a rustfmt formatter route, but no rustdoc driver
+/// route. Cargo doc/doctest still cache their rustc compile units via
+/// the cargo front door's `RUSTC_WRAPPER=soldr` injection.
+pub(crate) fn run_rustdoc(args: &[String]) -> Result<i32, SoldrError> {
+    run_toolchain_passthrough("rustdoc", args)
+}
+
 fn apply_rustfmt_zccache_env(command: &mut std::process::Command) -> Result<(), SoldrError> {
     if std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_none() {
         let paths = SoldrPaths::new()?;

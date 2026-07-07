@@ -51,6 +51,75 @@ fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) ->
     }
 }
 
+fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"rustdoc=%RUSTDOC%\"\n\
+             if not defined RUSTDOC set \"rustdoc={2}\"\n\
+             echo cargo %* wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% rustdoc=%rustdoc% env_rustdoc=%RUSTDOC% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
+             if \"%~1\"==\"doc\" (\n\
+               if defined RUSTC_WRAPPER (\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\"\n\
+                 if errorlevel 1 exit /b 1\n\
+               ) else (\n\
+                 call \"%RUSTC%\" --crate-name doc_demo --emit dep-info,link \"{1}\"\n\
+                 if errorlevel 1 exit /b 1\n\
+               )\n\
+               call \"%rustdoc%\" \"{1}\"\n\
+               exit /b\n\
+             )\n\
+             if \"%~1\"==\"test\" if \"%~2\"==\"--doc\" (\n\
+               if defined RUSTC_WRAPPER (\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\"\n\
+                 if errorlevel 1 exit /b 1\n\
+               ) else (\n\
+                 call \"%RUSTC%\" --crate-name doctest_demo --emit dep-info,link \"{1}\"\n\
+                 if errorlevel 1 exit /b 1\n\
+               )\n\
+               call \"%rustdoc%\" \"{1}\"\n\
+               exit /b\n\
+             )\n\
+             echo unsupported fake cargo doc invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustdoc.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             rustdoc=\"${{RUSTDOC:-{2}}}\"\n\
+             echo \"cargo $* wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} rustdoc=$rustdoc env_rustdoc=${{RUSTDOC:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
+             run_doc_compile() {{\n\
+               crate_name=\"$1\"\n\
+               if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
+                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" || exit $?\n\
+               else\n\
+                 \"$RUSTC\" --crate-name \"$crate_name\" --emit dep-info,link \"{1}\" || exit $?\n\
+               fi\n\
+               \"$rustdoc\" \"{1}\"\n\
+             }}\n\
+             if [ \"$1\" = \"doc\" ]; then\n\
+               run_doc_compile doc_demo\n\
+               exit $?\n\
+             fi\n\
+             if [ \"$1\" = \"test\" ] && [ \"${{2:-}}\" = \"--doc\" ]; then\n\
+               run_doc_compile doctest_demo\n\
+               exit $?\n\
+             fi\n\
+             echo \"unsupported fake cargo doc invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustdoc.display()
+        )
+    }
+}
+
 fn install_fake_cargo_fmt_toolchain(
     log_path: &Path,
     source_path: &Path,
@@ -69,6 +138,25 @@ fn install_fake_cargo_fmt_toolchain(
     (rustup, cargo, rustc, rustfmt, zccache)
 }
 
+fn install_fake_cargo_doc_toolchain(
+    log_path: &Path,
+    source_path: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let (rustup, cargo, rustc, _rustfmt) = install_fake_rustup_toolchain(log_path);
+    let tool_dir = cargo
+        .parent()
+        .expect("fake cargo should live in a tool dir")
+        .to_path_buf();
+    let rustdoc = fake_script_path(&tool_dir, "rustdoc");
+    let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(
+        &cargo,
+        &fake_cargo_doc_script(log_path, source_path, &rustdoc),
+    );
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (rustup, cargo, rustc, rustdoc, zccache)
+}
+
 fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
     let src_dir = cache_root.join("src");
     fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
@@ -77,11 +165,59 @@ fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
     source_path
 }
 
+fn write_rustdoc_source(cache_root: &Path) -> PathBuf {
+    let src_dir = cache_root.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create rustdoc source dir");
+    let source_path = src_dir.join("lib.rs");
+    fs::write(
+        &source_path,
+        "/// Adds two numbers.\npub fn add(left: usize, right: usize) -> usize { left + right }\n",
+    )
+    .expect("failed to write rustdoc source");
+    source_path
+}
+
 fn log_contains_cache_dir(log: &str, cache_root: &Path) -> bool {
     let expected = cache_root.join("cache").join("zccache");
     path_display_variants(&expected)
         .iter()
         .any(|path| log.contains(&format!("cache_dir={path}")))
+}
+
+fn expected_link_shim_path(dir: &Path, tool: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("{tool}.cmd"))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(tool)
+    }
+}
+
+fn assert_zccache_wrapped_rustc_compile(log: &str, rustc: &Path, crate_name: &str) {
+    let zccache_line = log
+        .lines()
+        .find(|line| line.contains("zccache wrapper") && line.contains(crate_name))
+        .unwrap_or_else(|| {
+            panic!("expected zccache wrapper line for rustc crate {crate_name}: {log}")
+        });
+    assert!(
+        path_display_variants(rustc)
+            .iter()
+            .any(|path| zccache_line.contains(path)),
+        "zccache wrapper should receive rustc for crate {crate_name}: {log}"
+    );
+}
+
+fn assert_zccache_did_not_wrap_rustdoc(log: &str, rustdoc: &Path) {
+    let rustdoc_paths = path_display_variants(rustdoc);
+    assert!(
+        !log.lines().any(|line| {
+            line.contains("zccache wrapper") && rustdoc_paths.iter().any(|path| line.contains(path))
+        }),
+        "rustdoc should not be routed through zccache: {log}"
+    );
 }
 
 #[test]
@@ -233,6 +369,222 @@ timed_test!(
         );
     }
 );
+
+#[test]
+fn rustdoc_driver_is_intentionally_direct_without_zccache() {
+    let cache_root = unique_temp_dir("rustdoc-direct-no-zccache");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustdoc_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let zccache_dir = unique_temp_dir("rustdoc-direct-zccache-bin");
+    let zccache = fake_script_path(&zccache_dir, "zccache");
+    write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+    let output = isolated_soldr_command()
+        .arg("rustdoc")
+        .arg(&source_path)
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", isolated_test_path())
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("ZCCACHE_CACHE_DIR")
+        .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run soldr rustdoc with fake tools");
+
+    assert!(
+        output.status.success(),
+        "rustdoc direct passthrough failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.lines().any(|line| line.starts_with("rustdoc ")),
+        "rustdoc should run directly: {log}"
+    );
+    assert!(
+        path_display_variants(&source_path)
+            .iter()
+            .any(|path| log.contains(path)),
+        "rustdoc should receive the source file: {log}"
+    );
+    assert!(
+        !log.contains("zccache wrapper"),
+        "direct rustdoc should not route through zccache: {log}"
+    );
+}
+
+#[test]
+fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
+    for (label, args) in [
+        ("cargo-doc", vec!["cargo", "doc"]),
+        ("bare-doc", vec!["doc"]),
+    ] {
+        let cache_root = unique_temp_dir(&format!("cargo-doc-rustdoc-policy-{label}"));
+        let log_path = cache_root.join("tool.log");
+        let source_path = write_rustdoc_source(&cache_root);
+        let (rustup, cargo, rustc, rustdoc, zccache) =
+            install_fake_cargo_doc_toolchain(&log_path, &source_path);
+
+        let output = isolated_soldr_command()
+            .args(args)
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env("PATH", isolated_test_path())
+            .env_remove("RUSTDOC")
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("ZCCACHE_CACHE_DIR")
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run soldr doc route {label}"));
+
+        assert!(
+            output.status.success(),
+            "cargo doc route {label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+        assert!(
+            log.contains("cargo doc wrapper=") && log.contains("cache=1"),
+            "cargo doc should run with cache enabled and a wrapper: {log}"
+        );
+        assert_zccache_wrapped_rustc_compile(&log, &rustc, "doc_demo");
+        assert!(
+            log.lines().any(|line| line.starts_with("rustdoc ")),
+            "cargo doc should still invoke rustdoc directly: {log}"
+        );
+        assert_zccache_did_not_wrap_rustdoc(&log, &rustdoc);
+    }
+}
+
+#[test]
+fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
+    let cache_root = unique_temp_dir("cargo-doctest-rustdoc-policy");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustdoc_source(&cache_root);
+    let (rustup, cargo, rustc, rustdoc, zccache) =
+        install_fake_cargo_doc_toolchain(&log_path, &source_path);
+
+    let output = isolated_soldr_command()
+        .args(["cargo", "test", "--doc"])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", isolated_test_path())
+        .env_remove("RUSTDOC")
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("ZCCACHE_CACHE_DIR")
+        .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run soldr cargo test --doc with fake tools");
+
+    assert!(
+        output.status.success(),
+        "cargo doctest route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo test --doc wrapper=") && log.contains("cache=1"),
+        "cargo doctest should run with cache enabled and a wrapper: {log}"
+    );
+    assert_zccache_wrapped_rustc_compile(&log, &rustc, "doctest_demo");
+    assert!(
+        log.lines().any(|line| line.starts_with("rustdoc ")),
+        "cargo doctest should still invoke rustdoc directly: {log}"
+    );
+    assert_zccache_did_not_wrap_rustdoc(&log, &rustdoc);
+}
+
+#[test]
+fn rustdoc_path_shim_reenters_direct_passthrough_without_zccache() {
+    let cache_root = unique_temp_dir("rustdoc-link-shim-no-zccache");
+    let log_path = cache_root.join("tool.log");
+    let shim_dir = cache_root.join("shims");
+    let source_path = write_rustdoc_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let zccache_dir = unique_temp_dir("rustdoc-link-shim-zccache-bin");
+    let zccache = fake_script_path(&zccache_dir, "zccache");
+    write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+    let link_output = isolated_soldr_command()
+        .args([
+            "toolchain",
+            "link",
+            "--shim-dir",
+            &shim_dir.display().to_string(),
+        ])
+        .current_dir(&cache_root)
+        .output()
+        .expect("failed to run soldr toolchain link");
+
+    assert!(
+        link_output.status.success(),
+        "toolchain link for rustdoc shim failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&link_output.stdout),
+        String::from_utf8_lossy(&link_output.stderr)
+    );
+
+    let rustdoc_shim = expected_link_shim_path(&shim_dir, "rustdoc");
+    let mut command = Command::new(&rustdoc_shim);
+    scrub_outer_soldr_env(&mut command);
+    let output = command
+        .arg(&source_path)
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", isolated_test_path())
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("ZCCACHE_CACHE_DIR")
+        .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run rustdoc PATH shim");
+
+    assert!(
+        output.status.success(),
+        "rustdoc PATH shim failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.lines().any(|line| line.starts_with("rustdoc ")),
+        "rustdoc shim should re-enter direct rustdoc passthrough: {log}"
+    );
+    assert!(
+        !log.contains("zccache wrapper"),
+        "rustdoc shim should not route through zccache: {log}"
+    );
+}
 
 #[test]
 fn rustfmt_file_invocation_routes_through_zccache_formatter() {
