@@ -405,17 +405,31 @@ fn collect_sdk_dirs(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), SoldrErro
         if !path.is_dir() {
             continue;
         }
-        if path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .is_some_and(|name| name.ends_with(".sdk"))
-        {
+        if is_apple_sdk_dir(&path) {
             out.push(path);
         } else {
             collect_sdk_dirs(&path, out)?;
         }
     }
     Ok(())
+}
+
+fn is_apple_sdk_dir(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .is_some_and(|name| name.ends_with(".sdk"))
+    {
+        return true;
+    }
+
+    // The thin 14.5 catalogue archives are Conan-style packages:
+    // `package/sdk/{SDKSettings.plist,SDKSettings.json,System,usr}`.
+    // Accept that SDK root even though the directory name is not
+    // `MacOSX*.sdk`.
+    (path.join("SDKSettings.plist").is_file() || path.join("SDKSettings.json").is_file())
+        && path.join("System").is_dir()
+        && path.join("usr").is_dir()
 }
 
 fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
@@ -682,6 +696,19 @@ mod tests {
         assert_eq!(
             find_extracted_sdk_dir(tmp.path(), &expected).expect("nested sdk fallback"),
             nested
+        );
+    });
+
+    crate::timed_test!(find_extracted_sdk_dir_accepts_conan_package_sdk_root, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let expected = tmp.path().join("MacOSX14.5.sdk");
+        let sdk = tmp.path().join("package").join("sdk");
+        std::fs::create_dir_all(sdk.join("System")).expect("System dir");
+        std::fs::create_dir_all(sdk.join("usr")).expect("usr dir");
+        std::fs::write(sdk.join("SDKSettings.plist"), "<plist/>").expect("SDKSettings");
+        assert_eq!(
+            find_extracted_sdk_dir(tmp.path(), &expected).expect("package sdk fallback"),
+            sdk
         );
     });
 
