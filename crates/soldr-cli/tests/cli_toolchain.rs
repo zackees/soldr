@@ -13,6 +13,23 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(not(windows))]
+fn fake_toolchain_plugin_cargo_script(log_path: &Path) -> String {
+    format!(
+        "#!/bin/sh\n\
+         echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} workspace_wrapper=${{RUSTC_WORKSPACE_WRAPPER:-}} args=$*\" >> \"{}\"\n",
+        log_path.display()
+    )
+}
+
+#[cfg(not(windows))]
+fn install_fake_toolchain_plugin_cargo(log_path: &Path) -> PathBuf {
+    let dir = unique_temp_dir("fake-toolchain-plugin-cargo");
+    let cargo = fake_script_path(&dir, "cargo");
+    write_fake_script(&cargo, &fake_toolchain_plugin_cargo_script(log_path));
+    cargo
+}
+
 // Retrofitted to use `timed_test!` (180s budget) as a smoke proof that
 // the watchdog macro composes cleanly with an existing integration
 // test that spawns the soldr binary as a subprocess.
@@ -283,6 +300,51 @@ fn toolchain_prepare_installs_plugins_with_version() {
         Some("0.9")
     );
 }
+
+#[cfg(not(windows))]
+timed_test!(
+    toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers,
+    {
+        let workspace = unique_temp_dir("toolchain-prepare-plugin-wrapper-policy");
+        seed_rust_toolchain_toml(
+            &workspace,
+            "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-nextest = \"0.9\"\n",
+        );
+        let rustup_log = workspace.join("rustup.log");
+        let cargo_log = workspace.join("cargo.log");
+        let rustup = install_logging_fake_rustup(&rustup_log);
+        let cargo = install_fake_toolchain_plugin_cargo(&cargo_log);
+
+        let output = isolated_soldr_command()
+            .args(["toolchain", "prepare"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("RUSTC_WRAPPER", "/tmp/outer-wrapper")
+            .env("RUSTC_WORKSPACE_WRAPPER", "/tmp/outer-workspace-wrapper")
+            .output()
+            .expect("failed to run soldr toolchain prepare");
+
+        assert!(
+            output.status.success(),
+            "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&cargo_log).expect("read fake cargo log");
+        assert!(
+            log.contains(
+                "cargo wrapper= workspace_wrapper= args=install cargo-nextest --version 0.9"
+            ),
+            "toolchain prepare plugin install should scrub rustc wrapper env: {log}"
+        );
+    }
+);
 
 #[test]
 fn toolchain_prepare_installs_plugin_with_locked_flag() {

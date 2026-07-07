@@ -26,10 +26,11 @@
 //!   focused on tools soldr actually bundles — generic `cargo install`
 //!   passthrough belongs in `soldr cargo install`, not here.
 //! - **Direct cargo invocation.** Resolves cargo via
-//!   `binaries::resolve_toolchain_binary("cargo")` so the spawn bypasses
-//!   `RUSTC_WRAPPER` injection. If this verb routed through soldr's own
-//!   wrapper machinery the inner `cargo install` would re-enter soldr's
-//!   cache logic recursively — see `crates/soldr-cli/src/toolchain.rs`'s
+//!   `binaries::resolve_toolchain_binary("cargo")` and clears inherited
+//!   `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` so the spawn bypasses
+//!   wrapper injection. If this verb routed through soldr's own wrapper
+//!   machinery the inner `cargo install` would re-enter soldr's cache
+//!   logic recursively — see `crates/soldr-cli/src/toolchain.rs`'s
 //!   `cargo_install_plugin` for the same pattern.
 //! - **Default version comes from the registry.** `version: None`
 //!   resolves through `known_tools::lookup_by_crate(tool).pinned_version`
@@ -165,8 +166,9 @@ pub struct BuildReport {
 
 /// Actually invoke `cargo install <tool>@<version> --target <triple>
 /// --root <staging>` and move the resulting binary into the per-(tool,
-/// version, triple) install dir. Bypasses `RUSTC_WRAPPER` injection by
-/// resolving cargo through [`resolve_toolchain_binary`] directly.
+/// version, triple) install dir. Bypasses `RUSTC_WRAPPER` /
+/// `RUSTC_WORKSPACE_WRAPPER` injection by resolving cargo through
+/// [`resolve_toolchain_binary`] directly and scrubbing inherited wrappers.
 pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
     // Honour the same retry budget the managed zccache path uses so
     // transient crates.io / registry hiccups don't spuriously fail the
@@ -223,10 +225,11 @@ pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
             // to attach to fds it cannot see (see soldr #283).
             .env_remove("MAKEFLAGS")
             .env_remove("CARGO_MAKEFLAGS")
-            // Belt-and-suspenders: explicitly clear RUSTC_WRAPPER so an
-            // accidentally-inherited soldr wrapper doesn't re-enter the
-            // cache layer during the source build.
-            .env_remove("RUSTC_WRAPPER");
+            // Belt-and-suspenders: explicitly clear rustc wrapper env so
+            // an accidentally-inherited soldr wrapper doesn't re-enter the
+            // cache layer during this bootstrap/source-build cargo install.
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("RUSTC_WORKSPACE_WRAPPER");
         suppress_windows_console_window(&mut command);
 
         let status = run_cargo_install_attempt(&mut command, plan)?;
