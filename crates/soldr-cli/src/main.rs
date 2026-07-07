@@ -343,13 +343,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     prepend_to_path_env(dir);
                 }
 
-                // soldr#882: auto-dispatch cargo subcommand based on
-                // target. *-pc-windows-msvc routes through `cargo xwin
-                // build`, *-apple-darwin / *-unknown-linux-musl /
-                // cross-arch *-unknown-linux-gnu route through
-                // `cargo zigbuild`. Opt-out via SOLDR_USE_LEGACY_{XWIN,
-                // ZIGBUILD}=1 (same env vars blessed_build::prepare
-                // already honors for sysroot prep). cfg-gated to linux
+                // soldr#882/#1081: auto-dispatch cargo subcommand based
+                // on target. *-pc-windows-msvc routes through `cargo
+                // xwin build`; linux musl and cross-arch linux gnu use
+                // `cargo zigbuild`. Darwin stays on plain cargo build
+                // after blessed_build injects the target-shaped Apple
+                // SDK/clang env, unless SOLDR_USE_LEGACY_ZIGBUILD=1 is
+                // set for diagnostic comparison. XWIN can similarly opt
+                // out via SOLDR_USE_LEGACY_XWIN=1. cfg-gated to linux
                 // hosts — native msvc/darwin host builds keep using
                 // plain cargo build.
                 if let Some(subcmd) = pick_cross_subcommand(&target_triple) {

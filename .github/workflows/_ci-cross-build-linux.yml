@@ -7,7 +7,7 @@
 #   *-unknown-linux-gnu (x86_64 native)  -> plain cargo
 #   *-unknown-linux-gnu (aarch64 cross)  -> cargo zigbuild
 #   *-unknown-linux-musl                 -> cargo zigbuild
-#   *-apple-darwin                       -> cargo zigbuild + apple-sdk + persistent zig-cc wrappers
+#   *-apple-darwin                       -> soldr build + target-shaped Apple SDK
 #   *-pc-windows-msvc                    -> cargo xwin
 #
 # Output: release binary at target/<triple>/release/soldr[.exe] + an
@@ -206,16 +206,23 @@ jobs:
           path: ${{ runner.temp }}/setup-soldr-soldr/sdk/${{ inputs.target }}/xwin/2026-06-22
           key: soldr-xwin-cache-${{ inputs.target }}-cargo-xwin-0.18.6-v2026-06-22
 
-      # soldr#1246 — cache the Apple SDK v11.3 fetched by soldr's
-      # blessed_build::prepare on darwin targets. Same pattern as
-      # the xwin-cache above. soldr's ensure_apple_sdk sees the
-      # extracted dir on next run and skips the download.
-      - name: Cache Apple SDK
-        if: contains(inputs.target, 'apple-darwin')
+      # soldr#1425 - cache the target-shaped Apple SDK v14.5 fetched by
+      # blessed_build::prepare on darwin targets. Cache path + key both
+      # include the catalogue version and shape so x86_64 and aarch64
+      # lanes never reuse the wrong SDK slice.
+      - name: Cache Apple SDK (x86_64)
+        if: inputs.target == 'x86_64-apple-darwin'
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
-          path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/11.3
-          key: soldr-apple-sdk-11.3-v1
+          path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-x86_64
+          key: soldr-apple-sdk-14.5-darwin-x86_64-v1
+
+      - name: Cache Apple SDK (aarch64)
+        if: inputs.target == 'aarch64-apple-darwin'
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: ${{ runner.temp }}/setup-soldr-soldr/bin/apple-sdk/14.5/darwin-aarch64
+          key: soldr-apple-sdk-14.5-darwin-aarch64-v1
 
       # soldr#1227 — cache target/ + ~/.cargo/{registry,git} across runs.
       # Bootstrap (host x86_64-linux-gnu) + Cross-build (target subtree)
@@ -394,7 +401,7 @@ jobs:
       # can't find MSVC lib.exe (windows) or Apple SDK CommonCrypto
       # headers (darwin). The target-run lane falls back to a
       # `soldr --version` smoke test for these targets. Tracked as
-      # #1068 (windows) and the post-#1112 mimalloc dep tree (darwin).
+      # #1068 (windows); darwin is split out from #1425 as #1432.
       - name: Build nextest archive
         if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
         shell: bash

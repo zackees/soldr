@@ -21,6 +21,31 @@ pub(super) fn default_cargo_build_target(args: &[String]) -> Result<Option<Strin
     Ok(Some(crate::core::TargetTriple::detect()?.triple()))
 }
 
+/// Return the target Cargo will build when soldr can know it without
+/// falling back to host auto-detection.
+///
+/// `default_cargo_build_target` has a narrower job: inject Windows' native
+/// MSVC default only when the user did not pass a target. Native C caching
+/// needs the explicit target too, otherwise cross builds only get a generic
+/// `CC` wrapper and cc-rs can fall back to the host compiler.
+pub(super) fn known_cargo_build_target(
+    args: &[String],
+    defaulted_target: Option<&str>,
+) -> Option<String> {
+    if let Some(target) = defaulted_target {
+        return Some(target.to_string());
+    }
+    if let Some(target) = std::env::var_os("CARGO_BUILD_TARGET") {
+        if let Some(s) = target.to_str() {
+            let s = s.trim();
+            if !s.is_empty() {
+                return Some(s.to_string());
+            }
+        }
+    }
+    cargo_args_target_value(args)
+}
+
 /// Apply the `SOLDR_LINKER` / `config.toml linker = ...` override (issue
 /// #285) to the cargo subprocess command.
 ///

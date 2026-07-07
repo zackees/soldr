@@ -32,8 +32,8 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | Linux → Windows GNU | `cargo-zigbuild` + `ziglang` ([Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended)) |
 | Windows → Windows GNU | managed MinGW-w64 GCC ([Section 1b](#1b-windows--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `cargo-xwin` ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)) |
-| **Windows → Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
-| **Windows → Mac** | `cargo-zigbuild` + Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
+| **Windows -> Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
+| **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
 ---
@@ -85,45 +85,52 @@ soldr cargo zigbuild --release --target x86_64-pc-windows-gnu
 
 ---
 
-## 1a. Windows → Linux via `cargo-zigbuild` (soldr#988 Phase 3)
+## 1a. Windows -> Linux via `cargo-zigbuild` and macOS via `soldr build` (soldr#988/soldr#1425)
 
-Same `cargo-zigbuild` tool, host-flipped. Windows contributors can produce
-Linux and Mac binaries locally instead of pushing a branch and waiting on
-CI. `zig` ships the libc headers / `libSystem` shims `zigbuild` needs;
-no mingw or wsl required.
+Windows contributors can produce Linux and macOS binaries locally instead of
+pushing a branch and waiting on CI, but the two target families now use
+different blessed build surfaces:
+
+- Linux cross targets still use explicit `soldr cargo zigbuild`.
+- macOS targets use `soldr build --target <apple-triple>`. That path resolves
+  the target-aware Apple SDK row and injects clang/SDK env internally. Direct
+  `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
+  not the default macOS recipe.
 
 ### Recipe
 
 ```powershell
 # Pin the cross targets in rust-toolchain.toml (same shape as Section 1):
 #   [toolchain]
-#   targets = ["x86_64-unknown-linux-gnu", "aarch64-apple-darwin"]
+#   targets = ["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin"]
 #
-# Then materialize the toolchain + fetch zig/cargo-zigbuild:
+# Linux target: materialize zig/cargo-zigbuild, then build through zigbuild.
 soldr prepare --target x86_64-unknown-linux-gnu
-soldr prepare --target aarch64-apple-darwin   # also fetches the Apple SDK
-
-# Build:
 soldr cargo zigbuild --target x86_64-unknown-linux-gnu --release -p soldr-cli
-soldr cargo zigbuild --target aarch64-apple-darwin   --release -p soldr-cli
+
+# macOS targets: soldr build is the blessed path. `prepare` is optional and
+# useful only when a later external/legacy command needs SDKROOT exported.
+soldr prepare --target x86_64-apple-darwin
+soldr build --target x86_64-apple-darwin --release -p soldr-cli
+soldr build --target aarch64-apple-darwin --release -p soldr-cli
 ```
 
 ### What soldr handles automatically
 
-- `cargo-zigbuild` install (fetched from the soldr-toolchain catalogue
-  per `SOLDR_TOOLCHAIN_ORIGIN`).
-- `zig` install (same).
-- Apple SDK fetch for `*-apple-darwin` targets — `prepare` writes
-  `SDKROOT=<path>` for the build step.
+- `cargo-zigbuild` and `zig` install for Linux zigbuild targets (fetched from
+  the soldr-toolchain catalogue per `SOLDR_TOOLCHAIN_ORIGIN`).
+- Apple SDK fetch for `*-apple-darwin` targets. Auto shape maps
+  `x86_64-apple-darwin` to `darwin-x86_64` and `aarch64-apple-darwin` to
+  `darwin-aarch64`; `soldr build` applies the SDK env internally.
 
 ### Apple SDK version + shape (soldr-toolchain#14)
 
 The Apple SDK soldr fetches is pinned per-target via two env vars
-(both optional — defaults match the historical behaviour):
+(both optional):
 
 | Env var | Values | Default | Effect |
 |---|---|---|---|
-| `SOLDR_APPLE_SDK_VERSION` | `11.3`, `13.3`, `14.5`, `15.2` | `11.3` | Which macOS SDK to vendor (catalogue row selection). |
+| `SOLDR_APPLE_SDK_VERSION` | `11.3`, `13.3`, `14.5`, `15.2` | `14.5` | Which macOS SDK to vendor (catalogue row selection). |
 | `SOLDR_APPLE_SDK_SHAPE` | `universal2`, `thin-x86_64`, `thin-aarch64`, `auto` | `auto` | Whether to fetch the fat universal2 artifact or a lipo-thinned per-arch slice. |
 
 `auto` (the default) picks the **thin variant matching the target
@@ -131,22 +138,22 @@ triple's arch** when cross-compiling for one Apple arch, falling
 back to `universal2` otherwise. Examples:
 
 ```powershell
-# Project targets only Apple Silicon → fetch ~50 MB thin SDK
+# Project targets only Apple Silicon: fetch the thin SDK slice
 $env:SOLDR_APPLE_SDK_VERSION = "14.5"
 $env:SOLDR_APPLE_SDK_SHAPE   = "thin-aarch64"
-soldr cargo zigbuild --target aarch64-apple-darwin --release -p soldr-cli
+soldr build --target aarch64-apple-darwin --release -p soldr-cli
 
-# Project targets both Apple archs from one cache → one fat artifact
+# Project targets both Apple archs from one cache: one fat artifact
 $env:SOLDR_APPLE_SDK_SHAPE = "universal2"
-soldr cargo zigbuild --target x86_64-apple-darwin  --release -p soldr-cli
-soldr cargo zigbuild --target aarch64-apple-darwin --release -p soldr-cli
+soldr build --target x86_64-apple-darwin  --release -p soldr-cli
+soldr build --target aarch64-apple-darwin --release -p soldr-cli
 ```
 
 The available `(version, shape)` rows live in the soldr-toolchain
 catalogue at `https://zackees.github.io/soldr-toolchain/catalogue.v1.json`
-under the URL pattern `/apple-sdk/<version>/<shape-slug>/`. Catalogue
-backfill for non-11.3 versions is tracked in
-[soldr-toolchain#14](https://github.com/zackees/soldr-toolchain/issues/14).
+under the URL pattern `/apple-sdk/<version>/<shape-slug>/`. The historical
+11.3 row keeps its legacy `/apple-sdk/MacOSX11.3/darwin-universal2/` layout;
+modern rows use the bare version plus shape slug.
 
 ### CI
 

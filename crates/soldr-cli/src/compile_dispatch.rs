@@ -360,8 +360,8 @@ mod tests {
         Duration::from_secs(5),
         {
             // Regression test for the darwin cross-compile lanes (run
-            // 28574600982). The workflow exports SDKROOT
-            // before `soldr cargo zigbuild --target *-apple-darwin`;
+            // 28574600982). `soldr build` and explicit legacy
+            // `soldr cargo zigbuild --target *-apple-darwin` export SDKROOT;
             // rustc reads it to locate the Apple SDK when linking (it
             // appends `-isysroot <sdk>` to the cc-style linker), and the
             // zig-cc linker shim reads it again for the SDK library

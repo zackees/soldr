@@ -1107,6 +1107,35 @@ mod tests {
         assert!(msg.contains("release lookup"));
     }
 
+    #[test]
+    fn darwin_x64_catalogue_mappings_cover_blessed_mac_x86() {
+        let target = "x86_64-apple-darwin";
+        assert_eq!(zstd_sysroot::catalogue_slug_for(target), Some("darwin-x64"));
+        assert_eq!(
+            sqlite_sysroot::catalogue_slug_for(target),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            mimalloc_sysroot::catalogue_slug_for(target),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            zlib_ng_sysroot::catalogue_slug_for(target),
+            Some("darwin-x64")
+        );
+        assert_eq!(lzma_sysroot::catalogue_slug_for(target), Some("darwin-x64"));
+        assert_eq!(
+            bzip2_sysroot::catalogue_slug_for(target),
+            Some("darwin-x64")
+        );
+        assert_eq!(
+            python_sysroot::catalogue_slug_for(target),
+            Some("darwin-x64")
+        );
+        assert_eq!(cmake_tools::host_slug_for(target), Some("darwin-x64"));
+        assert_eq!(uv_tool::host_slug_for(target), Some("darwin-x64"));
+    }
+
     // soldr#936 smoke-test-or-evict regression tests.
 
     crate::timed_test!(smoke_test_missing_file_errors, {
