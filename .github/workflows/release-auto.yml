@@ -303,15 +303,16 @@ jobs:
         if: steps.rustup_cache.outputs.cache-hit != 'true'
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
-      - name: Setup released soldr bootstrap and Rust toolchain
+      - name: Setup Rust toolchain
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
-          # Release CI needs a soldr bootstrap that already recognizes
-          # `soldr build`. Pin the latest completed GitHub binary
-          # release instead of relying on "latest" resolution, which can
-          # lag just enough for the bootstrap to treat `build` as an
-          # external tool name.
-          version: v0.7.104
+          # Release CI runs the checked-out soldr CLI via `cargo run`
+          # below, because the previous released soldr can lack the
+          # exact cross-build and sidecar behavior needed to build the
+          # next release. Keep setup-soldr in passthrough mode here so it
+          # only provisions Rust and cannot enter stale standalone
+          # zccache setup paths.
+          enable: false
           toolchain: 1.94.1
           cache: false
           build-cache: false
@@ -372,9 +373,6 @@ jobs:
         with:
           version: 0.15.2
 
-      # (Cargo registry + target cache is handled by setup-soldr's
-      # `cache: true` input above per soldr#1061.)
-
       - name: Build release binary
         shell: bash
         env:
@@ -408,11 +406,12 @@ jobs:
           cargo clean -p soldr-cli --target "${{ matrix.target }}" --release 2>/dev/null || true
 
           target='${{ matrix.target }}'
-          # Release CI calls the already-installed soldr bootstrap
-          # binary from setup-soldr and lets `soldr build` own all
-          # target-specific toolchain dispatch. The workflow must not
-          # install or invoke lower-level cross-build helpers directly.
-          soldr build --release --locked --target "$target" \
+          # Release CI runs the checked-out soldr CLI as the build
+          # driver and lets `soldr build` own all target-specific
+          # toolchain dispatch. The workflow must not install or invoke
+          # lower-level cross-build helpers directly.
+          cargo run --release --locked --package soldr-cli --bin soldr -- \
+            build --release --locked --target "$target" \
             --package soldr-cli \
             --bin soldr \
             --bin soldr-daemon \
@@ -596,7 +595,22 @@ jobs:
               name = archive.name
               if name.endswith(".tar.zst"):
                   subprocess.run(
-                      ["soldr", "archive", "--input", str(archive), "--extract-dir", str(extract_dir)],
+                      [
+                          "cargo",
+                          "run",
+                          "--release",
+                          "--locked",
+                          "--package",
+                          "soldr-cli",
+                          "--bin",
+                          "soldr",
+                          "--",
+                          "archive",
+                          "--input",
+                          str(archive),
+                          "--extract-dir",
+                          str(extract_dir),
+                      ],
                       check=True,
                   )
               elif name.endswith(".zip"):
