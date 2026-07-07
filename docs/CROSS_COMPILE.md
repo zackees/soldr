@@ -30,6 +30,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | You want | Use |
 |---|---|
 | Linux → Windows GNU | `cargo-zigbuild` + `ziglang` ([Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended)) |
+| Windows → Windows GNU | managed MinGW-w64 GCC ([Section 1b](#1b-windows--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `cargo-xwin` ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)) |
 | **Windows → Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
 | **Windows → Mac** | `cargo-zigbuild` + Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-soldr988-phase-3)) |
@@ -159,6 +160,44 @@ the Linux → Windows-GNU mirror of this recipe.
 
 ---
 
+## 1b. Windows → Windows GNU via managed MinGW-w64 GCC
+
+On Windows x64 hosts, `soldr prepare --target x86_64-pc-windows-gnu`
+downloads a pinned WinLibs MinGW-w64 GCC bundle from the soldr-toolchain
+catalogue, prepends its `bin/` directory to `PATH`, and exports the
+target-scoped Cargo/cc-rs variables needed by build scripts:
+`CC_x86_64_pc_windows_gnu`, `CXX_x86_64_pc_windows_gnu`,
+`AR_x86_64_pc_windows_gnu`, `RANLIB_x86_64_pc_windows_gnu`,
+`WINDRES_x86_64_pc_windows_gnu`, and
+`CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER`.
+
+### Recipe
+
+```powershell
+rustup target add x86_64-pc-windows-gnu
+
+soldr prepare --target x86_64-pc-windows-gnu
+where gcc
+gcc --version
+
+soldr build --target x86_64-pc-windows-gnu --release
+```
+
+In GitHub Actions, pass `--github-env $env:GITHUB_ENV` so later steps
+inherit the same compiler/linker environment:
+
+```powershell
+soldr prepare --target x86_64-pc-windows-gnu --github-env $env:GITHUB_ENV
+```
+
+Scope is intentionally narrow: first-class managed MinGW provisioning
+currently supports only `x86_64-pc-windows-gnu` on Windows x64 hosts.
+`i686-pc-windows-gnu`, `aarch64-pc-windows-gnullvm`, and other Windows
+GNU-family targets are follow-ups. Linux hosts should keep using
+[Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended).
+
+---
+
 ## 2. Linux → Windows MSVC via `cargo-xwin`
 
 `cargo-xwin` downloads the Microsoft CRT and Windows SDK headers/libs on
@@ -285,12 +324,12 @@ The #329 exploration is explicit about the lines soldr will not cross:
 
 - **No silent `RUSTFLAGS` injection.** soldr does not append linker flags
   or `-C link-arg=...` based on guesswork about your target.
-- **No automatic `CC` / `CXX` / linker mutation** without an explicit
-  opt-in. If a link fails because the wrong C compiler is on `PATH`,
-  the error stays pointing at the missing linker.
-- **No system-package installs** (mingw-w64, `binutils-mingw-w64-x86-64`,
-  etc.) from inside soldr. Those belong to your distro's package manager
-  or to a more permissive CI shim.
+- **No hidden `CC` / `CXX` / linker mutation.** `soldr prepare` may export
+  target-scoped env for a supported target, such as managed MinGW-w64 GCC
+  for `x86_64-pc-windows-gnu`, but only on an explicit `--target`.
+- **No system-package installs** (`mingw-w64`, `binutils-mingw-w64-x86-64`,
+  etc.) from inside soldr. Managed toolchains are downloaded into soldr's
+  cache instead of being installed into the host OS.
 
 For the CI side, [`zackees/setup-soldr`][setup-soldr] takes liberties that
 soldr itself will not — including a `cross-targets:` input that can install

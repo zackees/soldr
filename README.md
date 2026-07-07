@@ -128,7 +128,9 @@ soldr cargo build --target aarch64-pc-windows-msvc
 
 The canonical multi-platform GitHub Actions tutorial lives in [`zackees/setup-soldr#90`](https://github.com/zackees/setup-soldr/issues/90).
 
-For Linux → Windows cross-compilation (GNU via `cargo-zigbuild`, MSVC via `cargo-xwin`), see [docs/CROSS_COMPILE.md](./docs/CROSS_COMPILE.md).
+For Linux → Windows cross-compilation (GNU via `cargo-zigbuild`, MSVC via
+`cargo-xwin`) and explicit Windows x64 GNU builds via managed MinGW-w64 GCC,
+see [docs/CROSS_COMPILE.md](./docs/CROSS_COMPILE.md).
 
 ### CI cache lineage
 
@@ -329,7 +331,7 @@ If you also have many separate test binaries, consider consolidating them under 
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.
 - **Cross-platform**: Linux, macOS, Windows (x86_64 + aarch64).
-- **MSVC by default on Windows**: Always targets `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`) unless the active project explicitly selects another target in `.cargo/config.toml`, `.cargo/config`, or `rust-toolchain.toml`. MSVC links against `vcruntime140.dll` which ships with every modern Windows install. The GNU target requires shipping `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` with every binary, which is extra baggage for no benefit. This matches the Rust ecosystem default: rustup, cargo-binstall, and nearly all published release binaries target MSVC. crgx gets this wrong by baking the target at compile time, causing it to look for GNU binaries when compiled under MSYS2.
+- **MSVC by default on Windows**: Always targets `x86_64-pc-windows-msvc` (or `aarch64-pc-windows-msvc`) unless the active project explicitly selects another target in `.cargo/config.toml`, `.cargo/config`, or `rust-toolchain.toml`. MSVC links against `vcruntime140.dll` which ships with every modern Windows install. The GNU target requires shipping `libgcc_s_seh-1.dll` and `libwinpthread-1.dll` with every binary, which is extra baggage for most projects; when a project explicitly needs `x86_64-pc-windows-gnu`, `soldr prepare --target x86_64-pc-windows-gnu` provisions managed MinGW-w64 GCC on Windows x64. This matches the Rust ecosystem default: rustup, cargo-binstall, and nearly all published release binaries target MSVC. crgx gets this wrong by baking the target at compile time, causing it to look for GNU binaries when compiled under MSYS2.
 
 ## Architecture
 

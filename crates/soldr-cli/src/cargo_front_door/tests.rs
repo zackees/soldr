@@ -819,6 +819,31 @@ fn zigbuild_env_overrides_include_cc_and_linker_for_supported_target() {
 }
 
 #[test]
+fn zigbuild_env_overrides_include_windows_gnu_target() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(dir.path().join("soldr"));
+    let mut env = Vec::new();
+
+    append_zigbuild_env_overrides(&paths, "x86_64-pc-windows-gnu", &mut env).unwrap();
+
+    let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+    for key in [
+        "CC_x86_64_pc_windows_gnu",
+        "CXX_x86_64_pc_windows_gnu",
+        "AR_x86_64_pc_windows_gnu",
+        "RANLIB_x86_64_pc_windows_gnu",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
+    ] {
+        let value = map.get(key).unwrap_or_else(|| panic!("missing {key}"));
+        assert!(
+            value.contains("zigbuild-shims"),
+            "{key} should point at generated zigbuild shim, got {value}"
+        );
+    }
+}
+
+#[test]
 fn xwin_with_non_msvc_target_does_not_inject_anything() {
     let env =
         compute_subcommand_env_overrides(&argvec("xwin build --target x86_64-unknown-linux-gnu"));

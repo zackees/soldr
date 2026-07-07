@@ -67,6 +67,7 @@ pub mod bzip2_sysroot;
 pub mod cmake_tools;
 pub mod lzma_sysroot;
 pub mod mimalloc_sysroot;
+pub mod mingw_w64_gcc;
 pub mod sqlite_sysroot;
 /// soldr#1064 Phase B — shared download + extract for the six
 /// *-sys C library catalogue bundles. The per-lib modules each

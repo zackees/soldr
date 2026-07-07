@@ -28,11 +28,13 @@
 //! site.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use super::github::http_client;
 use super::manifest_lookup;
 use super::trust;
 use crate::core::{SoldrError, SoldrPaths};
+
+const SYSLIB_DOWNLOAD_TIMEOUT_SECS: u64 = 30 * 60;
 
 /// Build the canonical assets-branch URL for a `(lib, version, slug)`
 /// tuple. Mirrors the layout `forge_to_catalogue.py` writes:
@@ -98,9 +100,10 @@ pub async fn ensure_syslib_bundle(
 
     eprintln!("soldr: fetching syslib {lib}/{version}/{slug} from {url}...");
 
-    let client = http_client()?;
+    let client = syslib_http_client()?;
     let resp = client
         .get(&url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
         .send()
         .await
         .map_err(|e| SoldrError::Network(e.to_string()))?;
@@ -141,6 +144,20 @@ pub async fn ensure_syslib_bundle(
     std::fs::write(&stamp, format!("{lib} {version} {slug}"))?;
     eprintln!("soldr: extracted syslib to {}", sysroot.display());
     Ok(sysroot)
+}
+
+fn syslib_http_client() -> Result<reqwest::Client, SoldrError> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(syslib_download_timeout())
+        .http1_only()
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|e| SoldrError::Network(e.to_string()))
+}
+
+fn syslib_download_timeout() -> Duration {
+    Duration::from_secs(SYSLIB_DOWNLOAD_TIMEOUT_SECS)
 }
 
 /// Acquire a **blocking** exclusive cross-process lock for an install
@@ -210,6 +227,10 @@ mod tests {
         let a = asset_url_for("sqlite", "3.46.0", "windows-x64");
         let b = asset_url_for("sqlite", "3.46.0", "linux-arm64-musl");
         assert_ne!(a, b);
+    });
+
+    timed_test!(large_binary_download_timeout_allows_managed_toolchains, {
+        assert_eq!(syslib_download_timeout(), Duration::from_secs(30 * 60));
     });
 
     timed_test!(install_lock_serializes_racing_threads, {

@@ -4,6 +4,9 @@ description: |
   internally dispatches based on `target` triple via `soldr prepare`:
     *-pc-windows-msvc → ensure cargo-xwin + LLVM + extract vendored
       MSVC CRT cache to ~/.cache/cargo-xwin/ (no live MS download).
+    x86_64-pc-windows-gnu → on Windows x64, ensure managed MinGW-w64
+      GCC and export target-scoped Cargo/cc-rs env; on other hosts,
+      ensure cargo-zigbuild + zig.
     *-apple-darwin    → ensure cargo-zigbuild + zig + Apple SDK;
       export SDKROOT into $GITHUB_ENV.
     *-unknown-linux-* → ensure cargo-zigbuild + zig.
