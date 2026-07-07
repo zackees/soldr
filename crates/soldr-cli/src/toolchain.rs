@@ -373,11 +373,11 @@ fn format_plugin_label(name: &str, spec: &crate::core::PluginSpec) -> String {
 
 /// Install one plugin declared under `[soldr.plugins]` via the
 /// resolved cargo binary (so installs respect soldr-managed
-/// `$CARGO_HOME`). We deliberately do NOT route through the rustc
-/// wrapper machinery — that path is meant for compile units, not
-/// dev-tool installation. The active cargo already honors
-/// `rust-toolchain.toml` at exec time, so no explicit channel is
-/// passed.
+/// `$CARGO_HOME`). This is bootstrap/dev-tool acquisition, not a
+/// project compile, so it deliberately clears `RUSTC_WRAPPER` /
+/// `RUSTC_WORKSPACE_WRAPPER` instead of routing through zccache. The
+/// active cargo already honors `rust-toolchain.toml` at exec time, so
+/// no explicit channel is passed.
 fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i32, SoldrError> {
     let cargo = resolve_toolchain_binary("cargo")?;
     let mut command = std::process::Command::new(&cargo);
@@ -418,6 +418,9 @@ fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i3
     }
 
     apply_implicit_toolchain_homes(&mut command);
+    command
+        .env_remove("RUSTC_WRAPPER")
+        .env_remove("RUSTC_WORKSPACE_WRAPPER");
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, &format!("cargo install {name}"))?;
     Ok(status.code().unwrap_or(1))

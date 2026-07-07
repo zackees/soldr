@@ -556,6 +556,12 @@ soldr toolchain doctor [--json]   # run env-detection probes (musl-cc, shared ta
 3. `rustup target add --toolchain <channel> <target>` for every entry in `[toolchain].targets`
 4. `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
 
+Plugin installs are bootstrap/dev-tool acquisition, not project compilation.
+They invoke the directly resolved cargo binary and clear inherited
+`RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` so a setup step cannot
+recursively re-enter Soldr's zccache wrapper while installing the tools
+that future builds may use.
+
 The first non-zero exit short-circuits the chain.
 
 #### `soldr toolchain ensure`
@@ -1367,6 +1373,8 @@ When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr 
 When soldr manages zccache itself, `soldr cargo ...` resolves a fresh soldr workspace context by default. It preserves normal process environment used by Cargo, Rust, proxies, certificates, CI, and platform SDKs, but ignores inherited soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`, `SOLDR_TARGET_CACHE_*`, `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`. Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only for advanced workflows that intentionally inject those values. Custom wrapper modes leave caller-provided wrapper environment alone; when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves, soldr forwards their value rather than overriding it.
 
 `soldr cargo ...` only starts the managed build cache for compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`, `clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and `cargo --version` pass through without starting zccache.
+
+Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-source ...` and `[soldr.plugins]` installs from `soldr toolchain prepare` / `ensure` invoke the directly resolved cargo binary and scrub inherited `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER`. Those commands install dev tools and cross-target helper binaries; routing them through Soldr's wrapper slot would make setup recursively depend on the cache layer it is preparing.
 
 `rustdoc` is intentionally not a zccache driver route today. Direct `soldr rustdoc ...` invocations and `rustdoc` PATH shims resolve the toolchain `rustdoc` binary and run it directly. `soldr cargo doc`, `soldr doc`, and doc tests still run with `RUSTC_WRAPPER=soldr`, so rustc dependency compile units remain cached; only the rustdoc driver phase itself is uncached because the embedded zccache runtime has no rustdoc parser/route.
 
