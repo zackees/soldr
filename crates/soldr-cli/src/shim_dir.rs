@@ -28,9 +28,10 @@ pub(crate) const SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR: &str = "SOLDR_CHILD_SHIMS_ACT
 /// returns false and the external tool runs without a shim layer.
 pub(crate) const SOLDR_DISABLE_CHILD_SHIMS_ENV_VAR: &str = "SOLDR_DISABLE_CHILD_SHIMS";
 
-/// Names installed into the shim dir. Mirrors the `Commands` variants
-/// that route to `toolchain::run_toolchain_passthrough` so we only
-/// proxy tools soldr already knows how to wrap.
+/// Names installed into the shim dir. These are the child toolchain
+/// processes Soldr can safely proxy back through its front doors when
+/// a long-lived external process (for example rust-analyzer) spawns
+/// hardcoded `cargo` / `rustc` style commands.
 const SHIMMED_TOOLS: &[&str] = &["cargo", "rustc", "rustdoc", "rustfmt", "clippy-driver"];
 
 /// Drop-on-exit guard that removes the shim directory best-effort.

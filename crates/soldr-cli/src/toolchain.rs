@@ -61,7 +61,7 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     command.arg(rustfmt);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
-    apply_rustfmt_zccache_env(&mut command)?;
+    apply_zccache_child_env(&mut command)?;
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
     Ok(status.code().unwrap_or(1))
@@ -75,7 +75,34 @@ pub(crate) fn run_rustdoc(args: &[String]) -> Result<i32, SoldrError> {
     run_toolchain_passthrough("rustdoc", args)
 }
 
-fn apply_rustfmt_zccache_env(command: &mut std::process::Command) -> Result<(), SoldrError> {
+/// Run rust-analyzer itself as a direct rustup-managed LSP passthrough.
+/// When caching is enabled, soldr does not wrap the long-lived language
+/// server binary. Instead it gives rust-analyzer a scoped child environment
+/// so any bare `cargo` / `rustc` / `rustfmt` / `clippy-driver` process it
+/// spawns can re-enter Soldr and use the normal zccache cargo front door.
+pub(crate) fn run_rust_analyzer(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
+    let binary = resolve_toolchain_binary("rust-analyzer")?;
+    let mut command = std::process::Command::new(binary);
+    command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
+    command.env(
+        crate::cache_lib::CACHE_ENABLED_ENV_VAR,
+        crate::cache_lib::cache_enabled_env_value(cache_enabled),
+    );
+
+    let _shim_guard = if cache_enabled {
+        apply_zccache_child_env(&mut command)?;
+        maybe_apply_child_shim_dir(&mut command, "rust-analyzer")
+    } else {
+        None
+    };
+
+    suppress_windows_console_window(&mut command);
+    let status = run_toolchain_command(&mut command, "rust-analyzer passthrough")?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn apply_zccache_child_env(command: &mut std::process::Command) -> Result<(), SoldrError> {
     if std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_none() {
         let paths = SoldrPaths::new()?;
         let cache_dir = crate::zccache::managed_zccache_cache_dir(&paths)?;
@@ -92,6 +119,29 @@ fn apply_rustfmt_zccache_env(command: &mut std::process::Command) -> Result<(), 
     );
     crate::zccache::ZccacheChildEnv::from_current_process()?.apply_to_command(command);
     Ok(())
+}
+
+fn maybe_apply_child_shim_dir(
+    command: &mut std::process::Command,
+    context: &str,
+) -> Option<crate::shim_dir::ShimDirGuard> {
+    if !crate::shim_dir::should_install_shims() {
+        return None;
+    }
+
+    match crate::shim_dir::build_shim_dir() {
+        Ok(guard) => {
+            crate::shim_dir::apply_to_command(command, &guard.path);
+            Some(guard)
+        }
+        Err(err) => {
+            eprintln!(
+                "soldr warning: failed to build child shim dir for {context}; \
+                 nested cargo/rustc calls will bypass soldr: {err}"
+            );
+            None
+        }
+    }
 }
 
 fn rustfmt_invocation_bypasses_format_cache(args: &[String]) -> bool {
