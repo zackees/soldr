@@ -208,11 +208,10 @@ where
             Err(e) => last_err = Some(e),
         }
     }
-    Err(SoldrError::Other(format!(
-        "soldr daemon embedded compile dispatch failed after {}ms budget: last_err={:?} sock={}",
-        budget.as_millis(),
-        last_err,
-        sock.display()
+    Err(SoldrError::Other(compile_dispatch_failure_message(
+        budget,
+        last_err.as_ref(),
+        &sock,
     )))
 }
 
@@ -249,12 +248,61 @@ where
             Err(e) => last_err = Some(e),
         }
     }
-    Err(SoldrError::Other(format!(
-        "soldr daemon embedded compile dispatch failed after {}ms budget: last_err={:?} sock={}",
-        budget.as_millis(),
-        last_err,
-        sock_path.display()
+    Err(SoldrError::Other(compile_dispatch_failure_message(
+        budget,
+        last_err.as_ref(),
+        sock_path,
     )))
+}
+
+fn compile_dispatch_failure_message(
+    budget: Duration,
+    last_err: Option<&client::ClientError>,
+    sock_path: &Path,
+) -> String {
+    let last_err = last_err
+        .map(describe_compile_dispatch_error)
+        .unwrap_or_else(|| "no daemon reply was received before the retry budget expired".into());
+    format!(
+        "soldr embedded zccache compile dispatch failed after {}ms: the soldr-daemon embedded \
+         zccache cache daemon was unreachable, stopped responding, or died mid-compile. \
+         last_err={last_err}; sock={}. Recovery: inspect `soldr logs paths` and `soldr daemon \
+         status`; to keep the build moving while investigating, rerun with `soldr --no-cache cargo \
+         ...` or `ZCCACHE_DISABLE=1`; set `SOLDR_COMPILE_REPLY_TIMEOUT_SECS=<seconds>` to tune the \
+         per-compile no-response backstop for large release/LTO builds.",
+        budget.as_millis(),
+        sock_path.display()
+    )
+}
+
+fn describe_compile_dispatch_error(err: &client::ClientError) -> String {
+    match err {
+        client::ClientError::NotRunning => {
+            "daemon endpoint is not running or refused the connection".into()
+        }
+        client::ClientError::Protocol(message) => {
+            format!("daemon protocol error: {message}")
+        }
+        client::ClientError::Io(err) => {
+            use std::io::ErrorKind;
+
+            match err.kind() {
+                ErrorKind::UnexpectedEof | ErrorKind::BrokenPipe | ErrorKind::ConnectionReset => {
+                    format!(
+                        "daemon connection closed while the compile was in flight ({err}); the \
+                         embedded zccache cache daemon may have crashed or been killed"
+                    )
+                }
+                ErrorKind::TimedOut | ErrorKind::WouldBlock => {
+                    format!(
+                        "daemon did not return a compile reply before the timeout ({err}); the \
+                         embedded zccache cache daemon may be wedged"
+                    )
+                }
+                _ => format!("daemon IPC I/O error: {err}"),
+            }
+        }
+    }
 }
 
 /// Wrapper around [`client::compile_streaming`] that mirrors the
@@ -438,6 +486,43 @@ mod tests {
         }
     );
 
+    timed_test!(
+        compile_dispatch_failure_message_names_daemon_death_and_recovery,
+        Duration::from_secs(5),
+        {
+            let err = client::ClientError::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "daemon closed pipe",
+            ));
+            let message = compile_dispatch_failure_message(
+                Duration::from_secs(30),
+                Some(&err),
+                Path::new("/tmp/soldr-daemon.sock"),
+            );
+
+            assert!(
+                message.contains("embedded zccache cache daemon"),
+                "diagnostic must name the cache daemon failure: {message}"
+            );
+            assert!(
+                message.contains("died mid-compile") || message.contains("crashed or been killed"),
+                "diagnostic must distinguish daemon death from a bare rustc failure: {message}"
+            );
+            for needle in [
+                "soldr logs paths",
+                "soldr daemon status",
+                "soldr --no-cache cargo",
+                "ZCCACHE_DISABLE=1",
+                "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            ] {
+                assert!(
+                    message.contains(needle),
+                    "diagnostic missing recovery hint {needle:?}: {message}"
+                );
+            }
+        }
+    );
+
     // The TDD acceptance test for the no-hang contract: point dispatch
     // at a socket path that cannot possibly accept, set the budget to
     // 250 ms, expect the call to return an Err in well under 2 seconds.
@@ -474,6 +559,15 @@ mod tests {
             drop(g);
 
             assert!(result.is_err(), "dispatch should error on dead socket");
+            let message = result.unwrap_err().to_string();
+            assert!(
+                message.contains("embedded zccache cache daemon"),
+                "dead-socket failure should produce the actionable cache-daemon diagnostic: {message}"
+            );
+            assert!(
+                message.contains("soldr --no-cache cargo"),
+                "dead-socket failure should include the release-build recovery path: {message}"
+            );
             // Windows runtime spawn overhead per attempt can push elapsed
             // well past the configured budget. The contract is "the loop
             // honors the budget" — i.e. we don't sit at the 30 s default —

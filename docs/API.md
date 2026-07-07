@@ -1370,6 +1370,12 @@ Commands:
 `RUSTC_WRAPPER=soldr cargo build` remains a valid low-level passthrough path, but it is no longer the preferred user-facing workflow. As of #980 L1 (second pass) the rustc-wrapper invocation **requires a running soldr-daemon**: every per-compile call dispatches over IPC to the daemon's embedded `zccache::embedded::ZccacheService`, and there is no longer a fork-zccache.exe fallback. The daemon auto-starts on first wrapper call (see `soldr daemon status`); if it fails to start the wrapper fails the build with a clear error rather than silently degrading.
 When `SOLDR_RUSTC_WRAPPER` is set to a non-empty value such as `sccache`, soldr puts that binary in the wrapper slot instead of itself, bypassing the embedded path entirely. If it is set to `none` or an empty string, soldr leaves `RUSTC_WRAPPER` unset for that build.
 
+For release/LTO musl workloads that previously carried `soldr --no-cache`
+workarounds, see [`DATALAKE_RELEASE_MUSL.md`](DATALAKE_RELEASE_MUSL.md).
+That tracker records the `soldr 0.8.0+` status, a datalake-core-like manual
+Docker repro, and the diagnostic contract for embedded zccache daemon
+death/no-response failures.
+
 When soldr manages zccache itself, `soldr cargo ...` resolves a fresh soldr workspace context by default. It preserves normal process environment used by Cargo, Rust, proxies, certificates, CI, and platform SDKs, but ignores inherited soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`, `SOLDR_TARGET_CACHE_*`, `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`. Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only for advanced workflows that intentionally inject those values. Custom wrapper modes leave caller-provided wrapper environment alone; when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves, soldr forwards their value rather than overriding it.
 
 `soldr cargo ...` only starts the managed build cache for compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`, `clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and `cargo --version` pass through without starting zccache.
