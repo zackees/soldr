@@ -154,13 +154,16 @@ maturin. The dispatch pins the child's toolchain before exec:
 | `CARGO` / `RUSTC` | rustup-resolved cargo + its sibling rustc — `rust-toolchain.toml` wins over PATH-shadowing standalones (chocolatey/scoop GNU installs). |
 | `CARGO_BUILD_TARGET` | runtime MSVC-default triple on Windows (same policy as the cargo front door). |
 | `CMAKE` / `CMAKE_GENERATOR=Ninja` | managed cmake + ninja from the soldr toolchain archive for cmake-based `*-sys` crates. |
-| `RUSTC_WRAPPER=soldr` | compilation caching (set by the Python backend). |
+| `RUSTC_WRAPPER=soldr` | compilation caching. The Python backend sets this before calling `soldr maturin pep517`; direct `soldr maturin build` / `develop` auto-inject it when cache is enabled and `RUSTC_WRAPPER` is unset. |
 
 Every pin defers to a pre-set user env var. Maturin acquisition is a
 ladder controlled by `SOLDR_MATURIN_PROVISIONER` (`auto` default:
 pinned prebuilt binary from GitHub Releases, falling back to the PyPI
 maturin wheel provisioned into an isolated uv-managed env under
 `~/.soldr/bin/maturin-uv-<ver>/`; `binary` and `uv` force one rung).
+Direct `soldr maturin ...` preserves caller-provided `CARGO`, `RUSTC`,
+and `RUSTC_WRAPPER`; `SOLDR_RUSTC_WRAPPER` only controls Soldr's
+auto-injected wrapper when `RUSTC_WRAPPER` is unset.
 
 The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
 `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
