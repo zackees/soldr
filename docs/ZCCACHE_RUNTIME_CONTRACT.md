@@ -5,11 +5,12 @@ runtime soldr ships and wires through setup-soldr and npm.
 
 The contract fixes these cross-runtime expectations:
 
-- Release archives are `.tar.zst` bundles containing `soldr`, soldr-owned
-  sidecars (`soldr-daemon`, `soldr-shim`, `soldr-clang-shim`), `crgx`,
-  `cargo-chef`, and `manifest.json`. Windows archives also carry soldr's
-  matching PDB sidecar (`soldr.pdb` or `soldr_cli.pdb`) so crash dumps can
-  resolve file/line frames.
+- Release archives are `.tar.zst` bundles containing `soldr`,
+  `soldr-daemon`, `crgx`, `cargo-chef`, and `manifest.json`. Toolchain,
+  clang, and `zccache-soldr` shim names are materialized from `soldr` at
+  install time, not shipped as sidecar binaries. Windows archives also carry
+  soldr's matching PDB sidecar (`soldr.pdb` or `soldr_cli.pdb`) so crash
+  dumps can resolve file/line frames.
 - `manifest.json` is the authoritative per-archive descriptor for schema
   version, archive format, soldr target, embedded zccache status, bundled
   binary names, soldr debug-info sidecars, and per-file `sha256` values.

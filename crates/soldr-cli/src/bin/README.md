@@ -1,11 +1,13 @@
 # soldr-cli binaries
 
-Sidecar binaries that ship in the `soldr-cli` crate alongside the main
+Binary targets that ship in the `soldr-cli` crate alongside the main
 `soldr` binary defined in `../main.rs`.
 
 - **`soldr_daemon.rs`** — `soldr-daemon` long-lived helper process that
   owns target/ tracking (phase 1: `start`, `stop`, `status`).
-- **`soldr_shim.rs`** — per-tool shim binaries (`cargo`, `rustc`,
-  `rustfmt`, `clippy-driver`, `rustdoc`) installed under
-  `~/.soldr/v<X.Y.Z>/shims/` so soldr can interpose on bare tool
-  invocations without rewriting every consumer's `PATH`.
+- **`zccache_embedded.rs`** — `zccache` CLI trampoline backed by the
+  in-tree zccache library.
+
+The toolchain, clang, and `zccache-soldr` shim names are multicall names
+for `soldr` itself and are installed as hardlinks/copies of `soldr`, not
+as separate `src/bin` targets.

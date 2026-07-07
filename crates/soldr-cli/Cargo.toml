@@ -113,31 +113,6 @@ name = "soldr-daemon"
 path = "src/bin/soldr_daemon.rs"
 
 [[bin]]
-# Tiny multi-tool shim binary installed under each toolchain tool name
-# (`cargo`, `rustc`, `rustfmt`, `clippy-driver`, `rustdoc`) by
-# `soldr shims`. Reads argv[0] basename, strips its own dir from PATH
-# (recursion guard), then execs `soldr <tool> ...`. See zackees/soldr#742.
-name = "soldr-shim"
-path = "src/bin/soldr_shim.rs"
-
-[[bin]]
-# Tiny `clang` / `clang++` wrapper that routes to `clang-cl` when any
-# arg in argv matches `--target=*-pc-windows-msvc`. Sidesteps the ring
-# 0.17.14 build.rs:563 oversight (cf. soldr#1012 PR 4). Installed by
-# `Commands::Build` (PR 5) at `~/.soldr/bin/clang` for blessed cross-
-# compile to MSVC targets.
-name = "soldr-clang-shim"
-path = "src/bin/soldr_clang_shim.rs"
-
-[[bin]]
-# soldr#1081 — dedicated RUSTC_WRAPPER shim. Replaces the legacy
-# standalone `zccache.exe` slot. Talks to soldr-daemon's embedded
-# zccache service over the `Request::Compile` IPC verb; ships no
-# separate zccache binaries.
-name = "zccache-soldr"
-path = "src/bin/zccache_soldr.rs"
-
-[[bin]]
 # soldr#1368 — compiled-in `zccache` CLI trampoline. Forwards straight
 # into `zccache::cli::commands::run()` from the in-tree `_vender/zccache`
 # library dep, so `soldr zccache <args>` needs no externally downloaded

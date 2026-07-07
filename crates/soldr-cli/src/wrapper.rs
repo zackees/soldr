@@ -231,8 +231,8 @@ pub(crate) fn run_rustc_wrapper(
         // `compile_via_daemon` either returns the daemon's reply or
         // an error that the wrapper propagates to cargo.
         profile.finish("before_embedded_compile_ipc");
-        // soldr#1081 — lifted to `crate::compile_dispatch` so the
-        // dedicated `zccache-soldr` shim binary can share the same
+        // soldr#1081 — lifted to `crate::compile_dispatch` so
+        // multicall `zccache-soldr` dispatch can share the same
         // hang-safe retry logic. The bin-local copy below is the
         // legacy path retained only for the unit tests that still
         // import it; the production path now goes through the lifted
@@ -360,8 +360,8 @@ pub(crate) use crate::wrapper_target::{record_target_dir_in_registry, TargetTouc
 //
 // As of issue #1081 the `compile_via_daemon` body and the
 // `is_compile_env_var` env filter were lifted into
-// `crate::compile_dispatch` so the new `zccache-soldr` shim binary
-// can share them. The wrapper-entry dispatch site above now calls
+// `crate::compile_dispatch` so multicall `zccache-soldr` dispatch can
+// share them. The wrapper-entry dispatch site above now calls
 // `compile_dispatch::compile_via_daemon` directly. Nothing remains in
 // this file beyond the cargo-arg-shape predicates + stdin spill
 // helper.

@@ -41,6 +41,10 @@ impl Drop for EnvVarGuard {
     }
 }
 
+fn remove_env_vars(keys: &[&'static str]) -> Vec<EnvVarGuard> {
+    keys.iter().map(|&key| EnvVarGuard::remove(key)).collect()
+}
+
 fn command_env_override(
     command: &std::process::Command,
     key: &'static str,
@@ -796,6 +800,15 @@ fn zigbuild_does_not_inject_cc_overrides_even_for_msvc_target() {
 #[test]
 fn zigbuild_env_overrides_include_cc_and_linker_for_supported_target() {
     let _lock = ENV_LOCK.lock().unwrap();
+    let expected_keys = [
+        "CC_aarch64_unknown_linux_musl",
+        "CXX_aarch64_unknown_linux_musl",
+        "AR_aarch64_unknown_linux_musl",
+        "RANLIB_aarch64_unknown_linux_musl",
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+    ];
+    let _guards = remove_env_vars(&expected_keys);
+
     let dir = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(dir.path().join("soldr"));
     let mut env = Vec::new();
@@ -803,13 +816,7 @@ fn zigbuild_env_overrides_include_cc_and_linker_for_supported_target() {
     append_zigbuild_env_overrides(&paths, "aarch64-unknown-linux-musl", &mut env).unwrap();
 
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();
-    for key in [
-        "CC_aarch64_unknown_linux_musl",
-        "CXX_aarch64_unknown_linux_musl",
-        "AR_aarch64_unknown_linux_musl",
-        "RANLIB_aarch64_unknown_linux_musl",
-        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
-    ] {
+    for key in expected_keys {
         let value = map.get(key).unwrap_or_else(|| panic!("missing {key}"));
         assert!(
             value.contains("zigbuild-shims"),
@@ -821,6 +828,15 @@ fn zigbuild_env_overrides_include_cc_and_linker_for_supported_target() {
 #[test]
 fn zigbuild_env_overrides_include_windows_gnu_target() {
     let _lock = ENV_LOCK.lock().unwrap();
+    let expected_keys = [
+        "CC_x86_64_pc_windows_gnu",
+        "CXX_x86_64_pc_windows_gnu",
+        "AR_x86_64_pc_windows_gnu",
+        "RANLIB_x86_64_pc_windows_gnu",
+        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
+    ];
+    let _guards = remove_env_vars(&expected_keys);
+
     let dir = tempfile::tempdir().unwrap();
     let paths = SoldrPaths::with_root(dir.path().join("soldr"));
     let mut env = Vec::new();
@@ -828,13 +844,7 @@ fn zigbuild_env_overrides_include_windows_gnu_target() {
     append_zigbuild_env_overrides(&paths, "x86_64-pc-windows-gnu", &mut env).unwrap();
 
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();
-    for key in [
-        "CC_x86_64_pc_windows_gnu",
-        "CXX_x86_64_pc_windows_gnu",
-        "AR_x86_64_pc_windows_gnu",
-        "RANLIB_x86_64_pc_windows_gnu",
-        "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
-    ] {
+    for key in expected_keys {
         let value = map.get(key).unwrap_or_else(|| panic!("missing {key}"));
         assert!(
             value.contains("zigbuild-shims"),

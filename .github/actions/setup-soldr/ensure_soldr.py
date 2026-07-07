@@ -243,21 +243,21 @@ def main() -> None:
             debug_src = _locate_binary(extract_dir, str(entry["name"]))
             shutil.copy2(debug_src, install_dir / str(entry["name"]))
 
-        # Stage soldr-owned sidecars next to soldr. zccache itself is
-        # embedded; there is no standalone zccache binary to copy.
-        sidecar_bases = (
+        # Stage soldr-owned companion binaries next to soldr. zccache
+        # itself is embedded; there is no standalone zccache binary to copy.
+        companion_bases = (
             base
             for base in RELEASE_BUNDLED_BINARIES
             if base not in {"soldr", CRGX_BUNDLED_BINARY, CARGO_CHEF_BUNDLED_BINARY}
         )
-        for base in sidecar_bases:
+        for base in companion_bases:
             file_name = f"{base}{binary_ext}"
-            sidecar_src = _locate_binary(extract_dir, file_name)
-            sidecar_dst = install_dir / file_name
-            shutil.copy2(sidecar_src, sidecar_dst)
+            companion_src = _locate_binary(extract_dir, file_name)
+            companion_dst = install_dir / file_name
+            shutil.copy2(companion_src, companion_dst)
             if os.name != "nt":
-                sidecar_dst.chmod(
-                    sidecar_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
+                companion_dst.chmod(
+                    companion_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
                 )
 
         # Stage the bundled crgx next to soldr so the install dir

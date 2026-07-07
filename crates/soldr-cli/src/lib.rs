@@ -25,9 +25,8 @@ pub mod cargo_metadata_soldr;
 /// tests can exercise the classifier directly.
 pub mod cargo_path_check;
 /// soldr#1081 — Shared `Request::Compile` dispatch logic used by both
-/// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and the dedicated
-/// `zccache-soldr` shim binary (`bin/zccache_soldr.rs`). Owns the
-/// hang-safe retry budget contract.
+/// the soldr-as-RUSTC_WRAPPER hot path (`wrapper.rs`) and multicall
+/// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
 pub mod compile_dispatch;
 pub mod core;
 pub mod daemon;
@@ -52,10 +51,12 @@ pub mod logs_cmd;
 /// workaround. Detect-host now; managed-catalogue fallback is a
 /// follow-up in the same issue.
 pub mod msvc_host;
+pub mod multicall;
 /// soldr#939 — PyO3 auto-detection via cargo metadata.
 pub mod pyo3_detect;
 pub mod release_sidecar;
 pub mod self_relocate;
+pub mod shim_materialize;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// See module doc for the `soldr build --target <alias>` UX contract.
 pub mod target_alias;

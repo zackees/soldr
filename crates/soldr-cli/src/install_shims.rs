@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! ~/.soldr/v<MANAGED_SHIM_VERSION>/shims/
-//!     cargo{,.exe}            ← copies of soldr-shim under each tool name
+//!     cargo{,.exe}            ← hardlinks/copies of soldr under each tool name
 //!     rustc{,.exe}
 //!     rustfmt{,.exe}
 //!     clippy-driver{,.exe}
@@ -18,17 +18,16 @@
 //! JSON consumed by [`clud`](https://github.com/zackees/clud/issues/343)
 //! and other downstream callers.
 //!
-//! v1 scope: copy-only materialization (no symlink / hardlink
-//! optimization), no daemon RPC, no cross-process file lock. Concurrent
-//! first-runs are safe via per-pid tmp suffix + atomic rename + content
-//! idempotency (every writer produces identical content; last rename
-//! wins benignly). Daemon RPC + in-memory mutex is tracked as the next
-//! iteration in #742.
+//! v1 scope: hardlink-first materialization with copy fallback, no daemon
+//! RPC, no cross-process file lock. Concurrent first-runs are safe via
+//! per-pid tmp suffix + atomic rename + content idempotency (every writer
+//! produces identical content; last rename wins benignly). Daemon RPC +
+//! in-memory mutex is tracked as the next iteration in #742.
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::fetch::MANAGED_SHIM_VERSION;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 const TOOLS: &[&str] = &["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"];
@@ -66,7 +65,7 @@ pub fn run_shims(paths: &SoldrPaths, json: bool) -> Result<i32, SoldrError> {
     let started = Instant::now();
     paths.ensure_dirs()?;
 
-    let shim_source = locate_soldr_shim_source()?;
+    let shim_source = crate::shim_materialize::soldr_binary_source()?;
     let shim_dir = paths.versioned_shims_dir();
     std::fs::create_dir_all(&shim_dir).map_err(SoldrError::Io)?;
 
@@ -81,8 +80,8 @@ pub fn run_shims(paths: &SoldrPaths, json: bool) -> Result<i32, SoldrError> {
     let output = ShimsOutput {
         schema_version: SCHEMA_VERSION,
         shim_dir: shim_dir.display().to_string(),
-        shim_kind: "native-binary",
-        link_mode: "copy",
+        shim_kind: "multicall-soldr",
+        link_mode: crate::shim_materialize::LINK_MODE_HARDLINK_OR_COPY,
         soldr_shim_source: shim_source.display().to_string(),
         soldr_version: MANAGED_SHIM_VERSION,
         tools: tools_out,
@@ -107,109 +106,21 @@ pub(crate) fn tool_file_name(tool: &str) -> String {
     }
 }
 
-/// Resolve the path to the `soldr-shim` binary sibling of the running
-/// soldr. Returns an error with a clear message when missing — the
-/// shim is built as a `[[bin]]` in the same crate as soldr, so a normal
-/// release install should always ship both.
-fn locate_soldr_shim_source() -> Result<PathBuf, SoldrError> {
-    let soldr_path = crate::current_soldr_binary()?;
-    let parent = soldr_path.parent().ok_or_else(|| {
-        SoldrError::Other(format!(
-            "soldr binary path has no parent dir: {}",
-            soldr_path.display()
-        ))
-    })?;
-    let exe_name = if cfg!(windows) {
-        "soldr-shim.exe"
-    } else {
-        "soldr-shim"
-    };
-    let candidate = parent.join(exe_name);
-    if !candidate.is_file() {
-        return Err(SoldrError::Other(format!(
-            "soldr-shim binary not found at {}. \
-             Rebuild soldr with the matching workspace so both \
-             `soldr` and `soldr-shim` are produced.",
-            candidate.display()
-        )));
-    }
-    Ok(candidate)
-}
-
-/// Install (or re-install if stale) a single shim file. Atomic via
-/// per-pid tmp + rename. Idempotent via blake3 content match.
+/// Install (or re-install if stale) a single shim file. Atomic and
+/// idempotent via [`crate::shim_materialize::materialize_executable`].
 fn install_one(target: &Path, source: &Path, tool: &str) -> Result<ToolEntry, SoldrError> {
-    if is_current(target, source)? {
-        return Ok(ToolEntry {
-            name: tool.to_string(),
-            shim_path: target.display().to_string(),
-            created: false,
-            skip_reason: Some(SKIP_EXISTING_MATCHES),
-        });
-    }
-
-    let tmp = tmp_path_for(target);
-    std::fs::copy(source, &tmp).map_err(SoldrError::Io)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&tmp)
-            .map_err(SoldrError::Io)?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&tmp, perms).map_err(SoldrError::Io)?;
-    }
-    // Atomic rename — on POSIX same-fs, on Windows same-volume.
-    std::fs::rename(&tmp, target).map_err(|err| {
-        // Best-effort cleanup of the tmp on rename failure.
-        let _ = std::fs::remove_file(&tmp);
-        SoldrError::Io(err)
-    })?;
+    let result = crate::shim_materialize::materialize_executable(source, target)?;
 
     Ok(ToolEntry {
         name: tool.to_string(),
         shim_path: target.display().to_string(),
-        created: true,
-        skip_reason: None,
+        created: result.created,
+        skip_reason: if result.created {
+            None
+        } else {
+            Some(SKIP_EXISTING_MATCHES)
+        },
     })
-}
-
-/// `<target>.tmp.<pid>-<random>` — per-pid suffix prevents racing tmps
-/// across concurrent invocations.
-fn tmp_path_for(target: &Path) -> PathBuf {
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let suffix = format!("tmp.{pid}-{nanos}");
-    let mut s = target.as_os_str().to_os_string();
-    s.push(".");
-    s.push(suffix);
-    PathBuf::from(s)
-}
-
-/// `target` is "current" when it exists, has the same byte length as
-/// `source`, AND has the same blake3 content hash.
-fn is_current(target: &Path, source: &Path) -> Result<bool, SoldrError> {
-    let Ok(target_meta) = std::fs::metadata(target) else {
-        return Ok(false);
-    };
-    let Ok(source_meta) = std::fs::metadata(source) else {
-        return Ok(false);
-    };
-    if target_meta.len() != source_meta.len() {
-        return Ok(false);
-    }
-    let target_hash = blake3_file(target)?;
-    let source_hash = blake3_file(source)?;
-    Ok(target_hash == source_hash)
-}
-
-fn blake3_file(path: &Path) -> Result<[u8; 32], SoldrError> {
-    zccache::hash::hash_file(path)
-        .map(|hash| *hash.as_bytes())
-        .map_err(SoldrError::Io)
 }
 
 /// Best-effort sweep of leftover `*.tmp.*` files inside the shim dir.
@@ -260,11 +171,12 @@ fn emit_human(output: &ShimsOutput) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn fake_shim_source(tmp: &TempDir) -> PathBuf {
-        let bin = tmp.path().join("soldr-shim-fake");
-        std::fs::write(&bin, b"FAKE-SOLDR-SHIM-BYTES-v1").unwrap();
+        let bin = tmp.path().join("soldr-fake");
+        std::fs::write(&bin, b"FAKE-SOLDR-BYTES-v1").unwrap();
         bin
     }
 
@@ -279,7 +191,7 @@ mod tests {
         assert_eq!(
             std::fs::read(&target).unwrap(),
             std::fs::read(&source).unwrap(),
-            "target content must match source byte-for-byte"
+            "target content must match soldr source byte-for-byte"
         );
     });
 
@@ -302,13 +214,14 @@ mod tests {
         let target = tmp.path().join("rustfmt");
         install_one(&target, &source, "rustfmt").unwrap();
 
-        // Mutate source — simulates a soldr-shim binary upgrade.
-        std::fs::write(&source, b"FAKE-SOLDR-SHIM-BYTES-v2").unwrap();
+        // Mutate source — simulates a soldr binary upgrade.
+        std::fs::remove_file(&source).unwrap();
+        std::fs::write(&source, b"FAKE-SOLDR-BYTES-v2").unwrap();
         let replaced = install_one(&target, &source, "rustfmt").unwrap();
         assert!(replaced.created, "must replace when source bytes change");
         assert_eq!(
             std::fs::read(&target).unwrap(),
-            b"FAKE-SOLDR-SHIM-BYTES-v2",
+            b"FAKE-SOLDR-BYTES-v2",
             "target should reflect new source bytes"
         );
     });
@@ -320,25 +233,6 @@ mod tests {
         } else {
             assert_eq!(cargo, "cargo");
         }
-    });
-
-    crate::timed_test!(tmp_path_includes_pid_and_random_suffix, {
-        let target = Path::new("/tmp/cargo");
-        let a = tmp_path_for(target);
-        let b = tmp_path_for(target);
-        // Different invocations should differ (subsec_nanos jitter).
-        // Worst case identical nanos → both writers race on same tmp,
-        // both produce identical content, so the race is still safe.
-        let a_str = a.to_string_lossy();
-        let b_str = b.to_string_lossy();
-        assert!(
-            a_str.contains(".tmp."),
-            "tmp path must contain .tmp. delimiter: {a_str}"
-        );
-        assert!(
-            b_str.contains(".tmp."),
-            "tmp path must contain .tmp. delimiter: {b_str}"
-        );
     });
 
     crate::timed_test!(sweep_orphans_removes_only_tmp_files, {
@@ -361,13 +255,6 @@ mod tests {
         );
     });
 
-    crate::timed_test!(is_current_returns_false_when_target_missing, {
-        let tmp = TempDir::new().unwrap();
-        let source = fake_shim_source(&tmp);
-        let target = tmp.path().join("does-not-exist");
-        assert!(!is_current(&target, &source).unwrap());
-    });
-
     crate::timed_test!(json_output_carries_versioned_path_entry_and_schema, {
         let entries = vec![ToolEntry {
             name: "cargo".to_string(),
@@ -378,9 +265,9 @@ mod tests {
         let out = ShimsOutput {
             schema_version: SCHEMA_VERSION,
             shim_dir: "/.soldr/v0.7.55/shims".to_string(),
-            shim_kind: "native-binary",
-            link_mode: "copy",
-            soldr_shim_source: "/opt/soldr-shim".to_string(),
+            shim_kind: "multicall-soldr",
+            link_mode: crate::shim_materialize::LINK_MODE_HARDLINK_OR_COPY,
+            soldr_shim_source: "/opt/soldr".to_string(),
             soldr_version: MANAGED_SHIM_VERSION,
             tools: entries,
             path_entry: "/.soldr/v0.7.55/shims".to_string(),
@@ -390,8 +277,8 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["path_entry"], "/.soldr/v0.7.55/shims");
-        assert_eq!(parsed["shim_kind"], "native-binary");
-        assert_eq!(parsed["link_mode"], "copy");
+        assert_eq!(parsed["shim_kind"], "multicall-soldr");
+        assert_eq!(parsed["link_mode"], "hardlink-or-copy");
         assert_eq!(parsed["tools"][0]["name"], "cargo");
         assert!(
             parsed["tools"][0].get("skip_reason").is_none(),

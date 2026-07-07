@@ -10,8 +10,6 @@
     "required_binaries": [
       "soldr",
       "soldr-daemon",
-      "soldr-shim",
-      "soldr-clang-shim",
       "crgx",
       "cargo-chef"
     ],

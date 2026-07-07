@@ -20,7 +20,8 @@ mod cargo_diagnostics;
 mod cargo_front_door;
 mod cargo_metadata_soldr;
 /// soldr#1081 — shared `Request::Compile` dispatch with hang-safe
-/// retry budget. Used by `wrapper.rs` and the `zccache-soldr` bin.
+/// retry budget. Used by `wrapper.rs` and multicall `zccache-soldr`
+/// dispatch.
 /// soldr#1059 — classify the `cargo` binary that `which cargo` would
 /// resolve to. Used by `toolchain doctor` / `toolchain ensure` to warn
 /// when a Chocolatey-style standalone shadows rustup's proxy, defeating
@@ -55,6 +56,7 @@ mod logs_cmd;
 /// before cargo for MSVC targets so `link.exe` + `LIB` are set
 /// without the user touching `$env:LIB`.
 mod msvc_host;
+mod multicall;
 mod native_cc;
 mod optimize;
 mod optimize_detect;
@@ -69,6 +71,7 @@ mod rust_plan;
 mod save_load;
 mod self_relocate;
 mod shim_dir;
+mod shim_materialize;
 mod startup_profile;
 /// soldr#997 — friendly target aliases + Rust-triple passthrough.
 /// Bin tree mirrors the lib declaration; only one alias resolver
@@ -194,11 +197,23 @@ const SOLDR_AS_ENV_VAR: &str = "SOLDR_AS";
 /// soldr through `--as`. Prevents infinite hand-offs.
 const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 
-#[tokio::main]
-async fn main() {
+fn main() {
+    let raw_args: Vec<String> = std::env::args().collect();
+
+    match multicall::maybe_dispatch(&raw_args) {
+        Some(multicall::MulticallDispatch::Exit(code)) => std::process::exit(code),
+        Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
+            std::process::exit(block_on_exit_code(run_with_args("soldr", &args)));
+        }
+        None => {}
+    }
+
+    std::process::exit(run_main(raw_args));
+}
+
+fn run_main(raw_args: Vec<String>) -> i32 {
     // RUSTC_WRAPPER mode: cargo passes `soldr /path/to/rustc <args...>`
     // Must be checked before clap parsing.
-    let raw_args: Vec<String> = std::env::args().collect();
     if should_self_relocate_for_invocation(&raw_args) {
         match self_relocate::maybe_reexec_from_runtime(&raw_args) {
             Ok(Some(code)) => std::process::exit(code),
@@ -217,17 +232,11 @@ async fn main() {
         profile.mark("args_collected");
         if let Some(version) = soldr_as_env_pin() {
             if should_trampoline(&version) {
-                std::process::exit(
-                    run_trampoline(&version, &raw_args[1..])
-                        .await
-                        .unwrap_or_else(report_and_exit),
-                );
+                return block_on_exit_code(run_trampoline(&version, &raw_args[1..]));
             }
         }
         profile.mark("pin_check_done");
-        std::process::exit(
-            wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit),
-        );
+        return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
     }
 
     // `--as <version>` trampoline. Peeled off before clap so the fetched
@@ -243,25 +252,29 @@ async fn main() {
 
     if let Some(version) = pinned_version {
         if should_trampoline(&version) {
-            std::process::exit(
-                run_trampoline(&version, &trampoline_args)
-                    .await
-                    .unwrap_or_else(report_and_exit),
-            );
+            return block_on_exit_code(run_trampoline(&version, &trampoline_args));
         }
         // Short-circuit: requested version == current. Continue with args
         // that have `--as <ver>` stripped.
-        std::process::exit(
-            run_with_args(&raw_args[0], &trampoline_args)
-                .await
-                .unwrap_or_else(report_and_exit),
-        );
+        return block_on_exit_code(run_with_args(&raw_args[0], &trampoline_args));
     }
 
-    let rc = run_with_args(&raw_args[0], &raw_args[1..])
-        .await
-        .unwrap_or_else(report_and_exit);
-    std::process::exit(rc);
+    block_on_exit_code(run_with_args(&raw_args[0], &raw_args[1..]))
+}
+
+fn block_on_exit_code<F>(future: F) -> i32
+where
+    F: std::future::Future<Output = Result<i32, SoldrError>>,
+{
+    match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime.block_on(future).unwrap_or_else(report_and_exit),
+        Err(err) => report_and_exit(SoldrError::Other(format!(
+            "failed to start async runtime: {err}"
+        ))),
+    }
 }
 
 fn soldr_as_env_pin() -> Option<String> {
@@ -296,7 +309,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // canonical target triple it can identify in argv (looks
             // for `--target X` / `--target=X`). On MSVC targets that
             // step materializes the xwin-cache from the soldr-
-            // toolchain catalogue, installs the soldr-clang-shim
+            // toolchain catalogue, installs the multicall clang shim
             // ahead of system clang on PATH, and sets the cc-rs +
             // cargo target-specific env vars. The cargo front door is
             // then invoked with the same args + the prep env applied.
@@ -1303,8 +1316,8 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                         Duration::from_secs(idle_timeout)
                     },
                 };
-                // We're already inside main()'s #[tokio::main] runtime
-                // (run_with_args is async, called from main's runtime).
+                // We're already inside main()'s Tokio runtime
+                // (run_with_args is async and called through block_on).
                 // Calling the sync `server::run` here would have it build
                 // ANOTHER multi-thread runtime + block_on, which panics
                 // with "Cannot start a runtime from within a runtime"

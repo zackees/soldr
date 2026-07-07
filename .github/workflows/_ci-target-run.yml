@@ -36,9 +36,9 @@ on:
             Q2) — those need cargo/rustup on the runner
           - integration test BINARIES (i.e. the .rs files under tests/)
             named cli_cargo_*, cli_daemon_*, cli_rust_plan — those need
-            cargo on PATH, but the cross-build artifact ships only
-            `soldr` + `soldr-clang-shim`. Their behavior is already
-            covered by unit tests on the cross-build linux-host side.
+            cargo on PATH, but the cross-build artifact ships only the
+            primary `soldr` test binary. Their behavior is already covered
+            by unit tests on the cross-build linux-host side.
             (nextest distinguishes `test(...)` for test names from
             `binary(...)` for test-binary names — these tests' binaries
             are named after the integration-test file, so use binary().)
@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for bin in artifact/package/soldr artifact/package/soldr-clang-shim; do
+          for bin in artifact/package/soldr; do
             if [ -f "$bin" ]; then
               chmod +x "$bin"
               echo "chmod +x $bin"
