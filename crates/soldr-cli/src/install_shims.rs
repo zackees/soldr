@@ -207,18 +207,9 @@ fn is_current(target: &Path, source: &Path) -> Result<bool, SoldrError> {
 }
 
 fn blake3_file(path: &Path) -> Result<[u8; 32], SoldrError> {
-    use std::io::Read;
-    let mut file = std::fs::File::open(path).map_err(SoldrError::Io)?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 16 * 1024];
-    loop {
-        let n = file.read(&mut buf).map_err(SoldrError::Io)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(*hasher.finalize().as_bytes())
+    zccache::hash::hash_file(path)
+        .map(|hash| *hash.as_bytes())
+        .map_err(SoldrError::Io)
 }
 
 /// Best-effort sweep of leftover `*.tmp.*` files inside the shim dir.

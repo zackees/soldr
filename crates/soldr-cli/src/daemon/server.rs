@@ -210,10 +210,17 @@ async fn shutdown_compile_service(state: &Arc<State>) {
 /// and `soldr daemon start --foreground`. Builds a tokio runtime and
 /// blocks until the daemon exits.
 /// Env var that turns on the tokio-console layer for the daemon:
-/// `SOLDR_DAEMON_TOKIO_CONSOLE=1`. Only functional when the daemon is
-/// built with `RUSTFLAGS="--cfg tokio_unstable"`; otherwise it degrades
-/// to a warning (see [`maybe_init_tokio_console`]).
+/// `SOLDR_DAEMON_TOKIO_CONSOLE=1`. Only functional when soldr-cli is
+/// built with the `tokio-console` feature and `RUSTFLAGS="--cfg
+/// tokio_unstable"`; otherwise it degrades to a warning (see
+/// [`maybe_init_tokio_console`]).
 pub const TOKIO_CONSOLE_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE";
+
+fn tokio_console_requested() -> bool {
+    std::env::var(TOKIO_CONSOLE_ENV_VAR)
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
 
 /// Install the tokio-console subscriber layer when
 /// [`TOKIO_CONSOLE_ENV_VAR`] is truthy, so `tokio-console` can attach to
@@ -227,11 +234,9 @@ pub const TOKIO_CONSOLE_ENV_VAR: &str = "SOLDR_DAEMON_TOKIO_CONSOLE";
 /// simply logs a hint instead of crashing the daemon. Mirrors the
 /// established `zccache-daemon` pattern. No-op (and no subscriber
 /// installed — daemon stays silent as before) when the env var is unset.
+#[cfg(feature = "tokio-console")]
 fn maybe_init_tokio_console() {
-    let enabled = std::env::var(TOKIO_CONSOLE_ENV_VAR)
-        .map(|v| !v.is_empty() && v != "0")
-        .unwrap_or(false);
-    if !enabled {
+    if !tokio_console_requested() {
         return;
     }
     match std::panic::catch_unwind(console_subscriber::spawn) {
@@ -251,6 +256,17 @@ fn maybe_init_tokio_console() {
                  inert — rebuild with RUSTFLAGS=\"--cfg tokio_unstable\" to use tokio-console"
             );
         }
+    }
+}
+
+#[cfg(not(feature = "tokio-console"))]
+fn maybe_init_tokio_console() {
+    if tokio_console_requested() {
+        eprintln!(
+            "soldr-daemon: {TOKIO_CONSOLE_ENV_VAR} set but soldr-cli was built without \
+             the `tokio-console` feature; rebuild with `--features tokio-console` and \
+             RUSTFLAGS=\"--cfg tokio_unstable\" to use tokio-console"
+        );
     }
 }
 

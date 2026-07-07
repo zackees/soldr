@@ -44,7 +44,7 @@ use std::path::{Path, PathBuf};
 /// the digest exactly as if file content had been edited.
 pub(crate) fn cargo_config_digest(manifest_dir: &Path) -> String {
     let files = discover_cargo_config_files(manifest_dir);
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = zccache::hash::StreamHasher::new();
     // Domain-separate this digest so a future caller can never accidentally
     // collide with another blake3 input mixed into the same fingerprint.
     hasher.update(b"soldr-trampoline-cargo-config-v1\0");

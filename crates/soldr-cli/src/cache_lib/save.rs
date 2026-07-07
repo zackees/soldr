@@ -223,18 +223,9 @@ fn ns_to_systime(ns: i64) -> SystemTime {
 
 /// Stream-hash a file with BLAKE3. Returns the full 32-byte hash.
 fn hash_file(path: &Path) -> Result<[u8; 32]> {
-    let f = File::open(path).map_err(|e| io(path, e))?;
-    let mut reader = BufReader::with_capacity(64 * 1024, f);
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = reader.read(&mut buf).map_err(|e| io(path, e))?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(*hasher.finalize().as_bytes())
+    zccache::hash::hash_file(path)
+        .map(|hash| *hash.as_bytes())
+        .map_err(|e| io(path, e))
 }
 
 /// Walk a workspace and return every regular file's repo-relative POSIX
@@ -785,7 +776,7 @@ fn append_cache_file_entry<W: Write>(
 }
 
 fn manifest_digest(manifest: &Manifest) -> Result<Vec<u8>> {
-    Ok(blake3::hash(&encode_manifest(manifest)?)
+    Ok(zccache::hash::hash_bytes(&encode_manifest(manifest)?)
         .as_bytes()
         .to_vec())
 }

@@ -279,8 +279,7 @@ fn spill_stdin_to_content_addressed_file() -> Result<StdinSourceFile, SoldrError
 }
 
 fn materialize_stdin_source(bytes: &[u8]) -> Result<StdinSourceFile, SoldrError> {
-    let hash = blake3::hash(bytes);
-    let hex = hash.to_hex();
+    let hex = zccache::hash::hash_bytes(bytes).to_hex();
     let temp_dir = std::env::temp_dir();
     let short_path = temp_dir.join(format!("soldr-stdin-{}.rs", &hex[..16]));
     if ensure_stdin_source_path(&short_path, bytes)? {
@@ -374,7 +373,7 @@ mod tests {
             .as_nanos();
         let bytes = format!("fn main() {{ let _ = {nonce}; }}\n");
         let file = materialize_stdin_source(bytes.as_bytes()).unwrap();
-        let hash = blake3::hash(bytes.as_bytes()).to_hex();
+        let hash = zccache::hash::hash_bytes(bytes.as_bytes()).to_hex();
         let name = file.path().file_name().unwrap().to_string_lossy();
 
         assert_eq!(name.as_ref(), format!("soldr-stdin-{}.rs", &hash[..16]));

@@ -153,7 +153,7 @@ fn mint_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = zccache::hash::StreamHasher::new();
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..12])
