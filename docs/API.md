@@ -592,7 +592,7 @@ existing field names and types will not change without a schema bump:
   "channel": "1.94.1",
   "rustup_bootstrapped": false,
   "components_added": ["rustfmt", "clippy"],
-  "targets_added": ["x86_64-pc-windows-gnu"],
+  "targets_added": ["aarch64-apple-darwin"],
   "plugins_installed": ["cargo-zigbuild@0.18"],
   "smoke_verify": {
     "cargo_version": "cargo 1.94.1 (abc1234 2026-04-15)",

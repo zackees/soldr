@@ -9,8 +9,10 @@
 //!   `~/.cache/cargo-xwin/` so `cargo xwin build` skips the 15-min live
 //!   Microsoft download.
 //! - `x86_64-pc-windows-gnu` on Windows x64 -> ensure managed
-//!   MinGW-w64 GCC, prepend it to PATH, and export target-scoped
-//!   Cargo/cc-rs env. Other hosts keep using cargo-zigbuild + zig.
+//!   MinGW-w64 GCC, prepend it to PATH, export target-scoped
+//!   Cargo/cc-rs env, and materialize GNU-shaped syslib rows when
+//!   present. Other hosts fail visibly instead of falling back to
+//!   cargo-zigbuild for this target.
 //! - `*-apple-darwin` → ensure the target-shaped Apple SDK and print
 //!   `SDKROOT=<path>` so the caller can plumb it into `$GITHUB_ENV`.
 //!   `soldr build --target` is the blessed Darwin cross-build path;
@@ -64,6 +66,40 @@ fn append_env(path: Option<&Path>, key: &str, value: &str) -> Result<(), SoldrEr
             .map_err(|e| SoldrError::Other(format!("open {}: {e}", p.display())))?;
         writeln!(f, "{key}={value}")
             .map_err(|e| SoldrError::Other(format!("write {}: {e}", p.display())))?;
+    }
+    Ok(())
+}
+
+fn apply_blessed_prep_env(
+    github_env_path: Option<&Path>,
+    prep: &crate::blessed_build::BlessedPrep,
+) -> Result<(), SoldrError> {
+    for (key, value) in &prep.env {
+        std::env::set_var(key, value);
+        append_env(github_env_path, key, value)?;
+    }
+
+    let mut path_dirs = Vec::new();
+    if let Some(shim) = prep.shim_path_dir.as_ref() {
+        path_dirs.push(shim.clone());
+    }
+    path_dirs.extend(prep.path_dirs.iter().cloned());
+    if !path_dirs.is_empty() {
+        if let Some(current) = std::env::var_os("PATH") {
+            path_dirs.extend(std::env::split_paths(&current));
+        }
+        let path_value = std::env::join_paths(path_dirs)
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| SoldrError::Other(format!("failed to build prepared PATH: {e}")))?;
+        std::env::set_var("PATH", &path_value);
+        append_env(github_env_path, "PATH", &path_value)?;
+    }
+
+    if !prep.cargo_args.is_empty() {
+        eprintln!(
+            "soldr prepare: note: target uses Cargo --config syslib overrides; \
+             `soldr build` applies those automatically"
+        );
     }
     Ok(())
 }
@@ -305,33 +341,14 @@ pub async fn run(
                     }
                 }
                 Some(TargetAbi::Gnu) => {
-                    if crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
-                        eprintln!("soldr prepare: dispatch=mingw-w64-gcc");
-                        let mingw_root =
-                            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(&paths, &target)
-                                .await?;
-                        let mingw_bin = crate::fetch::mingw_w64_gcc::bin_dir(&mingw_root);
-                        eprintln!("soldr prepare: MinGW-w64 GCC at {}", mingw_root.display());
-                        println!("MINGW_W64_GCC_ROOT={}", mingw_root.display());
-                        println!("MINGW_W64_GCC_BIN={}", mingw_bin.display());
-                        for (key, value) in
-                            crate::fetch::mingw_w64_gcc::env_for_target(&mingw_root, &target)
-                        {
-                            append_env(github_env_path, &key, &value)?;
-                        }
-                        let path_value = crate::fetch::mingw_w64_gcc::path_with_mingw_bin(
-                            &mingw_root,
-                            std::env::var_os("PATH"),
-                        )?;
-                        std::env::set_var("PATH", &path_value);
-                        append_env(github_env_path, "PATH", &path_value)?;
-                    } else {
-                        eprintln!(
-                            "soldr prepare: dispatch=zigbuild (managed MinGW-w64 GCC is scoped to Windows x64 hosts)"
-                        );
-                        let zig_dir = ensure_zig(&paths).await?;
-                        eprintln!("soldr prepare: zig at {}", zig_dir.display());
+                    eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
+                    let prep = crate::blessed_build::prepare(&paths, &target).await?;
+                    if let Some((_, root)) =
+                        prep.env.iter().find(|(key, _)| key == "MINGW_W64_GCC_ROOT")
+                    {
+                        eprintln!("soldr prepare: MinGW-w64 GCC at {root}");
                     }
+                    apply_blessed_prep_env(github_env_path, &prep)?;
                 }
                 _ => unreachable!("classify_target rejects Windows without a supported ABI"),
             }
@@ -657,9 +674,7 @@ fn expected_state_paths(
     paths: &SoldrPaths,
 ) -> Result<Vec<RestoreEntry>, SoldrError> {
     let mut entries = Vec::new();
-    let windows_gnu_uses_zig = attrs.needs_mingw_w64_gcc
-        && !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc();
-    if attrs.needs_zig || windows_gnu_uses_zig {
+    if attrs.needs_zig {
         let zig_dir = paths
             .bin
             .join(format!("zig-{}", crate::fetch::MANAGED_ZIG_VERSION));
@@ -1039,6 +1054,52 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(apply_blessed_prep_env_exports_mingw_and_syslib_env, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _mingw = EnvVarGuard::remove("MINGW_W64_GCC_ROOT");
+        let _pkg_config = EnvVarGuard::remove("PKG_CONFIG_PATH_x86_64-pc-windows-gnu");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let github_env = tmp.path().join("github-env");
+        let mingw_bin = tmp.path().join("mingw").join("bin");
+        let pkgconfig = tmp
+            .path()
+            .join("syslib")
+            .join("sqlite")
+            .join("lib")
+            .join("pkgconfig");
+        let prep = crate::blessed_build::BlessedPrep {
+            path_dirs: vec![mingw_bin.clone()],
+            env: vec![
+                (
+                    "MINGW_W64_GCC_ROOT".to_string(),
+                    tmp.path().join("mingw").to_string_lossy().into_owned(),
+                ),
+                (
+                    "PKG_CONFIG_PATH_x86_64-pc-windows-gnu".to_string(),
+                    pkgconfig.to_string_lossy().into_owned(),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
+
+        assert_eq!(
+            std::env::var("MINGW_W64_GCC_ROOT").expect("mingw env"),
+            tmp.path().join("mingw").to_string_lossy()
+        );
+        assert_eq!(
+            std::env::var("PKG_CONFIG_PATH_x86_64-pc-windows-gnu").expect("pkg-config env"),
+            pkgconfig.to_string_lossy()
+        );
+
+        let body = std::fs::read_to_string(&github_env).expect("read github env");
+        assert!(body.contains("MINGW_W64_GCC_ROOT="));
+        assert!(body.contains("PKG_CONFIG_PATH_x86_64-pc-windows-gnu="));
+        assert!(body.contains(&format!("PATH={}", mingw_bin.to_string_lossy())));
     });
 
     crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {

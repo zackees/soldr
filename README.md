@@ -128,8 +128,8 @@ soldr cargo build --target aarch64-pc-windows-msvc
 
 The canonical multi-platform GitHub Actions tutorial lives in [`zackees/setup-soldr#90`](https://github.com/zackees/setup-soldr/issues/90).
 
-For Linux → Windows cross-compilation (GNU via `cargo-zigbuild`, MSVC via
-`cargo-xwin`) and explicit Windows x64 GNU builds via managed MinGW-w64 GCC,
+For Windows x64 → Windows GNU builds via managed MinGW-w64 GCC, and Linux →
+Windows MSVC cross-compilation via `cargo-xwin`,
 see [docs/CROSS_COMPILE.md](./docs/CROSS_COMPILE.md).
 
 ### CI cache lineage

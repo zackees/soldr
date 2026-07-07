@@ -683,13 +683,10 @@ fn pick_cross_subcommand_musl_returns_zigbuild() {
 
 #[test]
 #[cfg(target_os = "linux")]
-fn pick_cross_subcommand_windows_gnu_returns_zigbuild() {
+fn pick_cross_subcommand_windows_gnu_stays_on_blessed_path() {
     let _g = ENV_LOCK.lock().unwrap();
     std::env::remove_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
-    assert_eq!(
-        pick_cross_subcommand("x86_64-pc-windows-gnu"),
-        Some("zigbuild"),
-    );
+    assert_eq!(pick_cross_subcommand("x86_64-pc-windows-gnu"), None);
 
     std::env::set_var(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR, "1");
     assert_eq!(pick_cross_subcommand("x86_64-pc-windows-gnu"), None);

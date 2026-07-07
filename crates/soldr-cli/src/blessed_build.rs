@@ -172,9 +172,13 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     }
 
     // --------------------------- Windows GNU GCC ----------------------------
-    if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET
-        && crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc()
-    {
+    if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET {
+        if !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
+            return Err(SoldrError::UnsupportedPlatform(format!(
+                "managed Windows GNU target {target_triple} requires a Windows x64 host; \
+                 cargo-zigbuild is no longer used as the blessed Windows GNU fallback"
+            )));
+        }
         let mingw_root =
             crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(paths, target_triple).await?;
         add_mingw_w64_gcc_env(&mut prep, target_triple, &mingw_root);
@@ -1002,6 +1006,38 @@ mod tests {
         ] {
             assert!(names.contains(required), "missing env var {required}");
         }
+    });
+
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    crate::timed_test!(windows_gnu_requires_supported_mingw_host, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
+        let prev_cmake = std::env::var_os(USE_SYSTEM_CMAKE_ENV_VAR);
+
+        std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
+        std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(prepare(&paths, "x86_64-pc-windows-gnu"));
+
+        match prev_sys {
+            Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
+            None => std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR),
+        }
+        match prev_cmake {
+            Some(v) => std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, v),
+            None => std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR),
+        }
+
+        let err = result.expect_err("unsupported host should fail before cargo");
+        assert!(matches!(err, SoldrError::UnsupportedPlatform(_)));
+        assert!(
+            err.to_string().contains("cargo-zigbuild is no longer used"),
+            "unexpected error: {err}"
+        );
     });
 
     crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {

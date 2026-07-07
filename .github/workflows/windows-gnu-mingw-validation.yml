@@ -28,6 +28,7 @@ jobs:
       # rustc wrapper path also stayed far slower than the direct build.
       SOLDR_RUSTC_WRAPPER: "none"
       SOLDR_NATIVE_CACHE: "0"
+      SOLDR_CACHE_DIR: ${{ runner.temp }}\soldr-cache
       TARGET: x86_64-pc-windows-gnu
     steps:
       - name: Checkout soldr
@@ -83,3 +84,23 @@ jobs:
           soldr build -p running-process --features daemon --target $env:TARGET --color never
           soldr build -p running-process-observer-interposer-windows --target $env:TARGET --color never
           soldr build -p running-process-observer --features embed-helper --target $env:TARGET --color never
+
+      - name: Verify GNU syslibs were materialized
+        shell: pwsh
+        run: |
+          $syslib = Join-Path $env:SOLDR_CACHE_DIR "bin\syslib"
+          $expected = @{
+            "zstd" = "1.5.7"
+            "sqlite" = "3.46.0"
+            "mimalloc" = "3.3.2"
+            "zlib-ng" = "2.2.5"
+            "lzma" = "5.6.3"
+            "bzip2" = "1.0.8"
+          }
+          foreach ($name in $expected.Keys) {
+            $stamp = Join-Path $syslib "$name\$($expected[$name])\windows-x64-gnu\.complete"
+            if (-not (Test-Path $stamp)) {
+              throw "expected soldr-managed GNU syslib was not materialized: $stamp"
+            }
+            Write-Host "verified $name $($expected[$name]) windows-x64-gnu"
+          }
