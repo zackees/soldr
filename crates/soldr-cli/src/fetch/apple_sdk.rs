@@ -378,16 +378,16 @@ fn find_extracted_sdk_dir(install_dir: &Path, expected: &Path) -> Result<PathBuf
     }
     let mut candidates = Vec::new();
     if install_dir.is_dir() {
-        for entry in std::fs::read_dir(install_dir)? {
-            let path = entry?.path();
-            if path.is_dir()
-                && path
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .is_some_and(|name| name.ends_with(".sdk"))
-            {
-                candidates.push(path);
-            }
+        collect_sdk_dirs(install_dir, &mut candidates)?;
+    }
+    if let Some(expected_name) = expected.file_name() {
+        let mut matching_name: Vec<PathBuf> = candidates
+            .iter()
+            .filter(|path| path.file_name() == Some(expected_name))
+            .cloned()
+            .collect();
+        if matching_name.len() == 1 {
+            return Ok(matching_name.remove(0));
         }
     }
     if candidates.len() == 1 {
@@ -397,6 +397,25 @@ fn find_extracted_sdk_dir(install_dir: &Path, expected: &Path) -> Result<PathBuf
         "Apple SDK extract did not produce expected directory {}",
         expected.display()
     )))
+}
+
+fn collect_sdk_dirs(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), SoldrError> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|name| name.ends_with(".sdk"))
+        {
+            out.push(path);
+        } else {
+            collect_sdk_dirs(&path, out)?;
+        }
+    }
+    Ok(())
 }
 
 fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
@@ -648,6 +667,34 @@ mod tests {
         assert_eq!(
             find_extracted_sdk_dir(tmp.path(), &expected).expect("single sdk fallback"),
             fallback
+        );
+    });
+
+    crate::timed_test!(find_extracted_sdk_dir_accepts_nested_sdk_dir, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let expected = tmp.path().join("MacOSX14.5.sdk");
+        let nested = tmp
+            .path()
+            .join("package")
+            .join("payload")
+            .join("MacOSX14.5.sdk");
+        std::fs::create_dir_all(&nested).expect("sdk dir");
+        assert_eq!(
+            find_extracted_sdk_dir(tmp.path(), &expected).expect("nested sdk fallback"),
+            nested
+        );
+    });
+
+    crate::timed_test!(find_extracted_sdk_dir_prefers_expected_name_when_nested, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let expected = tmp.path().join("MacOSX14.5.sdk");
+        let wanted = tmp.path().join("thin").join("MacOSX14.5.sdk");
+        let other = tmp.path().join("other").join("MacOSX15.2.sdk");
+        std::fs::create_dir_all(&wanted).expect("wanted sdk dir");
+        std::fs::create_dir_all(&other).expect("other sdk dir");
+        assert_eq!(
+            find_extracted_sdk_dir(tmp.path(), &expected).expect("expected name wins"),
+            wanted
         );
     });
 }

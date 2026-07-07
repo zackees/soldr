@@ -677,7 +677,8 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
     }
-    let native_cache_target = target::known_cargo_build_target(args, explicit_target.as_deref());
+    let native_cache_target = target::known_cargo_build_target(args, explicit_target.as_deref())
+        .filter(|target| target.ends_with("-apple-darwin"));
 
     target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
