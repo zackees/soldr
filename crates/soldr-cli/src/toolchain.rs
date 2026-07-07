@@ -22,6 +22,31 @@ pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i
     Ok(status.code().unwrap_or(1))
 }
 
+/// Run rustc-like toolchain binaries through the same wrapper path Cargo
+/// uses when caching is enabled. The wrapper path owns zccache routing and
+/// non-cacheable probe bypasses; cache-disabled direct invocations keep the
+/// historical passthrough behavior.
+pub(crate) fn run_rustc_like(
+    tool: &str,
+    args: &[String],
+    cache_enabled: bool,
+) -> Result<i32, SoldrError> {
+    if !cache_enabled {
+        return run_toolchain_passthrough(tool, args);
+    }
+
+    let binary = resolve_toolchain_binary(tool)?;
+    let mut raw_args = Vec::with_capacity(args.len() + 2);
+    raw_args.push(
+        crate::current_soldr_binary()?
+            .to_string_lossy()
+            .into_owned(),
+    );
+    raw_args.push(binary.to_string_lossy().into_owned());
+    raw_args.extend(args.iter().cloned());
+    crate::wrapper::run_rustc_wrapper(&raw_args, crate::startup_profile::WrapperProfile::new())
+}
+
 /// Run rustfmt directly for non-cacheable invocations, otherwise route
 /// cacheable file-formatting calls through zccache's formatter path.
 pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {

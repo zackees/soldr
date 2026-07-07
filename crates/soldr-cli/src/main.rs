@@ -418,15 +418,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             std::process::exit(exec_cmd::run_exec(&args)?);
         }
         Commands::Rustc { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);
+            std::process::exit(toolchain::run_rustc_like("rustc", &args, cache_enabled)?);
         }
         Commands::Rustfmt { args } => {
             std::process::exit(toolchain::run_rustfmt(&args, cache_enabled)?);
         }
         Commands::ClippyDriver { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough(
+            std::process::exit(toolchain::run_rustc_like(
                 "clippy-driver",
                 &args,
+                cache_enabled,
             )?);
         }
         Commands::Rustdoc { args } => {
