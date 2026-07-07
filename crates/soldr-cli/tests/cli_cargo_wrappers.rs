@@ -4,6 +4,7 @@ mod common;
 
 use common::*;
 use serde_json::Value;
+use soldr_cli::timed_test;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -115,6 +116,52 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
         "build after global cargo options should still enable caching + wrap rustc: {log}"
     );
 }
+
+timed_test!(
+    cargo_clippy_routes_workspace_clippy_driver_through_zccache,
+    {
+        let cache_root = unique_temp_dir("cargo-clippy-clippy-driver-zccache");
+        let log_path = cache_root.join("tool.log");
+        let (cargo, rustc, zccache, clippy_driver) = install_fake_clippy_toolchain(&log_path);
+        let output = isolated_soldr_command()
+            .args(["cargo", "clippy"])
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env_remove("SOLDR_TARGET_CACHE_MODE")
+            .env_remove("SOLDR_BUILD_CACHE_MODE")
+            .output()
+            .expect("failed to run soldr cargo clippy with fake tools");
+
+        assert!(
+            output.status.success(),
+            "cargo clippy front door failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+        assert!(
+            log.contains("cargo wrapper=") && log.contains("workspace_wrapper="),
+            "fake cargo should model Cargo's nested workspace wrapper: {log}"
+        );
+        let zccache_line = log
+            .lines()
+            .find(|line| line.contains("zccache wrapper"))
+            .expect("clippy-driver workspace wrapper should be routed through zccache");
+        assert!(
+            path_display_variants(&clippy_driver)
+                .iter()
+                .any(|path| zccache_line.contains(path)),
+            "zccache should receive clippy-driver as the wrapped compiler: {log}"
+        );
+        assert!(
+            log.contains("clippy-driver") && log.contains("--crate-name demo"),
+            "clippy-driver should still receive the rustc compile args: {log}"
+        );
+    }
+);
 
 #[cfg(not(windows))]
 #[test]

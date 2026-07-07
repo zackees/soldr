@@ -22,8 +22,8 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
     WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
 }
 
-/// Detect rustc invocations cargo issues through `RUSTC_WRAPPER` that
-/// can never benefit from zccache (issue #980, L2):
+/// Detect rustc-style compiler invocations cargo issues through
+/// `RUSTC_WRAPPER` that can never benefit from zccache (issue #980, L2):
 ///
 ///   * Any `--print`/`--print=...` probe — these don't compile, they
 ///     just print metadata (e.g. `--print sysroot`, `--print cfg`).
@@ -33,9 +33,10 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
 ///
 /// `args` is the full argv as received in wrapper mode: `args[0]` is
 /// the soldr binary, `args[1]` is the tool path (rustc / clippy-driver),
-/// and `args[2..]` are the rustc arguments. The caller is responsible
-/// for confirming the tool stem is `rustc` before consulting this
-/// predicate — clippy-driver does its own routing.
+/// and `args[2..]` are the rustc-style arguments. With nested
+/// `RUSTC_WRAPPER` + `RUSTC_WORKSPACE_WRAPPER=clippy-driver`,
+/// `args[2]` is the real rustc path and `args[3..]` are the crate
+/// arguments; scanning the whole tail still detects the no-op probes.
 pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
     if args.len() < 3 {
         return false;
@@ -90,6 +91,10 @@ pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
     }
 
     false
+}
+
+fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
+    matches!(tool_stem, "rustc" | "clippy-driver")
 }
 
 pub(crate) fn run_rustc_wrapper(
@@ -170,18 +175,18 @@ pub(crate) fn run_rustc_wrapper(
     // spawn, daemon IPC) for guaranteed-zero benefit. Detect them here
     // and let the existing direct-exec tool-spawn path below handle
     // them instead of the zccache routing block.
-    let non_cacheable = tool_stem == "rustc" && is_non_cacheable_rustc(&effective_args);
+    let zccache_routed_tool = routes_through_embedded_zccache(tool_stem);
+    let non_cacheable = zccache_routed_tool && is_non_cacheable_rustc(&effective_args);
     if non_cacheable {
-        tracing::debug!("soldr: rustc invocation is non-cacheable; bypassing zccache");
+        tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
         profile.mark("non_cacheable_bypass");
     }
 
-    // Only route through the daemon's embedded compile service for
-    // actual rustc invocations, not clippy-driver or other workspace
-    // wrappers.
-    if tool_stem == "rustc"
-        && !non_cacheable
-        && crate::cache_lib::cache_enabled_in_current_process()
+    // Route rustc-like compiler invocations through the daemon's
+    // embedded zccache compile service. This includes `clippy-driver`
+    // when cargo nests `RUSTC_WORKSPACE_WRAPPER=clippy-driver` inside
+    // soldr's `RUSTC_WRAPPER` for workspace crates.
+    if zccache_routed_tool && !non_cacheable && crate::cache_lib::cache_enabled_in_current_process()
     {
         // Test seam (SOLDR_TEST_ZCCACHE_BIN): when the fake-toolchain
         // integration tests set this env var, wrapper mode spawns the
@@ -432,5 +437,11 @@ mod tests {
         // cacheable.
         let argv = wrapper_argv(&["src/lib.rs"]);
         assert!(!is_non_cacheable_rustc(&argv));
+    });
+
+    crate::timed_test!(clippy_driver_routes_through_embedded_zccache, {
+        assert!(routes_through_embedded_zccache("rustc"));
+        assert!(routes_through_embedded_zccache("clippy-driver"));
+        assert!(!routes_through_embedded_zccache("rustfmt"));
     });
 }
