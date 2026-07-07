@@ -46,14 +46,12 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
-# Opt-in tokio-console support for soldr-daemon (only active under a
-# `--cfg tokio_unstable` build; a no-op otherwise). See
-# `daemon::server::run`.
+# Opt-in tokio-console support for soldr-daemon. Only pulled into
+# soldr-cli when the crate's `tokio-console` feature is enabled.
 console-subscriber = "0.5"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-blake3 = "1"
 sha2 = "0.10"
 hex = "0.4"
 fs2 = "0.4"

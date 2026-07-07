@@ -59,13 +59,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use blake3::Hasher;
 use zccache::audit::AuditMode;
 use zccache::core::NormalizedPath;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest, HostIdentity,
     RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
+use zccache::hash::StreamHasher;
 
 use crate::core::SoldrPaths;
 use crate::daemon::protocol::{CompileRequest, CompileResponseBody, CompileStatsInfo};
@@ -289,7 +289,7 @@ fn uuid_like_random_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut hasher = Hasher::new();
+    let mut hasher = StreamHasher::new();
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..16])
@@ -321,7 +321,7 @@ fn split_compiler_and_args(
 }
 
 fn derive_identity(paths: &SoldrPaths) -> HostIdentity {
-    let mut hasher = Hasher::new();
+    let mut hasher = StreamHasher::new();
     hasher.update(paths.root.as_os_str().to_string_lossy().as_bytes());
     if let Ok(exe) = std::env::current_exe() {
         hasher.update(exe.as_os_str().to_string_lossy().as_bytes());

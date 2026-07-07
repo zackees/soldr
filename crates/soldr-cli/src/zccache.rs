@@ -447,7 +447,7 @@ fn synthetic_build_session_id() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = zccache::hash::StreamHasher::new();
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..12])
@@ -692,7 +692,7 @@ pub(crate) fn resolve_private_zccache_daemon_name(
         return name;
     }
 
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = zccache::hash::StreamHasher::new();
     hasher.update(b"soldr-private-zccache-v1\0");
     hash_path_component(&mut hasher, soldr_binary);
     let zccache_identity = zccache_binary_identity_path(zccache_binary, base_cache_dir);
@@ -733,7 +733,7 @@ fn path_file_name_eq(path: &std::path::Path, expected: &str) -> bool {
         .is_some_and(|name| name.eq_ignore_ascii_case(expected))
 }
 
-fn hash_path_component(hasher: &mut blake3::Hasher, path: &std::path::Path) {
+fn hash_path_component(hasher: &mut zccache::hash::StreamHasher, path: &std::path::Path) {
     let value = path.display().to_string();
     let value = if cfg!(windows) {
         value.to_ascii_lowercase()
@@ -763,7 +763,7 @@ pub(crate) fn sanitize_zccache_daemon_name(raw: &str) -> Option<String> {
         return Some(sanitized);
     }
     let prefix: String = sanitized.chars().take(23).collect();
-    let short = blake3::hash(trimmed.as_bytes()).to_hex();
+    let short = zccache::hash::hash_bytes(trimmed.as_bytes()).to_hex();
     Some(format!("{prefix}-{}", &short[..8]))
 }
 

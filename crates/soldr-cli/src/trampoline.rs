@@ -43,7 +43,7 @@ use crate::resolve_toolchain_binary;
 use serde::{Deserialize, Serialize};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::SystemTime;
@@ -746,7 +746,7 @@ pub(crate) fn compute_fingerprint(parsed: &ParsedRunArgs) -> Result<String, Sold
 
     let bytes = serde_json::to_vec(&inputs)
         .map_err(|err| SoldrError::Other(format!("fingerprint serialize: {err}")))?;
-    let hash = blake3::hash(&bytes);
+    let hash = zccache::hash::hash_bytes(&bytes);
     Ok(format!("blake3:{}", hash.to_hex()))
 }
 
@@ -830,17 +830,7 @@ const HASH_PREFIX: &str = "blake3:";
 /// success. Buffer size matches blake3's preferred 64 KiB chunk so
 /// hashing a 10 MB binary takes ~5–10 ms on a warm filesystem.
 pub(crate) fn compute_file_hash(path: &Path) -> std::io::Result<String> {
-    let mut file = fs::File::open(path)?;
-    let mut hasher = blake3::Hasher::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Ok(format!("{HASH_PREFIX}{}", hasher.finalize().to_hex()))
+    zccache::hash::hash_file(path).map(|hash| format!("{HASH_PREFIX}{}", hash.to_hex()))
 }
 
 pub(crate) fn trampoline_env_disabled() -> bool {
