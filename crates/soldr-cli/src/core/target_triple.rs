@@ -51,7 +51,7 @@ impl TargetTriple {
     /// match the runner that will execute them, not the Rust target being
     /// built.
     pub fn host() -> Result<Self, SoldrError> {
-        Self::from_triple(&compile_time_fallback_triple()?)
+        Self::from_triple(&compile_time_host_triple()?)
     }
 
     /// Detect the active target for the current project context.
@@ -196,6 +196,26 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
     Ok(triple)
 }
 
+fn compile_time_host_triple() -> Result<String, SoldrError> {
+    let arch = match compile_time_arch()? {
+        Arch::X86_64 => "x86_64",
+        Arch::Aarch64 => "aarch64",
+    };
+    let triple = match compile_time_host_os()? {
+        Os::Windows => format!("{arch}-pc-windows-msvc"),
+        Os::MacOs => format!("{arch}-apple-darwin"),
+        Os::Linux => {
+            let env = if cfg!(target_env = "musl") {
+                "musl"
+            } else {
+                "gnu"
+            };
+            format!("{arch}-unknown-linux-{env}")
+        }
+    };
+    Ok(triple)
+}
+
 /// Pick the Linux libc to encode in the fallback target triple when no
 /// explicit override and no runtime `rustc` are available. Without this
 /// detection, soldr defaults to `*-unknown-linux-gnu` and downloads
@@ -210,18 +230,34 @@ fn compile_time_fallback_triple() -> Result<String, SoldrError> {
 ///    most musl distributions (Alpine ships it as a busybox shim).
 ///    Musl's stderr line includes the word `musl`.
 /// 3. **Filesystem probe**: `/lib/ld-musl-<arch>.so.1` is the musl
-///    dynamic linker's well-known path; its presence is dispositive
-///    on minimal Alpine images that strip `ldd`.
+///    dynamic linker's well-known path. Treat it as dispositive only
+///    when a glibc dynamic linker is not also present; Ubuntu release
+///    runners install `musl-tools` for cross-compile lanes, and that
+///    drops a musl linker onto an otherwise glibc host.
 /// 4. **Default**: glibc. Most Linux distributions ship glibc — only
 ///    musl distros need the override.
 pub(crate) fn detect_linux_libc() -> Env {
-    if cfg!(target_env = "musl") {
+    classify_linux_libc(
+        cfg!(target_env = "musl"),
+        probe_ldd_reports_musl(),
+        probe_musl_dynamic_linker_present(),
+        probe_glibc_dynamic_linker_present(),
+    )
+}
+
+fn classify_linux_libc(
+    compile_time_musl: bool,
+    ldd_reports_musl: bool,
+    musl_dynamic_linker_present: bool,
+    glibc_dynamic_linker_present: bool,
+) -> Env {
+    if compile_time_musl {
         return Env::Musl;
     }
-    if probe_ldd_reports_musl() {
+    if ldd_reports_musl {
         return Env::Musl;
     }
-    if probe_musl_dynamic_linker_present() {
+    if musl_dynamic_linker_present && !glibc_dynamic_linker_present {
         return Env::Musl;
     }
     Env::Gnu
@@ -249,6 +285,16 @@ fn probe_musl_dynamic_linker_present() -> bool {
         "/lib/ld-musl-armhf.so.1",
         "/lib/ld-musl-arm.so.1",
         "/lib/ld-musl-i386.so.1",
+    ];
+    CANDIDATES.iter().any(|p| Path::new(p).exists())
+}
+
+fn probe_glibc_dynamic_linker_present() -> bool {
+    const CANDIDATES: &[&str] = &[
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        "/lib/ld-linux-aarch64.so.1",
+        "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
     ];
     CANDIDATES.iter().any(|p| Path::new(p).exists())
 }
@@ -318,6 +364,18 @@ mod tests {
         assert_ne!(TargetTriple::host().unwrap().triple(), override_triple);
     }
 
+    #[test]
+    fn host_triple_uses_compile_time_target_env() {
+        #[cfg(target_os = "linux")]
+        {
+            let host = TargetTriple::host().unwrap();
+            #[cfg(target_env = "gnu")]
+            assert_eq!(host.env, Env::Gnu);
+            #[cfg(target_env = "musl")]
+            assert_eq!(host.env, Env::Musl);
+        }
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn defaults_to_msvc_without_explicit_override() {
@@ -367,6 +425,22 @@ mod tests {
         // Defensive: a corrupted ldd output must not panic or report musl.
         let garbled = b"\xff\xfe\xfd not valid utf-8 \xff";
         assert!(!ldd_output_mentions_musl(garbled));
+    }
+
+    #[test]
+    fn musl_linker_does_not_override_glibc_host() {
+        assert_eq!(
+            classify_linux_libc(
+                false, false, true, // musl-tools installed for cross-compilation
+                true, // but the runner itself is still glibc
+            ),
+            Env::Gnu
+        );
+    }
+
+    #[test]
+    fn musl_linker_without_glibc_linker_identifies_minimal_musl_host() {
+        assert_eq!(classify_linux_libc(false, false, true, false), Env::Musl);
     }
 
     /// linux-musl only: when soldr itself is built for musl, the
