@@ -714,8 +714,8 @@ fn expected_state_paths(
     }
     if attrs.needs_apple_sdk {
         let selection = crate::fetch::apple_sdk::resolve_apple_sdk_selection(Some(&attrs.triple));
-        let sdk = crate::fetch::apple_sdk::install_dir_for_selection(&paths, &selection);
-        let sdk_dir = crate::fetch::apple_sdk::sdk_dir_for_selection(&paths, &selection);
+        let sdk = crate::fetch::apple_sdk::install_dir_for_selection(paths, &selection);
+        let sdk_dir = crate::fetch::apple_sdk::sdk_dir_for_selection(paths, &selection);
         entries.push(RestoreEntry {
             label: format!(
                 "Apple SDK {}/{}",
