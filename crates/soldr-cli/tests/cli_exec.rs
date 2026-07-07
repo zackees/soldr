@@ -1,0 +1,105 @@
+mod common;
+
+use common::*;
+use soldr_cli::timed_test;
+use std::path::Path;
+
+fn fake_exec_nested_cargo_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% child_shims=%SOLDR_CHILD_SHIMS_ACTIVE%>>\"{0}\"\n\
+             if defined RUSTC_WRAPPER (\n\
+               call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link\n\
+             ) else (\n\
+               call \"%RUSTC%\" --crate-name exec_demo --emit dep-info,link\n\
+             )\n\
+             exit /b %ERRORLEVEL%\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} child_shims=${{SOLDR_CHILD_SHIMS_ACTIVE:-}}\" >> \"{0}\"\n\
+             if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
+               \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name exec_demo --emit dep-info,link\n\
+             else\n\
+               \"$RUSTC\" --crate-name exec_demo --emit dep-info,link\n\
+             fi\n",
+            log_path.display()
+        )
+    }
+}
+
+fn fake_direct_rustup_cargo_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo direct rustup cargo %*>>\"{0}\"\n\
+             exit /b 66\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"direct rustup cargo $*\" >> \"{0}\"\n\
+             exit 66\n",
+            log_path.display()
+        )
+    }
+}
+
+timed_test!(exec_cargo_build_routes_through_child_shims_and_zccache, {
+    let cache_root = unique_temp_dir("exec-cargo-zccache-shims");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_toolchain(&log_path);
+    write_fake_script(&cargo, &fake_exec_nested_cargo_script(&log_path));
+
+    let cargo_home = cache_root.join("cargo-home");
+    let cargo_home_bin = cargo_home.join("bin");
+    std::fs::create_dir_all(&cargo_home_bin).expect("create fake cargo home bin");
+    let direct_cargo = fake_script_path(&cargo_home_bin, "cargo");
+    write_fake_script(&direct_cargo, &fake_direct_rustup_cargo_script(&log_path));
+
+    let output = isolated_soldr_command()
+        .args(["exec", "cargo", "build"])
+        .env("CARGO_HOME", &cargo_home)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_CHILD_SHIMS_ACTIVE")
+        .env_remove("SOLDR_DISABLE_CHILD_SHIMS")
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr exec cargo build");
+
+    assert!(
+        output.status.success(),
+        "soldr exec cargo build failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = std::fs::read_to_string(&log_path).expect("read fake tool log");
+    assert!(
+        !log.contains("direct rustup cargo"),
+        "exec should resolve cargo through the soldr child shim, not direct rustup cargo: {log}"
+    );
+    assert!(
+        log.contains("cargo wrapper=") && log.contains("child_shims=1"),
+        "nested cargo should inherit the exec child-shim recursion guard: {log}"
+    );
+    assert!(
+        log.lines()
+            .any(|line| line.contains("zccache wrapper") && line.contains("exec_demo")),
+        "nested cargo rustc call should route through zccache: {log}"
+    );
+});

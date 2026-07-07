@@ -24,6 +24,14 @@
 //! help against the very subprocess-y `cargo-dylint` style hardcoded
 //! `"cargo"` invocations the issue is about. The PATH-prepend is the
 //! load-bearing change.
+//!
+//! Issue #1417 adds a child-only Soldr shim layer ahead of the rustup
+//! bin dir when `SOLDR_CHILD_SHIMS_ACTIVE` is not already set and
+//! `SOLDR_DISABLE_CHILD_SHIMS` is not truthy. Explicit `CARGO`,
+//! `RUSTC`, and `RUSTC_WRAPPER` values are inherited rather than
+//! rewritten here; hardcoded PATH lookups for shimmed tools route back
+//! through Soldr by default, and users can opt out with
+//! `SOLDR_DISABLE_CHILD_SHIMS=1`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,22 +56,37 @@ pub fn run_exec(args: &[String]) -> Result<i32, SoldrError> {
         ))
     })?;
 
-    let new_path = path_with_prepend(rustup_bin_dir);
+    let rustup_path = path_with_prepend(rustup_bin_dir);
+    let shim_guard = if crate::shim_dir::should_install_shims() {
+        Some(crate::shim_dir::build_shim_dir()?)
+    } else {
+        None
+    };
+    let child_path = match shim_guard.as_ref() {
+        Some(guard) => path_with_prepend_using(&guard.path, rustup_path.as_os_str()),
+        None => rustup_path,
+    };
 
     let (cmd, cmd_args) = args.split_first().expect("non-empty checked above");
     // Resolve `cmd` against the NEW path so the rustup-bin lookup wins.
-    let resolved_cmd = find_on_path(cmd, &new_path).unwrap_or_else(|| PathBuf::from(cmd));
+    let resolved_cmd = find_on_path(cmd, &child_path).unwrap_or_else(|| PathBuf::from(cmd));
 
     eprintln!(
         "soldr exec: PATH prefix {} | running {} {}",
-        rustup_bin_dir.display(),
+        exec_path_prefix_for_display(
+            shim_guard.as_ref().map(|guard| guard.path.as_path()),
+            rustup_bin_dir,
+        ),
         resolved_cmd.display(),
         shell_quote(cmd_args)
     );
 
     let mut command = Command::new(&resolved_cmd);
     command.args(cmd_args);
-    command.env("PATH", &new_path);
+    command.env("PATH", &child_path);
+    if shim_guard.is_some() {
+        command.env(crate::shim_dir::SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR, "1");
+    }
     suppress_windows_console_window(&mut command);
 
     let status = command.status().map_err(|e| {
@@ -73,6 +96,13 @@ pub fn run_exec(args: &[String]) -> Result<i32, SoldrError> {
         ))
     })?;
     Ok(status.code().unwrap_or(127))
+}
+
+fn exec_path_prefix_for_display(shim_dir: Option<&Path>, rustup_bin_dir: &Path) -> String {
+    match shim_dir {
+        Some(shim_dir) => format!("{} -> {}", shim_dir.display(), rustup_bin_dir.display()),
+        None => rustup_bin_dir.display().to_string(),
+    }
 }
 
 /// Build a new PATH-style env var value with `prepend_dir` placed first
