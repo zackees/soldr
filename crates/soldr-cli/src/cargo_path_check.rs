@@ -99,7 +99,7 @@ impl CargoClassification {
             CargoClassification::Scoop => "scoop",
             CargoClassification::Rustup => "rustup",
             CargoClassification::RustupToolchainBin => "rustup-toolchain-bin",
-            CargoClassification::SoldrShim => "soldr-shim",
+            CargoClassification::SoldrShim => "soldr-multicall-shim",
             CargoClassification::SystemPackage => "system-package",
             CargoClassification::Unknown => "unknown",
         }
@@ -152,7 +152,7 @@ pub fn classify_cargo_path(path: &Path) -> CargoOnPathFinding {
         CargoClassification::Chocolatey
     } else if lower.contains("/scoop/") {
         CargoClassification::Scoop
-    } else if lower.contains("/soldr-shim")
+    } else if (lower.contains("/.soldr/v") && lower.contains("/shims/"))
         || lower.contains("/soldr/bin/")
         || lower.contains("\\soldr\\bin\\")
     {
@@ -176,8 +176,8 @@ pub fn classify_cargo_path(path: &Path) -> CargoOnPathFinding {
 }
 
 /// Render the user-actionable warning for a shadowing finding. Returns
-/// `None` when the finding does NOT warrant a warning (rustup or
-/// soldr-shim).
+/// `None` when the finding does NOT warrant a warning (rustup or a
+/// soldr-managed shim).
 pub fn warning_for(finding: &CargoOnPathFinding) -> Option<String> {
     if finding.honors_rust_toolchain_toml {
         return None;
@@ -240,6 +240,18 @@ mod tests {
         assert_eq!(f.classification, CargoClassification::Rustup);
         assert!(f.honors_rust_toolchain_toml);
     });
+
+    timed_test!(
+        classify_soldr_versioned_multicall_shim,
+        Duration::from_secs(5),
+        {
+            let p = PathBuf::from("/home/me/.soldr/v0.8.0/shims/cargo");
+            let f = classify_cargo_path(&p);
+            assert_eq!(f.classification, CargoClassification::SoldrShim);
+            assert!(f.honors_rust_toolchain_toml);
+            assert!(warning_for(&f).is_none());
+        }
+    );
 
     timed_test!(
         classify_rustup_toolchain_bin_is_warned,

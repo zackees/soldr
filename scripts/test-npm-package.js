@@ -165,7 +165,7 @@ for (const [key, target] of Object.entries(install.TARGETS || {})) {
   );
 }
 
-// BUNDLED_BINARIES must include soldr, soldr-owned sidecars, crgx, and
+// BUNDLED_BINARIES must include soldr, soldr-daemon, crgx, and
 // cargo-chef. It must not require standalone zccache binaries.
 assert.ok(
   Array.isArray(install.BUNDLED_BINARIES),
@@ -174,8 +174,6 @@ assert.ok(
 for (const required of [
   "soldr",
   "soldr-daemon",
-  "soldr-shim",
-  "soldr-clang-shim",
   "crgx",
   "cargo-chef",
 ]) {

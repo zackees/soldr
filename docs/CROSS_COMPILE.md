@@ -282,8 +282,9 @@ Crates depending on `ring 0.17.x` (rustls, reqwest's TLS, …) include
 hand-written ARM assembly at `pregenerated/sha256-armv8-win64.S` etc.
 ring's `build.rs` hardcodes `c.compiler("clang")` for windows-msvc and
 shells out to `clang` directly. On `aarch64-pc-windows-msvc` plain
-`clang` rejects this — soldr's `soldr-clang-shim` binary intercepts
-the call and re-execs `clang-cl` with the same argv.
+`clang` rejects this — soldr installs a multicall `clang` shim
+(hardlink/copy of `soldr`) that intercepts the call and re-execs
+`clang-cl` with the same argv.
 
 **Use the blessed surface**: `soldr build --target
 aarch64-pc-windows-msvc` (soldr#1012, #882). It auto-dispatches to

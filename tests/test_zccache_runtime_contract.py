@@ -102,6 +102,12 @@ def test_contract_json_has_expected_shape() -> None:
     assert contract["schema_version"] == 1
     assert contract["release_archive"]["extension"] == "tar.zst"
     assert contract["release_archive"]["manifest_min_schema_version"] == 3
+    assert contract["release_archive"]["required_binaries"] == [
+        "soldr",
+        "soldr-daemon",
+        "crgx",
+        "cargo-chef",
+    ]
     assert contract["zccache"]["embedded"] is True
     assert "required_binaries" not in contract["zccache"]
     assert contract["crgx"]["local_dir_env"] == "SOLDR_CRGX_LOCAL_DIR"

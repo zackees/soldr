@@ -9,9 +9,9 @@
 //!
 //! ## Target coverage
 //!
-//! * `*-pc-windows-msvc` — xwin-cache + clang shim (sidesteps the
-//!   ring 0.17.14:563 oversight described in [`crate::fetch::xwin_cache`]
-//!   and the `soldr-clang-shim` binary doc)
+//! * `*-pc-windows-msvc` — xwin-cache + multicall clang shim (sidesteps
+//!   the ring 0.17.14:563 oversight described in
+//!   [`crate::fetch::xwin_cache`])
 //! * `x86_64-pc-windows-gnu` on Windows x64 hosts - managed
 //!   MinGW-w64 GCC from the soldr-toolchain catalogue, prepended to
 //!   PATH with target-scoped Cargo/cc-rs env.
@@ -52,7 +52,7 @@ pub struct BlessedPrep {
     pub xwin_cache_dir: Option<PathBuf>,
     /// Path to `SDKROOT` value (for `*-apple-darwin`).
     pub sdkroot: Option<PathBuf>,
-    /// Directory to prepend to `PATH` so the soldr-clang-shim wins
+    /// Directory to prepend to `PATH` so the multicall clang shim wins
     /// when cc-rs (or ring) does a bare `which("clang")` lookup.
     pub shim_path_dir: Option<PathBuf>,
     /// Additional directories to prepend to `PATH` on the child cargo
@@ -138,7 +138,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // Native cflags + rustflags injection (soldr#1036).
                 // cc-rs reads `CFLAGS_<target>` / `CXXFLAGS_<target>`
                 // and forwards them to the compiler invocation. The
-                // soldr-clang-shim routes `clang` → `clang-cl` for
+                // The multicall clang shim routes `clang` → `clang-cl` for
                 // *-pc-windows-msvc, and clang-cl natively accepts
                 // `/imsvc <path>` MSVC-style include flags.
                 let cflags = xwin_msvc_cflags(&cache_dir);
@@ -708,9 +708,9 @@ fn legacy_zigbuild_opt_out() -> bool {
         .unwrap_or(false)
 }
 
-/// Install the soldr-clang-shim binary at `<paths.bin>/clang(.exe)`
-/// and matching siblings (`clang++`). Idempotent — overwrites if
-/// already present (cheap; the shim is ~few hundred KB).
+/// Install `soldr` under the multicall clang names at
+/// `<paths.bin>/clang-shim/clang(.exe)` and matching siblings
+/// (`clang++`). Idempotent via hardlink/copy materialization.
 ///
 /// Returns the directory the shim was installed into, ready for
 /// PATH prepending.
@@ -755,58 +755,16 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     let shim_dir = paths.bin.join("clang-shim");
     std::fs::create_dir_all(&shim_dir)?;
 
-    // The `soldr-clang-shim` binary lives next to the soldr binary
-    // (both are produced by the same workspace build). On a soldr-
-    // released install, it's at `<exe-dir>/soldr-clang-shim(.exe)`.
-    let shim_src = locate_shim_binary()?;
-
-    // soldr#1265 — preserve the source binary's mtime on the installed
-    // shim. cc-rs uses the CC binary's mtime in some build-script paths;
-    // without preservation every `soldr build` invocation looked like a
-    // fresh compiler → cargo invalidated cc-rs-touched deps on darwin/
-    // MSVC CI lanes. Preserving mtime keeps the shim's timestamp aligned
-    // with the source (stable when bootstrap cache HITs).
-    let src_mtime = std::fs::metadata(&shim_src)
-        .and_then(|meta| meta.modified())
-        .map_err(|e| {
-            SoldrError::Other(format!(
-                "failed to read source mtime for soldr-clang-shim: {e}"
-            ))
-        })?;
+    let shim_src = crate::shim_materialize::soldr_binary_source()?;
 
     for name in clang_shim_names() {
         let dst = shim_dir.join(&name);
-        // Best-effort remove first; ignore errors (file may not exist).
-        let _ = std::fs::remove_file(&dst);
-        // Use std::fs::copy for cross-platform; symlinks would be
-        // cleaner on POSIX but the implementation cost isn't worth
-        // it for what's effectively a 0-cost-per-invocation file copy.
-        std::fs::copy(&shim_src, &dst).map_err(|e| {
+        crate::shim_materialize::materialize_executable(&shim_src, &dst).map_err(|e| {
             SoldrError::Other(format!(
-                "failed to install soldr-clang-shim at {}: {e}",
+                "failed to install multicall clang shim at {}: {e}",
                 dst.display()
             ))
         })?;
-
-        // Preserve source mtime — see block comment above the loop.
-        std::fs::File::options()
-            .write(true)
-            .open(&dst)
-            .and_then(|f| f.set_modified(src_mtime))
-            .map_err(|e| {
-                SoldrError::Other(format!(
-                    "failed to preserve mtime on installed soldr-clang-shim {}: {e}",
-                    dst.display()
-                ))
-            })?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&dst)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&dst, perms)?;
-        }
     }
 
     Ok(shim_dir)
@@ -814,13 +772,10 @@ fn install_clang_shim(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
 
 #[cfg(windows)]
 fn clang_shim_names() -> Vec<String> {
-    // Only `clang` + `clang++` — soldr-clang-shim's `from_argv0` accepts
-    // those two basenames (plus `soldr-clang-shim` itself). DO NOT add
-    // `clang-cl` here: the shim invokes `clang-cl` as its DOWNSTREAM (it
-    // exists to route clang→clang-cl), and if `clang-cl` is also a
-    // symlink to the shim then PATH resolution finds the shim's own
-    // clang-cl symlink first and the shim re-invokes itself with
-    // argv[0]=clang-cl → `unrecognized argv[0] basename`. See
+    // Only `clang` + `clang++`. DO NOT add `clang-cl` here: the shim
+    // invokes `clang-cl` as its downstream, and if `clang-cl` is also a
+    // multicall name then PATH resolution can find the shim's own
+    // clang-cl first and recurse. See
     // ci/docker-aarch64-windows-msvc-cross/ + soldr#1033 followup.
     vec!["clang.exe".to_string(), "clang++.exe".to_string()]
 }
@@ -829,30 +784,6 @@ fn clang_shim_names() -> Vec<String> {
 fn clang_shim_names() -> Vec<String> {
     // See the Windows branch for why clang-cl is NOT here.
     vec!["clang".to_string(), "clang++".to_string()]
-}
-
-fn locate_shim_binary() -> Result<PathBuf, SoldrError> {
-    // Look next to the running `soldr` executable.
-    let current_exe = std::env::current_exe()
-        .map_err(|e| SoldrError::Other(format!("could not resolve current exe: {e}")))?;
-    let exe_dir = current_exe
-        .parent()
-        .ok_or_else(|| SoldrError::Other("current exe has no parent directory".to_string()))?;
-
-    let shim_name = if cfg!(windows) {
-        "soldr-clang-shim.exe"
-    } else {
-        "soldr-clang-shim"
-    };
-    let candidate = exe_dir.join(shim_name);
-    if candidate.is_file() {
-        return Ok(candidate);
-    }
-    Err(SoldrError::Other(format!(
-        "soldr-clang-shim binary not found at {}; expected next to the \
-         running soldr exe. Reinstall soldr or rebuild from source.",
-        candidate.display()
-    )))
 }
 
 /// Build the MSVC-style include-flag string that cargo-xwin would

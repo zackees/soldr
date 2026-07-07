@@ -12,7 +12,7 @@
 #   - soldr v0.7.66 (the just-released bundle that fixes both #1032
 #     bugs: zig 0.14.1 extraction + clang-shim packaging)
 #   - clang on PATH (the blessed `soldr build` surface installs
-#     soldr-clang-shim ahead of system clang so ring 0.17.x's
+#     soldr-managed clang shims ahead of system clang so ring 0.17.x's
 #     hardcoded `c.compiler("clang")` routes to clang-cl for MSVC)
 #   - cargo-xwin (the legacy `soldr cargo build` surface uses this
 #     to download the MS CRT + SDK headers; still installed for
@@ -65,11 +65,10 @@ ENV PATH=/root/.cargo/bin:$PATH \
     RUSTUP_HOME=/root/.rustup \
     CARGO_HOME=/root/.cargo
 
-# Install soldr v0.7.66 from the just-published GitHub release. This
-# is the version that ships the soldr-clang-shim binary alongside
-# soldr (the #1032 bug 2 fix), so `soldr build --target
-# aarch64-pc-windows-msvc` can install the shim to route ring's
-# hardcoded `clang` invocations to clang-cl.
+# Install soldr v0.7.66 from the just-published GitHub release. The
+# blessed `soldr build --target aarch64-pc-windows-msvc` surface
+# installs clang shim names so ring's hardcoded `clang` invocations
+# route to clang-cl.
 ENV SOLDR_VERSION=0.7.66 \
     SOLDR_ASSET_URL=https://github.com/zackees/soldr/releases/download/v0.7.66/soldr-v0.7.66-x86_64-unknown-linux-gnu.tar.zst
 

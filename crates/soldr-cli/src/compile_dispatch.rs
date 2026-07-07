@@ -1,8 +1,8 @@
 //! Shared `Request::Compile` dispatch logic (issue #1081).
 //!
 //! Lifted out of `wrapper.rs` so it is reachable by both the existing
-//! soldr-as-wrapper hot path AND the dedicated `zccache-soldr` shim
-//! binary added in #1081. Both callers do the same thing:
+//! soldr-as-wrapper hot path and multicall `zccache-soldr` dispatch.
+//! Both callers do the same thing:
 //!
 //! 1. Build a `CompileRequest` from the rustc-style argv they were
 //!    invoked with.
@@ -132,9 +132,9 @@ pub fn is_compile_env_var(name: &str) -> bool {
 /// Build a `CompileRequest` from a rustc-style argv. `argv[0]` is the
 /// rustc path (or clippy-driver, etc.) and `argv[1..]` are the
 /// arguments rustc receives. This is the SAME shape both
-/// soldr-as-RUSTC_WRAPPER and the dedicated `zccache-soldr` shim are
+/// soldr-as-RUSTC_WRAPPER and multicall `zccache-soldr` dispatch are
 /// invoked with — RUSTC_WRAPPER's contract is `[wrapper, rustc_path,
-/// ...rustc_args]`, and after the wrapper-binary entry has stripped
+/// ...rustc_args]`, and after the wrapper entry has stripped
 /// argv[0] we get the [rustc_path, ...rustc_args] shape this function
 /// expects.
 pub fn build_compile_request(rustc_argv: &[String]) -> CompileRequest {

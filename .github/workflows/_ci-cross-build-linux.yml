@@ -249,7 +249,7 @@ jobs:
       # (~v0.7.42 today) predates both subcommands so we need a fresh
       # binary from main HEAD. Bare cargo build to avoid a chicken-
       # and-egg with the wrapper.
-      # soldr#1162 — cache the host-side bootstrap soldr + soldr-clang-shim.
+      # soldr#1162 — cache the host-side bootstrap soldr.
       # Same story as #1160 / #1161 for baseline-zero-deps: three CI lanes
       # (apple-darwin x2 + windows-msvc x1) rebuild the identical host binaries
       # (~295 s each) with RUSTC_WRAPPER="", so there is no zccache to catch it.
@@ -281,14 +281,10 @@ jobs:
           # binary that lives inside the same lane and is deleted at
           # post-step cleanup.
           cargo build --profile ci-bootstrap --locked --package soldr-cli \
-            --bin soldr --bin soldr-clang-shim \
+            --bin soldr \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
           cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr "$RUNNER_TEMP/soldr-bin/soldr"
-          # blessed_build::install_clang_shim looks for soldr-clang-shim
-          # next to the soldr exe. Without it, `soldr build` errors with
-          # "soldr-clang-shim binary not found".
-          cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr-clang-shim "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
 
       - name: Expose bootstrap soldr on PATH
         if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
@@ -296,7 +292,6 @@ jobs:
         run: |
           set -euo pipefail
           test -x "$RUNNER_TEMP/soldr-bin/soldr" || chmod +x "$RUNNER_TEMP/soldr-bin/soldr"
-          test -x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim" || chmod +x "$RUNNER_TEMP/soldr-bin/soldr-clang-shim"
           echo "$RUNNER_TEMP/soldr-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/soldr-bin/soldr" --version
 

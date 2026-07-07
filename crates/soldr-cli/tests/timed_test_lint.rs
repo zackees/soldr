@@ -46,8 +46,6 @@ mod common;
 /// stable.
 const LEGACY_ALLOWLIST: &[&str] = &[
     // ----- src/ unit-test modules -----
-    "src/bin/soldr_clang_shim.rs",
-    "src/bin/soldr_shim.rs",
     "src/binaries.rs",
     "src/cache/session.rs",
     "src/cache_lib/auto_gc.rs",

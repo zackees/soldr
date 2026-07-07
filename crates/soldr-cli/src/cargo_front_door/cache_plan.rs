@@ -128,7 +128,7 @@ impl CargoCachePlan {
                 // `zccache-soldr` shim (not the removed managed binary),
                 // so build-script compiles route to the soldr-daemon
                 // embedded zccache service over the Compile IPC verb.
-                let shim = crate::binaries::zccache_soldr_shim_binary();
+                let shim = crate::binaries::zccache_soldr_shim_binary()?;
                 native_cc::inject_native_cache_env(command, &shim, explicit_target)?;
             }
         }

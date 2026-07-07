@@ -1,5 +1,5 @@
-//! `soldr archive` - bundle a built `soldr` binary plus its soldr-owned
-//! sidecars and bundled tools (`crgx`, `cargo-chef`) into
+//! `soldr archive` - bundle a built `soldr` binary plus `soldr-daemon`
+//! and bundled tools (`crgx`, `cargo-chef`) into
 //! a single deployable `.tar.zst` archive.
 //!
 //! Issue #858 (sub-issue of #853): the release workflow used to hand-roll
@@ -24,20 +24,21 @@
 //! release-workflow contract `setup-soldr` already consumes):
 //!
 //! - `soldr` / `soldr.exe` - the staged binary.
-//! - `soldr-daemon`, `soldr-shim`, and `soldr-clang-shim` - soldr-owned
-//!   sidecar binaries.
+//! - `soldr-daemon` / `soldr-daemon.exe` - soldr-owned daemon binary.
 //! - `crgx` / `crgx.exe` - bundled crgx (optional).
 //! - `cargo-chef` / `cargo-chef.exe` - bundled cargo-chef (optional).
 //! - `manifest.json` - minimal descriptor (soldr version + target +
 //!   embedded zccache version + entry list).
 //!
-//! ## Sidecar resolution
+//! ## Bundled binary resolution
 //!
-//! The soldr-owned sidecars are resolved from the same build target
-//! directory as `soldr`. `crgx` and `cargo-chef` are looked up under the
-//! managed-cache layout `<SoldrPaths::bin>/<crate>-<version>/<binary>`.
-//! Both bundled tools are optional: a missing tool is simply omitted,
-//! never network-fetched, which keeps `soldr archive` hermetic and testable.
+//! `soldr-daemon` is resolved from the same build target directory as
+//! `soldr`. The toolchain, clang, and native-cache shim names are
+//! materialized from `soldr` at install time, so no shim sidecar binaries
+//! are staged. `crgx` and `cargo-chef` are looked up under the managed-
+//! cache layout `<SoldrPaths::bin>/<crate>-<version>/<binary>`. Both
+//! bundled tools are optional: a missing tool is simply omitted, never
+//! network-fetched, which keeps `soldr archive` hermetic and testable.
 //!
 //! Tests inject fake binaries via the `ArchiveSources` struct so the
 //! whole pipeline can be exercised without touching `~/.soldr`.
@@ -61,7 +62,7 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 /// zccache trio is no longer staged. zccache itself is embedded into
 /// soldr/soldr-daemon, so this is informational only.
 const EMBEDDED_ZCCACHE_VERSION: &str = zccache::core::VERSION;
-const SOLDR_SIDECAR_ARCHIVE_BINARIES: &[&str] = &["soldr-daemon", "soldr-shim", "soldr-clang-shim"];
+const SOLDR_REQUIRED_ARCHIVE_BINARIES: &[&str] = &["soldr-daemon"];
 
 /// zstd compression level for `soldr archive` output. Matches the
 /// release-workflow setting documented in `.github/workflows/release-auto.yml`
@@ -91,9 +92,9 @@ pub struct ArchiveEntry {
 #[derive(Debug, Clone)]
 pub struct ArchiveSources {
     pub soldr_binary: PathBuf,
-    /// Required sidecars: missing → error.
+    /// Required soldr-owned binaries: missing → error.
     pub required: Vec<ArchiveEntry>,
-    /// Optional sidecars: missing → silently skipped.
+    /// Optional bundled tools: missing → silently skipped.
     pub optional: Vec<ArchiveEntry>,
     pub target_triple: String,
     pub soldr_version: String,
@@ -193,12 +194,12 @@ pub fn resolve_sources(
 
     let release_dir = cwd.join("target").join(&triple).join("release");
     let mut required = Vec::new();
-    for stem in SOLDR_SIDECAR_ARCHIVE_BINARIES {
+    for stem in SOLDR_REQUIRED_ARCHIVE_BINARIES {
         let binary_name = format!("{stem}{exe_suffix}");
         let source = release_dir.join(&binary_name);
         if !source.is_file() {
             return Err(SoldrError::Other(format!(
-                "soldr sidecar binary not found at {} - run `soldr cargo build --release --target {} --package soldr-cli --bins` first",
+                "required soldr binary not found at {} - run `soldr cargo build --release --target {} --package soldr-cli --bin soldr --bin soldr-daemon` first",
                 source.display(),
                 triple,
             )));
@@ -210,7 +211,7 @@ pub fn resolve_sources(
         });
     }
 
-    // Optional sidecars: crgx + cargo-chef are looked up under the
+    // Optional bundled tools: crgx + cargo-chef are looked up under the
     // same managed-cache layout (`<bin>/<crate>-<version>/<binary>`).
     // The exact version dirs are discovered by globbing the cache root
     // since soldr-cli doesn't expose a "find newest cached binary"
@@ -608,29 +609,15 @@ mod tests {
     fn synthesize_sources(stage: &Path, target: &str) -> ArchiveSources {
         let soldr = write_fake(stage, "soldr", b"fake-soldr-bin");
         let daemon = write_fake(stage, "soldr-daemon", b"fake-soldr-daemon");
-        let shim = write_fake(stage, "soldr-shim", b"fake-soldr-shim");
-        let clang_shim = write_fake(stage, "soldr-clang-shim", b"fake-soldr-clang-shim");
         let crgx = write_fake(stage, "crgx", b"fake-crgx");
         let chef = write_fake(stage, "cargo-chef", b"fake-cargo-chef");
         ArchiveSources {
             soldr_binary: soldr,
-            required: vec![
-                ArchiveEntry {
-                    archive_name: "soldr-daemon".into(),
-                    source: daemon,
-                    sha256: None,
-                },
-                ArchiveEntry {
-                    archive_name: "soldr-shim".into(),
-                    source: shim,
-                    sha256: None,
-                },
-                ArchiveEntry {
-                    archive_name: "soldr-clang-shim".into(),
-                    source: clang_shim,
-                    sha256: None,
-                },
-            ],
+            required: vec![ArchiveEntry {
+                archive_name: "soldr-daemon".into(),
+                source: daemon,
+                sha256: None,
+            }],
             optional: vec![
                 ArchiveEntry {
                     archive_name: "crgx".into(),
@@ -724,55 +711,62 @@ mod tests {
         );
     });
 
-    crate::timed_test!(archive_includes_expected_sidecars, {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let stage = tmp.path().join("stage");
-        std::fs::create_dir_all(&stage).unwrap();
-        let sources = synthesize_sources(&stage, "x86_64-unknown-linux-gnu");
-        let out = tmp.path().join("out.tar.zst");
-        build_archive(&sources, &out).expect("build_archive");
-        let entries = list_archive_entries(&out);
-        for expected in [
-            "soldr",
-            "soldr-daemon",
-            "soldr-shim",
-            "soldr-clang-shim",
-            "crgx",
-            "cargo-chef",
-            "manifest.json",
-        ] {
+    crate::timed_test!(
+        archive_includes_expected_runtime_entries_without_shim_sidecars,
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let stage = tmp.path().join("stage");
+            std::fs::create_dir_all(&stage).unwrap();
+            let sources = synthesize_sources(&stage, "x86_64-unknown-linux-gnu");
+            let out = tmp.path().join("out.tar.zst");
+            build_archive(&sources, &out).expect("build_archive");
+            let entries = list_archive_entries(&out);
+            for expected in [
+                "soldr",
+                "soldr-daemon",
+                "crgx",
+                "cargo-chef",
+                "manifest.json",
+            ] {
+                assert!(
+                    entries.iter().any(|e| e == expected),
+                    "archive must contain `{expected}`, got: {entries:?}",
+                );
+            }
+            for removed in ["soldr-shim", "soldr-clang-shim", "zccache-soldr"] {
+                assert!(
+                    !entries.iter().any(|e| e == removed),
+                    "archive must not contain removed shim sidecar `{removed}`, got: {entries:?}",
+                );
+            }
+            let manifest = read_archive_file(&out, "manifest.json").expect("manifest in archive");
+            let manifest = String::from_utf8(manifest).expect("manifest is utf8");
             assert!(
-                entries.iter().any(|e| e == expected),
-                "archive must contain `{expected}`, got: {entries:?}",
+                manifest.contains("\"schema_version\": 1"),
+                "manifest: {manifest}"
+            );
+            assert!(
+                manifest.contains("x86_64-unknown-linux-gnu"),
+                "manifest: {manifest}"
+            );
+            assert!(
+                manifest.contains("\"zccache_version\""),
+                "manifest: {manifest}"
             );
         }
-        let manifest = read_archive_file(&out, "manifest.json").expect("manifest in archive");
-        let manifest = String::from_utf8(manifest).expect("manifest is utf8");
-        assert!(
-            manifest.contains("\"schema_version\": 1"),
-            "manifest: {manifest}"
-        );
-        assert!(
-            manifest.contains("x86_64-unknown-linux-gnu"),
-            "manifest: {manifest}"
-        );
-        assert!(
-            manifest.contains("\"zccache_version\""),
-            "manifest: {manifest}"
-        );
-    });
+    );
 
     crate::timed_test!(archive_windows_target_uses_exe_suffix, {
         // When the target triple is windows-msvc the soldr entry name
-        // in the archive gets `.exe`. Sidecar entries already include
-        // their own suffix in the ArchiveEntry::archive_name field; the
+        // in the archive gets `.exe`. Required/optional entries already
+        // include their own suffix in ArchiveEntry::archive_name; the
         // synthesis helper used here mirrors the non-suffix case for
         // simplicity, so we only assert the soldr entry was renamed.
         let tmp = tempfile::tempdir().expect("tempdir");
         let stage = tmp.path().join("stage");
         std::fs::create_dir_all(&stage).unwrap();
         let mut sources = synthesize_sources(&stage, "x86_64-pc-windows-msvc");
-        // Simulate Windows binary layout: rename sidecars + soldr to
+        // Simulate Windows binary layout: rename bundled binaries + soldr to
         // include the `.exe` suffix so the staging is realistic.
         let new_soldr = stage.join("soldr.exe");
         std::fs::rename(&sources.soldr_binary, &new_soldr).unwrap();

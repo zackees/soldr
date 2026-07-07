@@ -329,14 +329,23 @@ pub(crate) fn embedded_zccache_binary() -> std::path::PathBuf {
     sibling_binary("zccache")
 }
 
-/// Resolve the `zccache-soldr` RUSTC_WRAPPER/CC shim (soldr#1081) that
-/// ships alongside `soldr`. Used by native-C caching (soldr#1368): it is
-/// injected into `CC`/`CXX` as the compiler wrapper so cc-rs build-script
-/// compiles route through the soldr-daemon embedded zccache service over
-/// the `Request::Compile` IPC verb (same shim RUSTC_WRAPPER uses). Sibling
-/// of the current exe; falls back to a bare name for a PATH lookup.
-pub(crate) fn zccache_soldr_shim_binary() -> std::path::PathBuf {
-    sibling_binary("zccache-soldr")
+/// Materialize the `zccache-soldr` RUSTC_WRAPPER/CC shim name
+/// (soldr#1081) from the main `soldr` binary. Native-C caching
+/// injects this stable basename into `CC`/`CXX` so cc-rs build-script
+/// compiles route through the soldr-daemon embedded zccache service
+/// over the `Request::Compile` IPC verb.
+pub(crate) fn zccache_soldr_shim_binary() -> Result<std::path::PathBuf, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    paths.ensure_dirs()?;
+    let file = if cfg!(windows) {
+        "zccache-soldr.exe"
+    } else {
+        "zccache-soldr"
+    };
+    let target = paths.bin.join(file);
+    let source = crate::shim_materialize::soldr_binary_source()?;
+    crate::shim_materialize::materialize_executable(&source, &target)?;
+    Ok(target)
 }
 
 /// Resolve `<stem>` as a sibling of the running executable (adding

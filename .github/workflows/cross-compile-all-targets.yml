@@ -525,7 +525,7 @@ jobs:
             chmod +x "dist/package/${b}${suffix}" || true
           done
 
-      - name: Stage soldr binary + sidecars
+      - name: Stage soldr binary
         run: |
           set -euo pipefail
           suffix="${{ matrix.exe_suffix }}"

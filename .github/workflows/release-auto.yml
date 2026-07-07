@@ -224,8 +224,8 @@ jobs:
       matrix:
         include:
           # All targets now produce a single `.tar.zst` archive that
-          # bundles the soldr binary alongside same-target soldr-owned
-          # sidecars, crgx, and cargo-chef. One fetch from
+          # bundles the soldr binary alongside same-target soldr-daemon,
+          # crgx, and cargo-chef. One fetch from
           # GitHub Releases installs the full runtime surface; registry
           # publishes are gated on that GitHub asset set being complete.
           - name: Linux x64
@@ -306,9 +306,9 @@ jobs:
       - name: Setup Rust toolchain
         uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
         with:
-          # Release CI runs the checked-out soldr CLI via `cargo run`
+          # Release CI runs the checked-out soldr CLI as the build driver
           # below, because the previous released soldr can lack the
-          # exact cross-build and sidecar behavior needed to build the
+          # exact cross-build behavior needed to build the
           # next release. Keep setup-soldr in passthrough mode here so it
           # only provisions Rust and cannot enter stale standalone
           # zccache setup paths.
@@ -418,8 +418,7 @@ jobs:
           # toolchain dispatch. The workflow must not install or invoke
           # lower-level cross-build helpers directly.
           cargo build --release --locked --package soldr-cli \
-            --bin soldr \
-            --bin soldr-clang-shim
+            --bin soldr
           driver="target/release/soldr"
           case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
           soldr_build_args=()
@@ -435,9 +434,7 @@ jobs:
             build --release --locked --target "$target" \
             --package soldr-cli \
             --bin soldr \
-            --bin soldr-daemon \
-            --bin soldr-shim \
-            --bin soldr-clang-shim
+            --bin soldr-daemon
           echo "=== post-build diagnostic: target/$target/release/ ==="
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
@@ -450,7 +447,7 @@ jobs:
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
-          for stem in soldr soldr-daemon soldr-shim soldr-clang-shim; do
+          for stem in soldr soldr-daemon; do
             src="target/${{ matrix.target }}/release/${stem}${suffix}"
             if [ ! -f "$src" ]; then
               echo "expected ${stem}${suffix} in target dir; observed release dir:" >&2
@@ -461,15 +458,10 @@ jobs:
             chmod +x "dist/package/${stem}${suffix}" 2>/dev/null || true
           done
 
-          # soldr#1032 bug 2: ship soldr-clang-shim next to soldr.
-          # The shim is a tiny clang/clang++ wrapper installed by
-          # Commands::Build (#1015 + #1016) to route ring 0.17.x's
-          # hardcoded `c.compiler("clang")` to clang-cl on
-          # *-pc-windows-msvc targets. `Commands::Build` looks for it
-          # at `~/.soldr/bin/soldr-clang-shim`, sourced FROM the release
-          # archive — so every archive must include it. Including it on
-          # every target keeps the archive layout uniform; it's a no-op
-          # binary on non-MSVC lanes.
+          # soldr#1302: toolchain, clang, and zccache wrapper shims are
+          # hardlinks/copies of `soldr` materialized at install time.
+          # There are no shim sidecar binaries to stage, so the #1032
+          # missing-sidecar archive class is structurally impossible.
           case "${{ matrix.target }}" in
             *-pc-windows-msvc)
               # Windows MSVC always emits a `.pdb` next to the binary
@@ -785,8 +777,6 @@ jobs:
             soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
           fi
           soldr_daemon_sha=$(sha256_of "dist/package/soldr-daemon${suffix}")
-          soldr_shim_sha=$(sha256_of "dist/package/soldr-shim${suffix}")
-          soldr_clang_shim_sha=$(sha256_of "dist/package/soldr-clang-shim${suffix}")
           crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
           cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -803,9 +793,7 @@ jobs:
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
               "sidecars": [
-                { "name": "soldr-daemon${suffix}",       "sha256": "${soldr_daemon_sha}" },
-                { "name": "soldr-shim${suffix}",         "sha256": "${soldr_shim_sha}" },
-                { "name": "soldr-clang-shim${suffix}",   "sha256": "${soldr_clang_shim_sha}" }
+                { "name": "soldr-daemon${suffix}",       "sha256": "${soldr_daemon_sha}" }
               ],
               "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
@@ -1137,8 +1125,6 @@ jobs:
               # Floor derived from win_arm64 (a known-good release):
               #   soldr.exe          15074816  ← main CLI
               #   soldr-daemon.exe    4700672
-              #   soldr-clang-shim    226304
-              #   soldr-shim          226304
               # Pick 2 MB as the floor for the primary bin (soldr /
               # soldr.exe). Anything below that means the actual
               # crate code did not get compiled in.
@@ -1260,7 +1246,7 @@ jobs:
         # Round-trip: extract the freshly-packaged combined archive into a
         # scratch dir, list its contents, and run soldr from there. Catches
         # mistakes in the tar layout / file modes / zstd compression /
-        # sidecar binary names before the artifact reaches the GH
+        # bundled binary names before the artifact reaches the GH
         # release. Cross-arch archives can't be executed (e.g. aarch64
         # build on x86_64 host) so the `--version` step is gated to
         # native-arch combinations.
@@ -1278,7 +1264,7 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship soldr, soldr-owned sidecars, crgx,
+          # Every archive must ship soldr, soldr-daemon, crgx,
           # cargo-chef, and a manifest.json describing the bundle.
           # Windows archives must also ship soldr's PDB sidecar.
           suffix=""
@@ -1286,8 +1272,6 @@ jobs:
           for required in \
             "${{ matrix.binary }}" \
             "soldr-daemon${suffix}" \
-            "soldr-shim${suffix}" \
-            "soldr-clang-shim${suffix}" \
             "crgx${suffix}" \
             "cargo-chef${suffix}" \
             "manifest.json"; do
@@ -1313,7 +1297,7 @@ jobs:
           # reaches the GH release surface, on every lane. Real soldr
           # ~13-15 MB on Linux glibc / ~15 MB on Windows / ~15 MB on
           # darwin; 2 MiB is well below that but far above any
-          # conceivable stub (soldr-shim / soldr-clang-shim).
+          # conceivable stub.
           MIN_SOLDR_BYTES=$((2 * 1024 * 1024))
           soldr_size=$(wc -c < "$extract/${{ matrix.binary }}" | tr -d ' ')
           if [ "$soldr_size" -lt "$MIN_SOLDR_BYTES" ]; then
@@ -1357,12 +1341,8 @@ jobs:
                   exit 1
               fi
 
-              # Smoke the bundled crgx too — same arch gate. crgx is
-              # self-contained (no daemon, no sidecars), so --version
-              # is enough to prove the binary loads and the static
-              # linkage works on the host.
+              # Smoke the bundled tools too — same arch gate.
               "$extract/soldr-daemon${suffix}" --help >/dev/null
-              "$extract/soldr-shim${suffix}" --help >/dev/null || true
               "$extract/crgx${suffix}" --version
               "$extract/cargo-chef${suffix}" --version
               ;;

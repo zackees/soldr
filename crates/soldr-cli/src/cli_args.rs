@@ -456,7 +456,7 @@ pub(crate) enum Commands {
 
     /// Bundle or extract a soldr release .tar.zst archive
     #[command(
-        long_about = "Bundle a previously-built `soldr` release binary together with its sidecars into a single `.tar.zst` archive, or extract one for validation.\n\nBy default, `soldr archive` resolves the built soldr binary from `target/<triple>/release/` and optional managed tool sidecars from the soldr cache. In release CI, pass `--stage-dir <DIR>` to compress an already-validated staging directory with soldr's in-process zstd encoder instead of shelling out to `tar | zstd`. For smoke tests, pass `--input <FILE> --extract-dir <DIR>` to extract through soldr's in-process zstd decoder.\n\nThe output is a flat `.tar.zst` (zstd level 19) — every entry sits at the archive root unless `--stage-dir` contains a nested sidecar directory such as a dSYM bundle."
+        long_about = "Bundle a previously-built `soldr` release binary together with `soldr-daemon` and bundled tools into a single `.tar.zst` archive, or extract one for validation.\n\nBy default, `soldr archive` resolves the built soldr binary and daemon from `target/<triple>/release/` and optional managed tools from the soldr cache. In release CI, pass `--stage-dir <DIR>` to compress an already-validated staging directory with soldr's in-process zstd encoder instead of shelling out to `tar | zstd`. For smoke tests, pass `--input <FILE> --extract-dir <DIR>` to extract through soldr's in-process zstd decoder.\n\nThe output is a flat `.tar.zst` (zstd level 19) — every entry sits at the archive root unless `--stage-dir` contains a nested debug-info sidecar directory such as a dSYM bundle."
     )]
     Archive {
         /// Target triple to bundle for. Defaults to the auto-detected

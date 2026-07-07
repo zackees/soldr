@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run inside the soldr-aarch64-windows-msvc-cross docker image.
 # Cross-compiles the soldr binary to `aarch64-pc-windows-msvc` from
-# x86_64 Linux using `soldr build` (the v0.7.66+ blessed surface that
-# installs soldr-clang-shim ahead of system clang).
+# x86_64 Linux using `soldr build` (the blessed surface that installs
+# soldr-managed clang shims ahead of system clang).
 #
 # Every soldr / cargo invocation is routed through run_with_ts.py so
 # each output line carries an elapsed-seconds prefix. This is the
@@ -41,9 +41,9 @@ echo "::endgroup::"
 
 echo "::group::Build soldr-cli for $TARGET via soldr build (blessed surface)"
 # `soldr build --target ...` is the v0.7.66+ blessed surface. It
-# installs soldr-clang-shim ahead of system clang on PATH so ring
-# 0.17.x's hardcoded `c.compiler("clang")` (build.rs:563) routes to
-# clang-cl for *-pc-windows-msvc targets. cargo-xwin is also installed
+# installs clang shim names ahead of system clang on PATH so ring 0.17.x's
+# hardcoded `c.compiler("clang")` (build.rs:563) routes to clang-cl for
+# *-pc-windows-msvc targets. cargo-xwin is also installed
 # in the image; soldr can dispatch to it for the SDK download.
 $WRAPPER soldr build --release \
     --target "$TARGET" \

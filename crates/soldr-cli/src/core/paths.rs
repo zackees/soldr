@@ -107,9 +107,9 @@ impl SoldrPaths {
     /// Per-version shim directory — `<versioned_root>/shims/`.
     ///
     /// Owned and populated by the `soldr shims` verb (zackees/soldr#742).
-    /// Holds the native `soldr-shim` install (symlinked/hardlinked under
-    /// each tool name) for THIS soldr version. Multi-version soldr installs
-    /// coexist cleanly because each version has its own subdir.
+    /// Holds multicall `soldr` shims (hardlinked/copied under each tool
+    /// name) for THIS soldr version. Multi-version soldr installs coexist
+    /// cleanly because each version has its own subdir.
     pub fn versioned_shims_dir(&self) -> PathBuf {
         self.versioned_root().join("shims")
     }

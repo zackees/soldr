@@ -22,7 +22,7 @@ echo "::group::seed: cargo build -p soldr-cli (native x86_64-unknown-linux-gnu)"
 # RUSTC_WRAPPER unset: the seed is the thing that will engage caching for
 # everything downstream — no chicken-and-egg.
 RUSTC_WRAPPER="" cargo build --release --locked \
-    --package soldr-cli --bin soldr --bin soldr-clang-shim \
+    --package soldr-cli --bin soldr \
     --target x86_64-unknown-linux-gnu
 seed_dir="$(pwd)/target/x86_64-unknown-linux-gnu/release"
 export PATH="$seed_dir:$PATH"
