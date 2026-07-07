@@ -28,7 +28,6 @@ jobs:
       # rustc wrapper path also stayed far slower than the direct build.
       SOLDR_RUSTC_WRAPPER: "none"
       SOLDR_NATIVE_CACHE: "0"
-      SOLDR_CACHE_DIR: ${{ runner.temp }}\soldr-cache
       TARGET: x86_64-pc-windows-gnu
     steps:
       - name: Checkout soldr
@@ -41,6 +40,12 @@ jobs:
         with:
           toolchain: 1.94.1
           targets: ${{ env.TARGET }}
+
+      - name: Use isolated soldr cache
+        shell: pwsh
+        run: |
+          "SOLDR_CACHE_DIR=$env:RUNNER_TEMP\soldr-cache" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Build soldr from checkout
         shell: pwsh
