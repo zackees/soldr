@@ -7,8 +7,10 @@ description: |
     x86_64-pc-windows-gnu → on Windows x64, ensure managed MinGW-w64
       GCC and export target-scoped Cargo/cc-rs env; on other hosts,
       ensure cargo-zigbuild + zig.
-    *-apple-darwin    → ensure cargo-zigbuild + zig + Apple SDK;
-      export SDKROOT into $GITHUB_ENV.
+    *-apple-darwin    → ensure the target-shaped Apple SDK and export
+      SDKROOT into $GITHUB_ENV for external/legacy commands. `soldr build`
+      is the blessed Darwin cross-build path and injects clang/SDK env
+      internally.
     *-unknown-linux-* → ensure cargo-zigbuild + zig.
   Collapses what used to be 3-4 separate workflow steps into one named
   "Preparing Cross Compile Toolchain". Designed for

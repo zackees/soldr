@@ -53,11 +53,13 @@ Current release assets follow this shape:
 
 - `soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst`
 - `soldr-vX.Y.Z-aarch64-unknown-linux-gnu.tar.zst`
-- `soldr-vX.Y.Z-x86_64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-aarch64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-aarch64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
+
+`x86_64-apple-darwin` is intentionally omitted from the automated release
+asset set while hosted Intel macOS release capacity remains unreliable.
 
 ## Step 1: Verify The Checksum
 

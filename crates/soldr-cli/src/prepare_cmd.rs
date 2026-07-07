@@ -11,8 +11,10 @@
 //! - `x86_64-pc-windows-gnu` on Windows x64 -> ensure managed
 //!   MinGW-w64 GCC, prepend it to PATH, and export target-scoped
 //!   Cargo/cc-rs env. Other hosts keep using cargo-zigbuild + zig.
-//! - `*-apple-darwin` → ensure cargo-zigbuild + zig + Apple SDK; print
+//! - `*-apple-darwin` → ensure the target-shaped Apple SDK and print
 //!   `SDKROOT=<path>` so the caller can plumb it into `$GITHUB_ENV`.
+//!   `soldr build --target` is the blessed Darwin cross-build path;
+//!   prepare still materializes zig for legacy/external tooling.
 //! - `*-unknown-linux-{gnu,musl}` (when triple ≠ host) → ensure
 //!   cargo-zigbuild + zig.
 //! - All targets: `rustup target add <triple>`.
@@ -335,10 +337,13 @@ pub async fn run(
             }
         }
         TargetOs::Darwin => {
-            // Darwin cross-compile path: needs zig + Apple SDK; export SDKROOT.
-            // Both fetches independent — race them.
-            eprintln!("soldr prepare: dispatch=zigbuild+apple-sdk (parallel)");
-            let (zig_dir, sdk) = tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths))?;
+            // Darwin prepare exports the target-shaped Apple SDK for
+            // callers that need SDKROOT directly. Zig is still fetched
+            // here for explicit legacy/external cargo-zigbuild use; the
+            // blessed `soldr build` path injects clang/SDK env internally.
+            eprintln!("soldr prepare: dispatch=apple-sdk+legacy-zig (parallel)");
+            let (zig_dir, sdk) =
+                tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths, Some(&target)))?;
             eprintln!("soldr prepare: zig at {}", zig_dir.display());
             eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
             let sdk_str = sdk.to_string_lossy();
@@ -422,8 +427,8 @@ pub struct TargetAttrs {
     pub arch: TargetArch,
     pub os: TargetOs,
     pub abi: Option<TargetAbi>,
-    /// Needs `cargo-zigbuild` (and zig on PATH). True for cross-
-    /// compile to darwin or to a non-host linux flavor.
+    /// Needs zig on PATH for prepare-time legacy/external flows. True
+    /// for cross-compile to darwin or to a non-host linux flavor.
     pub needs_zig: bool,
     /// Needs the vendored MSVC CRT + Windows SDK cache extracted to
     /// `~/.cache/cargo-xwin/`. True for `*-pc-windows-msvc`.
@@ -708,13 +713,16 @@ fn expected_state_paths(
         });
     }
     if attrs.needs_apple_sdk {
-        let sdk = paths
-            .bin
-            .join("apple-sdk")
-            .join(crate::fetch::MANAGED_APPLE_SDK_VERSION);
+        let selection = crate::fetch::apple_sdk::resolve_apple_sdk_selection(Some(&attrs.triple));
+        let sdk = crate::fetch::apple_sdk::install_dir_for_selection(&paths, &selection);
+        let sdk_dir = crate::fetch::apple_sdk::sdk_dir_for_selection(&paths, &selection);
         entries.push(RestoreEntry {
-            label: format!("Apple SDK {}", crate::fetch::MANAGED_APPLE_SDK_VERSION),
-            present: sdk.join(".complete").is_file() || sdk.is_dir(),
+            label: format!(
+                "Apple SDK {}/{}",
+                selection.version,
+                selection.shape.catalogue_slug()
+            ),
+            present: sdk.join(".complete").is_file() && sdk_dir.is_dir(),
             path: sdk,
         });
     }

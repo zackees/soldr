@@ -7,7 +7,7 @@
 # successfully run:
 #
 #   soldr cargo build --target x86_64-unknown-linux-gnu
-#   soldr cargo zigbuild --target aarch64-apple-darwin
+#   soldr cargo zigbuild --target aarch64-apple-darwin  # legacy explicit path
 #   soldr cargo xwin build --target x86_64-pc-windows-msvc
 #
 # DO NOT add `build-essential`, `clang`, `lld`, `llvm`, `zig`, `rustup`,

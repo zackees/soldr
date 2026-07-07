@@ -4,10 +4,11 @@ name: Baseline Zero-Deps Docker
 #
 # Proves soldr is a genuine full bootstrapper: a Docker image with NO
 # pre-installed build toolchain (no clang, no lld, no zig, no llvm, no
-# rustup, no build-essential) can still do `soldr cargo zigbuild
-# --target *-apple-darwin` and `soldr cargo xwin build --target
-# aarch64-pc-windows-msvc` purely because soldr fetches everything it
-# needs.
+# rustup, no build-essential) can still exercise the explicit legacy
+# `soldr cargo zigbuild --target *-apple-darwin` path and `soldr cargo
+# xwin build --target aarch64-pc-windows-msvc` purely because soldr
+# fetches everything those commands need. The blessed macOS cross-build
+# path in normal CI is `soldr build --target *-apple-darwin`.
 #
 # Two variants run in parallel: debian:bookworm-slim (glibc) and
 # alpine:3.20 (musl) — glibc and musl have very different prebuilt-
@@ -311,12 +312,13 @@ jobs:
             exit "$status"
           fi
 
-      - name: Exercise 3 — cargo zigbuild for aarch64-apple-darwin
+      - name: Exercise 3 — legacy cargo zigbuild for aarch64-apple-darwin
         shell: bash
         run: |
           set -euo pipefail
           # Proves rust target install + Apple SDK auto-fetch (#862) +
-          # zig auto-fetch (#841) work together from a zero-deps image.
+          # zig auto-fetch (#841) still work for the explicit legacy
+          # cargo-zigbuild path from a zero-deps image.
           set +e
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
@@ -405,7 +407,7 @@ jobs:
             echo "  - soldr version"
             echo "  - soldr cargo check --target ${{ matrix.native_target }}"
             echo "  - soldr prepare --target aarch64-apple-darwin"
-            echo "  - soldr cargo zigbuild --target aarch64-apple-darwin"
+            echo "  - soldr cargo zigbuild --target aarch64-apple-darwin (legacy explicit path)"
             echo "  - soldr prepare --target x86_64-pc-windows-msvc"
             echo "  - soldr cargo xwin build --target x86_64-pc-windows-msvc"
           } >> "$GITHUB_STEP_SUMMARY"

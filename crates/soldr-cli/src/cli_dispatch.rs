@@ -79,10 +79,11 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 /// * `Some("xwin")` for `*-pc-windows-msvc` (unless `SOLDR_USE_LEGACY_XWIN`
 ///   is set in env — escape hatch for callers who want the plain
 ///   `cargo build` fallback)
-/// * `Some("zigbuild")` for `*-apple-darwin`, `*-unknown-linux-musl`,
+/// * `None` for `*-apple-darwin` by default; `Some("zigbuild")` only
+///   when `SOLDR_USE_LEGACY_ZIGBUILD` is set for diagnostic comparison.
+/// * `Some("zigbuild")` for `*-unknown-linux-musl`,
 ///   `x86_64-pc-windows-gnu`, and aarch64 `*-unknown-linux-gnu`
-///   (cross from x86_64), unless
-///   `SOLDR_USE_LEGACY_ZIGBUILD` is set
+///   (cross from x86_64), unless `SOLDR_USE_LEGACY_ZIGBUILD` is set.
 /// * `None` for everything else
 pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
     if !cfg!(target_os = "linux") {

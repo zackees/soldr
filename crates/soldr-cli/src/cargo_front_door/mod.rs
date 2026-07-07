@@ -497,7 +497,8 @@ pub(crate) async fn run_cargo_front_door(
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
     // PATH so cargo's subcommand dispatch finds it. Also collect transitive
-    // bootstrap env (e.g. SDKROOT for `cargo zigbuild --target *-apple-darwin`).
+    // bootstrap env (e.g. SDKROOT for explicit legacy
+    // `cargo zigbuild --target *-apple-darwin`).
     let subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
     let extra_bin_dirs = subcommand_tool_bootstrap.bin_dirs;
     let transitive_env_overrides = subcommand_tool_bootstrap.env;
@@ -576,8 +577,8 @@ pub(crate) async fn run_cargo_front_door(
             command.env(key, value);
         }
     }
-    // Apply transitive-bootstrap env overrides (e.g. SDKROOT for
-    // `cargo zigbuild --target *-apple-darwin`). These come from
+    // Apply transitive-bootstrap env overrides (e.g. SDKROOT for explicit
+    // legacy `cargo zigbuild --target *-apple-darwin`). These come from
     // `ensure_known_subcommand_tool` which calls into ensure_apple_sdk
     // / ensure_zig / etc. The functions themselves already gate on
     // `var_os` being unset before pushing, so just apply them.
@@ -1226,8 +1227,8 @@ async fn ensure_known_subcommand_tool(
 ///
 /// Registered bootstraps:
 ///   - `cargo zigbuild` → ensure `zig` is on PATH (PR #841).
-///   - `cargo zigbuild --target *-apple-darwin` → ensure Apple SDK on
-///     disk + set `SDKROOT` env (issue #854).
+///   - explicit legacy `cargo zigbuild --target *-apple-darwin` → ensure
+///     Apple SDK on disk + set `SDKROOT` env (issue #854).
 ///   - `cargo xwin build --target *-pc-windows-msvc` → ensure `clang`
 ///     shim on PATH that forces `--driver-mode=cl` (PR #849).
 async fn append_subcommand_transitive_bin_dirs(
@@ -1240,15 +1241,15 @@ async fn append_subcommand_transitive_bin_dirs(
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
         extra_bin_dirs.push(zig_dir.clone());
-        // `soldr cargo zigbuild --target *-apple-darwin` needs the
-        // Apple SDK on disk + `SDKROOT` exported so cargo-zigbuild's
+        // Explicit legacy `soldr cargo zigbuild --target *-apple-darwin`
+        // needs the Apple SDK on disk + `SDKROOT` exported so cargo-zigbuild's
         // mach-O linker can resolve `-framework IOKit` / etc.
         // Without this, every Rust dep with an Apple-framework
         // dependency (ring, sysinfo, dirs, …) fails to link.
         if let Some(triple) = extract_target_arg(args) {
             append_zigbuild_env_overrides(paths, triple, extra_env)?;
             if triple.ends_with("-apple-darwin") {
-                let sdk_dir = crate::fetch::ensure_apple_sdk(paths).await?;
+                let sdk_dir = crate::fetch::ensure_apple_sdk(paths, Some(triple)).await?;
                 // Don't clobber a caller-set SDKROOT — escape hatch
                 // for users with their own Xcode SDK or a custom one.
                 if std::env::var_os("SDKROOT").is_none() {

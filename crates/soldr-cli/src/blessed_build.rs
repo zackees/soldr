@@ -15,9 +15,9 @@
 //! * `x86_64-pc-windows-gnu` on Windows x64 hosts - managed
 //!   MinGW-w64 GCC from the soldr-toolchain catalogue, prepended to
 //!   PATH with target-scoped Cargo/cc-rs env.
-//! * `*-apple-darwin` — soldr's existing apple-sdk fetcher already
-//!   handles this via `soldr prepare`; the blessed `soldr build` path
-//!   just calls into [`crate::fetch::apple_sdk::ensure_apple_sdk`]
+//! * `*-apple-darwin` — target-aware Apple SDK provisioning plus
+//!   clang/SDK env injection through
+//!   [`crate::fetch::apple_sdk::ensure_apple_sdk`].
 //!
 //! Other targets (linux musl, linux gnu) get no sysroot prep — they
 //! work out-of-the-box with the host cargo + zigbuild flow.
@@ -39,8 +39,8 @@ use crate::core::{SoldrError, SoldrPaths};
 /// targets. Set to any non-empty value to trigger.
 pub const USE_LEGACY_XWIN_ENV_VAR: &str = "SOLDR_USE_LEGACY_XWIN";
 
-/// Env var that opts out of the blessed zigbuild prep flow. Reserved
-/// for future #1012 work; today's zigbuild path is unchanged.
+/// Env var that opts out of blessed Darwin prep and falls back to the
+/// explicit legacy cargo-zigbuild path.
 pub const USE_LEGACY_ZIGBUILD_ENV_VAR: &str = "SOLDR_USE_LEGACY_ZIGBUILD";
 
 /// What the blessed-build prep accomplished, returned to the caller
@@ -194,7 +194,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
 
         // Apple SDK fetch is the same code path `soldr prepare` uses,
         // so this is reuse rather than new logic.
-        match crate::fetch::apple_sdk::ensure_apple_sdk(paths).await {
+        match crate::fetch::apple_sdk::ensure_apple_sdk(paths, Some(target_triple)).await {
             Ok(sdk) => {
                 let sdk_str = sdk.to_string_lossy().into_owned();
                 prep.sdkroot = Some(sdk.clone());

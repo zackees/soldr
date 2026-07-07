@@ -35,11 +35,7 @@ pub fn build_env_block(rust_triple: &str) -> Result<BTreeMap<String, String>, So
     // catalogue row when SOLDR_APPLE_SDK_SHAPE / _VERSION are set.
     if rust_triple.ends_with("-apple-darwin") {
         let paths = SoldrPaths::new()?;
-        let sdk_dir = paths
-            .bin
-            .join("apple-sdk")
-            .join(crate::fetch::apple_sdk::MANAGED_APPLE_SDK_VERSION)
-            .join(crate::fetch::apple_sdk::MANAGED_APPLE_SDK_DIRNAME);
+        let sdk_dir = crate::fetch::apple_sdk::sdk_dir_for_target(&paths, Some(rust_triple));
         env.insert("SDKROOT".to_string(), sdk_dir.display().to_string());
     }
 
