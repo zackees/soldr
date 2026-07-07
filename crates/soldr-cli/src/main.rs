@@ -1022,6 +1022,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             //     rust-toolchain.toml + MSVC-on-Windows). maturin
             //     reads `CARGO` before falling back to bare PATH
             //     lookup. A caller-provided CARGO always wins.
+            //   * `RUSTC_WRAPPER` -> soldr's current binary when
+            //     caching is enabled and the caller did not already
+            //     choose a wrapper. Direct `soldr maturin build` then
+            //     gets the same embedded-zccache route as the PEP 517
+            //     backend. A caller-provided RUSTC_WRAPPER always
+            //     wins over this auto-injection.
             //   * managed cmake/ninja env (`CMAKE`,
             //     `CMAKE_GENERATOR=Ninja`, PATH prepends) via the same
             //     `inject_cmake_tooling` the blessed `soldr build`
@@ -1087,6 +1093,23 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     }
                 }
                 let paths = SoldrPaths::new()?;
+                command.env(
+                    crate::cache_lib::CACHE_ENABLED_ENV_VAR,
+                    crate::cache_lib::cache_enabled_env_value(cache_enabled),
+                );
+                if std::env::var_os("RUSTC_WRAPPER").is_none() {
+                    if cache_enabled {
+                        let wrapper_plan =
+                            crate::zccache::prepare_rustc_wrapper_plan(&paths, zccache_source)
+                                .await?;
+                        wrapper_plan.apply_to_command(&mut command)?;
+                    } else {
+                        command.env_remove("RUSTC_WRAPPER");
+                    }
+                } else if cache_enabled {
+                    crate::zccache::ZccacheChildEnv::from_current_process()?
+                        .apply_to_command(&mut command);
+                }
                 let mut prep = crate::blessed_build::BlessedPrep::default();
                 crate::blessed_build::inject_cmake_tooling(&paths, &mut prep).await;
                 // Mutate our own env (inherited by the child) so the
