@@ -80,7 +80,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     let mut prep = BlessedPrep::default();
 
     // ----------------------------- Windows MSVC ------------------------------
-    if target_triple.ends_with("-pc-windows-msvc") && !legacy_xwin_opt_out() {
+    if should_prepare_xwin_for_target(target_triple) {
         // Install the clang shim + set cc-rs env vars FIRST,
         // independent of xwin-cache state. The shim is what actually
         // fixes ring's hardcoded compiler override (build.rs:563);
@@ -671,6 +671,12 @@ fn legacy_xwin_opt_out() -> bool {
         .unwrap_or(false)
 }
 
+fn should_prepare_xwin_for_target(target_triple: &str) -> bool {
+    target_triple.ends_with("-pc-windows-msvc")
+        && cfg!(target_os = "linux")
+        && !legacy_xwin_opt_out()
+}
+
 fn legacy_zigbuild_opt_out() -> bool {
     std::env::var(USE_LEGACY_ZIGBUILD_ENV_VAR)
         .map(|v| !v.is_empty() && v != "0")
@@ -925,6 +931,70 @@ mod tests {
             Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
             None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
         }
+    });
+
+    crate::timed_test!(xwin_prep_is_linux_host_only, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
+
+        std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
+        assert_eq!(
+            should_prepare_xwin_for_target("x86_64-pc-windows-msvc"),
+            cfg!(target_os = "linux")
+        );
+        assert!(!should_prepare_xwin_for_target("x86_64-unknown-linux-musl"));
+
+        std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, "1");
+        assert!(!should_prepare_xwin_for_target("x86_64-pc-windows-msvc"));
+
+        match prev {
+            Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
+            None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
+        }
+    });
+
+    #[cfg(target_os = "windows")]
+    crate::timed_test!(native_windows_msvc_gets_no_xwin_prep, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_xwin = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);
+        let prev_sys = std::env::var_os(USE_LEGACY_VENDORED_SYS_ENV_VAR);
+        let prev_cmake = std::env::var_os(USE_SYSTEM_CMAKE_ENV_VAR);
+
+        std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR);
+        std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
+        std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, "1");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let target = if cfg!(target_arch = "aarch64") {
+            "aarch64-pc-windows-msvc"
+        } else {
+            "x86_64-pc-windows-msvc"
+        };
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(prepare(&paths, target));
+
+        match prev_xwin {
+            Some(v) => std::env::set_var(USE_LEGACY_XWIN_ENV_VAR, v),
+            None => std::env::remove_var(USE_LEGACY_XWIN_ENV_VAR),
+        }
+        match prev_sys {
+            Some(v) => std::env::set_var(USE_LEGACY_VENDORED_SYS_ENV_VAR, v),
+            None => std::env::remove_var(USE_LEGACY_VENDORED_SYS_ENV_VAR),
+        }
+        match prev_cmake {
+            Some(v) => std::env::set_var(USE_SYSTEM_CMAKE_ENV_VAR, v),
+            None => std::env::remove_var(USE_SYSTEM_CMAKE_ENV_VAR),
+        }
+
+        let prep = result.expect("native Windows MSVC target should not error");
+        assert!(prep.xwin_cache_dir.is_none());
+        assert!(prep.shim_path_dir.is_none());
+        assert!(prep.sdkroot.is_none());
+        assert!(prep.env.is_empty());
+        assert!(prep.path_dirs.is_empty());
+        assert!(prep.cargo_args.is_empty());
     });
 
     crate::timed_test!(linux_targets_get_no_xwin_or_sdk_prep, {
