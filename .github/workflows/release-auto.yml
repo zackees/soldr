@@ -422,7 +422,16 @@ jobs:
             --bin soldr-clang-shim
           driver="target/release/soldr"
           case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
+          soldr_build_args=()
+          case "$target" in
+            # Native MSVC release runners are already CPU-bound and have
+            # no warm cache. Keep soldr's toolchain/syslib prep, but avoid
+            # routing this one release build through the embedded zccache
+            # wrapper path that can hang the hosted Windows jobs.
+            *-pc-windows-msvc) soldr_build_args+=(--no-cache) ;;
+          esac
           "$driver" \
+            "${soldr_build_args[@]}" \
             build --release --locked --target "$target" \
             --package soldr-cli \
             --bin soldr \
