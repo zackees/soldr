@@ -443,5 +443,6 @@ mod tests {
         assert!(routes_through_embedded_zccache("rustc"));
         assert!(routes_through_embedded_zccache("clippy-driver"));
         assert!(!routes_through_embedded_zccache("rustfmt"));
+        assert!(!routes_through_embedded_zccache("rustdoc"));
     });
 }

@@ -558,13 +558,18 @@ pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
                  echo {3}\n\
                  exit /b 0\n\
                )\n\
+               if \"%~2\"==\"rustdoc\" (\n\
+                 echo {4}\n\
+                 exit /b 0\n\
+               )\n\
              )\n\
              echo unsupported rustup invocation %* 1>&2\n\
              exit /b 1\n",
             log_path.display(),
             tool_dir.join("cargo.cmd").display(),
             tool_dir.join("rustc.cmd").display(),
-            tool_dir.join("rustfmt.cmd").display()
+            tool_dir.join("rustfmt.cmd").display(),
+            tool_dir.join("rustdoc.cmd").display()
         )
     }
     #[cfg(not(windows))]
@@ -586,6 +591,10 @@ pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
                    echo \"{3}\"\n\
                    exit 0\n\
                    ;;\n\
+                 rustdoc)\n\
+                   echo \"{4}\"\n\
+                   exit 0\n\
+                   ;;\n\
                esac\n\
              fi\n\
              echo \"unsupported rustup invocation: $*\" >&2\n\
@@ -593,7 +602,8 @@ pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
             log_path.display(),
             tool_dir.join("cargo").display(),
             tool_dir.join("rustc").display(),
-            tool_dir.join("rustfmt").display()
+            tool_dir.join("rustfmt").display(),
+            tool_dir.join("rustdoc").display()
         )
     }
 }
@@ -972,6 +982,7 @@ pub(crate) fn install_fake_rustup_toolchain(
     let cargo = fake_script_path(&dir, "cargo");
     let rustc = fake_script_path(&dir, "rustc");
     let rustfmt = fake_script_path(&dir, "rustfmt");
+    let rustdoc = fake_script_path(&dir, "rustdoc");
     #[cfg(windows)]
     let rustup = dir.join("rustup.bat");
     #[cfg(not(windows))]
@@ -979,6 +990,7 @@ pub(crate) fn install_fake_rustup_toolchain(
     write_fake_script(&cargo, &fake_version_tool_script(log_path, "cargo"));
     write_fake_script(&rustc, &fake_version_tool_script(log_path, "rustc"));
     write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
+    write_fake_script(&rustdoc, &fake_version_tool_script(log_path, "rustdoc"));
     write_fake_script(&rustup, &fake_rustup_script(log_path, &dir));
     (rustup, cargo, rustc, rustfmt)
 }
