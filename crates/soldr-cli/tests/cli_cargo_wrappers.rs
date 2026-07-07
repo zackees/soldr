@@ -120,6 +120,45 @@ fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) ->
     }
 }
 
+fn fake_cargo_miri_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo miri wrapper=%RUSTC_WRAPPER% rustc=%RUSTC% cache=%SOLDR_CACHE_ENABLED% session=%ZCCACHE_SESSION_ID%>>\"{0}\"\n\
+             if \"%~1\"==\"miri\" (\n\
+               if defined RUSTC_WRAPPER (\n\
+                 call \"%RUSTC_WRAPPER%\" \"%RUSTC%\" --crate-name miri_demo --emit metadata,link\n\
+               ) else (\n\
+                 call \"%RUSTC%\" --crate-name miri_demo --emit metadata,link\n\
+               )\n\
+               exit /b %ERRORLEVEL%\n\
+             )\n\
+             echo unsupported fake cargo miri invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo miri wrapper=${{RUSTC_WRAPPER:-}} rustc=${{RUSTC:-}} cache=${{SOLDR_CACHE_ENABLED:-}} session=${{ZCCACHE_SESSION_ID:-}}\" >> \"{0}\"\n\
+             if [ \"$1\" = \"miri\" ]; then\n\
+               if [ -n \"${{RUSTC_WRAPPER:-}}\" ]; then\n\
+                 \"$RUSTC_WRAPPER\" \"$RUSTC\" --crate-name miri_demo --emit metadata,link\n\
+               else\n\
+                 \"$RUSTC\" --crate-name miri_demo --emit metadata,link\n\
+               fi\n\
+               exit $?\n\
+             fi\n\
+             echo \"unsupported fake cargo miri invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display()
+        )
+    }
+}
+
 fn install_fake_cargo_fmt_toolchain(
     log_path: &Path,
     source_path: &Path,
@@ -155,6 +194,12 @@ fn install_fake_cargo_doc_toolchain(
     );
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, cargo, rustc, rustdoc, zccache)
+}
+
+fn install_fake_cargo_miri_toolchain(log_path: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let (cargo, rustc, zccache) = install_fake_toolchain(log_path);
+    write_fake_script(&cargo, &fake_cargo_miri_script(log_path));
+    (cargo, rustc, zccache)
 }
 
 fn install_fake_direct_rustc_like_toolchain(
@@ -372,6 +417,36 @@ fn cargo_front_door_detects_build_after_global_cargo_options() {
         "build after global cargo options should still enable caching + wrap rustc: {log}"
     );
 }
+
+timed_test!(cargo_miri_keeps_inner_rustc_wrapped_by_policy, {
+    let cache_root = unique_temp_dir("cargo-miri-zccache-policy");
+    let log_path = cache_root.join("tool.log");
+    let (cargo, rustc, zccache) = install_fake_cargo_miri_toolchain(&log_path);
+    let output = isolated_soldr_command()
+        .args(["cargo", "miri"])
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env_remove("SOLDR_TARGET_CACHE_MODE")
+        .env_remove("SOLDR_BUILD_CACHE_MODE")
+        .output()
+        .expect("failed to run soldr cargo miri with fake tools");
+
+    assert!(
+        output.status.success(),
+        "cargo miri policy route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("cargo miri wrapper=") && log.contains("cache=1"),
+        "cargo miri should keep cache env and wrapper available: {log}"
+    );
+    assert_zccache_wrapped_rustc_compile(&log, &rustc, "miri_demo");
+});
 
 timed_test!(
     cargo_clippy_routes_workspace_clippy_driver_through_zccache,
