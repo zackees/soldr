@@ -72,12 +72,13 @@ jobs:
       - name: Verify managed gcc is on PATH
         shell: pwsh
         run: |
-          $gcc = (where.exe gcc | Select-Object -First 1)
+          $gcc = (where.exe gcc | Select-Object -First 1).Trim()
           if (-not $gcc) {
             throw "gcc was not found on PATH after soldr prepare"
           }
-          if ($gcc -notmatch "\\.soldr\\") {
-            throw "expected soldr-managed gcc first on PATH, got: $gcc"
+          $expected = Join-Path $env:MINGW_W64_GCC_BIN "gcc.exe"
+          if (-not [StringComparer]::OrdinalIgnoreCase.Equals($gcc, $expected)) {
+            throw "expected soldr-managed gcc first on PATH, got: $gcc; expected: $expected"
           }
           Write-Host "gcc=$gcc"
           gcc --version
