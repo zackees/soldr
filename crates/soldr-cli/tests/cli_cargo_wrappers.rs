@@ -13,6 +13,77 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"fmt=%RUSTFMT%\"\n\
+             if not defined RUSTFMT set \"fmt={2}\"\n\
+             echo cargo fmt rustfmt=%fmt% env_rustfmt=%RUSTFMT% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
+             if \"%~1\"==\"fmt\" (\n\
+               call \"%fmt%\" \"{1}\"\n\
+               exit /b %ERRORLEVEL%\n\
+             )\n\
+             echo unsupported fake cargo fmt invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustfmt.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             fmt=\"${{RUSTFMT:-{2}}}\"\n\
+             echo \"cargo fmt rustfmt=$fmt env_rustfmt=${{RUSTFMT:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
+             if [ \"$1\" = \"fmt\" ]; then\n\
+               \"$fmt\" \"{1}\"\n\
+               exit $?\n\
+             fi\n\
+             echo \"unsupported fake cargo fmt invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustfmt.display()
+        )
+    }
+}
+
+fn install_fake_cargo_fmt_toolchain(
+    log_path: &Path,
+    source_path: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let (rustup, cargo, rustc, rustfmt) = install_fake_rustup_toolchain(log_path);
+    let tool_dir = cargo
+        .parent()
+        .expect("fake cargo should live in a tool dir")
+        .to_path_buf();
+    let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(
+        &cargo,
+        &fake_cargo_fmt_script(log_path, source_path, &rustfmt),
+    );
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (rustup, cargo, rustc, rustfmt, zccache)
+}
+
+fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
+    let src_dir = cache_root.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
+    let source_path = src_dir.join("lib.rs");
+    fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
+    source_path
+}
+
+fn log_contains_cache_dir(log: &str, cache_root: &Path) -> bool {
+    let expected = cache_root.join("cache").join("zccache");
+    path_display_variants(&expected)
+        .iter()
+        .any(|path| log.contains(&format!("cache_dir={path}")))
+}
+
 #[test]
 fn cargo_front_door_uses_real_tool_overrides_before_path_probe() {
     let cache_root = unique_temp_dir("cargo-real-tool-overrides");
@@ -162,6 +233,224 @@ timed_test!(
         );
     }
 );
+
+#[test]
+fn rustfmt_file_invocation_routes_through_zccache_formatter() {
+    let cache_root = unique_temp_dir("rustfmt-zccache-formatter");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let zccache_dir = unique_temp_dir("rustfmt-zccache-bin");
+    let zccache = fake_script_path(&zccache_dir, "zccache");
+    write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+    let output = isolated_soldr_command()
+        .arg("rustfmt")
+        .arg(&source_path)
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", isolated_test_path())
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("ZCCACHE_CACHE_DIR")
+        .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run soldr rustfmt with fake tools");
+
+    assert!(
+        output.status.success(),
+        "rustfmt zccache route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        log.contains("zccache wrapper") && log.contains("rustfmt"),
+        "rustfmt file invocation should route through zccache: {log}"
+    );
+    assert!(
+        log_contains_cache_dir(&log, &cache_root),
+        "rustfmt zccache route should use soldr's managed zccache cache dir: {log}"
+    );
+    assert!(
+        path_display_variants(&source_path)
+            .iter()
+            .any(|path| log.contains(path)),
+        "rustfmt should receive the source file: {log}"
+    );
+}
+
+#[test]
+fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
+    for (label, prefix_args, zccache_disable, include_source) in [
+        ("no-cache", vec!["--no-cache", "rustfmt"], false, true),
+        ("zccache-disable", vec!["rustfmt"], true, true),
+        ("version", vec!["rustfmt", "--version"], false, false),
+    ] {
+        let cache_root = unique_temp_dir(&format!("rustfmt-bypass-{label}"));
+        let log_path = cache_root.join("tool.log");
+        let source_path = write_rustfmt_source(&cache_root);
+        let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+        let zccache_dir = unique_temp_dir(&format!("rustfmt-bypass-zccache-{label}"));
+        let zccache = fake_script_path(&zccache_dir, "zccache");
+        write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+        let mut command = isolated_soldr_command();
+        command.args(prefix_args);
+        if include_source {
+            command.arg(&source_path);
+        }
+        command
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env("PATH", isolated_test_path())
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("ZCCACHE_CACHE_DIR")
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR");
+        if zccache_disable {
+            command.env("ZCCACHE_DISABLE", "1");
+        } else {
+            command.env_remove("ZCCACHE_DISABLE");
+        }
+
+        let output = command
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run rustfmt bypass case {label}"));
+
+        assert!(
+            output.status.success(),
+            "rustfmt bypass case {label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&log_path).unwrap_or_else(|err| {
+            panic!(
+                "failed to read fake tool log for bypass case {label}: {err}\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        assert!(
+            log.contains("rustfmt"),
+            "rustfmt should still run directly in bypass case {label}: {log}"
+        );
+        assert!(
+            !log.contains("zccache wrapper"),
+            "rustfmt bypass case {label} should not route through zccache: {log}"
+        );
+    }
+}
+
+#[test]
+fn cargo_fmt_routes_rustfmt_through_zccache_formatter() {
+    for (label, args) in [
+        ("cargo-fmt", vec!["cargo", "fmt"]),
+        ("bare-fmt", vec!["fmt"]),
+    ] {
+        let cache_root = unique_temp_dir(&format!("cargo-fmt-zccache-{label}"));
+        let log_path = cache_root.join("tool.log");
+        let source_path = write_rustfmt_source(&cache_root);
+        let (rustup, cargo, rustc, _rustfmt, zccache) =
+            install_fake_cargo_fmt_toolchain(&log_path, &source_path);
+
+        let output = isolated_soldr_command()
+            .args(args)
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env("PATH", isolated_test_path())
+            .env_remove("RUSTFMT")
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("ZCCACHE_CACHE_DIR")
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .unwrap_or_else(|_| panic!("failed to run soldr {label} with fake tools"));
+
+        assert!(
+            output.status.success(),
+            "cargo fmt route {label} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+        assert!(
+            log.contains("cargo fmt rustfmt=") && log.contains("env_rustfmt="),
+            "fake cargo fmt should receive an explicit RUSTFMT shim: {log}"
+        );
+        assert!(
+            log.contains("zccache wrapper") && log.contains("rustfmt"),
+            "cargo fmt should route rustfmt through zccache: {log}"
+        );
+        assert!(
+            log_contains_cache_dir(&log, &cache_root),
+            "cargo fmt rustfmt shim should use soldr's managed zccache cache dir: {log}"
+        );
+    }
+}
+
+#[test]
+fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
+    let cache_root = unique_temp_dir("cargo-fmt-no-cache-direct");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, cargo, rustc, rustfmt, zccache) =
+        install_fake_cargo_fmt_toolchain(&log_path, &source_path);
+
+    let output = isolated_soldr_command()
+        .args(["--no-cache", "cargo", "fmt"])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", isolated_test_path())
+        .env_remove("RUSTFMT")
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("ZCCACHE_CACHE_DIR")
+        .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("failed to run no-cache cargo fmt with fake tools");
+
+    assert!(
+        output.status.success(),
+        "no-cache cargo fmt failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    assert!(
+        path_display_variants(&rustfmt)
+            .iter()
+            .any(|path| log.contains(&format!("rustfmt={path}"))),
+        "no-cache cargo fmt should fall back to direct rustfmt: {log}"
+    );
+    assert!(
+        !log.contains("zccache wrapper"),
+        "no-cache cargo fmt should not route rustfmt through zccache: {log}"
+    );
+}
 
 #[cfg(not(windows))]
 #[test]

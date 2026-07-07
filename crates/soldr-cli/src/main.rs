@@ -408,7 +408,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             std::process::exit(toolchain::run_toolchain_passthrough("rustc", &args)?);
         }
         Commands::Rustfmt { args } => {
-            std::process::exit(toolchain::run_toolchain_passthrough("rustfmt", &args)?);
+            std::process::exit(toolchain::run_rustfmt(&args, cache_enabled)?);
         }
         Commands::ClippyDriver { args } => {
             std::process::exit(toolchain::run_toolchain_passthrough(
