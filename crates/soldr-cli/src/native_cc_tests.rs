@@ -316,6 +316,55 @@ fn inject_wraps_target_specific_when_user_set_them() {
     assert_eq!(cxx_wrapped, expect_wrapped("/tmp/zccache", "clang++"));
 }
 
+#[test]
+fn target_wrapper_mirrors_snake_env_to_cc_rs_dash_key() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let triple = "x86_64-apple-darwin";
+    let dashed: &'static str = Box::leak(format!("CC_{triple}").into_boxed_str());
+    let snake: &'static str =
+        Box::leak(format!("CC_{}", triple.replace('-', "_")).into_boxed_str());
+    let _gd = EnvGuard::remove(dashed);
+    let _gs = EnvGuard::set(snake, "clang --target=x86_64-apple-darwin");
+
+    let mut cmd = std::process::Command::new("echo");
+    let wrapper = OsString::from("/tmp/zccache");
+    wrap_target_compiler_envs(&mut cmd, "CC_", triple, "cc", &wrapper, true);
+
+    let get = |key: &str| -> Option<OsString> {
+        cmd.get_envs()
+            .find(|(candidate, _)| *candidate == OsStr::new(key))
+            .and_then(|(_, value)| value.map(OsString::from))
+    };
+    let expected = expect_wrapped("/tmp/zccache", "clang --target=x86_64-apple-darwin");
+    assert_eq!(get(snake), Some(expected.clone()));
+    assert_eq!(get(dashed), Some(expected));
+}
+
+#[test]
+fn target_wrapper_honors_command_level_snake_override() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let triple = "aarch64-pc-windows-msvc";
+    let dashed: &'static str = Box::leak(format!("CC_{triple}").into_boxed_str());
+    let snake: &'static str =
+        Box::leak(format!("CC_{}", triple.replace('-', "_")).into_boxed_str());
+    let _gd = EnvGuard::remove(dashed);
+    let _gs = EnvGuard::remove(snake);
+
+    let mut cmd = std::process::Command::new("echo");
+    cmd.env(snake, "clang-cl");
+    let wrapper = OsString::from("/tmp/zccache");
+    wrap_target_compiler_envs(&mut cmd, "CC_", triple, "cc", &wrapper, true);
+
+    let get = |key: &str| -> Option<OsString> {
+        cmd.get_envs()
+            .find(|(candidate, _)| *candidate == OsStr::new(key))
+            .and_then(|(_, value)| value.map(OsString::from))
+    };
+    let expected = expect_wrapped("/tmp/zccache", "clang-cl");
+    assert_eq!(get(snake), Some(expected.clone()));
+    assert_eq!(get(dashed), Some(expected));
+}
+
 // -------------------------------------------------------------------------
 // soldr#1368 — inject uses the zccache-soldr shim + an absolute compiler
 // -------------------------------------------------------------------------

@@ -677,6 +677,7 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
     }
+    let native_cache_target = target::known_cargo_build_target(args, explicit_target.as_deref());
 
     target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
@@ -694,7 +695,7 @@ pub(crate) async fn run_cargo_front_door(
     // flags doesn't silently rewire the prefetch decision.
     let mut cache_plan =
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
-    cache_plan.apply_to_command(&mut command, explicit_target.as_deref())?;
+    cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
 
     cache_plan.prepare_rust_artifact_plan(
         &cargo,

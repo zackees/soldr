@@ -191,26 +191,29 @@ pub(crate) fn inject_native_cache_env(
         }
     }
 
-    // Target-specific variants. cc-rs reads these in order:
-    //   1. `<TOOL>_<target-as-snake>` (most specific)
-    //   2. `<TOOL>_<target-with-hyphens>` (less common; some forks)
-    //   3. `<TOOL>` (fallback)
-    // We wrap only the snake-case form, which is what current cc-rs
-    // documents; the hyphen form is a legacy path some forks honor.
-    // Refusing to wrap forms we don't recognize keeps the no-double-wrap
-    // invariant tight.
+    // Target-specific variants. cc-rs 1.2.x reads these in order:
+    //   1. `<TOOL>_<target-with-hyphens>`
+    //   2. `<TOOL>_<target-as-snake>`
+    //   3. `TARGET_<TOOL>` / `HOST_<TOOL>`
+    //   4. `<TOOL>` (fallback)
+    //
+    // Most shells cannot conveniently export names with hyphens, so soldr's
+    // own prep layers historically set only the snake form. Mirror the same
+    // wrapped compiler into both spellings so cc-rs's first lookup key does
+    // not fall through to generic `CC`.
     if let Some(triple) = target {
-        let snake = triple.replace('-', "_");
         for (prefix, default_compiler) in [
             ("CC_", default_c_compiler_for_target(triple)),
             ("CXX_", default_cxx_compiler_for_target(triple)),
         ] {
-            let var = format!("{prefix}{snake}");
-            if let Some(wrapped) =
-                wrap_compiler_env(&var, default_compiler, &wrapper, synthesize_default)
-            {
-                cargo.env(&var, wrapped);
-            }
+            wrap_target_compiler_envs(
+                cargo,
+                prefix,
+                triple,
+                default_compiler,
+                &wrapper,
+                synthesize_default,
+            );
         }
     }
 
@@ -230,6 +233,42 @@ pub(crate) fn inject_native_cache_env(
     }
 
     Ok(())
+}
+
+fn wrap_target_compiler_envs(
+    cargo: &mut std::process::Command,
+    prefix: &str,
+    triple: &str,
+    default_compiler: &str,
+    wrapper: &OsStr,
+    synthesize_default: bool,
+) {
+    let dashed = format!("{prefix}{triple}");
+    let snake = format!("{prefix}{}", triple.replace(['-', '.'], "_"));
+    let source = if std::env::var_os(&dashed).is_some() {
+        dashed.as_str()
+    } else {
+        snake.as_str()
+    };
+    let existing = command_env_value(cargo, &dashed)
+        .or_else(|| command_env_value(cargo, &snake))
+        .or_else(|| std::env::var_os(source));
+
+    if let Some(wrapped) =
+        wrap_compiler_value(existing, default_compiler, wrapper, synthesize_default)
+    {
+        cargo.env(&snake, &wrapped);
+        if dashed != snake {
+            cargo.env(&dashed, wrapped);
+        }
+    }
+}
+
+fn command_env_value(command: &std::process::Command, key: &str) -> Option<OsString> {
+    command
+        .get_envs()
+        .find(|(candidate, _)| *candidate == OsStr::new(key))
+        .and_then(|(_, value)| value.map(OsString::from))
 }
 
 /// Resolve a bare compiler name (`cc`, `c++`, `musl-gcc`, …) to an
@@ -297,8 +336,20 @@ fn wrap_compiler_env(
     wrapper: &OsStr,
     synthesize_default: bool,
 ) -> Option<OsString> {
-    let existing = std::env::var_os(var);
+    wrap_compiler_value(
+        std::env::var_os(var),
+        default_compiler,
+        wrapper,
+        synthesize_default,
+    )
+}
 
+fn wrap_compiler_value(
+    existing: Option<OsString>,
+    default_compiler: &str,
+    wrapper: &OsStr,
+    synthesize_default: bool,
+) -> Option<OsString> {
     // Decide what the underlying compiler is. Two cases:
     //   - var is unset → use the bare default (`cc` / `c++`) when the
     //     caller asked us to synthesize one; otherwise skip and let

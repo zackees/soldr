@@ -736,6 +736,42 @@ fn argvec(s: &str) -> Vec<String> {
 }
 
 #[test]
+fn known_cargo_build_target_uses_explicit_target_arg() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::remove("CARGO_BUILD_TARGET");
+
+    assert_eq!(
+        target::known_cargo_build_target(
+            &argvec("build --release --target x86_64-apple-darwin"),
+            None,
+        ),
+        Some("x86_64-apple-darwin".to_string()),
+    );
+    assert_eq!(
+        target::known_cargo_build_target(
+            &argvec("build --release --target=aarch64-apple-darwin"),
+            None,
+        ),
+        Some("aarch64-apple-darwin".to_string()),
+    );
+}
+
+#[test]
+fn known_cargo_build_target_prefers_defaulted_target_then_env() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::set("CARGO_BUILD_TARGET", "x86_64-unknown-linux-musl");
+
+    assert_eq!(
+        target::known_cargo_build_target(&argvec("build"), Some("x86_64-pc-windows-msvc")),
+        Some("x86_64-pc-windows-msvc".to_string()),
+    );
+    assert_eq!(
+        target::known_cargo_build_target(&argvec("build"), None),
+        Some("x86_64-unknown-linux-musl".to_string()),
+    );
+}
+
+#[test]
 fn extract_target_arg_handles_space_separated_form() {
     assert_eq!(
         extract_target_arg(&argvec(
