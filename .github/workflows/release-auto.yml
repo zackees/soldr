@@ -410,7 +410,12 @@ jobs:
           # driver and lets `soldr build` own all target-specific
           # toolchain dispatch. The workflow must not install or invoke
           # lower-level cross-build helpers directly.
-          cargo run --release --locked --package soldr-cli --bin soldr -- \
+          cargo build --release --locked --package soldr-cli \
+            --bin soldr \
+            --bin soldr-clang-shim
+          driver="target/release/soldr"
+          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
+          "$driver" \
             build --release --locked --target "$target" \
             --package soldr-cli \
             --bin soldr \
@@ -535,7 +540,7 @@ jobs:
           def read_constant(path: str, name: str) -> str:
               import re
               text = Path(path).read_text(encoding="utf-8")
-              m = re.search(rf'{name}\\s*:\\s*&str\\s*=\\s*"([^"]+)"', text)
+              m = re.search(rf'{name}\s*:\s*&str\s*=\s*"([^"]+)"', text)
               if not m:
                   raise SystemExit(f"could not read {name} from {path}")
               return m.group(1)
@@ -594,17 +599,12 @@ jobs:
           def extract_archive(archive: Path, extract_dir: Path) -> None:
               name = archive.name
               if name.endswith(".tar.zst"):
+                  driver = Path("target/release/soldr.exe" if os.name == "nt" else "target/release/soldr")
+                  if not driver.is_file():
+                      raise SystemExit(f"checked-out soldr driver missing at {driver}")
                   subprocess.run(
                       [
-                          "cargo",
-                          "run",
-                          "--release",
-                          "--locked",
-                          "--package",
-                          "soldr-cli",
-                          "--bin",
-                          "soldr",
-                          "--",
+                          str(driver),
                           "archive",
                           "--input",
                           str(archive),
@@ -695,6 +695,10 @@ jobs:
             crates/soldr-cli/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
             crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+          if [ -z "$crgx_version" ]; then
+            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-cli/src/fetch/mod.rs" >&2
+            exit 1
+          fi
           if [ -z "$cargo_chef_version" ]; then
             echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-cli/src/fetch/known_tools.rs" >&2
             exit 1
@@ -829,8 +833,9 @@ jobs:
           set -euo pipefail
           version="${{ needs.prepare.outputs.version }}"
           name="soldr-${version}-${{ matrix.target }}"
-          cargo run --release --locked --package soldr-cli --bin soldr -- \
-            archive --stage-dir dist/package --output "dist/${name}.tar.zst"
+          driver="target/release/soldr"
+          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
+          "$driver" archive --stage-dir dist/package --output "dist/${name}.tar.zst"
           ls -la "dist/${name}.tar.zst"
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
 
@@ -1251,8 +1256,9 @@ jobs:
           test -f "$archive" || { echo "missing archive: $archive" >&2; exit 1; }
 
           extract=$(mktemp -d)
-          cargo run --release --locked --package soldr-cli --bin soldr -- \
-            archive --input "$archive" --extract-dir "$extract"
+          driver="target/release/soldr"
+          case "$RUNNER_OS" in Windows) driver="target/release/soldr.exe" ;; esac
+          "$driver" archive --input "$archive" --extract-dir "$extract"
           echo "--- extracted layout ---"
           ls -la "$extract"
 

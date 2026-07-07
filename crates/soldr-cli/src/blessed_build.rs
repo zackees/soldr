@@ -99,7 +99,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // Put the managed LLVM binutils (clang-cl / lld-link / llvm-lib,
         // from zackees/clang-tool-chain-bins) on PATH so the AR /
         // linker picks below resolve without a host `apt install llvm`.
-        ensure_llvm_on_path(paths, &mut prep, target_triple).await;
+        let _ = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
         prep.env
             .push((format!("CC_{target_u}"), "clang".to_string()));
@@ -178,7 +178,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // resolve on a bare Linux runner. (msvc gets LLVM via its
         // downstream `cargo xwin` subcommand; darwin dispatches to plain
         // cargo, so without this it never gets llvm-ar — soldr#1309.)
-        ensure_llvm_on_path(paths, &mut prep, target_triple).await;
+        let managed_llvm_available = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
         // Apple SDK fetch is the same code path `soldr prepare` uses,
         // so this is reuse rather than new logic.
@@ -226,28 +226,40 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // through lld which knows Mach-O. The `--target=` flag
                 // is also needed in CFLAGS so the compiler test
                 // actually targets darwin (not the linux host).
+                let lld_flag = if managed_llvm_available {
+                    " -fuse-ld=lld"
+                } else {
+                    ""
+                };
                 let cflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
-                     -mmacosx-version-min=11.0 -fuse-ld=lld"
+                     -mmacosx-version-min=11.0{lld_flag}"
                 );
                 let cxxflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
-                     -mmacosx-version-min=11.0 -stdlib=libc++ -fuse-ld=lld"
+                     -mmacosx-version-min=11.0 -stdlib=libc++{lld_flag}"
                 );
-                let rustflags = format!(
+                let mut rustflags = format!(
                     "-C link-arg=--target={clang_arch_target} \
                      -C link-arg=-isysroot \
                      -C link-arg={sdk_str} \
-                     -C link-arg=-mmacosx-version-min=11.0 \
-                     -C link-arg=-fuse-ld=lld"
+                     -C link-arg=-mmacosx-version-min=11.0"
                 );
+                if managed_llvm_available {
+                    rustflags.push_str(" -C link-arg=-fuse-ld=lld");
+                }
+                let (ar_tool, ranlib_tool) = if managed_llvm_available {
+                    ("llvm-ar", "llvm-ranlib")
+                } else {
+                    ("ar", "ranlib")
+                };
                 prep.env
                     .push((format!("CC_{target_u}"), clang_base.clone()));
                 prep.env.push((format!("CXX_{target_u}"), clangxx_base));
                 prep.env
-                    .push((format!("AR_{target_u}"), "llvm-ar".to_string()));
+                    .push((format!("AR_{target_u}"), ar_tool.to_string()));
                 prep.env
-                    .push((format!("RANLIB_{target_u}"), "llvm-ranlib".to_string()));
+                    .push((format!("RANLIB_{target_u}"), ranlib_tool.to_string()));
                 prep.env.push((format!("CFLAGS_{target_u}"), cflags));
                 prep.env.push((format!("CXXFLAGS_{target_u}"), cxxflags));
                 prep.env.push((
@@ -684,7 +696,11 @@ fn legacy_zigbuild_opt_out() -> bool {
 ///
 /// Non-fatal on miss: logs and falls through so a host-provided LLVM
 /// still works if the catalogue asset is unavailable for the host arch.
-async fn ensure_llvm_on_path(paths: &SoldrPaths, prep: &mut BlessedPrep, target_triple: &str) {
+async fn ensure_llvm_on_path(
+    paths: &SoldrPaths,
+    prep: &mut BlessedPrep,
+    target_triple: &str,
+) -> bool {
     match crate::fetch::ensure_llvm_toolchain(paths).await {
         Ok(bin_dir) => {
             // Prepend so the managed clang/llvm-ar/lld win over any host
@@ -692,10 +708,12 @@ async fn ensure_llvm_on_path(paths: &SoldrPaths, prep: &mut BlessedPrep, target_
             // the caller and only shadows `clang`/`clang++`, so clang-cl
             // / lld-link / llvm-lib still resolve here.
             prep.path_dirs.insert(0, bin_dir);
+            true
         }
         Err(e) => {
             eprintln!("soldr build: managed LLVM toolchain unavailable for {target_triple}: {e}");
             eprintln!("soldr build: continuing — relying on any host clang/llvm/lld on PATH");
+            false
         }
     }
 }

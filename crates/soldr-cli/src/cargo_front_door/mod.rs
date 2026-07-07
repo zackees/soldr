@@ -1157,7 +1157,8 @@ async fn ensure_known_subcommand_tool(
         .unwrap_or(VersionSpec::Latest);
 
     eprintln!("soldr: fetching {}...", spec.crate_name);
-    let result = crate::fetch::fetch_tool_with_paths(spec.crate_name, &version, paths).await?;
+    let result =
+        crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths).await?;
 
     if result.cached {
         eprintln!(

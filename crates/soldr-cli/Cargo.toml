@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "CLI for soldr — instant tools, instant builds"
+publish = false
 
 [dependencies]
 # Folded in from former soldr-core / soldr-fetch / soldr-cache crates
@@ -56,7 +57,7 @@ zstd = { workspace = true }
 # soldr#1368: there is no longer a separately-downloaded managed zccache
 # binary — the `zccache` CLI ships as a compiled-in soldr-cli `[[bin]]`
 # (`src/bin/zccache_embedded.rs`) built from this same library dep.
-zccache = { path = "../../_vender/zccache/crates/zccache", default-features = false }
+zccache = { version = "1.12.14", path = "../../_vender/zccache/crates/zccache", default-features = false }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent
