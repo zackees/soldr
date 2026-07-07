@@ -16,8 +16,12 @@ jobs:
   running-process:
     name: running-process on x86_64-pc-windows-gnu
     runs-on: windows-2025
+    timeout-minutes: 240
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
+      # Cold Windows GNU builds can exceed soldr's default 30 minute
+      # cargo wait guard before Cargo reaches the next diagnostic line.
+      SOLDR_CARGO_WAIT_TIMEOUT_SECS: "7200"
       TARGET: x86_64-pc-windows-gnu
     steps:
       - name: Checkout soldr
