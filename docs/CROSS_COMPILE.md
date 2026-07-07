@@ -29,8 +29,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 
 | You want | Use |
 |---|---|
-| Linux → Windows GNU | `cargo-zigbuild` + `ziglang` ([Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended)) |
-| Windows → Windows GNU | managed MinGW-w64 GCC ([Section 1b](#1b-windows--windows-gnu-via-managed-mingw-w64-gcc)) |
+| Windows x64 → Windows GNU | managed MinGW-w64 GCC + GNU syslibs ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)) |
 | Linux → Windows MSVC | `cargo-xwin` ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)) |
 | **Windows -> Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
@@ -38,50 +37,47 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 
 ---
 
-## 1. Linux → Windows GNU via `cargo-zigbuild` (recommended)
+## 1. Windows x64 → Windows GNU via managed MinGW-w64 GCC
 
-`cargo-zigbuild` shells out to `zig cc` as the C linker, which means a single
-zig install gives you GNU-ABI Windows binaries from any Linux host without
-mingw-w64 or a glibc-version dance.
+On Windows x64 hosts, `soldr prepare --target x86_64-pc-windows-gnu`
+downloads a pinned WinLibs MinGW-w64 GCC bundle from the soldr-toolchain
+catalogue, prepends its `bin/` directory to `PATH`, and exports the
+target-scoped Cargo/cc-rs variables needed by build scripts:
+`CC_x86_64_pc_windows_gnu`, `CXX_x86_64_pc_windows_gnu`,
+`AR_x86_64_pc_windows_gnu`, `RANLIB_x86_64_pc_windows_gnu`,
+`WINDRES_x86_64_pc_windows_gnu`, and
+`CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER`.
 
-### `rust-toolchain.toml`
+The same prepare/build path materializes GNU-shaped managed syslib rows
+(`windows-x64-gnu`) for the C dependencies soldr injects: `zstd`,
+`sqlite`, `mimalloc`, `zlib-ng`, `lzma`, and `bzip2`. A Windows GNU build
+must not consume `windows-x64` MSVC syslibs.
 
-```toml
-[toolchain]
-channel = "1.94.1"
-targets = ["x86_64-pc-windows-gnu"]
+### Recipe
 
-[soldr.plugins]
-cargo-zigbuild = { version = "0.22", locked = true }
+```powershell
+rustup target add x86_64-pc-windows-gnu
+
+soldr prepare --target x86_64-pc-windows-gnu
+where gcc
+gcc --version
+
+soldr build --target x86_64-pc-windows-gnu --release
 ```
 
-### Bootstrap and build
+In GitHub Actions, pass `--github-env $env:GITHUB_ENV` so later steps
+inherit the same compiler/linker/pkg-config environment:
 
-```sh
-# Installs the pinned rust toolchain, adds the cross target,
-# and `cargo install`s cargo-zigbuild into soldr-managed $CARGO_HOME.
-soldr toolchain prepare
-
-# zig itself is not yet soldr-managed; install it system-wide
-# (or into a venv) so cargo-zigbuild can shell out to it.
-pip install ziglang
-
-# Cross-build through soldr (caches via zccache like a normal build).
-soldr cargo zigbuild --release --target x86_64-pc-windows-gnu
+```powershell
+soldr prepare --target x86_64-pc-windows-gnu --github-env $env:GITHUB_ENV
 ```
 
-### Notes
-
-- `pip install ziglang` is **currently a system-level install** — there is
-  no soldr-managed `zig` yet. This is tracked as a follow-up to the #329
-  exploration.
-- `cargo-zigbuild` is a normal `cargo-<sub>` extension, so `soldr cargo
-  zigbuild ...` flows through the same cargo front door (and the same
-  zccache wrapper) as `soldr cargo build`.
-- A pre-built fetch of `cargo-zigbuild` via `known_tools` is deferred:
-  upstream ships `.tar.xz` archives and soldr's extractor does not yet
-  handle that format. Until then, `[soldr.plugins]` performs a `cargo
-  install` on first `soldr toolchain prepare`.
+Scope is intentionally narrow: first-class managed MinGW provisioning
+currently supports only `x86_64-pc-windows-gnu` on Windows x64 hosts.
+`i686-pc-windows-gnu`, `aarch64-pc-windows-gnullvm`, and other Windows
+GNU-family targets are follow-ups. Linux hosts are not a blessed Windows
+GNU path in soldr; do not use `cargo-zigbuild` as a substitute for this
+target.
 
 ---
 
@@ -162,46 +158,9 @@ runs this exact recipe on a `windows-2022` runner. The
 `cross-build-from-windows-x64-linux` job in `ci.yml` exercises it on every
 PR with `target = x86_64-unknown-linux-gnu` as the regression test.
 
-[Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended) covers
-the Linux → Windows-GNU mirror of this recipe.
-
----
-
-## 1b. Windows → Windows GNU via managed MinGW-w64 GCC
-
-On Windows x64 hosts, `soldr prepare --target x86_64-pc-windows-gnu`
-downloads a pinned WinLibs MinGW-w64 GCC bundle from the soldr-toolchain
-catalogue, prepends its `bin/` directory to `PATH`, and exports the
-target-scoped Cargo/cc-rs variables needed by build scripts:
-`CC_x86_64_pc_windows_gnu`, `CXX_x86_64_pc_windows_gnu`,
-`AR_x86_64_pc_windows_gnu`, `RANLIB_x86_64_pc_windows_gnu`,
-`WINDRES_x86_64_pc_windows_gnu`, and
-`CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER`.
-
-### Recipe
-
-```powershell
-rustup target add x86_64-pc-windows-gnu
-
-soldr prepare --target x86_64-pc-windows-gnu
-where gcc
-gcc --version
-
-soldr build --target x86_64-pc-windows-gnu --release
-```
-
-In GitHub Actions, pass `--github-env $env:GITHUB_ENV` so later steps
-inherit the same compiler/linker environment:
-
-```powershell
-soldr prepare --target x86_64-pc-windows-gnu --github-env $env:GITHUB_ENV
-```
-
-Scope is intentionally narrow: first-class managed MinGW provisioning
-currently supports only `x86_64-pc-windows-gnu` on Windows x64 hosts.
-`i686-pc-windows-gnu`, `aarch64-pc-windows-gnullvm`, and other Windows
-GNU-family targets are follow-ups. Linux hosts should keep using
-[Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended).
+Windows GNU is intentionally handled by the managed MinGW path in
+[Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc), not by
+the Linux-hosted zigbuild flow.
 
 ---
 
@@ -349,7 +308,7 @@ the system bits on a GitHub-hosted runner.
 
 | Sub-item | Status |
 |---|---|
-| 1. First-class `zigbuild` path | Works via `[soldr.plugins]` ([Section 1](#1-linux--windows-gnu-via-cargo-zigbuild-recommended)). Pre-built fetch via `known_tools` deferred — needs `.tar.xz` extractor support. |
+| 1. Windows GNU managed MinGW path | Works via `soldr prepare` / `soldr build` on Windows x64 hosts ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)). |
 | 2. Documented `xwin` recipe | This file ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)). |
 | 3. Pinned host triples per project | Works via `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)). A unified `[soldr.cross-targets]` block is deferred. |
 

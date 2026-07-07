@@ -7,14 +7,14 @@
 # example's README references. Layout:
 #
 #   examples/docker-cross-win/
-#   ├── Dockerfile         # messense/cargo-zigbuild + 2 win targets
+#   ├── Dockerfile         # rust + cargo-xwin + 2 MSVC win targets
 #   ├── crate/             # tiny Rust source (only main.rs)
 #   ├── build.sh           # this file
 #   └── out/               # host-side artifact landing zone (gitignored)
 #
 # Usage:
 #   ./build.sh                                       # default x86_64
-#   ./build.sh --target aarch64-pc-windows-gnullvm   # windows ARM64
+#   ./build.sh --target aarch64-pc-windows-msvc      # windows ARM64
 #   ./build.sh --no-host-check                       # skip the run check
 #   ./build.sh --target <t> --no-host-check          # combined
 #
@@ -29,7 +29,6 @@ set -euo pipefail
 
 # Default: the canonical Microsoft ABI for Windows desktop x64.
 # Matches soldr's "MSVC on Windows always" design rule (CLAUDE.md).
-# The GNU and gnullvm lanes remain selectable via --target.
 target="x86_64-pc-windows-msvc"
 skip_host_check=0
 while [ $# -gt 0 ]; do
@@ -64,31 +63,19 @@ done
 # Map the target triple to:
 #   - the architecture string `file(1)` reports inside the PE header,
 #     used for the post-build arch sanity check
-#   - the cross-link toolchain we dispatch to. MSVC-ABI targets need
-#     cargo-xwin (clang-cl + lld-link + the MSVC SDK); the GNU/gnullvm
-#     family uses cargo-zigbuild (zig as the linker).
+#   - the cross-link toolchain we dispatch to. This legacy Docker
+#     example only covers MSVC-ABI targets through cargo-xwin.
 case "$target" in
-    x86_64-pc-windows-gnu*|x86_64-pc-windows-gnullvm)
-        expected_pe_arch="x86-64"; cross_tool="zigbuild" ;;
     x86_64-pc-windows-msvc)
         expected_pe_arch="x86-64"; cross_tool="xwin" ;;
-    i686-pc-windows-gnu*|i686-pc-windows-gnullvm)
-        expected_pe_arch="Intel 80386"; cross_tool="zigbuild" ;;
-    i686-pc-windows-msvc)
-        expected_pe_arch="Intel 80386"; cross_tool="xwin" ;;
-    aarch64-pc-windows-gnullvm)
-        expected_pe_arch="ARM64"; cross_tool="zigbuild" ;;
     aarch64-pc-windows-msvc)
         expected_pe_arch="ARM64"; cross_tool="xwin" ;;
     *)
         echo "ERROR: unsupported target $target." >&2
         echo "Supported by this script:" >&2
-        echo "  x86_64-pc-windows-gnu          (zigbuild)" >&2
+        echo "  x86_64-pc-windows-msvc         (xwin)" >&2
         echo "  aarch64-pc-windows-msvc        (xwin)" >&2
-        echo "  aarch64-pc-windows-gnullvm     (zigbuild)" >&2
-        echo "(other windows triples may work too — extend the Dockerfile's" >&2
-        echo "rustup target list and add a case here mapping to expected_pe_arch" >&2
-        echo "and either 'zigbuild' or 'xwin'.)" >&2
+        echo "Use soldr's managed MinGW path for x86_64-pc-windows-gnu." >&2
         exit 64
         ;;
 esac
@@ -119,19 +106,12 @@ echo "==> cross-compile in container for target: $target  (via cargo-$cross_tool
 # `docker run --rm`. The first xwin invocation downloads the SDK; every
 # subsequent one is offline.
 xwin_cache="$here/.xwin-cache"
-if [ "$cross_tool" = "xwin" ]; then
-    mkdir -p "$xwin_cache"
-    MSYS_NO_PATHCONV=1 docker run --rm \
-        -v "$crate_dir:/work" \
-        -v "$xwin_cache:/root/.cache/cargo-xwin" \
-        "$img" \
-        xwin build --target "$target" --release
-else
-    MSYS_NO_PATHCONV=1 docker run --rm \
-        -v "$crate_dir:/work" \
-        "$img" \
-        zigbuild --target "$target" --release
-fi
+mkdir -p "$xwin_cache"
+MSYS_NO_PATHCONV=1 docker run --rm \
+    -v "$crate_dir:/work" \
+    -v "$xwin_cache:/root/.cache/cargo-xwin" \
+    "$img" \
+    xwin build --target "$target" --release
 
 exe_in_crate="$crate_dir/target/$target/release/${bin_name}.exe"
 if [ ! -f "$exe_in_crate" ]; then

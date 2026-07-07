@@ -31,6 +31,7 @@ pub const MANAGED_MIMALLOC_VERSION: &str = "3.3.2";
 
 pub const MIMALLOC_TARGETS: &[(&str, &str)] = &[
     ("x86_64-pc-windows-msvc", "windows-x64"),
+    ("x86_64-pc-windows-gnu", "windows-x64-gnu"),
     ("aarch64-pc-windows-msvc", "windows-arm64"),
     ("x86_64-apple-darwin", "darwin-x64"),
     ("aarch64-apple-darwin", "darwin-arm64"),
@@ -74,6 +75,10 @@ mod tests {
         assert_eq!(
             catalogue_slug_for("x86_64-pc-windows-msvc"),
             Some("windows-x64")
+        );
+        assert_eq!(
+            catalogue_slug_for("x86_64-pc-windows-gnu"),
+            Some("windows-x64-gnu")
         );
         assert_eq!(
             catalogue_slug_for("aarch64-unknown-linux-gnu"),

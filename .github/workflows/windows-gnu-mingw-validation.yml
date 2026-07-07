@@ -41,6 +41,12 @@ jobs:
           toolchain: 1.94.1
           targets: ${{ env.TARGET }}
 
+      - name: Use isolated soldr cache
+        shell: pwsh
+        run: |
+          "SOLDR_CACHE_DIR=$env:RUNNER_TEMP\soldr-cache" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build soldr from checkout
         shell: pwsh
         env:
@@ -66,12 +72,13 @@ jobs:
       - name: Verify managed gcc is on PATH
         shell: pwsh
         run: |
-          $gcc = (where.exe gcc | Select-Object -First 1)
+          $gcc = (where.exe gcc | Select-Object -First 1).Trim()
           if (-not $gcc) {
             throw "gcc was not found on PATH after soldr prepare"
           }
-          if ($gcc -notmatch "\\.soldr\\") {
-            throw "expected soldr-managed gcc first on PATH, got: $gcc"
+          $expected = Join-Path $env:MINGW_W64_GCC_BIN "gcc.exe"
+          if (-not [StringComparer]::OrdinalIgnoreCase.Equals($gcc, $expected)) {
+            throw "expected soldr-managed gcc first on PATH, got: $gcc; expected: $expected"
           }
           Write-Host "gcc=$gcc"
           gcc --version
@@ -83,3 +90,23 @@ jobs:
           soldr build -p running-process --features daemon --target $env:TARGET --color never
           soldr build -p running-process-observer-interposer-windows --target $env:TARGET --color never
           soldr build -p running-process-observer --features embed-helper --target $env:TARGET --color never
+
+      - name: Verify GNU syslibs were materialized
+        shell: pwsh
+        run: |
+          $syslib = Join-Path $env:SOLDR_CACHE_DIR "bin\syslib"
+          $expected = @{
+            "zstd" = "1.5.7"
+            "sqlite" = "3.46.0"
+            "mimalloc" = "3.3.2"
+            "zlib-ng" = "2.2.5"
+            "lzma" = "5.6.3"
+            "bzip2" = "1.0.8"
+          }
+          foreach ($name in $expected.Keys) {
+            $stamp = Join-Path $syslib "$name\$($expected[$name])\windows-x64-gnu\.complete"
+            if (-not (Test-Path $stamp)) {
+              throw "expected soldr-managed GNU syslib was not materialized: $stamp"
+            }
+            Write-Host "verified $name $($expected[$name]) windows-x64-gnu"
+          }

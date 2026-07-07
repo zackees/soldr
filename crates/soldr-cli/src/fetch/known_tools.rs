@@ -540,9 +540,9 @@ mod tests {
 
     #[test]
     fn cargo_zigbuild_is_registered_for_cross_compile_docs_alignment() {
-        // docs/CROSS_COMPILE.md names cargo-zigbuild as the recommended
-        // Linux → Windows cross-compile front-end. The promise to auto-
-        // fetch it only holds if the registry has the entry.
+        // docs/CROSS_COMPILE.md still names cargo-zigbuild for Apple and
+        // Linux cross-compile lanes. The promise to auto-fetch it only
+        // holds if the registry has the entry.
         let spec = lookup_by_crate("cargo-zigbuild").expect("cargo-zigbuild must be registered");
         assert_eq!(spec.cargo_subcommand, Some("zigbuild"));
         assert_eq!(spec.binary_name, "cargo-zigbuild");
