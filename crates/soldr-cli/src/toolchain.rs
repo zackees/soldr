@@ -2,7 +2,7 @@
 //! `soldr rustup` front door, and `soldr toolchain install` / `prepare`.
 //! Extracted from `main.rs` as part of issue #339.
 
-use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, rustup_binary};
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -20,6 +20,86 @@ pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, &format!("{tool} passthrough"))?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// Run rustfmt directly for non-cacheable invocations, otherwise route
+/// cacheable file-formatting calls through zccache's formatter path.
+pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
+    if !cache_enabled || rustfmt_invocation_bypasses_format_cache(args) {
+        return run_toolchain_passthrough("rustfmt", args);
+    }
+
+    let rustfmt = resolve_toolchain_binary("rustfmt")?;
+    let zccache = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR)
+        .unwrap_or_else(crate::binaries::embedded_zccache_binary);
+    let mut command = std::process::Command::new(zccache);
+    command.arg(rustfmt);
+    command.args(args);
+    apply_implicit_toolchain_homes(&mut command);
+    apply_rustfmt_zccache_env(&mut command)?;
+    suppress_windows_console_window(&mut command);
+    let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
+    Ok(status.code().unwrap_or(1))
+}
+
+fn apply_rustfmt_zccache_env(command: &mut std::process::Command) -> Result<(), SoldrError> {
+    if std::env::var_os(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR).is_none() {
+        let paths = SoldrPaths::new()?;
+        let cache_dir = crate::zccache::managed_zccache_cache_dir(&paths)?;
+        std::fs::create_dir_all(&cache_dir)?;
+        command.env(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR, &cache_dir);
+        command.env(
+            crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
+            &cache_dir,
+        );
+    }
+    command.env(
+        crate::cache_lib::CACHE_ENABLED_ENV_VAR,
+        crate::cache_lib::cache_enabled_env_value(true),
+    );
+    crate::zccache::ZccacheChildEnv::from_current_process()?.apply_to_command(command);
+    Ok(())
+}
+
+fn rustfmt_invocation_bypasses_format_cache(args: &[String]) -> bool {
+    !rustfmt_invocation_has_source_file(args)
+}
+
+fn rustfmt_invocation_has_source_file(args: &[String]) -> bool {
+    const FLAGS_WITH_VALUE: &[&str] = &[
+        "--edition",
+        "--config-path",
+        "--config",
+        "--color",
+        "--print-config",
+        "--files-with-diff",
+        "--file-lines",
+    ];
+
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_str();
+        if matches!(arg, "--help" | "-h" | "--version" | "-V") {
+            return false;
+        }
+        if FLAGS_WITH_VALUE.contains(&arg) {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with("--") && arg.contains('=') {
+            index += 1;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        if arg.ends_with(".rs") {
+            return true;
+        }
+        index += 1;
+    }
+    false
 }
 
 /// Drop-in passthrough for `soldr rustup ...`.

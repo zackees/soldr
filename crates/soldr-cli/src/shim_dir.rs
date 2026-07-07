@@ -82,11 +82,22 @@ pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
     Ok(ShimDirGuard { path: dir_path })
 }
 
+pub(crate) fn shim_tool_path(dir: &Path, tool: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        dir.join(format!("{tool}.cmd"))
+    }
+    #[cfg(not(windows))]
+    {
+        dir.join(tool)
+    }
+}
+
 #[cfg(windows)]
 fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError> {
     // .cmd is the simplest cross-tool extension Windows resolves
     // automatically from PATH. Quoting the soldr path handles spaces.
-    let path = dir.join(format!("{tool}.cmd"));
+    let path = shim_tool_path(dir, tool);
     let body = format!("@echo off\r\n\"{}\" {} %*\r\n", soldr_bin.display(), tool);
     std::fs::write(&path, body).map_err(SoldrError::Io)
 }
@@ -94,7 +105,7 @@ fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError
 #[cfg(unix)]
 fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError> {
     use std::os::unix::fs::PermissionsExt;
-    let path = dir.join(tool);
+    let path = shim_tool_path(dir, tool);
     let body = format!(
         "#!/bin/sh\nexec \"{}\" {} \"$@\"\n",
         soldr_bin.display(),
@@ -139,10 +150,7 @@ mod tests {
     fn shim_dir_contains_every_shimmed_tool() {
         let guard = build_shim_dir().expect("build_shim_dir");
         for tool in SHIMMED_TOOLS {
-            #[cfg(windows)]
-            let expected = guard.path.join(format!("{tool}.cmd"));
-            #[cfg(not(windows))]
-            let expected = guard.path.join(tool);
+            let expected = shim_tool_path(&guard.path, tool);
             assert!(expected.is_file(), "missing shim at {}", expected.display());
         }
     }

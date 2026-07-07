@@ -347,6 +347,36 @@ fn scrub_inherited_soldr_workspace_env_for_child_cargo(command: &mut std::proces
     }
 }
 
+fn maybe_apply_rustfmt_zccache_shim(
+    command: &mut std::process::Command,
+    args: &[String],
+    cache_enabled: bool,
+) -> Option<crate::shim_dir::ShimDirGuard> {
+    if !cache_enabled
+        || first_cargo_subcommand(args) != Some("fmt")
+        || std::env::var_os("RUSTFMT").is_some()
+    {
+        return None;
+    }
+
+    match crate::shim_dir::build_shim_dir() {
+        Ok(guard) => {
+            command.env(
+                "RUSTFMT",
+                crate::shim_dir::shim_tool_path(&guard.path, "rustfmt"),
+            );
+            command.env(crate::shim_dir::SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR, "1");
+            Some(guard)
+        }
+        Err(err) => {
+            eprintln!(
+                "soldr warning: failed to build rustfmt shim for cargo fmt; rustfmt will run without zccache format caching: {err}"
+            );
+            None
+        }
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
@@ -640,6 +670,8 @@ pub(crate) async fn run_cargo_front_door(
         "PATH",
         disk::prepend_paths(&path_dirs, existing_path.as_deref())?,
     );
+    let _rustfmt_shim_guard =
+        maybe_apply_rustfmt_zccache_shim(&mut command, args, cache_enabled_for_cargo);
     let explicit_target = target::default_cargo_build_target(args)?;
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
