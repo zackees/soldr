@@ -281,6 +281,14 @@ fn cargo_args_are_not_cacheable_for_direct_clean() {
 }
 
 #[test]
+fn cargo_args_are_not_cacheable_for_direct_miri_driver_hooks() {
+    // Miri owns its own interpreter/runtime driver path. Soldr still
+    // exports RUSTC_WRAPPER to cache-enabled `cargo miri`, but does not
+    // run target/rust-plan build hooks around the Miri driver itself.
+    assert!(!cargo_args_are_cacheable(&argv(&["miri"])));
+}
+
+#[test]
 fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     // Issue #824 raised against `cargo zigbuild` specifically, but the
     // sub-agent audit of the known_tools registry surfaced six others

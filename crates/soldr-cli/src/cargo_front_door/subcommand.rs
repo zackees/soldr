@@ -194,6 +194,14 @@ fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
         return true;
     }
 
+    // `cargo miri` is intentionally not a build-side-hook verb. Miri
+    // owns a distinct interpreter/runtime driver path, so Soldr does
+    // not run target GC, rust-plan restore/save, or profile-debug
+    // defaults around it. The cargo front door still injects
+    // RUSTC_WRAPPER for every cache-enabled cargo invocation, so any
+    // rustc child Miri launches can route through Soldr/zccache without
+    // claiming the Miri driver itself is cacheable.
+
     // Managed cargo-<sub> ecosystem tool — consult the registry. The
     // `wraps_inner_cargo_build` flag is now the policy data: tools whose
     // outer invocation will spawn an inner cargo build (or otherwise
