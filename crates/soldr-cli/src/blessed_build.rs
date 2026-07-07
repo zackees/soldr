@@ -12,6 +12,9 @@
 //! * `*-pc-windows-msvc` — xwin-cache + clang shim (sidesteps the
 //!   ring 0.17.14:563 oversight described in [`crate::fetch::xwin_cache`]
 //!   and the `soldr-clang-shim` binary doc)
+//! * `x86_64-pc-windows-gnu` on Windows x64 hosts - managed
+//!   MinGW-w64 GCC from the soldr-toolchain catalogue, prepended to
+//!   PATH with target-scoped Cargo/cc-rs env.
 //! * `*-apple-darwin` — soldr's existing apple-sdk fetcher already
 //!   handles this via `soldr prepare`; the blessed `soldr build` path
 //!   just calls into [`crate::fetch::apple_sdk::ensure_apple_sdk`]
@@ -168,6 +171,15 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         }
     }
 
+    // --------------------------- Windows GNU GCC ----------------------------
+    if target_triple == crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TARGET
+        && crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc()
+    {
+        let mingw_root =
+            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(paths, target_triple).await?;
+        add_mingw_w64_gcc_env(&mut prep, target_triple, &mingw_root);
+    }
+
     // ------------------------------ Apple Darwin -----------------------------
     if target_triple.ends_with("-apple-darwin") && !legacy_zigbuild_opt_out() {
         // soldr is a bootstrapping tool: it must provision the cross
@@ -298,6 +310,19 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     inject_cmake_tooling(paths, &mut prep).await;
 
     Ok(prep)
+}
+
+fn add_mingw_w64_gcc_env(
+    prep: &mut BlessedPrep,
+    target_triple: &str,
+    mingw_root: &std::path::Path,
+) {
+    prep.path_dirs
+        .insert(0, crate::fetch::mingw_w64_gcc::bin_dir(mingw_root));
+    prep.env.extend(crate::fetch::mingw_w64_gcc::env_for_target(
+        mingw_root,
+        target_triple,
+    ));
 }
 
 /// Env var that opts out of the managed cmake/ninja injection and
@@ -949,6 +974,33 @@ mod tests {
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
         assert!(prep.cargo_args.is_empty());
+    });
+
+    crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path().join("mingw");
+        let mut prep = BlessedPrep::default();
+
+        add_mingw_w64_gcc_env(&mut prep, "x86_64-pc-windows-gnu", &root);
+
+        assert_eq!(
+            prep.path_dirs,
+            vec![crate::fetch::mingw_w64_gcc::bin_dir(&root)]
+        );
+        let names: std::collections::HashSet<&str> =
+            prep.env.iter().map(|(name, _)| name.as_str()).collect();
+        for required in [
+            "MINGW_W64_GCC_ROOT",
+            "MINGW_W64_GCC_BIN",
+            "CC_x86_64_pc_windows_gnu",
+            "CXX_x86_64_pc_windows_gnu",
+            "AR_x86_64_pc_windows_gnu",
+            "RANLIB_x86_64_pc_windows_gnu",
+            "WINDRES_x86_64_pc_windows_gnu",
+            "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER",
+        ] {
+            assert!(names.contains(required), "missing env var {required}");
+        }
     });
 
     crate::timed_test!(cmake_generator_sweep_removes_only_mismatches, {

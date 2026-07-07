@@ -51,6 +51,7 @@ fn rust_target_to_zig_target(triple: &str) -> Result<&'static str, SoldrError> {
         "aarch64-unknown-linux-gnu" => Ok("aarch64-linux-gnu"),
         "x86_64-unknown-linux-musl" => Ok("x86_64-linux-musl"),
         "aarch64-unknown-linux-musl" => Ok("aarch64-linux-musl"),
+        "x86_64-pc-windows-gnu" => Ok("x86_64-windows-gnu"),
         "x86_64-apple-darwin" => Ok("x86_64-macos-none"),
         "aarch64-apple-darwin" => Ok("aarch64-macos-none"),
         _ => Err(SoldrError::UnsupportedPlatform(format!(
@@ -169,6 +170,10 @@ mod tests {
         assert_eq!(
             rust_target_to_zig_target("x86_64-apple-darwin").unwrap(),
             "x86_64-macos-none"
+        );
+        assert_eq!(
+            rust_target_to_zig_target("x86_64-pc-windows-gnu").unwrap(),
+            "x86_64-windows-gnu"
         );
     });
 

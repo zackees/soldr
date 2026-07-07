@@ -80,7 +80,8 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 ///   is set in env — escape hatch for callers who want the plain
 ///   `cargo build` fallback)
 /// * `Some("zigbuild")` for `*-apple-darwin`, `*-unknown-linux-musl`,
-///   and aarch64 `*-unknown-linux-gnu` (cross from x86_64), unless
+///   `x86_64-pc-windows-gnu`, and aarch64 `*-unknown-linux-gnu`
+///   (cross from x86_64), unless
 ///   `SOLDR_USE_LEGACY_ZIGBUILD` is set
 /// * `None` for everything else
 pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
@@ -97,6 +98,13 @@ pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str>
 
     if target_triple.ends_with("-pc-windows-msvc") {
         return if legacy_xwin { None } else { Some("xwin") };
+    }
+    if target_triple == "x86_64-pc-windows-gnu" {
+        return if legacy_zigbuild {
+            None
+        } else {
+            Some("zigbuild")
+        };
     }
     // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
     // cargo-zigbuild. The blessed-build apple-darwin arm in

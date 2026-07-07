@@ -8,6 +8,9 @@
 //!   the vendored xwin MSVC CRT cache from soldr-toolchain assets to
 //!   `~/.cache/cargo-xwin/` so `cargo xwin build` skips the 15-min live
 //!   Microsoft download.
+//! - `x86_64-pc-windows-gnu` on Windows x64 -> ensure managed
+//!   MinGW-w64 GCC, prepend it to PATH, and export target-scoped
+//!   Cargo/cc-rs env. Other hosts keep using cargo-zigbuild + zig.
 //! - `*-apple-darwin` → ensure cargo-zigbuild + zig + Apple SDK; print
 //!   `SDKROOT=<path>` so the caller can plumb it into `$GITHUB_ENV`.
 //! - `*-unknown-linux-{gnu,musl}` (when triple ≠ host) → ensure
@@ -275,24 +278,60 @@ pub async fn run(
     // result.
     match attrs.os {
         TargetOs::Windows => {
-            // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
-            // toolchain (for clang/lld-link), and the MSVC CRT cache.
-            // Run LLVM and the xwin cache extract concurrently.
-            eprintln!("soldr prepare: dispatch=xwin (parallel)");
-            let llvm_fut = async {
-                match ensure_llvm_toolchain(&paths).await {
-                    Ok(p) => Ok::<PathBuf, SoldrError>(p),
-                    Err(SoldrError::UnsupportedPlatform(m)) => {
-                        eprintln!("soldr prepare: LLVM auto-bootstrap not supported on host: {m}");
-                        Ok(PathBuf::new())
+            match attrs.abi {
+                Some(TargetAbi::Msvc) => {
+                    // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
+                    // toolchain (for clang/lld-link), and the MSVC CRT cache.
+                    // Run LLVM and the xwin cache extract concurrently.
+                    eprintln!("soldr prepare: dispatch=xwin (parallel)");
+                    let llvm_fut = async {
+                        match ensure_llvm_toolchain(&paths).await {
+                            Ok(p) => Ok::<PathBuf, SoldrError>(p),
+                            Err(SoldrError::UnsupportedPlatform(m)) => {
+                                eprintln!(
+                                    "soldr prepare: LLVM auto-bootstrap not supported on host: {m}"
+                                );
+                                Ok(PathBuf::new())
+                            }
+                            Err(e) => Err(e),
+                        }
+                    };
+                    let xwin_fut = ensure_xwin_cache();
+                    let (llvm_dir, _) = tokio::try_join!(llvm_fut, xwin_fut)?;
+                    if !llvm_dir.as_os_str().is_empty() {
+                        eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
                     }
-                    Err(e) => Err(e),
                 }
-            };
-            let xwin_fut = ensure_xwin_cache();
-            let (llvm_dir, _) = tokio::try_join!(llvm_fut, xwin_fut)?;
-            if !llvm_dir.as_os_str().is_empty() {
-                eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
+                Some(TargetAbi::Gnu) => {
+                    if crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc() {
+                        eprintln!("soldr prepare: dispatch=mingw-w64-gcc");
+                        let mingw_root =
+                            crate::fetch::mingw_w64_gcc::ensure_mingw_w64_gcc(&paths, &target)
+                                .await?;
+                        let mingw_bin = crate::fetch::mingw_w64_gcc::bin_dir(&mingw_root);
+                        eprintln!("soldr prepare: MinGW-w64 GCC at {}", mingw_root.display());
+                        println!("MINGW_W64_GCC_ROOT={}", mingw_root.display());
+                        println!("MINGW_W64_GCC_BIN={}", mingw_bin.display());
+                        for (key, value) in
+                            crate::fetch::mingw_w64_gcc::env_for_target(&mingw_root, &target)
+                        {
+                            append_env(github_env_path, &key, &value)?;
+                        }
+                        let path_value = crate::fetch::mingw_w64_gcc::path_with_mingw_bin(
+                            &mingw_root,
+                            std::env::var_os("PATH"),
+                        )?;
+                        std::env::set_var("PATH", &path_value);
+                        append_env(github_env_path, "PATH", &path_value)?;
+                    } else {
+                        eprintln!(
+                            "soldr prepare: dispatch=zigbuild (managed MinGW-w64 GCC is scoped to Windows x64 hosts)"
+                        );
+                        let zig_dir = ensure_zig(&paths).await?;
+                        eprintln!("soldr prepare: zig at {}", zig_dir.display());
+                    }
+                }
+                _ => unreachable!("classify_target rejects Windows without a supported ABI"),
             }
         }
         TargetOs::Darwin => {
@@ -392,6 +431,9 @@ pub struct TargetAttrs {
     /// Needs the soldr-managed LLVM toolchain (clang / lld-link /
     /// llvm-lib). True for `*-pc-windows-msvc` (cargo-xwin uses it).
     pub needs_llvm_toolchain: bool,
+    /// Needs the soldr-managed MinGW-w64 GCC toolchain on supported
+    /// hosts. True for `x86_64-pc-windows-gnu`.
+    pub needs_mingw_w64_gcc: bool,
     /// Needs the vendored Apple SDK (IOKit/CoreFoundation/...).
     /// True for `*-apple-darwin`.
     pub needs_apple_sdk: bool,
@@ -563,13 +605,20 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
                 }
             )));
         }
-        // Disallow windows-{gnu,musl} (soldr only ships MSVC) and
-        // linux-msvc (nonsense).
-        (TargetOs::Windows, Some(TargetAbi::Gnu | TargetAbi::Musl))
-        | (TargetOs::Linux, Some(TargetAbi::Msvc)) => {
+        // Disallow windows-musl and linux-msvc. Windows GNU is
+        // supported for x86_64 only today; other Windows GNU-family
+        // triples (aarch64 gnullvm, i686 gnu, etc.) remain explicit
+        // follow-ups rather than silently accepting a no-op.
+        (TargetOs::Windows, Some(TargetAbi::Musl)) | (TargetOs::Linux, Some(TargetAbi::Msvc)) => {
             return Err(SoldrError::Other(format!(
                 "soldr prepare: unsupported os/abi combination in `{triple}` \
-                 (supported: windows-msvc, darwin, linux-gnu, linux-musl)"
+                 (supported: windows-msvc, x86_64 windows-gnu, darwin, linux-gnu, linux-musl)"
+            )));
+        }
+        (TargetOs::Windows, Some(TargetAbi::Gnu)) if arch != TargetArch::X86_64 => {
+            return Err(SoldrError::Other(format!(
+                "soldr prepare: unsupported Windows GNU target `{triple}` \
+                 (first-class MinGW provisioning currently supports only x86_64-pc-windows-gnu)"
             )));
         }
         _ => {}
@@ -580,8 +629,12 @@ pub fn classify_target(triple: &str) -> Result<TargetAttrs, SoldrError> {
         os,
         abi,
         needs_zig: matches!(os, TargetOs::Darwin | TargetOs::Linux),
-        needs_xwin_cache: matches!(os, TargetOs::Windows),
-        needs_llvm_toolchain: matches!(os, TargetOs::Windows),
+        needs_xwin_cache: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
+        needs_llvm_toolchain: matches!((os, abi), (TargetOs::Windows, Some(TargetAbi::Msvc))),
+        needs_mingw_w64_gcc: matches!(
+            (os, abi, arch),
+            (TargetOs::Windows, Some(TargetAbi::Gnu), TargetArch::X86_64)
+        ),
         needs_apple_sdk: matches!(os, TargetOs::Darwin),
     })
 }
@@ -599,7 +652,9 @@ fn expected_state_paths(
     paths: &SoldrPaths,
 ) -> Result<Vec<RestoreEntry>, SoldrError> {
     let mut entries = Vec::new();
-    if attrs.needs_zig {
+    let windows_gnu_uses_zig = attrs.needs_mingw_w64_gcc
+        && !crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc();
+    if attrs.needs_zig || windows_gnu_uses_zig {
         let zig_dir = paths
             .bin
             .join(format!("zig-{}", crate::fetch::MANAGED_ZIG_VERSION));
@@ -627,6 +682,29 @@ fn expected_state_paths(
             present: xwin.join("crt").join("include").is_dir()
                 && xwin.join("sdk").join("include").is_dir(),
             path: xwin,
+        });
+    }
+    if attrs.needs_mingw_w64_gcc
+        && crate::fetch::mingw_w64_gcc::current_host_supports_mingw_w64_gcc()
+    {
+        let mingw = paths
+            .bin
+            .join("syslib")
+            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TOOL)
+            .join(crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION)
+            .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_SLUG);
+        let package = mingw.join("package");
+        entries.push(RestoreEntry {
+            label: format!(
+                "MinGW-w64 GCC {}",
+                crate::fetch::mingw_w64_gcc::MANAGED_MINGW_W64_GCC_VERSION
+            ),
+            present: mingw.join(".complete").is_file()
+                && package
+                    .join("bin")
+                    .join(crate::fetch::mingw_w64_gcc::exe_name("gcc"))
+                    .is_file(),
+            path: package,
         });
     }
     if attrs.needs_apple_sdk {
@@ -688,7 +766,7 @@ fn num_cpus_for_zstd() -> u32 {
 /// accidentally pull in zccache binaries or anything unrelated.
 fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     let mut roots = Vec::new();
-    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>}
+    // ~/.soldr/bin/{zig-<ver>,llvm-<ver>,apple-sdk/<ver>,syslib/mingw-w64-gcc}
     if let Ok(entries) = std::fs::read_dir(&paths.bin) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -697,6 +775,13 @@ fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
                 roots.push(entry.path());
             }
         }
+    }
+    let mingw_root = paths
+        .bin
+        .join("syslib")
+        .join(crate::fetch::mingw_w64_gcc::MINGW_W64_GCC_TOOL);
+    if mingw_root.is_dir() {
+        roots.push(mingw_root);
     }
     // xwin cache (cargo-xwin's default location, mirrors `xwin_cache_root`).
     let xwin_root = xwin_cache_root()?;
@@ -713,7 +798,7 @@ fn save_prepare_state(archive: &Path, paths: &SoldrPaths) -> Result<(), SoldrErr
     let home = crate::core::home_dir()?;
     let roots = prepare_state_roots(paths)?;
     if roots.is_empty() {
-        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/xwin dirs found)");
+        eprintln!("soldr prepare: nothing to save (no zig/llvm/apple-sdk/mingw/xwin dirs found)");
         return Ok(());
     }
 
@@ -1206,6 +1291,7 @@ mod tests {
         assert_eq!(attrs.abi, Some(TargetAbi::Msvc));
         assert!(attrs.needs_xwin_cache);
         assert!(attrs.needs_llvm_toolchain);
+        assert!(!attrs.needs_mingw_w64_gcc);
         assert!(!attrs.needs_zig);
         assert!(!attrs.needs_apple_sdk);
 
@@ -1267,13 +1353,28 @@ mod tests {
         assert!(err.to_string().contains("unrecognized target triple shape"));
     });
 
-    crate::timed_test!(classify_target_rejects_windows_gnu_abi, {
-        // soldr supports MSVC only on Windows; gnu (mingw) is not in
-        // scope so the classifier rejects it via the cross-component
-        // os/abi constraint after fuzzy matching the components.
-        let err = classify_target("x86_64-pc-windows-gnu").expect_err("gnu abi on windows");
+    crate::timed_test!(classify_target_windows_gnu_x64, {
+        let attrs = classify_target("x86_64-pc-windows-gnu").expect("classify mingw");
+        assert_eq!(attrs.arch, TargetArch::X86_64);
+        assert_eq!(attrs.os, TargetOs::Windows);
+        assert_eq!(attrs.abi, Some(TargetAbi::Gnu));
+        assert!(attrs.needs_mingw_w64_gcc);
+        assert!(!attrs.needs_xwin_cache);
+        assert!(!attrs.needs_llvm_toolchain);
+        assert!(!attrs.needs_zig);
+        assert!(!attrs.needs_apple_sdk);
+    });
+
+    crate::timed_test!(classify_target_rejects_non_x64_windows_gnu_scope, {
+        let err = classify_target("aarch64-pc-windows-gnu").expect_err("non-x64 gnu out of scope");
         assert!(
-            err.to_string().contains("unsupported os/abi combination"),
+            err.to_string().contains("only x86_64-pc-windows-gnu"),
+            "msg: {err}"
+        );
+
+        let err = classify_target("x86_64-pc-windows-gnullvm").expect_err("gnullvm out of scope");
+        assert!(
+            err.to_string().contains("did not match any known abi"),
             "msg: {err}"
         );
     });
@@ -1388,6 +1489,7 @@ mod tests {
             triple,
             "x86_64-pc-windows-msvc"
                 | "aarch64-pc-windows-msvc"
+                | "x86_64-pc-windows-gnu"
                 | "x86_64-apple-darwin"
                 | "aarch64-apple-darwin"
                 | "x86_64-unknown-linux-gnu"
@@ -1428,7 +1530,12 @@ mod tests {
                     }
                     if triple.contains("-windows-") {
                         assert_eq!(attrs.os, TargetOs::Windows, "{triple}");
-                        assert_eq!(attrs.abi, Some(TargetAbi::Msvc), "{triple}");
+                        let expected_abi = if triple.ends_with("-gnu") {
+                            TargetAbi::Gnu
+                        } else {
+                            TargetAbi::Msvc
+                        };
+                        assert_eq!(attrs.abi, Some(expected_abi), "{triple}");
                     } else if triple.contains("-darwin") {
                         assert_eq!(attrs.os, TargetOs::Darwin, "{triple}");
                         assert_eq!(attrs.abi, None, "{triple}");
@@ -1470,8 +1577,8 @@ mod tests {
         }
         // Sanity: confirm we actually exercised the supported set.
         assert_eq!(
-            supported_ok, 8,
-            "expected all 8 soldr-supported triples to classify Ok"
+            supported_ok, 9,
+            "expected all 9 soldr-supported triples to classify Ok"
         );
     });
 }
