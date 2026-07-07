@@ -43,6 +43,17 @@ pub struct TargetTriple {
 }
 
 impl TargetTriple {
+    /// Detect the host triple for the currently-running soldr binary.
+    ///
+    /// Unlike [`TargetTriple::detect`], this intentionally ignores project
+    /// target overrides from `.cargo/config.toml` or `rust-toolchain.toml`.
+    /// Host-executed tools fetched by soldr, such as `cargo-zigbuild`, must
+    /// match the runner that will execute them, not the Rust target being
+    /// built.
+    pub fn host() -> Result<Self, SoldrError> {
+        Self::from_triple(&compile_time_fallback_triple()?)
+    }
+
     /// Detect the active target for the current project context.
     pub fn detect() -> Result<Self, SoldrError> {
         let current_dir = std::env::current_dir().ok();
@@ -282,6 +293,29 @@ mod tests {
         assert_eq!(t.triple(), "aarch64-apple-darwin");
         assert_eq!(t.archive_ext(), "tar.gz");
         assert_eq!(t.binary_ext(), "");
+    }
+
+    #[test]
+    fn host_ignores_project_target_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_dir = dir.path().join(".cargo");
+        std::fs::create_dir_all(&cargo_dir).unwrap();
+        let override_triple = if cfg!(target_os = "windows") {
+            "aarch64-unknown-linux-musl"
+        } else {
+            "x86_64-pc-windows-msvc"
+        };
+        std::fs::write(
+            cargo_dir.join("config.toml"),
+            format!("[build]\ntarget = \"{override_triple}\"\n"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            TargetTriple::detect_in_dir(dir.path()).unwrap().triple(),
+            override_triple
+        );
+        assert_ne!(TargetTriple::host().unwrap().triple(), override_triple);
     }
 
     #[cfg(target_os = "windows")]

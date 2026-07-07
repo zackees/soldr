@@ -197,6 +197,29 @@ pub async fn fetch_tool_with_paths(
     version: &VersionSpec,
     paths: &SoldrPaths,
 ) -> Result<FetchResult, SoldrError> {
+    let target = TargetTriple::detect()?;
+    fetch_tool_for_target_with_paths(crate_name, version, paths, target).await
+}
+
+/// Fetch a tool binary for the currently-running host, ignoring any project
+/// build target override. This is for host-executed tools such as Cargo
+/// subcommands; `cargo-zigbuild` must match the runner that executes it even
+/// when the Rust build target is `aarch64-unknown-linux-musl`.
+pub(crate) async fn fetch_tool_for_host_with_paths(
+    crate_name: &str,
+    version: &VersionSpec,
+    paths: &SoldrPaths,
+) -> Result<FetchResult, SoldrError> {
+    let target = TargetTriple::host()?;
+    fetch_tool_for_target_with_paths(crate_name, version, paths, target).await
+}
+
+async fn fetch_tool_for_target_with_paths(
+    crate_name: &str,
+    version: &VersionSpec,
+    paths: &SoldrPaths,
+    target: TargetTriple,
+) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
 
     // Bundled single-binary escape hatches: when the npm shim or
@@ -251,12 +274,22 @@ pub async fn fetch_tool_with_paths(
             &effective_version,
             spec.tag_prefix,
             paths,
+            target,
         )
         .await;
     }
 
     let repo = github::resolve_repo(crate_name).await?;
-    fetch_repo_binary_with_paths(crate_name, &[crate_name], &repo, version, None, paths).await
+    fetch_repo_binary_with_paths(
+        crate_name,
+        &[crate_name],
+        &repo,
+        version,
+        None,
+        paths,
+        target,
+    )
+    .await
 }
 
 /// Resolve a bundled single-binary tool from a local directory env var.
@@ -311,12 +344,21 @@ pub(super) async fn fetch_repo_binary_with_paths(
     version: &VersionSpec,
     tag_prefix: Option<&str>,
     paths: &SoldrPaths,
+    target: TargetTriple,
 ) -> Result<FetchResult, SoldrError> {
     let mut backoff = REPO_FETCH_INITIAL_BACKOFF;
     let mut attempt: u32 = 1;
     loop {
-        match fetch_repo_binary_once(cache_name, binary_names, repo, version, tag_prefix, paths)
-            .await
+        match fetch_repo_binary_once(
+            cache_name,
+            binary_names,
+            repo,
+            version,
+            tag_prefix,
+            paths,
+            &target,
+        )
+        .await
         {
             Ok(result) => return Ok(result),
             Err(err) if attempt < REPO_FETCH_ATTEMPTS && is_transient_fetch_error(&err) => {
@@ -354,9 +396,9 @@ async fn fetch_repo_binary_once(
     version: &VersionSpec,
     tag_prefix: Option<&str>,
     paths: &SoldrPaths,
+    target: &TargetTriple,
 ) -> Result<FetchResult, SoldrError> {
     paths.ensure_dirs()?;
-    let target = TargetTriple::detect()?;
     if binary_names.is_empty() {
         return Err(SoldrError::Other(format!(
             "no binary names configured for {cache_name}"
@@ -364,7 +406,7 @@ async fn fetch_repo_binary_once(
     }
 
     if let VersionSpec::Exact(ref v) = version {
-        if let Some(r) = check_cache(paths, cache_name, v, binary_names, &target)? {
+        if let Some(r) = check_cache(paths, cache_name, v, binary_names, target)? {
             return Ok(r);
         }
     }
@@ -387,7 +429,7 @@ async fn fetch_repo_binary_once(
                 repo,
                 tag,
                 tag_prefix,
-                &target,
+                target,
             )
             .await?
             {
@@ -413,7 +455,7 @@ async fn fetch_repo_binary_once(
                 repo,
                 tag,
                 tag_prefix,
-                &target,
+                target,
             )
             .await?
             {
@@ -424,13 +466,13 @@ async fn fetch_repo_binary_once(
 
     let release = github::fetch_release(repo, version, tag_prefix)
         .await
-        .map_err(|err| annotate_release_fetch_error(err, repo, version, &target))?;
+        .map_err(|err| annotate_release_fetch_error(err, repo, version, target))?;
 
-    if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, &target)? {
+    if let Some(r) = check_cache(paths, cache_name, &release.version, binary_names, target)? {
         return Ok(r);
     }
 
-    let asset = github::match_asset(&release.assets, &target).map_err(|err| match err {
+    let asset = github::match_asset(&release.assets, target).map_err(|err| match err {
         SoldrError::UnsupportedPlatform(message) => SoldrError::UnsupportedPlatform(format!(
             "asset matching failed for {}/{} version {} target {}: {message}",
             repo.owner,
@@ -446,7 +488,7 @@ async fn fetch_repo_binary_once(
         cache_name,
         &release.version,
         &asset.download_url,
-        &target,
+        target,
         binary_names,
     )
     .await?;
