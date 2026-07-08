@@ -10,9 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::cache_lib::save::{
-    load, read_manifest_from_archive, save, save_delta, CacheLayerKind, LoadOptions,
-    SaveDeltaOptions, SaveOptions, DEFAULT_ZSTD_LEVEL,
+    ci_profile_excludes_cache_path, load, read_manifest_from_archive, save, save_delta,
+    CacheLayerKind, LoadOptions, SaveDeltaOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
 };
+use soldr_cli::timed_test;
 
 fn write(path: &Path, content: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -84,6 +85,41 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf, PathBuf) {
     (dir, ws, cache, archive)
 }
 
+timed_test!(
+    ci_profile_exclusion_filter_keeps_cache_payloads_and_drops_runtime_noise,
+    {
+        for rel in [
+            "logs/session.log",
+            "debug/logs/session.jsonl",
+            "tmp/extracting.bin",
+            "scratch/retry.tmp",
+            "server.sock",
+            "compile.lock",
+            "zccache/runtime-binaries/zccache.exe",
+            "bin/soldr.exe",
+            "sdk/x86_64-pc-windows-msvc/crt/include/windows.h",
+        ] {
+            assert!(
+                ci_profile_excludes_cache_path(Path::new(rel)),
+                "ci profile should exclude {rel}"
+            );
+        }
+
+        for rel in [
+            "ab/cd/object-1.bin",
+            "index.json",
+            "debug/deps/libsoldr_cli.rlib",
+            "release/build/ring/out/libring_core.a",
+            ".fingerprint/soldr-cli/dep-bin-soldr",
+        ] {
+            assert!(
+                !ci_profile_excludes_cache_path(Path::new(rel)),
+                "ci profile should keep cache payload {rel}"
+            );
+        }
+    }
+);
+
 #[test]
 fn roundtrip_basic_mtime_restoration() {
     let (_g, ws, cache, archive) = fixture();
@@ -98,6 +134,7 @@ fn roundtrip_basic_mtime_restoration() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
     assert!(
@@ -162,6 +199,74 @@ fn roundtrip_basic_mtime_restoration() {
     );
 }
 
+timed_test!(
+    ci_profile_save_excludes_noise_but_roundtrips_cache_payloads,
+    {
+        let (_g, ws, cache, archive) = fixture();
+        write(&cache.join("logs/session.log"), b"runtime log");
+        write(&cache.join("tmp/inflight.tmp"), &[0xDD; 512]);
+        write(&cache.join("daemon.sock"), b"socket placeholder");
+        write(&cache.join("sdk/toolchain/bin/clang"), b"managed tool");
+        write(
+            &cache.join("zccache/runtime-binaries/zccache"),
+            b"runtime binary",
+        );
+
+        let report = save(&SaveOptions {
+            workspace: Some(&ws),
+            cache_dir: Some(&cache),
+            out: &archive,
+            zstd_level: DEFAULT_ZSTD_LEVEL,
+            threads: None,
+            mtimes_only: false,
+            profile: SaveProfile::Ci,
+        })
+        .expect("ci profile save ok");
+        assert_eq!(report.profile, SaveProfile::Ci);
+        assert_eq!(report.cache_files, 4, "only fixture cache payloads remain");
+        assert_eq!(report.excluded_files, 5);
+        assert!(report.excluded_bytes > 0);
+
+        let paths = archive_paths(&archive);
+        assert!(paths.contains(&"cache/ab/cd/object-1.bin".to_string()));
+        assert!(paths.contains(&"cache/index.json".to_string()));
+        assert!(!paths.iter().any(|p| p.contains("logs/session.log")));
+        assert!(!paths.iter().any(|p| p.contains("tmp/inflight.tmp")));
+        assert!(!paths.iter().any(|p| p.contains("daemon.sock")));
+        assert!(!paths.iter().any(|p| p.contains("sdk/toolchain/bin/clang")));
+        assert!(!paths.iter().any(|p| p.contains("runtime-binaries/zccache")));
+
+        let manifest = read_manifest_from_archive(&archive).expect("manifest");
+        assert_eq!(manifest.cache_file_count, 4);
+        assert!(manifest
+            .cache_files
+            .iter()
+            .all(|entry| !entry.path.contains("logs/") && !entry.path.contains("tmp/")));
+
+        fs::remove_dir_all(&cache).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        let lreport = load(&LoadOptions {
+            archive: &archive,
+            cache_dir: Some(&cache),
+            workspace: Some(&ws),
+            threads: None,
+            mtimes_only: false,
+            profile_extract: false,
+            auto_defender_exclude: false,
+        })
+        .expect("ci profile load ok");
+
+        assert_eq!(lreport.cache_files_restored, 4);
+        assert!(cache.join("ab/cd/object-1.bin").exists());
+        assert!(cache.join("index.json").exists());
+        assert!(!cache.join("logs/session.log").exists());
+        assert!(!cache.join("tmp/inflight.tmp").exists());
+        assert!(!cache.join("daemon.sock").exists());
+        assert!(!cache.join("sdk/toolchain/bin/clang").exists());
+        assert!(!cache.join("zccache/runtime-binaries/zccache").exists());
+    }
+);
+
 #[test]
 fn save_and_delta_support_long_cache_paths() {
     let (g, ws, cache, archive) = fixture();
@@ -182,6 +287,7 @@ fn save_and_delta_support_long_cache_paths() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save accepts long cache archive paths");
     assert!(
@@ -199,6 +305,7 @@ fn save_and_delta_support_long_cache_paths() {
         out: &delta_archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
+        profile: SaveProfile::Full,
     })
     .expect("delta save accepts long cache archive paths");
     assert!(
@@ -217,6 +324,7 @@ fn load_skips_content_changed_files() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -265,6 +373,7 @@ fn load_skips_missing_files() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -297,6 +406,7 @@ fn load_skips_size_mismatch_without_hashing() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -330,6 +440,7 @@ fn cache_only_archive_skips_mtime_replay() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
     fs::remove_dir_all(&cache).unwrap();
@@ -376,6 +487,7 @@ fn mtimes_only_save_and_load_roundtrip() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: true,
+        profile: SaveProfile::Full,
     })
     .expect("mtimes-only save ok");
 
@@ -452,6 +564,7 @@ fn mtimes_only_load_refuses_modified_source() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: true,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -507,6 +620,7 @@ fn mtimes_only_save_without_workspace_errors() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: true,
+        profile: SaveProfile::Full,
     })
     .expect_err("save --mtimes-only without workspace must error");
     let msg = err.to_string();
@@ -526,6 +640,7 @@ fn mtimes_only_save_with_cache_dir_errors() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: true,
+        profile: SaveProfile::Full,
     })
     .expect_err("save --mtimes-only WITH cache-dir must error");
     let msg = err.to_string();
@@ -547,6 +662,7 @@ fn mtimes_only_load_rejects_cache_entries() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("normal save ok");
 
@@ -577,6 +693,7 @@ fn save_without_cache_or_mtimes_only_errors() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect_err("save without cache and without mtimes_only must error");
     let msg = err.to_string();
@@ -616,6 +733,7 @@ fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: Some(1),
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("base save ok");
     assert_eq!(base_report.cache_files, 4);
@@ -644,6 +762,7 @@ fn delta_cache_roundtrip_restores_base_overlay_tombstones_and_mtimes() {
         out: &delta_archive,
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: Some(1),
+        profile: SaveProfile::Full,
     })
     .expect("delta save ok");
     assert_eq!(
@@ -784,6 +903,7 @@ fn parallel_extract_many_small_files() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -855,6 +975,7 @@ fn parallel_extract_surfaces_worker_errors() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
@@ -903,6 +1024,7 @@ fn profile_extract_flag_does_not_break_load() {
         zstd_level: 1,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .unwrap();
 
@@ -948,6 +1070,7 @@ fn load_restores_executable_bit_for_cache_files() {
         zstd_level: 1,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .unwrap();
 

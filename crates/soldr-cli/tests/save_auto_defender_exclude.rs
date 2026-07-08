@@ -14,7 +14,9 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-use soldr_cli::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
+use soldr_cli::cache_lib::save::{
+    load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
+};
 use soldr_cli::defender::{
     SOLDR_TEST_ASSUME_ADMIN_ENV, SOLDR_TEST_DEFENDER_EXISTING_ENV, SOLDR_TEST_DEFENDER_LOG_ENV,
 };
@@ -72,6 +74,7 @@ timed_test!(load_auto_defender_exclude_adds_then_removes_on_drop, {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
 
