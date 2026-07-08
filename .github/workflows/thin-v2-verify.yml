@@ -104,6 +104,7 @@ jobs:
       - name: First (cold) build
         working-directory: ${{ runner.temp }}/verify-noop
         env:
+          SOLDR_TRUST_INHERITED_ENV: "1"
           SOLDR_TARGET_CACHE_MODE: thin
           SOLDR_TARGET_CACHE_PROFILE: thin-v2
           SOLDR_TARGET_CACHE_BACKEND: local
@@ -115,6 +116,7 @@ jobs:
       - name: Second (warm) build — must be a no-op
         working-directory: ${{ runner.temp }}/verify-noop
         env:
+          SOLDR_TRUST_INHERITED_ENV: "1"
           SOLDR_TARGET_CACHE_MODE: thin
           SOLDR_TARGET_CACHE_PROFILE: thin-v2
           SOLDR_TARGET_CACHE_BACKEND: local
