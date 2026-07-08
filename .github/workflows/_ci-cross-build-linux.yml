@@ -180,10 +180,13 @@ jobs:
           tool: cargo-xwin@0.18.6
 
       # nextest — required for the test archive output. soldr#1291 —
-      # matches the archive step's `if:` so MSVC/darwin lanes (which
-      # skip the archive) don't install a tool they never invoke.
+      # matches the archive step's `if:` so MSVC lanes (which skip the
+      # archive) don't install a tool they never invoke. Darwin now
+      # archives through `soldr cargo nextest archive`, which injects
+      # the same blessed Apple SDK + clang/lld env as `soldr build`
+      # (soldr#1432).
       - name: Install cargo-nextest
-        if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
+        if: (!contains(inputs.target, 'pc-windows-msvc'))
         uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
         with:
           tool: cargo-nextest
@@ -393,17 +396,15 @@ jobs:
 
       # Stage C — test binary archive (consumed by _ci-target-run.yml).
       # Skipped for windows-msvc: `cargo nextest archive` doesn't go
-      # through `cargo xwin`, so it can't find MSVC `lib.exe` on
-      # linux. Tracked under #1068; will switch to `soldr build`-style
-      # blessed env-var injection in a follow-up.
-      # Skip for windows-msvc + apple-darwin: cargo nextest archive
-      # doesn't go through soldr build's blessed env injection, so it
-      # can't find MSVC lib.exe (windows) or Apple SDK CommonCrypto
-      # headers (darwin). The target-run lane falls back to a
-      # `soldr --version` smoke test for these targets. Tracked as
-      # #1068 (windows); darwin is split out from #1425 as #1432.
+      # through `cargo xwin`, so it can't find MSVC `lib.exe` on linux.
+      # Tracked under #1068. Darwin archives route through
+      # `soldr cargo nextest archive --target *-apple-darwin` because it
+      # now injects the blessed Apple SDK + clang/lld env from `soldr build`
+      # (soldr#1432). The zigbuild-driven linux cross targets keep the
+      # existing workflow-installed `cargo nextest` path so their
+      # CARGO_TARGET_*_LINKER zig wrappers remain in charge.
       - name: Build nextest archive
-        if: (!contains(inputs.target, 'pc-windows-msvc')) && (!contains(inputs.target, 'apple-darwin'))
+        if: (!contains(inputs.target, 'pc-windows-msvc'))
         shell: bash
         env:
           # soldr#1168 — drop full DWARF from test binaries so the
@@ -432,7 +433,12 @@ jobs:
           # 1.034 GB with 63 binaries; the four binary(...) excludes
           # below are already skipped at target-run time so archiving
           # them was pure wasted upload + download bytes.
-          cargo nextest archive \
+          if [[ "$target" == *-apple-darwin ]]; then
+            nextest_cmd=(soldr cargo nextest archive)
+          else
+            nextest_cmd=(cargo nextest archive)
+          fi
+          "${nextest_cmd[@]}" \
             --target "$target" \
             --workspace \
             --archive-file "$archive" \

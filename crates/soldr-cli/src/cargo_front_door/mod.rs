@@ -71,7 +71,7 @@ pub(crate) use inputs::{
 pub(crate) use profile_debug::CargoProfileDebugDefault;
 pub(crate) use subcommand::{
     cargo_args_are_cacheable, cargo_args_specify_target, cargo_args_use_reserved_no_cache,
-    first_cargo_subcommand,
+    first_cargo_subcommand, first_cargo_subcommand_index,
 };
 
 /// 64-bit build session id: high 32 bits = unix-ms truncated, low 32
@@ -500,6 +500,14 @@ pub(crate) async fn run_cargo_front_door(
     // bootstrap env (e.g. SDKROOT for explicit legacy
     // `cargo zigbuild --target *-apple-darwin`).
     let subcommand_tool_bootstrap = ensure_known_subcommand_tool(args, &paths).await?;
+    let owned_bootstrap_args;
+    let args: &[String] = if subcommand_tool_bootstrap.cargo_args.is_empty() {
+        args
+    } else {
+        owned_bootstrap_args =
+            insert_cargo_global_args(args, &subcommand_tool_bootstrap.cargo_args);
+        &owned_bootstrap_args
+    };
     let extra_bin_dirs = subcommand_tool_bootstrap.bin_dirs;
     let transitive_env_overrides = subcommand_tool_bootstrap.env;
     // Compute env-var overrides keyed off the subcommand + its
@@ -1114,6 +1122,7 @@ fn find_on_path(tool: &str) -> Option<std::path::PathBuf> {
 pub(crate) struct SubcommandToolBootstrap {
     pub bin_dirs: Vec<std::path::PathBuf>,
     pub env: Vec<(String, String)>,
+    pub cargo_args: Vec<String>,
 }
 
 async fn ensure_known_subcommand_tool(
@@ -1124,6 +1133,7 @@ async fn ensure_known_subcommand_tool(
         return Ok(SubcommandToolBootstrap {
             bin_dirs: Vec::new(),
             env: Vec::new(),
+            cargo_args: Vec::new(),
         });
     };
     let Some(spec) = crate::fetch::lookup_by_cargo_subcommand(sub) else {
@@ -1140,6 +1150,7 @@ async fn ensure_known_subcommand_tool(
         return Ok(SubcommandToolBootstrap {
             bin_dirs: Vec::new(),
             env: Vec::new(),
+            cargo_args: Vec::new(),
         });
     };
 
@@ -1159,6 +1170,7 @@ async fn ensure_known_subcommand_tool(
     // want byte-identical pinned binaries.
     let mut extra_bin_dirs: Vec<std::path::PathBuf> = Vec::new();
     let mut extra_env: Vec<(String, String)> = Vec::new();
+    let mut extra_cargo_args: Vec<String> = Vec::new();
 
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
@@ -1177,11 +1189,13 @@ async fn ensure_known_subcommand_tool(
                 paths,
                 &mut extra_bin_dirs,
                 &mut extra_env,
+                &mut extra_cargo_args,
             )
             .await?;
             return Ok(SubcommandToolBootstrap {
                 bin_dirs: extra_bin_dirs,
                 env: extra_env,
+                cargo_args: extra_cargo_args,
             });
         }
     }
@@ -1215,12 +1229,30 @@ async fn ensure_known_subcommand_tool(
         })?
         .to_path_buf();
     extra_bin_dirs.push(dir);
-    append_subcommand_transitive_bin_dirs(sub, args, paths, &mut extra_bin_dirs, &mut extra_env)
-        .await?;
+    append_subcommand_transitive_bin_dirs(
+        sub,
+        args,
+        paths,
+        &mut extra_bin_dirs,
+        &mut extra_env,
+        &mut extra_cargo_args,
+    )
+    .await?;
     Ok(SubcommandToolBootstrap {
         bin_dirs: extra_bin_dirs,
         env: extra_env,
+        cargo_args: extra_cargo_args,
     })
+}
+
+fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {
+    if cargo_args.is_empty() {
+        return args.to_vec();
+    }
+    let mut out = args.to_vec();
+    let insert_at = first_cargo_subcommand_index(args).unwrap_or(0);
+    out.splice(insert_at..insert_at, cargo_args.iter().cloned());
+    out
 }
 
 /// Resolve transitive runtime dependencies for `cargo-<sub>` and append
@@ -1233,12 +1265,15 @@ async fn ensure_known_subcommand_tool(
 ///     Apple SDK on disk + set `SDKROOT` env (issue #854).
 ///   - `cargo xwin build --target *-pc-windows-msvc` → ensure `clang`
 ///     shim on PATH that forces `--driver-mode=cl` (PR #849).
+///   - `cargo nextest archive --target *-apple-darwin` → reuse the
+///     blessed Apple SDK + clang/lld prep from `soldr build` (soldr#1432).
 async fn append_subcommand_transitive_bin_dirs(
     sub: &str,
     args: &[String],
     paths: &SoldrPaths,
     extra_bin_dirs: &mut Vec<std::path::PathBuf>,
     extra_env: &mut Vec<(String, String)>,
+    extra_cargo_args: &mut Vec<String>,
 ) -> Result<(), SoldrError> {
     if sub == "zigbuild" {
         let zig_dir = crate::fetch::ensure_zig(paths).await?;
@@ -1356,7 +1391,71 @@ async fn append_subcommand_transitive_bin_dirs(
             }
         }
     }
+    if let Some(triple) = nextest_archive_darwin_target(args) {
+        let prep = crate::blessed_build::prepare(paths, triple).await?;
+        append_blessed_prep_to_subcommand_bootstrap(
+            prep,
+            extra_bin_dirs,
+            extra_env,
+            extra_cargo_args,
+        );
+    }
     Ok(())
+}
+
+fn nextest_archive_darwin_target(args: &[String]) -> Option<&str> {
+    let sub_idx = first_cargo_subcommand_index(args)?;
+    if args[sub_idx] != "nextest" {
+        return None;
+    }
+    if first_nextest_verb(args, sub_idx) != Some("archive") {
+        return None;
+    }
+    let triple = extract_target_arg(args)?;
+    triple.ends_with("-apple-darwin").then_some(triple)
+}
+
+fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
+    let mut skip_next = false;
+    for arg in args.iter().skip(nextest_idx + 1) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--" {
+            return None;
+        }
+        if nextest_global_arg_takes_value(arg) {
+            skip_next = !arg.contains('=');
+            continue;
+        }
+        if arg.starts_with('-') {
+            continue;
+        }
+        return Some(arg.as_str());
+    }
+    None
+}
+
+fn nextest_global_arg_takes_value(arg: &str) -> bool {
+    matches!(arg, "--color" | "--config-file" | "--tool-config-file")
+        || arg.starts_with("--color=")
+        || arg.starts_with("--config-file=")
+        || arg.starts_with("--tool-config-file=")
+}
+
+fn append_blessed_prep_to_subcommand_bootstrap(
+    prep: crate::blessed_build::BlessedPrep,
+    extra_bin_dirs: &mut Vec<std::path::PathBuf>,
+    extra_env: &mut Vec<(String, String)>,
+    extra_cargo_args: &mut Vec<String>,
+) {
+    if let Some(shim_dir) = prep.shim_path_dir {
+        extra_bin_dirs.push(shim_dir);
+    }
+    extra_bin_dirs.extend(prep.path_dirs);
+    extra_env.extend(prep.env);
+    extra_cargo_args.extend(prep.cargo_args);
 }
 
 /// Write the cmake toolchain-file WRAPPER that disables zlib-ng's ARM

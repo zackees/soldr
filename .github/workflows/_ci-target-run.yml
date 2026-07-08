@@ -132,6 +132,7 @@ jobs:
           if [ -f "$archive" ]; then
             cargo nextest run \
               --archive-file "$archive" \
+              --workspace-remap "$GITHUB_WORKSPACE" \
               --no-fail-fast \
               -E "${{ inputs.skip_filter }}"
           else
