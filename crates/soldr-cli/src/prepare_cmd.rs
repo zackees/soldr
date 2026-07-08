@@ -4,10 +4,10 @@
 //! shape, only `--target` varies. Internally dispatches based on the
 //! target triple:
 //!
-//! - `*-pc-windows-msvc` → ensure cargo-xwin + LLVM toolchain + extract
-//!   the vendored xwin MSVC CRT cache from soldr-toolchain assets to
-//!   `~/.cache/cargo-xwin/` so `cargo xwin build` skips the 15-min live
-//!   Microsoft download.
+//! - `*-pc-windows-msvc` -> prepare the blessed MSVC toolchain stack,
+//!   including LLVM, xwin SDK cache, and target-scoped compiler/linker
+//!   env for `soldr build`, deferred `soldr cook`, and cargo-xwin
+//!   consumers that honor `XWIN_CACHE_DIR`.
 //! - `x86_64-pc-windows-gnu` on Windows x64 -> ensure managed
 //!   MinGW-w64 GCC, prepend it to PATH, export target-scoped
 //!   Cargo/cc-rs env, and materialize GNU-shaped syslib rows when
@@ -33,21 +33,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::fetch::github::http_client;
-use crate::fetch::{ensure_apple_sdk, ensure_llvm_toolchain, ensure_zig};
+use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
+use crate::fetch::{ensure_apple_sdk, ensure_zig};
 use wait_timeout::ChildExt;
-
-/// URL of the vendored cargo-xwin MSVC CRT + Windows SDK cache on
-/// soldr-toolchain assets. PR #890 packaged 1.08 GiB of MSVC CRT +
-/// Windows SDK headers/libs as a single 81 MiB zstd-19 tarball; this
-/// extracts into `~/.cache/cargo-xwin/xwin/{crt,sdk}` so subsequent
-/// `cargo xwin build` invocations skip the live Microsoft download.
-pub const XWIN_CACHE_URL: &str =
-    "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/xwin-cache/2026-06-22/windows-x86_64-msvc/xwin-cache.tar.zst";
-
-/// Pinned sha256 of the xwin cache tar.zst. Mismatch is a hard error.
-pub const XWIN_CACHE_SHA256: &str =
-    "33c04d8026d99dab4d66f39ddbd93d75f64c68063d4ba58e5450626524bf348d";
 
 const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
 const DEFAULT_RUSTUP_TARGET_ADD_TIMEOUT_SECS: u64 = 15 * 60;
@@ -103,122 +91,6 @@ fn apply_blessed_prep_env(
     }
     Ok(())
 }
-
-/// Resolve the xwin cache root cargo-xwin uses. cargo-xwin's default is
-/// `dirs::cache_dir().join("cargo-xwin")`. On Linux that resolves to
-/// `$XDG_CACHE_HOME/cargo-xwin` (when set) or `$HOME/.cache/cargo-xwin`.
-/// We mirror that here so the extraction lands at the exact path
-/// cargo-xwin will look in.
-fn xwin_cache_root() -> Result<PathBuf, SoldrError> {
-    let home = crate::core::home_dir()?;
-    #[cfg(target_os = "linux")]
-    let cache_base = match std::env::var_os("XDG_CACHE_HOME") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => home.join(".cache"),
-    };
-    #[cfg(target_os = "macos")]
-    let cache_base = home.join("Library").join("Caches");
-    #[cfg(target_os = "windows")]
-    let cache_base = match std::env::var_os("LOCALAPPDATA") {
-        Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => home.join("AppData").join("Local"),
-    };
-    Ok(cache_base.join("cargo-xwin"))
-}
-
-/// Extract the vendored xwin cache into the location cargo-xwin reads
-/// by default. After extraction the layout is
-/// `<cache>/xwin/{crt,sdk,DONE,...}`. The DONE file in the tarball was
-/// written by `cargo xwin cache xwin` itself when we pre-populated it
-/// — its first line lists the arches (`x86_64 aarch64`) and subsequent
-/// lines list every file downloaded. cargo-xwin reads that exact
-/// format to decide whether to skip the live download.
-///
-/// IMPORTANT: do NOT overwrite `<cache>/xwin/DONE` after extraction.
-/// The tarball already contains the correct cargo-xwin marker; writing
-/// anything else there (e.g. a sha256 hex string as we used to) makes
-/// cargo-xwin treat the first line as an unknown "arch", fail the
-/// arch-match check, and re-download MSVC CRT live (15min wasted).
-/// We use `.soldr-extracted` as a sibling marker for our own
-/// idempotence instead.
-async fn ensure_xwin_cache() -> Result<PathBuf, SoldrError> {
-    let cache_root = xwin_cache_root()?;
-    let xwin_dir = cache_root.join("xwin");
-    // Sibling marker for our own already-extracted check — must NOT
-    // be `DONE` (cargo-xwin owns that filename) and must NOT be inside
-    // `xwin/` if any file there is being checksummed by cargo-xwin.
-    let soldr_marker = cache_root.join(".soldr-xwin-extracted");
-
-    if soldr_marker.is_file() && xwin_dir.join("crt").join("include").is_dir() {
-        let aliases = ensure_xwin_case_aliases(&xwin_dir)?;
-        if aliases > 0 {
-            eprintln!("soldr prepare: added {aliases} lowercase xwin cache aliases");
-        }
-        eprintln!(
-            "soldr prepare: xwin cache already present at {}",
-            xwin_dir.display()
-        );
-        return Ok(xwin_dir);
-    }
-
-    eprintln!("soldr prepare: fetching xwin MSVC CRT + Windows SDK cache from {XWIN_CACHE_URL}...");
-    let client = http_client()?;
-    let resp = client
-        .get(XWIN_CACHE_URL)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "xwin cache download failed: HTTP {}",
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-
-    let digest = crate::fetch::trust::sha256_of(&bytes);
-    if digest != XWIN_CACHE_SHA256 {
-        return Err(SoldrError::Other(format!(
-            "xwin cache sha256 mismatch: expected {XWIN_CACHE_SHA256}, got {digest}"
-        )));
-    }
-    eprintln!("soldr prepare: trust: verified xwin cache sha256={digest}");
-
-    std::fs::create_dir_all(&cache_root)?;
-    let reader = std::io::Cursor::new(&bytes[..]);
-    let zst = zstd::stream::read::Decoder::new(reader)
-        .map_err(|e| SoldrError::Archive(format!("zstd decoder: {e}")))?;
-    let mut archive = tar::Archive::new(zst);
-    archive
-        .unpack(&cache_root)
-        .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
-    let aliases = ensure_xwin_case_aliases(&xwin_dir)?;
-    if aliases > 0 {
-        eprintln!("soldr prepare: added {aliases} lowercase xwin cache aliases");
-    }
-    // Drop our own marker SIBLING to xwin/, not inside it — see the
-    // doc comment above for why clobbering xwin/DONE was a 15-min CI
-    // regression.
-    std::fs::write(&soldr_marker, XWIN_CACHE_SHA256)?;
-    eprintln!(
-        "soldr prepare: extracted xwin cache to {} (size {} bytes)",
-        xwin_dir.display(),
-        bytes.len()
-    );
-    Ok(xwin_dir)
-}
-
-/// Case-alias materialization is shared with the blessed
-/// `fetch::xwin_cache` path — same bundle shape, same case-sensitivity
-/// problem, one implementation (cross-run 28574600982 fix). Covers both the lowercase
-/// pass (`Kernel32.Lib` → `kernel32.lib`) and the include-referenced
-/// pass (`driverspecs.h` → `DriverSpecs.h`, which `kernelspecs.h`
-/// references as `#include "DriverSpecs.h"` from every `windows.h`
-/// compile).
-use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
 
 /// Parse the `--target` argument into a list of triples.
 ///
@@ -310,7 +182,8 @@ pub async fn run(
     }
 
     // soldr#940 — assets within a target's dispatch are fetched
-    // concurrently via `tokio::try_join!`. Each ensure_* call already
+    // concurrently, either here via `tokio::try_join!` or inside the
+    // shared blessed-build prep object. Each ensure_* call already
     // implements its own integrity verification + caching, so racing
     // them only affects net-bandwidth ordering — not the on-disk
     // result.
@@ -318,27 +191,20 @@ pub async fn run(
         TargetOs::Windows => {
             match attrs.abi {
                 Some(TargetAbi::Msvc) => {
-                    // Windows MSVC cross-compile path: needs cargo-xwin, LLVM
-                    // toolchain (for clang/lld-link), and the MSVC CRT cache.
-                    // Run LLVM and the xwin cache extract concurrently.
-                    eprintln!("soldr prepare: dispatch=xwin (parallel)");
-                    let llvm_fut = async {
-                        match ensure_llvm_toolchain(&paths).await {
-                            Ok(p) => Ok::<PathBuf, SoldrError>(p),
-                            Err(SoldrError::UnsupportedPlatform(m)) => {
-                                eprintln!(
-                                    "soldr prepare: LLVM auto-bootstrap not supported on host: {m}"
-                                );
-                                Ok(PathBuf::new())
-                            }
-                            Err(e) => Err(e),
-                        }
-                    };
-                    let xwin_fut = ensure_xwin_cache();
-                    let (llvm_dir, _) = tokio::try_join!(llvm_fut, xwin_fut)?;
-                    if !llvm_dir.as_os_str().is_empty() {
-                        eprintln!("soldr prepare: LLVM toolchain at {}", llvm_dir.display());
+                    // Windows MSVC uses the same blessed prep object as
+                    // `soldr build`, so the caller gets one coherent
+                    // XWIN_CACHE_DIR + clang shim/LLVM PATH + cc-rs env
+                    // instead of a second cargo-xwin-default cache.
+                    eprintln!("soldr prepare: dispatch=blessed-msvc");
+                    let prep = crate::blessed_build::prepare(&paths, &target).await?;
+                    if let Some((_, cache_dir)) = prep
+                        .env
+                        .iter()
+                        .find(|(key, _)| key == crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR)
+                    {
+                        eprintln!("soldr prepare: xwin cache at {cache_dir}");
                     }
+                    apply_blessed_prep_env(github_env_path, &prep)?;
                 }
                 Some(TargetAbi::Gnu) => {
                     eprintln!("soldr prepare: dispatch=mingw-w64-gcc+syslibs");
@@ -447,8 +313,9 @@ pub struct TargetAttrs {
     /// Needs zig on PATH for prepare-time legacy/external flows. True
     /// for cross-compile to darwin or to a non-host linux flavor.
     pub needs_zig: bool,
-    /// Needs the vendored MSVC CRT + Windows SDK cache extracted to
-    /// `~/.cache/cargo-xwin/`. True for `*-pc-windows-msvc`.
+    /// Needs the blessed MSVC CRT + Windows SDK cache under
+    /// `~/.soldr/sdk/<triple>/xwin/<version>/`. True for
+    /// `*-pc-windows-msvc`.
     pub needs_xwin_cache: bool,
     /// Needs the soldr-managed LLVM toolchain (clang / lld-link /
     /// llvm-lib). True for `*-pc-windows-msvc` (cargo-xwin uses it).
@@ -696,12 +563,14 @@ fn expected_state_paths(
         });
     }
     if attrs.needs_xwin_cache {
-        let xwin = xwin_cache_root()?.join("xwin");
+        let xwin_root = blessed_xwin_cache_root(paths, &attrs.triple);
+        let xwin = xwin_root.join("xwin");
         entries.push(RestoreEntry {
             label: "xwin MSVC CRT + Windows SDK".to_string(),
-            present: xwin.join("crt").join("include").is_dir()
+            present: xwin_root.join(".complete").is_file()
+                && xwin.join("crt").join("include").is_dir()
                 && xwin.join("sdk").join("include").is_dir(),
-            path: xwin,
+            path: xwin_root,
         });
     }
     if attrs.needs_mingw_w64_gcc
@@ -742,6 +611,15 @@ fn expected_state_paths(
         });
     }
     Ok(entries)
+}
+
+fn blessed_xwin_cache_root(paths: &SoldrPaths, target: &str) -> PathBuf {
+    paths
+        .root
+        .join("sdk")
+        .join(target)
+        .join("xwin")
+        .join(crate::fetch::xwin_cache::MANAGED_XWIN_CACHE_VERSION)
 }
 
 fn emit_restore_report(entries: &[RestoreEntry]) {
@@ -806,10 +684,10 @@ fn prepare_state_roots(paths: &SoldrPaths) -> Result<Vec<PathBuf>, SoldrError> {
     if mingw_root.is_dir() {
         roots.push(mingw_root);
     }
-    // xwin cache (cargo-xwin's default location, mirrors `xwin_cache_root`).
-    let xwin_root = xwin_cache_root()?;
-    if xwin_root.is_dir() {
-        roots.push(xwin_root);
+    // Blessed target SDK caches (`~/.soldr/sdk/<triple>/xwin/<version>/...`).
+    let sdk_root = paths.root.join("sdk");
+    if sdk_root.is_dir() {
+        roots.push(sdk_root);
     }
     Ok(roots)
 }
@@ -1035,13 +913,6 @@ mod tests {
         }
     }
 
-    crate::timed_test!(constants_are_well_formed, {
-        assert!(XWIN_CACHE_URL.starts_with("https://"));
-        assert!(XWIN_CACHE_URL.ends_with(".tar.zst"));
-        assert_eq!(XWIN_CACHE_SHA256.len(), 64);
-        assert!(XWIN_CACHE_SHA256.chars().all(|c| c.is_ascii_hexdigit()));
-    });
-
     crate::timed_test!(append_env_creates_file_and_appends, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let p = tmp.path().join("env");
@@ -1054,6 +925,51 @@ mod tests {
 
     crate::timed_test!(append_env_no_op_when_none, {
         append_env(None, "FOO", "bar").expect("no-op");
+    });
+
+    crate::timed_test!(expected_state_paths_uses_blessed_msvc_xwin_cache, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
+        let attrs = classify_target("x86_64-pc-windows-msvc").expect("classify");
+        let xwin_root = blessed_xwin_cache_root(&paths, "x86_64-pc-windows-msvc");
+
+        let entries = expected_state_paths(&attrs, &paths).expect("expected paths");
+        let xwin_entry = entries
+            .iter()
+            .find(|entry| entry.label == "xwin MSVC CRT + Windows SDK")
+            .expect("xwin restore entry");
+        assert_eq!(xwin_entry.path, xwin_root);
+        assert!(
+            !xwin_entry.present,
+            "entry must stay missing until the blessed xwin marker and include dirs exist"
+        );
+
+        std::fs::create_dir_all(xwin_root.join("xwin").join("crt").join("include"))
+            .expect("mkdir crt include");
+        std::fs::create_dir_all(xwin_root.join("xwin").join("sdk").join("include"))
+            .expect("mkdir sdk include");
+        std::fs::write(xwin_root.join(".complete"), b"").expect("write complete");
+
+        let entries = expected_state_paths(&attrs, &paths).expect("expected paths");
+        let xwin_entry = entries
+            .iter()
+            .find(|entry| entry.label == "xwin MSVC CRT + Windows SDK")
+            .expect("xwin restore entry");
+        assert!(xwin_entry.present);
+    });
+
+    crate::timed_test!(prepare_state_roots_includes_blessed_sdk_root, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
+        let sdk_root = paths.root.join("sdk");
+        std::fs::create_dir_all(&sdk_root).expect("mkdir sdk root");
+
+        let roots = prepare_state_roots(&paths).expect("prepare roots");
+        assert!(
+            roots.iter().any(|root| root == &sdk_root),
+            "prepare --save must include blessed SDK caches under {}",
+            sdk_root.display()
+        );
     });
 
     crate::timed_test!(apply_blessed_prep_env_exports_mingw_and_syslib_env, {
@@ -1100,6 +1016,89 @@ mod tests {
         assert!(body.contains("MINGW_W64_GCC_ROOT="));
         assert!(body.contains("PKG_CONFIG_PATH_x86_64-pc-windows-gnu="));
         assert!(body.contains(&format!("PATH={}", mingw_bin.to_string_lossy())));
+    });
+
+    crate::timed_test!(apply_blessed_prep_env_exports_msvc_target_env, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        let _cc = EnvVarGuard::remove("CC_x86_64_pc_windows_msvc");
+        let _cxx = EnvVarGuard::remove("CXX_x86_64_pc_windows_msvc");
+        let _ar = EnvVarGuard::remove("AR_x86_64_pc_windows_msvc");
+        let _linker = EnvVarGuard::remove("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER");
+        let _rustflags = EnvVarGuard::remove("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS");
+        let _xwin = EnvVarGuard::remove(crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR);
+        let _path = EnvVarGuard::set("PATH", "");
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let github_env = tmp.path().join("github-env");
+        let shim_dir = tmp.path().join("clang-shim");
+        let llvm_bin = tmp.path().join("llvm").join("bin");
+        let xwin_dir = tmp.path().join("xwin");
+        let libpath = xwin_dir.join("sdk").join("lib").join("um").join("x64");
+        let rustflags = format!("-C link-arg=/LIBPATH:{}", libpath.display());
+        let prep = crate::blessed_build::BlessedPrep {
+            shim_path_dir: Some(shim_dir.clone()),
+            path_dirs: vec![llvm_bin.clone()],
+            env: vec![
+                ("CC_x86_64_pc_windows_msvc".to_string(), "clang".to_string()),
+                (
+                    "CXX_x86_64_pc_windows_msvc".to_string(),
+                    "clang".to_string(),
+                ),
+                (
+                    "AR_x86_64_pc_windows_msvc".to_string(),
+                    "llvm-lib".to_string(),
+                ),
+                (
+                    "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER".to_string(),
+                    "lld-link".to_string(),
+                ),
+                (
+                    crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR.to_string(),
+                    xwin_dir.to_string_lossy().into_owned(),
+                ),
+                (
+                    "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS".to_string(),
+                    rustflags.clone(),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        apply_blessed_prep_env(Some(&github_env), &prep).expect("apply prep env");
+
+        assert_eq!(
+            std::env::var("CC_x86_64_pc_windows_msvc").expect("cc env"),
+            "clang"
+        );
+        assert_eq!(
+            std::env::var("AR_x86_64_pc_windows_msvc").expect("ar env"),
+            "llvm-lib"
+        );
+        assert_eq!(
+            std::env::var("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER").expect("linker env"),
+            "lld-link"
+        );
+        assert_eq!(
+            std::env::var(crate::fetch::xwin_cache::XWIN_CACHE_DIR_ENV_VAR).expect("xwin env"),
+            xwin_dir.to_string_lossy()
+        );
+        assert_eq!(
+            std::env::var("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS").expect("rustflags env"),
+            rustflags
+        );
+
+        let path = std::env::var_os("PATH").expect("path env");
+        let path_dirs = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(path_dirs[0], shim_dir);
+        assert_eq!(path_dirs[1], llvm_bin);
+
+        let body = std::fs::read_to_string(&github_env).expect("read github env");
+        assert!(body.contains("CC_x86_64_pc_windows_msvc=clang"));
+        assert!(body.contains("AR_x86_64_pc_windows_msvc=llvm-lib"));
+        assert!(body.contains("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link"));
+        assert!(body.contains("XWIN_CACHE_DIR="));
+        assert!(body.contains("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="));
+        assert!(body.contains("PATH="));
     });
 
     crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {
