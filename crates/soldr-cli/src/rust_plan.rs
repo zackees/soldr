@@ -319,7 +319,7 @@ pub(crate) fn prune_orphan_rmetas_in_deps(deps_dir: &std::path::Path) -> usize {
 /// (`target/<profile>/deps/`) and the explicit-target layout
 /// (`target/<triple>/<profile>/deps/`) without needing to thread the
 /// triple/profile through the call site.
-pub(crate) fn prune_orphan_rmetas_after_failed_build(plan: &RustArtifactPlanContext) {
+pub(crate) fn prune_orphan_rmetas_after_failed_build(plan: &RustArtifactPlanContext) -> usize {
     let target_root = std::path::PathBuf::from(&plan.target_dir);
     let mut total = 0usize;
     for deps_dir in find_deps_dirs(&target_root, 3) {
@@ -331,6 +331,7 @@ pub(crate) fn prune_orphan_rmetas_after_failed_build(plan: &RustArtifactPlanCont
             target_root.display()
         );
     }
+    total
 }
 
 /// Locate `deps/` subdirectories under `root` up to `max_depth` levels

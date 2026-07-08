@@ -111,6 +111,101 @@ fn diagnostic_capture_does_not_wait_for_leaked_stderr_handle_after_cargo_exits()
     );
 }
 
+crate::timed_test!(timeout_error_mentions_cleanup_and_recovery, {
+    let err = SoldrError::Other(format!(
+        "cargo diagnostic capture timed out after 1 seconds (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override); killed child process tree"
+    ));
+    let cleanup = CargoAbortCleanupReport {
+        orphan_rmetas_pruned: 2,
+        incremental_dirs_removed: 1,
+    };
+    let msg = augment_aborted_cargo_error(err, cleanup, true).to_string();
+
+    assert!(
+        msg.contains("soldr cleanup after abort: pruned 2 orphan .rmeta file(s), removed 1 incremental/ dir(s)"),
+        "timeout message should summarize cleanup: {msg}"
+    );
+    assert!(
+        msg.contains("soldr --no-cache cargo clean -p <crate>"),
+        "timeout message should include actionable recovery: {msg}"
+    );
+    assert!(
+        msg.contains("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
+        "timeout message should point at fail-fast compile diagnostics: {msg}"
+    );
+});
+
+crate::timed_test!(cargo_wait_heartbeat_names_context_and_override, {
+    let msg = cargo_wait_heartbeat_message(
+        "cargo diagnostic capture",
+        Duration::from_secs(120),
+        Duration::from_secs(1800),
+    );
+
+    assert_eq!(
+        msg,
+        format!(
+            "soldr: cargo diagnostic capture still running after 120s (timeout 1800s; set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
+        )
+    );
+});
+
+crate::timed_test!(aborted_build_cleanup_removes_incremental_dirs, {
+    let target = tempfile::tempdir().expect("temp target");
+    let host_incremental = target.path().join("debug").join("incremental");
+    let target_incremental = target
+        .path()
+        .join("x86_64-pc-windows-msvc")
+        .join("release")
+        .join("incremental");
+    let deps = target.path().join("debug").join("deps");
+    std::fs::create_dir_all(host_incremental.join("crate-a")).expect("host incremental");
+    std::fs::create_dir_all(target_incremental.join("crate-b")).expect("target incremental");
+    std::fs::create_dir_all(&deps).expect("deps");
+    std::fs::write(deps.join("libkeep.rlib"), b"keep").expect("deps file");
+
+    let removed = cleanup_target_incremental_dirs_after_aborted_build(target.path());
+
+    assert_eq!(removed, 2);
+    assert!(!host_incremental.exists());
+    assert!(!target_incremental.exists());
+    assert!(deps.join("libkeep.rlib").exists());
+});
+
+crate::timed_test!(aborted_build_cleanup_prunes_rmetas_and_incremental_dirs, {
+    let root = tempfile::tempdir().expect("temp root");
+    let target = root.path().join("target");
+    let deps = target.join("debug").join("deps");
+    let incremental = target.join("debug").join("incremental");
+    std::fs::create_dir_all(&deps).expect("deps");
+    std::fs::create_dir_all(incremental.join("crate-a")).expect("incremental");
+    let orphan_rmeta = deps.join("libstale.rmeta");
+    std::fs::write(&orphan_rmeta, b"stale").expect("orphan rmeta");
+
+    let plan = crate::rust_plan::RustArtifactPlanContext {
+        path: root.path().join("plan.json"),
+        zccache_binary: root.path().join("zccache"),
+        cache_dir: root.path().join("cache"),
+        zccache_daemon_cache_dir: root.path().join("daemon-cache"),
+        zccache_daemon_cache_dir_env: false,
+        zccache_daemon_name: None,
+        session_id: "test-session".to_string(),
+        journal_path: root.path().join("journal.jsonl"),
+        backend: "local".to_string(),
+        cache_profile: None,
+        plan_inputs_hash: "hash".to_string(),
+        target_dir: target.display().to_string(),
+    };
+    let cache_plan = CargoCachePlan::for_test_with_rust_artifact_plan(plan);
+
+    let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, &[String::from("build")], true);
+
+    assert_eq!(cleanup.orphan_rmetas_pruned, 1);
+    assert_eq!(cleanup.incremental_dirs_removed, 1);
+    assert!(!orphan_rmeta.exists());
+    assert!(!incremental.exists());
+});
+
 #[test]
 fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
     let mut command = std::process::Command::new("cargo");

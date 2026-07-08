@@ -111,6 +111,15 @@ impl CargoCachePlan {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test_with_rust_artifact_plan(plan: RustArtifactPlanContext) -> Self {
+        Self {
+            cache_enabled_for_cargo: true,
+            rustc_wrapper: None,
+            rust_artifact_plan: Some(plan),
+        }
+    }
+
     pub(crate) fn apply_to_command(
         &self,
         command: &mut std::process::Command,
@@ -191,10 +200,11 @@ impl CargoCachePlan {
         Ok(())
     }
 
-    pub(crate) fn prune_orphan_rmetas_after_failed_build(&self) {
-        if let Some(plan) = self.rust_artifact_plan.as_ref() {
-            rust_plan::prune_orphan_rmetas_after_failed_build(plan);
-        }
+    pub(crate) fn prune_orphan_rmetas_after_failed_build(&self) -> usize {
+        self.rust_artifact_plan
+            .as_ref()
+            .map(rust_plan::prune_orphan_rmetas_after_failed_build)
+            .unwrap_or(0)
     }
 
     pub(crate) fn finish_zccache_session(
