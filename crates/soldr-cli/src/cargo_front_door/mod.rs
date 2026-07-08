@@ -51,6 +51,7 @@ use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
+const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 
@@ -102,33 +103,126 @@ fn wait_for_cargo_child(
     context: &str,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     let timeout = cargo_wait_timeout();
-    match child
-        .wait_timeout(timeout)
-        .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
-    {
-        Some(status) => Ok(status),
-        None => {
-            let kill_result = child.kill();
-            let reap_result =
-                child.wait_timeout(Duration::from_secs(KILLED_CARGO_REAP_TIMEOUT_SECS));
-            let timeout_secs = timeout.as_secs();
-            let mut message = format!(
-                "{context} timed out after {timeout_secs} seconds \
-                 (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
-            );
-            match kill_result {
-                Ok(()) => message.push_str("; killed child process"),
-                Err(err) => message.push_str(&format!("; kill failed: {err}")),
-            }
-            match reap_result {
-                Ok(Some(_)) => {}
-                Ok(None) => message.push_str(&format!(
-                    "; process did not exit within {KILLED_CARGO_REAP_TIMEOUT_SECS} seconds after kill"
-                )),
-                Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
-            }
-            Err(SoldrError::Other(message))
+    let start = Instant::now();
+    let heartbeat = Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS);
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(cargo_timeout_error(child, context, timeout));
         }
+        let wait_for = timeout.saturating_sub(elapsed).min(heartbeat);
+        match child
+            .wait_timeout(wait_for)
+            .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
+        {
+            Some(status) => return Ok(status),
+            None if start.elapsed() >= timeout => {
+                return Err(cargo_timeout_error(child, context, timeout));
+            }
+            None => {
+                eprintln!(
+                    "{}",
+                    cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
+                );
+            }
+        }
+    }
+}
+
+fn cargo_wait_heartbeat_message(context: &str, elapsed: Duration, timeout: Duration) -> String {
+    format!(
+        "soldr: {context} still running after {}s (timeout {}s; set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)",
+        elapsed.as_secs(),
+        timeout.as_secs()
+    )
+}
+
+fn cargo_timeout_error(
+    child: &mut std::process::Child,
+    context: &str,
+    timeout: Duration,
+) -> SoldrError {
+    let kill_result = kill_cargo_process_tree(child);
+    let reap_result = child.wait_timeout(Duration::from_secs(KILLED_CARGO_REAP_TIMEOUT_SECS));
+    let timeout_secs = timeout.as_secs();
+    let mut message = format!(
+        "{context} timed out after {timeout_secs} seconds \
+         (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
+    );
+    match kill_result {
+        Ok(detail) => message.push_str(&format!("; {detail}")),
+        Err(err) => message.push_str(&format!("; kill failed: {err}")),
+    }
+    match reap_result {
+        Ok(Some(_)) => {}
+        Ok(None) => message.push_str(&format!(
+            "; process did not exit within {KILLED_CARGO_REAP_TIMEOUT_SECS} seconds after kill"
+        )),
+        Err(err) => message.push_str(&format!("; reap after kill failed: {err}")),
+    }
+    SoldrError::Other(message)
+}
+
+#[cfg(windows)]
+fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+    let pid = child.id().to_string();
+    let taskkill = std::process::Command::new("taskkill")
+        .args(["/PID", &pid, "/T", "/F"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match taskkill {
+        Ok(status) if status.success() => Ok("killed child process tree"),
+        _ => {
+            child.kill()?;
+            Ok("killed child process")
+        }
+    }
+}
+
+#[cfg(unix)]
+fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+    let pgid = child.id() as libc::pid_t;
+    let term_result = signal_process_group(pgid, libc::SIGTERM);
+    std::thread::sleep(Duration::from_millis(100));
+    let kill_result = signal_process_group(pgid, libc::SIGKILL);
+    if term_result.is_ok() || kill_result.is_ok() {
+        return Ok("signaled cargo process group");
+    }
+    child.kill()?;
+    Ok("killed child process")
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> std::io::Result<()> {
+    // SAFETY: `pgid` is the spawned cargo child's PID after `process_group(0)`;
+    // negating it asks the kernel to signal that process group.
+    let rc = unsafe { libc::kill(-pgid, signal) };
+    if rc == 0 {
+        return Ok(());
+    }
+    let err = std::io::Error::last_os_error();
+    if err.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(());
+    }
+    Err(err)
+}
+
+#[cfg(all(not(windows), not(unix)))]
+fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+    child.kill()?;
+    Ok("killed child process")
+}
+
+fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
     }
 }
 
@@ -329,6 +423,133 @@ fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPrune
     if let Some(line) = render_summary(outcome) {
         eprintln!("{line}");
     }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct CargoAbortCleanupReport {
+    orphan_rmetas_pruned: usize,
+    incremental_dirs_removed: usize,
+}
+
+impl CargoAbortCleanupReport {
+    fn summary(self) -> String {
+        format!(
+            "pruned {} orphan .rmeta file(s), removed {} incremental/ dir(s)",
+            self.orphan_rmetas_pruned, self.incremental_dirs_removed
+        )
+    }
+}
+
+fn cargo_run_error_is_timeout(err: &SoldrError) -> bool {
+    matches!(err, SoldrError::Other(message) if message.contains(CARGO_WAIT_TIMEOUT_ENV_VAR) && message.contains("timed out after"))
+}
+
+fn cleanup_after_aborted_cargo_run(
+    cache_plan: &CargoCachePlan,
+    args: &[String],
+    timeout: bool,
+) -> CargoAbortCleanupReport {
+    let orphan_rmetas_pruned = cache_plan.prune_orphan_rmetas_after_failed_build();
+    let incremental_dirs_removed = if timeout {
+        cache_plan
+            .target_dir_for_hooks(args)
+            .as_deref()
+            .map(cleanup_target_incremental_dirs_after_aborted_build)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if orphan_rmetas_pruned > 0 || incremental_dirs_removed > 0 {
+        eprintln!(
+            "soldr: cleanup after aborted cargo build: {} (soldr#1384)",
+            CargoAbortCleanupReport {
+                orphan_rmetas_pruned,
+                incremental_dirs_removed,
+            }
+            .summary()
+        );
+    }
+    CargoAbortCleanupReport {
+        orphan_rmetas_pruned,
+        incremental_dirs_removed,
+    }
+}
+
+fn cleanup_target_incremental_dirs_after_aborted_build(target_dir: &std::path::Path) -> usize {
+    let mut candidates = Vec::new();
+    collect_incremental_dir_candidates(target_dir, &mut candidates);
+    candidates.sort();
+    candidates.dedup();
+
+    let mut removed = 0usize;
+    for path in candidates {
+        if !path.is_dir() {
+            continue;
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => removed = removed.saturating_add(1),
+            Err(err) => eprintln!(
+                "soldr warning: failed to remove incremental dir {} after aborted cargo build: {err}",
+                path.display()
+            ),
+        }
+    }
+    removed
+}
+
+fn collect_incremental_dir_candidates(
+    target_dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) {
+    let Ok(first_level) = std::fs::read_dir(target_dir) else {
+        return;
+    };
+    for first in first_level.flatten() {
+        let first_path = first.path();
+        if !first_path.is_dir() {
+            continue;
+        }
+        let direct = first_path.join(crate::cache_lib::prune_target::INCREMENTAL_SUBDIR);
+        if direct.is_dir() {
+            out.push(direct);
+        }
+        let Ok(second_level) = std::fs::read_dir(&first_path) else {
+            continue;
+        };
+        for second in second_level.flatten() {
+            let second_path = second.path();
+            if !second_path.is_dir() {
+                continue;
+            }
+            let nested = second_path.join(crate::cache_lib::prune_target::INCREMENTAL_SUBDIR);
+            if nested.is_dir() {
+                out.push(nested);
+            }
+        }
+    }
+}
+
+fn augment_aborted_cargo_error(
+    err: SoldrError,
+    cleanup: CargoAbortCleanupReport,
+    timeout: bool,
+) -> SoldrError {
+    let SoldrError::Other(mut message) = err else {
+        return err;
+    };
+    message.push_str(&format!(
+        "; soldr cleanup after abort: {}",
+        cleanup.summary()
+    ));
+    if timeout {
+        message.push_str(
+            "; if the next build still stalls, run `soldr --no-cache cargo clean -p <crate>` \
+             or remove the affected target/*/incremental directory, then retry with \
+             `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` lowered \
+             while diagnosing",
+        );
+    }
+    SoldrError::Other(message)
 }
 
 fn scrub_soldr_cache_lifecycle_env_for_child_cargo(command: &mut std::process::Command) {
@@ -814,14 +1035,38 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(session) = cache_plan.zccache_session() {
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
-    let (status, clippy_capture, diagnostic_capture) = if needs_clippy_capture {
-        let (status, capture) = run_command_capturing_clippy(&mut command)?;
-        (status, Some(capture), None)
+    let cargo_run_result: Result<
+        (
+            std::process::ExitStatus,
+            Option<RawClippyCapture>,
+            Option<String>,
+        ),
+        SoldrError,
+    > = if needs_clippy_capture {
+        run_command_capturing_clippy(&mut command)
+            .map(|(status, capture)| (status, Some(capture), None))
     } else if capture_for_diagnostics {
-        let (status, captured) = run_command_capturing_diagnostic_tail(&mut command)?;
-        (status, None, Some(captured))
+        run_command_capturing_diagnostic_tail(&mut command)
+            .map(|(status, captured)| (status, None, Some(captured)))
     } else {
-        (run_command_inheriting_stdio(&mut command)?, None, None)
+        run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
+    };
+    let (status, clippy_capture, diagnostic_capture) = match cargo_run_result {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            let timeout = cargo_run_error_is_timeout(&err);
+            crate::daemon::client::build_session_end(&paths, session_id, -1, current_unix_ms());
+            crate::cache_lib::build_active::set(false);
+            let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
+            if let Err(finish_err) =
+                cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout)
+            {
+                eprintln!(
+                    "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
+                );
+            }
+            return Err(augment_aborted_cargo_error(err, cleanup, timeout));
+        }
     };
     // Extract whatever stderr text we captured BEFORE the success
     // branch moves `clippy_capture` into `refresh_workspace_sidecar_after_cargo`.
@@ -922,6 +1167,7 @@ fn run_command_capturing_clippy(
 ) -> Result<(std::process::ExitStatus, RawClippyCapture), SoldrError> {
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
+    configure_cargo_child_for_timeout(command);
     let mut child = command.spawn().map_err(|err| {
         SoldrError::Other(format!("spawn cargo for clippy capture failed: {err}"))
     })?;
@@ -947,6 +1193,7 @@ fn run_command_capturing_clippy(
 fn run_command_inheriting_stdio(
     command: &mut std::process::Command,
 ) -> Result<std::process::ExitStatus, SoldrError> {
+    configure_cargo_child_for_timeout(command);
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
@@ -968,6 +1215,7 @@ fn run_command_capturing_diagnostic_tail(
 ) -> Result<(std::process::ExitStatus, String), SoldrError> {
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
+    configure_cargo_child_for_timeout(command);
     let mut child = command.spawn().map_err(|err| {
         SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
     })?;

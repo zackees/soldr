@@ -4,6 +4,7 @@ mod common;
 
 use common::*;
 use serde_json::Value;
+use soldr_cli::timed_test;
 use std::io::Write;
 use std::process::Command;
 use std::{
@@ -149,6 +150,135 @@ fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
         )
     }
 }
+
+fn fake_timeout_then_success_cargo_script(marker: &Path, log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             echo cargo %*>>\"{1}\"\n\
+             if exist \"{0}\" (\n\
+               if exist target\\debug\\incremental\\poison\\state.bin (\n\
+                 echo Poisoned incremental state still present 1>&2\n\
+                 ping -n 6 127.0.0.1 >nul\n\
+               )\n\
+               exit /b 0\n\
+             )\n\
+             type nul > \"{0}\"\n\
+             if not exist target\\debug\\incremental\\poison mkdir target\\debug\\incremental\\poison\n\
+             echo stale>target\\debug\\incremental\\poison\\state.bin\n\
+             echo Blocking waiting for file lock on artifact directory 1>&2\n\
+             ping -n 6 127.0.0.1 >nul\n\
+             exit /b 0\n",
+            marker.display(),
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             echo \"cargo $*\" >> \"{1}\"\n\
+             if [ -f \"{0}\" ]; then\n\
+               if [ -f target/debug/incremental/poison/state.bin ]; then\n\
+                 echo 'Poisoned incremental state still present' >&2\n\
+                 sleep 5\n\
+               fi\n\
+               exit 0\n\
+             fi\n\
+             : > \"{0}\"\n\
+             mkdir -p target/debug/incremental/poison\n\
+             printf stale > target/debug/incremental/poison/state.bin\n\
+             echo 'Blocking waiting for file lock on artifact directory' >&2\n\
+             sleep 5\n\
+             exit 0\n",
+            marker.display(),
+            log_path.display()
+        )
+    }
+}
+
+timed_test!(
+    cargo_timeout_cleans_incremental_and_next_run_succeeds,
+    Duration::from_secs(45),
+    {
+        let root = unique_temp_dir("cargo-timeout-cleanup");
+        let workspace = root.join("workspace");
+        let tool_dir = root.join("tool");
+        let log_path = root.join("cargo.log");
+        let marker = root.join("first-run.marker");
+        fs::create_dir_all(workspace.join("src")).expect("workspace src");
+        fs::create_dir_all(&tool_dir).expect("tool dir");
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname = \"timeout_cleanup\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("manifest");
+        fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
+        let cargo = fake_script_path(&tool_dir, "cargo");
+        write_fake_script(
+            &cargo,
+            &fake_timeout_then_success_cargo_script(&marker, &log_path),
+        );
+
+        let first = common::isolated_soldr_command()
+            .args(["--no-cache", "cargo", "build"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
+            .output()
+            .expect("first soldr cargo build");
+
+        assert!(
+            !first.status.success(),
+            "first fake cargo invocation should time out\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&first.stdout),
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let first_stderr = String::from_utf8_lossy(&first.stderr);
+        assert!(
+            first_stderr.contains("timed out after 1 seconds"),
+            "timeout should be explicit: {first_stderr}"
+        );
+        assert!(
+            first_stderr.contains("soldr cleanup after abort"),
+            "timeout should report cleanup: {first_stderr}"
+        );
+        assert!(
+            first_stderr.contains("removed 1 incremental/ dir(s)"),
+            "timeout cleanup should remove poisoned incremental dir: {first_stderr}"
+        );
+        assert!(
+            !workspace.join("target/debug/incremental").exists(),
+            "aborted-build cleanup should remove target/debug/incremental"
+        );
+
+        let second = common::isolated_soldr_command()
+            .args(["--no-cache", "cargo", "build"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
+            .output()
+            .expect("second soldr cargo build");
+
+        assert!(
+            second.status.success(),
+            "second fake cargo invocation should complete after cleanup\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&second.stdout),
+            String::from_utf8_lossy(&second.stderr)
+        );
+        let second_stderr = String::from_utf8_lossy(&second.stderr);
+        assert!(
+            !second_stderr.contains("Poisoned incremental state still present"),
+            "second invocation should not observe stale incremental state: {second_stderr}"
+        );
+        let log = fs::read_to_string(&log_path).expect("fake cargo log");
+        assert!(
+            log.lines().count() >= 2,
+            "fake cargo should have been invoked twice: {log}"
+        );
+    }
+);
 
 #[test]
 fn cargo_build_warns_when_disk_space_is_low() {
