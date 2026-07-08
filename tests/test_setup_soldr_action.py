@@ -235,6 +235,25 @@ def test_cross_build_nextest_archive_uses_ci_nextest_profile() -> None:
     assert 'strip = "none"' in cargo_toml
 
 
+def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "uses: zackees/setup-soldr/cook@" in workflow
+    assert "flags: --profile ci-nextest --target ${{ inputs.target }} --workspace" in workflow
+    assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" in workflow
+    assert "soldr prepare --target \"${{ inputs.target }}\" --github-env \"$GITHUB_ENV\"" in workflow
+    assert "soldr cargo clean -p soldr-cli --target \"$target\" --profile ci-nextest" in workflow
+    assert "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" in workflow
+
+    prepare_idx = workflow.index("Prepare blessed target env for cook")
+    cook_idx = workflow.index("Restore cooked dependency cache")
+    clean_idx = workflow.index("Clean cooked first-party stubs")
+    build_idx = workflow.index("Cross-build release binary")
+    assert prepare_idx < cook_idx < clean_idx < build_idx
+
+
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:
     module = _load_module()
     workspace = tmp_path / "workspace"
