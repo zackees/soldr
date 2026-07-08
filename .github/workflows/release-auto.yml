@@ -111,6 +111,8 @@ jobs:
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
             "soldr-${cargo_version}-py3-none-win_amd64.whl"
             "soldr-${cargo_version}-py3-none-win_arm64.whl"
             "soldr-${version}-SHA256SUMS.txt"
@@ -844,20 +846,11 @@ jobs:
           echo "compressed_size_bytes=$(wc -c < "dist/${name}.tar.zst")"
 
       - name: Install uv
-        # PyPI wheel build is gnu-only for now. musllinux wheels need a
-        # docker-based smoke test (the smoke step below cannot install a
-        # musllinux wheel on the glibc-based release runner), and that
-        # plumbing is out of scope for the initial musl-binary ship.
-        # Users on alpine still get pip install via the source dist or
-        # the GitHub Releases tarball; the npm wrapper picks up the musl
-        # tarball directly via libc detection.
-        if: ${{ !contains(matrix.target, 'musl') }}
         uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
         with:
           enable-cache: false
 
       - name: Build hardened wheel from shared target directory
-        if: ${{ !contains(matrix.target, 'musl') }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -944,12 +937,18 @@ jobs:
           # 0.1.0 placeholder sdist. Reference implementation:
           # FastLED/fbuild .github/workflows/template_native_build.yml
           # with a Zig-linked manylinux floor; `maturin --zig` owns its
-          # internal linker setup for wheel tagging. macOS / Windows
+          # internal linker setup for wheel tagging. Native musl lanes
+          # build with the Rust musl target + musl-tools and explicitly
+          # tag the result as musllinux_1_2 so Alpine/distroless pip
+          # installs do not fall back to source builds. macOS / Windows
           # lanes keep `--compatibility pypi` untouched.
           compat_args=(--compatibility pypi)
           case "${{ matrix.target }}" in
             *-unknown-linux-gnu)
               compat_args=(--zig --compatibility manylinux_2_17)
+              ;;
+            *-unknown-linux-musl)
+              compat_args=(--compatibility musllinux_1_2)
               ;;
           esac
 
@@ -963,7 +962,6 @@ jobs:
             --out dist
 
       - name: Lint wheel filenames against workspace version
-        if: ${{ !contains(matrix.target, 'musl') }}
         shell: python
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1059,8 +1057,35 @@ jobs:
           for w in wheels:
               print(f"  - {w.name}")
 
+      - name: Assert linux-musl wheels are tagged musllinux_1_2
+        if: contains(matrix.target, 'unknown-linux-musl')
+        shell: python
+        run: |
+          import sys
+          from pathlib import Path
+
+          wheels = sorted(Path("dist").glob("*.whl"))
+          if not wheels:
+              sys.exit("no wheels in dist/ - maturin produced nothing?")
+          bad = [w.name for w in wheels if "musllinux_1_2" not in w.name]
+          if bad:
+              msg = ["musllinux_1_2 tag assertion FAILED:"]
+              for name in bad:
+                  msg.append(f"  - {name}")
+              msg.append("")
+              msg.append(
+                  "Every linux-musl wheel must carry the musllinux_1_2 "
+                  "platform tag (PEP 656). A native linux tag or missing "
+                  "musllinux tag makes `pip install soldr` on Alpine skip "
+                  "the binary wheel and fall back to source build, which is "
+                  "the soldr#909 regression."
+              )
+              sys.exit("\n".join(msg))
+          print(f"musllinux_1_2 tag assertion OK: {len(wheels)} wheel(s):")
+          for w in wheels:
+              print(f"  - {w.name}")
+
       - name: Verify wheel ships the bin script at the spec path
-        if: ${{ !contains(matrix.target, 'musl') }}
         shell: python
         run: |
           import zipfile
@@ -1209,12 +1234,44 @@ jobs:
               exit 1
           fi
 
+      - name: Smoke test musllinux wheel on Alpine
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          expected_soldr_version="${EXPECTED_VERSION#v}"
+          docker run --rm \
+            -e EXPECTED_VERSION="$expected_soldr_version" \
+            -v "$PWD/dist:/dist:ro" \
+            alpine:3.20 \
+            sh -euxc '
+              apk add --no-cache python3 py3-pip
+              python3 -m venv /tmp/venv
+              . /tmp/venv/bin/activate
+              pip install --no-index --only-binary=:all: --find-links /dist "soldr==${EXPECTED_VERSION}"
+              out="$(soldr --version)"
+              printf "alpine wheel smoke test - soldr --version output: %s\n" "$out"
+              case "$out" in
+                "soldr "*) ;;
+                *) echo "ERROR: soldr --version output did not start with soldr " >&2; exit 1 ;;
+              esac
+              json_out="$(soldr version --json)"
+              test -n "$json_out"
+              printf "alpine wheel smoke test - soldr version --json output: %s\n" "$json_out"
+              compact="$(printf "%s" "$json_out" | tr -d " \n\r\t")"
+              case "$compact" in
+                *"\"soldr_version\":\"${EXPECTED_VERSION}\""*) ;;
+                *) echo "ERROR: soldr version --json did not include soldr_version=${EXPECTED_VERSION}" >&2; exit 1 ;;
+              esac
+            '
+
       - name: Smoke test standalone musl binary
-        # The wheel smoke test above is unreachable for musl rows (the
-        # release runner is glibc, can't install a musllinux wheel). The
-        # standalone musl binary is statically linked so it CAN run on
-        # glibc — verify that the build actually produced a working
-        # executable, otherwise we'd ship an untested artifact.
+        # The Alpine wheel smoke above verifies pip compatibility for
+        # musllinux. Keep this direct binary smoke too: the standalone
+        # musl binary is statically linked so it CAN run on glibc, and
+        # it catches broken tarball artifacts before release upload.
         if: contains(matrix.target, 'musl')
         shell: bash
         env:
@@ -1356,8 +1413,7 @@ jobs:
           name: release-soldr-${{ matrix.target }}
           path: dist/soldr-*.tar.zst
 
-      - if: ${{ !contains(matrix.target, 'musl') }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
@@ -1379,7 +1435,7 @@ jobs:
 
       # Wheels ship as GH-release assets alongside the .tar.zst archives.
       # This is parity with what `publish-pypi` uploads to PyPI: the same
-      # 6 platform wheels become offline-installable via
+      # 7 platform wheels become offline-installable via
       # `pip install <release-asset-url>`, and the assets are attestation-
       # covered via the same SHA256SUMS file below.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1526,6 +1582,8 @@ jobs:
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
+            "soldr-${cargo_version}-py3-none-musllinux_1_2_x86_64.whl"
             "soldr-${cargo_version}-py3-none-win_amd64.whl"
             "soldr-${cargo_version}-py3-none-win_arm64.whl"
             "soldr-${tag}-SHA256SUMS.txt"
@@ -1595,11 +1653,10 @@ jobs:
           set -euo pipefail
           # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
           pypi_version="${PYPI_VERSION#v}"
-          # Expected wheel count == number of non-musl matrix rows in the
-          # `build` job (the musl rows skip wheel build by design). 5 = 2
-          # linux-gnu + 1 darwin (aarch64-only per soldr#1237 macos-x64
-          # drop) + 2 windows-msvc.
-          expected=5
+          # Expected wheel count == number of PyPI wheel matrix rows in the
+          # `build` job. 7 = 2 linux-gnu + 2 linux-musl + 1 darwin
+          # (aarch64-only per soldr#1237 macos-x64 drop) + 2 windows-msvc.
+          expected=7
           deadline=$(( $(date +%s) + 1800 ))
           attempts=0
           max_attempts=60
