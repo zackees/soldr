@@ -265,6 +265,37 @@ message WireBuildRecord {
   uint32 crate_count = 7;
   optional uint64 slowest_crate_us = 8;
   optional string slowest_crate_name = 9;
+  optional WireBuildCacheSummary cache_summary = 10;
+  optional WireBuildLogPaths log_paths = 11;
+  repeated WireBuildMissReason miss_reasons = 12;
+}
+
+message WireBuildCacheSummary {
+  uint64 hits = 1;
+  uint64 misses = 2;
+  uint64 non_cacheable = 3;
+  uint64 errors = 4;
+  uint64 compilations = 5;
+  uint64 time_saved_ms = 6;
+}
+
+message WireBuildLogPaths {
+  optional string zccache_session_id = 1;
+  optional string cache_dir = 2;
+  optional string session_log_path = 3;
+  optional string journal_path = 4;
+  optional string session_stats_path = 5;
+  optional string compile_journal_path = 6;
+  optional string archived_session_log_path = 7;
+  optional string archived_journal_path = 8;
+  optional string archived_session_stats_path = 9;
+  optional string archived_compile_journal_path = 10;
+  optional string private_daemon_name = 11;
+}
+
+message WireBuildMissReason {
+  string reason = 1;
+  uint64 count = 2;
 }
 
 // =========================================================================

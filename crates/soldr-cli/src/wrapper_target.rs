@@ -25,6 +25,7 @@
 
 use crate::core::SoldrPaths;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Env var the cargo front door sets after recording the workspace
 /// `target/` dir for the build session. When present and matching
@@ -127,6 +128,33 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     TargetTouchPath::DaemonFirst
 }
 
+pub(crate) fn record_compile_end_for_wrapper(
+    rustc_args: &[String],
+    started_at_ms: i64,
+    elapsed: Duration,
+) {
+    let Some(session_id) = read_build_session_id_env() else {
+        return;
+    };
+    let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
+    else {
+        return;
+    };
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
+    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+    crate::daemon::client::record_compile(
+        &paths,
+        session_id,
+        crate_name,
+        &target,
+        started_at_ms,
+        Some(duration_us),
+    );
+}
+
 /// True when `SOLDR_TARGET_REGISTRY_RECORDED` is set AND its value
 /// path-equals the workspace `target/` the wrapper resolved. Uses
 /// canonical-on-best-effort comparison so different casings or
@@ -162,7 +190,7 @@ pub fn read_build_session_id_env() -> Option<u64> {
         .and_then(|s| s.parse::<u64>().ok())
 }
 
-fn current_unix_ms() -> i64 {
+pub(crate) fn current_unix_ms() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
