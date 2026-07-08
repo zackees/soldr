@@ -8,6 +8,9 @@
 //! - `cargo watch -x <inner>` introspection so the inner subcommand
 //!   classification flows through to the outer caller
 //!   ([`cargo_watch_inner_is_cacheable`])
+//! - `cargo watch -x fmt` / `-s "cargo fmt"` introspection so the
+//!   rustfmt zccache shim can be applied without engaging unrelated
+//!   build-side hooks.
 //! - `--target` / `--no-cache` argv probes
 //!   ([`cargo_args_specify_target`], [`cargo_args_use_reserved_no_cache`])
 //!
@@ -154,6 +157,16 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
     false
 }
 
+pub(crate) fn cargo_args_should_apply_rustfmt_shim(args: &[String]) -> bool {
+    match first_cargo_subcommand(args) {
+        Some("fmt") => true,
+        Some("watch") => cargo_watch_inner_subcommands(args)
+            .iter()
+            .any(|sub| sub == "fmt"),
+        _ => false,
+    }
+}
+
 fn is_cacheable_cargo_subcommand(subcommand: &str) -> bool {
     // Naming note (issue #824 follow-up): this predicate no longer
     // controls the `RUSTC_WRAPPER=zccache` injection. The front door
@@ -297,15 +310,19 @@ fn cargo_subcommand_index(args: &[String], target: &str) -> Option<usize> {
 
 fn inner_subcommand_from_exec_value(value: &str) -> Option<String> {
     let mut tokens = value.split_whitespace();
-    let first = tokens.next()?;
+    let mut first = tokens.next()?;
     // `-s 'cargo build --release'` form: peel off a literal leading `cargo`
     // so the next token is the inner subcommand.
-    let candidate = if first == "cargo" {
-        tokens.next()?
-    } else {
-        first
-    };
-    Some(candidate.to_string())
+    if first == "cargo" {
+        first = tokens.next()?;
+    }
+    // Accept `cargo +nightly fmt` in shell forms. Leading cargo global
+    // flags are intentionally not parsed here; this helper only handles
+    // the common cargo-watch command strings we can classify safely.
+    while first.starts_with('+') && first.len() > 1 {
+        first = tokens.next()?;
+    }
+    Some(first.to_string())
 }
 
 pub(crate) fn cargo_args_specify_target(args: &[String]) -> bool {

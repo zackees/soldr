@@ -1,12 +1,12 @@
-//! `soldr toolchain link --shim-dir <path>` — write PATH shim files
+//! `soldr toolchain link --shim-dir <path>` — write PATH shim executables
 //! that re-route `cargo` / `rustfmt` / `clippy-driver` / `rustc` /
 //! `rustdoc` back through `soldr <tool>`. Port of setup-soldr's
 //! `ensure-shims.ts` into the soldr binary (issue #407 Phase 3).
 //!
-//! The shim contents are the same shape soldr's *transient* child
-//! shims (`crate::shim_dir`) use, but `toolchain link` writes them to
-//! a caller-chosen directory and supports idempotent re-runs plus
-//! `--force` overwrites. Setup-soldr#133 will delegate its TS shim
+//! The shims are native multicall hardlinks/copies of the running soldr
+//! binary, matching `crate::shim_dir` and `soldr shims`. `toolchain link`
+//! writes them to a caller-chosen directory and supports idempotent re-runs
+//! plus `--force` overwrites. Setup-soldr#133 will delegate its TS shim
 //! installer to this verb on the soldr-managed side.
 
 use serde::Serialize;
@@ -63,7 +63,7 @@ pub(crate) const SKIP_EXISTING_DIFFERS: &str = "existing-differs";
 /// JSON result.
 pub(crate) fn run_toolchain_link(args: LinkArgs) -> Result<i32, SoldrError> {
     let started = Instant::now();
-    let soldr_bin = crate::current_soldr_binary()?;
+    let soldr_bin = crate::shim_materialize::soldr_binary_source()?;
     let outcome = write_shims(&args.shim_dir, &soldr_bin, args.force)?;
 
     let output = ToolchainLinkOutput {
@@ -81,43 +81,18 @@ pub(crate) fn run_toolchain_link(args: LinkArgs) -> Result<i32, SoldrError> {
     Ok(0)
 }
 
-/// Build the shim body for `tool` that points at `soldr_bin`. Pure
-/// function — exposed (`pub(crate)`) so tests can compare verbatim.
-#[cfg(unix)]
-pub(crate) fn shim_body(tool: &str, soldr_bin: &Path) -> String {
-    format!(
-        "#!/bin/sh\nexec \"{}\" {} \"$@\"\n",
-        soldr_bin.display(),
-        tool
-    )
-}
-
-/// Windows `.cmd` shim body. CRLF line endings — cmd.exe parses
-/// multi-line scripts most reliably with CRLF.
-#[cfg(windows)]
-pub(crate) fn shim_body(tool: &str, soldr_bin: &Path) -> String {
-    format!("@echo off\r\n\"{}\" {} %*\r\n", soldr_bin.display(), tool)
-}
-
-/// Resolve the on-disk shim path for a tool inside `shim_dir`. On Unix
-/// this is `<dir>/<tool>`; on Windows we append `.cmd` so PATHEXT picks
-/// the file up automatically.
+/// Resolve the on-disk shim path for a tool inside `shim_dir`. On Windows
+/// this is a native `<tool>.exe` multicall shim so Rust-spawned children
+/// using `CreateProcess` can discover it without shell mediation.
 pub(crate) fn shim_path(shim_dir: &Path, tool: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        shim_dir.join(format!("{tool}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
-        shim_dir.join(tool)
-    }
+    shim_dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// Core file-writer. Creates `shim_dir` if missing, then per tool:
-/// - if no existing file → write + created=true
-/// - if existing file with matching body → skip (existing-matches)
+/// - if no existing file → hardlink/copy + created=true
+/// - if existing file with matching executable bytes → skip (existing-matches)
 /// - if existing file with different body AND !force → skip (existing-differs)
-/// - if existing file with different body AND force → overwrite + created=true
+/// - if existing file with different body AND force → hardlink/copy + created=true
 pub(crate) fn write_shims(
     shim_dir: &Path,
     soldr_bin: &Path,
@@ -127,54 +102,32 @@ pub(crate) fn write_shims(
     let mut out = Vec::with_capacity(LINK_SHIMMED_TOOLS.len());
     for tool in LINK_SHIMMED_TOOLS {
         let path = shim_path(shim_dir, tool);
-        let body = shim_body(tool, soldr_bin);
-
-        let entry = match std::fs::read_to_string(&path) {
-            Ok(existing) if existing == body => ToolEntry {
+        let entry = if crate::shim_materialize::executable_matches(&path, soldr_bin)? {
+            ToolEntry {
                 name: (*tool).to_string(),
                 shim_path: path.display().to_string(),
                 created: false,
                 skip_reason: Some(SKIP_EXISTING_MATCHES.to_string()),
-            },
-            Ok(_existing) if !force => ToolEntry {
+            }
+        } else if path.exists() && !force {
+            ToolEntry {
                 name: (*tool).to_string(),
                 shim_path: path.display().to_string(),
                 created: false,
                 skip_reason: Some(SKIP_EXISTING_DIFFERS.to_string()),
-            },
-            // Either no existing file, existing-differs+force, or any
-            // read error (e.g. NotFound). Write the body either way.
-            _ => {
-                write_executable(&path, &body)?;
-                ToolEntry {
-                    name: (*tool).to_string(),
-                    shim_path: path.display().to_string(),
-                    created: true,
-                    skip_reason: None,
-                }
+            }
+        } else {
+            let result = crate::shim_materialize::materialize_executable(soldr_bin, &path)?;
+            ToolEntry {
+                name: (*tool).to_string(),
+                shim_path: path.display().to_string(),
+                created: result.created,
+                skip_reason: (!result.created).then(|| SKIP_EXISTING_MATCHES.to_string()),
             }
         };
         out.push(entry);
     }
     Ok(out)
-}
-
-#[cfg(unix)]
-fn write_executable(path: &Path, body: &str) -> Result<(), SoldrError> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::write(path, body).map_err(SoldrError::Io)?;
-    let mut perms = std::fs::metadata(path)
-        .map_err(SoldrError::Io)?
-        .permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms).map_err(SoldrError::Io)?;
-    Ok(())
-}
-
-#[cfg(windows)]
-fn write_executable(path: &Path, body: &str) -> Result<(), SoldrError> {
-    std::fs::write(path, body).map_err(SoldrError::Io)?;
-    Ok(())
 }
 
 fn emit_json(output: &ToolchainLinkOutput) -> Result<(), SoldrError> {
@@ -233,6 +186,13 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    #[cfg(windows)]
+    fn system_cmd_exe() -> PathBuf {
+        let system_root = std::env::var_os("SystemRoot")
+            .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
+        PathBuf::from(system_root).join("System32").join("cmd.exe")
+    }
+
     fn tempdir(label: &str) -> PathBuf {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -241,6 +201,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("soldr-link-test-{label}-{nanos}"));
         std::fs::create_dir_all(&dir).expect("create tempdir");
         dir
+    }
+
+    fn fake_soldr_binary(dir: &Path, label: &str) -> PathBuf {
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let path = dir.join(format!("soldr-{label}{suffix}"));
+        std::fs::write(&path, format!("fake-soldr-{label}")).expect("write fake soldr");
+        path
     }
 
     #[test]
@@ -254,48 +221,14 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn shim_body_unix_execs_soldr_with_tool() {
-        let soldr = PathBuf::from("/usr/local/bin/soldr");
-        let body = shim_body("cargo", &soldr);
-        assert!(
-            body.contains("exec \"/usr/local/bin/soldr\" cargo \"$@\""),
-            "unexpected shim body: {body}"
-        );
-        assert!(
-            body.starts_with("#!/bin/sh\n"),
-            "unix shim must start with shebang: {body}"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn shim_body_windows_calls_soldr_with_tool() {
-        let soldr = PathBuf::from(r"C:\bin\soldr.exe");
-        let body = shim_body("cargo", &soldr);
-        assert!(
-            body.contains(r#""C:\bin\soldr.exe" cargo %*"#),
-            "unexpected shim body: {body}"
-        );
-        assert!(
-            body.starts_with("@echo off\r\n"),
-            "windows shim must start with @echo off: {body}"
-        );
-        assert!(
-            body.contains("\r\n"),
-            "windows shim must use CRLF line endings: {body:?}"
-        );
-    }
-
-    #[test]
-    fn shim_path_appends_cmd_on_windows_only() {
+    fn shim_path_appends_exe_on_windows_only() {
         let dir = PathBuf::from("/tmp/shims");
         let p = shim_path(&dir, "cargo");
         #[cfg(windows)]
         assert!(
-            p.to_string_lossy().ends_with("cargo.cmd"),
-            "windows shim path should end with .cmd: {}",
+            p.to_string_lossy().ends_with("cargo.exe"),
+            "windows shim path should end with .exe: {}",
             p.display()
         );
         #[cfg(not(windows))]
@@ -309,7 +242,7 @@ mod tests {
     #[test]
     fn write_shims_creates_every_routed_tool_on_fresh_dir() {
         let dir = tempdir("fresh");
-        let soldr = PathBuf::from("/opt/soldr/soldr");
+        let soldr = fake_soldr_binary(&dir, "fresh");
         let result = write_shims(&dir, &soldr, false).expect("write_shims");
         assert_eq!(result.len(), LINK_SHIMMED_TOOLS.len());
         for (entry, expected) in result.iter().zip(LINK_SHIMMED_TOOLS.iter()) {
@@ -324,10 +257,34 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    crate::timed_test!(windows_link_shims_are_visible_to_rust_command_lookup, {
+        let dir = tempdir("windows-command-lookup");
+        let cmd = system_cmd_exe();
+        assert!(cmd.is_file(), "missing {}", cmd.display());
+        write_shims(&dir, &cmd, false).expect("write shims");
+
+        for tool in LINK_SHIMMED_TOOLS {
+            let output = std::process::Command::new(tool)
+                .args(["/D", "/C", "exit 0"])
+                .env("PATH", &dir)
+                .output()
+                .unwrap_or_else(|err| {
+                    panic!("Rust Command::new({tool:?}) did not find executable shim: {err}")
+                });
+            assert!(
+                output.status.success(),
+                "link shim {tool} resolved but failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    });
+
     #[test]
     fn write_shims_skips_existing_matching_files() {
         let dir = tempdir("idempotent");
-        let soldr = PathBuf::from("/opt/soldr/soldr");
+        let soldr = fake_soldr_binary(&dir, "idempotent");
         let first = write_shims(&dir, &soldr, false).expect("first run");
         assert!(first.iter().all(|e| e.created));
 
@@ -345,7 +302,7 @@ mod tests {
     #[test]
     fn write_shims_skips_existing_differing_files_without_force() {
         let dir = tempdir("differs-noforce");
-        let soldr = PathBuf::from("/opt/soldr/soldr");
+        let soldr = fake_soldr_binary(&dir, "differs-noforce");
         // Seed every shim with foreign content.
         std::fs::create_dir_all(&dir).expect("mkdir");
         for tool in LINK_SHIMMED_TOOLS {
@@ -372,7 +329,7 @@ mod tests {
     #[test]
     fn write_shims_overwrites_existing_differing_files_with_force() {
         let dir = tempdir("differs-force");
-        let soldr = PathBuf::from("/opt/soldr/soldr");
+        let soldr = fake_soldr_binary(&dir, "differs-force");
         std::fs::create_dir_all(&dir).expect("mkdir");
         for tool in LINK_SHIMMED_TOOLS {
             let p = shim_path(&dir, tool);
@@ -386,7 +343,7 @@ mod tests {
             let on_disk = std::fs::read_to_string(&entry.shim_path).expect("read");
             assert_eq!(
                 on_disk,
-                shim_body(&entry.name, &soldr),
+                std::fs::read_to_string(&soldr).expect("read source"),
                 "forced overwrite content mismatch"
             );
         }
@@ -395,7 +352,7 @@ mod tests {
     #[test]
     fn write_shims_overwrite_with_force_is_idempotent() {
         let dir = tempdir("force-idempotent");
-        let soldr = PathBuf::from("/opt/soldr/soldr");
+        let soldr = fake_soldr_binary(&dir, "force-idempotent");
         let first = write_shims(&dir, &soldr, true).expect("first");
         assert!(first.iter().all(|e| e.created));
 

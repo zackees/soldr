@@ -257,14 +257,7 @@ fn log_contains_cache_dir(log: &str, cache_root: &Path) -> bool {
 }
 
 fn expected_link_shim_path(dir: &Path, tool: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        dir.join(format!("{tool}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
-        dir.join(tool)
-    }
+    dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
 }
 
 fn assert_zccache_wrapped_rustc_compile(log: &str, rustc: &Path, crate_name: &str) {
@@ -1066,7 +1059,7 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
     let cache_root = unique_temp_dir("cargo-fmt-no-cache-direct");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
-    let (rustup, cargo, rustc, rustfmt, zccache) =
+    let (rustup, cargo, rustc, _rustfmt, zccache) =
         install_fake_cargo_fmt_toolchain(&log_path, &source_path);
 
     let output = isolated_soldr_command()
@@ -1096,11 +1089,15 @@ fn cargo_fmt_no_cache_leaves_rustfmt_direct() {
     );
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
+    let rustfmt_line = log
+        .lines()
+        .find(|line| line.starts_with("rustfmt "))
+        .unwrap_or_else(|| panic!("no-cache cargo fmt should invoke rustfmt directly: {log}"));
     assert!(
-        path_display_variants(&rustfmt)
+        path_display_variants(&source_path)
             .iter()
-            .any(|path| log.contains(&format!("rustfmt={path}"))),
-        "no-cache cargo fmt should fall back to direct rustfmt: {log}"
+            .any(|path| rustfmt_line.contains(path)),
+        "no-cache cargo fmt should pass the source path to direct rustfmt: {log}"
     );
     assert!(
         !log.contains("zccache wrapper"),

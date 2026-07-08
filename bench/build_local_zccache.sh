@@ -7,7 +7,7 @@
 #
 # Defaults to $HOME/dev/zccache. The zccache repo's
 # [profile.release] should already ship `debug = "line-tables-only"`
-# and `split-debuginfo = "packed"` so cargo build --release produces
+# and `split-debuginfo = "packed"` so soldr cargo build --release produces
 # .exe + .pdb pairs in target/release.
 set -euo pipefail
 
@@ -22,9 +22,14 @@ if [ ! -f "$zccache_dir/Cargo.toml" ]; then
   echo "error: $zccache_dir does not look like a Rust crate (no Cargo.toml)" >&2
   exit 1
 fi
+if ! command -v soldr >/dev/null 2>&1; then
+  echo "error: soldr is required on PATH to build local zccache through the cached toolchain" >&2
+  echo "hint: install soldr first, then rerun this script; pass --no-cache to soldr manually only while diagnosing cache failures" >&2
+  exit 1
+fi
 
 echo "soldr: building zccache release in $zccache_dir ..."
-(cd "$zccache_dir" && cargo build --release)
+(cd "$zccache_dir" && soldr cargo build --release)
 target_release="$zccache_dir/target/release"
 
 echo
