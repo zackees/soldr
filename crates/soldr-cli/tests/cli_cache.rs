@@ -54,6 +54,14 @@ fn status_reports_cache_control_defaults() {
         stdout.contains("(source: embedded)"),
         "status should report the embedded zccache backend: {stdout}"
     );
+    assert!(
+        stdout.contains("zccache status: embedded in soldr-daemon"),
+        "status should point daemon health checks at soldr-daemon: {stdout}"
+    );
+    assert!(
+        !stdout.contains("zccache status: no output"),
+        "embedded zccache should not look like a silent external daemon: {stdout}"
+    );
 }
 
 #[test]
@@ -197,6 +205,10 @@ fn cache_command_reports_managed_zccache_status() {
     assert!(
         stdout.contains("(source: embedded)"),
         "cache command should report the embedded zccache backend: {stdout}"
+    );
+    assert!(
+        stdout.contains("zccache status: embedded in soldr-daemon"),
+        "cache command should point daemon health checks at soldr-daemon: {stdout}"
     );
 }
 

@@ -33,7 +33,7 @@ use crate::{
 };
 use std::ffi::OsString;
 use std::io::Write;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
 mod cache_plan;
@@ -52,6 +52,7 @@ use cache_plan::CargoCachePlan;
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
+const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 
 // -- Re-exports for cross-module callers --
 //
@@ -919,56 +920,22 @@ pub(crate) async fn run_cargo_front_door(
 fn run_command_capturing_clippy(
     command: &mut std::process::Command,
 ) -> Result<(std::process::ExitStatus, RawClippyCapture), SoldrError> {
-    use std::io::Read;
-
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|err| {
         SoldrError::Other(format!("spawn cargo for clippy capture failed: {err}"))
     })?;
-    let mut child_stdout = child.stdout.take().expect("piped");
-    let mut child_stderr = child.stderr.take().expect("piped");
+    let child_stdout = child.stdout.take().expect("piped");
+    let child_stderr = child.stderr.take().expect("piped");
 
     // Read both streams in parallel using OS threads so neither side
     // deadlocks if it fills its pipe before the consumer drains it.
-    let stdout_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 8192];
-        let stdout = std::io::stdout();
-        loop {
-            match child_stdout.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    let _ = stdout.lock().write_all(&chunk[..n]);
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = stdout.lock().flush();
-        buf
-    });
-    let stderr_handle = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let mut chunk = [0u8; 8192];
-        let stderr = std::io::stderr();
-        loop {
-            match child_stderr.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    let _ = stderr.lock().write_all(&chunk[..n]);
-                }
-                Err(_) => break,
-            }
-        }
-        let _ = stderr.lock().flush();
-        buf
-    });
+    let stdout_rx = spawn_capture_pipe_reader(child_stdout, CapturePipe::Stdout);
+    let stderr_rx = spawn_capture_pipe_reader(child_stderr, CapturePipe::Stderr);
 
     let status = wait_for_cargo_child(&mut child, "cargo clippy")?;
-    let stdout = stdout_handle.join().unwrap_or_default();
-    let stderr = stderr_handle.join().unwrap_or_default();
+    let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo clippy stdout");
+    let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo clippy stderr");
     let capture = RawClippyCapture {
         stdout,
         stderr,
@@ -999,37 +966,118 @@ fn run_command_inheriting_stdio(
 fn run_command_capturing_diagnostic_tail(
     command: &mut std::process::Command,
 ) -> Result<(std::process::ExitStatus, String), SoldrError> {
-    use std::io::Read;
-
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
     let mut child = command.spawn().map_err(|err| {
         SoldrError::Other(format!("spawn cargo for diagnostic capture failed: {err}"))
     })?;
-    let mut child_stderr = child.stderr.take().expect("piped");
+    let child_stderr = child.stderr.take().expect("piped");
 
-    let stderr_handle = std::thread::spawn(move || -> Vec<u8> {
-        let mut buf = Vec::new();
+    let stderr_rx = spawn_capture_pipe_reader(child_stderr, CapturePipe::Stderr);
+
+    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture")?;
+    let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
+    let captured = String::from_utf8_lossy(&bytes).into_owned();
+    Ok((status, captured))
+}
+
+#[derive(Clone, Copy)]
+enum CapturePipe {
+    Stdout,
+    Stderr,
+}
+
+enum CapturePipeMessage {
+    Chunk(Vec<u8>),
+    Eof,
+}
+
+fn spawn_capture_pipe_reader<R>(
+    mut reader: R,
+    pipe: CapturePipe,
+) -> std::sync::mpsc::Receiver<CapturePipeMessage>
+where
+    R: std::io::Read + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut chunk = [0u8; 8192];
-        let stderr = std::io::stderr();
         loop {
-            match child_stderr.read(&mut chunk) {
+            match reader.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
-                    buf.extend_from_slice(&chunk[..n]);
-                    let _ = stderr.lock().write_all(&chunk[..n]);
+                    let bytes = chunk[..n].to_vec();
+                    match pipe {
+                        CapturePipe::Stdout => {
+                            let stdout = std::io::stdout();
+                            let _ = stdout.lock().write_all(&bytes);
+                        }
+                        CapturePipe::Stderr => {
+                            let stderr = std::io::stderr();
+                            let _ = stderr.lock().write_all(&bytes);
+                        }
+                    }
+                    let _ = tx.send(CapturePipeMessage::Chunk(bytes));
                 }
                 Err(_) => break,
             }
         }
-        let _ = stderr.lock().flush();
-        buf
+        match pipe {
+            CapturePipe::Stdout => {
+                let stdout = std::io::stdout();
+                let _ = stdout.lock().flush();
+            }
+            CapturePipe::Stderr => {
+                let stderr = std::io::stderr();
+                let _ = stderr.lock().flush();
+            }
+        }
+        let _ = tx.send(CapturePipeMessage::Eof);
     });
+    rx
+}
 
-    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture")?;
-    let bytes = stderr_handle.join().unwrap_or_default();
-    let captured = String::from_utf8_lossy(&bytes).into_owned();
-    Ok((status, captured))
+fn drain_capture_pipe_after_child_exit(
+    rx: &std::sync::mpsc::Receiver<CapturePipeMessage>,
+    context: &str,
+) -> Vec<u8> {
+    let deadline = Instant::now() + CAPTURE_PIPE_EOF_GRACE;
+    let mut buf = Vec::new();
+    loop {
+        match rx.try_recv() {
+            Ok(CapturePipeMessage::Chunk(bytes)) => {
+                buf.extend_from_slice(&bytes);
+                continue;
+            }
+            Ok(CapturePipeMessage::Eof) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return buf;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            eprintln!(
+                "soldr: {context} pipe did not close within {}ms after cargo exited; \
+                 continuing with captured output",
+                CAPTURE_PIPE_EOF_GRACE.as_millis()
+            );
+            return buf;
+        };
+        match rx.recv_timeout(remaining) {
+            Ok(CapturePipeMessage::Chunk(bytes)) => buf.extend_from_slice(&bytes),
+            Ok(CapturePipeMessage::Eof) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                return buf;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                eprintln!(
+                    "soldr: {context} pipe did not close within {}ms after cargo exited; \
+                     continuing with captured output",
+                    CAPTURE_PIPE_EOF_GRACE.as_millis()
+                );
+                return buf;
+            }
+        }
+    }
 }
 
 /// Detect a fake-cargo test harness via the same env vars the binaries

@@ -557,7 +557,7 @@ pub fn record_target_touch_or_fallback(paths: &SoldrPaths, target: &Path) {
         Err(_) => return,
     };
 
-    let sock = daemon_sock_path(paths);
+    let sock = default_sock_path(paths);
     let req = Request::RecordTargetTouch {
         path: target.display().to_string(),
         unix_seconds,

@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Debug)]
 pub enum LifecycleError {
@@ -155,9 +155,10 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 /// within a short window, the loser still returns `Ok(())` — the next
 /// wrapper invocation will reprobe and try again.
 ///
-/// Best-effort: returns Ok(()) on spawn success, Err otherwise. Caller
-/// MUST treat the daemon as eventually-consistent — the spawn returns
-/// before the socket is ready.
+/// Best-effort: returns Ok(()) on spawn success, Err otherwise. The
+/// spawn owner keeps the herd lock briefly after spawn while waiting
+/// for the daemon endpoint to become live; if readiness still races or
+/// times out, callers must keep using their normal retry budget.
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
     // Prefer the sibling `soldr-daemon` binary (dev builds + maturin
@@ -213,11 +214,34 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     if !daemon_via_self && !crate::daemon::backend_handle_adoption::running_process_disabled() {
         let _ = crate::daemon::service_definition::install_service_definition(&relocated);
     }
-    if daemon_via_self {
+    let spawn_result = if daemon_via_self {
         spawn_detached_self_inner(&relocated).map_err(LifecycleError::Spawn)
     } else {
         spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
+    };
+    spawn_result?;
+
+    // Keep the spawn lock held until the daemon has written its PID file and
+    // answered the active endpoint probe. Without this, a cargo fan-out on
+    // Windows can acquire the lock sequentially in several rustc-wrapper
+    // processes and spawn multiple `soldr daemon start --foreground` children
+    // before the first one is ready.
+    if let Some(paths) = paths.as_ref() {
+        wait_for_spawned_daemon_ready(paths, Duration::from_secs(5));
     }
+
+    Ok(())
+}
+
+fn wait_for_spawned_daemon_ready(paths: &SoldrPaths, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if is_live(paths).is_some() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
 }
 
 /// Acquire the spawn-herd lock. Returns `Some(file)` when the
@@ -301,20 +325,7 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(windows)]
 fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
-
-    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW
-    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
-
-    Command::new(daemon)
-        .arg("--foreground")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(FLAGS)
-        .spawn()?;
-    Ok(())
+    spawn_detached_windows_no_inherit(daemon, &["--foreground"])
 }
 
 /// Spawn the daemon via `<current-soldr-exe> daemon start --foreground`
@@ -368,19 +379,138 @@ fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(windows)]
 fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
-    use std::os::windows::process::CommandExt;
-    use std::process::{Command, Stdio};
+    spawn_detached_windows_no_inherit(soldr_self, &["daemon", "start", "--foreground"])
+}
 
-    const FLAGS: u32 = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+#[cfg(windows)]
+#[allow(clippy::upper_case_acronyms)]
+fn spawn_detached_windows_no_inherit(program: &Path, args: &[&str]) -> Result<(), std::io::Error> {
+    use std::ffi::c_void;
+    use std::mem::{size_of, zeroed};
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::raw::HANDLE;
+    use std::ptr::{null, null_mut};
 
-    Command::new(soldr_self)
-        .args(["daemon", "start", "--foreground"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(FLAGS)
-        .spawn()?;
+    #[allow(non_camel_case_types)]
+    type DWORD = u32;
+    #[allow(non_camel_case_types)]
+    type BOOL = i32;
+    #[allow(non_camel_case_types)]
+    type LPVOID = *mut c_void;
+    #[allow(non_camel_case_types)]
+    type LPCVOID = *const c_void;
+    #[allow(non_camel_case_types)]
+    type LPCWSTR = *const u16;
+    #[allow(non_camel_case_types)]
+    type LPWSTR = *mut u16;
+    #[allow(non_camel_case_types)]
+    type WORD = u16;
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct STARTUPINFOW {
+        cb: DWORD,
+        lpReserved: LPWSTR,
+        lpDesktop: LPWSTR,
+        lpTitle: LPWSTR,
+        dwX: DWORD,
+        dwY: DWORD,
+        dwXSize: DWORD,
+        dwYSize: DWORD,
+        dwXCountChars: DWORD,
+        dwYCountChars: DWORD,
+        dwFillAttribute: DWORD,
+        dwFlags: DWORD,
+        wShowWindow: WORD,
+        cbReserved2: WORD,
+        lpReserved2: *mut u8,
+        hStdInput: HANDLE,
+        hStdOutput: HANDLE,
+        hStdError: HANDLE,
+    }
+
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct PROCESS_INFORMATION {
+        hProcess: HANDLE,
+        hThread: HANDLE,
+        dwProcessId: DWORD,
+        dwThreadId: DWORD,
+    }
+
+    extern "system" {
+        fn CreateProcessW(
+            lpApplicationName: LPCWSTR,
+            lpCommandLine: LPWSTR,
+            lpProcessAttributes: LPVOID,
+            lpThreadAttributes: LPVOID,
+            bInheritHandles: BOOL,
+            dwCreationFlags: DWORD,
+            lpEnvironment: LPCVOID,
+            lpCurrentDirectory: LPCWSTR,
+            lpStartupInfo: *mut STARTUPINFOW,
+            lpProcessInformation: *mut PROCESS_INFORMATION,
+        ) -> BOOL;
+        fn CloseHandle(hObject: HANDLE) -> BOOL;
+    }
+
+    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW.
+    const FLAGS: DWORD = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+
+    let application: Vec<u16> = program.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut command_line = build_windows_command_line(program, args);
+    // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are plain Win32 POD
+    // structs. Zero initialization is the documented baseline before setting
+    // STARTUPINFOW.cb and passing both structs to CreateProcessW.
+    let mut startup: STARTUPINFOW = unsafe { zeroed() };
+    startup.cb = size_of::<STARTUPINFOW>() as DWORD;
+    let mut process_info: PROCESS_INFORMATION = unsafe { zeroed() };
+
+    // SAFETY: application and command_line are null-terminated UTF-16 buffers
+    // that live for the duration of the call. All optional pointer parameters
+    // are null by design, and bInheritHandles is FALSE so the child cannot
+    // inherit Cargo/test pipe handles from the wrapper process.
+    let ok = unsafe {
+        CreateProcessW(
+            application.as_ptr(),
+            command_line.as_mut_ptr(),
+            null_mut(),
+            null_mut(),
+            0,
+            FLAGS,
+            null(),
+            null(),
+            &mut startup,
+            &mut process_info,
+        )
+    };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: CreateProcessW initialized these handles on success; this
+    // process does not need to retain either handle after the detached spawn.
+    unsafe {
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+    }
     Ok(())
+}
+
+#[cfg(windows)]
+fn build_windows_command_line(program: &Path, args: &[&str]) -> Vec<u16> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut out = Vec::new();
+    out.push('"' as u16);
+    out.extend(program.as_os_str().encode_wide());
+    out.push('"' as u16);
+    for arg in args {
+        out.push(' ' as u16);
+        out.extend(OsStr::new(arg).encode_wide());
+    }
+    out.push(0);
+    out
 }
 
 #[cfg(unix)]

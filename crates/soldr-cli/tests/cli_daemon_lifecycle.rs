@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
 use soldr_cli::core::SoldrPaths;
+use wait_timeout::ChildExt;
 mod common;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -97,6 +98,44 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process
     cmd.output().expect("failed to run soldr")
 }
 
+fn run_soldr_with_timeout(
+    args: &[&str],
+    cache_root: &Path,
+    home_root: &Path,
+    current_dir: &Path,
+    timeout: Duration,
+) -> std::process::Output {
+    let mut cmd = Command::new(common::soldr_bin());
+    cmd.args(args)
+        .current_dir(current_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in isolated_env(cache_root, home_root) {
+        cmd.env(k, v);
+    }
+    cmd.env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000");
+    cmd.env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60");
+    cmd.env_remove("RUSTC_WRAPPER");
+
+    let mut child = cmd.spawn().expect("failed to spawn soldr");
+    if child
+        .wait_timeout(timeout)
+        .expect("failed waiting for soldr")
+        .is_none()
+    {
+        let _ = child.kill();
+        let output = child.wait_with_output().expect("collect timed-out output");
+        panic!(
+            "soldr {:?} timed out after {:?}\nstdout:\n{}\nstderr:\n{}",
+            args,
+            timeout,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    child.wait_with_output().expect("collect soldr output")
+}
+
 struct Daemon {
     child: Option<Child>,
     cache_root: PathBuf,
@@ -144,6 +183,19 @@ impl Drop for Daemon {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+}
+
+#[cfg(windows)]
+struct DaemonCleanup {
+    cache_root: PathBuf,
+    home_root: PathBuf,
+}
+
+#[cfg(windows)]
+impl Drop for DaemonCleanup {
+    fn drop(&mut self) {
+        let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
     }
 }
 
@@ -216,6 +268,128 @@ fn running_process_disable_uses_direct_daemon_liveness() {
     );
 
     drop(daemon);
+}
+
+#[test]
+fn doctor_uses_same_endpoint_as_daemon_status_for_cook_counts() {
+    let daemon = Daemon::spawn();
+    let cache_root = daemon.cache_root.clone();
+    let home_root = daemon.home_root.clone();
+    let workspace = unique_temp_dir("daemon-doctor-workspace");
+
+    let status = run_soldr(&["daemon", "status", "--json"], &cache_root, &home_root);
+    assert!(
+        status.status.success(),
+        "daemon status failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status_body: Value = serde_json::from_slice(&status.stdout).expect("status json");
+    assert_eq!(status_body["running"].as_bool(), Some(true));
+
+    let doctor = run_soldr_with_timeout(
+        &["doctor", "--json"],
+        &cache_root,
+        &home_root,
+        &workspace,
+        Duration::from_secs(15),
+    );
+    assert!(
+        doctor.status.success(),
+        "doctor failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let doctor_body: Value = serde_json::from_slice(&doctor.stdout).expect("doctor json");
+    assert_eq!(
+        doctor_body["cook"]["entries"].as_u64(),
+        Some(0),
+        "doctor must query the same live daemon endpoint as `soldr daemon status`: {doctor_body}"
+    );
+    assert_eq!(doctor_body["cook"]["total_bytes"].as_u64(), Some(0));
+    assert_eq!(doctor_body["cook"]["hits_this_session"].as_u64(), Some(0));
+
+    drop(daemon);
+}
+
+#[cfg(windows)]
+#[test]
+fn cargo_test_recovers_after_daemon_stop_without_herd_spawning() {
+    let cache_root = unique_temp_dir("daemon-restart-cache");
+    let home_root = unique_temp_dir("daemon-restart-home");
+    let project = unique_temp_dir("daemon-restart-project");
+    let _cleanup = DaemonCleanup {
+        cache_root: cache_root.clone(),
+        home_root: home_root.clone(),
+    };
+
+    fs::write(
+        project.join("Cargo.toml"),
+        "[package]\nname = \"soldr_daemon_restart_probe\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("write Cargo.toml");
+    fs::create_dir_all(project.join("src")).expect("create src");
+    fs::write(
+        project.join("src").join("lib.rs"),
+        "pub fn add(left: usize, right: usize) -> usize { left + right }\n\
+         #[test]\n\
+         fn it_adds() { assert_eq!(add(2, 2), 4); }\n",
+    )
+    .expect("write lib.rs");
+
+    let first = run_soldr_with_timeout(
+        &["cargo", "test", "--quiet"],
+        &cache_root,
+        &home_root,
+        &project,
+        Duration::from_secs(90),
+    );
+    assert!(
+        first.status.success(),
+        "first soldr cargo test failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&first.stdout),
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    let stop = run_soldr(&["daemon", "stop"], &cache_root, &home_root);
+    assert!(
+        stop.status.success(),
+        "daemon stop failed: stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&stop.stdout),
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    fs::remove_dir_all(project.join("target")).expect("remove target for forced recompile");
+
+    let second = run_soldr_with_timeout(
+        &["cargo", "test", "--quiet"],
+        &cache_root,
+        &home_root,
+        &project,
+        Duration::from_secs(90),
+    );
+    assert!(
+        second.status.success(),
+        "second soldr cargo test after daemon stop failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&second.stdout),
+        String::from_utf8_lossy(&second.stderr)
+    );
+
+    let lifecycle = fs::read_to_string(
+        cache_root
+            .join("cache")
+            .join("soldr-daemon")
+            .join("lifecycle.jsonl"),
+    )
+    .unwrap_or_default();
+    let spawn_count = lifecycle
+        .lines()
+        .filter(|line| line.contains("\"event\":\"spawn\""))
+        .count();
+    assert!(
+        spawn_count <= 2,
+        "two cargo test runs with one explicit stop should spawn at most one daemon each; lifecycle={lifecycle}"
+    );
 }
 
 #[test]
