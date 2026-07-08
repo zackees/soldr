@@ -160,14 +160,27 @@ fn run_zccache_soldr() -> i32 {
         return 2;
     }
 
-    match crate::compile_dispatch::dispatch_compile(
+    match crate::compile_dispatch::dispatch_compile_detailed(
         &rustc_argv,
         std::io::stdout(),
         std::io::stderr(),
     ) {
         Ok(code) => normalize_exit_code(code),
-        Err(err) => {
-            eprintln!("zccache-soldr: dispatch failed: {err}");
+        Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
+            crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
+            match crate::compile_dispatch::direct_exec_rustc(&rustc_argv) {
+                Ok(code) => normalize_exit_code(code),
+                Err(err) => {
+                    eprintln!("zccache-soldr: direct rustc fallback failed: {err}");
+                    101
+                }
+            }
+        }
+        Err(failure) => {
+            eprintln!(
+                "zccache-soldr: dispatch failed: {}",
+                failure.into_soldr_error()
+            );
             101
         }
     }

@@ -225,11 +225,8 @@ pub(crate) fn run_rustc_wrapper(
         }
 
         // L1 (issue #977 / #980 L1): dispatch the rustc invocation to
-        // the daemon's embedded zccache service over IPC. As of the
-        // L1 second pass there is no fallback — embedded is
-        // mandatory. The legacy `zccache.exe` fork was deleted.
-        // `compile_via_daemon` either returns the daemon's reply or
-        // an error that the wrapper propagates to cargo.
+        // the daemon's embedded zccache service over IPC. The legacy
+        // `zccache.exe` fork was deleted in the L1 second pass.
         profile.finish("before_embedded_compile_ipc");
         // soldr#1081 — lifted to `crate::compile_dispatch` so
         // multicall `zccache-soldr` dispatch can share the same
@@ -237,12 +234,49 @@ pub(crate) fn run_rustc_wrapper(
         // legacy path retained only for the unit tests that still
         // import it; the production path now goes through the lifted
         // function.
-        return crate::compile_dispatch::compile_via_daemon(&effective_args[1..]);
+        // soldr#1081 — lifted to `crate::compile_dispatch` so the
+        // dedicated `zccache-soldr` shim binary can share the same
+        // hang-safe retry logic.
+        //
+        // soldr#1300 — when the retry budget is exhausted and the
+        // terminal condition is daemon UNAVAILABILITY (NotRunning /
+        // spawn failure / transport error — NOT a compile failure or
+        // error reply from a healthy daemon), degrade to the same
+        // direct-exec path used for non-cacheable rustc invocations
+        // below: run the real rustc uncached instead of failing the
+        // build. A daemon-reported compile failure never reaches this
+        // branch — it arrives as `Ok(exit_code != 0)` and is
+        // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
+        // restores the pre-#1300 hard-fail for CI lanes that want to
+        // catch daemon regressions.
+        return match crate::compile_dispatch::compile_via_daemon_detailed(&effective_args[1..]) {
+            Ok(code) => Ok(code),
+            Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
+                crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
+                direct_exec_tool(tool_arg, tool_stem, &effective_args, None)
+            }
+            Err(failure) => Err(failure.into_soldr_error()),
+        };
     }
 
+    direct_exec_tool(tool_arg, tool_stem, &effective_args, Some(profile))
+}
+
+/// Direct (uncached) exec of the wrapped tool — the non-daemon path.
+/// Used for clippy-driver / non-cacheable rustc invocations, and as
+/// the soldr#1300 degradation when the compile daemon is unavailable.
+/// Preserves rustc's stdout/stderr/exit-code passthrough exactly: the
+/// child inherits the wrapper's stdio and the exit code is returned
+/// to cargo unchanged.
+fn direct_exec_tool(
+    tool_arg: &str,
+    tool_stem: &str,
+    effective_args: &[String],
+    profile: Option<WrapperProfile>,
+) -> Result<i32, SoldrError> {
     // Resolve the tool binary. If it's already a full path, use it
     // directly. Otherwise resolve via rustup.
-    let tool_path: std::path::PathBuf = if std::path::Path::new(tool_arg.as_str()).is_absolute() {
+    let tool_path: std::path::PathBuf = if std::path::Path::new(tool_arg).is_absolute() {
         tool_arg.into()
     } else {
         resolve_toolchain_binary(tool_stem)?
@@ -252,7 +286,9 @@ pub(crate) fn run_rustc_wrapper(
     command.args(&effective_args[2..]);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    profile.finish("before_tool_spawn");
+    if let Some(profile) = profile {
+        profile.finish("before_tool_spawn");
+    }
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
