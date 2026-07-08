@@ -32,7 +32,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::daemon::client;
@@ -63,6 +63,12 @@ pub const DEFAULT_SPAWN_RETRY_BUDGET_MS: u64 = 30_000;
 /// is coming up but doesn't waste an extra ~hundred-ms after the
 /// socket starts accepting.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Freshness window for the cross-process daemon-unavailable marker.
+/// When one wrapper proves the daemon cannot be reached, sibling rustc
+/// wrapper processes skip the full spawn retry budget for this window
+/// and fall back directly after one cheap probe.
+const DAEMON_UNAVAILABLE_MARKER_TTL: Duration = Duration::from_secs(300);
 
 /// Predicate for the env-var filter (Phase 5c from #981, reworked for
 /// correctness after the `cargo:rustc-env` regression that broke the
@@ -337,6 +343,69 @@ pub fn direct_exec_rustc(rustc_argv: &[String]) -> Result<i32, SoldrError> {
     Ok(status.code().unwrap_or(1))
 }
 
+fn daemon_unavailable_marker_path(paths: &SoldrPaths) -> PathBuf {
+    crate::cache_lib::soldr_daemon_dir(paths).join("compile-daemon-unavailable")
+}
+
+fn remember_daemon_unavailable(marker_path: &Path) {
+    if let Some(parent) = marker_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(marker_path, b"daemon unavailable\n");
+}
+
+fn forget_daemon_unavailable(marker_path: &Path) {
+    let _ = std::fs::remove_file(marker_path);
+}
+
+fn daemon_unavailable_marker_is_fresh_at(marker_path: &Path, now: SystemTime) -> bool {
+    let Ok(metadata) = std::fs::metadata(marker_path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    match now.duration_since(modified) {
+        Ok(age) if age <= DAEMON_UNAVAILABLE_MARKER_TTL => true,
+        Ok(_) => {
+            forget_daemon_unavailable(marker_path);
+            false
+        }
+        Err(_) => true,
+    }
+}
+
+fn should_skip_retry_after_recent_daemon_unavailable(
+    marker_path: &Path,
+    first_err: &client::ClientError,
+) -> bool {
+    !daemon_required()
+        && client_error_indicates_daemon_unavailable(first_err)
+        && daemon_unavailable_marker_is_fresh_at(marker_path, SystemTime::now())
+}
+
+fn recent_daemon_unavailable_error(
+    sock_path: &Path,
+    first_err: client::ClientError,
+) -> DispatchError {
+    DispatchError::BudgetExhausted {
+        budget: Duration::ZERO,
+        last_err: Some(first_err),
+        sock: sock_path.to_path_buf(),
+        spawn_err: Some(
+            "recent daemon-unavailable marker present; skipped spawn retry".to_string(),
+        ),
+    }
+}
+
+fn record_dispatch_result_marker(marker_path: &Path, result: &Result<i32, DispatchError>) {
+    match result {
+        Ok(_) => forget_daemon_unavailable(marker_path),
+        Err(err) if err.is_daemon_unavailable() => remember_daemon_unavailable(marker_path),
+        Err(_) => {}
+    }
+}
+
 /// Dispatch a rustc-style compile to soldr-daemon's embedded zccache
 /// service and stream the reply back to `stdout`/`stderr`. Returns
 /// the rustc exit code on success.
@@ -368,8 +437,8 @@ where
 /// fail.
 pub fn dispatch_compile_detailed<O, E>(
     rustc_argv: &[String],
-    mut stdout: O,
-    mut stderr: E,
+    stdout: O,
+    stderr: E,
 ) -> Result<i32, DispatchError>
 where
     O: Write,
@@ -379,23 +448,83 @@ where
         DispatchError::Setup(SoldrError::Other(format!("resolve soldr paths: {e}")))
     })?;
     let sock = client::default_sock_path(&paths);
+    let marker = daemon_unavailable_marker_path(&paths);
+    dispatch_compile_with_sock_and_marker_detailed(
+        &sock,
+        Some(&marker),
+        rustc_argv,
+        stdout,
+        stderr,
+        true,
+    )
+}
+
+fn dispatch_compile_with_sock_and_marker_detailed<O, E>(
+    sock_path: &Path,
+    marker_path: Option<&Path>,
+    rustc_argv: &[String],
+    mut stdout: O,
+    mut stderr: E,
+    spawn_on_first_failure: bool,
+) -> Result<i32, DispatchError>
+where
+    O: Write,
+    E: Write,
+{
     let req = build_compile_request(rustc_argv);
 
-    // First try — daemon may already be running.
-    let first_err = match client::compile_streaming(&sock, req.clone(), &mut stdout, &mut stderr) {
-        Ok(done) => return Ok(done.exit_code),
-        Err(e) => e,
-    };
+    // First try: daemon may already be running.
+    let first_err =
+        match client::compile_streaming(sock_path, req.clone(), &mut stdout, &mut stderr) {
+            Ok(done) => {
+                if let Some(marker_path) = marker_path {
+                    forget_daemon_unavailable(marker_path);
+                }
+                return Ok(done.exit_code);
+            }
+            Err(e) => e,
+        };
 
-    // Daemon down — spawn detached and retry within budget.
-    // Daemon down — spawn detached and retry within budget. The spawn
-    // error (if any) is carried into the terminal failure for
-    // diagnostics; the retry loop still runs because another wrapper
-    // may be bringing the daemon up concurrently.
-    let spawn_err = crate::daemon::lifecycle::try_spawn_detached()
-        .err()
-        .map(|e| format!("{e:?}"));
-    retry_within_budget(&sock, req, first_err, spawn_err, stdout, stderr)
+    if let Some(marker_path) = marker_path {
+        if should_skip_retry_after_recent_daemon_unavailable(marker_path, &first_err) {
+            return Err(recent_daemon_unavailable_error(sock_path, first_err));
+        }
+    }
+
+    let spawn_err = if spawn_on_first_failure {
+        crate::daemon::lifecycle::try_spawn_detached()
+            .err()
+            .map(|e| format!("{e:?}"))
+    } else {
+        None
+    };
+    let result = retry_within_budget(sock_path, req, first_err, spawn_err, stdout, stderr);
+    if let Some(marker_path) = marker_path {
+        record_dispatch_result_marker(marker_path, &result);
+    }
+    result
+}
+
+#[cfg(test)]
+fn dispatch_compile_with_sock_and_marker_for_test<O, E>(
+    sock_path: &Path,
+    marker_path: &Path,
+    rustc_argv: &[String],
+    stdout: O,
+    stderr: E,
+) -> Result<i32, DispatchError>
+where
+    O: Write,
+    E: Write,
+{
+    dispatch_compile_with_sock_and_marker_detailed(
+        sock_path,
+        Some(marker_path),
+        rustc_argv,
+        stdout,
+        stderr,
+        false,
+    )
 }
 
 /// Variant of [`dispatch_compile`] that takes an explicit socket path
@@ -843,6 +972,120 @@ mod tests {
              this is the no-hang contract: the retry loop MUST honor the \
              SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS budget instead of waiting \
              out the 30s default"
+            );
+        }
+    );
+
+    timed_test!(
+        daemon_unavailable_marker_freshness_expires_and_cleans_stale,
+        Duration::from_secs(5),
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let marker = temp.path().join("compile-daemon-unavailable");
+
+            assert!(!daemon_unavailable_marker_is_fresh_at(
+                &marker,
+                SystemTime::now()
+            ));
+            remember_daemon_unavailable(&marker);
+            assert!(
+                daemon_unavailable_marker_is_fresh_at(&marker, SystemTime::now()),
+                "new marker should be fresh"
+            );
+
+            let stale_now =
+                SystemTime::now() + DAEMON_UNAVAILABLE_MARKER_TTL + Duration::from_secs(1);
+            assert!(
+                !daemon_unavailable_marker_is_fresh_at(&marker, stale_now),
+                "marker should expire after the cooldown ttl"
+            );
+            assert!(
+                !marker.exists(),
+                "stale marker should be cleaned up best-effort"
+            );
+        }
+    );
+
+    timed_test!(
+        daemon_unavailable_failure_records_marker_for_sibling_wrappers,
+        Duration::from_secs(10),
+        {
+            let mut g = EnvVarGuard::acquire(SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR);
+            g.also(SOLDR_DAEMON_REQUIRED_ENV_VAR);
+            g.set(SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR, "100");
+
+            let temp = tempfile::tempdir().expect("tempdir");
+            let marker = temp.path().join("compile-daemon-unavailable");
+            let dead = if cfg!(windows) {
+                PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-marker-record")
+            } else {
+                temp.path().join("no-such-sock")
+            };
+            let argv = vec!["rustc".to_string(), "--version".to_string()];
+            let mut stdout: Vec<u8> = Vec::new();
+            let mut stderr: Vec<u8> = Vec::new();
+
+            let result = dispatch_compile_with_sock_and_marker_for_test(
+                &dead,
+                &marker,
+                &argv,
+                &mut stdout,
+                &mut stderr,
+            );
+            drop(g);
+
+            let err = result.expect_err("dead socket should fail");
+            assert!(
+                err.is_daemon_unavailable(),
+                "dead socket should be classified as daemon-unavailable: {err:?}"
+            );
+            assert!(
+                marker.exists(),
+                "daemon-unavailable failure should leave a marker for sibling wrappers"
+            );
+        }
+    );
+
+    timed_test!(
+        recent_daemon_unavailable_marker_skips_spawn_retry_budget,
+        Duration::from_secs(10),
+        {
+            let mut g = EnvVarGuard::acquire(SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR);
+            g.also(SOLDR_DAEMON_REQUIRED_ENV_VAR);
+            g.set(SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS_ENV_VAR, "5000");
+
+            let temp = tempfile::tempdir().expect("tempdir");
+            let marker = temp.path().join("compile-daemon-unavailable");
+            remember_daemon_unavailable(&marker);
+            let dead = if cfg!(windows) {
+                PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-marker-skip")
+            } else {
+                temp.path().join("no-such-sock")
+            };
+            let argv = vec!["rustc".to_string(), "--version".to_string()];
+            let mut stdout: Vec<u8> = Vec::new();
+            let mut stderr: Vec<u8> = Vec::new();
+
+            let start = Instant::now();
+            let result = dispatch_compile_with_sock_and_marker_for_test(
+                &dead,
+                &marker,
+                &argv,
+                &mut stdout,
+                &mut stderr,
+            );
+            let elapsed = start.elapsed();
+            drop(g);
+
+            let err = result.expect_err("dead socket should fail");
+            assert_eq!(
+                err.budget_ms(),
+                0,
+                "fresh marker should skip the retry budget entirely: {err:?}"
+            );
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "fresh marker should avoid a per-rustc 5s retry storm; elapsed={elapsed:?}"
             );
         }
     );
