@@ -171,6 +171,9 @@ def test_cache_delta_experiment_quiesces_before_packaging() -> None:
         / "cache-delta-experiment-cleanup"
         / "action.yml"
     ).read_text(encoding="utf-8")
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "cache-delta-experiment.yml"
+    ).read_text(encoding="utf-8")
 
     assert "Flush + shutdown cache before packaging delta" in setup_action
     assert "soldr cache flush --json || true" in setup_action
@@ -196,6 +199,12 @@ def test_cache_delta_experiment_quiesces_before_packaging() -> None:
     assert 'find . -type f -print0 > "$LIST"' in cleanup_action
     assert 'tar --null -T "$LIST"' in cleanup_action
     assert "tar --use-compress-program='zstd -19 -T0' -cf \"$ARCHIVE\" ." not in cleanup_action
+
+    assert "Flush + shutdown baseline cache" in workflow
+    assert 'rm -f "${ZCCACHE_CACHE_DIR}/daemon.sock"' in workflow
+    assert 'find . -type f -print0 > "$list"' in workflow
+    assert 'tar --null -T "$list"' in workflow
+    assert "tar --use-compress-program='zstd -19 -T0' -cf \"$archive\" -C \"$zccache_dir\" ." not in workflow
 
 
 def test_build_and_test_documents_removed_windows_pdb_artifacts() -> None:

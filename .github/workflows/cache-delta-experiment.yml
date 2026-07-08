@@ -236,6 +236,19 @@ jobs:
           soldr cook
           soldr cargo build --package soldr-cli --locked
 
+      - name: Flush + shutdown baseline cache
+        if: always()
+        shell: bash
+        env:
+          SOLDR_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline
+          ZCCACHE_CACHE_DIR: ${{ runner.temp }}/cache-delta-exp-baseline/cache/zccache
+        run: |
+          set +e
+          soldr cache flush --json || true
+          soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true
+          rm -f "${ZCCACHE_CACHE_DIR}/daemon.sock"
+          exit 0
+
       - id: measure
         name: Measure baseline upload size
         if: always()
@@ -253,8 +266,14 @@ jobs:
           archive="${RUNNER_TEMP}/baseline-upload-estimate.tar.zst"
           zccache_dir="${{ steps.keys.outputs.zccache-dir }}"
           if [ -d "$zccache_dir" ]; then
-            tar --use-compress-program='zstd -19 -T0' -cf "$archive" -C "$zccache_dir" .
-            bytes=$(wc -c < "$archive" | awk '{print $1}')
+            list="${RUNNER_TEMP}/baseline-upload-files.lst"
+            ( cd "$zccache_dir" && find . -type f -print0 > "$list" )
+            if [ -s "$list" ] && tr -d '\0' < "$list" | grep -q .; then
+              ( cd "$zccache_dir" && tar --null -T "$list" --use-compress-program='zstd -19 -T0' -cf "$archive" )
+              bytes=$(wc -c < "$archive" | awk '{print $1}')
+            else
+              bytes=0
+            fi
           else
             bytes=0
           fi
