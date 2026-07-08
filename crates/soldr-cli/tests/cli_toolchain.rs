@@ -837,14 +837,30 @@ fn toolchain_ensure_no_channel_emits_empty_schema_v1_payload() {
 /// Platform-aware shim filename. Mirrors `toolchain_link::shim_path` so
 /// the integration tests don't have to depend on the bin-tree module.
 fn expected_shim_path(dir: &Path, tool: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        dir.join(format!("{tool}.cmd"))
+    dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
+}
+
+fn assert_native_shim_matches_soldr(shim: &Path, soldr_bin: &Path, tool: &str) {
+    let shim_bytes =
+        fs::read(shim).unwrap_or_else(|err| panic!("read {tool} shim {}: {err}", shim.display()));
+    let soldr_bytes = fs::read(soldr_bin)
+        .unwrap_or_else(|err| panic!("read soldr binary {}: {err}", soldr_bin.display()));
+    assert_eq!(
+        shim_bytes,
+        soldr_bytes,
+        "{tool} shim should be a native multicall copy/hardlink of {}",
+        soldr_bin.display()
+    );
+}
+
+fn expected_toolchain_link_source_soldr_bin() -> PathBuf {
+    if let Some(original) = std::env::var_os("SOLDR_ORIGINAL_EXE") {
+        let path = PathBuf::from(original);
+        if path.is_file() {
+            return path;
+        }
     }
-    #[cfg(not(windows))]
-    {
-        dir.join(tool)
-    }
+    common::soldr_bin()
 }
 
 #[test]
@@ -870,6 +886,7 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    let soldr_bin = expected_toolchain_link_source_soldr_bin();
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let shim = expected_shim_path(&shim_dir, tool);
         assert!(
@@ -877,19 +894,7 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
             "expected shim at {} after link, but it's missing",
             shim.display()
         );
-        let body = fs::read_to_string(&shim).expect("read shim");
-        assert!(
-            body.contains(tool),
-            "shim body for {tool} should mention the tool name: {body}"
-        );
-        // The shim must reference the running soldr binary so subprocess
-        // exec lands back on this build.
-        let soldr_bin = common::soldr_bin();
-        assert!(
-            body.contains(soldr_bin.to_string_lossy().as_ref()),
-            "shim body for {tool} should reference soldr binary {}: {body}",
-            soldr_bin.display(),
-        );
+        assert_native_shim_matches_soldr(&shim, &soldr_bin, tool);
     }
 }
 
@@ -1099,16 +1104,9 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
             "--force must overwrite differing shim: {entry}"
         );
     }
+    let soldr_bin = expected_toolchain_link_source_soldr_bin();
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let path = expected_shim_path(&shim_dir, tool);
-        let body = fs::read_to_string(&path).expect("read shim");
-        assert_ne!(
-            body, "USER CUSTOM",
-            "--force must overwrite {tool} shim (still USER CUSTOM: {body:?})"
-        );
-        assert!(
-            body.contains(tool),
-            "rewritten shim body for {tool} should mention the tool name: {body}"
-        );
+        assert_native_shim_matches_soldr(&path, &soldr_bin, tool);
     }
 }
