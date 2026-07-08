@@ -18,6 +18,12 @@ def load_verify_module():
     return module
 
 
+def executable_yaml(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
 def test_workflows_pin_setup_soldr_to_current_v0_sha() -> None:
     module = load_verify_module()
 
@@ -33,7 +39,7 @@ def test_soldr_self_builds_use_pinned_public_setup_soldr() -> None:
     assert "uses: zackees/setup-soldr@" in bootstrap
 
 
-def test_ci_resets_restore_key_target_artifacts_before_self_builds() -> None:
+def test_ci_does_not_carry_stale_setup_soldr_fallback_resets() -> None:
     bootstrap = (REPO_ROOT / ".github" / "workflows" / "_bootstrap-e2e.yml").read_text(
         encoding="utf-8"
     )
@@ -41,21 +47,12 @@ def test_ci_resets_restore_key_target_artifacts_before_self_builds() -> None:
         encoding="utf-8"
     )
 
-    for workflow in (bootstrap, build):
-        assert "id: setup_soldr" in workflow
-        assert (
-            "steps.setup_soldr.outputs.target-cache-restore-status != 'exact-hit'"
-            in workflow
-        )
-        assert (
-            "steps.setup_soldr.outputs.build-cache-restore-status != 'exact-hit'"
-            in workflow
-        )
-        assert "SOLDR_TARGET_CACHE_MODE=off" in workflow
-        assert 'Join-Path "target" "${{ inputs.target }}"' in workflow
-        assert 'Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"' in workflow
+    for workflow in (executable_yaml(bootstrap), executable_yaml(build)):
+        assert "id: setup_soldr" not in workflow
+        assert "steps.setup_soldr.outputs" not in workflow
+        assert "SOLDR_TARGET_CACHE_MODE=off" not in workflow
+        assert 'Join-Path "target" "${{ inputs.target }}"' not in workflow
+        assert 'Join-Path $env:ZCCACHE_CACHE_DIR "artifacts"' not in workflow
 
-    reset_block = bootstrap.split("Reset stale cache fallback artifacts", 1)[1].split(
-        "Build soldr-cli", 1
-    )[0]
-    assert "contains(inputs.target, 'musl')" not in reset_block
+    assert "- name: Reset stale cache fallback artifacts" not in executable_yaml(bootstrap)
+    assert "- name: Restore checkout after soldr-cook" not in executable_yaml(build)

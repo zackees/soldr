@@ -56,14 +56,11 @@ jobs:
         with:
           submodules: recursive
 
-      # soldr#1083 follow-up: cache + soldr-cook hydration disabled.
-      # Cook hydration was rewriting the workspace Cargo.toml to a
-      # stripped variant (workspace + dependencies, no
-      # [workspace.package]) which broke the release wheel-version
-      # extraction. Cache save cost no longer translates to
-      # measurable speedups on the lint job. Drop both. Restore-from-
-      # git workaround that paired with it is no longer needed
-      # because the manifest is never overwritten.
+      # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled on
+      # Lint while target/profile-shaped cook restore is reintroduced in
+      # the cross/release lanes first. Restore-from-git workaround that
+      # paired with the old cook flow is no longer needed because the
+      # manifest is never overwritten.
       # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
       # setup-soldr uses it (Setup soldr build cache drops from ~22 s
       # to ~2 s). Same pattern as #1341/#1342/#1343. Shared cache key
@@ -80,7 +77,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
         with:
           toolchain: 1.94.1
           cache: false

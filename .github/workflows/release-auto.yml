@@ -285,12 +285,11 @@ jobs:
       # artifact restore that every-commit CI now uses. Saves the
       # 45-70s/lane that release builds were spending on bit-identical
       # libsqlite3-sys / tikv-jemalloc-sys / zstd-sys / ring rebuilds.
-      # soldr#1083 follow-up: cache + soldr-cook hydration disabled.
-      # Cook rewrites Cargo.toml in ways that don't compose with
-      # cross-compile (stripped [workspace.package], wrong-versioned
-      # wheels). Save cost no longer offsets the savings. Drop both;
-      # rely on cargo's native incremental + zccache for build
-      # acceleration.
+      # soldr#1248/#2 follow-up: setup-soldr remains in passthrough
+      # mode here until release cook can run after target-specific
+      # toolchain/syslib setup with release-shaped flags. #1224 fixed
+      # the old source-restore blocker; the active blocker is ordering
+      # + profile wiring.
       # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
       # setup-soldr uses it without spending the release lane on a fresh
       # rustup install. Same pattern as #1341/#1342/#1343/#1345.
@@ -306,7 +305,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup Rust toolchain
-        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
         with:
           # Release CI runs the checked-out soldr CLI as the build driver
           # below, because the previous released soldr can lack the

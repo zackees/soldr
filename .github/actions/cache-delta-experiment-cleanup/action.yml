@@ -50,6 +50,27 @@ runs:
         echo "loaded state:"
         cat "$STATE_FILE"
 
+    - name: Quiesce cache before cleanup packaging
+      if: always() && steps.state.outputs.have-state == 'true'
+      shell: bash
+      run: |
+        set +e
+        STATE_FILE="${RUNNER_TEMP}/soldr-cache-delta-state/state.env"
+        # shellcheck disable=SC1090
+        . "$STATE_FILE"
+
+        CACHE_DIR="$ZCCACHE_DIR"
+        case "$CACHE_DIR" in
+          */cache/zccache) CACHE_DIR="${CACHE_DIR%/cache/zccache}" ;;
+          */zccache) CACHE_DIR="${CACHE_DIR%/zccache}" ;;
+        esac
+
+        export SOLDR_CACHE_DIR="$CACHE_DIR"
+        export ZCCACHE_CACHE_DIR="$ZCCACHE_DIR"
+        soldr cache flush --json || true
+        soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true
+        exit 0
+
     - name: Package cook layer (only when cook key missed)
       # `cache-hit` is the exact-key indicator from actions/cache@v4.
       # Empty / 'false' means the layer was missing OR the only match
@@ -77,8 +98,15 @@ runs:
         fi
 
         echo "packing cook layer from $ZCCACHE_DIR to $ARCHIVE"
+        LIST="${RUNNER_TEMP}/soldr-cook-layer-files.lst"
+        ( cd "$ZCCACHE_DIR" && find . -type f -print0 > "$LIST" )
+        if [ ! -s "$LIST" ] || ! tr -d '\0' < "$LIST" | grep -q .; then
+          echo "zccache dir has no regular files to tar; skipping cook layer save"
+          echo "packed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
         ( cd "$ZCCACHE_DIR" \
-          && tar --use-compress-program='zstd -19 -T0' -cf "$ARCHIVE" . )
+          && tar --null -T "$LIST" --use-compress-program='zstd -19 -T0' -cf "$ARCHIVE" )
         echo "cook layer size: $(du -h "$ARCHIVE" | cut -f1)"
         echo "packed=true" >> "$GITHUB_OUTPUT"
 
