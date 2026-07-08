@@ -260,7 +260,11 @@ fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
             "zccache binary: {binary_path} (source: {})",
             snapshot.binary_source
         );
-        if snapshot.status_empty {
+        if snapshot.binary_source == "embedded" {
+            println!(
+                "zccache status: embedded in soldr-daemon; use `soldr daemon status` for live daemon health"
+            );
+        } else if snapshot.status_empty {
             println!("zccache status: no output");
         } else {
             for line in &snapshot.status_lines {

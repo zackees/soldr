@@ -289,7 +289,7 @@ struct DefenderProbeOutcome {
 fn collect_cook_stats() -> Option<DoctorCookStats> {
     let paths = SoldrPaths::new().ok()?;
     let cook_dir = crate::cache_lib::cook_archive::cook_cache_dir(&paths);
-    let sock = crate::cache_lib::daemon_sock_path(&paths);
+    let sock = crate::daemon::client::default_sock_path(&paths);
 
     let from_daemon = crate::daemon::client::status(&sock).ok();
     let cook_stats = from_daemon.as_ref().map(|s| s.cook_stats_or_zero());

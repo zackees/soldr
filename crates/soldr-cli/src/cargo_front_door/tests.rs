@@ -79,6 +79,38 @@ fn cargo_wait_timeout_uses_positive_env_override_only() {
     );
 }
 
+#[cfg(windows)]
+#[test]
+fn diagnostic_capture_does_not_wait_for_leaked_stderr_handle_after_cargo_exits() {
+    let mut command = std::process::Command::new("cmd");
+    command.args([
+        "/C",
+        "echo leaked diagnostic before exit 1>&2 & start /B ping -n 6 127.0.0.1 >nul",
+    ]);
+
+    let start = std::time::Instant::now();
+    let (status, captured) =
+        run_command_capturing_diagnostic_tail(&mut command).expect("run diagnostic capture");
+    let elapsed = start.elapsed();
+
+    assert!(
+        status.success(),
+        "fake cargo command should exit successfully"
+    );
+    assert!(
+        captured.contains("leaked diagnostic before exit"),
+        "diagnostic capture lost stderr: {captured:?}"
+    );
+    assert!(
+        elapsed >= CAPTURE_PIPE_EOF_GRACE.saturating_sub(Duration::from_millis(250)),
+        "test setup should keep stderr open long enough to exercise the bounded drain; elapsed={elapsed:?}",
+    );
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "diagnostic capture waited for a leaked inherited stderr handle instead of returning after cargo exited; elapsed={elapsed:?}",
+    );
+}
+
 #[test]
 fn child_cargo_scrubs_soldr_cache_lifecycle_controls() {
     let mut command = std::process::Command::new("cargo");
