@@ -64,6 +64,11 @@ jobs:
     env:
       SOLDR_TARGET_CACHE_PROFILE: thin-v2
       CARGO_TERM_COLOR: never
+      # The verification fixture is created under $RUNNER_TEMP, outside
+      # soldr's rust-toolchain.toml. setup-soldr installs 1.94.1 into its
+      # managed RUSTUP_HOME, but rustup still needs an explicit selected
+      # toolchain when cargo runs from that synthetic crate.
+      RUSTUP_TOOLCHAIN: 1.94.1
       # soldr#1322 — soldr's zccache/crgx fetch reads SOLDR_GITHUB_TOKEN
       # for authenticated GitHub Releases lookups (5,000/hr) instead of
       # unauthenticated (60/hr per runner IP). Follow-up to #1319 / #1323.
