@@ -127,7 +127,8 @@ jobs:
         run: |
           python ${{ github.workspace }}/.github/scripts/assert_thin_noop.py \
             ${{ runner.temp }}/verify-noop/first.log \
-            ${{ runner.temp }}/verify-noop/second.log
+            ${{ runner.temp }}/verify-noop/second.log \
+            --allow-empty-second
 
       # Validate the thin-v2 manifest the soldr-cli writes alongside the
       # deterministic bundle directory. This is intentionally unconditional:

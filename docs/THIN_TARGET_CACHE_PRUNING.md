@@ -352,11 +352,18 @@ mkdir -p "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
 
 # Capture both passes. (If you have a real warm thin-v2 slice from a
 # previous CI run, drop it into target/ between the two builds.)
+set -o pipefail
 soldr cargo build --locked -v 2>&1 | tee first.log
 soldr cargo build --locked -v 2>&1 | tee second.log
 
-python /path/to/soldr/.github/scripts/assert_thin_noop.py first.log second.log
+uv run --no-project python /path/to/soldr/.github/scripts/assert_thin_noop.py \
+  first.log second.log --allow-empty-second
 ```
+
+`--allow-empty-second` is only appropriate after the second build command has
+already succeeded. A completely fresh no-op can emit no captured lines through
+soldr's non-interactive diagnostic path, so the command exit code is the
+success proof and the empty log means "no compile lines observed."
 
 Exit code semantics:
 
