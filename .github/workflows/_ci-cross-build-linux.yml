@@ -34,6 +34,13 @@ on:
         description: |
           Optional commit SHA to checkout. Defaults to the workflow's
           implicit ref via actions/checkout default behavior.
+      bootstrap_artifact_name:
+        type: string
+        default: ""
+        description: |
+          Optional artifact containing the host x86_64-linux bootstrap
+          soldr binary. Darwin/MSVC lanes prefer this over rebuilding
+          or restoring their own per-lane bootstrap cache.
 
 permissions:
   contents: read
@@ -265,16 +272,26 @@ jobs:
       # (~295 s each) with RUSTC_WRAPPER="", so there is no zccache to catch it.
       # When crates/**, Cargo.toml, Cargo.lock, rust-toolchain.toml are unchanged
       # a lane hits the cache and skips the 5-minute compile.
+      # soldr#1248: main CI builds or restores this host bootstrap once and
+      # fans it out as an artifact. Manual callers that do not pass
+      # `bootstrap_artifact_name` keep the older per-lane cache/build fallback.
+      - name: Download shared bootstrap soldr artifact
+        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ inputs.bootstrap_artifact_name }}
+          path: ${{ runner.temp }}/soldr-bin
+
       - name: Restore cached bootstrap soldr binaries
         id: bootstrap_cache
-        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
+        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == ''
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/soldr-bin
           key: bootstrap-soldr-blessed-linux-gnu-${{ hashFiles('crates/**', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml') }}
 
       - name: Bootstrap soldr for SDK / blessed-build prep
-        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && steps.bootstrap_cache.outputs.cache-hit != 'true'
+        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == '' && steps.bootstrap_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
           # soldr#1274 reverts soldr#1270: routing bootstrap through
