@@ -241,10 +241,15 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
     ).read_text(encoding="utf-8")
 
     assert "uses: zackees/setup-soldr/cook@" in workflow
-    assert "flags: --profile ci-nextest --target ${{ inputs.target }} --workspace" in workflow
-    assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" in workflow
+    assert (
+        "flags: --profile ${{ contains(inputs.target, 'pc-windows-msvc') && "
+        "'ci-release' || 'ci-nextest' }} --target ${{ inputs.target }} --workspace"
+        in workflow
+    )
     assert "soldr prepare --target \"${{ inputs.target }}\" --github-env \"$GITHUB_ENV\"" in workflow
-    assert "soldr cargo clean -p soldr-cli --target \"$target\" --profile ci-nextest" in workflow
+    assert "if [[ \"$target\" == *-pc-windows-msvc ]]; then" in workflow
+    assert "profile=\"ci-release\"" in workflow
+    assert "soldr cargo clean -p soldr-cli --target \"$target\" --profile \"$profile\"" in workflow
     assert "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" in workflow
 
     prepare_idx = workflow.index("Prepare blessed target env for cook")

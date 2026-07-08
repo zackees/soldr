@@ -356,30 +356,32 @@ jobs:
           echo "CARGO_TARGET_${target_u_upper}_RUSTFLAGS=-C link-self-contained=no" >> "$GITHUB_ENV"
 
       - name: Prepare blessed target env for cook
-        if: contains(inputs.target, 'apple-darwin')
+        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         run: |
           set -euo pipefail
           soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"
 
-      # MSVC stays out of this first re-enable: it skips nextest archives and
-      # uses ci-release, so its cook/proof path is separate from the
-      # ci-nextest lanes that dominate this PR workflow.
+      # MSVC skips nextest archives and builds the release binary with the
+      # ci-release profile. Other lanes use ci-nextest so the archive step
+      # reuses the same target profile instead of compiling a debug tree.
       - name: Restore cooked dependency cache
-        if: (!contains(inputs.target, 'pc-windows-msvc'))
         uses: zackees/setup-soldr/cook@e8f28749013e1976621805566a35de37ecdbb190
         with:
           target-dir: target
-          flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
+          flags: --profile ${{ contains(inputs.target, 'pc-windows-msvc') && 'ci-release' || 'ci-nextest' }} --target ${{ inputs.target }} --workspace
 
       - name: Clean cooked first-party stubs
-        if: (!contains(inputs.target, 'pc-windows-msvc'))
         shell: bash
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
+          profile="ci-nextest"
+          if [[ "$target" == *-pc-windows-msvc ]]; then
+            profile="ci-release"
+          fi
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          soldr cargo clean -p soldr-cli --target "$target" --profile ci-nextest 2>/dev/null || true
+          soldr cargo clean -p soldr-cli --target "$target" --profile "$profile" 2>/dev/null || true
 
       # Stage A — lint intentionally NOT run here. `cargo fmt --check` and
       # `cargo clippy --workspace --all-targets` are both covered by the
