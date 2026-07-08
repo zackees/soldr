@@ -343,11 +343,17 @@ soldr cargo build -p soldr-cli --locked
 mkdir -p /tmp/verify-noop && cd /tmp/verify-noop
 soldr cargo init --name verify-noop --bin verify-noop >/dev/null
 soldr cargo add serde --no-default-features --features derive >/dev/null
+export SOLDR_TARGET_CACHE_MODE=thin
+export SOLDR_TARGET_CACHE_PROFILE=thin-v2
+export SOLDR_TARGET_CACHE_BACKEND=local
+export SOLDR_TARGET_CACHE_BUNDLE_DIR=/tmp/verify-noop-thin-v2-bundle
+rm -rf "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
+mkdir -p "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
 
 # Capture both passes. (If you have a real warm thin-v2 slice from a
 # previous CI run, drop it into target/ between the two builds.)
-SOLDR_TARGET_CACHE_PROFILE=thin-v2 soldr cargo build --locked 2>&1 | tee first.log
-SOLDR_TARGET_CACHE_PROFILE=thin-v2 soldr cargo build --locked 2>&1 | tee second.log
+soldr cargo build --locked -v 2>&1 | tee first.log
+soldr cargo build --locked -v 2>&1 | tee second.log
 
 python /path/to/soldr/.github/scripts/assert_thin_noop.py first.log second.log
 ```

@@ -200,12 +200,14 @@ const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 fn main() {
     let raw_args: Vec<String> = std::env::args().collect();
 
-    match multicall::maybe_dispatch(&raw_args) {
-        Some(multicall::MulticallDispatch::Exit(code)) => std::process::exit(code),
-        Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
-            std::process::exit(block_on_exit_code(run_with_args("soldr", &args)));
+    if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
+        match multicall::maybe_dispatch(&raw_args) {
+            Some(multicall::MulticallDispatch::Exit(code)) => std::process::exit(code),
+            Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
+                std::process::exit(block_on_exit_code(run_with_args("soldr", &args)));
+            }
+            None => {}
         }
-        None => {}
     }
 
     std::process::exit(run_main(raw_args));

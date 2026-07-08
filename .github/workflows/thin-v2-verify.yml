@@ -104,14 +104,24 @@ jobs:
       - name: First (cold) build
         working-directory: ${{ runner.temp }}/verify-noop
         env:
+          SOLDR_TARGET_CACHE_MODE: thin
+          SOLDR_TARGET_CACHE_PROFILE: thin-v2
+          SOLDR_TARGET_CACHE_BACKEND: local
           SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
-        run: soldr cargo build --locked 2>&1 | tee first.log
+        run: |
+          set -o pipefail
+          soldr cargo build --locked -v 2>&1 | tee first.log
 
       - name: Second (warm) build — must be a no-op
         working-directory: ${{ runner.temp }}/verify-noop
         env:
+          SOLDR_TARGET_CACHE_MODE: thin
+          SOLDR_TARGET_CACHE_PROFILE: thin-v2
+          SOLDR_TARGET_CACHE_BACKEND: local
           SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
-        run: soldr cargo build --locked 2>&1 | tee second.log
+        run: |
+          set -o pipefail
+          soldr cargo build --locked -v 2>&1 | tee second.log
 
       - name: Assert second build was a no-op
         run: |
