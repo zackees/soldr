@@ -111,7 +111,16 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         // configuration.
         .env_remove("ZCCACHE_PATH_REMAP")
         .env_remove("ZCCACHE_WORKTREE_ROOT")
-        .env_remove("SOLDR_PATH_REMAP");
+        .env_remove("SOLDR_PATH_REMAP")
+        // Self-relocation markers leak from an outer dogfooding soldr
+        // (`soldr cargo test ...`) into the test-built soldr child. A
+        // stale SOLDR_ORIGINAL_EXE makes `soldr_binary_source()` resolve
+        // the OUTER soldr binary, so `toolchain link` shims get written
+        // from the wrong executable; a stale SOLDR_RELOCATED_EXE
+        // suppresses the child's own relocation. Scrub both so the test
+        // binary behaves like a fresh top-level invocation.
+        .env_remove("SOLDR_ORIGINAL_EXE")
+        .env_remove("SOLDR_RELOCATED_EXE");
     for (name, _) in std::env::vars_os() {
         if name
             .to_str()
