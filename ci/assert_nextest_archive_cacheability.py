@@ -109,7 +109,9 @@ ensure_soldr_daemon
 
 echo "## cold nextest archive build"
 cold_start=$(date +%s%3N)
-"$SOLDR_BIN" cargo nextest archive --workspace --locked \
+CARGO_PROFILE_TEST_DEBUG=line-tables-only \
+  "$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  --cargo-profile ci-nextest \
   --archive-file "$ARCHIVE_DIR/cold-tests.tar.zst" \
   --archive-format tar-zst
 cold_end=$(date +%s%3N)
@@ -123,7 +125,9 @@ echo "## warm nextest archive build after cargo clean and daemon restart"
 clean_target
 ensure_soldr_daemon
 warm_start=$(date +%s%3N)
-"$SOLDR_BIN" cargo nextest archive --workspace --locked \
+CARGO_PROFILE_TEST_DEBUG=line-tables-only \
+  "$SOLDR_BIN" cargo nextest archive --workspace --locked \
+  --cargo-profile ci-nextest \
   --archive-file "$ARCHIVE_DIR/warm-tests.tar.zst" \
   --archive-format tar-zst
 warm_end=$(date +%s%3N)

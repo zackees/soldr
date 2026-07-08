@@ -255,9 +255,11 @@ jobs:
           # additions, so the v3 primary key kept hitting with only
           # target/<triple>/release/ deps cached — Stage B's cold
           # ci-release/ subdir added ~5 min per lane in run 28750573776.
-          # Bumping to v4 forces one cache-miss cycle that saves the
-          # ci-release/ deps for every subsequent run.
-          shared-key: cross-build-${{ inputs.target }}-v4
+          # Bumping to v4 forced one cache-miss cycle that saved the
+          # ci-release/ deps for every subsequent run. soldr#1248 → v5
+          # forces the same refresh for target/<triple>/ci-nextest after
+          # the nextest-archive lanes moved to a shared CI test profile.
+          shared-key: cross-build-${{ inputs.target }}-v5
 
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
@@ -390,26 +392,32 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
+          ci_profile="ci-release"
+          if [[ "$target" != *-pc-windows-msvc ]]; then
+            ci_profile="ci-nextest"
+          fi
           # soldr#1357 — --profile ci-release drops LTO + codegen-units=1
           # from CI-only cross-build artifacts (soldr-ci-e2e-*), saving
           # 1-2 min per MSVC/darwin lane. Shipped release-soldr-* /
           # pypi-soldr-* artifacts in release-auto.yml stay on --release.
+          # soldr#1248 — lanes that also build nextest archives use
+          # ci-nextest so Stage C reuses this same target profile.
           if [[ "$target" == *-pc-windows-msvc ]] \
              || [[ "$target" == *-apple-darwin ]]; then
-            soldr build --profile ci-release --target "$target" \
+            soldr build --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-unknown-linux-musl ]] \
                || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
-            cargo zigbuild --profile ci-release --target "$target" \
+            cargo zigbuild --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           else
-            cargo build --profile ci-release --target "$target" \
+            cargo build --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           fi
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
-          ls -la "target/$target/ci-release/soldr$suffix"
-          file "target/$target/ci-release/soldr$suffix"
+          ls -la "target/$target/$ci_profile/soldr$suffix"
+          file "target/$target/$ci_profile/soldr$suffix"
 
       # Stage C — test binary archive (consumed by _ci-target-run.yml).
       # Skipped for windows-msvc: `cargo nextest archive` doesn't go
@@ -424,18 +432,24 @@ jobs:
         if: (!contains(inputs.target, 'pc-windows-msvc'))
         shell: bash
         env:
-          # soldr#1168 — drop full DWARF from test binaries so the
-          # tar.zst archive shrinks from ~3.4 GB to ~1 GB. `line-tables-
-          # only` keeps enough info for backtraces to show file:line in
-          # the target-run lane, which is the main triage need there.
-          # Env-scoped to this step so local `cargo test` still gets
-          # full debuginfo.
+          # `soldr cargo nextest archive` does not treat nextest's
+          # `--cargo-profile` as Cargo's `--profile`, so keep this no-op
+          # test-profile override to suppress soldr's default debug=false
+          # warning on the darwin lanes. The actual archive profile is
+          # ci-nextest below.
           CARGO_PROFILE_TEST_DEBUG: line-tables-only
         run: |
           set -euo pipefail
           mkdir -p dist
           target='${{ inputs.target }}'
           archive="dist/${{ inputs.artifact_name }}-tests.tar.zst"
+          ci_profile="ci-nextest"
+          # soldr#1248 — Stage B already built target/<triple>/ci-nextest.
+          # Keep the nextest archive on the same Cargo profile so stable
+          # dependencies are reused instead of compiling a second
+          # target/<triple>/debug tree just for target-run smoke tests.
+          # ci-nextest preserves soldr#1168's line-table-only debug info
+          # so archived-test failures still have file:line backtraces.
           # soldr#1376 followup — filter at archive time so binaries the
           # target-run lane will never execute are excluded from the
           # .tar.zst before upload. Archive-filter expressions only
@@ -456,6 +470,7 @@ jobs:
             nextest_cmd=(cargo nextest archive)
           fi
           "${nextest_cmd[@]}" \
+            --cargo-profile "$ci_profile" \
             --target "$target" \
             --workspace \
             --archive-file "$archive" \
@@ -469,10 +484,14 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
+          ci_profile="ci-release"
+          if [[ "$target" != *-pc-windows-msvc ]]; then
+            ci_profile="ci-nextest"
+          fi
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
           mkdir -p dist/package
-          cp "target/$target/ci-release/soldr$suffix" "dist/package/soldr$suffix"
+          cp "target/$target/$ci_profile/soldr$suffix" "dist/package/soldr$suffix"
           chmod +x "dist/package/soldr$suffix" 2>/dev/null || true
           # Fixtures go alongside the binary so the target-run job can
           # set SOLDR_TEST_FIXTURES_DIR via the helper from #1040.

@@ -160,15 +160,32 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
-def test_build_and_test_uploads_windows_pdb_artifacts() -> None:
+def test_build_and_test_documents_removed_windows_pdb_artifacts() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
         encoding="utf-8"
     )
 
-    assert "CARGO_PROFILE_DEV_DEBUG=line-tables-only" in workflow
-    assert "CARGO_PROFILE_TEST_DEBUG=line-tables-only" in workflow
+    assert "soldr#1335" in workflow
     assert "Upload Windows test PDBs on failure" in workflow
-    assert "target/${{ inputs.target }}/debug/**/*.pdb" in workflow
+    assert "CARGO_PROFILE_DEV_DEBUG" not in workflow
+    assert "CARGO_PROFILE_TEST_DEBUG" not in workflow
+    assert "target/${{ inputs.target }}/debug/**/*.pdb" not in workflow
+
+
+def test_cross_build_nextest_archive_uses_ci_nextest_profile() -> None:
+    workflow = (
+        REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
+    ).read_text(encoding="utf-8")
+    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+
+    assert "cargo nextest archive" in workflow
+    assert "ci_profile=\"ci-nextest\"" in workflow
+    assert "--cargo-profile \"$ci_profile\"" in workflow
+    assert "CARGO_PROFILE_TEST_DEBUG: line-tables-only" in workflow
+    assert "[profile.ci-nextest]" in cargo_toml
+    assert 'inherits = "ci-release"' in cargo_toml
+    assert 'debug = "line-tables-only"' in cargo_toml
+    assert 'strip = "none"' in cargo_toml
 
 
 def test_main_creates_cache_layout_and_outputs(tmp_path: Path, monkeypatch) -> None:
