@@ -62,10 +62,10 @@ jobs:
       # `rustup target add` is required. Components are installed further
       # down via the "Install requested Rust components" step.
       #
-      # soldr#1083 follow-up: cache + soldr-cook disabled. Cook
-      # rewrites the workspace manifest in ways incompatible with
-      # cross-compile lanes; save cost no longer justifies. Pure
-      # toolchain install via setup-soldr.
+      # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled in
+      # this general build/test template while target/profile-shaped
+      # cook restore is reintroduced in the cross/release lanes first.
+      # Swatinem/rust-cache remains the authoritative target/ restore.
       # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
       # setup-soldr finds it via its "Runner rustup home already
       # contains toolchain X" check and skips its own 9 s rustup
@@ -83,7 +83,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
         with:
           toolchain: 1.94.1
           cache: false
@@ -105,14 +105,14 @@ jobs:
       # caller returns, both come back in one PR.
 
       # soldr#1254 — removed the "Restore checkout after soldr-cook"
-      # step. Same failure pattern as #1252: setup-soldr's `cache: false`
-      # (#1083) disables cook, so nothing rewrites the workspace and
-      # `git restore --worktree -- .` was 4-7 s of dead code.
+      # step. setup-soldr's `cache: false` disables cook, so nothing
+      # rewrites the workspace and `git restore --worktree -- .` was
+      # 4-7 s of dead code.
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. Same rationale as the sibling in _bootstrap-e2e.yml:
-      # setup-soldr's `cache: false` (#1083) makes its restore-status
-      # never `exact-hit`, so the guard tripped every run and the step
+      # setup-soldr's `cache: false` makes its restore-status never
+      # `exact-hit`, so the guard tripped every run and the step
       # deleted `target/<triple>/` right after Swatinem/rust-cache
       # (#1242) restored it. rust-cache's own restore is authoritative.
 
@@ -137,7 +137,7 @@ jobs:
           exit $exitCode
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr/cleanup@e8f28749013e1976621805566a35de37ecdbb190
 
       # soldr#1324 — combined `Run library tests` + `Run CLI smoke tests`
       # into one cargo invocation. Workspace has one member (soldr-cli),

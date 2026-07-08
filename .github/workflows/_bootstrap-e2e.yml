@@ -116,10 +116,10 @@ jobs:
           EOF
           cat rust-toolchain.ci.toml
 
-      # soldr#1083 follow-up: cache + soldr-cook disabled across the
-      # repo. Cook rewrites workspace + per-crate source files in
-      # ways incompatible with cross-compile lanes. Save cost no
-      # longer offsets savings. Toolchain install only.
+      # soldr#1248/#2 follow-up: cache + soldr-cook stay disabled in
+      # this bootstrap template while target/profile-shaped cook restore
+      # is reintroduced in the cross/release lanes first. Toolchain
+      # install only.
       # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
       # setup-soldr uses it instead of installing to its managed
       # RUSTUP_HOME (saves ~9 s per lane). Same pattern as #1341.
@@ -138,7 +138,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
@@ -159,8 +159,8 @@ jobs:
 
       # soldr#1252 — removed the "Reset stale cache fallback artifacts"
       # step. It guarded on `setup_soldr.outputs.*-cache-restore-status
-      # != 'exact-hit'`, but with setup-soldr's `cache: false` (set in
-      # #1083 to disable soldr-cook), that condition trips EVERY run —
+      # != 'exact-hit'`, but with setup-soldr's `cache: false`, that
+      # condition trips EVERY run —
       # so the step was deleting `target/<triple>/` right after
       # Swatinem/rust-cache (added in #1233) restored it, nuking all
       # rust-cache benefit. rust-cache's own restore is authoritative
@@ -220,7 +220,7 @@ jobs:
           & "${{ steps.soldr_binary.outputs.path }}" --version
 
       - name: Stop setup-soldr builder cache before bootstrap test
-        uses: zackees/setup-soldr/cleanup@cca74625e75e70b56f1805fa6eeee9069f945d48
+        uses: zackees/setup-soldr/cleanup@e8f28749013e1976621805566a35de37ecdbb190
 
       - name: Build third-party app through soldr
         shell: pwsh

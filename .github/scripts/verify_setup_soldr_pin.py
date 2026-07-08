@@ -17,7 +17,10 @@ SETUP_SOLDR_V0_REF = "refs/tags/v0"
 OLD_SETUP_SOLDR_SHA = "1937c19529f3690df5553a36dd33f39ccb20b070"
 SETUP_SOLDR_V0_2_SHA = "13b2e37f3ee8dc6867f08d3b2fe49ece4783dba2"
 SETUP_SOLDR_V0_4_3_SHA = "6c48a0946390a3520a853e30fe417db7465b9119"
-SETUP_SOLDR_USE_RE = re.compile(r"\buses:\s*zackees/setup-soldr@([^\s#]+)")
+SETUP_SOLDR_V0_9_12_SHA = "cca74625e75e70b56f1805fa6eeee9069f945d48"
+SETUP_SOLDR_USE_RE = re.compile(
+    r"\buses:\s*(zackees/setup-soldr(?:/[A-Za-z0-9_.-]+)?)@([^\s#]+)"
+)
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 AUTOFIX_BRANCH_PREFIX = "ci/update-setup-soldr-v0"
 AUTOFIX_ISSUE_TITLE = "Update setup-soldr workflow pin to current @v0"
@@ -55,7 +58,7 @@ def executable_workflow_lines(workflow_text: str) -> list[str]:
 
 def setup_soldr_refs(workflow_text: str) -> list[str]:
     return [
-        match.group(1)
+        match.group(2)
         for line in executable_workflow_lines(workflow_text)
         if (match := SETUP_SOLDR_USE_RE.search(line))
     ]
@@ -72,7 +75,12 @@ def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
     current_v0_sha = resolve_setup_soldr_v0_sha()
     errors: list[str] = []
 
-    for old_sha in [OLD_SETUP_SOLDR_SHA, SETUP_SOLDR_V0_2_SHA, SETUP_SOLDR_V0_4_3_SHA]:
+    for old_sha in [
+        OLD_SETUP_SOLDR_SHA,
+        SETUP_SOLDR_V0_2_SHA,
+        SETUP_SOLDR_V0_4_3_SHA,
+        SETUP_SOLDR_V0_9_12_SHA,
+    ]:
         if old_sha in text:
             errors.append(f"stale setup-soldr SHA remains in workflows: {old_sha}")
 
@@ -153,7 +161,7 @@ def update_workflow_pins(repo_root: Path, current_v0_sha: str) -> None:
                 continue
             updated_lines.append(
                 SETUP_SOLDR_USE_RE.sub(
-                    lambda match: f"uses: zackees/setup-soldr@{current_v0_sha}",
+                    lambda match: f"uses: {match.group(1)}@{current_v0_sha}",
                     line,
                 )
             )
