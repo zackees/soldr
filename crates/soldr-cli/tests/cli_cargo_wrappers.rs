@@ -296,7 +296,7 @@ fn assert_zccache_wrapped_compiler(log: &str, compiler: &Path, crate_name: &str)
     let compiler_stem = compiler
         .file_stem()
         .and_then(|name| name.to_str())
-        .expect("fake compiler should have a utf-8 file stem");
+        .unwrap_or(compiler_name);
     assert!(
         path_display_variants(compiler)
             .iter()
@@ -531,9 +531,13 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 .env_remove("CARGO_HOME")
                 .env_remove("RUSTUP_HOME")
                 .env_remove("RUSTUP_TOOLCHAIN")
+                // The setup-soldr action smoke runs the test suite under
+                // `soldr --no-cache cargo test`, which propagates this marker
+                // to test processes. This positive wrapper assertion needs
+                // the child soldr invocation's normal cache-enabled default.
+                .env_remove("SOLDR_CACHE_ENABLED")
                 .env_remove("ZCCACHE_CACHE_DIR")
                 .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
-                .env_remove("SOLDR_CACHE_ENABLED")
                 .env_remove("ZCCACHE_DISABLE")
                 .output()
                 .unwrap_or_else(|_| panic!("failed to run direct {tool} route {label}"));

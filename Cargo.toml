@@ -150,6 +150,16 @@ lto = false
 codegen-units = 16
 strip = "symbols"
 
+# soldr#1248 — fast-compile profile for CI cross-build lanes that also
+# produce nextest archives. It matches ci-release's compile-time wins so
+# Stage B and Stage C share target/<triple>/ci-nextest artifacts, while
+# preserving the soldr#1168 line-table-only debug info target-run needs
+# for useful backtraces from archived tests.
+[profile.ci-nextest]
+inherits = "ci-release"
+debug = "line-tables-only"
+strip = "none"
+
 [workspace.lints.rust]
 unused_mut = "deny"
 
