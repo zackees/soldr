@@ -293,13 +293,17 @@ fn assert_zccache_wrapped_compiler(log: &str, compiler: &Path, crate_name: &str)
         .file_name()
         .and_then(|name| name.to_str())
         .expect("fake compiler should have a utf-8 file name");
+    let compiler_stem = compiler
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .expect("fake compiler should have a utf-8 file stem");
     assert!(
         path_display_variants(compiler)
             .iter()
             .any(|path| zccache_line.contains(path))
             || zccache_line
                 .split_whitespace()
-                .any(|word| word == compiler_name),
+                .any(|word| word == compiler_name || word == compiler_stem),
         "zccache wrapper should receive compiler for crate {crate_name}: {log}"
     );
 }
@@ -529,6 +533,7 @@ fn direct_rustc_like_commands_route_through_zccache_with_and_without_global_flag
                 .env_remove("RUSTUP_TOOLCHAIN")
                 .env_remove("ZCCACHE_CACHE_DIR")
                 .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+                .env_remove("SOLDR_CACHE_ENABLED")
                 .env_remove("ZCCACHE_DISABLE")
                 .output()
                 .unwrap_or_else(|_| panic!("failed to run direct {tool} route {label}"));
