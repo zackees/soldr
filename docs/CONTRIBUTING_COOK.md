@@ -107,13 +107,13 @@ convenience CLI that runs ANY cargo command against the same warm
 volumes:
 
 ```bash
-uv run python ci/perf_local.py cargo build --release
-uv run python ci/perf_local.py cargo test --workspace
-uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
+uv run --no-project python ci/perf_local.py cargo build --release
+uv run --no-project python ci/perf_local.py cargo test --workspace
+uv run --no-project python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
 # Volume admin
-uv run python ci/perf_local.py --status   # show volume mount points
-uv run python ci/perf_local.py --wipe     # remove all three perf volumes
+uv run --no-project python ci/perf_local.py --status   # show volume mount points
+uv run --no-project python ci/perf_local.py --wipe     # remove all three perf volumes
 ```
 
 `perf_local.py` uses its own `soldr-perf-soldr-home` volume for

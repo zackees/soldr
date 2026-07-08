@@ -15,9 +15,9 @@ applies here.
 
 ## Usage
 
-    uv run python ci/perf_local.py cargo build --release
-    uv run python ci/perf_local.py cargo test --workspace
-    uv run python ci/perf_local.py cargo clippy --workspace -- -D warnings
+    uv run --no-project python ci/perf_local.py cargo build --release
+    uv run --no-project python ci/perf_local.py cargo test --workspace
+    uv run --no-project python ci/perf_local.py cargo clippy --workspace -- -D warnings
 
 Anything after the literal `cargo` token is forwarded verbatim to
 cargo inside the container — `argparse` is intentionally NOT used past

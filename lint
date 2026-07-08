@@ -1,19 +1,21 @@
 #!/bin/bash
 set -e
 
+./install
+
 echo Running ruff src
-uv run ruff check --fix src
+uv run --no-sync ruff check --fix src
 echo Running ruff tests
-uv run ruff check --fix tests
+uv run --no-sync ruff check --fix tests
 echo Running black src tests
-uv run black src tests
+uv run --no-sync black src tests
 echo Running isort src tests
-uv run isort --profile black src tests
+uv run --no-sync isort --profile black src tests
 echo Running flake8 src tests
-uv run flake8 src tests
+uv run --no-sync flake8 src tests
 echo Running pylint src
-uv run pylint src tests
+uv run --no-sync pylint src tests
 echo Running mypy src
-uv run mypy src tests
+uv run --no-sync mypy src tests
 echo Linting complete!
 exit 0

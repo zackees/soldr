@@ -16,4 +16,15 @@ if ! command -v uv &> /dev/null; then
   fi
 fi
 
-uv sync --group dev
+uv venv --allow-existing --no-project
+uv pip install \
+  "maturin>=1.7,<2" \
+  "pillow==11.3.0" \
+  "pytest>=8.0" \
+  "pytest-xdist>=3.0" \
+  "ruff>=0.4" \
+  black \
+  isort \
+  flake8 \
+  pylint \
+  mypy
