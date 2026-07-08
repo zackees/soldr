@@ -2,7 +2,9 @@
 //! Extracted from `wire.rs` (soldr#1368) via `#[path = "wire_tests.rs"]`.
 
 use super::*;
-use crate::daemon::protocol::{Response, StatusInfo};
+use crate::daemon::protocol::{
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, Response, StatusInfo,
+};
 
 fn sample_link() -> ZccacheDaemonLink {
     ZccacheDaemonLink {
@@ -237,6 +239,35 @@ crate::timed_test!(builds_response_round_trips_with_all_optional_fields, {
         crate_count: 7,
         slowest_crate_us: Some(123_456),
         slowest_crate_name: Some("zccache".into()),
+        cache_summary: Some(BuildCacheSummary {
+            hits: 13,
+            misses: 5,
+            non_cacheable: 2,
+            errors: 1,
+            compilations: 21,
+            time_saved_ms: 900,
+        }),
+        log_paths: Some(BuildLogPaths {
+            zccache_session_id: Some("session-abc".into()),
+            cache_dir: Some("/cache/zccache".into()),
+            session_log_path: Some("/cache/zccache/logs/last-session.log".into()),
+            journal_path: Some("/cache/zccache/logs/last-session.jsonl".into()),
+            session_stats_path: Some("/cache/zccache/logs/last-session-stats.json".into()),
+            compile_journal_path: Some("/cache/zccache/logs/compile_journal.jsonl".into()),
+            archived_session_log_path: Some("/cache/zccache/history/42/last-session.log".into()),
+            archived_journal_path: Some("/cache/zccache/history/42/last-session.jsonl".into()),
+            archived_session_stats_path: Some(
+                "/cache/zccache/history/42/last-session-stats.json".into(),
+            ),
+            archived_compile_journal_path: Some(
+                "/cache/zccache/history/42/compile_journal.jsonl".into(),
+            ),
+            private_daemon_name: Some("soldr-dev-demo".into()),
+        }),
+        miss_reasons: vec![BuildMissReason {
+            reason: "key_mismatch".into(),
+            count: 5,
+        }],
     };
     let resp = Response::Builds(vec![record.clone()]);
     let bytes = encode_response(&resp);

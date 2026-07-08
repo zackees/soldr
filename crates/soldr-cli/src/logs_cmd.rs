@@ -1,18 +1,17 @@
-//! `soldr logs` — Phase 1 of the discoverable logs API tracked in
+//! `soldr logs` — discoverable logs API tracked in
 //! [issue #820](https://github.com/zackees/soldr/issues/820).
 //!
-//! This module currently implements only one verb — `paths` — which
-//! prints every directory soldr writes session, lifecycle, and
-//! daemon-spawn logs into. The follow-up verbs in the issue
-//! (`list`, `show`, `view`, `prune`) ride on the same `Commands::Logs`
-//! arm; this module is the foundation they'll extend.
+//! This module implements `paths`, `list`, and `show`. The follow-up
+//! verbs in the issue (`view`, `prune`) ride on the same
+//! `Commands::Logs` arm.
 //!
 //! Goal: 15-minute-grep-for-the-right-journal becomes one command.
 //! On a vanilla `~/.soldr/` install with no `SOLDR_CACHE_DIR`
 //! override, the directories printed today are the same ones the
 //! issue's repro mentioned (`logs/last-session.{log,jsonl,stats.json}`,
 //! `daemon-{lifecycle,spawn}-*.log`, trash mailboxes, runtime state).
-//! Future verbs will read them; this one just names them.
+//! `logs list/show` read the durable history; `logs paths` names the
+//! live directories.
 //!
 //! ## JSON shape (stable contract)
 //!
@@ -39,6 +38,8 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 
 use crate::core::{SoldrError, SoldrPaths};
+use crate::daemon::db::{self, Event, EventKind};
+use crate::daemon::protocol::{BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord};
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -59,6 +60,95 @@ pub(crate) struct LogPathsOutput {
     pub paths: Vec<LogPathEntry>,
 }
 
+#[derive(Serialize, Debug)]
+pub(crate) struct LogsListOutput {
+    pub schema_version: u32,
+    pub command: &'static str,
+    pub root: PathBuf,
+    pub db_path: PathBuf,
+    pub launches: Vec<LogLaunchSummary>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub(crate) struct LogsShowOutput {
+    pub schema_version: u32,
+    pub command: &'static str,
+    pub root: PathBuf,
+    pub db_path: PathBuf,
+    pub launch: LogLaunchSummary,
+    pub slow_compiles: Vec<LogCompileEvent>,
+    pub events: Vec<LogEvent>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct LogLaunchSummary {
+    pub id: String,
+    pub short_id: String,
+    pub repo_root: String,
+    pub started_at_ms: i64,
+    pub ended_at_ms: Option<i64>,
+    pub duration_ms: Option<u64>,
+    pub exit_code: Option<i32>,
+    pub crate_count: u32,
+    pub cache: Option<LogCacheSummary>,
+    pub slowest_compile: Option<LogCompileEvent>,
+    pub miss_reasons: Vec<LogMissReason>,
+    pub logs: Option<LogBuildPaths>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct LogCacheSummary {
+    pub hits: u64,
+    pub misses: u64,
+    pub non_cacheable: u64,
+    pub errors: u64,
+    pub compilations: u64,
+    pub time_saved_ms: u64,
+    pub hit_rate: Option<f64>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct LogCompileEvent {
+    pub crate_name: Option<String>,
+    pub duration_us: Option<u64>,
+    pub duration_ms: Option<f64>,
+    pub target_dir: Option<String>,
+    pub started_at_ms: Option<i64>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct LogMissReason {
+    pub reason: String,
+    pub count: u64,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct LogBuildPaths {
+    pub zccache_session_id: Option<String>,
+    pub cache_dir: Option<String>,
+    pub session_log_path: Option<String>,
+    pub journal_path: Option<String>,
+    pub session_stats_path: Option<String>,
+    pub compile_journal_path: Option<String>,
+    pub archived_session_log_path: Option<String>,
+    pub archived_journal_path: Option<String>,
+    pub archived_session_stats_path: Option<String>,
+    pub archived_compile_journal_path: Option<String>,
+    pub private_daemon_name: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub(crate) struct LogEvent {
+    pub ts_ms: i64,
+    pub kind: &'static str,
+    pub crate_name: Option<String>,
+    pub duration_us: Option<u64>,
+    pub target_dir: Option<String>,
+    pub exit_code: Option<i32>,
+}
+
 /// Implementation of `soldr logs paths`. Returns the soldr exit code:
 /// always `0` on success — the command's job is informational, not
 /// diagnostic. JSON mode emits a stable `schema_version: 1` payload.
@@ -74,6 +164,30 @@ pub(crate) fn run_logs_paths(json: bool) -> Result<i32, SoldrError> {
     Ok(0)
 }
 
+pub(crate) fn run_logs_list(limit: u32, json: bool) -> Result<i32, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let output = collect_logs_list_output_for_paths(&paths, limit)?;
+
+    if json {
+        emit_json(&output)?;
+    } else {
+        emit_logs_list_human(&output);
+    }
+    Ok(0)
+}
+
+pub(crate) fn run_logs_show(launch_id: &str, json: bool) -> Result<i32, SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let output = collect_logs_show_output_for_paths(&paths, launch_id)?;
+
+    if json {
+        emit_json(&output)?;
+    } else {
+        emit_logs_show_human(&output);
+    }
+    Ok(0)
+}
+
 /// Pure-function constructor for the [`LogPathsOutput`] used by both
 /// the JSON and human emit paths. Lets unit tests drive the shape
 /// without doing filesystem I/O for emission.
@@ -84,6 +198,62 @@ pub(crate) fn build_log_paths_output(paths: &SoldrPaths) -> LogPathsOutput {
         root: paths.root.clone(),
         paths: entries,
     }
+}
+
+pub(crate) fn collect_logs_list_output_for_paths(
+    paths: &SoldrPaths,
+    limit: u32,
+) -> Result<LogsListOutput, SoldrError> {
+    let db_path = db::db_path(paths);
+    let mut notes = Vec::new();
+    let records = if db_path.exists() {
+        db::list_builds(&db_path, limit, None)
+            .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?
+    } else {
+        notes
+            .push("build history database is missing; run a cache-enabled build first".to_string());
+        Vec::new()
+    };
+    Ok(LogsListOutput {
+        schema_version: SCHEMA_VERSION,
+        command: "logs list",
+        root: paths.root.clone(),
+        db_path,
+        launches: records.iter().map(log_launch_summary).collect(),
+        notes,
+    })
+}
+
+pub(crate) fn collect_logs_show_output_for_paths(
+    paths: &SoldrPaths,
+    launch_id: &str,
+) -> Result<LogsShowOutput, SoldrError> {
+    let db_path = db::db_path(paths);
+    if !db_path.exists() {
+        return Err(SoldrError::Other(
+            "build history database is missing; run `soldr logs list` after a build".to_string(),
+        ));
+    }
+    let record = resolve_launch_record(&db_path, launch_id)?;
+    let events = db::list_events_for_session(&db_path, record.session_id)
+        .map_err(|e| SoldrError::Other(format!("read daemon events: {e}")))?;
+    let mut notes = launch_notes(&record);
+    let slow_compiles = slow_compile_events(&events, 10);
+    if slow_compiles.is_empty() && record.slowest_crate_us.is_none() {
+        notes.push(
+            "slow_compiles: no per-compile durations were recorded for this launch".to_string(),
+        );
+    }
+    Ok(LogsShowOutput {
+        schema_version: SCHEMA_VERSION,
+        command: "logs show",
+        root: paths.root.clone(),
+        db_path,
+        launch: log_launch_summary(&record),
+        slow_compiles,
+        events: events.iter().map(log_event).collect(),
+        notes,
+    })
 }
 
 /// Walk the known list of directories soldr writes runtime logs into
@@ -160,9 +330,303 @@ fn collect_log_path_entries(root: &Path, cache: &Path, bin: &Path) -> Vec<LogPat
         .collect()
 }
 
-fn emit_json(output: &LogPathsOutput) -> Result<(), SoldrError> {
+fn resolve_launch_record(db_path: &Path, launch_id: &str) -> Result<BuildRecord, SoldrError> {
+    let trimmed = launch_id.trim();
+    if trimmed.is_empty() {
+        return Err(SoldrError::Other("launch id is empty".to_string()));
+    }
+    if let Ok(session_id) = trimmed.parse::<u64>() {
+        if let Some(record) = db::get_build(db_path, session_id)
+            .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?
+        {
+            return Ok(record);
+        }
+    }
+
+    let needle = trimmed.to_ascii_lowercase();
+    let records = db::list_builds(db_path, 10_000, None)
+        .map_err(|e| SoldrError::Other(format!("read daemon build history: {e}")))?;
+    let mut matches = records
+        .into_iter()
+        .filter(|record| {
+            record.session_id.to_string().starts_with(&needle)
+                || format!("{:016x}", record.session_id).starts_with(&needle)
+        })
+        .collect::<Vec<_>>();
+    match matches.len() {
+        0 => Err(SoldrError::Other(format!("launch id not found: {trimmed}"))),
+        1 => Ok(matches.remove(0)),
+        _ => Err(SoldrError::Other(format!(
+            "launch id prefix is ambiguous: {trimmed}"
+        ))),
+    }
+}
+
+fn log_launch_summary(record: &BuildRecord) -> LogLaunchSummary {
+    LogLaunchSummary {
+        id: record.session_id.to_string(),
+        short_id: short_launch_id(record.session_id),
+        repo_root: record.repo_root.clone(),
+        started_at_ms: record.started_at_ms,
+        ended_at_ms: record.ended_at_ms,
+        duration_ms: record.total_wall_ms,
+        exit_code: record.exit_code,
+        crate_count: record.crate_count,
+        cache: record.cache_summary.as_ref().map(log_cache_summary),
+        slowest_compile: record.slowest_crate_us.map(|duration_us| LogCompileEvent {
+            crate_name: record.slowest_crate_name.clone(),
+            duration_us: Some(duration_us),
+            duration_ms: Some(duration_us as f64 / 1000.0),
+            target_dir: None,
+            started_at_ms: None,
+        }),
+        miss_reasons: record.miss_reasons.iter().map(log_miss_reason).collect(),
+        logs: record.log_paths.as_ref().map(log_build_paths),
+    }
+}
+
+fn log_cache_summary(summary: &BuildCacheSummary) -> LogCacheSummary {
+    let denom = summary.hits + summary.misses;
+    LogCacheSummary {
+        hits: summary.hits,
+        misses: summary.misses,
+        non_cacheable: summary.non_cacheable,
+        errors: summary.errors,
+        compilations: summary.compilations,
+        time_saved_ms: summary.time_saved_ms,
+        hit_rate: (denom > 0).then_some(summary.hits as f64 / denom as f64),
+    }
+}
+
+fn log_build_paths(paths: &BuildLogPaths) -> LogBuildPaths {
+    LogBuildPaths {
+        zccache_session_id: paths.zccache_session_id.clone(),
+        cache_dir: paths.cache_dir.clone(),
+        session_log_path: paths.session_log_path.clone(),
+        journal_path: paths.journal_path.clone(),
+        session_stats_path: paths.session_stats_path.clone(),
+        compile_journal_path: paths.compile_journal_path.clone(),
+        archived_session_log_path: paths.archived_session_log_path.clone(),
+        archived_journal_path: paths.archived_journal_path.clone(),
+        archived_session_stats_path: paths.archived_session_stats_path.clone(),
+        archived_compile_journal_path: paths.archived_compile_journal_path.clone(),
+        private_daemon_name: paths.private_daemon_name.clone(),
+    }
+}
+
+fn log_miss_reason(reason: &BuildMissReason) -> LogMissReason {
+    LogMissReason {
+        reason: reason.reason.clone(),
+        count: reason.count,
+    }
+}
+
+fn slow_compile_events(events: &[Event], limit: usize) -> Vec<LogCompileEvent> {
+    let mut rows = events
+        .iter()
+        .filter(|event| matches!(&event.kind, EventKind::CompileEnd))
+        .filter_map(|event| {
+            let duration_us = event.duration_us?;
+            Some(LogCompileEvent {
+                crate_name: event.crate_name.clone(),
+                duration_us: Some(duration_us),
+                duration_ms: Some(duration_us as f64 / 1000.0),
+                target_dir: event.target_dir.clone(),
+                started_at_ms: Some(event.ts_ms),
+            })
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|a, b| b.duration_us.unwrap_or(0).cmp(&a.duration_us.unwrap_or(0)));
+    rows.truncate(limit);
+    rows
+}
+
+fn log_event(event: &Event) -> LogEvent {
+    LogEvent {
+        ts_ms: event.ts_ms,
+        kind: match &event.kind {
+            EventKind::SessionStart => "session_start",
+            EventKind::SessionEnd => "session_end",
+            EventKind::CompileStart => "compile_start",
+            EventKind::CompileEnd => "compile_end",
+        },
+        crate_name: event.crate_name.clone(),
+        duration_us: event.duration_us,
+        target_dir: event.target_dir.clone(),
+        exit_code: event.exit_code,
+    }
+}
+
+fn launch_notes(record: &BuildRecord) -> Vec<String> {
+    let mut notes = Vec::new();
+    if record.cache_summary.is_none() {
+        notes.push(
+            "cache_summary: unavailable for this launch; only newer builds persist hit/miss stats"
+                .to_string(),
+        );
+    }
+    if record.log_paths.is_none() {
+        notes.push(
+            "logs: unavailable for this launch; only newer builds persist log/archive paths"
+                .to_string(),
+        );
+    }
+    if record.miss_reasons.is_empty() {
+        notes.push(
+            "miss_reasons: unavailable; no archived zccache journal or log reason lines were found"
+                .to_string(),
+        );
+    }
+    notes
+}
+
+fn emit_logs_list_human(output: &LogsListOutput) {
+    println!("soldr logs list");
+    println!("root: {}", output.root.display());
+    if output.launches.is_empty() {
+        println!("no launches recorded");
+    } else {
+        println!(
+            "{:<14} {:>12} {:>11} {:>10}  cwd",
+            "LAUNCH-ID", "DURATION", "HITS/MISSES", "EXIT"
+        );
+        for launch in &output.launches {
+            let hits = launch
+                .cache
+                .as_ref()
+                .map(|cache| format!("{}/{}", cache.hits, cache.misses))
+                .unwrap_or_else(|| "n/a".to_string());
+            let exit = launch
+                .exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "running".to_string());
+            println!(
+                "{:<14} {:>12} {:>11} {:>10}  {}",
+                launch.short_id,
+                launch
+                    .duration_ms
+                    .map(format_duration_ms)
+                    .unwrap_or_else(|| "running".to_string()),
+                hits,
+                exit,
+                launch.repo_root
+            );
+        }
+    }
+    for note in &output.notes {
+        println!("note: {note}");
+    }
+    println!("Run `soldr logs list --json` for a machine-readable form.");
+}
+
+fn emit_logs_show_human(output: &LogsShowOutput) {
+    let launch = &output.launch;
+    println!("soldr logs show {}", launch.id);
+    println!("short-id: {}", launch.short_id);
+    println!("started-ms: {}", launch.started_at_ms);
+    if let Some(duration_ms) = launch.duration_ms {
+        println!("duration: {}", format_duration_ms(duration_ms));
+    }
+    println!("cwd: {}", launch.repo_root);
+    println!(
+        "exit-code: {}",
+        launch
+            .exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "running".to_string())
+    );
+    println!("compilations: {}", launch.crate_count);
+    if let Some(cache) = &launch.cache {
+        println!(
+            "cache: hits={} misses={} non-cacheable={} errors={} hit-rate={}",
+            cache.hits,
+            cache.misses,
+            cache.non_cacheable,
+            cache.errors,
+            cache
+                .hit_rate
+                .map(|rate| format!("{:.1}%", rate * 100.0))
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+        println!("time-saved: {} ms", cache.time_saved_ms);
+    } else {
+        println!("cache: n/a");
+    }
+
+    if !launch.miss_reasons.is_empty() {
+        println!("top miss reasons:");
+        for reason in &launch.miss_reasons {
+            println!("  {:>6}  {}", reason.count, reason.reason);
+        }
+    }
+    if !output.slow_compiles.is_empty() {
+        println!("slowest compiles:");
+        for compile in &output.slow_compiles {
+            println!(
+                "  {:>10}  {}",
+                compile
+                    .duration_ms
+                    .map(|ms| format!("{ms:.1} ms"))
+                    .unwrap_or_else(|| "n/a".to_string()),
+                compile.crate_name.as_deref().unwrap_or("<unknown>")
+            );
+        }
+    } else if let Some(slowest) = &launch.slowest_compile {
+        println!(
+            "slowest compile: {} ({})",
+            slowest.crate_name.as_deref().unwrap_or("<unknown>"),
+            slowest
+                .duration_ms
+                .map(|ms| format!("{ms:.1} ms"))
+                .unwrap_or_else(|| "n/a".to_string())
+        );
+    }
+    if let Some(paths) = &launch.logs {
+        println!("logs:");
+        print_optional_path("  cache", &paths.cache_dir);
+        print_optional_path("  session", &paths.archived_session_log_path);
+        print_optional_path("  journal", &paths.archived_journal_path);
+        print_optional_path("  compile-journal", &paths.archived_compile_journal_path);
+        print_optional_path("  stats", &paths.archived_session_stats_path);
+        print_optional_path("  original-session", &paths.session_log_path);
+        print_optional_path("  original-journal", &paths.journal_path);
+        print_optional_path("  original-compile-journal", &paths.compile_journal_path);
+        print_optional_path("  original-stats", &paths.session_stats_path);
+    }
+    for note in &output.notes {
+        println!("note: {note}");
+    }
+    println!(
+        "Run `soldr logs show {} --json` for full event details.",
+        launch.id
+    );
+}
+
+fn print_optional_path(label: &str, path: &Option<String>) {
+    if let Some(path) = path {
+        println!("{label}: {path}");
+    }
+}
+
+fn short_launch_id(session_id: u64) -> String {
+    format!("{session_id:016x}")[..12].to_string()
+}
+
+fn format_duration_ms(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        let minutes = ms / 60_000;
+        let seconds = (ms % 60_000) as f64 / 1000.0;
+        format!("{minutes}m {seconds:.1}s")
+    }
+}
+
+fn emit_json<T: Serialize>(output: &T) -> Result<(), SoldrError> {
     let s = serde_json::to_string_pretty(output)
-        .map_err(|e| SoldrError::Other(format!("serialize logs paths JSON: {e}")))?;
+        .map_err(|e| SoldrError::Other(format!("serialize logs JSON: {e}")))?;
     println!("{s}");
     Ok(())
 }
@@ -328,4 +792,128 @@ mod tests {
         let arr = v["paths"].as_array().expect("paths must be array");
         assert!(!arr.is_empty());
     });
+
+    fn seeded_build(session_id: u64, started_at_ms: i64) -> BuildRecord {
+        BuildRecord {
+            session_id,
+            repo_root: "/repo".into(),
+            started_at_ms,
+            ended_at_ms: Some(started_at_ms + 1_500),
+            exit_code: Some(0),
+            total_wall_ms: Some(1_500),
+            crate_count: 2,
+            slowest_crate_us: Some(900_000),
+            slowest_crate_name: Some("slow-crate".into()),
+            cache_summary: Some(BuildCacheSummary {
+                hits: 8,
+                misses: 2,
+                non_cacheable: 1,
+                errors: 0,
+                compilations: 11,
+                time_saved_ms: 750,
+            }),
+            log_paths: Some(BuildLogPaths {
+                zccache_session_id: Some("session-1".into()),
+                cache_dir: Some("/cache/zccache".into()),
+                session_log_path: Some("/cache/zccache/logs/last-session.log".into()),
+                journal_path: Some("/cache/zccache/logs/last-session.jsonl".into()),
+                session_stats_path: Some("/cache/zccache/logs/last-session-stats.json".into()),
+                compile_journal_path: Some("/cache/zccache/logs/compile_journal.jsonl".into()),
+                archived_session_log_path: Some("/cache/zccache/history/1/last-session.log".into()),
+                archived_journal_path: Some("/cache/zccache/history/1/last-session.jsonl".into()),
+                archived_session_stats_path: Some(
+                    "/cache/zccache/history/1/last-session-stats.json".into(),
+                ),
+                archived_compile_journal_path: Some(
+                    "/cache/zccache/history/1/compile_journal.jsonl".into(),
+                ),
+                private_daemon_name: Some("soldr-dev-demo".into()),
+            }),
+            miss_reasons: vec![BuildMissReason {
+                reason: "key_mismatch".into(),
+                count: 2,
+            }],
+        }
+    }
+
+    timed_test!(
+        logs_list_reads_persisted_cache_summary,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let db_path = db::db_path(&paths);
+            db::upsert_build(&db_path, &seeded_build(42, 1_000)).expect("upsert");
+
+            let output = collect_logs_list_output_for_paths(&paths, 10).expect("list");
+            assert_eq!(output.schema_version, 1);
+            assert_eq!(output.launches.len(), 1);
+            let launch = &output.launches[0];
+            assert_eq!(launch.id, "42");
+            assert_eq!(launch.cache.as_ref().expect("cache").hits, 8);
+            assert_eq!(launch.cache.as_ref().expect("cache").misses, 2);
+            assert_eq!(launch.miss_reasons[0].reason, "key_mismatch");
+            assert_eq!(
+                launch
+                    .logs
+                    .as_ref()
+                    .and_then(|paths| paths.private_daemon_name.as_deref()),
+                Some("soldr-dev-demo")
+            );
+        }
+    );
+
+    timed_test!(
+        logs_show_accepts_hex_prefix_and_lists_slow_compiles,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let db_path = db::db_path(&paths);
+            let session_id = 0xabc_def0_1234_u64;
+            db::upsert_build(&db_path, &seeded_build(session_id, 1_000)).expect("upsert");
+            db::append_event(
+                &db_path,
+                &Event {
+                    ts_ms: 1_100,
+                    session_id: Some(session_id),
+                    kind: EventKind::CompileEnd,
+                    crate_name: Some("fast-crate".into()),
+                    duration_us: Some(250_000),
+                    target_dir: Some("/repo/target".into()),
+                    exit_code: None,
+                },
+            )
+            .expect("event");
+            db::append_event(
+                &db_path,
+                &Event {
+                    ts_ms: 1_200,
+                    session_id: Some(session_id),
+                    kind: EventKind::CompileEnd,
+                    crate_name: Some("slow-crate".into()),
+                    duration_us: Some(2_500_000),
+                    target_dir: Some("/repo/target".into()),
+                    exit_code: None,
+                },
+            )
+            .expect("event");
+
+            let output = collect_logs_show_output_for_paths(&paths, "00000abc").expect("show");
+            assert_eq!(output.launch.id, session_id.to_string());
+            assert_eq!(output.slow_compiles.len(), 2);
+            assert_eq!(
+                output.slow_compiles[0].crate_name.as_deref(),
+                Some("slow-crate")
+            );
+            assert!(
+                output
+                    .notes
+                    .iter()
+                    .all(|note| !note.starts_with("cache_summary")),
+                "cache summary should be present: {:?}",
+                output.notes
+            );
+        }
+    );
 }

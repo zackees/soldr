@@ -312,6 +312,26 @@ pub fn list_slow_builds(
     Ok(rows)
 }
 
+pub fn list_events_for_session(
+    db_path: &Path,
+    session_id: u64,
+) -> Result<Vec<Event>, RegistryError> {
+    let db = open_db(db_path)?;
+    init_tables(&db)?;
+    let txn = db.begin_read()?;
+    let events = txn.open_table(EVENTS)?;
+    let mut rows: Vec<Event> = Vec::new();
+    for entry in events.iter()? {
+        let (_, v) = entry?;
+        let event = decode_event_row(v.value())?;
+        if event.session_id == Some(session_id) {
+            rows.push(event);
+        }
+    }
+    rows.sort_by(|a, b| a.ts_ms.cmp(&b.ts_ms));
+    Ok(rows)
+}
+
 /// Walk events for `session_id`, returning `(crate_count, slowest_us, slowest_name)`.
 pub fn aggregate_session(
     db_path: &Path,
@@ -321,7 +341,8 @@ pub fn aggregate_session(
     init_tables(&db)?;
     let txn = db.begin_read()?;
     let events = txn.open_table(EVENTS)?;
-    let mut count: u32 = 0;
+    let mut start_count: u32 = 0;
+    let mut end_count: u32 = 0;
     let mut slowest_us: Option<u64> = None;
     let mut slowest_name: Option<String> = None;
     for entry in events.iter()? {
@@ -330,8 +351,10 @@ pub fn aggregate_session(
         if event.session_id != Some(session_id) {
             continue;
         }
-        if matches!(event.kind, EventKind::CompileStart | EventKind::CompileEnd) {
-            count += 1;
+        match event.kind {
+            EventKind::CompileStart => start_count += 1,
+            EventKind::CompileEnd => end_count += 1,
+            EventKind::SessionStart | EventKind::SessionEnd => {}
         }
         if let Some(d) = event.duration_us {
             if d > slowest_us.unwrap_or(0) {
@@ -340,6 +363,11 @@ pub fn aggregate_session(
             }
         }
     }
+    let count = if end_count > 0 {
+        end_count
+    } else {
+        start_count
+    };
     Ok((count, slowest_us, slowest_name))
 }
 
@@ -477,7 +505,7 @@ mod tests {
         )
         .expect("append");
         let (count, slowest_us, slowest_name) = aggregate_session(&path, 42).expect("aggregate");
-        assert_eq!(count, 2);
+        assert_eq!(count, 1);
         assert_eq!(slowest_us, Some(250_000));
         assert_eq!(slowest_name.as_deref(), Some("bar"));
     }
@@ -499,6 +527,9 @@ mod tests {
                     crate_count: 1,
                     slowest_crate_us: None,
                     slowest_crate_name: None,
+                    cache_summary: None,
+                    log_paths: None,
+                    miss_reasons: Vec::new(),
                 },
             )
             .expect("upsert");
@@ -528,6 +559,9 @@ mod tests {
                     crate_count: 0,
                     slowest_crate_us: None,
                     slowest_crate_name: None,
+                    cache_summary: None,
+                    log_paths: None,
+                    miss_reasons: Vec::new(),
                 },
             )
             .expect("upsert");

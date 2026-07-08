@@ -31,8 +31,10 @@ use crate::zccache::{
 use crate::{
     apply_implicit_toolchain_homes, gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg,
 };
+use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
@@ -54,6 +56,11 @@ const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
+const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
+const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
+const COMPILE_JOURNAL_TAIL_STABLE_POLLS: usize = 3;
+const BUILD_HISTORY_RETRY_ATTEMPTS: usize = 20;
+const BUILD_HISTORY_RETRY_POLL: Duration = Duration::from_millis(25);
 
 // -- Re-exports for cross-module callers --
 //
@@ -87,6 +94,506 @@ fn generate_build_session_id() -> u64 {
     let high = ((nanos / 1_000_000) as u64) & 0xFFFF_FFFF;
     let low = ((nanos as u64) ^ (std::process::id() as u64)) & 0xFFFF_FFFF;
     (high << 32) | low
+}
+
+fn new_build_record(
+    session_id: u64,
+    repo_root: String,
+    started_at_ms: i64,
+) -> crate::daemon::protocol::BuildRecord {
+    crate::daemon::protocol::BuildRecord {
+        session_id,
+        repo_root,
+        started_at_ms,
+        ended_at_ms: None,
+        exit_code: None,
+        total_wall_ms: None,
+        crate_count: 0,
+        slowest_crate_us: None,
+        slowest_crate_name: None,
+        cache_summary: None,
+        log_paths: None,
+        miss_reasons: Vec::new(),
+    }
+}
+
+fn persist_build_session_start_fallback(
+    paths: &SoldrPaths,
+    session_id: u64,
+    repo_root: &Path,
+    started_at_ms: i64,
+) {
+    if let Err(err) =
+        persist_build_session_start_fallback_inner(paths, session_id, repo_root, started_at_ms)
+    {
+        eprintln!(
+            "soldr warning: failed to persist build-session start fallback for {session_id}: {err}"
+        );
+    }
+}
+
+fn persist_build_session_start_fallback_inner(
+    paths: &SoldrPaths,
+    session_id: u64,
+    repo_root: &Path,
+    started_at_ms: i64,
+) -> Result<(), SoldrError> {
+    let db_path = crate::cache_lib::data_db_path(paths);
+    if crate::daemon::db::get_build(&db_path, session_id)
+        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
+        .is_none()
+    {
+        let record = new_build_record(session_id, repo_root.display().to_string(), started_at_ms);
+        crate::daemon::db::upsert_build(&db_path, &record)
+            .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    }
+    let _ = crate::daemon::db::append_event(
+        &db_path,
+        &crate::daemon::db::Event {
+            ts_ms: started_at_ms,
+            session_id: Some(session_id),
+            kind: crate::daemon::db::EventKind::SessionStart,
+            crate_name: None,
+            duration_us: None,
+            target_dir: None,
+            exit_code: None,
+        },
+    );
+    Ok(())
+}
+
+fn persist_build_session_end_fallback(
+    paths: &SoldrPaths,
+    session_id: u64,
+    exit_code: i32,
+    ended_at_ms: i64,
+) {
+    if let Err(err) =
+        persist_build_session_end_fallback_inner(paths, session_id, exit_code, ended_at_ms)
+    {
+        eprintln!(
+            "soldr warning: failed to persist build-session end fallback for {session_id}: {err}"
+        );
+    }
+}
+
+fn persist_build_session_end_fallback_inner(
+    paths: &SoldrPaths,
+    session_id: u64,
+    exit_code: i32,
+    ended_at_ms: i64,
+) -> Result<(), SoldrError> {
+    let db_path = crate::cache_lib::data_db_path(paths);
+    let mut record = crate::daemon::db::get_build(&db_path, session_id)
+        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
+        .unwrap_or_else(|| {
+            let repo_root = std::env::current_dir()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|_| ".".to_string());
+            new_build_record(session_id, repo_root, ended_at_ms)
+        });
+    let (crate_count, slowest_crate_us, slowest_crate_name) =
+        crate::daemon::db::aggregate_session(&db_path, session_id).unwrap_or((0, None, None));
+    record.ended_at_ms = Some(ended_at_ms);
+    record.exit_code = Some(exit_code);
+    record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
+    record.crate_count = crate_count;
+    record.slowest_crate_us = slowest_crate_us;
+    record.slowest_crate_name = slowest_crate_name;
+    crate::daemon::db::upsert_build(&db_path, &record)
+        .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    let _ = crate::daemon::db::append_event(
+        &db_path,
+        &crate::daemon::db::Event {
+            ts_ms: ended_at_ms,
+            session_id: Some(session_id),
+            kind: crate::daemon::db::EventKind::SessionEnd,
+            crate_name: None,
+            duration_us: None,
+            target_dir: None,
+            exit_code: Some(exit_code),
+        },
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct BuildLogHistoryRequest<'a> {
+    paths: &'a SoldrPaths,
+    build_session_id: u64,
+    repo_root: &'a Path,
+    started_at_ms: i64,
+    session: &'a crate::zccache_lifecycle::ZccacheBuildSession,
+    compile_journal_start_len: u64,
+    exit_code: i32,
+    ended_at_ms: i64,
+}
+
+fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
+    let build_session_id = request.build_session_id;
+    let mut last_error = None;
+    for attempt in 0..BUILD_HISTORY_RETRY_ATTEMPTS {
+        match persist_build_log_history_inner(&request) {
+            Ok(()) => return,
+            Err(err) => {
+                last_error = Some(err);
+                if attempt + 1 < BUILD_HISTORY_RETRY_ATTEMPTS {
+                    std::thread::sleep(BUILD_HISTORY_RETRY_POLL);
+                }
+            }
+        }
+    }
+    if let Some(err) = last_error {
+        eprintln!(
+            "soldr warning: failed to persist logs history for build {build_session_id}: {err}"
+        );
+    }
+}
+
+fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Result<(), SoldrError> {
+    let BuildLogHistoryRequest {
+        paths,
+        build_session_id,
+        repo_root,
+        started_at_ms,
+        session,
+        compile_journal_start_len,
+        exit_code,
+        ended_at_ms,
+    } = *request;
+    let db_path = crate::cache_lib::data_db_path(paths);
+    let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
+        .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
+        .unwrap_or_else(|| {
+            new_build_record(
+                build_session_id,
+                repo_root.display().to_string(),
+                started_at_ms,
+            )
+        });
+
+    let archive_dir = build_log_history_dir(paths, build_session_id);
+    let archived_session_log_path =
+        copy_session_artifact(&session.session_log_path, &archive_dir, "last-session.log");
+    let archived_journal_path =
+        copy_session_artifact(&session.journal_path, &archive_dir, "last-session.jsonl");
+    let archived_session_stats_path = copy_session_artifact(
+        &session.session_stats_path,
+        &archive_dir,
+        "last-session-stats.json",
+    );
+    let cache_summary = read_build_cache_summary(&session.session_stats_path);
+    let expected_compile_journal_entries = cache_summary
+        .as_ref()
+        .and_then(|summary| (summary.compilations > 0).then_some(summary.compilations));
+    let compile_journal_path = embedded_compile_journal_path(paths);
+    if expected_compile_journal_entries.is_some() {
+        wait_for_compile_journal_tail(
+            &compile_journal_path,
+            compile_journal_start_len,
+            expected_compile_journal_entries,
+        );
+    }
+    let archived_compile_journal_path = copy_session_artifact_tail(
+        &compile_journal_path,
+        &archive_dir,
+        "compile_journal.jsonl",
+        compile_journal_start_len,
+    );
+
+    record.cache_summary = cache_summary;
+    record.miss_reasons = read_build_miss_reasons(
+        archived_compile_journal_path
+            .as_ref()
+            .map(|path| Path::new(path.as_str())),
+        archived_journal_path
+            .as_ref()
+            .map(|path| Path::new(path.as_str()))
+            .unwrap_or(&session.journal_path),
+        archived_session_log_path
+            .as_ref()
+            .map(|path| Path::new(path.as_str()))
+            .unwrap_or(&session.session_log_path),
+    );
+    let (crate_count, slowest_crate_us, slowest_crate_name) =
+        crate::daemon::db::aggregate_session(&db_path, build_session_id).unwrap_or((0, None, None));
+    record.ended_at_ms = Some(record.ended_at_ms.unwrap_or(ended_at_ms));
+    record.exit_code = Some(record.exit_code.unwrap_or(exit_code));
+    record.total_wall_ms = Some(
+        record
+            .ended_at_ms
+            .map(|ended| (ended - record.started_at_ms).max(0) as u64)
+            .unwrap_or(0),
+    );
+    record.crate_count = crate_count;
+    record.slowest_crate_us = slowest_crate_us;
+    record.slowest_crate_name = slowest_crate_name;
+    record.log_paths = Some(crate::daemon::protocol::BuildLogPaths {
+        zccache_session_id: Some(session.session_id.clone()),
+        cache_dir: Some(session.cache_dir.display().to_string()),
+        session_log_path: Some(session.session_log_path.display().to_string()),
+        journal_path: Some(session.journal_path.display().to_string()),
+        session_stats_path: Some(session.session_stats_path.display().to_string()),
+        compile_journal_path: Some(compile_journal_path.display().to_string()),
+        archived_session_log_path,
+        archived_journal_path,
+        archived_session_stats_path,
+        archived_compile_journal_path,
+        private_daemon_name: session
+            .private_daemon
+            .as_ref()
+            .map(|private| private.daemon_name.clone()),
+    });
+
+    crate::daemon::db::upsert_build(&db_path, &record)
+        .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    Ok(())
+}
+
+fn build_log_history_dir(paths: &SoldrPaths, build_session_id: u64) -> PathBuf {
+    paths
+        .cache
+        .join("zccache")
+        .join("history")
+        .join(build_session_id.to_string())
+}
+
+fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
+    paths
+        .cache
+        .join("zccache")
+        .join(format!("v{}", zccache::core::VERSION))
+        .join("logs")
+        .join("compile_journal.jsonl")
+}
+
+fn file_len(path: &Path) -> u64 {
+    std::fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0)
+}
+
+fn wait_for_compile_journal_tail(
+    path: &Path,
+    start_offset: u64,
+    expected_entries: Option<u64>,
+) -> bool {
+    let deadline = Instant::now() + COMPILE_JOURNAL_TAIL_WAIT;
+    let mut last_len = None;
+    let mut stable_polls = 0;
+    loop {
+        let len = file_len(path);
+        let has_tail = len > start_offset;
+        let has_expected_entries = expected_entries
+            .map(|expected| {
+                expected == 0
+                    || count_compile_journal_tail_entries(path, start_offset)
+                        .map(|count| count >= expected)
+                        .unwrap_or(false)
+            })
+            .unwrap_or(has_tail);
+        if has_tail && has_expected_entries {
+            if last_len == Some(len) {
+                stable_polls += 1;
+            } else {
+                last_len = Some(len);
+                stable_polls = 0;
+            }
+            if stable_polls >= COMPILE_JOURNAL_TAIL_STABLE_POLLS {
+                return true;
+            }
+        } else {
+            last_len = Some(len);
+            stable_polls = 0;
+        }
+        if Instant::now() >= deadline {
+            return has_tail;
+        }
+        std::thread::sleep(COMPILE_JOURNAL_TAIL_POLL);
+    }
+}
+
+fn count_compile_journal_tail_entries(path: &Path, start_offset: u64) -> Option<u64> {
+    let tail = read_file_tail(path, start_offset)?;
+    Some(tail.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+}
+
+fn read_file_tail(path: &Path, start_offset: u64) -> Option<String> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    if len <= start_offset {
+        return None;
+    }
+    file.seek(SeekFrom::Start(start_offset)).ok()?;
+    let mut body = String::new();
+    file.read_to_string(&mut body).ok()?;
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
+    }
+}
+
+fn copy_session_artifact(source: &Path, archive_dir: &Path, file_name: &str) -> Option<String> {
+    if !source.is_file() {
+        return None;
+    }
+    std::fs::create_dir_all(archive_dir).ok()?;
+    let dest = archive_dir.join(file_name);
+    std::fs::copy(source, &dest).ok()?;
+    Some(dest.display().to_string())
+}
+
+fn copy_session_artifact_tail(
+    source: &Path,
+    archive_dir: &Path,
+    file_name: &str,
+    start_offset: u64,
+) -> Option<String> {
+    let tail = read_file_tail(source, start_offset)?;
+    std::fs::create_dir_all(archive_dir).ok()?;
+    let dest = archive_dir.join(file_name);
+    std::fs::write(&dest, tail).ok()?;
+    Some(dest.display().to_string())
+}
+
+fn read_build_cache_summary(
+    stats_path: &Path,
+) -> Option<crate::daemon::protocol::BuildCacheSummary> {
+    let raw = std::fs::read_to_string(stats_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(raw.trim()).ok()?;
+    if json.get("status").and_then(serde_json::Value::as_str) != Some("ok") {
+        return None;
+    }
+    let hits = json_u64(&json, "hits").unwrap_or(0);
+    let misses = json_u64(&json, "misses").unwrap_or(0);
+    let non_cacheable = json_u64(&json, "non_cacheable").unwrap_or(0);
+    let errors = json_u64(&json, "errors").unwrap_or(0);
+    Some(crate::daemon::protocol::BuildCacheSummary {
+        hits,
+        misses,
+        non_cacheable,
+        errors,
+        compilations: json_u64(&json, "compilations").unwrap_or(hits + misses),
+        time_saved_ms: json_u64(&json, "time_saved_ms").unwrap_or(0),
+    })
+}
+
+fn read_build_miss_reasons(
+    compile_journal_path: Option<&Path>,
+    session_journal_path: &Path,
+    session_log_path: &Path,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    if let Some(compile_journal_path) = compile_journal_path {
+        let from_compile_journal = read_build_miss_reasons_from_journal(compile_journal_path);
+        if !from_compile_journal.is_empty() {
+            return from_compile_journal;
+        }
+    }
+    let from_session_journal = read_build_miss_reasons_from_journal(session_journal_path);
+    if !from_session_journal.is_empty() {
+        return from_session_journal;
+    }
+    read_build_miss_reasons_from_log(session_log_path)
+}
+
+fn read_build_miss_reasons_from_journal(
+    journal_path: &Path,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    let Ok(raw) = std::fs::read_to_string(journal_path) else {
+        return Vec::new();
+    };
+    parse_build_miss_reasons_from_journal(&raw)
+}
+
+fn parse_build_miss_reasons_from_journal(
+    journal_body: &str,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for line in journal_body.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let outcome = value
+            .get("outcome")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        if !matches!(outcome, "miss" | "link_miss") {
+            continue;
+        }
+        let reason = value
+            .get("miss_reason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        *counts.entry(reason).or_insert(0) += 1;
+    }
+    sorted_miss_reasons(counts)
+}
+
+fn read_build_miss_reasons_from_log(
+    log_path: &Path,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    let Ok(raw) = std::fs::read_to_string(log_path) else {
+        return Vec::new();
+    };
+    parse_build_miss_reasons_from_log(&raw)
+}
+
+fn parse_build_miss_reasons_from_log(
+    log_body: &str,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    let mut counts: BTreeMap<String, u64> = BTreeMap::new();
+    for line in log_body.lines().filter(|line| line.contains("[MISS]")) {
+        let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
+        *counts.entry(reason).or_insert(0) += 1;
+    }
+    if counts.is_empty() {
+        for line in log_body
+            .lines()
+            .filter(|line| line.contains("verdict=Miss"))
+        {
+            let reason = extract_miss_reason(line).unwrap_or_else(|| "unknown".to_string());
+            *counts.entry(reason).or_insert(0) += 1;
+        }
+    }
+    sorted_miss_reasons(counts)
+}
+
+fn sorted_miss_reasons(
+    counts: BTreeMap<String, u64>,
+) -> Vec<crate::daemon::protocol::BuildMissReason> {
+    let mut reasons: Vec<_> = counts
+        .into_iter()
+        .map(|(reason, count)| crate::daemon::protocol::BuildMissReason { reason, count })
+        .collect();
+    reasons.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+    reasons
+}
+
+fn extract_miss_reason(line: &str) -> Option<String> {
+    if let Some(rest) = line.split("(reason:").nth(1) {
+        let reason = rest.split(')').next()?.trim();
+        if !reason.is_empty() {
+            return Some(reason.to_string());
+        }
+    }
+    if let Some(rest) = line.split("reason=").nth(1) {
+        let reason = rest
+            .split_whitespace()
+            .next()?
+            .trim_matches(|c: char| matches!(c, ',' | ';' | ')' | ']'))
+            .trim();
+        if !reason.is_empty() {
+            return Some(reason.to_string());
+        }
+    }
+    None
+}
+
+fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(serde_json::Value::as_u64)
 }
 
 fn cargo_wait_timeout() -> Duration {
@@ -871,12 +1378,21 @@ pub(crate) async fn run_cargo_front_door(
     let session_started_at_ms = current_unix_ms();
     let session_repo_root =
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    crate::daemon::client::build_session_start(
+    if crate::daemon::client::build_session_start(
         &paths,
         session_id,
         &session_repo_root,
         session_started_at_ms,
-    );
+    )
+    .is_err()
+    {
+        persist_build_session_start_fallback(
+            &paths,
+            session_id,
+            &session_repo_root,
+            session_started_at_ms,
+        );
+    }
     // Issue #980 L7: gate the in-process auto-GC orchestrator (and any
     // other long-running workers) so they sleep while this cargo
     // invocation is running. The flag is cleared below right after
@@ -1035,6 +1551,7 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(session) = cache_plan.zccache_session() {
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
+    let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
     let cargo_run_result: Result<
         (
             std::process::ExitStatus,
@@ -1055,12 +1572,29 @@ pub(crate) async fn run_cargo_front_door(
         Ok(outcome) => outcome,
         Err(err) => {
             let timeout = cargo_run_error_is_timeout(&err);
-            crate::daemon::client::build_session_end(&paths, session_id, -1, current_unix_ms());
+            let ended_at_ms = current_unix_ms();
+            if crate::daemon::client::build_session_end(&paths, session_id, -1, ended_at_ms)
+                .is_err()
+            {
+                persist_build_session_end_fallback(&paths, session_id, -1, ended_at_ms);
+            }
             crate::cache_lib::build_active::set(false);
             let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
-            if let Err(finish_err) =
-                cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout)
-            {
+            let finish_result =
+                cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
+            if let Some(session) = cache_plan.zccache_session() {
+                persist_build_log_history(BuildLogHistoryRequest {
+                    paths: &paths,
+                    build_session_id: session_id,
+                    repo_root: &session_repo_root,
+                    started_at_ms: session_started_at_ms,
+                    session,
+                    compile_journal_start_len,
+                    exit_code: -1,
+                    ended_at_ms,
+                });
+            }
+            if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
                 );
@@ -1081,12 +1615,22 @@ pub(crate) async fn run_cargo_front_door(
     // Phase 2: fire BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
     // build's own outcome.
-    crate::daemon::client::build_session_end(
+    let ended_at_ms = current_unix_ms();
+    if crate::daemon::client::build_session_end(
         &paths,
         session_id,
         status.code().unwrap_or(-1),
-        current_unix_ms(),
-    );
+        ended_at_ms,
+    )
+    .is_err()
+    {
+        persist_build_session_end_fallback(
+            &paths,
+            session_id,
+            status.code().unwrap_or(-1),
+            ended_at_ms,
+        );
+    }
     // Issue #980 L7: paired with the `set(true)` above. Clearing here
     // (before `post_cargo_result`) lets the post-build target-GC pass
     // run normally without thinking it's still inside the build.
@@ -1151,7 +1695,20 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout)?;
+    let finish_result = cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
+    if let Some(session) = cache_plan.zccache_session() {
+        persist_build_log_history(BuildLogHistoryRequest {
+            paths: &paths,
+            build_session_id: session_id,
+            repo_root: &session_repo_root,
+            started_at_ms: session_started_at_ms,
+            session,
+            compile_journal_start_len,
+            exit_code: status.code().unwrap_or(-1),
+            ended_at_ms,
+        });
+    }
+    finish_result?;
     post_cargo_result?;
     drop(trampoline_plan);
     drop(workspace_plan);

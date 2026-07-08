@@ -58,7 +58,9 @@ use thiserror::Error;
 ///   hit/miss/time-saved counters over IPC and diff them against a
 ///   session-start baseline — replacing the old `zccache session-end`
 ///   subprocess against the (removed) managed binary.
-pub const PROTOCOL_VERSION: u32 = 9;
+/// * v10 (soldr#820): extends `BuildRecord` with optional cache summary,
+///   log/archive paths, and miss-reason rollups for `soldr logs`.
+pub const PROTOCOL_VERSION: u32 = 10;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -379,6 +381,37 @@ pub struct ZccacheDaemonLink {
     pub private_env_keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildCacheSummary {
+    pub hits: u64,
+    pub misses: u64,
+    pub non_cacheable: u64,
+    pub errors: u64,
+    pub compilations: u64,
+    pub time_saved_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildLogPaths {
+    pub zccache_session_id: Option<String>,
+    pub cache_dir: Option<String>,
+    pub session_log_path: Option<String>,
+    pub journal_path: Option<String>,
+    pub session_stats_path: Option<String>,
+    pub compile_journal_path: Option<String>,
+    pub archived_session_log_path: Option<String>,
+    pub archived_journal_path: Option<String>,
+    pub archived_session_stats_path: Option<String>,
+    pub archived_compile_journal_path: Option<String>,
+    pub private_daemon_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuildMissReason {
+    pub reason: String,
+    pub count: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BuildRecord {
     pub session_id: u64,
@@ -390,19 +423,22 @@ pub struct BuildRecord {
     pub crate_count: u32,
     pub slowest_crate_us: Option<u64>,
     pub slowest_crate_name: Option<String>,
+    pub cache_summary: Option<BuildCacheSummary>,
+    pub log_paths: Option<BuildLogPaths>,
+    pub miss_reasons: Vec<BuildMissReason>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v9_after_compile_stats, {
+    crate::timed_test!(protocol_version_is_v10_after_logs_history, {
         // Bumped from 8 → 9 in soldr#1368 when Request::CompileStats was
         // added so `soldr session end` can read the embedded zccache
         // service's cumulative counters over IPC (replacing the removed
         // managed `zccache session-end` subprocess). (8 came from #1286
         // F1's Request::FlushCaches.)
-        assert_eq!(PROTOCOL_VERSION, 9);
+        assert_eq!(PROTOCOL_VERSION, 10);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {

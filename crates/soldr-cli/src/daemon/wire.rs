@@ -34,8 +34,9 @@
 
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
-    BuildRecord, CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, Request,
-    Response, StatusInfo, WireDecodeError, ZccacheDaemonLink,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileRequest,
+    CompileResponseBody, CompileStatsInfo, CookStats, Request, Response, StatusInfo,
+    WireDecodeError, ZccacheDaemonLink,
 };
 
 #[path = "wire_proto.rs"]
@@ -129,6 +130,16 @@ pub fn build_record_to_wire(record: &BuildRecord) -> proto::WireBuildRecord {
         crate_count: record.crate_count,
         slowest_crate_us: record.slowest_crate_us,
         slowest_crate_name: record.slowest_crate_name.clone(),
+        cache_summary: record
+            .cache_summary
+            .as_ref()
+            .map(build_cache_summary_to_wire),
+        log_paths: record.log_paths.as_ref().map(build_log_paths_to_wire),
+        miss_reasons: record
+            .miss_reasons
+            .iter()
+            .map(build_miss_reason_to_wire)
+            .collect(),
     }
 }
 
@@ -143,6 +154,81 @@ pub fn build_record_from_wire(wire: proto::WireBuildRecord) -> BuildRecord {
         crate_count: wire.crate_count,
         slowest_crate_us: wire.slowest_crate_us,
         slowest_crate_name: wire.slowest_crate_name,
+        cache_summary: wire.cache_summary.map(build_cache_summary_from_wire),
+        log_paths: wire.log_paths.map(build_log_paths_from_wire),
+        miss_reasons: wire
+            .miss_reasons
+            .into_iter()
+            .map(build_miss_reason_from_wire)
+            .collect(),
+    }
+}
+
+fn build_cache_summary_to_wire(summary: &BuildCacheSummary) -> proto::WireBuildCacheSummary {
+    proto::WireBuildCacheSummary {
+        hits: summary.hits,
+        misses: summary.misses,
+        non_cacheable: summary.non_cacheable,
+        errors: summary.errors,
+        compilations: summary.compilations,
+        time_saved_ms: summary.time_saved_ms,
+    }
+}
+
+fn build_cache_summary_from_wire(wire: proto::WireBuildCacheSummary) -> BuildCacheSummary {
+    BuildCacheSummary {
+        hits: wire.hits,
+        misses: wire.misses,
+        non_cacheable: wire.non_cacheable,
+        errors: wire.errors,
+        compilations: wire.compilations,
+        time_saved_ms: wire.time_saved_ms,
+    }
+}
+
+fn build_log_paths_to_wire(paths: &BuildLogPaths) -> proto::WireBuildLogPaths {
+    proto::WireBuildLogPaths {
+        zccache_session_id: paths.zccache_session_id.clone(),
+        cache_dir: paths.cache_dir.clone(),
+        session_log_path: paths.session_log_path.clone(),
+        journal_path: paths.journal_path.clone(),
+        session_stats_path: paths.session_stats_path.clone(),
+        compile_journal_path: paths.compile_journal_path.clone(),
+        archived_session_log_path: paths.archived_session_log_path.clone(),
+        archived_journal_path: paths.archived_journal_path.clone(),
+        archived_session_stats_path: paths.archived_session_stats_path.clone(),
+        archived_compile_journal_path: paths.archived_compile_journal_path.clone(),
+        private_daemon_name: paths.private_daemon_name.clone(),
+    }
+}
+
+fn build_log_paths_from_wire(wire: proto::WireBuildLogPaths) -> BuildLogPaths {
+    BuildLogPaths {
+        zccache_session_id: wire.zccache_session_id,
+        cache_dir: wire.cache_dir,
+        session_log_path: wire.session_log_path,
+        journal_path: wire.journal_path,
+        session_stats_path: wire.session_stats_path,
+        compile_journal_path: wire.compile_journal_path,
+        archived_session_log_path: wire.archived_session_log_path,
+        archived_journal_path: wire.archived_journal_path,
+        archived_session_stats_path: wire.archived_session_stats_path,
+        archived_compile_journal_path: wire.archived_compile_journal_path,
+        private_daemon_name: wire.private_daemon_name,
+    }
+}
+
+fn build_miss_reason_to_wire(reason: &BuildMissReason) -> proto::WireBuildMissReason {
+    proto::WireBuildMissReason {
+        reason: reason.reason.clone(),
+        count: reason.count,
+    }
+}
+
+fn build_miss_reason_from_wire(wire: proto::WireBuildMissReason) -> BuildMissReason {
+    BuildMissReason {
+        reason: wire.reason,
+        count: wire.count,
     }
 }
 

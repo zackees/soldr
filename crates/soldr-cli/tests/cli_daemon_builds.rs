@@ -120,6 +120,9 @@ fn seed_build(
             crate_count: 3,
             slowest_crate_us: Some(wall_ms * 1000 / 2),
             slowest_crate_name: Some("seeded-crate".into()),
+            cache_summary: None,
+            log_paths: None,
+            miss_reasons: Vec::new(),
         },
     )
     .expect("upsert");
