@@ -106,7 +106,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache (Rust toolchain only)
-        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
+        uses: zackees/setup-soldr@fcbf681004d0798db6ee2174c38c511b7e70b3d5
         with:
           toolchain: 1.94.1
           cache: false
@@ -370,7 +370,7 @@ jobs:
       # is already ~4 min. Keep the lane and archive coverage, but skip cook
       # for this target until setup-soldr/cook grows a restore-only miss path.
       - name: Restore cooked dependency cache
-        uses: zackees/setup-soldr/cook@e8f28749013e1976621805566a35de37ecdbb190
+        uses: zackees/setup-soldr/cook@fcbf681004d0798db6ee2174c38c511b7e70b3d5
         with:
           cache: ${{ inputs.target == 'x86_64-unknown-linux-musl' && 'false' || 'true' }}
           target-dir: target
