@@ -198,28 +198,33 @@ pub fn build_session_start(
     session_id: u64,
     repo_root: &Path,
     started_at_ms: i64,
-) {
+) -> Result<(), ClientError> {
     let sock = default_sock_path(paths);
-    let _ = submit_fire_and_forget(
+    submit_fire_and_forget(
         &sock,
         &Request::BuildSessionStart {
             session_id,
             repo_root: repo_root.display().to_string(),
             started_at_ms,
         },
-    );
+    )
 }
 
-pub fn build_session_end(paths: &SoldrPaths, session_id: u64, exit_code: i32, ended_at_ms: i64) {
+pub fn build_session_end(
+    paths: &SoldrPaths,
+    session_id: u64,
+    exit_code: i32,
+    ended_at_ms: i64,
+) -> Result<(), ClientError> {
     let sock = default_sock_path(paths);
-    let _ = submit_fire_and_forget(
+    submit_fire_and_forget(
         &sock,
         &Request::BuildSessionEnd {
             session_id,
             exit_code,
             ended_at_ms,
         },
-    );
+    )
 }
 
 pub fn record_compile(

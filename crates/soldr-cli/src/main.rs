@@ -49,8 +49,8 @@ mod gc;
 mod install_shims;
 mod linker;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.
-/// Phase 1 ships the `paths` verb; future PRs layer `list` / `show`
-/// / `view` / `prune` on the same dispatch arm.
+/// `list` / `show` / `paths` live here; `view` / `prune` stay
+/// follow-up verbs tracked by the issue.
 mod logs_cmd;
 /// soldr#1079 — Windows MSVC host-toolchain auto-discovery. Runs
 /// before cargo for MSVC targets so `link.exe` + `LIB` are set
@@ -631,30 +631,38 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         Commands::Config => {
             println!("(config not yet implemented)");
         }
-        Commands::Logs { command } => match command {
-            // soldr#820 phase 1 — `paths` is the only implemented verb today.
-            Some(LogsSubcommand::Paths { json }) => {
-                std::process::exit(logs_cmd::run_logs_paths(json)?);
+        Commands::Logs { command } => {
+            match command {
+                // soldr#820: `list` / `show` / `paths` are implemented;
+                // `view` / `prune` remain follow-up verbs.
+                Some(LogsSubcommand::List { limit, json }) => {
+                    std::process::exit(logs_cmd::run_logs_list(limit, json)?);
+                }
+                Some(LogsSubcommand::Show { launch_id, json }) => {
+                    std::process::exit(logs_cmd::run_logs_show(&launch_id, json)?);
+                }
+                Some(LogsSubcommand::Paths { json }) => {
+                    std::process::exit(logs_cmd::run_logs_paths(json)?);
+                }
+                None => {
+                    // Bare `soldr logs` with no subcommand: print the help-shaped
+                    // overview from the issue's design plus follow-up hints.
+                    eprintln!("soldr logs — inspect soldr's runtime activity (issue #820)");
+                    eprintln!();
+                    eprintln!("Subcommands:");
+                    eprintln!("  soldr logs list                List recent launches");
+                    eprintln!("  soldr logs show <launch-id>    Session summary + log paths");
+                    eprintln!("  soldr logs paths               Print every directory soldr writes logs into");
+                    eprintln!();
+                    eprintln!("Planned follow-up verbs (not implemented yet):");
+                    eprintln!("  soldr logs view <launch-id>    Stream a launch's JSONL journal");
+                    eprintln!("  soldr logs prune --keep N      Bounded retention sweep");
+                    eprintln!();
+                    eprintln!("Run `soldr logs list --json` for a machine-readable form.");
+                    std::process::exit(0);
+                }
             }
-            None => {
-                // Bare `soldr logs` with no subcommand: print the help-shaped
-                // overview from the issue's design + a hint that today only
-                // `paths` is implemented. Other verbs are planned follow-ups.
-                eprintln!("soldr logs — inspect soldr's runtime activity (issue #820)");
-                eprintln!();
-                eprintln!("Subcommands:");
-                eprintln!("  soldr logs paths    Print every directory soldr writes logs into");
-                eprintln!();
-                eprintln!("Planned follow-up verbs (not implemented yet):");
-                eprintln!("  soldr logs list                List recent launches");
-                eprintln!("  soldr logs show <launch-id>    Session summary + log paths");
-                eprintln!("  soldr logs view <launch-id>    Stream a launch's JSONL journal");
-                eprintln!("  soldr logs prune --keep N      Bounded retention sweep");
-                eprintln!();
-                eprintln!("Run `soldr logs paths --json` for a machine-readable form.");
-                std::process::exit(0);
-            }
-        },
+        }
         Commands::Cache { json, command } => match command {
             Some(CacheSubcommand::Report { json: report_json }) => {
                 cache::run_cache_report_command(report_json || json)?;

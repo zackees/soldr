@@ -1281,3 +1281,137 @@ crate::timed_test!(zlib_ng_arm_wrapper_written_only_for_aarch64_msvc, {
         .expect("second call still yields the wrapper");
     assert_eq!((key, value), (key2, value2));
 });
+
+crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
+    let body = [
+        r#"{"outcome":"hit","miss_reason":"ignored"}"#,
+        r#"{"outcome":"miss","miss_reason":"context_not_found"}"#,
+        r#"{"outcome":"miss","miss_reason":"context_not_found"}"#,
+        r#"{"outcome":"link_miss","miss_reason":"no_artifact_for_key"}"#,
+        r#"{"outcome":"miss"}"#,
+        "not-json",
+    ]
+    .join("\n");
+
+    let reasons = parse_build_miss_reasons_from_journal(&body);
+
+    assert_eq!(reasons.len(), 3);
+    assert_eq!(reasons[0].reason, "context_not_found");
+    assert_eq!(reasons[0].count, 2);
+    assert_eq!(reasons[1].reason, "no_artifact_for_key");
+    assert_eq!(reasons[1].count, 1);
+    assert_eq!(reasons[2].reason, "unknown");
+    assert_eq!(reasons[2].count, 1);
+});
+
+crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {
+    let root = tempfile::tempdir().expect("temp root");
+    let global_journal = root.path().join("compile_journal.jsonl");
+    std::fs::write(
+        &global_journal,
+        r#"{"outcome":"miss","miss_reason":"old_build"}"#,
+    )
+    .expect("write old global journal");
+    let session_journal = root.path().join("last-session.jsonl");
+    let session_log = root.path().join("last-session.log");
+
+    let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
+
+    assert!(
+        reasons.is_empty(),
+        "missing archived tail must not parse unrelated global journal entries"
+    );
+});
+
+crate::timed_test!(
+    miss_reasons_fall_back_to_session_journal_when_tail_missing,
+    {
+        let root = tempfile::tempdir().expect("temp root");
+        let session_journal = root.path().join("last-session.jsonl");
+        let session_log = root.path().join("last-session.log");
+        std::fs::write(
+            &session_journal,
+            r#"{"outcome":"miss","miss_reason":"session_build"}"#,
+        )
+        .expect("write session journal");
+
+        let reasons = read_build_miss_reasons(None, &session_journal, &session_log);
+
+        assert_eq!(reasons.len(), 1);
+        assert_eq!(reasons[0].reason, "session_build");
+        assert_eq!(reasons[0].count, 1);
+    }
+);
+
+crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
+    let root = tempfile::tempdir().expect("temp root");
+    let source = root.path().join("compile_journal.jsonl");
+    std::fs::write(&source, "old-build\n").expect("write old journal");
+    let start_offset = std::fs::metadata(&source).expect("metadata").len();
+    std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2\n").expect("append journal");
+
+    let archived = copy_session_artifact_tail(
+        &source,
+        &root.path().join("history").join("1"),
+        "compile_journal.jsonl",
+        start_offset,
+    )
+    .expect("archive path");
+
+    let body = std::fs::read_to_string(archived).expect("archived body");
+    assert_eq!(body, "new-build-1\nnew-build-2\n");
+});
+
+crate::timed_test!(
+    compile_journal_tail_waits_for_expected_entries,
+    Duration::from_secs(5),
+    {
+        let root = tempfile::tempdir().expect("temp root");
+        let source = root.path().join("compile_journal.jsonl");
+        std::fs::write(&source, "old-build\n").expect("write old journal");
+        let start_offset = std::fs::metadata(&source).expect("metadata").len();
+        let writer_source = source.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            std::fs::write(&writer_source, "old-build\nnew-build-1\n").expect("write first tail");
+            std::thread::sleep(Duration::from_millis(100));
+            std::fs::write(&writer_source, "old-build\nnew-build-1\nnew-build-2\n")
+                .expect("write second tail");
+        });
+
+        assert!(wait_for_compile_journal_tail(
+            &source,
+            start_offset,
+            Some(2)
+        ));
+        assert_eq!(
+            count_compile_journal_tail_entries(&source, start_offset),
+            Some(2)
+        );
+    }
+);
+
+crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let repo = root.path().join("repo");
+    std::fs::create_dir_all(&repo).expect("repo dir");
+
+    persist_build_session_start_fallback_inner(&paths, 99, &repo, 1_000).expect("start fallback");
+    persist_build_session_end_fallback_inner(&paths, 99, 0, 1_250).expect("end fallback");
+
+    let db_path = crate::cache_lib::data_db_path(&paths);
+    let record = crate::daemon::db::get_build(&db_path, 99)
+        .expect("read build")
+        .expect("record");
+    assert_eq!(record.repo_root, repo.display().to_string());
+    assert_eq!(record.started_at_ms, 1_000);
+    assert_eq!(record.ended_at_ms, Some(1_250));
+    assert_eq!(record.total_wall_ms, Some(250));
+    assert_eq!(record.exit_code, Some(0));
+
+    let events = crate::daemon::db::list_events_for_session(&db_path, 99).expect("events");
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, crate::daemon::db::EventKind::SessionStart);
+    assert_eq!(events[1].kind, crate::daemon::db::EventKind::SessionEnd);
+});

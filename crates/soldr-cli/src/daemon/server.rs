@@ -177,6 +177,98 @@ fn current_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
+fn merge_build_session_start(
+    existing: Option<BuildRecord>,
+    session_id: u64,
+    repo_root: String,
+    started_at_ms: i64,
+) -> BuildRecord {
+    let mut record = existing.unwrap_or(BuildRecord {
+        session_id,
+        repo_root: String::new(),
+        started_at_ms,
+        ended_at_ms: None,
+        exit_code: None,
+        total_wall_ms: None,
+        crate_count: 0,
+        slowest_crate_us: None,
+        slowest_crate_name: None,
+        cache_summary: None,
+        log_paths: None,
+        miss_reasons: Vec::new(),
+    });
+    record.session_id = session_id;
+    record.repo_root = repo_root;
+    record.started_at_ms = started_at_ms;
+    if let Some(ended_at_ms) = record.ended_at_ms {
+        record.total_wall_ms = Some((ended_at_ms - started_at_ms).max(0) as u64);
+    }
+    record
+}
+
+#[cfg(test)]
+mod build_session_start_tests {
+    use super::merge_build_session_start;
+    use crate::daemon::protocol::{BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord};
+
+    crate::timed_test!(late_start_preserves_finalized_build_history, {
+        let cache_summary = BuildCacheSummary {
+            hits: 1,
+            misses: 2,
+            non_cacheable: 3,
+            errors: 4,
+            compilations: 5,
+            time_saved_ms: 6,
+        };
+        let log_paths = BuildLogPaths {
+            zccache_session_id: Some("zccache-session".to_string()),
+            cache_dir: Some("cache".to_string()),
+            session_log_path: Some("last-session.log".to_string()),
+            journal_path: Some("last-session.jsonl".to_string()),
+            session_stats_path: Some("last-session-stats.json".to_string()),
+            compile_journal_path: Some("compile_journal.jsonl".to_string()),
+            archived_session_log_path: Some("history/last-session.log".to_string()),
+            archived_journal_path: Some("history/last-session.jsonl".to_string()),
+            archived_session_stats_path: Some("history/last-session-stats.json".to_string()),
+            archived_compile_journal_path: Some("history/compile_journal.jsonl".to_string()),
+            private_daemon_name: Some("private-daemon".to_string()),
+        };
+        let miss_reason = BuildMissReason {
+            reason: "source changed".to_string(),
+            count: 7,
+        };
+        let existing = BuildRecord {
+            session_id: 42,
+            repo_root: "stale".to_string(),
+            started_at_ms: 2000,
+            ended_at_ms: Some(2600),
+            exit_code: Some(0),
+            total_wall_ms: Some(600),
+            crate_count: 8,
+            slowest_crate_us: Some(900),
+            slowest_crate_name: Some("slow_crate".to_string()),
+            cache_summary: Some(cache_summary.clone()),
+            log_paths: Some(log_paths.clone()),
+            miss_reasons: vec![miss_reason.clone()],
+        };
+
+        let merged = merge_build_session_start(Some(existing), 42, "repo".to_string(), 1000);
+
+        assert_eq!(merged.session_id, 42);
+        assert_eq!(merged.repo_root, "repo");
+        assert_eq!(merged.started_at_ms, 1000);
+        assert_eq!(merged.ended_at_ms, Some(2600));
+        assert_eq!(merged.exit_code, Some(0));
+        assert_eq!(merged.total_wall_ms, Some(1600));
+        assert_eq!(merged.crate_count, 8);
+        assert_eq!(merged.slowest_crate_us, Some(900));
+        assert_eq!(merged.slowest_crate_name.as_deref(), Some("slow_crate"));
+        assert_eq!(merged.cache_summary, Some(cache_summary));
+        assert_eq!(merged.log_paths, Some(log_paths));
+        assert_eq!(merged.miss_reasons, vec![miss_reason]);
+    });
+}
+
 /// Start the embedded zccache compile service at daemon boot. Issue
 /// #977 / #980 L1 — embedded is mandatory; on failure the daemon
 /// itself refuses to start so callers see a hard error instead of a
@@ -589,17 +681,8 @@ where
             // daemon-resident auto-GC tick) skips its tick. Cleared on
             // `BuildSessionEnd` below.
             crate::cache_lib::build_active::set(true);
-            let record = BuildRecord {
-                session_id,
-                repo_root,
-                started_at_ms,
-                ended_at_ms: None,
-                exit_code: None,
-                total_wall_ms: None,
-                crate_count: 0,
-                slowest_crate_us: None,
-                slowest_crate_name: None,
-            };
+            let existing = db::get_build(&state.db_path, session_id).ok().flatten();
+            let record = merge_build_session_start(existing, session_id, repo_root, started_at_ms);
             let _ = db::upsert_build(&state.db_path, &record);
             // L4 (issue soldr#980): route the SessionStart event through
             // the batcher so we don't compete with the build's first
@@ -634,15 +717,30 @@ where
             // events with this session_id, persist back.
             let (count, slowest_us, slowest_name) =
                 db::aggregate_session(&state.db_path, session_id).unwrap_or((0u32, None, None));
-            if let Ok(Some(mut record)) = db::get_build(&state.db_path, session_id) {
-                record.ended_at_ms = Some(ended_at_ms);
-                record.exit_code = Some(exit_code);
-                record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
-                record.crate_count = count;
-                record.slowest_crate_us = slowest_us;
-                record.slowest_crate_name = slowest_name;
-                let _ = db::upsert_build(&state.db_path, &record);
-            }
+            let mut record = match db::get_build(&state.db_path, session_id) {
+                Ok(Some(record)) => record,
+                _ => BuildRecord {
+                    session_id,
+                    repo_root: String::new(),
+                    started_at_ms: ended_at_ms,
+                    ended_at_ms: None,
+                    exit_code: None,
+                    total_wall_ms: None,
+                    crate_count: 0,
+                    slowest_crate_us: None,
+                    slowest_crate_name: None,
+                    cache_summary: None,
+                    log_paths: None,
+                    miss_reasons: Vec::new(),
+                },
+            };
+            record.ended_at_ms = Some(ended_at_ms);
+            record.exit_code = Some(exit_code);
+            record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
+            record.crate_count = count;
+            record.slowest_crate_us = slowest_us;
+            record.slowest_crate_name = slowest_name;
+            let _ = db::upsert_build(&state.db_path, &record);
             // SessionEnd ALSO rides the batcher and then gets flushed
             // again so the journal is consistent at the end of the
             // session (and a follow-up status snapshot sees the

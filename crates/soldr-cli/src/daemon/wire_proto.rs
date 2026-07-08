@@ -394,6 +394,62 @@ pub struct WireBuildRecord {
     pub slowest_crate_us: Option<u64>,
     #[prost(string, optional, tag = "9")]
     pub slowest_crate_name: Option<String>,
+    #[prost(message, optional, tag = "10")]
+    pub cache_summary: Option<WireBuildCacheSummary>,
+    #[prost(message, optional, tag = "11")]
+    pub log_paths: Option<WireBuildLogPaths>,
+    #[prost(message, repeated, tag = "12")]
+    pub miss_reasons: Vec<WireBuildMissReason>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBuildCacheSummary {
+    #[prost(uint64, tag = "1")]
+    pub hits: u64,
+    #[prost(uint64, tag = "2")]
+    pub misses: u64,
+    #[prost(uint64, tag = "3")]
+    pub non_cacheable: u64,
+    #[prost(uint64, tag = "4")]
+    pub errors: u64,
+    #[prost(uint64, tag = "5")]
+    pub compilations: u64,
+    #[prost(uint64, tag = "6")]
+    pub time_saved_ms: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBuildLogPaths {
+    #[prost(string, optional, tag = "1")]
+    pub zccache_session_id: Option<String>,
+    #[prost(string, optional, tag = "2")]
+    pub cache_dir: Option<String>,
+    #[prost(string, optional, tag = "3")]
+    pub session_log_path: Option<String>,
+    #[prost(string, optional, tag = "4")]
+    pub journal_path: Option<String>,
+    #[prost(string, optional, tag = "5")]
+    pub session_stats_path: Option<String>,
+    #[prost(string, optional, tag = "6")]
+    pub compile_journal_path: Option<String>,
+    #[prost(string, optional, tag = "7")]
+    pub archived_session_log_path: Option<String>,
+    #[prost(string, optional, tag = "8")]
+    pub archived_journal_path: Option<String>,
+    #[prost(string, optional, tag = "9")]
+    pub archived_session_stats_path: Option<String>,
+    #[prost(string, optional, tag = "10")]
+    pub archived_compile_journal_path: Option<String>,
+    #[prost(string, optional, tag = "11")]
+    pub private_daemon_name: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBuildMissReason {
+    #[prost(string, tag = "1")]
+    pub reason: String,
+    #[prost(uint64, tag = "2")]
+    pub count: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]

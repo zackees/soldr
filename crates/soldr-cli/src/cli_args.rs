@@ -399,13 +399,9 @@ pub(crate) enum Commands {
     },
     /// Inspect soldr's runtime logs (issue #820)
     ///
-    /// Phase 1 of the discoverable logs surface: today only the
-    /// `paths` subcommand is implemented — it prints every directory
-    /// soldr writes session / lifecycle / daemon logs into, with a
-    /// one-line annotation per path so an agent or human triaging a
-    /// slow build can find the right journal without grepping the
-    /// source. Future subcommands (`list`, `show`, `view`, `prune`)
-    /// build on this entry point per the issue's design.
+    /// `list` shows recent build launches, `show` expands one launch
+    /// into cache stats / slow compiles / log paths, and `paths`
+    /// prints every directory soldr writes runtime logs into.
     Logs {
         #[command(subcommand)]
         command: Option<LogsSubcommand>,
@@ -1286,11 +1282,34 @@ pub enum TrimProfileArg {
 
 /// `soldr logs` subcommand surface — issue #820.
 ///
-/// Phase 1 ships `paths` only. The fuller `list` / `show` / `view` /
-/// `prune` verbs documented in the issue land in follow-up PRs as
-/// the supporting JSONL parser + retention-window logic come online.
+/// `list` / `show` / `paths` are implemented; `view` / `prune` stay
+/// follow-up work tracked by the issue.
 #[derive(clap::Subcommand)]
 pub(crate) enum LogsSubcommand {
+    /// List recent cargo launches recorded by the soldr daemon DB.
+    List {
+        /// Maximum number of launches to return. Defaults to the most
+        /// recent 10.
+        #[arg(long, default_value_t = 10)]
+        limit: u32,
+        /// Emit the stable machine-facing JSON form for this command
+        /// (`schema_version: 1`). Stable enough for consumers; field
+        /// additions are additive.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show one launch summary, cache hit/miss counts, slow compiles,
+    /// miss reasons, and log paths.
+    Show {
+        /// Launch id from `soldr logs list`. Exact decimal ids are
+        /// accepted, as are unique decimal or lower-hex prefixes.
+        launch_id: String,
+        /// Emit the stable machine-facing JSON form for this command
+        /// (`schema_version: 1`). Stable enough for consumers; field
+        /// additions are additive.
+        #[arg(long)]
+        json: bool,
+    },
     /// Print every directory soldr writes logs into, annotated with
     /// what each directory contains. Self-documenting escape hatch
     /// so an agent or human triaging a slow build can locate the
