@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S uv run --no-project --script
 """Unit tests for the shell command tool guard hook.
 
 Run via uv (sibling-module resolution works because cwd is the hook dir):
@@ -7,12 +7,17 @@ Run via uv (sibling-module resolution works because cwd is the hook dir):
 """
 
 import unittest
+from pathlib import Path
 
 from tool_guard import (  # type: ignore[import-not-found]
     SHELL_TOOL_NAMES,
     check_command,
     extract_command,
 )
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEV_LOOP_SCRIPTS = ("lint", "test", "install")
+UV_RUN_GUARDS = ("--no-project", "--no-sync", "--frozen")
 
 
 class ToolGuardTests(unittest.TestCase):
@@ -69,8 +74,8 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNone(check_command("soldr --no-cache cargo build"))
         self.assertIsNone(check_command("soldr rustc --version"))
         self.assertIsNone(check_command("soldr rustfmt --check src/lib.rs"))
-        self.assertIsNone(check_command("uv run soldr cargo test"))
-        self.assertIsNone(check_command("uv run soldr rustfmt --check src/lib.rs"))
+        self.assertIsNone(check_command("uv run --no-project soldr cargo test"))
+        self.assertIsNone(check_command("uv run --no-sync soldr rustfmt --check src/lib.rs"))
 
     def test_blocks_bare_python(self):
         result = check_command("python ci/script.py")
@@ -82,9 +87,38 @@ class ToolGuardTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "python3")
 
-    def test_allows_uv_run_script(self):
-        self.assertIsNone(check_command("uv run script.py"))
-        self.assertIsNone(check_command("uv run python script.py"))
+    def test_blocks_unguarded_uv_run_script(self):
+        for command in (
+            "uv run script.py",
+            "uv run python script.py",
+            "uv run pytest tests",
+            "uv run soldr cargo check",
+        ):
+            with self.subTest(command=command):
+                result = check_command(command)
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], "uv run")
+                self.assertIn("--no-project", result[1])
+
+    def test_allows_guarded_uv_run_script(self):
+        self.assertIsNone(check_command("uv run --no-project script.py"))
+        self.assertIsNone(check_command("uv run --no-project python script.py"))
+        self.assertIsNone(check_command("uv run --no-sync pytest tests"))
+        self.assertIsNone(check_command("uv run --frozen pytest tests"))
+
+    def test_repo_dev_loop_scripts_do_not_use_unsafe_uv_shapes(self):
+        failures = []
+        for name in DEV_LOOP_SCRIPTS:
+            path = REPO_ROOT / name
+            for line_number, raw_line in enumerate(path.read_text().splitlines(), 1):
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "uv sync" in line:
+                    failures.append(f"{name}:{line_number}: {line}")
+                if "uv run" in line and not any(flag in line for flag in UV_RUN_GUARDS):
+                    failures.append(f"{name}:{line_number}: {line}")
+        self.assertEqual([], failures)
 
     def test_blocks_bare_pip(self):
         result = check_command("pip install foo")
@@ -150,7 +184,7 @@ class ToolGuardTests(unittest.TestCase):
     def test_allows_soldr_rustup_rustdoc(self):
         self.assertIsNone(check_command("soldr rustup target add x86_64-pc-windows-msvc"))
         self.assertIsNone(check_command("soldr rustdoc --output target/doc src/lib.rs"))
-        self.assertIsNone(check_command("uv run soldr rustup show"))
+        self.assertIsNone(check_command("uv run --no-project soldr rustup show"))
 
     def test_blocks_env_prefixed_bare_cargo(self):
         # Leading env-var assignments are not a backdoor around the policy.
@@ -176,7 +210,7 @@ class ToolGuardTests(unittest.TestCase):
         # routing the *tool*, not forbidding env overrides.
         self.assertIsNone(check_command("SOLDR_TRUST_MODE=strict soldr cargo build"))
         self.assertIsNone(check_command("CARGO_BUILD_JOBS=4 soldr cargo test --release"))
-        self.assertIsNone(check_command("FOO=bar uv run soldr cargo check"))
+        self.assertIsNone(check_command("FOO=bar uv run --no-project soldr cargo check"))
 
     def test_blocks_env_prefixed_bare_python(self):
         result = check_command("PYTHONPATH=/foo python ci/script.py")

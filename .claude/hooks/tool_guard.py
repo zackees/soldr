@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --script
+#!/usr/bin/env -S uv run --no-project --script
 """PreToolUse hook: blocks bare Rust commands and bare python/pip.
 
 All Rust toolchain commands (cargo, rustup, rustc, rustfmt, clippy-driver,
@@ -23,7 +23,7 @@ import sys
 
 
 # Anything in this set, invoked bare, is denied. The user is expected to
-# route through `soldr <tool> ...` (or `uv run soldr <tool> ...`).
+# route through `soldr <tool> ...` (or `uv run --no-project soldr <tool> ...`).
 RUST_TOOLS = {
     "cargo",
     "cargo-clippy",
@@ -74,6 +74,7 @@ UV_RUN_FLAGS_WITH_VALUES = {
     "-m",
     "-p",
 }
+UV_RUN_REBUILD_GUARD_FLAGS = {"--no-project", "--no-sync", "--frozen"}
 
 # Matches `IDENT=`, with optional digits/underscores after the first letter.
 # Used to strip leading shell env-var assignments before evaluating the real
@@ -155,6 +156,28 @@ def uv_run_target(parts):
     return ""
 
 
+def uv_run_has_rebuild_guard(parts):
+    """Return True if `uv run` itself carries a no-rebuild guard flag."""
+    index = 2
+    while index < len(parts):
+        token = parts[index]
+        if token == "--":
+            return False
+        if token in UV_RUN_REBUILD_GUARD_FLAGS:
+            return True
+        if token in UV_RUN_FLAGS_WITH_VALUES:
+            index += 2
+            continue
+        if any(token.startswith(f"{flag}=") for flag in UV_RUN_FLAGS_WITH_VALUES):
+            index += 1
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        return False
+    return False
+
+
 def check_command(command):
     """Check a command string for forbidden bare invocations.
 
@@ -165,11 +188,8 @@ def check_command(command):
         if not tokens:
             continue
 
-        # `soldr <tool>` and `uv run soldr <tool>` are the canonical
-        # entry points — allow them outright.
+        # `soldr <tool>` is the canonical direct entry point.
         if tokens[0] == "soldr":
-            continue
-        if tokens[:3] == ["uv", "run", "soldr"]:
             continue
 
         # `uv pip ...` is the canonical pip replacement — allow.
@@ -178,17 +198,26 @@ def check_command(command):
 
         first_word = tokens[0]
 
-        # `uv run <something>`: allow uv-run-of-a-script, but block the
-        # old `uv run cargo` console-script shim so Rust tooling has
-        # one canonical entry point.
+        # `uv run <something>` must opt out of auto-sync before it can
+        # reach the project. The old `uv run cargo` console-script shim
+        # remains blocked so Rust tooling has one canonical entry point.
         if tokens[:2] == ["uv", "run"]:
             run_target = uv_run_target(tokens)
             if run_target in RUST_TOOLS:
                 return (
                     run_target,
-                    f"Use `uv run soldr {run_target} ...` instead of "
+                    f"Use `uv run --no-project soldr {run_target} ...` instead of "
                     f"`uv run {run_target} ...`. soldr resolves the project-pinned "
                     f"Rust toolchain via rustup.",
+                )
+            if not uv_run_has_rebuild_guard(tokens):
+                return (
+                    "uv run",
+                    "Use `uv run --no-project ...`, `uv run --no-sync ...`, "
+                    "or `uv run --frozen ...` instead of unguarded `uv run ...`. "
+                    "Unguarded uv run can auto-sync this maturin project and "
+                    "silently rebuild the native extension before the requested "
+                    "dev-loop command starts.",
                 )
             continue
 
@@ -196,7 +225,7 @@ def check_command(command):
             return (
                 first_word,
                 f"Use `soldr {first_word} ...` or "
-                f"`uv run soldr {first_word} ...` instead of bare "
+                f"`uv run --no-project soldr {first_word} ...` instead of bare "
                 f"`{first_word}`. All Rust toolchain commands (cargo, rustup, "
                 f"rustc, rustfmt, clippy-driver, cargo-clippy, cargo-fmt, "
                 f"rustdoc, rust-gdb, rust-lldb, rust-analyzer) must go through "
@@ -218,7 +247,7 @@ def check_command(command):
                 )
             return (
                 first_word,
-                f"Use `uv run ...` instead of bare `{first_word}`. "
+                f"Use `uv run --no-project ...` instead of bare `{first_word}`. "
                 f"All Python must be executed through uv.",
             )
 

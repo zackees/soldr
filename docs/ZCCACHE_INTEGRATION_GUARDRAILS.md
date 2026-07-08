@@ -30,7 +30,7 @@ soldr --no-cache cargo test -p soldr-cli --test cli_cargo_native_cc --locked
 soldr --no-cache cargo test -p soldr-cli --test cli_unknown_session_retry --locked
 soldr --no-cache cargo test -p soldr-cli --test cli_wrapper_perf --locked
 soldr --no-cache cargo test -p soldr-cli --test timed_test_lint --locked
-uv run pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
+uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q
 node scripts/test-npm-package.js
 ```
 
