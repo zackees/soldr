@@ -6,6 +6,7 @@
 use super::*;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
@@ -515,6 +516,95 @@ fn cargo_args_are_cacheable_for_watch_shell_form_strips_leading_cargo() {
 fn cargo_args_are_not_cacheable_for_watch_with_uncacheable_inner() {
     assert!(!cargo_args_are_cacheable(&argv(&["watch", "-x", "clean"])));
     assert!(!cargo_args_are_cacheable(&argv(&["watch", "-x", "fmt"])));
+}
+
+#[test]
+fn cargo_args_apply_rustfmt_shim_for_direct_and_watch_fmt() {
+    assert!(cargo_args_should_apply_rustfmt_shim(&argv(&["fmt"])));
+    assert!(cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch", "-x", "fmt",
+    ])));
+    assert!(cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch",
+        "--exec=fmt --check",
+    ])));
+    assert!(cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch",
+        "-s",
+        "cargo fmt --check",
+    ])));
+    assert!(cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch",
+        "--shell",
+        "cargo +nightly fmt --check",
+    ])));
+}
+
+#[test]
+fn cargo_args_do_not_apply_rustfmt_shim_for_non_fmt_watch() {
+    assert!(!cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch", "-x", "build",
+    ])));
+    assert!(!cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch",
+        "-s",
+        "cargo clean",
+    ])));
+    assert!(!cargo_args_should_apply_rustfmt_shim(&argv(&[
+        "watch", "--", "-x", "fmt",
+    ])));
+}
+
+#[test]
+fn rustfmt_shim_env_is_applied_to_watch_fmt_when_cache_enabled() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guards = remove_env_vars(&["RUSTFMT"]);
+
+    for args in [
+        argv(&["watch", "-x", "fmt"]),
+        argv(&["watch", "-s", "cargo fmt --check"]),
+    ] {
+        let mut command = std::process::Command::new("cargo");
+        let guard = maybe_apply_rustfmt_zccache_shim(&mut command, &args, true)
+            .expect("watch fmt should get a rustfmt shim");
+
+        let rustfmt = command_env_override(&command, "RUSTFMT")
+            .expect("RUSTFMT env override")
+            .expect("RUSTFMT env value");
+        let rustfmt_path = PathBuf::from(rustfmt);
+        assert!(
+            rustfmt_path.is_file(),
+            "RUSTFMT shim should exist while guard is alive: {}",
+            rustfmt_path.display()
+        );
+        let expected_name = format!("rustfmt{}", std::env::consts::EXE_SUFFIX);
+        assert_eq!(
+            rustfmt_path.file_name().and_then(|name| name.to_str()),
+            Some(expected_name.as_str())
+        );
+        assert_eq!(
+            command_env_override(&command, crate::shim_dir::SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR)
+                .flatten()
+                .as_deref(),
+            Some(OsStr::new("1")),
+            "cargo-watch must inherit the child-shim recursion sentinel"
+        );
+        drop(guard);
+    }
+}
+
+#[test]
+fn rustfmt_shim_env_is_not_applied_when_cache_is_disabled() {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guards = remove_env_vars(&["RUSTFMT"]);
+    let args = argv(&["watch", "-x", "fmt"]);
+    let mut command = std::process::Command::new("cargo");
+
+    assert!(maybe_apply_rustfmt_zccache_shim(&mut command, &args, false).is_none());
+    assert!(
+        command_env_override(&command, "RUSTFMT").is_none(),
+        "cache-disabled cargo watch fmt should leave rustfmt direct"
+    );
 }
 
 #[test]

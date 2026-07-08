@@ -337,20 +337,34 @@ Run it locally to spot-check a `thin-v2` change without spinning up CI:
 
 ```bash
 # Build soldr-cli so SOLDR_TARGET_CACHE_PROFILE=thin-v2 is honored.
-cargo build -p soldr-cli --locked
+soldr cargo build -p soldr-cli --locked
 
-# Use any small workspace; a fresh `cargo init` works.
+# Use any small workspace; a fresh `soldr cargo init` works.
 mkdir -p /tmp/verify-noop && cd /tmp/verify-noop
-cargo init --name verify-noop --bin verify-noop >/dev/null
-cargo add serde --no-default-features --features derive >/dev/null
+soldr cargo init --name verify-noop --bin verify-noop >/dev/null
+soldr cargo add serde --no-default-features --features derive >/dev/null
+export SOLDR_TARGET_CACHE_MODE=thin
+export SOLDR_TARGET_CACHE_PROFILE=thin-v2
+export SOLDR_TARGET_CACHE_BACKEND=local
+export SOLDR_TARGET_CACHE_BUNDLE_DIR=/tmp/verify-noop-thin-v2-bundle
+export SOLDR_TRUST_INHERITED_ENV=1
+rm -rf "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
+mkdir -p "$SOLDR_TARGET_CACHE_BUNDLE_DIR"
 
 # Capture both passes. (If you have a real warm thin-v2 slice from a
 # previous CI run, drop it into target/ between the two builds.)
-SOLDR_TARGET_CACHE_PROFILE=thin-v2 cargo build --locked 2>&1 | tee first.log
-SOLDR_TARGET_CACHE_PROFILE=thin-v2 cargo build --locked 2>&1 | tee second.log
+set -o pipefail
+soldr cargo build --locked -v 2>&1 | tee first.log
+soldr cargo build --locked -v 2>&1 | tee second.log
 
-python /path/to/soldr/.github/scripts/assert_thin_noop.py first.log second.log
+uv run --no-project python /path/to/soldr/.github/scripts/assert_thin_noop.py \
+  first.log second.log --allow-empty-second
 ```
+
+`--allow-empty-second` is only appropriate after the second build command has
+already succeeded. A completely fresh no-op can emit no captured lines through
+soldr's non-interactive diagnostic path, so the command exit code is the
+success proof and the empty log means "no compile lines observed."
 
 Exit code semantics:
 
@@ -399,11 +413,11 @@ What it checks:
 Exit codes mirror `assert_thin_noop.py`: `0` ok / `1` validation failure
 (human-readable reason printed to stderr) / `2` usage error.
 
-The CI workflow runs this script in a step guarded on
-`SOLDR_TARGET_CACHE_BUNDLE_DIR` being set, so it no-ops cleanly until the
-workflow is upgraded to actually drive the `soldr cargo build` save path
-that produces a manifest. The assertion script is in place ahead of time
-so the day the workflow is wired up, the gate fires immediately.
+The CI workflow runs this script unconditionally after the synthetic fixture
+is built through `soldr cargo build` with `SOLDR_TARGET_CACHE_BUNDLE_DIR`
+pinned to a deterministic temp directory. If the save path stops producing
+`manifest.v2.json`, the verifier fails instead of silently skipping the
+manifest assertion.
 
 ### 5.2 Counter-tests
 

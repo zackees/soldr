@@ -116,6 +116,7 @@ def assert_second_build_is_noop(
     *,
     tolerance: int = 2,
     require_first_built_something: bool = True,
+    allow_empty_second: bool = False,
 ) -> tuple[BuildLogSummary, BuildLogSummary, list[str]]:
     """Validate that the second build was a near no-op.
 
@@ -133,7 +134,8 @@ def assert_second_build_is_noop(
             "If this is intentional, pass --allow-empty-first."
         )
 
-    if not second.finished_seen:
+    second_empty_allowed = allow_empty_second and second.raw_lines == 0
+    if not second.finished_seen and not second_empty_allowed:
         errors.append(
             "second build did not produce a 'Finished' line; the build "
             "likely failed or was truncated."
@@ -210,6 +212,14 @@ def _build_argparser() -> argparse.ArgumentParser:
             "Useful when the first build was itself partly cached."
         ),
     )
+    parser.add_argument(
+        "--allow-empty-second",
+        action="store_true",
+        help=(
+            "Accept an empty second log as a successful no-op. Use only when "
+            "the calling step already fails if the second build command fails."
+        ),
+    )
     return parser
 
 
@@ -227,6 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         second_text,
         tolerance=args.tolerance,
         require_first_built_something=not args.allow_empty_first,
+        allow_empty_second=args.allow_empty_second,
     )
 
     print(_format_summary("first ", first))

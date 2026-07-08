@@ -79,8 +79,8 @@ pub(crate) use inputs::{
 };
 pub(crate) use profile_debug::CargoProfileDebugDefault;
 pub(crate) use subcommand::{
-    cargo_args_are_cacheable, cargo_args_specify_target, cargo_args_use_reserved_no_cache,
-    first_cargo_subcommand, first_cargo_subcommand_index,
+    cargo_args_are_cacheable, cargo_args_should_apply_rustfmt_shim, cargo_args_specify_target,
+    cargo_args_use_reserved_no_cache, first_cargo_subcommand, first_cargo_subcommand_index,
 };
 
 /// 64-bit build session id: high 32 bits = unix-ms truncated, low 32
@@ -1082,7 +1082,7 @@ fn maybe_apply_rustfmt_zccache_shim(
     cache_enabled: bool,
 ) -> Option<crate::shim_dir::ShimDirGuard> {
     if !cache_enabled
-        || first_cargo_subcommand(args) != Some("fmt")
+        || !cargo_args_should_apply_rustfmt_shim(args)
         || std::env::var_os("RUSTFMT").is_some()
     {
         return None;

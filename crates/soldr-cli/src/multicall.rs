@@ -60,6 +60,25 @@ pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
     }
 }
 
+pub(crate) fn toolchain_shim_should_defer_to_rustc_wrapper(raw_args: &[String]) -> bool {
+    let Some(rustc_path) = raw_args.get(1) else {
+        return false;
+    };
+    if !is_rustc_wrapper_passthrough_tool(rustc_path) {
+        return false;
+    }
+    let argv0 = raw_args.first().map(String::as_str).unwrap_or("");
+    matches!(classify_argv0(argv0), Some(ShimIdentity::Toolchain(_)))
+}
+
+fn is_rustc_wrapper_passthrough_tool(arg: &str) -> bool {
+    let stem = Path::new(arg)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(arg);
+    matches!(stem, "rustc" | "clippy-driver")
+}
+
 fn classify_argv0(argv0: &str) -> Option<ShimIdentity> {
     let stem = argv0_stem(argv0)?;
     for &tool in TOOLCHAIN_TOOLS {
@@ -358,5 +377,32 @@ mod tests {
         assert_eq!(normalize_exit_code(255), 255);
         assert_eq!(normalize_exit_code(256), 1);
         assert_eq!(normalize_exit_code(-1), 1);
+    });
+
+    crate::timed_test!(toolchain_shim_defers_rustc_wrapper_contract, {
+        assert!(toolchain_shim_should_defer_to_rustc_wrapper(&[
+            "/tmp/soldr-shims/cargo".into(),
+            "/opt/rust/bin/rustc".into(),
+            "-vV".into(),
+        ]));
+        assert!(toolchain_shim_should_defer_to_rustc_wrapper(&[
+            "cargo.exe".into(),
+            "clippy-driver.exe".into(),
+            "-vV".into(),
+        ]));
+        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
+            "/tmp/soldr-shims/cargo".into(),
+            "build".into(),
+        ]));
+        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
+            "zccache-soldr".into(),
+            "/opt/rust/bin/rustc".into(),
+            "-vV".into(),
+        ]));
+        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
+            "clang".into(),
+            "/opt/rust/bin/rustc".into(),
+            "-vV".into(),
+        ]));
     });
 }

@@ -40,7 +40,7 @@ pub(crate) fn materialize_executable(
     source: &Path,
     target: &Path,
 ) -> Result<MaterializeResult, SoldrError> {
-    if is_current(target, source)? {
+    if executable_matches(target, source)? {
         return Ok(MaterializeResult {
             created: false,
             link_mode: LINK_MODE_HARDLINK_OR_COPY,
@@ -110,7 +110,7 @@ fn tmp_path_for(target: &Path) -> PathBuf {
     PathBuf::from(path)
 }
 
-fn is_current(target: &Path, source: &Path) -> Result<bool, SoldrError> {
+pub(crate) fn executable_matches(target: &Path, source: &Path) -> Result<bool, SoldrError> {
     let Ok(target_meta) = std::fs::metadata(target) else {
         return Ok(false);
     };

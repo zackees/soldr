@@ -18,13 +18,13 @@
 #     small. The verifier behavior is workspace-agnostic; once stable we can
 #     point it at the real soldr workspace too.
 #
-# TODO(#237 Phase 4): flip continue-on-error to false, expand matrix to
-# Windows and macOS, and consider running on the soldr workspace itself.
-# TODO(#237 Phase 4): wire the workflow through `soldr cargo build` with
-# SOLDR_TARGET_CACHE_BUNDLE_DIR set so the manifest assertion below has a
-# real artifact to inspect on every run. The gate is added now (guarded on
-# the env var) so the assertion script and CI surface stay in lockstep.
-
+# Follow-up once this gate is stable: flip continue-on-error to false, expand
+# the matrix to Windows and macOS, and consider running on the soldr workspace
+# itself.
+#
+# The verifier now runs the synthetic fixture through `soldr cargo build` with
+# SOLDR_TARGET_CACHE_BUNDLE_DIR pinned to a deterministic temp path, so the
+# thin-v2 manifest assertion is an active gate instead of a guarded no-op.
 name: thin-v2-verify
 
 on:
@@ -74,47 +74,72 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup soldr build cache
+        uses: zackees/setup-soldr@e8f28749013e1976621805566a35de37ecdbb190
+        with:
+          toolchain: 1.94.1
+          cache: false
+          zccache-seed-strict: true
+
       - name: Build soldr CLI
-        run: cargo build -p soldr-cli --locked
+        run: soldr cargo build -p soldr-cli --locked
+
+      - name: Use soldr under test
+        run: echo "${{ github.workspace }}/target/debug" >> "$GITHUB_PATH"
 
       - name: Synthesize verification fixture
         working-directory: ${{ runner.temp }}
         run: |
-          cargo init --name verify-noop --bin verify-noop
+          soldr cargo init --name verify-noop --bin verify-noop
           cd verify-noop
           # Pin a deterministic small dep so the cold build does meaningful
           # work the verifier can recognize as a baseline.
-          cargo add serde --no-default-features --features derive
+          soldr cargo add serde --no-default-features --features derive
+
+      - name: Reset thin-v2 bundle dir
+        run: |
+          rm -rf "${{ runner.temp }}/thin-v2-bundle"
+          mkdir -p "${{ runner.temp }}/thin-v2-bundle"
 
       - name: First (cold) build
         working-directory: ${{ runner.temp }}/verify-noop
-        run: cargo build --locked 2>&1 | tee first.log
+        env:
+          SOLDR_TRUST_INHERITED_ENV: "1"
+          SOLDR_TARGET_CACHE_MODE: thin
+          SOLDR_TARGET_CACHE_PROFILE: thin-v2
+          SOLDR_TARGET_CACHE_BACKEND: local
+          SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
+        run: |
+          set -o pipefail
+          soldr cargo build --locked -v 2>&1 | tee first.log
 
       - name: Second (warm) build — must be a no-op
         working-directory: ${{ runner.temp }}/verify-noop
-        run: cargo build --locked 2>&1 | tee second.log
+        env:
+          SOLDR_TRUST_INHERITED_ENV: "1"
+          SOLDR_TARGET_CACHE_MODE: thin
+          SOLDR_TARGET_CACHE_PROFILE: thin-v2
+          SOLDR_TARGET_CACHE_BACKEND: local
+          SOLDR_TARGET_CACHE_BUNDLE_DIR: ${{ runner.temp }}/thin-v2-bundle
+        run: |
+          set -o pipefail
+          soldr cargo build --locked -v 2>&1 | tee second.log
 
       - name: Assert second build was a no-op
         run: |
           python ${{ github.workspace }}/.github/scripts/assert_thin_noop.py \
             ${{ runner.temp }}/verify-noop/first.log \
-            ${{ runner.temp }}/verify-noop/second.log
+            ${{ runner.temp }}/verify-noop/second.log \
+            --allow-empty-second
 
-      # Phase 3.5 / issue #237: validate the thin-v2 manifest the soldr-cli
-      # writes alongside the bundle directory. Guarded on
-      # SOLDR_TARGET_CACHE_BUNDLE_DIR being set because today this workflow
-      # runs `cargo build` directly, not `soldr cargo build`, so no manifest
-      # is produced. Once the workflow is upgraded to drive the full save
-      # path (TODO above), this step starts firing automatically and catches:
-      #   - manifest.v2.json never written
-      #   - manifest lists files not on disk (drift)
-      #   - manifest re-lists dropped categories (rlib/rmeta/incremental/...)
+      # Validate the thin-v2 manifest the soldr-cli writes alongside the
+      # deterministic bundle directory. This is intentionally unconditional:
+      # if soldr stops producing manifest.v2.json, the verifier fails.
       - name: Assert thin-v2 manifest matches bundle
-        if: env.SOLDR_TARGET_CACHE_BUNDLE_DIR != ''
         run: |
           python ${{ github.workspace }}/.github/scripts/assert_thin_manifest.py \
-            "${SOLDR_TARGET_CACHE_BUNDLE_DIR}/manifest.v2.json" \
-            "${SOLDR_TARGET_CACHE_BUNDLE_DIR}"
+            "${{ runner.temp }}/thin-v2-bundle/manifest.v2.json" \
+            "${{ runner.temp }}/thin-v2-bundle"
 
       - name: Upload build logs
         if: always()

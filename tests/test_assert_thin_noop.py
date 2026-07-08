@@ -147,6 +147,20 @@ def test_assert_second_build_is_noop_fails_when_warm_has_no_finished(mod) -> Non
     assert any("Finished" in e for e in errors)
 
 
+def test_assert_second_build_is_noop_fails_on_empty_second_by_default(mod) -> None:
+    _, _, errors = mod.assert_second_build_is_noop(_cold_log(), "")
+    assert any("Finished" in e for e in errors)
+
+
+def test_assert_second_build_is_noop_allows_empty_second_when_enabled(mod) -> None:
+    _, _, errors = mod.assert_second_build_is_noop(
+        _cold_log(),
+        "",
+        allow_empty_second=True,
+    )
+    assert errors == []
+
+
 def test_assert_second_build_is_noop_fails_on_empty_first_by_default(mod) -> None:
     _, _, errors = mod.assert_second_build_is_noop(
         "    Finished `dev` profile in 0.01s\n",
@@ -181,6 +195,24 @@ def test_cli_exits_zero_on_clean_warm_build(tmp_path: Path) -> None:
     second = _write(tmp_path / "second.log", _warm_noop_log())
     result = subprocess.run(
         [sys.executable, str(SCRIPT_PATH), str(first), str(second)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "assert_thin_noop: OK" in result.stdout
+
+
+def test_cli_allows_empty_second_with_flag(tmp_path: Path) -> None:
+    first = _write(tmp_path / "first.log", _cold_log())
+    second = _write(tmp_path / "second.log", "")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            str(first),
+            str(second),
+            "--allow-empty-second",
+        ],
         capture_output=True,
         text=True,
     )

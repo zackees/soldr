@@ -15,4 +15,3 @@ Exceptions:
 
 - **release-auto.yml** remains conservative and keeps its existing release artifact build path.
 - **parent-cache-bench.yml**, **perf-cold-warm.yml**, **perf-matrix.yml**, **cache-delta-experiment.yml** intentionally compare cache strategies or preserve experiment topology, so setup-soldr is not forced onto the control rows. The third-party comparison surface (`cache-benchmark.yml` and friends) lives in `zackees/setup-soldr` now — see soldr#674.
-- **thin-v2-verify.yml** intentionally uses direct Cargo until its existing Phase 4 TODO wires the verifier through `soldr cargo build` and asserts a produced thin-v2 bundle manifest.

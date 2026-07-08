@@ -5,12 +5,12 @@
 //! / etc it spawns internally would normally bypass soldr because PATH
 //! still resolves to the unwrapped system binaries.
 //!
-//! This module creates a transient directory of thin shims for the
+//! This module creates a transient directory of multicall shims for the
 //! Rust toolchain binaries soldr already wraps (`cargo`, `rustc`,
-//! `rustdoc`, `rustfmt`, `clippy-driver`). Each shim re-invokes the
-//! parent soldr binary with the matching verb, so nested toolchain
-//! calls route back through soldr (and therefore zccache, the managed
-//! toolchain home, etc) without the user having to mess with PATH.
+//! `rustdoc`, `rustfmt`, `clippy-driver`). Each shim is a hardlink/copy
+//! of the running soldr binary under the matching argv[0] name, so nested
+//! toolchain calls route back through soldr (and therefore zccache, the
+//! managed toolchain home, etc) without shell mediation or PATH setup.
 //!
 //! A recursion guard env var (`SOLDR_CHILD_SHIMS_ACTIVE`) is set in the
 //! child environment so a nested `soldr <external-tool>` invocation
@@ -64,10 +64,9 @@ pub(crate) fn should_install_shims() -> bool {
 }
 
 /// Build a fresh shim dir under the system tempdir and populate it
-/// with one shim per `SHIMMED_TOOLS` entry. Each shim execs the parent
-/// soldr binary with the corresponding verb.
+/// with one multicall executable per `SHIMMED_TOOLS` entry.
 pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
-    let soldr_bin = std::env::current_exe().map_err(SoldrError::from)?;
+    let soldr_bin = crate::shim_materialize::soldr_binary_source()?;
     let dir = tempfile::Builder::new()
         .prefix("soldr-shims-")
         .tempdir()
@@ -84,41 +83,12 @@ pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
 }
 
 pub(crate) fn shim_tool_path(dir: &Path, tool: &str) -> PathBuf {
-    #[cfg(windows)]
-    {
-        dir.join(format!("{tool}.cmd"))
-    }
-    #[cfg(not(windows))]
-    {
-        dir.join(tool)
-    }
+    dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
 }
 
-#[cfg(windows)]
 fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError> {
-    // .cmd is the simplest cross-tool extension Windows resolves
-    // automatically from PATH. Quoting the soldr path handles spaces.
     let path = shim_tool_path(dir, tool);
-    let body = format!("@echo off\r\n\"{}\" {} %*\r\n", soldr_bin.display(), tool);
-    std::fs::write(&path, body).map_err(SoldrError::Io)
-}
-
-#[cfg(unix)]
-fn write_shim(dir: &Path, tool: &str, soldr_bin: &Path) -> Result<(), SoldrError> {
-    use std::os::unix::fs::PermissionsExt;
-    let path = shim_tool_path(dir, tool);
-    let body = format!(
-        "#!/bin/sh\nexec \"{}\" {} \"$@\"\n",
-        soldr_bin.display(),
-        tool
-    );
-    std::fs::write(&path, body).map_err(SoldrError::Io)?;
-    let mut perms = std::fs::metadata(&path)
-        .map_err(SoldrError::Io)?
-        .permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(&path, perms).map_err(SoldrError::Io)?;
-    Ok(())
+    crate::shim_materialize::materialize_executable(soldr_bin, &path).map(|_| ())
 }
 
 /// Apply the shim dir to `command`'s environment so the child sees it
@@ -147,6 +117,13 @@ mod tests {
     use super::*;
     use std::ffi::OsStr;
 
+    #[cfg(windows)]
+    fn system_cmd_exe() -> PathBuf {
+        let system_root = std::env::var_os("SystemRoot")
+            .unwrap_or_else(|| std::ffi::OsString::from("C:\\Windows"));
+        PathBuf::from(system_root).join("System32").join("cmd.exe")
+    }
+
     #[test]
     fn shim_dir_contains_every_shimmed_tool() {
         let guard = build_shim_dir().expect("build_shim_dir");
@@ -155,6 +132,47 @@ mod tests {
             assert!(expected.is_file(), "missing shim at {}", expected.display());
         }
     }
+
+    crate::timed_test!(shim_tool_path_uses_native_executable_suffix, {
+        let dir = PathBuf::from("/tmp/shims");
+        let path = shim_tool_path(&dir, "cargo");
+        #[cfg(windows)]
+        assert!(
+            path.to_string_lossy().ends_with("cargo.exe"),
+            "windows shims must be native executable files: {}",
+            path.display()
+        );
+        #[cfg(not(windows))]
+        assert!(
+            path.to_string_lossy().ends_with("cargo"),
+            "unix shims keep extensionless tool names: {}",
+            path.display()
+        );
+    });
+
+    #[cfg(windows)]
+    crate::timed_test!(windows_shims_are_visible_to_rust_command_lookup, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cmd = system_cmd_exe();
+        assert!(cmd.is_file(), "missing {}", cmd.display());
+
+        for tool in SHIMMED_TOOLS {
+            write_shim(temp.path(), tool, &cmd).expect("write shim");
+            let output = std::process::Command::new(tool)
+                .args(["/D", "/C", "exit 0"])
+                .env("PATH", temp.path())
+                .output()
+                .unwrap_or_else(|err| {
+                    panic!("Rust Command::new({tool:?}) did not find executable shim: {err}")
+                });
+            assert!(
+                output.status.success(),
+                "shim {tool} resolved but failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    });
 
     #[test]
     fn apply_to_command_sets_recursion_sentinel_and_prepends_path() {
