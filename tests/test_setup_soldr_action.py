@@ -160,6 +160,44 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
 
+def test_cache_delta_experiment_quiesces_before_packaging() -> None:
+    setup_action = (
+        REPO_ROOT / ".github" / "actions" / "cache-delta-experiment" / "action.yml"
+    ).read_text(encoding="utf-8")
+    cleanup_action = (
+        REPO_ROOT
+        / ".github"
+        / "actions"
+        / "cache-delta-experiment-cleanup"
+        / "action.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "Flush + shutdown cache before packaging delta" in setup_action
+    assert "soldr cache flush --json || true" in setup_action
+    assert (
+        "soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true"
+        in setup_action
+    )
+    assert re.search(
+        r"- name: Package build delta\s+id: delta-tar\s+if: always\(\)",
+        setup_action,
+    )
+    assert re.search(
+        r"- name: Stash state for cleanup action\s+if: always\(\)",
+        setup_action,
+    )
+
+    assert "Quiesce cache before cleanup packaging" in cleanup_action
+    assert "soldr cache flush --json || true" in cleanup_action
+    assert (
+        "soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true"
+        in cleanup_action
+    )
+    assert 'find . -type f -print0 > "$LIST"' in cleanup_action
+    assert 'tar --null -T "$LIST"' in cleanup_action
+    assert "tar --use-compress-program='zstd -19 -T0' -cf \"$ARCHIVE\" ." not in cleanup_action
+
+
 def test_build_and_test_documents_removed_windows_pdb_artifacts() -> None:
     workflow = (REPO_ROOT / ".github" / "workflows" / "_build-and-test.yml").read_text(
         encoding="utf-8"
