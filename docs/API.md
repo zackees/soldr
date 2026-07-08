@@ -324,6 +324,23 @@ soldr save --cache-dir <dir> --workspace <dir> --out cache.tar.zst
 soldr load --archive cache.tar.zst --cache-dir <dir> --workspace <dir>
 ```
 
+Recognised `soldr save` flags:
+
+- `--cache-dir <DIR>` — cache directory to archive.
+- `--workspace <DIR>` — workspace whose source-file mtimes get snapshotted.
+- `--out <FILE>` — destination archive.
+- `--threads <N>` — parallel hash / compression worker hint.
+- `--mtimes-only` — write only the source-file mtime manifest.
+- `--delta-from-manifest <FILE>` — save a delta against a previously
+  restored base manifest.
+- `--ci`, `--minimal` — CI/minimal payload profile. Excludes logs,
+  sockets, lock files, runtime scratch, zccache runtime binaries, and
+  soldr-managed binary/toolchain trees from the cache payload while
+  preserving cache artifacts and manifest state needed for warm rustc hits.
+- `--json` — emit a JSON summary. Save JSON includes
+  `profile`, `source_files`, `cache_files`, `excluded_files`,
+  `excluded_bytes`, `archive_bytes`, and `elapsed_ms`.
+
 Recognised `soldr load` flags (issue #575):
 
 - `--archive <FILE>` — input archive produced by `soldr save`.
@@ -1342,6 +1359,7 @@ Commands:
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
 | `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
 | `SOLDR_ZCCACHE_PRIVATE` | Opt-in private session. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes the managed zccache cache directory to `<cwd>/.zccache` instead of the shared soldr-managed cache root, and `soldr save`/`soldr load` default `--cache-dir` to the same path when omitted. Lets a build's artifacts be tar'd or `actions/upload-artifact`'d without polluting the shared cache. Explicit `ZCCACHE_CACHE_DIR` (build) or `--cache-dir` (save/load) always wins. | unset |
+| `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
 | `ZCCACHE_CACHE_DIR` | zccache cache-root override. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `ZCCACHE_DISABLE` | The standard zccache kill-switch. Truthy values (`1`/`true`/`yes`/`on`) are treated as `--no-cache` for `soldr cargo ...`: the wrapper + daemon are bypassed and rustc runs directly (uncached). Use this — or `soldr --no-cache cargo ...` — to recover if a build hangs on a wedged cache. | unset |

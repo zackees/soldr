@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use crate::cache_lib::save::{
     load, read_manifest_file, read_manifest_from_archive, save, save_delta, write_manifest_file,
-    LoadOptions, SaveDeltaOptions, SaveOptions, DEFAULT_ZSTD_LEVEL,
+    LoadOptions, SaveDeltaOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL, SAVE_PROFILE_ENV,
 };
 use clap::Args;
 
@@ -45,9 +45,17 @@ pub struct SaveArgs {
     pub threads: Option<usize>,
 
     /// Emit a machine-readable JSON line summarising the save. Stable
-    /// schema: `{"source_files","cache_files","archive_bytes","elapsed_ms","mtimes_only"}`.
+    /// schema includes `profile`, `excluded_files`, and `excluded_bytes`.
     #[arg(long)]
     pub json: bool,
+
+    /// Use the CI/minimal payload profile. Alias: `--minimal`.
+    /// Excludes logs, sockets, locks, runtime scratch, and soldr-managed
+    /// binary/toolchain trees from cache archives while reporting the
+    /// omitted file count and byte total. If absent, `SOLDR_SAVE_PROFILE`
+    /// may select the same profile.
+    #[arg(long, visible_alias = "minimal")]
+    pub ci: bool,
 
     /// Produce a manifest-only archive — only the source-file mtime
     /// snapshot, no cache payload. Requires `--workspace`; mutually
@@ -146,6 +154,13 @@ pub fn run_save(args: SaveArgs) -> i32 {
             return 1;
         }
     };
+    let profile = match resolve_save_profile(args.ci) {
+        Ok(profile) => profile,
+        Err(err) => {
+            eprintln!("soldr save: {err}");
+            return 1;
+        }
+    };
     if args.cache_dir.is_some() {
         flush_embedded_state_before_save();
     }
@@ -172,6 +187,7 @@ pub fn run_save(args: SaveArgs) -> i32 {
             out: &args.out,
             zstd_level: args.zstd_level,
             threads: args.threads,
+            profile,
         };
         let report = match save_delta(&opts) {
             Ok(r) => r,
@@ -182,19 +198,25 @@ pub fn run_save(args: SaveArgs) -> i32 {
         };
         if args.json {
             println!(
-                "{{\"source_files\":{},\"cache_files\":{},\"deleted_cache_files\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"delta\":true}}",
+                "{{\"profile\":\"{}\",\"source_files\":{},\"cache_files\":{},\"deleted_cache_files\":{},\"excluded_files\":{},\"excluded_bytes\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"delta\":true}}",
+                report.profile.as_str(),
                 report.source_files,
                 report.cache_files,
                 report.deleted_cache_files,
+                report.excluded_files,
+                report.excluded_bytes,
                 report.archive_bytes,
                 report.elapsed_ms,
             );
         } else {
             println!(
-                "soldr save: source_files={} cache_files={} deleted_cache_files={} archive_bytes={} elapsed_ms={} delta=true out={}",
+                "soldr save: profile={} source_files={} cache_files={} deleted_cache_files={} excluded_files={} excluded_bytes={} archive_bytes={} elapsed_ms={} delta=true out={}",
+                report.profile.as_str(),
                 report.source_files,
                 report.cache_files,
                 report.deleted_cache_files,
+                report.excluded_files,
+                report.excluded_bytes,
                 report.archive_bytes,
                 report.elapsed_ms,
                 args.out.display(),
@@ -210,6 +232,7 @@ pub fn run_save(args: SaveArgs) -> i32 {
         zstd_level: args.zstd_level,
         threads: args.threads,
         mtimes_only: args.mtimes_only,
+        profile,
     };
     let report = match save(&opts) {
         Ok(r) => r,
@@ -220,18 +243,24 @@ pub fn run_save(args: SaveArgs) -> i32 {
     };
     if args.json {
         println!(
-            "{{\"source_files\":{},\"cache_files\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"mtimes_only\":{}}}",
+            "{{\"profile\":\"{}\",\"source_files\":{},\"cache_files\":{},\"excluded_files\":{},\"excluded_bytes\":{},\"archive_bytes\":{},\"elapsed_ms\":{},\"mtimes_only\":{}}}",
+            report.profile.as_str(),
             report.source_files,
             report.cache_files,
+            report.excluded_files,
+            report.excluded_bytes,
             report.archive_bytes,
             report.elapsed_ms,
             args.mtimes_only,
         );
     } else {
         println!(
-            "soldr save: source_files={} cache_files={} archive_bytes={} elapsed_ms={} mtimes_only={} out={}",
+            "soldr save: profile={} source_files={} cache_files={} excluded_files={} excluded_bytes={} archive_bytes={} elapsed_ms={} mtimes_only={} out={}",
+            report.profile.as_str(),
             report.source_files,
             report.cache_files,
+            report.excluded_files,
+            report.excluded_bytes,
             report.archive_bytes,
             report.elapsed_ms,
             args.mtimes_only,
@@ -239,6 +268,20 @@ pub fn run_save(args: SaveArgs) -> i32 {
         );
     }
     0
+}
+
+fn resolve_save_profile(cli_ci: bool) -> Result<SaveProfile, String> {
+    if cli_ci {
+        return Ok(SaveProfile::Ci);
+    }
+    let Ok(raw) = std::env::var(SAVE_PROFILE_ENV) else {
+        return Ok(SaveProfile::Full);
+    };
+    SaveProfile::parse(&raw).ok_or_else(|| {
+        format!(
+            "{SAVE_PROFILE_ENV} must be one of: full, default, complete, ci, minimal (got {raw:?})"
+        )
+    })
 }
 
 pub fn run_load(args: LoadArgs) -> i32 {
@@ -352,6 +395,24 @@ where
 #[cfg(test)]
 mod private_session_default_tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    fn with_save_profile_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os(SAVE_PROFILE_ENV);
+        match value {
+            Some(value) => std::env::set_var(SAVE_PROFILE_ENV, value),
+            None => std::env::remove_var(SAVE_PROFILE_ENV),
+        }
+        let result = f();
+        match prev {
+            Some(prev) => std::env::set_var(SAVE_PROFILE_ENV, prev),
+            None => std::env::remove_var(SAVE_PROFILE_ENV),
+        }
+        result
+    }
 
     fn fake_cwd() -> std::io::Result<PathBuf> {
         Ok(PathBuf::from("/fake/cwd"))
@@ -365,6 +426,7 @@ mod private_session_default_tests {
             zstd_level: DEFAULT_ZSTD_LEVEL,
             threads: None,
             json: false,
+            ci: false,
             mtimes_only: false,
             delta_from_manifest: None,
         }
@@ -451,5 +513,31 @@ mod private_session_default_tests {
         let args = apply_private_session_cache_dir_default_load(args, true, fake_cwd)
             .expect("apply default");
         assert!(args.cache_dir.is_none());
+    });
+
+    crate::timed_test!(save_profile_defaults_to_full_when_env_unset, {
+        with_save_profile_env(None, || {
+            assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Full);
+        });
+    });
+
+    crate::timed_test!(save_profile_env_accepts_ci_and_minimal_alias, {
+        with_save_profile_env(Some("ci"), || {
+            assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Ci);
+        });
+        with_save_profile_env(Some("minimal"), || {
+            assert_eq!(resolve_save_profile(false).unwrap(), SaveProfile::Ci);
+        });
+    });
+
+    crate::timed_test!(save_profile_invalid_env_errors_unless_cli_flag_wins, {
+        with_save_profile_env(Some("tiny"), || {
+            let err = resolve_save_profile(false).expect_err("invalid env must error");
+            assert!(
+                err.contains(SAVE_PROFILE_ENV) && err.contains("tiny"),
+                "error should name env and bad value: {err}"
+            );
+            assert_eq!(resolve_save_profile(true).unwrap(), SaveProfile::Ci);
+        });
     });
 }

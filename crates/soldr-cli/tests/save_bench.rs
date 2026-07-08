@@ -10,7 +10,9 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use soldr_cli::cache_lib::save::{load, save, LoadOptions, SaveOptions, DEFAULT_ZSTD_LEVEL};
+use soldr_cli::cache_lib::save::{
+    load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
+};
 
 fn write(path: &Path, content: &[u8]) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -85,6 +87,7 @@ fn perf_roundtrip_realistic() {
         zstd_level: DEFAULT_ZSTD_LEVEL,
         threads: None,
         mtimes_only: false,
+        profile: SaveProfile::Full,
     })
     .expect("save ok");
     let save_elapsed = t0.elapsed();

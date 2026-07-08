@@ -154,6 +154,40 @@ const EXTRACT_WORKER_RECV_TIMEOUT: Duration = Duration::from_secs(60);
 /// roughly 1 GB/s on a Linux CI runner).
 pub const DEFAULT_ZSTD_LEVEL: i32 = 3;
 
+/// Environment variable that selects the default `soldr save` profile
+/// when the CLI does not pass `--ci` / `--minimal`.
+pub const SAVE_PROFILE_ENV: &str = "SOLDR_SAVE_PROFILE";
+
+/// Payload profile for `soldr save`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SaveProfile {
+    /// Historical behavior: archive every regular file below `cache_dir`.
+    #[default]
+    Full,
+    /// CI/minimal v1: archive cache payload needed for warm hits while
+    /// excluding logs, runtime scratch, sockets, lock files, zccache
+    /// runtime binaries, and soldr managed binary/toolchain trees that
+    /// do not participate in rustc hits.
+    Ci,
+}
+
+impl SaveProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Ci => "ci",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "" | "full" | "default" | "complete" => Some(Self::Full),
+            "ci" | "minimal" => Some(Self::Ci),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SaveLoadError {
     #[error("io error at {path}: {source}")]
@@ -300,6 +334,76 @@ fn walk_cache_files(cache_dir: &Path, threads: Option<usize>) -> Result<Vec<Path
     Ok(out)
 }
 
+#[derive(Debug, Default)]
+struct CacheWalk {
+    included_paths: Vec<PathBuf>,
+    excluded_files: u64,
+    excluded_bytes: u64,
+}
+
+fn walk_cache_files_for_profile(
+    cache_dir: &Path,
+    threads: Option<usize>,
+    profile: SaveProfile,
+) -> Result<CacheWalk> {
+    let mut walk = CacheWalk::default();
+    for abs in walk_cache_files(cache_dir, threads)? {
+        let rel = abs
+            .strip_prefix(cache_dir)
+            .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
+        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+            let meta = std::fs::metadata(&abs).map_err(|e| io(&abs, e))?;
+            walk.excluded_files += 1;
+            walk.excluded_bytes = walk.excluded_bytes.saturating_add(meta.len());
+        } else {
+            walk.included_paths.push(abs);
+        }
+    }
+    Ok(walk)
+}
+
+/// Return true when a cache-relative path is intentionally omitted from
+/// the `ci` / `minimal` save profile. This is intentionally conservative:
+/// it only drops runtime diagnostics, scratch files, locks/sockets, and
+/// top-level soldr-managed tool/binary trees that are re-materialized by
+/// the installer rather than consumed by rustc cache lookups.
+pub fn ci_profile_excludes_cache_path(rel: &Path) -> bool {
+    let parts: Vec<String> = rel
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(part) => Some(part.to_string_lossy().to_ascii_lowercase()),
+            _ => None,
+        })
+        .collect();
+    if parts.is_empty() {
+        return false;
+    }
+
+    if parts.iter().any(|part| {
+        matches!(
+            part.as_str(),
+            "logs" | "log" | "tmp" | "temp" | "scratch" | "sockets" | "locks" | "runtime-binaries"
+        )
+    }) {
+        return true;
+    }
+
+    let first = parts[0].as_str();
+    if matches!(first, "bin" | "downloads" | "sdk" | "toolchains") {
+        return true;
+    }
+
+    let file_name = parts.last().map(String::as_str).unwrap_or_default();
+    matches!(file_name, "lock" | ".lock" | "pid" | ".pid")
+        || file_name.ends_with(".log")
+        || file_name.ends_with(".lock")
+        || file_name.ends_with(".sock")
+        || file_name.ends_with(".socket")
+        || file_name.ends_with(".pid")
+        || file_name.ends_with(".tmp")
+        || file_name.ends_with(".temp")
+}
+
 fn rel_to_posix(rel: &Path) -> String {
     rel.components()
         .filter_map(|c| match c {
@@ -379,13 +483,19 @@ pub struct SaveOptions<'a> {
     /// shape is otherwise byte-identical to a normal save, so the same
     /// `load()` path consumes it.
     pub mtimes_only: bool,
+    /// Cache payload profile. `Full` preserves the historical behavior;
+    /// `Ci` excludes runtime-only files and reports those omissions.
+    pub profile: SaveProfile,
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct SaveReport {
+    pub profile: SaveProfile,
     pub source_files: u64,
     pub cache_files: u64,
     pub deleted_cache_files: u64,
+    pub excluded_files: u64,
+    pub excluded_bytes: u64,
     pub archive_bytes: u64,
     pub elapsed_ms: u64,
 }
@@ -405,6 +515,10 @@ pub struct SaveDeltaOptions<'a> {
     pub zstd_level: i32,
     /// Number of rayon threads for hash + tar work.
     pub threads: Option<usize>,
+    /// Cache payload profile. Applies before delta comparison so excluded
+    /// paths are omitted from the delta manifest and can become tombstones
+    /// against a fuller base layer.
+    pub profile: SaveProfile,
 }
 
 /// Validate save inputs:
@@ -455,7 +569,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     // keep the join shape so the source walk still benefits from the
     // shared rayon pool.
     let pool = build_pool(opts.threads)?;
-    let (source_result, cache_files_paths): (Result<Vec<SourceFile>>, Result<Vec<PathBuf>>) = pool
+    let (source_result, cache_walk_result): (Result<Vec<SourceFile>>, Result<CacheWalk>) = pool
         .install(|| {
             rayon::join(
                 || -> Result<Vec<SourceFile>> {
@@ -478,19 +592,22 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                         })
                         .collect()
                 },
-                || -> Result<Vec<PathBuf>> {
+                || -> Result<CacheWalk> {
                     if opts.mtimes_only {
-                        return Ok(Vec::new());
+                        return Ok(CacheWalk::default());
                     }
                     match opts.cache_dir {
-                        Some(dir) if dir.exists() => walk_cache_files(dir, opts.threads),
-                        _ => Ok(Vec::new()),
+                        Some(dir) if dir.exists() => {
+                            walk_cache_files_for_profile(dir, opts.threads, opts.profile)
+                        }
+                        _ => Ok(CacheWalk::default()),
                     }
                 },
             )
         });
     let manifest_files = source_result?;
-    let cache_files_paths = cache_files_paths?;
+    let cache_walk = cache_walk_result?;
+    let cache_files_paths = cache_walk.included_paths;
     let cache_manifest_files =
         build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?;
 
@@ -585,9 +702,12 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     let archive_bytes = std::fs::metadata(opts.out).map(|m| m.len()).unwrap_or(0);
 
     Ok(SaveReport {
+        profile: opts.profile,
         source_files: manifest.source_file_count,
         cache_files,
         deleted_cache_files: 0,
+        excluded_files: cache_walk.excluded_files,
+        excluded_bytes: cache_walk.excluded_bytes,
         archive_bytes,
         elapsed_ms: start.elapsed().as_millis() as u64,
     })
@@ -597,7 +717,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let start = std::time::Instant::now();
     let pool = build_pool(opts.threads)?;
 
-    let (source_result, cache_files_paths): (Result<Vec<SourceFile>>, Result<Vec<PathBuf>>) = pool
+    let (source_result, cache_walk_result): (Result<Vec<SourceFile>>, Result<CacheWalk>) = pool
         .install(|| {
             rayon::join(
                 || -> Result<Vec<SourceFile>> {
@@ -620,17 +740,18 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
                         })
                         .collect()
                 },
-                || -> Result<Vec<PathBuf>> {
+                || -> Result<CacheWalk> {
                     if opts.cache_dir.exists() {
-                        walk_cache_files(opts.cache_dir, opts.threads)
+                        walk_cache_files_for_profile(opts.cache_dir, opts.threads, opts.profile)
                     } else {
-                        Ok(Vec::new())
+                        Ok(CacheWalk::default())
                     }
                 },
             )
         });
     let manifest_files = source_result?;
-    let cache_files_paths = cache_files_paths?;
+    let cache_walk = cache_walk_result?;
+    let cache_files_paths = cache_walk.included_paths;
     let cache_manifest_files =
         build_cache_manifest_entries(&pool, Some(opts.cache_dir), &cache_files_paths)?;
 
@@ -700,9 +821,12 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let archive_bytes = std::fs::metadata(opts.out).map(|m| m.len()).unwrap_or(0);
 
     Ok(SaveReport {
+        profile: opts.profile,
         source_files: manifest.source_file_count,
         cache_files: manifest.cache_file_count,
         deleted_cache_files: manifest.deleted_cache_paths.len() as u64,
+        excluded_files: cache_walk.excluded_files,
+        excluded_bytes: cache_walk.excluded_bytes,
         archive_bytes,
         elapsed_ms: start.elapsed().as_millis() as u64,
     })
