@@ -80,6 +80,8 @@ pub struct BlessedPrep {
 /// Caller is responsible for applying `prep.env` and prepending
 /// `prep.shim_path_dir` to `PATH` on the child cargo invocation.
 pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedPrep, SoldrError> {
+    let target_triple_canonical = target_triple.to_ascii_lowercase();
+    let target_triple = target_triple_canonical.as_str();
     let mut prep = BlessedPrep::default();
 
     // ----------------------------- Windows MSVC ------------------------------
@@ -127,7 +129,14 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // fall through — the shim alone is enough for the win-arm64
         // ring fix; cargo-xwin's live download still produces a working
         // SDK.
-        match crate::fetch::xwin_cache::ensure_xwin_cache(paths, target_triple).await {
+        let (llvm_result, xwin_result) = tokio::join!(
+            crate::fetch::ensure_llvm_toolchain(paths),
+            crate::fetch::xwin_cache::ensure_xwin_cache(paths, target_triple)
+        );
+
+        let _ = apply_llvm_toolchain_result(&mut prep, target_triple, llvm_result);
+
+        match xwin_result {
             Ok(cache_dir) => {
                 prep.xwin_cache_dir = Some(cache_dir.clone());
                 prep.env.push((
@@ -701,7 +710,9 @@ fn legacy_xwin_opt_out() -> bool {
 }
 
 fn should_prepare_xwin_for_target(target_triple: &str) -> bool {
-    target_triple.ends_with("-pc-windows-msvc")
+    target_triple
+        .to_ascii_lowercase()
+        .ends_with("-pc-windows-msvc")
         && cfg!(target_os = "linux")
         && !legacy_xwin_opt_out()
 }
@@ -736,7 +747,16 @@ async fn ensure_llvm_on_path(
     prep: &mut BlessedPrep,
     target_triple: &str,
 ) -> bool {
-    match crate::fetch::ensure_llvm_toolchain(paths).await {
+    let result = crate::fetch::ensure_llvm_toolchain(paths).await;
+    apply_llvm_toolchain_result(prep, target_triple, result)
+}
+
+fn apply_llvm_toolchain_result(
+    prep: &mut BlessedPrep,
+    target_triple: &str,
+    result: Result<PathBuf, SoldrError>,
+) -> bool {
+    match result {
         Ok(bin_dir) => {
             // Prepend so the managed clang/llvm-ar/lld win over any host
             // copies; the clang shim (msvc) is prepended even earlier by
@@ -835,20 +855,22 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
 /// (`x64`, `arm64`) — matching xwin's `--preserve-ms-arch-notation`
 /// flag in the upstream recipe.
 fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> String {
-    let arch = if target_triple.starts_with("aarch64-") {
-        "arm64"
+    let arch_dirs: &[&str] = if target_triple.starts_with("aarch64-") {
+        &["arm64", "aarch64"]
     } else if target_triple.starts_with("x86_64-") {
-        "x64"
+        &["x64", "x86_64"]
     } else {
         return String::new();
     };
-    let candidates = [
-        cache_dir.join("crt").join("lib").join(arch),
-        cache_dir.join("sdk").join("lib").join("um").join(arch),
-        cache_dir.join("sdk").join("lib").join("ucrt").join(arch),
-    ];
-    candidates
+    arch_dirs
         .iter()
+        .flat_map(|arch| {
+            [
+                cache_dir.join("crt").join("lib").join(arch),
+                cache_dir.join("sdk").join("lib").join("um").join(arch),
+                cache_dir.join("sdk").join("lib").join("ucrt").join(arch),
+            ]
+        })
         .filter(|p| p.is_dir())
         .flat_map(|p| {
             vec![
@@ -901,6 +923,11 @@ mod tests {
         assert_eq!(
             should_prepare_xwin_for_target("x86_64-pc-windows-msvc"),
             cfg!(target_os = "linux")
+        );
+        assert_eq!(
+            should_prepare_xwin_for_target("X86_64-PC-Windows-MSVC"),
+            cfg!(target_os = "linux"),
+            "target classification is case-insensitive before canonicalization"
         );
         assert!(!should_prepare_xwin_for_target("x86_64-unknown-linux-musl"));
 
@@ -1224,6 +1251,44 @@ mod tests {
         assert!(
             out.is_empty(),
             "non-msvc triple must yield empty link args, got: {out:?}"
+        );
+    });
+
+    crate::timed_test!(xwin_link_args_accepts_cargo_xwin_arch_names, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("crt").join("lib").join("x86_64")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("lib").join("um").join("x86_64")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("x86_64")).unwrap();
+
+        let out = xwin_msvc_link_args(root, "x86_64-pc-windows-msvc");
+        assert!(
+            out.contains("/x86_64") || out.contains("\\x86_64"),
+            "cargo-xwin-style x86_64 lib dirs must be accepted: {out}"
+        );
+        assert_eq!(
+            out.matches("link-arg=/LIBPATH:").count(),
+            3,
+            "expected all three x86_64 lib dirs in link args: {out}"
+        );
+    });
+
+    crate::timed_test!(xwin_link_args_accepts_cargo_xwin_aarch64_arch_names, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("crt").join("lib").join("aarch64")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("lib").join("um").join("aarch64")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("aarch64")).unwrap();
+
+        let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+        assert!(
+            out.contains("/aarch64") || out.contains("\\aarch64"),
+            "cargo-xwin-style aarch64 lib dirs must be accepted: {out}"
+        );
+        assert_eq!(
+            out.matches("link-arg=/LIBPATH:").count(),
+            3,
+            "expected all three aarch64 lib dirs in link args: {out}"
         );
     });
 
