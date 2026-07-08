@@ -735,6 +735,120 @@ fn argvec(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
+crate::timed_test!(nextest_archive_darwin_target_detects_archive_only, {
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec(
+            "nextest archive --target aarch64-apple-darwin --workspace"
+        )),
+        Some("aarch64-apple-darwin"),
+    );
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec(
+            "--manifest-path Cargo.toml nextest archive --target=x86_64-apple-darwin"
+        )),
+        Some("x86_64-apple-darwin"),
+    );
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec(
+            "nextest --color always archive --target=x86_64-apple-darwin"
+        )),
+        Some("x86_64-apple-darwin"),
+    );
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec("nextest run --archive-file dist/tests.tar.zst")),
+        None,
+    );
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec("nextest run archive --target x86_64-apple-darwin")),
+        None,
+    );
+    assert_eq!(
+        nextest_archive_darwin_target(&argvec(
+            "nextest archive --target x86_64-unknown-linux-musl"
+        )),
+        None,
+    );
+});
+
+crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
+    let args = argvec("--manifest-path Cargo.toml nextest archive --target x86_64-apple-darwin");
+    let cargo_args = vec![
+        "--config".to_string(),
+        "target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"]".to_string(),
+    ];
+
+    let got = insert_cargo_global_args(&args, &cargo_args);
+
+    assert_eq!(
+        got,
+        argvec("--manifest-path Cargo.toml --config target.x86_64-apple-darwin.mimalloc.rustc-link-lib=[\"static=mimalloc\"] nextest archive --target x86_64-apple-darwin")
+    );
+});
+
+crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let sdk = tmp.path().join("MacOSX.fake.sdk");
+    let llvm_bin = tmp.path().join("llvm-bin");
+    std::fs::create_dir_all(&sdk).unwrap();
+    std::fs::create_dir_all(&llvm_bin).unwrap();
+
+    let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
+    let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+    let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
+    let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
+    let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
+
+    let paths = SoldrPaths::with_root(tmp.path().join("soldr"));
+    let mut bin_dirs = Vec::new();
+    let mut env = Vec::new();
+    let mut cargo_args = Vec::new();
+
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(append_subcommand_transitive_bin_dirs(
+            "nextest",
+            &argvec("nextest archive --target x86_64-apple-darwin --workspace"),
+            &paths,
+            &mut bin_dirs,
+            &mut env,
+            &mut cargo_args,
+        ))
+        .unwrap();
+
+    assert!(
+        bin_dirs.iter().any(|dir| dir == &llvm_bin),
+        "managed LLVM bin dir must be prepended for darwin nextest archive: {bin_dirs:?}"
+    );
+    assert!(
+        cargo_args.is_empty(),
+        "syslib overrides are opted out in this hermetic test"
+    );
+
+    let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+    assert_eq!(
+        map.get("SDKROOT").map(String::as_str),
+        Some(sdk.to_str().unwrap()),
+    );
+    assert!(
+        map.get("CC_x86_64_apple_darwin")
+            .is_some_and(|value| value.contains("--target=x86_64-apple-darwin")
+                && value.contains("-isysroot")),
+        "CC_x86_64_apple_darwin must target the Apple SDK: {map:?}"
+    );
+    assert_eq!(
+        map.get("CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER")
+            .map(String::as_str),
+        Some("clang"),
+    );
+    assert!(
+        map.get("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS")
+            .is_some_and(|value| value.contains("-fuse-ld=lld")
+                && value.contains("-mmacosx-version-min=11.0")),
+        "darwin rustflags must route through clang/lld with the SDK: {map:?}"
+    );
+});
+
 #[test]
 fn known_cargo_build_target_uses_explicit_target_arg() {
     let _lock = ENV_LOCK.lock().unwrap();

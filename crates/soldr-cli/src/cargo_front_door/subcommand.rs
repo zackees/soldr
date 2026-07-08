@@ -21,8 +21,12 @@ pub(super) fn is_cargo_run_invocation(args: &[String]) -> bool {
 /// Return the first positional argument (skipping flags) of the cargo
 /// front-door args, which is conventionally the cargo subcommand.
 pub(crate) fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
+    first_cargo_subcommand_index(args).map(|idx| args[idx].as_str())
+}
+
+pub(crate) fn first_cargo_subcommand_index(args: &[String]) -> Option<usize> {
     let mut skip_next = false;
-    for arg in args {
+    for (idx, arg) in args.iter().enumerate() {
         if skip_next {
             skip_next = false;
             continue;
@@ -40,7 +44,7 @@ pub(crate) fn first_cargo_subcommand(args: &[String]) -> Option<&str> {
         if arg.starts_with('-') {
             continue;
         }
-        return Some(arg.as_str());
+        return Some(idx);
     }
     None
 }
@@ -287,31 +291,8 @@ fn cargo_watch_inner_subcommands(args: &[String]) -> Vec<String> {
 /// (and `+toolchain` shorthand) that `first_cargo_subcommand` skips. Returns
 /// `None` if no such positional appears before a `--` separator.
 fn cargo_subcommand_index(args: &[String], target: &str) -> Option<usize> {
-    let mut skip_next = false;
-    for (idx, arg) in args.iter().enumerate() {
-        if skip_next {
-            skip_next = false;
-            continue;
-        }
-        if arg == "--" {
-            return None;
-        }
-        if arg.starts_with('+') && arg.len() > 1 {
-            continue;
-        }
-        if cargo_global_arg_takes_value(arg) {
-            skip_next = !arg.contains('=');
-            continue;
-        }
-        if arg.starts_with('-') {
-            continue;
-        }
-        if arg == target {
-            return Some(idx);
-        }
-        return None;
-    }
-    None
+    let idx = first_cargo_subcommand_index(args)?;
+    (args[idx] == target).then_some(idx)
 }
 
 fn inner_subcommand_from_exec_value(value: &str) -> Option<String> {
