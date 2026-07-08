@@ -235,7 +235,11 @@ files touched. What you get over `build-backend = "maturin"`:
 - **Compilation caching** — rustc invocations run under soldr's
   `RUSTC_WRAPPER`, so repeat builds hit the cache.
 
-soldr's own wheel is built this way (see this repo's `pyproject.toml`).
+Note: soldr's own wheel is built with plain `build-backend = "maturin"`,
+not with itself — using soldr as its own build backend created a
+bootstrap cycle where a broken installed soldr made the fix in this
+repo uninstallable (`pip install .` pulled the *published* soldr wheel
+and shelled out to the system `soldr` binary).
 
 ## How it works
 
