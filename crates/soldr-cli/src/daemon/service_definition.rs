@@ -1,26 +1,30 @@
-//! Minimal `running-process` service-definition support for soldr-daemon.
+//! `running-process` **v2** service-definition support for soldr-daemon.
 //!
-//! This is the package/discovery slice for zackees/soldr#718. It makes
-//! soldr-daemon discoverable by the shared broker without switching soldr's
-//! own hot path to broker-mediated connects yet.
+//! soldr adopts the running-process v2 broker (soldr#1495). This module
+//! writes the soldr-daemon `.servicedef.v2` file the v2 broker reads to
+//! discover the daemon, its `per_version_binary_dir` allow-list root,
+//! and its version policy (`min_version` + `version_allow_list`). The v2
+//! adoption is mandatory — there is no v1 fallback lane and no opt-in
+//! switch. When no broker is reachable the daemon is still found via the
+//! direct PID-file probe (see `broker_discovery.rs`).
 
 use crate::daemon::backend_handle_adoption::{
     SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION,
 };
-use prost::Message as _;
-use running_process::broker::protocol::{BrokerIsolation, ServiceDefinition};
-use running_process::broker::server::{
-    ensure_service_definition_dir, service_definition_dir, service_definition_path,
-    validate_service_definition_for_service,
+use running_process::broker::protocol_v2::{
+    service_definition_dir_v2, service_definition_path_v2, write_service_definition_v2,
+    BrokerIsolation, ServiceDefinition, ServiceDefinitionBuilder,
 };
-use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Work intentionally left out of the v2 adoption slice, tracked under
+/// soldr#1495 Workstream B: the broker-owned `UpgradeDaemon` graceful
+/// handoff cannot land until running-process ships the singleton-mode
+/// Phase 4b machinery (the v2 adopt path is a stub today).
 pub(crate) const SOLDR_DAEMON_SERVICE_DEF_DEFERRED: &[&str] = &[
-    "package/postinstall servicedef auto-install coverage",
-    "broker-client connect_to_backend wiring",
-    "default-on rollout and escape-hatch removal",
+    "broker-owned UpgradeDaemon singleton handoff (upstream Phase 4b)",
+    "broker-mediated backend routing once adopt returns a real endpoint",
 ];
 
 #[derive(Debug, Clone)]
@@ -46,6 +50,12 @@ pub(crate) fn default_daemon_binary() -> io::Result<PathBuf> {
     Ok(sibling_daemon_binary(&current))
 }
 
+/// Build the soldr-daemon v2 `SHARED_BROKER` service definition. The
+/// `per_version_binary_dir` allow-list root is the directory holding the
+/// (canonicalized) daemon binary — matching soldr's version-rooted
+/// runtime relocation tree — and the version policy pins exactly this
+/// build's `CARGO_PKG_VERSION` so the broker refuses any other version's
+/// Hello.
 pub(crate) fn soldr_daemon_service_definition(
     daemon_binary: &Path,
 ) -> io::Result<ServiceDefinition> {
@@ -57,27 +67,24 @@ pub(crate) fn soldr_daemon_service_definition(
         )
     })?;
 
-    let mut labels = HashMap::new();
-    labels.insert("vendor".to_string(), "zackees".to_string());
-    labels.insert("package".to_string(), "soldr".to_string());
-    labels.insert(
-        "running-process-tracker".to_string(),
-        "zackees/soldr#718".to_string(),
-    );
+    let definition = ServiceDefinitionBuilder::shared_broker(
+        SOLDR_DAEMON_SERVICE_NAME,
+        binary.display().to_string(),
+    )
+    .per_version_binary_dir(binary_dir.display().to_string())
+    .min_version(SOLDR_DAEMON_SERVICE_VERSION)
+    .version_allow_list([SOLDR_DAEMON_SERVICE_VERSION])
+    .label("vendor", "zackees")
+    .label("package", "soldr")
+    .label("running-process-tracker", "zackees/soldr#1495")
+    .build();
 
-    let definition = ServiceDefinition {
-        service_name: SOLDR_DAEMON_SERVICE_NAME.to_string(),
-        binary_path: binary.display().to_string(),
-        isolation: BrokerIsolation::SharedBroker as i32,
-        explicit_instance: String::new(),
-        per_version_binary_dir: binary_dir.display().to_string(),
-        min_version: SOLDR_DAEMON_SERVICE_VERSION.to_string(),
-        version_allow_list: vec![SOLDR_DAEMON_SERVICE_VERSION.to_string()],
-        labels,
-    };
-    validate_service_definition_for_service(&definition, SOLDR_DAEMON_SERVICE_NAME)
-        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+    debug_assert_eq!(definition.isolation, BrokerIsolation::SharedBroker as i32);
     Ok(definition)
+}
+
+fn servicedef_io_error(err: impl std::fmt::Display) -> io::Error {
+    io::Error::other(err.to_string())
 }
 
 pub(crate) fn install_default_service_definition() -> io::Result<InstalledServiceDefinition> {
@@ -87,7 +94,7 @@ pub(crate) fn install_default_service_definition() -> io::Result<InstalledServic
 pub(crate) fn install_service_definition(
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {
-    install_service_definition_to_dir(service_definition_dir(), daemon_binary)
+    install_service_definition_to_dir(service_definition_dir_v2(), daemon_binary)
 }
 
 pub(crate) fn install_service_definition_to_dir(
@@ -95,19 +102,24 @@ pub(crate) fn install_service_definition_to_dir(
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {
     let service_root = service_root.as_ref();
-    ensure_service_definition_dir(service_root).map_err(|err| io::Error::other(err.to_string()))?;
     let definition = soldr_daemon_service_definition(daemon_binary)?;
-    let path = service_definition_path(service_root, SOLDR_DAEMON_SERVICE_NAME)
-        .map_err(|err| io::Error::other(err.to_string()))?;
-
-    std::fs::write(&path, definition.encode_to_vec())?;
+    // `write_service_definition_v2` creates the (privately-permissioned)
+    // dir, validates the service name, and writes the `.servicedef.v2`
+    // protobuf.
+    let path =
+        write_service_definition_v2(service_root, &definition).map_err(servicedef_io_error)?;
+    debug_assert_eq!(
+        path,
+        service_definition_path_v2(service_root, SOLDR_DAEMON_SERVICE_NAME)
+            .expect("valid service name"),
+    );
     Ok(InstalledServiceDefinition { path, definition })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use running_process::broker::server::ServiceDefinitionLoader;
+    use running_process::broker::protocol_v2::ServiceDefinitionLoader;
     use tempfile::TempDir;
 
     fn fake_daemon_binary(root: &Path) -> PathBuf {
@@ -131,16 +143,13 @@ mod tests {
         assert_eq!(definition.min_version, env!("CARGO_PKG_VERSION"));
         assert_eq!(definition.version_allow_list, [env!("CARGO_PKG_VERSION")]);
         assert_eq!(
-            definition
-                .labels
-                .get("running-process-tracker")
-                .map(String::as_str),
-            Some("zackees/soldr#718"),
+            definition.labels.get("package").map(String::as_str),
+            Some("soldr"),
         );
     });
 
     crate::timed_test!(
-        install_service_definition_writes_loader_compatible_protobuf,
+        install_service_definition_writes_v2_loader_compatible_protobuf,
         {
             let temp = TempDir::new().expect("tempdir");
             let service_root = temp.path().join("services");
@@ -149,7 +158,11 @@ mod tests {
             let installed = install_service_definition_to_dir(&service_root, &daemon)
                 .expect("install service definition");
 
-            assert_eq!(installed.path, service_root.join("soldr-daemon.servicedef"));
+            // v2 files carry the `.servicedef.v2` extension.
+            assert_eq!(
+                installed.path,
+                service_root.join("soldr-daemon.servicedef.v2")
+            );
             let loaded = ServiceDefinitionLoader::new(&service_root)
                 .load("soldr-daemon")
                 .expect("load service definition");
@@ -157,15 +170,14 @@ mod tests {
         }
     );
 
-    crate::timed_test!(deferred_items_document_minimal_slice_boundary, {
+    crate::timed_test!(deferred_items_document_upstream_gated_boundary, {
+        // The v2 discovery + servicedef wiring is DONE (this slice); what
+        // remains deferred is the upstream-gated broker-owned handoff.
         assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
-            .any(|item| item.contains("connect_to_backend")));
+            .any(|item| item.contains("UpgradeDaemon")));
         assert!(!SOLDR_DAEMON_SERVICE_DEF_DEFERRED
             .iter()
-            .any(|item| item.contains("RUNNING_PROCESS_DISABLE")));
-        assert!(SOLDR_DAEMON_SERVICE_DEF_DEFERRED
-            .iter()
-            .any(|item| item.contains("escape-hatch")));
+            .any(|item| item.contains("connect_to_backend wiring")));
     });
 }
