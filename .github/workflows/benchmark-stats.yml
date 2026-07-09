@@ -124,6 +124,10 @@ jobs:
         env:
           ACTION_WORKSPACE: ${{ github.workspace }}/soldr
         with:
+          # Benchmark Stats is a per-commit trend. Build the soldr binary from
+          # the commit under measurement instead of benchmarking the released
+          # default from setup-soldr.
+          ref: ${{ github.sha }}
           toolchain: 1.94.1
           cache: true
           zccache-seed-strict: true
