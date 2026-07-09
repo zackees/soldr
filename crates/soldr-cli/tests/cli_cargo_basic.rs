@@ -270,6 +270,7 @@ timed_test!(
         .expect("cargo abort log should be JSON");
         assert_eq!(abort_record["event"], Value::from("cargo_abort"));
         assert_eq!(abort_record["timeout"], Value::from(true));
+        assert_eq!(abort_record["auto_retry_planned"], Value::from(false));
         assert_eq!(
             abort_record["cleanup"]["incremental_dirs_removed"],
             Value::from(1)
@@ -307,6 +308,94 @@ timed_test!(
         assert!(
             log.lines().count() >= 2,
             "fake cargo should have been invoked twice: {log}"
+        );
+    }
+);
+
+timed_test!(
+    cargo_timeout_retries_once_without_cache,
+    Duration::from_secs(60),
+    {
+        let root = unique_temp_dir("cargo-timeout-retry");
+        let workspace = root.join("workspace");
+        let tool_dir = root.join("tool");
+        let cache_root = root.join("soldr-cache");
+        let log_path = root.join("cargo.log");
+        let fake_tool_log = root.join("fake-toolchain.log");
+        let marker = root.join("first-run.marker");
+        fs::create_dir_all(workspace.join("src")).expect("workspace src");
+        fs::create_dir_all(&tool_dir).expect("tool dir");
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname = \"timeout_retry\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .expect("manifest");
+        fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
+        let cargo = fake_script_path(&tool_dir, "cargo");
+        let (_unused_cargo, rustc, zccache) = install_fake_toolchain(&fake_tool_log);
+        write_fake_script(
+            &cargo,
+            &fake_timeout_then_success_cargo_script(&marker, &log_path),
+        );
+
+        let output = common::isolated_soldr_command()
+            .args(["cargo", "build"])
+            .current_dir(&workspace)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+            .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+            .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .expect("soldr cargo build with timeout retry");
+
+        assert!(
+            output.status.success(),
+            "cached run should time out once, retry without cache, and succeed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("retrying timed-out cargo run without cache"),
+            "timeout should announce the no-cache retry: {stderr}"
+        );
+        assert!(
+            stderr.contains("no-cache cargo retry exited with code 0"),
+            "successful retry should report its exit code: {stderr}"
+        );
+        assert!(
+            !workspace.join("target/debug/incremental").exists(),
+            "aborted cached run should clean target/debug/incremental before retry"
+        );
+
+        let abort_log_path = cache_root.join("logs").join("cargo-aborts.jsonl");
+        let abort_log = fs::read_to_string(&abort_log_path).unwrap_or_else(|err| {
+            panic!(
+                "timeout retry should persist cargo abort log at {}: {err}",
+                abort_log_path.display()
+            )
+        });
+        let abort_record: Value = serde_json::from_str(
+            abort_log
+                .lines()
+                .next()
+                .expect("cargo abort log should have one record"),
+        )
+        .expect("cargo abort log should be JSON");
+        assert_eq!(abort_record["event"], Value::from("cargo_abort"));
+        assert_eq!(abort_record["timeout"], Value::from(true));
+        assert_eq!(abort_record["auto_retry_planned"], Value::from(true));
+        assert_eq!(
+            abort_record["recovery"]["retry_without_cache"]["argv"],
+            serde_json::json!(["soldr", "--no-cache", "cargo", "build"])
+        );
+
+        let log = fs::read_to_string(&log_path).expect("fake cargo log");
+        assert!(
+            log.lines().count() >= 2,
+            "fake cargo should have been invoked by the timed-out run and the no-cache retry: {log}"
         );
     }
 );

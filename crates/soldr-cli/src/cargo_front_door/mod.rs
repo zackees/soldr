@@ -52,9 +52,11 @@ mod zig_shim;
 use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
+const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
 const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
+const MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS: u64 = 30;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
@@ -106,6 +108,7 @@ struct CargoAbortLogRequest<'a> {
     timeout: bool,
     cleanup: CargoAbortCleanupReport,
     message: &'a str,
+    auto_retry_planned: bool,
 }
 
 fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, SoldrError> {
@@ -119,6 +122,7 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         timeout,
         cleanup,
         message,
+        auto_retry_planned,
     } = request;
     let path = paths.cargo_abort_log();
     if let Some(parent) = path.parent() {
@@ -145,6 +149,7 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         "timeout": timeout,
         "cargo_args": args,
         "message": message,
+        "auto_retry_planned": auto_retry_planned,
         "cleanup": {
             "orphan_rmetas_pruned": cleanup.orphan_rmetas_pruned,
             "incremental_dirs_removed": cleanup.incremental_dirs_removed,
@@ -173,6 +178,35 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         .open(&path)?;
     writeln!(file, "{line}")?;
     Ok(path)
+}
+
+fn cargo_timeout_retry_allowed(cache_enabled_for_cargo: bool, args: &[String]) -> bool {
+    if !cache_enabled_for_cargo || env_flag_truthy(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR) {
+        return false;
+    }
+    matches!(
+        first_cargo_subcommand(args),
+        Some("b" | "build" | "c" | "check" | "t" | "test" | "clippy" | "d" | "doc")
+    )
+}
+
+fn retry_timed_out_cargo_without_cache(
+    args: &[String],
+    explicit_toolchain: Option<&str>,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("--no-cache").arg("cargo").args(args);
+    if let Some(toolchain) = explicit_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    command.env(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
+    suppress_windows_console_window(&mut command);
+    configure_cargo_child_for_timeout(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn no-cache cargo retry failed: {err}")))?;
+    wait_for_no_cache_retry_child(&mut child)
 }
 
 fn new_build_record(
@@ -708,6 +742,48 @@ fn wait_for_cargo_child(
                 eprintln!(
                     "{}",
                     cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
+                );
+            }
+        }
+    }
+}
+
+fn wait_for_no_cache_retry_child(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let timeout =
+        cargo_wait_timeout().max(Duration::from_secs(MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS));
+    let start = Instant::now();
+    let heartbeat = Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS);
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(cargo_timeout_error(
+                child,
+                "soldr no-cache cargo retry",
+                timeout,
+            ));
+        }
+        let wait_for = timeout.saturating_sub(elapsed).min(heartbeat);
+        match child.wait_timeout(wait_for).map_err(|err| {
+            SoldrError::Other(format!("wait on soldr no-cache cargo retry failed: {err}"))
+        })? {
+            Some(status) => return Ok(status),
+            None if start.elapsed() >= timeout => {
+                return Err(cargo_timeout_error(
+                    child,
+                    "soldr no-cache cargo retry",
+                    timeout,
+                ));
+            }
+            None => {
+                eprintln!(
+                    "{}",
+                    cargo_wait_heartbeat_message(
+                        "soldr no-cache cargo retry",
+                        start.elapsed(),
+                        timeout
+                    )
                 );
             }
         }
@@ -1679,6 +1755,8 @@ pub(crate) async fn run_cargo_front_door(
                 );
             }
             let augmented = augment_aborted_cargo_error(err, cleanup, timeout);
+            let auto_retry_planned =
+                timeout && cargo_timeout_retry_allowed(cache_enabled_for_cargo, args);
             match append_cargo_abort_log(CargoAbortLogRequest {
                 paths: &paths,
                 session_id,
@@ -1689,10 +1767,30 @@ pub(crate) async fn run_cargo_front_door(
                 timeout,
                 cleanup,
                 message: &augmented.to_string(),
+                auto_retry_planned,
             }) {
                 Ok(path) => eprintln!("soldr: cargo abort details written to {}", path.display()),
                 Err(log_err) => {
                     eprintln!("soldr warning: failed to write cargo abort log: {log_err}")
+                }
+            }
+            if auto_retry_planned {
+                eprintln!(
+                    "soldr: retrying timed-out cargo run without cache: soldr --no-cache cargo <same args>"
+                );
+                match retry_timed_out_cargo_without_cache(args, explicit_toolchain) {
+                    Ok(status) => {
+                        let code = status
+                            .code()
+                            .unwrap_or(if status.success() { 0 } else { 1 });
+                        eprintln!("soldr: no-cache cargo retry exited with code {code}");
+                        return Ok(code);
+                    }
+                    Err(retry_err) => {
+                        return Err(SoldrError::Other(format!(
+                            "{augmented}; no-cache retry failed: {retry_err}"
+                        )));
+                    }
                 }
             }
             return Err(augmented);
