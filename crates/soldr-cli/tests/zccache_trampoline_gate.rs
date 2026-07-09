@@ -20,8 +20,21 @@ use std::time::Duration;
 
 use soldr_cli::timed_test;
 
-fn trampoline_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_zccache"))
+/// Resolve the trampoline binary. `env!("CARGO_BIN_EXE_zccache")` expands
+/// at compile time, baking the build machine's path into the test binary
+/// (soldr#1039). On a target runner replaying a nextest archive, nextest
+/// exports `NEXTEST_BIN_EXE_zccache` at runtime pointing into the
+/// extracted archive — prefer that. If neither resolves to an existing
+/// file (archive built without the bin), the caller skips the test.
+fn trampoline_bin() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("NEXTEST_BIN_EXE_zccache") {
+        let p = PathBuf::from(p);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    let compile_time = PathBuf::from(env!("CARGO_BIN_EXE_zccache"));
+    compile_time.exists().then_some(compile_time)
 }
 
 /// Isolated invocation env: unique cache root + daemon namespace so an
@@ -33,12 +46,19 @@ struct TrampolineEnv {
 }
 
 impl TrampolineEnv {
-    fn new(tag: &str) -> Self {
-        Self {
-            bin: trampoline_bin(),
+    /// `None` when the trampoline binary is unavailable (target runner
+    /// replaying an archive without it) — the test skips cleanly, the
+    /// gate contract stays covered on the native build lanes.
+    fn new(tag: &str) -> Option<Self> {
+        let Some(bin) = trampoline_bin() else {
+            eprintln!("skipping {tag}: zccache trampoline binary unavailable in this environment");
+            return None;
+        };
+        Some(Self {
+            bin,
             cache_dir: tempfile::tempdir().expect("create temp cache dir"),
             namespace: format!("soldr-gate-{tag}-{}", std::process::id()),
-        }
+        })
     }
 
     fn run(&self, args: &[&str]) -> Output {
@@ -74,7 +94,9 @@ fn combined(output: &Output) -> String {
 }
 
 timed_test!(spawning_subcommand_is_refused_with_embedded_hint, {
-    let env = TrampolineEnv::new("start");
+    let Some(env) = TrampolineEnv::new("start") else {
+        return;
+    };
     let output = env.run(&["start"]);
     let text = combined(&output);
     assert!(
@@ -92,7 +114,9 @@ timed_test!(spawning_subcommand_is_refused_with_embedded_hint, {
 });
 
 timed_test!(status_subcommand_is_refused, {
-    let env = TrampolineEnv::new("status");
+    let Some(env) = TrampolineEnv::new("status") else {
+        return;
+    };
     let output = env.run(&["status"]);
     let text = combined(&output);
     assert!(
@@ -103,7 +127,9 @@ timed_test!(status_subcommand_is_refused, {
 });
 
 timed_test!(cache_root_passes_through, {
-    let env = TrampolineEnv::new("cacheroot");
+    let Some(env) = TrampolineEnv::new("cacheroot") else {
+        return;
+    };
     let output = env.run(&["cache-root"]);
     let text = combined(&output);
     assert!(
@@ -113,7 +139,9 @@ timed_test!(cache_root_passes_through, {
 });
 
 timed_test!(session_end_passes_through, {
-    let env = TrampolineEnv::new("sessionend");
+    let Some(env) = TrampolineEnv::new("sessionend") else {
+        return;
+    };
     // Daemon-unreachable `session-end` is idempotent exit-0 (zccache#150);
     // the id is arbitrary — no daemon exists in this isolated namespace.
     let output = env.run(&["session-end", "soldr-gate-test-session"]);
@@ -125,7 +153,9 @@ timed_test!(session_end_passes_through, {
 });
 
 timed_test!(version_flag_passes_through, {
-    let env = TrampolineEnv::new("version");
+    let Some(env) = TrampolineEnv::new("version") else {
+        return;
+    };
     let output = env.run(&["--version"]);
     let text = combined(&output);
     assert!(
@@ -144,7 +174,9 @@ timed_test!(
         // message and exits 0 without spawning — the observable contract
         // here is simply that nothing was spawned and no runtime-binaries
         // copy appeared in the isolated cache root.
-        let env = TrampolineEnv::new("nospawn");
+        let Some(env) = TrampolineEnv::new("nospawn") else {
+            return;
+        };
         let _ = env.run(&["stop"]);
         let mut stack = vec![env.cache_dir.path().to_path_buf()];
         while let Some(dir) = stack.pop() {
