@@ -185,10 +185,8 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
         cache_dir: rust_artifact_plan_cache_dir(session)?,
         zccache_daemon_cache_dir: session.cache_dir.clone(),
         zccache_daemon_cache_dir_env: session.cache_dir_env,
-        zccache_daemon_name: session
-            .private_daemon
-            .as_ref()
-            .map(|private| private.daemon_name.clone()),
+        // soldr#1368: private managed-zccache daemons are gone.
+        zccache_daemon_name: None,
         session_id: session.session_id.clone(),
         journal_path: session.journal_path.clone(),
         backend: rust_artifact_cache_backend_from_env()?,

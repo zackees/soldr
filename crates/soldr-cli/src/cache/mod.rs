@@ -20,10 +20,7 @@ mod report;
 mod session;
 mod trim;
 
-pub(super) use crate::zccache_lifecycle::{
-    zccache_daemon_already_stopped, zccache_output_snippet, zccache_subcommand_unsupported,
-    ZCCACHE_ANALYZE_NOTE_LIMIT,
-};
+pub(super) use crate::zccache_lifecycle::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
 pub(crate) use release_worktree::{
     run_cache_release_worktree_command, run_cache_sweep_trash_command, sweep_trash, SweepReport,
 };

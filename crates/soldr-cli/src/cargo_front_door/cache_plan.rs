@@ -2,10 +2,7 @@ use crate::cargo_front_door::profile_debug::CargoProfileDebugDefault;
 use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
 use crate::rust_plan::{self, RustArtifactPlanContext};
-use crate::zccache::{
-    finish_zccache_build, prepare_rustc_wrapper_plan, stop_zccache_after_command, RustcWrapperPlan,
-    ZccacheBuildSession,
-};
+use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
 use crate::ZccacheSourceArg;
 
 pub(crate) struct CargoCachePlan {
@@ -306,7 +303,6 @@ mod tests {
             session_log_path: std::path::PathBuf::from("/tmp/soldr-zccache/log"),
             journal_path: std::path::PathBuf::from("/tmp/soldr-zccache/journal"),
             session_stats_path: std::path::PathBuf::from("/tmp/soldr-zccache/stats.json"),
-            private_daemon: None,
         }
     }
 

@@ -6,19 +6,6 @@ use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, Response, StatusInfo,
 };
 
-fn sample_link() -> ZccacheDaemonLink {
-    ZccacheDaemonLink {
-        binary_path: "/tmp/zccache".into(),
-        cache_dir: "/tmp/cache".into(),
-        session_id: Some("session-1".into()),
-        source: "managed".into(),
-        private_daemon: true,
-        daemon_name: Some("soldr-dev".into()),
-        owner_pid: Some(1234),
-        private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
-    }
-}
-
 crate::timed_test!(record_target_touch_round_trips, {
     let req = Request::RecordTargetTouch {
         path: "/tmp/target".into(),
@@ -137,27 +124,12 @@ crate::timed_test!(cook_record_round_trips_with_sha_validation, {
     assert_eq!(branch_name.as_deref(), Some("main"));
 });
 
-crate::timed_test!(link_zccache_round_trips_with_optional_fields, {
-    let req = Request::LinkZccache {
-        link: sample_link(),
-    };
-    let bytes = encode_request(&req);
-    let decoded = decode_request(&bytes).expect("decode");
-    match decoded {
-        Request::LinkZccache { link } => {
-            assert_eq!(link, sample_link());
-        }
-        other => panic!("unexpected variant: {other:?}"),
-    }
-});
-
 crate::timed_test!(status_response_round_trips_with_cook_stats, {
     let info = StatusInfo {
         version: 7,
         pid: 4242,
         uptime_secs: 60,
         request_count: 17,
-        linked_zccache: Some(sample_link()),
         cook_stats: Some(CookStats {
             entries: 3,
             total_bytes: 9_999,

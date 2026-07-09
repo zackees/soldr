@@ -32,7 +32,9 @@ message WireRequest {
     WireRecordCompile record_compile = 6;
     WireListBuilds list_builds = 7;
     WireListSlowBuilds list_slow_builds = 8;
-    WireLinkZccache link_zccache = 9;
+    // Tag 9 (WireLinkZccache link_zccache) reserved — deleted in
+    // soldr#1467; proto3 disallows `reserved` inside `oneof`, so this
+    // comment is the reservation.
     WireCookLookup cook_lookup = 10;
     WireCookRecord cook_record = 11;
     WireCookTouch cook_touch = 12;
@@ -86,10 +88,6 @@ message WireListBuilds {
 message WireListSlowBuilds {
   uint64 threshold_ms = 1;
   uint32 limit = 2;
-}
-
-message WireLinkZccache {
-  WireZccacheDaemonLink link = 1;
 }
 
 message WireCookLookup {
@@ -230,7 +228,8 @@ message WireStatusInfo {
   uint32 pid = 2;
   uint64 uptime_secs = 3;
   uint64 request_count = 4;
-  optional WireZccacheDaemonLink linked_zccache = 5;
+  // Field 5 (linked_zccache) deleted in soldr#1467.
+  reserved 5;
   optional WireCookStats cook_stats = 6;
   // #977 / #980 L1 — always "embedded". The legacy "wrapped"
   // fork-zccache.exe backend was removed in #980 L1's second pass;
@@ -242,17 +241,6 @@ message WireCookStats {
   uint64 entries = 1;
   uint64 total_bytes = 2;
   uint64 hits_this_session = 3;
-}
-
-message WireZccacheDaemonLink {
-  string binary_path = 1;
-  string cache_dir = 2;
-  optional string session_id = 3;
-  string source = 4;
-  bool private_daemon = 5;
-  optional string daemon_name = 6;
-  optional uint32 owner_pid = 7;
-  repeated string private_env_keys = 8;
 }
 
 message WireBuildRecord {

@@ -13,8 +13,8 @@ The `soldr-daemon` long-lived process and its IPC surface.
   (`status`, `flush_caches`, `compile_stats`, `build_session_*`, …).
 - `server.rs` — the accept loop + per-request handlers, including the
   embedded zccache `Compile` / `FlushCaches` / `CompileStats` verbs.
-- `zccache_link.rs` / `db.rs` / `lifecycle.rs` — linked-zccache state,
-  redb-backed build/target registry, and daemon spawn/adoption.
+- `db.rs` / `lifecycle.rs` — redb-backed build/target registry and daemon
+  spawn/adoption.
 
 The daemon owns the in-process embedded zccache service; wrappers dispatch
 compiles to it over the `Request::Compile` IPC verb (soldr#977/#980/#1081),
