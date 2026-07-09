@@ -70,22 +70,32 @@ fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsStr
     ]
 }
 
-fn wait_for_ready(cache_root: &Path, deadline: Instant) -> bool {
-    // PID file is written before the accept loop binds the endpoint
-    // and is the strongest cross-platform "the daemon process is up"
-    // signal — Unix socket paths may relocate to $TMPDIR under
-    // SUN_LEN constraints, and Windows named pipes aren't a fs entry.
+fn wait_for_ready(cache_root: &Path, home_root: &Path, deadline: Instant) -> bool {
+    // PID file is written before the accept loop binds the endpoint, so
+    // it only proves the process started. The CLI contract this test
+    // exercises is `daemon status`, so wait until that endpoint answers.
     let pid_file = cache_root
         .join("cache")
         .join("soldr-daemon")
         .join("daemon.pid");
     while Instant::now() < deadline {
-        if pid_file.exists() {
+        if pid_file.exists() && status_reports_running(cache_root, home_root) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     false
+}
+
+fn status_reports_running(cache_root: &Path, home_root: &Path) -> bool {
+    let out = run_soldr(&["daemon", "status", "--json"], cache_root, home_root);
+    if !out.status.success() {
+        return false;
+    }
+    serde_json::from_slice::<Value>(&out.stdout)
+        .ok()
+        .and_then(|body| body["running"].as_bool())
+        .unwrap_or(false)
 }
 
 fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process::Output {
@@ -157,7 +167,7 @@ impl Daemon {
         let child = cmd.spawn().expect("spawn soldr-daemon");
         let deadline = Instant::now() + Duration::from_secs(5);
         assert!(
-            wait_for_ready(&cache_root, deadline),
+            wait_for_ready(&cache_root, &home_root, deadline),
             "daemon never opened its endpoint under {}",
             cache_root.display()
         );
