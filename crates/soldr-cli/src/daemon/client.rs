@@ -6,7 +6,6 @@
 use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
 use crate::cache_lib::{daemon_sock_path, data_db_path};
 use crate::core::SoldrPaths;
-use crate::daemon::db;
 #[cfg(windows)]
 use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
@@ -246,14 +245,6 @@ pub fn record_compile(
             duration_us,
         },
     );
-}
-
-pub fn link_zccache(paths: &SoldrPaths, link: crate::daemon::protocol::ZccacheDaemonLink) {
-    let sock = default_sock_path(paths);
-    if submit_fire_and_forget(&sock, &Request::LinkZccache { link: link.clone() }).is_ok() {
-        return;
-    }
-    let _ = db::set_linked_zccache(&data_db_path(paths), Some(&link));
 }
 
 /// PR 1 cook-index client surface (#576). PR 2 (`soldr cook`) and PR 3

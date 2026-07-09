@@ -552,80 +552,8 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
 #[cfg(test)]
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
-    use super::super::{
-        zccache_daemon_already_stopped, zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT,
-    };
+    use super::super::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
     use super::clear_session_artifacts;
-    use crate::zccache_lifecycle::{zccache_flag_unsupported, zccache_session_already_ended};
-    use std::process::Output;
-
-    fn synthetic_output(stderr: &str, exit: i32) -> Output {
-        #[cfg(unix)]
-        let status = {
-            use std::os::unix::process::ExitStatusExt;
-            std::process::ExitStatus::from_raw((exit & 0xFF) << 8)
-        };
-        #[cfg(windows)]
-        let status = {
-            use std::os::windows::process::ExitStatusExt;
-            std::process::ExitStatus::from_raw(exit as u32)
-        };
-        Output {
-            status,
-            stdout: Vec::new(),
-            stderr: stderr.as_bytes().to_vec(),
-        }
-    }
-
-    #[test]
-    fn session_already_ended_detects_common_error_phrases() {
-        for needle in [
-            "session not found",
-            "Session Not Found: foo",
-            "no such session: 123",
-            "ALREADY ENDED",
-            "unknown session abc",
-        ] {
-            assert!(
-                zccache_session_already_ended(&synthetic_output(needle, 1)),
-                "expected {needle:?} to be classified as already-ended"
-            );
-        }
-    }
-
-    #[test]
-    fn session_already_ended_rejects_unrelated_errors() {
-        for needle in ["compile failure", "permission denied", "internal error"] {
-            assert!(
-                !zccache_session_already_ended(&synthetic_output(needle, 1)),
-                "did not expect {needle:?} to be classified as already-ended"
-            );
-        }
-    }
-
-    #[test]
-    fn daemon_already_stopped_detects_common_states() {
-        for needle in [
-            "daemon not running",
-            "No daemon to stop",
-            "Connection refused",
-            "service not running",
-        ] {
-            assert!(
-                zccache_daemon_already_stopped(&synthetic_output(needle, 1)),
-                "expected {needle:?} to indicate daemon already stopped"
-            );
-        }
-    }
-
-    #[test]
-    fn flag_unsupported_detects_clap_phrasing() {
-        let out = synthetic_output("error: unexpected argument '--no-depgraph-save' found", 2);
-        assert!(zccache_flag_unsupported(&out, "--no-depgraph-save"));
-
-        let unrelated = synthetic_output("error: something else went wrong", 1);
-        assert!(!zccache_flag_unsupported(&unrelated, "--no-depgraph-save"));
-    }
 
     #[test]
     fn clear_session_artifacts_removes_existing_files_only() {
@@ -679,24 +607,5 @@ mod tests {
         assert!(note.contains("rollups: zccache analyze exited with status Some(1)"));
         assert!(note.contains("stderr: expected compile journal JSONL"));
         assert!(note.contains(r#"stdout: {"status":"error","error":"bad input"}"#));
-    }
-
-    /// soldr#383: the shutdown poll uses a real zccache binary as its
-    /// daemon-alive oracle. With a missing binary path, the poll must
-    /// terminate quickly with `PollFailed`, never silently loop until
-    /// the deadline expires (which would mask the underlying error).
-    #[test]
-    fn poll_zccache_daemon_exit_surfaces_spawn_failure() {
-        use crate::zccache_lifecycle::{ZccacheDaemonExitPollResult, ZccacheLifecycle};
-        use std::time::Duration;
-
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let bogus = tmp.path().join("definitely-not-zccache");
-        let lifecycle = ZccacheLifecycle::new(&bogus, tmp.path());
-        let result = lifecycle.poll_daemon_exit(Duration::from_millis(50));
-        assert!(
-            matches!(result, ZccacheDaemonExitPollResult::PollFailed(_)),
-            "expected PollFailed when zccache binary cannot be spawned"
-        );
     }
 }

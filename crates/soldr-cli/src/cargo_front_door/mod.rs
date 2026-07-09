@@ -52,9 +52,11 @@ mod zig_shim;
 use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
+const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
 const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
+const MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS: u64 = 30;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
@@ -94,6 +96,117 @@ fn generate_build_session_id() -> u64 {
     let high = ((nanos / 1_000_000) as u64) & 0xFFFF_FFFF;
     let low = ((nanos as u64) ^ (std::process::id() as u64)) & 0xFFFF_FFFF;
     (high << 32) | low
+}
+
+struct CargoAbortLogRequest<'a> {
+    paths: &'a SoldrPaths,
+    session_id: u64,
+    repo_root: &'a Path,
+    started_at_ms: i64,
+    ended_at_ms: i64,
+    args: &'a [String],
+    timeout: bool,
+    cleanup: CargoAbortCleanupReport,
+    message: &'a str,
+    auto_retry_planned: bool,
+}
+
+fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, SoldrError> {
+    let CargoAbortLogRequest {
+        paths,
+        session_id,
+        repo_root,
+        started_at_ms,
+        ended_at_ms,
+        args,
+        timeout,
+        cleanup,
+        message,
+        auto_retry_planned,
+    } = request;
+    let path = paths.cargo_abort_log();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let retry_without_cache: Vec<&str> = ["soldr", "--no-cache", "cargo"]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .collect();
+    let retry_with_zccache_disabled: Vec<&str> = ["soldr", "cargo"]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .collect();
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "event": "cargo_abort",
+        "ts_ms": ended_at_ms,
+        "session_id": session_id,
+        "repo_root": repo_root.display().to_string(),
+        "started_at_ms": started_at_ms,
+        "ended_at_ms": ended_at_ms,
+        "elapsed_ms": (ended_at_ms - started_at_ms).max(0),
+        "timeout": timeout,
+        "cargo_args": args,
+        "message": message,
+        "auto_retry_planned": auto_retry_planned,
+        "cleanup": {
+            "orphan_rmetas_pruned": cleanup.orphan_rmetas_pruned,
+            "incremental_dirs_removed": cleanup.incremental_dirs_removed,
+        },
+        "recovery": {
+            "inspect_logs": ["soldr", "logs", "paths"],
+            "retry_without_cache": {
+                "argv": retry_without_cache,
+            },
+            "retry_with_zccache_disabled": {
+                "env": { "ZCCACHE_DISABLE": "1" },
+                "argv": retry_with_zccache_disabled,
+            },
+            "clean_hint": ["soldr", "--no-cache", "cargo", "clean", "-p", "<crate>"],
+            "timeout_env": {
+                "cargo_wait": CARGO_WAIT_TIMEOUT_ENV_VAR,
+                "compile_reply": "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            },
+        },
+    });
+    let line = serde_json::to_string(&record)
+        .map_err(|err| SoldrError::Other(format!("serialize cargo abort log: {err}")))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(file, "{line}")?;
+    Ok(path)
+}
+
+fn cargo_timeout_retry_allowed(cache_enabled_for_cargo: bool, args: &[String]) -> bool {
+    if !cache_enabled_for_cargo || env_flag_truthy(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR) {
+        return false;
+    }
+    matches!(
+        first_cargo_subcommand(args),
+        Some("b" | "build" | "c" | "check" | "t" | "test" | "clippy" | "d" | "doc")
+    )
+}
+
+fn retry_timed_out_cargo_without_cache(
+    args: &[String],
+    explicit_toolchain: Option<&str>,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("--no-cache").arg("cargo").args(args);
+    if let Some(toolchain) = explicit_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    command.env(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
+    suppress_windows_console_window(&mut command);
+    configure_cargo_child_for_timeout(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn no-cache cargo retry failed: {err}")))?;
+    wait_for_no_cache_retry_child(&mut child)
 }
 
 fn new_build_record(
@@ -339,10 +452,9 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         archived_journal_path,
         archived_session_stats_path,
         archived_compile_journal_path,
-        private_daemon_name: session
-            .private_daemon
-            .as_ref()
-            .map(|private| private.daemon_name.clone()),
+        // soldr#1368: private managed-zccache daemons are gone; the
+        // field stays on the wire for older records.
+        private_daemon_name: None,
     });
 
     crate::daemon::db::upsert_build(&db_path, &record)
@@ -630,6 +742,48 @@ fn wait_for_cargo_child(
                 eprintln!(
                     "{}",
                     cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
+                );
+            }
+        }
+    }
+}
+
+fn wait_for_no_cache_retry_child(
+    child: &mut std::process::Child,
+) -> Result<std::process::ExitStatus, SoldrError> {
+    let timeout =
+        cargo_wait_timeout().max(Duration::from_secs(MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS));
+    let start = Instant::now();
+    let heartbeat = Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS);
+    loop {
+        let elapsed = start.elapsed();
+        if elapsed >= timeout {
+            return Err(cargo_timeout_error(
+                child,
+                "soldr no-cache cargo retry",
+                timeout,
+            ));
+        }
+        let wait_for = timeout.saturating_sub(elapsed).min(heartbeat);
+        match child.wait_timeout(wait_for).map_err(|err| {
+            SoldrError::Other(format!("wait on soldr no-cache cargo retry failed: {err}"))
+        })? {
+            Some(status) => return Ok(status),
+            None if start.elapsed() >= timeout => {
+                return Err(cargo_timeout_error(
+                    child,
+                    "soldr no-cache cargo retry",
+                    timeout,
+                ));
+            }
+            None => {
+                eprintln!(
+                    "{}",
+                    cargo_wait_heartbeat_message(
+                        "soldr no-cache cargo retry",
+                        start.elapsed(),
+                        timeout
+                    )
                 );
             }
         }
@@ -1051,9 +1205,10 @@ fn augment_aborted_cargo_error(
     if timeout {
         message.push_str(
             "; if the next build still stalls, run `soldr --no-cache cargo clean -p <crate>` \
-             or remove the affected target/*/incremental directory, then retry with \
-             `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` lowered \
-             while diagnosing",
+             or remove the affected target/*/incremental directory, then retry the same command \
+             as `soldr --no-cache cargo <same args>` or with `ZCCACHE_DISABLE=1`; use \
+             `soldr logs paths` to inspect durable logs, and lower \
+             `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` while diagnosing",
         );
     }
     SoldrError::Other(message)
@@ -1599,7 +1754,46 @@ pub(crate) async fn run_cargo_front_door(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
                 );
             }
-            return Err(augment_aborted_cargo_error(err, cleanup, timeout));
+            let augmented = augment_aborted_cargo_error(err, cleanup, timeout);
+            let auto_retry_planned =
+                timeout && cargo_timeout_retry_allowed(cache_enabled_for_cargo, args);
+            match append_cargo_abort_log(CargoAbortLogRequest {
+                paths: &paths,
+                session_id,
+                repo_root: &session_repo_root,
+                started_at_ms: session_started_at_ms,
+                ended_at_ms,
+                args,
+                timeout,
+                cleanup,
+                message: &augmented.to_string(),
+                auto_retry_planned,
+            }) {
+                Ok(path) => eprintln!("soldr: cargo abort details written to {}", path.display()),
+                Err(log_err) => {
+                    eprintln!("soldr warning: failed to write cargo abort log: {log_err}")
+                }
+            }
+            if auto_retry_planned {
+                eprintln!(
+                    "soldr: retrying timed-out cargo run without cache: soldr --no-cache cargo <same args>"
+                );
+                match retry_timed_out_cargo_without_cache(args, explicit_toolchain) {
+                    Ok(status) => {
+                        let code = status
+                            .code()
+                            .unwrap_or(if status.success() { 0 } else { 1 });
+                        eprintln!("soldr: no-cache cargo retry exited with code {code}");
+                        return Ok(code);
+                    }
+                    Err(retry_err) => {
+                        return Err(SoldrError::Other(format!(
+                            "{augmented}; no-cache retry failed: {retry_err}"
+                        )));
+                    }
+                }
+            }
+            return Err(augmented);
         }
     };
     // Extract whatever stderr text we captured BEFORE the success

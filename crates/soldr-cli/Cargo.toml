@@ -56,7 +56,7 @@ zstd = { workspace = true }
 # soldr#1368: there is no longer a separately-downloaded managed zccache
 # binary — the `zccache` CLI ships as a compiled-in soldr-cli `[[bin]]`
 # (`src/bin/zccache_embedded.rs`) built from this same library dep.
-zccache = { version = "1.12.14", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
+zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
 # and detached spawn (setsid). On Windows the equivalent

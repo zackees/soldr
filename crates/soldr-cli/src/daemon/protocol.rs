@@ -60,7 +60,11 @@ use thiserror::Error;
 ///   subprocess against the (removed) managed binary.
 /// * v10 (soldr#820): extends `BuildRecord` with optional cache summary,
 ///   log/archive paths, and miss-reason rollups for `soldr logs`.
-pub const PROTOCOL_VERSION: u32 = 10;
+/// * v11 (soldr#1467): removes `Request::LinkZccache`,
+///   `ZccacheDaemonLink`, and `StatusInfo.linked_zccache` — the
+///   external managed-zccache daemon the link tracked was deleted in
+///   soldr#1368, so there is nothing left to stop on daemon shutdown.
+pub const PROTOCOL_VERSION: u32 = 11;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -146,11 +150,6 @@ pub enum Request {
     /// `total_wall_ms >= threshold_ms`, sorted desc by `total_wall_ms`,
     /// capped at `limit`.
     ListSlowBuilds { threshold_ms: u64, limit: u32 },
-    /// Fire-and-forget: tell the daemon which zccache runtime/cache/session is
-    /// linked to this soldr-daemon's session. On daemon shutdown
-    /// (explicit RPC, signal, or idle timeout), the daemon issues
-    /// `zccache stop` with the recorded cache dir before exiting.
-    LinkZccache { link: ZccacheDaemonLink },
     /// Request-response: probe the cook-artifact index for the given
     /// `(recipe_hash, target_triple, profile, channel, rustc_version)`
     /// tuple. On exact hit returns [`Response::CookHit`] with
@@ -330,8 +329,6 @@ pub struct StatusInfo {
     pub pid: u32,
     pub uptime_secs: u64,
     pub request_count: u64,
-    /// Set by `LinkZccache`; cleared on daemon shutdown.
-    pub linked_zccache: Option<ZccacheDaemonLink>,
     /// Cook-index aggregate stats (issue #576).
     pub cook_stats: Option<CookStats>,
     /// Compile-dispatch backend label. Always [`COMPILE_BACKEND_EMBEDDED`]
@@ -367,18 +364,6 @@ pub struct CookStats {
     /// Number of [`Request::CookLookup`] hits served by the running
     /// daemon since its last startup. Resets across daemon restarts.
     pub hits_this_session: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ZccacheDaemonLink {
-    pub binary_path: String,
-    pub cache_dir: String,
-    pub session_id: Option<String>,
-    pub source: String,
-    pub private_daemon: bool,
-    pub daemon_name: Option<String>,
-    pub owner_pid: Option<u32>,
-    pub private_env_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,13 +417,12 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v10_after_logs_history, {
-        // Bumped from 8 → 9 in soldr#1368 when Request::CompileStats was
-        // added so `soldr session end` can read the embedded zccache
-        // service's cumulative counters over IPC (replacing the removed
-        // managed `zccache session-end` subprocess). (8 came from #1286
-        // F1's Request::FlushCaches.)
-        assert_eq!(PROTOCOL_VERSION, 10);
+    crate::timed_test!(protocol_version_is_v11_after_link_zccache_removal, {
+        // Bumped from 10 → 11 in soldr#1467 when the dead LinkZccache
+        // request, ZccacheDaemonLink payload, and
+        // StatusInfo.linked_zccache field were deleted (their managed
+        // external zccache daemon went away in soldr#1368).
+        assert_eq!(PROTOCOL_VERSION, 11);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
@@ -454,7 +438,6 @@ mod tests {
             pid: 1,
             uptime_secs: 0,
             request_count: 0,
-            linked_zccache: None,
             cook_stats: None,
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
         };

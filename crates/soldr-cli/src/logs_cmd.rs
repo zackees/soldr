@@ -192,7 +192,7 @@ pub(crate) fn run_logs_show(launch_id: &str, json: bool) -> Result<i32, SoldrErr
 /// the JSON and human emit paths. Lets unit tests drive the shape
 /// without doing filesystem I/O for emission.
 pub(crate) fn build_log_paths_output(paths: &SoldrPaths) -> LogPathsOutput {
-    let entries = collect_log_path_entries(&paths.root, &paths.cache, &paths.bin);
+    let entries = collect_log_path_entries(paths);
     LogPathsOutput {
         schema_version: SCHEMA_VERSION,
         root: paths.root.clone(),
@@ -256,18 +256,22 @@ pub(crate) fn collect_logs_show_output_for_paths(
     })
 }
 
-/// Walk the known list of directories soldr writes runtime logs into
+/// Walk the known list of paths soldr writes runtime logs into
 /// and stamp each with an `exists` boolean based on the live
 /// filesystem. The fixed list mirrors the issue #820 repro's
-/// "non-obvious tour" and the directories `cache_lib` / `daemon` /
+/// "non-obvious tour" and the paths `cache_lib` / `daemon` /
 /// `gc` actually use.
-fn collect_log_path_entries(root: &Path, cache: &Path, bin: &Path) -> Vec<LogPathEntry> {
+fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
+    let root = &paths.root;
+    let cache = &paths.cache;
+    let bin = &paths.bin;
     let zccache = cache.join("zccache");
     let zccache_private = zccache.join("private");
     let zccache_default_logs = zccache.join("logs");
     let runtime = root.join("runtime");
     let runtime_daemon = runtime.join("soldr-daemon");
     let runtime_self = runtime.join("soldr-self");
+    let cargo_abort_log = paths.cargo_abort_log();
 
     let entries = [
         (
@@ -300,6 +304,12 @@ fn collect_log_path_entries(root: &Path, cache: &Path, bin: &Path) -> Vec<LogPat
             "Per-project private-daemon namespaces (`soldr-dev-<hash>/`). Each holds a \
              `logs/` subdir with `last-session.{log,jsonl,stats.json}` overwritten on each \
              soldr session. This is where the issue #820 repro's slow-build journal lived.",
+        ),
+        (
+            "soldr-cargo-abort-log",
+            cargo_abort_log,
+            "Durable JSONL record of cargo front-door aborts and timeouts. Includes the \
+             build-session id, elapsed time, cleanup counts, and cache-bypass recovery hints.",
         ),
         (
             "soldr-daemon-runtime",
@@ -735,6 +745,28 @@ mod tests {
                 .expect("soldr-daemon-runtime entry must exist");
             let expected = tmp.path().join("runtime").join("soldr-daemon");
             assert_eq!(entry.path, expected);
+        }
+    );
+
+    timed_test!(
+        build_log_paths_output_names_cargo_abort_log,
+        Duration::from_secs(5),
+        {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+            let output = build_log_paths_output(&paths);
+            let entry = output
+                .paths
+                .iter()
+                .find(|e| e.name == "soldr-cargo-abort-log")
+                .expect("soldr-cargo-abort-log entry must exist");
+            let expected = tmp.path().join("logs").join("cargo-aborts.jsonl");
+            assert_eq!(entry.path, expected);
+            assert!(
+                entry.description.contains("cargo front-door aborts"),
+                "description should mention cargo aborts, got: {}",
+                entry.description
+            );
         }
     );
 

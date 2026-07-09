@@ -5,7 +5,7 @@
 //! per-request handlers each call `open_db` on `state.redb`, so two
 //! handlers landing on different tokio worker threads can race and one
 //! of them silently fails — see issue #608 for the regression this
-//! mutex fixes (`db::set_linked_zccache` silently dropped writes when a
+//! mutex fixes (a daemon-side `db` write silently dropped its row when a
 //! concurrent `Status` request had the same file open via
 //! `cook_index::stats`).
 //!

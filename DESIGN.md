@@ -101,6 +101,29 @@ For wrapper mode:
 3. Delegate cache-enabled builds into the managed zccache binary
 4. Fall through to the real compiler when caching is disabled or unavailable
 
+### One daemon: embedded zccache (soldr#1467)
+
+soldr runs exactly one long-lived process: soldr-daemon. The zccache build
+cache is hosted *inside* it as an embedded service — wrapper invocations
+ferry each compile to the daemon over the `Request::Compile` IPC verb. No
+standalone `zccache-daemon` or `zccache-download-daemon` process is ever
+spawned, and nothing in soldr may reach the upstream lazy-spawn entry
+points (enforced by `tests/no_standalone_spawn_lint.rs`).
+
+The compiled-in `zccache` trampoline (`src/bin/zccache_embedded.rs`, what
+`soldr zccache <args>` execs) passes through only the daemon-free
+subcommands — `rust-plan`, `session-end`, `stop`, `cache-root` (plus
+`--help` / `--version`) — and hard-errors everything else, pointing at the
+embedded equivalents (`soldr status`, `soldr cache`, `soldr cargo <verb>`).
+As defense-in-depth it exports `ZCCACHE_NO_SPAWN=1` (upstream guard
+zackees/zccache#982) so even an allowlisted subcommand can never spawn.
+Embedded parity for the refused subcommands is tracked in
+zackees/zccache#905.
+
+`soldr doctor` reports leftovers from pre-embedded installs or direct
+zccache CLI use: running `zccache-daemon*` processes and stale per-launch
+copies under `<zccache-root>/*/runtime-binaries/`, with a cleanup hint.
+
 ---
 
 ## Architecture

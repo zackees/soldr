@@ -1,5 +1,5 @@
-//! Daemon-side redb tables for build session correlation and the
-//! linked-zccache runtime identity. Opens `~/.soldr/state.redb` per call
+//! Daemon-side redb tables for build session correlation. Opens
+//! `~/.soldr/state.redb` per call
 //! and drops the handle on return — redb refuses concurrent multi-
 //! process opens and the wrapper / GC tools open the same file directly.
 //!
@@ -7,7 +7,6 @@
 //! - `daemon_builds`        : u64 session_id → tagged-byte BuildRecord
 //! - `daemon_events`        : u64 event_id   → tagged-byte Event
 //! - `daemon_meta`          : `&str` key     → u64 (next event id, ...)
-//! - `daemon_zccache_link`  : `&str` key     → tagged-byte ZccacheDaemonLink
 //!
 //! ## Serialization (issue #603 cleanup of #580)
 //!
@@ -23,7 +22,7 @@
 
 use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
-use crate::daemon::protocol::{BuildRecord, WireDecodeError, ZccacheDaemonLink};
+use crate::daemon::protocol::{BuildRecord, WireDecodeError};
 use crate::daemon::wire::{self, prost_tagged_bytes, REDB_TAG_PROST};
 use prost::Message;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
@@ -40,10 +39,8 @@ fn prost_decode_err(e: prost::DecodeError) -> RegistryError {
 const BUILDS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_builds");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("daemon_events");
 const META: TableDefinition<&str, u64> = TableDefinition::new("daemon_meta");
-const ZCCACHE_LINK: TableDefinition<&str, &[u8]> = TableDefinition::new("daemon_zccache_link");
 
 const META_NEXT_EVENT_ID: &str = "next_event_id";
-const LINKED_ZCCACHE_KEY: &str = "active";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EventKind {
@@ -88,7 +85,6 @@ fn init_tables(db: &Database) -> Result<(), RegistryError> {
         let _ = txn.open_table(BUILDS)?;
         let _ = txn.open_table(EVENTS)?;
         let _ = txn.open_table(META)?;
-        let _ = txn.open_table(ZCCACHE_LINK)?;
     }
     txn.commit()?;
     Ok(())
@@ -106,7 +102,6 @@ fn init_tables(db: &Database) -> Result<(), RegistryError> {
 fn migrate_drop_non_prost_rows(db: &Database) -> Result<(), RegistryError> {
     let mut builds_drop: Vec<u64> = Vec::new();
     let mut events_drop: Vec<u64> = Vec::new();
-    let mut link_drop: Vec<String> = Vec::new();
     {
         let txn = db.begin_read()?;
         let builds = txn.open_table(BUILDS)?;
@@ -123,15 +118,8 @@ fn migrate_drop_non_prost_rows(db: &Database) -> Result<(), RegistryError> {
                 events_drop.push(k.value());
             }
         }
-        let links = txn.open_table(ZCCACHE_LINK)?;
-        for entry in links.iter()? {
-            let (k, v) = entry?;
-            if v.value().first().copied() != Some(REDB_TAG_PROST) {
-                link_drop.push(k.value().to_string());
-            }
-        }
     }
-    if builds_drop.is_empty() && events_drop.is_empty() && link_drop.is_empty() {
+    if builds_drop.is_empty() && events_drop.is_empty() {
         return Ok(());
     }
     let txn = db.begin_write()?;
@@ -144,20 +132,15 @@ fn migrate_drop_non_prost_rows(db: &Database) -> Result<(), RegistryError> {
         for id in &events_drop {
             events.remove(*id)?;
         }
-        let mut links = txn.open_table(ZCCACHE_LINK)?;
-        for key in &link_drop {
-            links.remove(key.as_str())?;
-        }
     }
     txn.commit()?;
-    let dropped = builds_drop.len() + events_drop.len() + link_drop.len();
+    let dropped = builds_drop.len() + events_drop.len();
     if dropped > 0 {
         eprintln!(
             "soldr-daemon: dropped {dropped} pre-#580 redb rows during one-time format migration \
-             (builds={}, events={}, links={})",
+             (builds={}, events={})",
             builds_drop.len(),
             events_drop.len(),
-            link_drop.len(),
         );
     }
     Ok(())
@@ -243,12 +226,6 @@ fn decode_event_row(bytes: &[u8]) -> Result<Event, RegistryError> {
     let rest = strip_prost_tag(bytes)?;
     let wire = wire::proto::WireEvent::decode(rest).map_err(prost_decode_err)?;
     wire::event_from_wire(wire).map_err(wire_err)
-}
-
-fn decode_link_row(bytes: &[u8]) -> Result<ZccacheDaemonLink, RegistryError> {
-    let rest = strip_prost_tag(bytes)?;
-    let wire = wire::proto::WireZccacheDaemonLink::decode(rest).map_err(prost_decode_err)?;
-    Ok(wire::zccache_link_from_wire(wire))
 }
 
 fn strip_prost_tag(bytes: &[u8]) -> Result<&[u8], RegistryError> {
@@ -369,41 +346,6 @@ pub fn aggregate_session(
         start_count
     };
     Ok((count, slowest_us, slowest_name))
-}
-
-/// Set the linked zccache runtime/cache/session identity. None clears it.
-pub fn set_linked_zccache(
-    db_path: &Path,
-    link: Option<&ZccacheDaemonLink>,
-) -> Result<(), RegistryError> {
-    let db = open_db(db_path)?;
-    init_tables(&db)?;
-    let txn = db.begin_write()?;
-    {
-        let mut table = txn.open_table(ZCCACHE_LINK)?;
-        match link {
-            Some(link) => {
-                let bytes = prost_tagged_bytes(&wire::zccache_link_to_wire(link));
-                table.insert(LINKED_ZCCACHE_KEY, bytes.as_slice())?;
-            }
-            None => {
-                table.remove(LINKED_ZCCACHE_KEY)?;
-            }
-        }
-    }
-    txn.commit()?;
-    Ok(())
-}
-
-pub fn get_linked_zccache(db_path: &Path) -> Result<Option<ZccacheDaemonLink>, RegistryError> {
-    let db = open_db(db_path)?;
-    init_tables(&db)?;
-    let txn = db.begin_read()?;
-    let table = txn.open_table(ZCCACHE_LINK)?;
-    let Some(row) = table.get(LINKED_ZCCACHE_KEY)? else {
-        return Ok(None);
-    };
-    decode_link_row(row.value()).map(Some)
 }
 
 /// Delete `daemon_events` rows older than `cutoff_ms`. Returns the
@@ -576,27 +518,6 @@ mod tests {
         assert_eq!(filtered[0].session_id, 30);
         let limited = list_builds(&path, 2, None).expect("limited");
         assert_eq!(limited.len(), 2);
-    }
-
-    #[test]
-    fn linked_zccache_identity_round_trips() {
-        let temp = TempDir::new().expect("tempdir");
-        let path = temp.path().join("state.redb");
-        let link = ZccacheDaemonLink {
-            binary_path: "/tmp/zccache".into(),
-            cache_dir: "/tmp/cache".into(),
-            session_id: Some("session-1".into()),
-            source: "managed".into(),
-            private_daemon: true,
-            daemon_name: Some("soldr-dev-test".into()),
-            owner_pid: Some(1234),
-            private_env_keys: vec!["ZCCACHE_PATH_REMAP".into()],
-        };
-        assert_eq!(get_linked_zccache(&path).expect("get"), None);
-        set_linked_zccache(&path, Some(&link)).expect("set");
-        assert_eq!(get_linked_zccache(&path).expect("get"), Some(link));
-        set_linked_zccache(&path, None).expect("clear");
-        assert_eq!(get_linked_zccache(&path).expect("get"), None);
     }
 
     #[test]

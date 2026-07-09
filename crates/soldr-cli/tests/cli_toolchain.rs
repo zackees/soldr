@@ -836,6 +836,7 @@ fn toolchain_ensure_no_channel_emits_empty_schema_v1_payload() {
 
 /// Platform-aware shim filename. Mirrors `toolchain_link::shim_path` so
 /// the integration tests don't have to depend on the bin-tree module.
+/// Shims are native multicall executables, so Windows gets `<tool>.exe`.
 fn expected_shim_path(dir: &Path, tool: &str) -> PathBuf {
     dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
 }
@@ -887,6 +888,10 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
     );
 
     let soldr_bin = expected_toolchain_link_source_soldr_bin();
+    // Shims are native multicall hardlinks/copies of the running soldr
+    // binary (issue #1302), so each shim must be byte-identical to the
+    // soldr binary - that's what guarantees subprocess exec lands back
+    // on this build.
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let shim = expected_shim_path(&shim_dir, tool);
         assert!(
@@ -1107,6 +1112,12 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
     let soldr_bin = expected_toolchain_link_source_soldr_bin();
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let path = expected_shim_path(&shim_dir, tool);
+        let body = fs::read(&path).expect("read shim");
+        assert_ne!(
+            body,
+            b"USER CUSTOM".to_vec(),
+            "--force must overwrite {tool} shim (still USER CUSTOM)"
+        );
         assert_native_shim_matches_soldr(&path, &soldr_bin, tool);
     }
 }

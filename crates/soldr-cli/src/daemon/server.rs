@@ -18,10 +18,9 @@ use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, Request, Response, StatusInfo, ZccacheDaemonLink, CHUNK_BYTES,
-    COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
+    BuildRecord, CookStats, Request, Response, StatusInfo, CHUNK_BYTES, COMPILE_BACKEND_EMBEDDED,
+    PROTOCOL_VERSION,
 };
-use crate::daemon::zccache_link;
 use crate::zccache_embedded::SoldrZccacheService;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -100,9 +99,6 @@ struct State {
     /// probes. The client-side liveness check only trusts the PID
     /// file after this endpoint response matches.
     daemon_identity: running_process::broker::backend_handle::DaemonProcess,
-    /// Linked zccache runtime kept in memory for fast `Status` replies;
-    /// also persisted to redb so a daemon restart can resume shutdown.
-    linked_zccache: std::sync::Mutex<Option<ZccacheDaemonLink>>,
     start_instant: Instant,
     request_count: AtomicU64,
     last_activity_ms: AtomicU64,
@@ -153,11 +149,6 @@ impl State {
             pid: std::process::id(),
             uptime_secs: self.start_instant.elapsed().as_secs(),
             request_count: self.request_count.load(Ordering::Relaxed),
-            linked_zccache: self
-                .linked_zccache
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
             cook_stats: Some(CookStats {
                 entries,
                 total_bytes,
@@ -417,8 +408,6 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // Initialize the cook_index_v1 table (issue #576). Idempotent and
     // non-fatal — old soldr versions ignore this table entirely.
     let _ = cook_index::ensure_initialized(&db_path);
-    // Resume any linked zccache identity persisted across daemon restarts.
-    let resumed_link = db::get_linked_zccache(&db_path).ok().flatten();
     let start_instant = Instant::now();
     let idle_timeout_secs = u32::try_from(opts.idle_timeout.as_secs()).ok();
     let daemon_identity = current_daemon_process(&paths, idle_timeout_secs)
@@ -441,7 +430,6 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         db_path,
         paths: paths.clone(),
         daemon_identity,
-        linked_zccache: std::sync::Mutex::new(resumed_link),
         start_instant,
         request_count: AtomicU64::new(0),
         last_activity_ms: AtomicU64::new(0),
@@ -513,14 +501,6 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // Issue #977 / #980 L1: drain the embedded zccache service before
     // any other shutdown work so pending writes flush through.
     shutdown_compile_service(&state).await;
-
-    // Phase 3: if the daemon's session linked a zccache daemon PID,
-    // stop it before our own final exit. Runs on both explicit shutdown
-    // and idle-timeout paths.
-    let paths_for_stop = paths.clone();
-    tokio::task::spawn_blocking(move || zccache_link::stop_linked_zccache(&paths_for_stop))
-        .await
-        .ok();
 
     // Best-effort: remove the endpoint file so a stale socket doesn't
     // confuse the next start. On Windows the named pipe is destroyed
@@ -801,20 +781,6 @@ where
             let rows =
                 db::list_slow_builds(&state.db_path, threshold_ms, limit).unwrap_or_default();
             let _ = write_frame_async(&mut stream, &Response::Builds(rows)).await;
-        }
-        Request::LinkZccache { link } => {
-            // Persist to redb so a restart can still stop the linked
-            // daemon, AND cache in-process for fast Status replies.
-            // Surface persistence errors on stderr — silently dropping
-            // the disk write is exactly what caused the #608 regression
-            // (`stop_linked_zccache` reads from disk on shutdown, not
-            // from this in-memory mutex).
-            if let Err(err) = db::set_linked_zccache(&state.db_path, Some(&link)) {
-                eprintln!("soldr-daemon: failed to persist linked zccache: {err}");
-            }
-            if let Ok(mut guard) = state.linked_zccache.lock() {
-                *guard = Some(link);
-            }
         }
         Request::CookLookup {
             recipe_hash,
