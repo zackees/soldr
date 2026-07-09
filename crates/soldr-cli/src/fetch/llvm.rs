@@ -3,18 +3,20 @@
 //! cannot rely on a stock `apt install clang lld llvm` being on the
 //! runner.
 //!
-//! Today the primary consumer is `cargo xwin build --target
-//! *-pc-windows-msvc`. cargo-xwin's link step shells out to `clang-cl`
-//! (the MSVC-compat clang driver), `lld-link` (LLD's PE/COFF linker),
-//! and `llvm-lib` (for static archive creation). On a stock GitHub
-//! Linux runner those binaries either don't exist or are mismatched
-//! versions across the toolchain — which previously forced the
-//! workflow to `apt install llvm clang lld` ahead of every job.
+//! The primary consumers are the blessed `soldr build --target
+//! *-pc-windows-msvc` path and the explicit `cargo xwin build`
+//! fallback. Both need `clang-cl` (the MSVC-compat clang driver),
+//! `lld-link` (LLD's PE/COFF linker), and `llvm-lib` (for static
+//! archive creation). On a stock GitHub Linux runner those binaries
+//! either don't exist or are mismatched versions across the toolchain
+//! — which previously forced the workflow to `apt install llvm clang
+//! lld` ahead of every job.
 //!
 //! Mirrors PR #841 (`ensure_zig`) and PR #862 (`ensure_apple_sdk`):
 //! soldr is the bootstrapper (CLAUDE.md "Pre-built first"), so every
-//! consumer of `soldr cargo xwin build --target *-pc-windows-msvc`
-//! Just Works on a stock device. Closes #855 (sub of meta #853).
+//! consumer of `soldr build --target *-pc-windows-msvc` or explicit
+//! `soldr cargo xwin build --target *-pc-windows-msvc` Just Works on a
+//! stock device. Closes #855 (sub of meta #853).
 //!
 //! Resolution order:
 //!   1. `SOLDR_LLVM_DIR` env var pointing at an existing directory →

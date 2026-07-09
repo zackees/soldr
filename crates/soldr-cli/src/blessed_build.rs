@@ -89,7 +89,8 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // Install the clang shim + set cc-rs env vars FIRST,
         // independent of xwin-cache state. The shim is what actually
         // fixes ring's hardcoded compiler override (build.rs:563);
-        // xwin-cache is only an optimization that lets cargo-xwin
+        // xwin-cache supplies the headers/libs used by the native
+        // blessed cargo path, and also lets the cargo-xwin fallback
         // short-circuit its live MSVC download. Even when the
         // catalogue row for a target arch isn't yet ingested (arm64
         // today, until soldr-toolchain PR #30's recipe gets dispatched

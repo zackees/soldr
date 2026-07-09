@@ -17,11 +17,10 @@
 //!   (soldr-toolchain PR #30 / soldr#1012 PR 3)
 //!
 //! Soldr's `Commands::Build` arm calls [`ensure_xwin_cache`] before
-//! invoking cargo for those targets; the bundle is materialized,
-//! `XWIN_CACHE_DIR` is exported so cargo-xwin (if anything still
-//! invokes it under the hood) finds the cache locally instead of
-//! triggering a fresh live download. cargo-xwin's documentation
-//! formalizes that env var as the consumer-facing entry point.
+//! invoking cargo for those targets; the bundle is materialized, and
+//! the blessed path injects matching include/linker flags so plain
+//! cargo can build against the managed SDK. `XWIN_CACHE_DIR` is still
+//! exported for explicit cargo-xwin fallback consumers.
 //!
 //! ## Pinned versions
 //!

@@ -185,10 +185,10 @@ pub(crate) fn is_cargo_builtin_verb(verb: &str) -> bool {
 }
 
 pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
-    // soldr#1012 PR 1: `build` is a soldr-native verb (the blessed-
-    // default surface). Today functionally aliases `soldr cargo build`;
-    // future #1012 PRs layer catalogue-driven sysroot prep on this arm.
-    // Stays paired with `Commands::Build` in the enum.
+    // soldr#1012: `build` is a soldr-native verb (the blessed-default
+    // surface). It layers catalogue-driven sysroot prep on top of the
+    // cargo front door and stays paired with `Commands::Build` in the
+    // enum.
     "build",
     "cargo",
     "cook",
@@ -238,20 +238,16 @@ pub(crate) enum Commands {
     /// Build the workspace via soldr's blessed cross-compile path
     ///
     /// `soldr build --target X` is the **blessed-default surface** for
-    /// builds. Today this is functionally an alias for `soldr cargo
-    /// build` — all arguments are forwarded to `cargo build` verbatim
-    /// through the same `cargo_front_door` pipeline, with the same
-    /// caching, target resolution, and managed-toolchain behavior. The
-    /// surface contract is the load-bearing part: callers asking for
-    /// `soldr build` get the soldr-blessed toolchain story, while
+    /// builds. It forwards to the same `cargo_front_door` pipeline as
+    /// `soldr cargo build`, but first prepares any supported target
+    /// sysroot and compiler/linker environment. For example,
+    /// `*-pc-windows-msvc` can use the managed xwin-cache with clang/lld
+    /// directly, without routing the default path through `cargo xwin`.
+    ///
+    /// The surface contract is the load-bearing part: callers asking
+    /// for `soldr build` get the soldr-blessed toolchain story, while
     /// callers asking for `soldr cargo build` get the explicit legacy
     /// passthrough.
-    ///
-    /// Per soldr#1010 / soldr#1012, future work layers catalogue-driven
-    /// sysroot prep + a clang/clang-cl shim on top of this verb so
-    /// cross-compile to `*-pc-windows-msvc` lands without `cargo xwin`
-    /// — but those land behind this same `Commands::Build` arm; today's
-    /// users get a stable surface that won't change.
     ///
     /// Internal sharing of dispatch with `Commands::Cargo` is
     /// intentional and expected; what matters is the user-facing
@@ -477,7 +473,7 @@ pub(crate) enum Commands {
     /// Prepare the cross-compile toolchain for a target triple
     #[command(
         name = "prepare",
-        long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure cargo-xwin + LLVM toolchain + extract the vendored xwin MSVC CRT cache from soldr-toolchain assets into ~/.cache/cargo-xwin/ so `cargo xwin build` skips the live Microsoft download.\n  x86_64-pc-windows-gnu: on Windows x64, ensure managed MinGW-w64 GCC plus GNU syslibs and export target-scoped Cargo/cc-rs env; on other hosts, fail visibly instead of falling back to cargo-zigbuild.\n  *-apple-darwin:     ensure the target-shaped Apple SDK and print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set). `soldr build --target` is the blessed Darwin cross-build path; prepare is for env export and legacy/external tooling.\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
+        long_about = "Uniform cross-compile toolchain bootstrap. Same invocation shape for every target — only `--target` varies. Internally dispatches based on the triple:\n\n  *-pc-windows-msvc:  ensure LLVM toolchain + extract the vendored xwin MSVC CRT cache from soldr-toolchain assets, then export target-scoped Cargo/cc-rs/linker env for the blessed `soldr build` path and explicit cargo-xwin fallback consumers.\n  x86_64-pc-windows-gnu: on Windows x64, ensure managed MinGW-w64 GCC plus GNU syslibs and export target-scoped Cargo/cc-rs env; on other hosts, fail visibly instead of falling back to cargo-zigbuild.\n  *-apple-darwin:     ensure the target-shaped Apple SDK and print `SDKROOT=<path>` (and append to $GITHUB_ENV when --github-env is set). `soldr build --target` is the blessed Darwin cross-build path; prepare is for env export and legacy/external tooling.\n  *-unknown-linux-*:  ensure cargo-zigbuild + zig (when triple != host).\n  All targets:        `rustup target add <triple>`.\n\nCollapses the per-step ad-hoc downloads in `cross-compile-all-targets.yml` into a single 'Preparing Cross Compile Toolchain' step. Designed to be wrapped by `.github/actions/prepare-cross-toolchain/action.yml`."
     )]
     Prepare {
         /// Target triple to prepare the toolchain for. Three shapes
