@@ -33,8 +33,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
+use crate::fetch::ensure_zig;
 use crate::fetch::xwin_cache::ensure_xwin_case_aliases;
-use crate::fetch::{ensure_apple_sdk, ensure_zig};
 use wait_timeout::ChildExt;
 
 const RUSTUP_TARGET_ADD_TIMEOUT_ENV_VAR: &str = "SOLDR_RUSTUP_TARGET_ADD_TIMEOUT_SECS";
@@ -220,18 +220,24 @@ pub async fn run(
             }
         }
         TargetOs::Darwin => {
-            // Darwin prepare exports the target-shaped Apple SDK for
-            // callers that need SDKROOT directly. Zig is still fetched
-            // here for explicit legacy/external cargo-zigbuild use; the
-            // blessed `soldr build` path injects clang/SDK env internally.
-            eprintln!("soldr prepare: dispatch=apple-sdk+legacy-zig (parallel)");
-            let (zig_dir, sdk) =
-                tokio::try_join!(ensure_zig(&paths), ensure_apple_sdk(&paths, Some(&target)))?;
+            // Darwin prepare must export the same target-scoped clang,
+            // SDK, linker, LLVM, and cmake/ninja env as `soldr build`.
+            // Deferred cook runs before the final build step in CI, so
+            // `SDKROOT` alone still lets cc-rs/ring probe `/usr/bin/cc`
+            // and fall back to the host Linux linker. Keep fetching zig
+            // for explicit legacy/external cargo-zigbuild callers, but
+            // make the GitHub env block the blessed-build env.
+            eprintln!("soldr prepare: dispatch=blessed-darwin+legacy-zig (parallel)");
+            let (zig_dir, prep) = tokio::try_join!(
+                ensure_zig(&paths),
+                crate::blessed_build::prepare(&paths, &target)
+            )?;
             eprintln!("soldr prepare: zig at {}", zig_dir.display());
-            eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
-            let sdk_str = sdk.to_string_lossy();
-            println!("SDKROOT={sdk_str}");
-            append_env(github_env_path, "SDKROOT", &sdk_str)?;
+            if let Some(sdk) = prep.sdkroot.as_ref() {
+                eprintln!("soldr prepare: Apple SDK at {}", sdk.display());
+                println!("SDKROOT={}", sdk.display());
+            }
+            apply_blessed_prep_env(github_env_path, &prep)?;
         }
         TargetOs::Linux => {
             // Linux cross-compile via zigbuild (musl always, gnu when
@@ -1099,6 +1105,86 @@ mod tests {
         assert!(body.contains("XWIN_CACHE_DIR="));
         assert!(body.contains("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS="));
         assert!(body.contains("PATH="));
+    });
+
+    crate::timed_test!(darwin_prepare_exports_blessed_env_for_deferred_cook, {
+        let _lock = ENV_LOCK.lock().expect("env lock");
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let soldr_root = tmp.path().join("soldr-root");
+        let github_env = tmp.path().join("github-env");
+        let sdk = tmp.path().join("MacOSX.fake.sdk");
+        let llvm_bin = tmp.path().join("llvm").join("bin");
+        let fake_zig_dir = tmp.path().join("zig-bin");
+        let fake_zig = fake_zig_dir.join(if cfg!(windows) { "zig.exe" } else { "zig" });
+        let fake_rustup = tmp.path().join(if cfg!(windows) {
+            "rustup.cmd"
+        } else {
+            "rustup"
+        });
+
+        std::fs::create_dir_all(&sdk).expect("mkdir sdk");
+        std::fs::create_dir_all(&llvm_bin).expect("mkdir llvm");
+        std::fs::create_dir_all(&fake_zig_dir).expect("mkdir zig");
+        std::fs::write(&fake_zig, b"fake zig").expect("write fake zig");
+
+        #[cfg(windows)]
+        std::fs::write(&fake_rustup, "@echo off\r\nexit /b 0\r\n").expect("write fake rustup");
+
+        #[cfg(not(windows))]
+        {
+            std::fs::write(&fake_rustup, "#!/bin/sh\nexit 0\n").expect("write fake rustup");
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake_rustup)
+                .expect("metadata")
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake_rustup, perms).expect("chmod rustup");
+        }
+
+        let _root = EnvVarGuard::set(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &soldr_root);
+        let _rustup = EnvVarGuard::set(crate::TEST_RUSTUP_BIN_ENV_VAR, &fake_rustup);
+        let _zig = EnvVarGuard::set("ZIG", &fake_zig);
+        let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
+        let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+        let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
+        let _legacy_sys =
+            EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
+        let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
+
+        tokio::runtime::Runtime::new()
+            .expect("runtime")
+            .block_on(run(
+                "x86_64-apple-darwin".to_string(),
+                Some(github_env.clone()),
+                None,
+                None,
+            ))
+            .expect("prepare darwin");
+
+        let body = std::fs::read_to_string(&github_env).expect("read github env");
+        assert!(body.contains("SDKROOT="), "SDKROOT missing: {body}");
+        assert!(
+            body.contains("CC_x86_64_apple_darwin=clang --target=x86_64-apple-darwin"),
+            "darwin CC env missing blessed clang target: {body}"
+        );
+        assert!(
+            body.contains("CFLAGS_x86_64_apple_darwin=--target=x86_64-apple-darwin")
+                && body.contains("-fuse-ld=lld"),
+            "darwin CFLAGS must route cc-rs probes through clang/lld: {body}"
+        );
+        assert!(
+            body.contains("CARGO_TARGET_X86_64_APPLE_DARWIN_LINKER=clang"),
+            "darwin linker env missing: {body}"
+        );
+        assert!(
+            body.contains("CARGO_TARGET_X86_64_APPLE_DARWIN_RUSTFLAGS=")
+                && body.contains("-mmacosx-version-min=11.0"),
+            "darwin rustflags missing SDK/link args: {body}"
+        );
+        assert!(
+            body.contains("PATH=") && body.contains(&llvm_bin.to_string_lossy().to_string()),
+            "managed LLVM bin dir must be exported on PATH: {body}"
+        );
     });
 
     crate::timed_test!(xwin_cache_case_aliases_mixed_case_sdk_files, {
