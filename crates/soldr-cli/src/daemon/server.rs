@@ -450,6 +450,16 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     })?;
     append_lifecycle_event(&paths, "spawn");
 
+    // soldr#1495: publish this daemon's version claim so a newer client
+    // can detect a stale daemon and displace it. Best-effort — a failure
+    // to write the manifest (e.g. permission-restricted root on an
+    // unusual host) must not stop the daemon; version-aware liveness then
+    // simply treats this daemon as version-unknown.
+    if let Err(err) = crate::daemon::broker_discovery::write_root_version_claim(&paths) {
+        tracing::warn!(target: "soldr::daemon", "failed to publish version claim: {err}");
+    }
+    let _ = crate::daemon::broker_discovery::publish_cache_manifest(&paths);
+
     let accept_state = state.clone();
     let paths_for_accept = paths.clone();
     let accept_handle = tokio::spawn(async move {
@@ -511,6 +521,9 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         let _ = std::fs::remove_file(daemon_sock_path(&paths));
     }
     remove_pid_file(&paths);
+    // soldr#1495: drop the version claim so a stale manifest can't outlive
+    // its writer and make the next client think a daemon is still live.
+    crate::daemon::broker_discovery::remove_root_version_claim(&paths);
     let event = if state.exit_via_idle.load(Ordering::Relaxed) {
         "died-idle"
     } else {

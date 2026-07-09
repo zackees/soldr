@@ -1285,6 +1285,18 @@ pub(crate) async fn run_cargo_front_door(
         None
     };
 
+    // soldr#1495: preflight the shared daemon once per managed build. If a
+    // stale-version daemon is holding the endpoint (an older release still
+    // serving compiles, or a protocol-mismatched daemon), displace it now
+    // so this build's first rustc wrapper spawns a current-version daemon
+    // instead of silently reusing stale embedded zccache or burning the
+    // retry budget. Cheap when the daemon is already current or absent.
+    if cache_enabled {
+        if let Ok(paths) = crate::core::SoldrPaths::new() {
+            crate::daemon::lifecycle::preflight_displace_stale_daemon(&paths);
+        }
+    }
+
     // Strip soldr-private auto target-GC opt-out flags before any other
     // arg-vector handling so downstream code (trampolines, cargo spawn)
     // never sees them. The env-var fallback is unioned in below.
