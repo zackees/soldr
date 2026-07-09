@@ -267,6 +267,7 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
         in workflow
     )
     assert "soldr prepare --target \"${{ inputs.target }}\" --github-env \"$GITHUB_ENV\"" in workflow
+    assert "inputs.target == 'x86_64-pc-windows-msvc'" in workflow
     assert "if [[ \"$target\" == *-pc-windows-msvc ]]; then" in workflow
     assert "profile=\"ci-release\"" in workflow
     assert "soldr cargo clean -p soldr-cli --target \"$target\" --profile \"$profile\"" in workflow
