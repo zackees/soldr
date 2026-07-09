@@ -255,7 +255,10 @@ jobs:
           # ci-release/ deps for every subsequent run. soldr#1248 → v5
           # forces the same refresh for target/<triple>/ci-nextest after
           # the nextest-archive lanes moved to a shared CI test profile.
-          shared-key: cross-build-${{ inputs.target }}-v5
+          # soldr#1479 → v6 forces a fresh save after the CI-only
+          # profiles lowered opt-levels; rust-cache's meta-hash does
+          # not include profile setting changes.
+          shared-key: cross-build-${{ inputs.target }}-v6
 
       # Bootstrap soldr from the current checkout. Darwin uses it to
       # drive `soldr prepare --target ... --github-env`. Windows MSVC
