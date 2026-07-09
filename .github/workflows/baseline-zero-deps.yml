@@ -222,6 +222,11 @@ jobs:
     needs: build-soldr
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     runs-on: ubuntu-latest
+    env:
+      BASELINE_NATIVE_TIMEOUT: 10m
+      BASELINE_DARWIN_TIMEOUT: 15m
+      BASELINE_XWIN_TIMEOUT: 25m
+      SOLDR_BASELINE_COMPILE_REPLY_TIMEOUT_SECS: "180"
     strategy:
       fail-fast: false
       matrix:
@@ -282,8 +287,10 @@ jobs:
           # a zero-deps image without requiring a system linker. soldr must
           # fetch its own rustc/cargo and its own zccache.
           set +e
+          timeout --foreground "$BASELINE_NATIVE_TIMEOUT" \
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            --env SOLDR_COMPILE_REPLY_TIMEOUT_SECS="$SOLDR_BASELINE_COMPILE_REPLY_TIMEOUT_SECS" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
               mkdir -p /tmp/hello/src
@@ -304,7 +311,11 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "::error title=Exercise 2 failed (${{ matrix.libc }})::native cargo check from zero failed (exit $status)"
+            if [ "$status" -eq 124 ]; then
+              echo "::error title=Exercise 2 timed out (${{ matrix.libc }})::native cargo check exceeded $BASELINE_NATIVE_TIMEOUT"
+            else
+              echo "::error title=Exercise 2 failed (${{ matrix.libc }})::native cargo check from zero failed (exit $status)"
+            fi
             echo "--- captured stderr ---"
             cat exercise2.stderr || true
             echo "--- captured stdout ---"
@@ -320,8 +331,10 @@ jobs:
           # zig auto-fetch (#841) still work for the explicit legacy
           # cargo-zigbuild path from a zero-deps image.
           set +e
+          timeout --foreground "$BASELINE_DARWIN_TIMEOUT" \
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            --env SOLDR_COMPILE_REPLY_TIMEOUT_SECS="$SOLDR_BASELINE_COMPILE_REPLY_TIMEOUT_SECS" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
               mkdir -p /tmp/hellomac/src
@@ -344,7 +357,11 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "::error title=Exercise 3 failed (${{ matrix.libc }})::cargo zigbuild aarch64-apple-darwin failed (exit $status)"
+            if [ "$status" -eq 124 ]; then
+              echo "::error title=Exercise 3 timed out (${{ matrix.libc }})::cargo zigbuild aarch64-apple-darwin exceeded $BASELINE_DARWIN_TIMEOUT"
+            else
+              echo "::error title=Exercise 3 failed (${{ matrix.libc }})::cargo zigbuild aarch64-apple-darwin failed (exit $status)"
+            fi
             echo "--- captured stderr ---"
             cat exercise3.stderr || true
             echo "--- captured stdout ---"
@@ -362,8 +379,10 @@ jobs:
           # The managed LLVM archive is currently glibc-linked; musl
           # remains covered by the native and Apple/zigbuild exercises.
           set +e
+          timeout --foreground "$BASELINE_XWIN_TIMEOUT" \
           docker run --rm \
             --env SOLDR_GITHUB_TOKEN="${{ github.token }}" \
+            --env SOLDR_COMPILE_REPLY_TIMEOUT_SECS="$SOLDR_BASELINE_COMPILE_REPLY_TIMEOUT_SECS" \
             "${{ matrix.image_tag }}" \
             bash -eux -c '
               mkdir -p /tmp/hellowin/src
@@ -386,7 +405,11 @@ jobs:
           status=$?
           set -e
           if [ "$status" -ne 0 ]; then
-            echo "::error title=Exercise 4 failed (${{ matrix.libc }})::cargo xwin build x86_64-pc-windows-msvc failed (exit $status)"
+            if [ "$status" -eq 124 ]; then
+              echo "::error title=Exercise 4 timed out (${{ matrix.libc }})::cargo xwin build x86_64-pc-windows-msvc exceeded $BASELINE_XWIN_TIMEOUT"
+            else
+              echo "::error title=Exercise 4 failed (${{ matrix.libc }})::cargo xwin build x86_64-pc-windows-msvc failed (exit $status)"
+            fi
             echo "--- captured stderr ---"
             cat exercise4.stderr || true
             echo "--- captured stdout ---"
@@ -403,6 +426,8 @@ jobs:
             echo
             echo "- Base image: ${{ matrix.libc == 'glibc' && 'debian:bookworm-slim' || 'alpine:3.20' }}"
             echo "- Pre-installed build tools: **none**"
+            echo "- Compile reply timeout: ${SOLDR_BASELINE_COMPILE_REPLY_TIMEOUT_SECS}s"
+            echo "- Exercise watchdogs: native ${BASELINE_NATIVE_TIMEOUT}, darwin ${BASELINE_DARWIN_TIMEOUT}, xwin ${BASELINE_XWIN_TIMEOUT}"
             echo "- Exercises:"
             echo "  - soldr version"
             echo "  - soldr cargo check --target ${{ matrix.native_target }}"
