@@ -87,8 +87,10 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     // ----------------------------- Windows MSVC ------------------------------
     if should_prepare_xwin_for_target(target_triple) {
         // Install the clang shim + set cc-rs env vars FIRST,
-        // independent of xwin-cache state. The shim is what actually
-        // fixes ring's hardcoded compiler override (build.rs:563);
+        // independent of xwin-cache state. `CC_<target>=clang-cl` is
+        // what fixes cc-rs/ring MSVC `/imsvc...` flag handling; the
+        // shim remains on PATH for literal `clang --target=...-msvc`
+        // invocations that bypass CC/CXX env:
         // xwin-cache supplies the headers/libs used by the native
         // blessed cargo path, and also lets the cargo-xwin fallback
         // short-circuit its live MSVC download. Even when the
@@ -107,16 +109,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // linker picks below resolve without a host `apt install llvm`.
         let _ = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
-        prep.env
-            .push((format!("CC_{target_u}"), "clang".to_string()));
-        prep.env
-            .push((format!("CXX_{target_u}"), "clang".to_string()));
-        prep.env
-            .push((format!("AR_{target_u}"), "llvm-lib".to_string()));
-        prep.env.push((
-            format!("CARGO_TARGET_{target_u_upper}_LINKER"),
-            "lld-link".to_string(),
-        ));
+        add_msvc_tool_env(&mut prep, &target_u, &target_u_upper);
 
         // Now try to materialize xwin-cache too. If the catalogue row
         // for this arch is ingested, we set XWIN_CACHE_DIR so cargo-
@@ -148,9 +141,8 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // Native cflags + rustflags injection (soldr#1036).
                 // cc-rs reads `CFLAGS_<target>` / `CXXFLAGS_<target>`
                 // and forwards them to the compiler invocation. The
-                // The multicall clang shim routes `clang` → `clang-cl` for
-                // *-pc-windows-msvc, and clang-cl natively accepts
-                // `/imsvc <path>` MSVC-style include flags.
+                // `CC_<target>=clang-cl` env above makes clang-cl parse
+                // `/imsvc<path>` MSVC-style include flags correctly.
                 let cflags = xwin_msvc_cflags(&cache_dir);
                 if !cflags.is_empty() {
                     prep.env
@@ -324,6 +316,19 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
     inject_cmake_tooling(paths, &mut prep).await;
 
     Ok(prep)
+}
+
+fn add_msvc_tool_env(prep: &mut BlessedPrep, target_u: &str, target_u_upper: &str) {
+    prep.env
+        .push((format!("CC_{target_u}"), "clang-cl".to_string()));
+    prep.env
+        .push((format!("CXX_{target_u}"), "clang-cl".to_string()));
+    prep.env
+        .push((format!("AR_{target_u}"), "llvm-lib".to_string()));
+    prep.env.push((
+        format!("CARGO_TARGET_{target_u_upper}_LINKER"),
+        "lld-link".to_string(),
+    ));
 }
 
 fn add_mingw_w64_gcc_env(
@@ -1007,6 +1012,29 @@ mod tests {
         assert!(prep.sdkroot.is_none());
         assert!(prep.env.is_empty());
         assert!(prep.cargo_args.is_empty());
+    });
+
+    crate::timed_test!(msvc_tool_env_uses_clang_cl_for_cc_rs, {
+        let mut prep = BlessedPrep::default();
+
+        add_msvc_tool_env(
+            &mut prep,
+            "x86_64_pc_windows_msvc",
+            "X86_64_PC_WINDOWS_MSVC",
+        );
+
+        let env: std::collections::HashMap<&str, &str> = prep
+            .env
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        assert_eq!(env.get("CC_x86_64_pc_windows_msvc"), Some(&"clang-cl"));
+        assert_eq!(env.get("CXX_x86_64_pc_windows_msvc"), Some(&"clang-cl"));
+        assert_eq!(env.get("AR_x86_64_pc_windows_msvc"), Some(&"llvm-lib"));
+        assert_eq!(
+            env.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"),
+            Some(&"lld-link")
+        );
     });
 
     crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
