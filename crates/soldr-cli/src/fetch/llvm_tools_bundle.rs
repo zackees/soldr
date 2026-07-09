@@ -2,8 +2,9 @@
 //! #942).
 //!
 //! Distinct from [`crate::fetch::llvm`]: that module pulls the existing
-//! `zackees/clang-tool-chain-bins` LLVM build (the xwin-lane bootstrap
-//! for `cargo xwin build --target *-pc-windows-msvc`). This module
+//! `zackees/clang-tool-chain-bins` LLVM build (the MSVC cross-compile
+//! bootstrap for blessed `soldr build` and explicit cargo-xwin
+//! fallback). This module
 //! consumes the **new** `recipes/llvm-tools-linux-x64/` catalogue row
 //! that bundles the same upstream LLVM 18.1.8 release archive
 //! whitelist-extracted to just the binutils we actually need:
@@ -16,9 +17,10 @@
 //! ```
 //!
 //! Why two LLVM modules?
-//!   * `llvm.rs` — xwin-specific, version-pinned at 21.1.5, ships pre-
-//!     compressed `.tar.zst` per-host from `clang-tool-chain-bins`. It
-//!     pre-dates the `soldr-toolchain` Phase A pipeline.
+//!   * `llvm.rs` — MSVC-specific, version-pinned at 21.1.5, ships
+//!     pre-compressed `.tar.zst` per-host from
+//!     `clang-tool-chain-bins`. It pre-dates the `soldr-toolchain`
+//!     Phase A pipeline.
 //!   * `llvm_tools_bundle.rs` (this file) — the soldr#997 Phase A
 //!     bundle. Comes from soldr-toolchain's forge-built recipes; one
 //!     row per cross-compile-driver host (today: linux-x64 only;

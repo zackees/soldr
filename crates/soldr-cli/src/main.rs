@@ -319,7 +319,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // Targets with no prep need (linux musl, linux gnu) get
             // a no-op prep + the standard cargo front door behavior.
             // `SOLDR_USE_LEGACY_XWIN=1` opts out of the blessed path
-            // and falls through to the unchanged cargo-xwin flow.
+            // and falls through to the explicit cargo-xwin flow.
             let mut full_args = Vec::with_capacity(args.len() + 1);
             full_args.push("build".to_string());
             full_args.extend(args);
@@ -345,17 +345,21 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     prepend_to_path_env(dir);
                 }
 
-                // soldr#882/#1081: auto-dispatch cargo subcommand based
-                // on target. *-pc-windows-msvc routes through `cargo
-                // xwin build`; linux musl and cross-arch linux gnu use
-                // `cargo zigbuild`. Darwin stays on plain cargo build
-                // after blessed_build injects the target-shaped Apple
-                // SDK/clang env, unless SOLDR_USE_LEGACY_ZIGBUILD=1 is
-                // set for diagnostic comparison. XWIN can similarly opt
-                // out via SOLDR_USE_LEGACY_XWIN=1. cfg-gated to linux
-                // hosts — native msvc/darwin host builds keep using
-                // plain cargo build.
-                if let Some(subcmd) = pick_cross_subcommand(&target_triple) {
+                // soldr#882/#1081/#1248: auto-dispatch cargo subcommand
+                // based on target. Windows MSVC stays on plain cargo
+                // build when blessed_build materialized the xwin-cache
+                // and injected clang/lld/MSVC SDK env; otherwise it
+                // falls back to cargo-xwin. Linux musl and cross-arch
+                // linux gnu use cargo-zigbuild. Darwin stays on plain
+                // cargo build after blessed_build injects the target-
+                // shaped Apple SDK/clang env, unless
+                // SOLDR_USE_LEGACY_ZIGBUILD=1 is set for diagnostic
+                // comparison. cfg-gated to linux hosts — native
+                // msvc/darwin host builds keep using plain cargo build.
+                let msvc_blessed_cache_ready = prep.xwin_cache_dir.is_some();
+                if let Some(subcmd) =
+                    pick_cross_subcommand(&target_triple, msvc_blessed_cache_ready)
+                {
                     full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
                 }
                 full_args = insert_cargo_config_args(full_args, &cargo_args);

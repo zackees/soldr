@@ -253,9 +253,11 @@ shells out to `clang` directly. On `aarch64-pc-windows-msvc` plain
 `clang-cl` with the same argv.
 
 **Use the blessed surface**: `soldr build --target
-aarch64-pc-windows-msvc` (soldr#1012, #882). It auto-dispatches to
-cargo-xwin AND installs the shim at `~/.soldr/bin/clang-shim/` ahead
-of system clang on `PATH`.
+aarch64-pc-windows-msvc` (soldr#1012, #882). It installs the shim at
+`~/.soldr/bin/clang-shim/` ahead of system clang on `PATH` and uses
+the managed MSVC SDK cache when that target's cache row is available.
+Until the arm64 cache row is ingested, `soldr build` falls back to the
+cargo-xwin path after installing the shim.
 
 ### Direct cargo-xwin path is unsupported
 

@@ -76,9 +76,13 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 /// host builds keep using plain `cargo build`.
 ///
 /// Returns:
-/// * `Some("xwin")` for `*-pc-windows-msvc` (unless `SOLDR_USE_LEGACY_XWIN`
-///   is set in env — escape hatch for callers who want the plain
-///   `cargo build` fallback)
+/// * `None` for `*-pc-windows-msvc` when blessed prep produced an
+///   xwin-cache, so `soldr build` uses plain `cargo build` with the
+///   prepared clang/lld/MSVC SDK env.
+/// * `Some("xwin")` for `*-pc-windows-msvc` when
+///   `SOLDR_USE_LEGACY_XWIN` is set, or when blessed prep could not
+///   produce an xwin-cache (for example, targets whose managed cache
+///   row is not ingested yet).
 /// * `None` for `*-apple-darwin` by default; `Some("zigbuild")` only
 ///   when `SOLDR_USE_LEGACY_ZIGBUILD` is set for diagnostic comparison.
 /// * `None` for `x86_64-pc-windows-gnu`; that target stays on the
@@ -88,7 +92,10 @@ pub(crate) fn extract_target_from_args(args: &[String]) -> Option<String> {
 ///   `*-unknown-linux-gnu` (cross from x86_64), unless
 ///   `SOLDR_USE_LEGACY_ZIGBUILD` is set.
 /// * `None` for everything else
-pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str> {
+pub(crate) fn pick_cross_subcommand(
+    target_triple: &str,
+    msvc_blessed_cache_ready: bool,
+) -> Option<&'static str> {
     if !cfg!(target_os = "linux") {
         return None;
     }
@@ -101,7 +108,11 @@ pub(crate) fn pick_cross_subcommand(target_triple: &str) -> Option<&'static str>
         .unwrap_or(false);
 
     if target_triple.ends_with("-pc-windows-msvc") {
-        return if legacy_xwin { None } else { Some("xwin") };
+        return if legacy_xwin || !msvc_blessed_cache_ready {
+            Some("xwin")
+        } else {
+            None
+        };
     }
     // soldr#1081 follow-up: `*-apple-darwin` no longer routes through
     // cargo-zigbuild. The blessed-build apple-darwin arm in
