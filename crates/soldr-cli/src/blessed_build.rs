@@ -244,11 +244,12 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // through lld which knows Mach-O. The `--target=` flag
                 // is also needed in CFLAGS so the compiler test
                 // actually targets darwin (not the linux host).
-                let lld_flag = if managed_llvm_available {
-                    " -fuse-ld=lld"
-                } else {
-                    ""
-                };
+                // If managed LLVM cannot be fetched on Linux, still ask
+                // host clang for LLD. GitHub's cross lane installs lld,
+                // and this is strictly better than falling back to GNU
+                // ld, which cannot link Mach-O at all.
+                let use_lld_linker = darwin_should_use_lld(managed_llvm_available);
+                let lld_flag = if use_lld_linker { " -fuse-ld=lld" } else { "" };
                 let cflags = format!(
                     "--target={clang_arch_target} -isysroot {sdk_str} \
                      -mmacosx-version-min=11.0{lld_flag}"
@@ -263,10 +264,10 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                      -C link-arg={sdk_str} \
                      -C link-arg=-mmacosx-version-min=11.0"
                 );
-                if managed_llvm_available {
+                if use_lld_linker {
                     rustflags.push_str(" -C link-arg=-fuse-ld=lld");
                 }
-                let (ar_tool, ranlib_tool) = if managed_llvm_available {
+                let (ar_tool, ranlib_tool) = if use_lld_linker {
                     ("llvm-ar", "llvm-ranlib")
                 } else {
                     ("ar", "ranlib")
@@ -329,6 +330,10 @@ fn add_msvc_tool_env(prep: &mut BlessedPrep, target_u: &str, target_u_upper: &st
         format!("CARGO_TARGET_{target_u_upper}_LINKER"),
         "lld-link".to_string(),
     ));
+}
+
+fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
+    managed_llvm_available || cfg!(target_os = "linux")
 }
 
 fn add_mingw_w64_gcc_env(
@@ -1035,6 +1040,25 @@ mod tests {
             env.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"),
             Some(&"lld-link")
         );
+    });
+
+    crate::timed_test!(darwin_lld_policy_uses_host_lld_on_linux_fallback, {
+        assert!(
+            darwin_should_use_lld(true),
+            "managed LLVM should always enable LLD for Darwin cross-links",
+        );
+
+        if cfg!(target_os = "linux") {
+            assert!(
+                darwin_should_use_lld(false),
+                "Linux Darwin fallback must prefer LLD over GNU ld for Mach-O links",
+            );
+        } else {
+            assert!(
+                !darwin_should_use_lld(false),
+                "non-Linux fallback keeps platform clang behavior unless managed LLVM is present",
+            );
+        }
     });
 
     crate::timed_test!(mingw_w64_gcc_env_injects_target_scoped_tools, {
