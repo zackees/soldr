@@ -1385,7 +1385,23 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 println!("soldr-daemon: not running");
                 Ok(())
             }
-            Err(e) => Err(SoldrError::Other(format!("daemon stop failed: {e:?}"))),
+            Err(e) => {
+                // soldr#1495: the wire `Shutdown` verb failed — most
+                // commonly because the running daemon speaks a different
+                // `PROTOCOL_VERSION` and rejected our frame. Fall back to
+                // a verified-PID signal so a newer CLI can always evict an
+                // older-protocol daemon instead of dead-ending here.
+                use crate::daemon::lifecycle::{
+                    displace_stale_daemon, stale_daemon_occupies_endpoint,
+                };
+                if stale_daemon_occupies_endpoint(&paths).is_some() && displace_stale_daemon(&paths)
+                {
+                    println!("soldr-daemon: stopped (wire shutdown unavailable; signalled by PID)");
+                    Ok(())
+                } else {
+                    Err(SoldrError::Other(format!("daemon stop failed: {e:?}")))
+                }
+            }
         },
         DaemonSubcommand::Status { json } => match client::status(&sock) {
             Ok(info) => {
@@ -1393,10 +1409,19 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 // daemons would emit `cook_stats: None` — render as
                 // zero so the surface is stable.
                 let cook = info.cook_stats_or_zero();
+                // soldr#1495: surface the running daemon's claimed package
+                // version and whether it matches this CLI, so a
+                // version-shadow is visible in `soldr daemon status`.
+                let claimed_pkg =
+                    crate::daemon::broker_discovery::read_claimed_service_version(&paths);
+                let pkg_matches = claimed_pkg.as_deref() == Some(env!("CARGO_PKG_VERSION"));
                 if json {
                     let payload = serde_json::json!({
                         "running": true,
                         "version": info.version,
+                        "pkg_version": claimed_pkg,
+                        "pkg_version_matches_cli": pkg_matches,
+                        "cli_pkg_version": env!("CARGO_PKG_VERSION"),
                         "pid": info.pid,
                         "uptime_secs": info.uptime_secs,
                         "request_count": info.request_count,
@@ -1409,8 +1434,18 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
                 } else {
                     println!(
-                        "soldr-daemon: pid={} uptime={}s requests={} version={}",
+                        "soldr-daemon: pid={} uptime={}s requests={} protocol={}",
                         info.pid, info.uptime_secs, info.request_count, info.version
+                    );
+                    println!(
+                        "  pkg version: {} (this cli: {}){}",
+                        claimed_pkg.as_deref().unwrap_or("unknown"),
+                        env!("CARGO_PKG_VERSION"),
+                        if pkg_matches {
+                            ""
+                        } else {
+                            "  [MISMATCH — stale daemon]"
+                        },
                     );
                     println!(
                         "  cook: entries={} total_bytes={} hits_this_session={}",

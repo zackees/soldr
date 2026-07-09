@@ -93,6 +93,193 @@ fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Opt
     }
 }
 
+/// Env escape hatch (soldr#1495): set `SOLDR_DAEMON_DISPLACE=off` (or
+/// `0`/`false`/`no`) to disable displacement of a stale-version daemon
+/// and revert to the pre-#1495 "first daemon wins" behavior.
+pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
+
+pub(crate) fn displacement_enabled() -> bool {
+    match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
+        Ok(v) => {
+            let v = v.trim();
+            !(v.eq_ignore_ascii_case("off")
+                || v == "0"
+                || v.eq_ignore_ascii_case("false")
+                || v.eq_ignore_ascii_case("no"))
+        }
+        Err(_) => true,
+    }
+}
+
+/// True when the running daemon's published version claim matches this
+/// build's `CARGO_PKG_VERSION`. A missing claim (a pre-#1495 daemon that
+/// never wrote a manifest) is treated as a mismatch — version-unknown is
+/// stale — so a newer client always converges to a daemon it can name.
+pub(crate) fn current_version_claim_matches(paths: &SoldrPaths) -> bool {
+    crate::daemon::broker_discovery::read_claimed_service_version(paths)
+        .is_some_and(|claimed| claimed == env!("CARGO_PKG_VERSION"))
+}
+
+/// Version-aware liveness: the daemon is live (passes the existing PID +
+/// nonce/IPC probe, which already rejects a different `PROTOCOL_VERSION`)
+/// **and** its package-version claim matches this build. Returns the PID
+/// only when both hold. Used by the spawn path and the managed-build
+/// preflight to decide whether the running daemon is the one this client
+/// wants, or a stale version to displace.
+pub fn is_live_current_version(paths: &SoldrPaths) -> Option<u32> {
+    let pid = is_live(paths)?;
+    current_version_claim_matches(paths).then_some(pid)
+}
+
+/// Version-blind occupancy check: is the singleton endpoint held by a
+/// live soldr daemon process at all? Accepts both the sibling
+/// `soldr-daemon` binary and the via-self `soldr` form (CI / slim
+/// deployments spawn `soldr daemon start`). Returns its PID. This is the
+/// signal that a stale daemon must be *displaced* before a new one can
+/// bind — distinct from `is_live` (which additionally requires the IPC
+/// probe to succeed, and so misses a protocol-mismatched daemon that is
+/// nonetheless holding the socket).
+pub fn stale_daemon_occupies_endpoint(paths: &SoldrPaths) -> Option<u32> {
+    let (pid, _exe) = read_pid_file(paths)?;
+    pid_is_soldr_daemon(pid).then_some(pid)
+}
+
+/// PID-recycling-safe identity gate for a signalled kill: the PID must be
+/// alive and its running image must look like one of soldr's own daemon
+/// process names. A recycled PID running an unrelated program fails the
+/// stem check, so we never signal a stranger.
+fn pid_is_soldr_daemon(pid: u32) -> bool {
+    pid_is_alive(pid)
+        && (pid_exe_stem_matches(
+            pid,
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+        ) || pid_exe_stem_matches(pid, "soldr"))
+}
+
+/// Displace the stale daemon currently holding the endpoint so a
+/// current-version daemon can take over (soldr#1495). Graceful first:
+/// ask it to shut down over the wire (works for a same-`PROTOCOL_VERSION`
+/// stale release). If that does not evict it within the budget, fall back
+/// to a verified-PID signal (SIGTERM→SIGKILL / TerminateProcess) — always
+/// re-verifying the PID is alive and still a soldr daemon before
+/// signalling. On success the stale PID file, socket, and version claim
+/// are removed so the successor can bind cleanly. Returns whether the
+/// endpoint was freed.
+pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
+    let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
+        // Nothing live is holding the endpoint; clear any stale files.
+        cleanup_after_displacement(paths);
+        return true;
+    };
+
+    append_lifecycle_event(paths, "displace-stale-requested");
+
+    // 1) Graceful wire shutdown.
+    let sock = crate::daemon::client::default_sock_path(paths);
+    let _ = crate::daemon::client::shutdown(&sock);
+    if wait_for_pid_exit(pid, Duration::from_secs(5)) {
+        cleanup_after_displacement(paths);
+        return true;
+    }
+
+    // 2) Verified-PID kill fallback (protocol-mismatched daemon can't
+    //    answer the wire Shutdown verb).
+    if pid_is_soldr_daemon(pid) {
+        append_lifecycle_event(paths, "displace-kill-fallback");
+        terminate_pid(pid);
+        wait_for_pid_exit(pid, Duration::from_secs(5));
+    }
+
+    let freed = !pid_is_alive(pid);
+    if freed {
+        cleanup_after_displacement(paths);
+    }
+    freed
+}
+
+/// One-shot preflight for the managed-build front door (soldr#1495).
+/// Mode 1 — a same-`PROTOCOL_VERSION` older release serving our compiles
+/// — never fails the hot path, so `try_spawn_detached`'s displacement is
+/// never reached during a build. Run this once at `soldr cargo` startup:
+/// if a stale-version daemon holds the endpoint, displace it here so the
+/// build's first wrapper call spawns a current-version daemon. A no-op
+/// when displacement is disabled or the running daemon is already current.
+pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
+    if !displacement_enabled() {
+        return;
+    }
+    if is_live_current_version(paths).is_some() {
+        return;
+    }
+    if stale_daemon_occupies_endpoint(paths).is_some() {
+        displace_stale_daemon(paths);
+    }
+}
+
+fn cleanup_after_displacement(paths: &SoldrPaths) {
+    remove_pid_file(paths);
+    crate::daemon::broker_discovery::remove_root_version_claim(paths);
+    // Unix domain socket file must be unlinked before a new daemon can
+    // bind the same path. On Windows the named pipe has no filesystem
+    // artifact, so this is a no-op there.
+    #[cfg(unix)]
+    {
+        let _ = fs::remove_file(crate::cache_lib::daemon_sock_path(paths));
+    }
+}
+
+fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if !pid_is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    !pid_is_alive(pid)
+}
+
+#[cfg(unix)]
+fn terminate_pid(pid: u32) {
+    // SAFETY: kill(2) with SIGTERM then (if needed) SIGKILL. The PID was
+    // just verified alive + soldr-daemon by the caller.
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGTERM);
+    }
+    if wait_for_pid_exit(pid, Duration::from_secs(3)) {
+        return;
+    }
+    unsafe {
+        libc::kill(pid as libc::pid_t, libc::SIGKILL);
+    }
+}
+
+#[cfg(windows)]
+#[allow(non_snake_case)]
+fn terminate_pid(pid: u32) {
+    use std::os::windows::raw::HANDLE;
+    type DWORD = u32;
+    type BOOL = i32;
+    const PROCESS_TERMINATE: DWORD = 0x0001;
+    extern "system" {
+        fn OpenProcess(desired_access: DWORD, inherit: BOOL, pid: DWORD) -> HANDLE;
+        fn TerminateProcess(h: HANDLE, exit_code: DWORD) -> BOOL;
+        fn CloseHandle(h: HANDLE) -> BOOL;
+    }
+    // SAFETY: OpenProcess for a verified soldr-daemon PID; TerminateProcess
+    // is the Windows equivalent of SIGKILL (the daemon holds no
+    // filesystem lock we need graceful about — cleanup_after_displacement
+    // removes the pid file + version claim).
+    let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    if h.is_null() {
+        return;
+    }
+    unsafe {
+        TerminateProcess(h, 1);
+        CloseHandle(h);
+    }
+}
+
 /// Write the PID file for the running daemon. Overwrites any stale
 /// content. Caller is responsible for ensuring `soldr_daemon_dir`
 /// exists.
@@ -181,11 +368,18 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     let paths = SoldrPaths::new().ok();
     let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
     // Re-check liveness while holding the lock (or after failing to
-    // acquire it): if another wrapper already brought the daemon up
-    // we can short-circuit before doing relocate + spawn.
+    // acquire it): if a daemon of THIS version already brought the
+    // endpoint up we short-circuit before doing relocate + spawn.
+    // soldr#1495: if a *stale-version* daemon holds the endpoint instead,
+    // displace it (graceful shutdown → verified-PID kill) so our spawn
+    // can bind — this is what breaks the version shadow, both for a
+    // silently-serving older release and a protocol-mismatched daemon.
     if let Some(p) = paths.as_ref() {
-        if is_live(p).is_some() {
+        if is_live_current_version(p).is_some() {
             return Ok(());
+        }
+        if displacement_enabled() && stale_daemon_occupies_endpoint(p).is_some() {
+            displace_stale_daemon(p);
         }
     }
     // Without the lock, another wrapper is currently mid-spawn. Don't
@@ -623,6 +817,69 @@ mod spawn_lock_tests {
         // After release, the next call gets the lock back.
         let third = acquire_spawn_lock(&paths).expect("third acquire after release");
         drop(third);
+    }
+
+    #[test]
+    fn displacement_enabled_by_default_and_off_via_env() {
+        // Default (unset) → enabled. The explicit off-values disable it.
+        // Uses a process-global env var; keep this the only test that
+        // touches SOLDR_DAEMON_DISPLACE so it can't race a sibling.
+        let prior = std::env::var_os(SOLDR_DAEMON_DISPLACE_ENV);
+        std::env::remove_var(SOLDR_DAEMON_DISPLACE_ENV);
+        assert!(displacement_enabled(), "unset must be enabled");
+        for off in ["off", "0", "false", "no", "OFF"] {
+            std::env::set_var(SOLDR_DAEMON_DISPLACE_ENV, off);
+            assert!(!displacement_enabled(), "{off} must disable");
+        }
+        std::env::set_var(SOLDR_DAEMON_DISPLACE_ENV, "on");
+        assert!(displacement_enabled(), "any other value stays enabled");
+        match prior {
+            Some(v) => std::env::set_var(SOLDR_DAEMON_DISPLACE_ENV, v),
+            None => std::env::remove_var(SOLDR_DAEMON_DISPLACE_ENV),
+        }
+    }
+
+    #[test]
+    fn current_version_claim_matches_only_for_this_build() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        // No claim → version-unknown → not current.
+        assert!(!current_version_claim_matches(&paths));
+
+        // This build's own claim → current.
+        crate::daemon::broker_discovery::write_root_version_claim(&paths).expect("write claim");
+        assert!(current_version_claim_matches(&paths));
+
+        // A stale writer's claim → not current (the mismatch that drives
+        // displacement).
+        use running_process::broker::protocol_v2::{write_to_root_v2, CacheManifestBuilder};
+        let stale = CacheManifestBuilder::new(
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+            "0.0.0-stale",
+        )
+        .build();
+        write_to_root_v2(&paths.root, &stale).expect("write stale");
+        assert!(!current_version_claim_matches(&paths));
+    }
+
+    #[test]
+    fn stale_daemon_occupancy_ignores_dead_pid() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        // A large positive PID that is almost certainly not a running
+        // process. (Not `u32::MAX`, which casts to the `-1` "all
+        // processes" wildcard on Unix and would spuriously look alive.)
+        std::fs::write(
+            daemon_pid_path(&paths),
+            format!("{}\nsoldr-daemon\n", i32::MAX as u32),
+        )
+        .expect("pid file");
+        assert!(stale_daemon_occupies_endpoint(&paths).is_none());
+        // Displacing a non-occupied endpoint is a successful no-op that
+        // clears any stale files.
+        assert!(displace_stale_daemon(&paths));
     }
 
     #[test]

@@ -27,9 +27,29 @@ use crate::core::SoldrPaths;
 use crate::daemon::backend_handle_adoption::{
     running_process_disabled, SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION,
 };
+use prost::Message as _;
 use running_process::broker::client_v2::{self, BrokerV2Error};
-use running_process::broker::protocol_v2::{CacheManifest, CacheManifestBuilder, CacheRootKind};
+use running_process::broker::protocol_v2::{
+    write_to_root_v2, CacheManifest, CacheManifestBuilder, CacheRootKind, ROOT_MANIFEST_FILE_V2,
+};
 use std::path::{Path, PathBuf};
+
+/// Test seam (soldr#1495): overrides the package version the daemon
+/// *claims* in its published manifest, so a test can stand up a daemon
+/// that advertises a stale version and assert a current-version client
+/// displaces it. Never consulted on the read/compare side — liveness
+/// always compares against the real [`SOLDR_DAEMON_SERVICE_VERSION`].
+pub(crate) const FAKE_PKG_VERSION_ENV: &str = "SOLDR_TEST_DAEMON_FAKE_PKG_VERSION";
+
+/// The package version this daemon advertises in its manifest claim —
+/// normally this build's `CARGO_PKG_VERSION`, overridable by the
+/// [`FAKE_PKG_VERSION_ENV`] test seam.
+fn claimed_service_version() -> String {
+    std::env::var(FAKE_PKG_VERSION_ENV)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| SOLDR_DAEMON_SERVICE_VERSION.to_string())
+}
 
 /// How soldr-daemon discovery resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,7 +108,7 @@ pub(crate) fn soldr_daemon_cache_manifest(paths: &SoldrPaths) -> CacheManifest {
 
 fn cache_manifest_builder(paths: &SoldrPaths) -> CacheManifestBuilder {
     let roots = SoldrCacheRoots::for_paths(paths);
-    CacheManifestBuilder::new(SOLDR_DAEMON_SERVICE_NAME, SOLDR_DAEMON_SERVICE_VERSION)
+    CacheManifestBuilder::new(SOLDR_DAEMON_SERVICE_NAME, claimed_service_version())
         .broker_instance("shared")
         // state: the redb state/data DBs live directly under the soldr root.
         .root(CacheRootKind::CacheData, roots.state.display().to_string())
@@ -126,6 +146,39 @@ pub(crate) fn publish_cache_manifest_in(
     cache_manifest_builder(paths)
         .publish_in(registry_dir)
         .map_err(BrokerDiscoveryError::manifest)
+}
+
+/// Path of the root manifest the daemon writes as its **version claim**
+/// (soldr#1495): `<soldr-root>/.running-process-manifest.v2.pb`. The
+/// broker reads this to route the daemon; soldr reads it locally for
+/// version-aware liveness (see [`crate::daemon::lifecycle`]).
+pub(crate) fn root_manifest_path(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join(ROOT_MANIFEST_FILE_V2)
+}
+
+/// Write the daemon's version-claim manifest into the soldr root (the
+/// `CacheData`/`CacheIndex` shared-state root). Called once at daemon
+/// startup. The claimed `service_version` is this build's version (or the
+/// [`FAKE_PKG_VERSION_ENV`] override in tests).
+pub(crate) fn write_root_version_claim(paths: &SoldrPaths) -> Result<(), BrokerDiscoveryError> {
+    let manifest = cache_manifest_builder(paths).build();
+    write_to_root_v2(&paths.root, &manifest).map_err(BrokerDiscoveryError::manifest)
+}
+
+/// Read the package version the currently-running daemon claimed in its
+/// root manifest. `None` when no manifest exists (a pre-#1495 daemon that
+/// never wrote one — treated as version-unknown) or it cannot be decoded.
+pub fn read_claimed_service_version(paths: &SoldrPaths) -> Option<String> {
+    let bytes = std::fs::read(root_manifest_path(paths)).ok()?;
+    let manifest = CacheManifest::decode(bytes.as_slice()).ok()?;
+    let version = manifest.service_version;
+    (!version.is_empty()).then_some(version)
+}
+
+/// Remove the root version-claim manifest — part of tearing down a
+/// displaced daemon so a stale claim can't outlive its writer.
+pub(crate) fn remove_root_version_claim(paths: &SoldrPaths) {
+    let _ = std::fs::remove_file(root_manifest_path(paths));
 }
 
 /// The concrete on-disk roots soldr records in its cache manifest.
@@ -217,6 +270,40 @@ pub(crate) fn soldr_daemon_pid_via_broker_with_disabled(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    crate::timed_test!(version_claim_round_trips_through_root_manifest, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        // No claim yet → version-unknown.
+        assert!(read_claimed_service_version(&paths).is_none());
+
+        write_root_version_claim(&paths).expect("write claim");
+        assert_eq!(
+            read_claimed_service_version(&paths).as_deref(),
+            Some(env!("CARGO_PKG_VERSION")),
+        );
+
+        // Removing the claim returns to version-unknown so a stale claim
+        // can't outlive its writer.
+        remove_root_version_claim(&paths);
+        assert!(read_claimed_service_version(&paths).is_none());
+    });
+
+    crate::timed_test!(read_claim_reports_a_stale_writers_version, {
+        // A daemon of a different version writes a manifest; the read
+        // side reports whatever version was claimed (so the caller can
+        // detect the mismatch), never assuming the current version.
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let stale = CacheManifestBuilder::new(SOLDR_DAEMON_SERVICE_NAME, "0.0.0-stale").build();
+        write_to_root_v2(&paths.root, &stale).expect("write stale claim");
+
+        assert_eq!(
+            read_claimed_service_version(&paths).as_deref(),
+            Some("0.0.0-stale"),
+        );
+    });
 
     crate::timed_test!(cache_manifest_records_expected_roots, {
         let temp = TempDir::new().expect("tempdir");
