@@ -2,28 +2,20 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::zccache_lifecycle::{
-    zccache_command_failure_message, zccache_json_flag_unsupported, ZccacheLifecycle,
-    ZccachePrivateEnv,
-};
+use crate::zccache_lifecycle::ZccachePrivateEnv;
 use crate::{
     current_soldr_binary, non_empty_env_path, ZccacheSourceArg, RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
 };
 use std::ffi::OsStr;
 
 pub(crate) use crate::zccache_lifecycle::{
-    command_stderr, effective_daemon_rust_log, run_zccache_command_in_cache_dir,
-    run_zccache_command_raw_in_cache_dir, run_zccache_command_raw_in_cache_dir_with_daemon_name,
-    run_zccache_command_strings_in_cache_dir,
-    run_zccache_command_strings_in_cache_dir_with_daemon_name, start_zccache_with_recovery,
-    ZccacheBuildSession, SOLDR_DAEMON_RUST_LOG_ENV_VAR, ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
+    command_stderr, run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
+    ZCCACHE_DAEMON_NAMESPACE_ENV_VAR,
 };
 
 pub(crate) const SOLDR_CACHE_LIFECYCLE_ENV_VAR: &str = "SOLDR_CACHE_LIFECYCLE";
 pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
     "SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS";
-pub(crate) const SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME_ENV_VAR: &str =
-    "SOLDR_ZCCACHE_PRIVATE_DAEMON_NAME";
 pub(crate) const SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_SESSION_DIR";
 
 /// Opt-in: when set to a truthy value (`1`, `true`, `yes`, `on`), route
@@ -431,7 +423,6 @@ async fn prepare_zccache_build(
         session_log_path: crate::cache_lib::session_log_path(&zccache_dir),
         journal_path: crate::cache_lib::session_journal_path(&zccache_dir),
         session_stats_path: crate::cache_lib::session_stats_path(&zccache_dir),
-        private_daemon: None,
     };
 
     Ok(ManagedZccacheWrapperPlan { session, child_env })
@@ -451,228 +442,6 @@ fn synthetic_build_session_id() -> String {
     hasher.update(&std::process::id().to_le_bytes());
     hasher.update(&nanos.to_le_bytes());
     hex::encode(&hasher.finalize().as_bytes()[..12])
-}
-
-pub(crate) fn finish_zccache_build(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let lifecycle = ZccacheLifecycle::from_session(session);
-    let output = lifecycle.run_raw(&["session-end", &session.session_id, "--json"])?;
-    if session.session_log_path.exists() {
-        eprintln!(
-            "soldr: zccache session log: {}",
-            session.session_log_path.display()
-        );
-    }
-    if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stats_json = stdout.trim();
-        if !stats_json.is_empty() {
-            write_zccache_session_stats_json(session, stats_json)?;
-            let stats = parse_zccache_session_stats_json(stats_json)?;
-            print_zccache_session_stats(&stats, &session.session_stats_path);
-            print_wasted_depgraph_hits_if_any(&session.session_log_path);
-        }
-        return Ok(());
-    }
-
-    if zccache_json_flag_unsupported(&output) {
-        eprintln!(
-            "soldr: zccache JSON session summary unavailable; falling back to text session-end"
-        );
-        finish_zccache_build_text_fallback(session)?;
-        return Ok(());
-    }
-
-    Err(SoldrError::Other(zccache_command_failure_message(
-        &["session-end", &session.session_id, "--json"],
-        &output,
-    )))
-}
-
-pub(crate) fn stop_zccache_after_command(
-    session: &ZccacheBuildSession,
-    timeout: std::time::Duration,
-) -> Result<(), SoldrError> {
-    let mut lifecycle = ZccacheLifecycle::from_session(session);
-    let output = lifecycle.stop(false)?;
-    if output.stopped {
-        eprintln!("soldr: command-lifetime cache: zccache stop requested");
-    } else if output.already_stopped {
-        eprintln!("soldr: command-lifetime cache: zccache daemon already stopped");
-        return Ok(());
-    } else if let Some(failure) = output.failure {
-        return Err(SoldrError::Other(format!("zccache stop failed: {failure}")));
-    }
-
-    match lifecycle.poll_daemon_exit(timeout) {
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::Exited => {
-            eprintln!("soldr: command-lifetime cache: zccache daemon exited");
-            Ok(())
-        }
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut => {
-            eprintln!(
-                "soldr: command-lifetime cache: zccache daemon did not exit within {}s; continuing",
-                timeout.as_secs()
-            );
-            Ok(())
-        }
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed(err) => {
-            eprintln!(
-                "soldr: command-lifetime cache: could not confirm zccache daemon exit: {err}; continuing"
-            );
-            Ok(())
-        }
-    }
-}
-
-#[cfg(test)]
-fn command_lifetime_daemon_exit_poll_result(
-    result: crate::zccache_lifecycle::ZccacheDaemonExitPollResult,
-    timeout: std::time::Duration,
-) -> Result<(), SoldrError> {
-    match result {
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::Exited => Ok(()),
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut => {
-            eprintln!(
-                "command-lifetime cache: zccache daemon did not exit within {}s",
-                timeout.as_secs()
-            );
-            Ok(())
-        }
-        crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed(err) => {
-            eprintln!("command-lifetime cache: could not confirm zccache daemon exit: {err}");
-            Ok(())
-        }
-    }
-}
-
-fn finish_zccache_build_text_fallback(session: &ZccacheBuildSession) -> Result<(), SoldrError> {
-    let lifecycle = ZccacheLifecycle::from_session(session);
-    let output = lifecycle.run(&["session-end", &session.session_id])?;
-    let stdout = output.stdout.trim();
-    if !stdout.is_empty() {
-        eprintln!("soldr: zccache session summary");
-        eprintln!("{stdout}");
-    }
-    Ok(())
-}
-
-fn write_zccache_session_stats_json(
-    session: &ZccacheBuildSession,
-    stats_json: &str,
-) -> Result<(), SoldrError> {
-    if let Some(parent) = session.session_stats_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&session.session_stats_path, stats_json)?;
-    Ok(())
-}
-
-fn parse_zccache_session_stats_json(stats_json: &str) -> Result<serde_json::Value, SoldrError> {
-    serde_json::from_str(stats_json).map_err(|err| {
-        SoldrError::Other(format!(
-            "failed to parse zccache JSON session summary: {err}"
-        ))
-    })
-}
-
-fn print_zccache_session_stats(stats: &serde_json::Value, stats_path: &std::path::Path) {
-    eprintln!("soldr: zccache session summary");
-    eprintln!("  stats file: {}", stats_path.display());
-    match stats.get("status").and_then(serde_json::Value::as_str) {
-        Some("ok") => {
-            let hits = json_u64(stats, "hits").unwrap_or(0);
-            let misses = json_u64(stats, "misses").unwrap_or(0);
-            let non_cacheable = json_u64(stats, "non_cacheable").unwrap_or(0);
-            let errors = json_u64(stats, "errors").unwrap_or(0);
-            let compilations = json_u64(stats, "compilations").unwrap_or(hits + misses);
-            eprintln!(
-                "  compilations: {compilations}; hits: {hits}; misses: {misses}; non-cacheable: {non_cacheable}; errors: {errors}"
-            );
-            if let Some(hit_rate) = json_f64(stats, "hit_rate") {
-                eprintln!("  hit rate: {:.1}%", hit_rate * 100.0);
-            } else {
-                eprintln!("  hit rate: n/a");
-            }
-            let unique_sources = json_u64(stats, "unique_sources").unwrap_or(0);
-            let bytes_read = json_u64(stats, "bytes_read").unwrap_or(0);
-            let bytes_written = json_u64(stats, "bytes_written").unwrap_or(0);
-            eprintln!(
-                "  unique sources: {unique_sources}; bytes read: {bytes_read}; bytes written: {bytes_written}"
-            );
-            let time_saved_ms = json_u64(stats, "time_saved_ms").unwrap_or(0);
-            let duration_ms = json_u64(stats, "duration_ms").unwrap_or(0);
-            eprintln!("  time saved: {time_saved_ms} ms; duration: {duration_ms} ms");
-        }
-        Some("unavailable") => {
-            let reason = stats
-                .get("reason")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown");
-            eprintln!("  status: unavailable ({reason})");
-        }
-        Some("error") => {
-            let error = stats
-                .get("error")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown error");
-            eprintln!("  status: error ({error})");
-        }
-        Some(status) => eprintln!("  status: {status}"),
-        None => eprintln!("  status: unknown"),
-    }
-}
-
-fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
-    value.get(key).and_then(serde_json::Value::as_u64)
-}
-
-fn json_f64(value: &serde_json::Value, key: &str) -> Option<f64> {
-    value.get(key).and_then(serde_json::Value::as_f64)
-}
-
-/// Count "depgraph said Hit, artifact store had no payload" events in
-/// a zccache session log. Each `[DIAG] artifact_not_found:` line is a
-/// hit-classified lookup that fell through to a forced miss — i.e. the
-/// cache *thought* it had the unit, the lookup succeeded, then the
-/// storage layer dropped it. Surfaces issue #704's "depgraph Hit +
-/// artifact_not_found -> forced miss" pattern without grep'ing the log.
-///
-/// Pure parser over the log body — caller is responsible for reading
-/// the file (so this stays testable without filesystem I/O).
-pub(crate) fn count_wasted_depgraph_hits(log_body: &str) -> u64 {
-    log_body
-        .lines()
-        .filter(|line| line.trim_start().starts_with("[DIAG] artifact_not_found:"))
-        .count() as u64
-}
-
-/// Cap on how much of the session log we'll read to compute the wasted-
-/// hit count. 16 MiB covers full debug sessions on dogfood builds with
-/// substantial headroom; anything larger almost certainly has bigger
-/// problems than a missing diagnostic line.
-const SESSION_LOG_READ_CAP: u64 = 16 * 1024 * 1024;
-
-/// Emit a `  wasted depgraph hits: N` summary line when the log shows
-/// any artifact-not-found events. Silent when the log is missing,
-/// unreadable, oversized, or shows zero wasted hits — this is purely
-/// additive diagnostic surface and must not break existing output.
-fn print_wasted_depgraph_hits_if_any(session_log_path: &std::path::Path) {
-    let Ok(metadata) = std::fs::metadata(session_log_path) else {
-        return;
-    };
-    if metadata.len() > SESSION_LOG_READ_CAP {
-        return;
-    }
-    let Ok(body) = std::fs::read_to_string(session_log_path) else {
-        return;
-    };
-    let wasted = count_wasted_depgraph_hits(&body);
-    if wasted > 0 {
-        eprintln!(
-            "  wasted depgraph hits: {wasted} (depgraph said Hit but artifact store had \
-             no payload; see issue #704)"
-        );
-    }
 }
 
 pub(crate) fn private_zccache_cache_dir(
@@ -822,58 +591,6 @@ mod tests {
         assert!(is_sccache_wrapper(OsStr::new("/tmp/tools/sccache")));
         assert!(!is_sccache_wrapper(OsStr::new("zccache")));
         assert!(!is_sccache_wrapper(OsStr::new("sccache-proxy")));
-    }
-
-    #[test]
-    fn count_wasted_depgraph_hits_returns_zero_when_no_artifact_not_found_lines() {
-        let body = "\
-[DIAG] depgraph_check: foo verdict=Hit reason=fast_key_match
-[HIT] foo (reason: fast_key_match)
-[DIAG] depgraph_check: bar verdict=Miss reason=key_mismatch
-[MISS] bar (reason: key_mismatch)
-";
-        assert_eq!(count_wasted_depgraph_hits(body), 0);
-    }
-
-    #[test]
-    fn count_wasted_depgraph_hits_counts_each_artifact_not_found_line() {
-        let body = "\
-[DIAG] depgraph_check: foo verdict=Hit reason=fast_key_match
-[DIAG] artifact_not_found: key=aaaaaaaa
-[MISS] foo (reason: fast_key_match)
-[DIAG] depgraph_check: bar verdict=Hit reason=first_check_after_update
-[DIAG] artifact_not_found: key=bbbbbbbb
-[MISS] bar (reason: first_check_after_update)
-";
-        assert_eq!(count_wasted_depgraph_hits(body), 2);
-    }
-
-    #[test]
-    fn count_wasted_depgraph_hits_tolerates_leading_whitespace() {
-        // Some log frameworks indent diagnostic lines under a parent span.
-        let body = "\
-    [DIAG] artifact_not_found: key=aaaaaaaa
-\t[DIAG] artifact_not_found: key=bbbbbbbb
-[DIAG] artifact_not_found: key=cccccccc
-";
-        assert_eq!(count_wasted_depgraph_hits(body), 3);
-    }
-
-    #[test]
-    fn count_wasted_depgraph_hits_ignores_unrelated_diag_lines() {
-        let body = "\
-[DIAG] depgraph_check: foo verdict=Hit
-[DIAG] artifact_size: 12345
-[DIAG] artifact_not_found_recovered: key=xxxx
-[DIAG] artifact_not_foundish: key=yyyy
-[INFO] artifact_not_found: this is not a DIAG line
-";
-        assert_eq!(count_wasted_depgraph_hits(body), 0);
-    }
-
-    #[test]
-    fn count_wasted_depgraph_hits_handles_empty_log() {
-        assert_eq!(count_wasted_depgraph_hits(""), 0);
     }
 
     // Parent-cache L1.x env injection (issue #352). The decision function
@@ -1121,50 +838,6 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
-    // ---------------------------------------------------------------
-    // RUST_LOG injection on daemon spawn (issue #416). The daemon
-    // inherits the env of the `zccache start` invocation; without a
-    // soldr-side override, narrow RUST_LOG values in the parent (CI
-    // configs, shell exports) silently filter out sibling-crate INFO
-    // logs from the daemon spawn log. Soldr forces a non-narrowing
-    // directive unless the user explicitly opts in via
-    // SOLDR_DAEMON_RUST_LOG.
-    // ---------------------------------------------------------------
-
-    #[test]
-    fn daemon_rust_log_defaults_to_info_when_override_unset() {
-        assert_eq!(effective_daemon_rust_log(None), "info");
-    }
-
-    #[test]
-    fn daemon_rust_log_defaults_to_info_when_override_is_blank() {
-        // Empty / whitespace-only override is treated as unset so accidental
-        // `export SOLDR_DAEMON_RUST_LOG=` doesn't re-introduce the narrow
-        // filter the env var exists to defeat.
-        assert_eq!(effective_daemon_rust_log(Some("")), "info");
-        assert_eq!(effective_daemon_rust_log(Some("   ")), "info");
-    }
-
-    #[test]
-    fn daemon_rust_log_honors_explicit_override() {
-        assert_eq!(effective_daemon_rust_log(Some("debug")), "debug");
-        assert_eq!(
-            effective_daemon_rust_log(Some("info,zccache_artifact=debug")),
-            "info,zccache_artifact=debug"
-        );
-    }
-
-    #[test]
-    fn daemon_rust_log_override_passes_through_narrow_directive() {
-        // If the user explicitly asks for a single-target directive via
-        // SOLDR_DAEMON_RUST_LOG, that's a conscious choice and soldr respects
-        // it — the override exists specifically to give power users this knob.
-        assert_eq!(
-            effective_daemon_rust_log(Some("zccache_daemon=trace")),
-            "zccache_daemon=trace"
-        );
-    }
-
     #[test]
     fn cache_lifecycle_defaults_to_job_long_cache() {
         assert_eq!(
@@ -1190,20 +863,6 @@ mod tests {
                 "expected {value:?} to enable command-lifetime cache shutdown"
             );
         }
-    }
-
-    #[test]
-    fn command_lifetime_daemon_exit_timeout_is_non_fatal() {
-        assert!(command_lifetime_daemon_exit_poll_result(
-            crate::zccache_lifecycle::ZccacheDaemonExitPollResult::TimedOut,
-            std::time::Duration::from_secs(30),
-        )
-        .is_ok());
-        assert!(command_lifetime_daemon_exit_poll_result(
-            crate::zccache_lifecycle::ZccacheDaemonExitPollResult::PollFailed("gone".into()),
-            std::time::Duration::from_secs(30),
-        )
-        .is_ok());
     }
 
     #[test]

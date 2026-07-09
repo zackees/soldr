@@ -36,7 +36,7 @@ use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileRequest,
     CompileResponseBody, CompileStatsInfo, CookStats, Request, Response, StatusInfo,
-    WireDecodeError, ZccacheDaemonLink,
+    WireDecodeError,
 };
 
 #[path = "wire_proto.rs"]
@@ -275,32 +275,6 @@ fn u32_to_event_kind(n: u32) -> Result<EventKind, WireDecodeError> {
     }
 }
 
-pub fn zccache_link_to_wire(link: &ZccacheDaemonLink) -> proto::WireZccacheDaemonLink {
-    proto::WireZccacheDaemonLink {
-        binary_path: link.binary_path.clone(),
-        cache_dir: link.cache_dir.clone(),
-        session_id: link.session_id.clone(),
-        source: link.source.clone(),
-        private_daemon: link.private_daemon,
-        daemon_name: link.daemon_name.clone(),
-        owner_pid: link.owner_pid,
-        private_env_keys: link.private_env_keys.clone(),
-    }
-}
-
-pub fn zccache_link_from_wire(wire: proto::WireZccacheDaemonLink) -> ZccacheDaemonLink {
-    ZccacheDaemonLink {
-        binary_path: wire.binary_path,
-        cache_dir: wire.cache_dir,
-        session_id: wire.session_id,
-        source: wire.source,
-        private_daemon: wire.private_daemon,
-        daemon_name: wire.daemon_name,
-        owner_pid: wire.owner_pid,
-        private_env_keys: wire.private_env_keys,
-    }
-}
-
 fn compile_stats_to_wire(info: &CompileStatsInfo) -> proto::WireCompileStats {
     proto::WireCompileStats {
         total_compilations: info.total_compilations,
@@ -345,7 +319,6 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
         pid: info.pid,
         uptime_secs: info.uptime_secs,
         request_count: info.request_count,
-        linked_zccache: info.linked_zccache.as_ref().map(zccache_link_to_wire),
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
         compile_backend: info.compile_backend.clone(),
     }
@@ -357,7 +330,6 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
         pid: wire.pid,
         uptime_secs: wire.uptime_secs,
         request_count: wire.request_count,
-        linked_zccache: wire.linked_zccache.map(zccache_link_from_wire),
         cook_stats: wire.cook_stats.map(cook_stats_from_wire),
         compile_backend: wire.compile_backend,
     }
@@ -424,11 +396,6 @@ impl From<&Request> for proto::WireRequest {
                 threshold_ms: *threshold_ms,
                 limit: *limit,
             }),
-            Request::LinkZccache { link } => {
-                proto::WireRequestKind::LinkZccache(proto::WireLinkZccache {
-                    link: Some(zccache_link_to_wire(link)),
-                })
-            }
             Request::CookLookup {
                 recipe_hash,
                 target_triple,
@@ -543,12 +510,6 @@ impl TryFrom<proto::WireRequest> for Request {
             proto::WireRequestKind::ListSlowBuilds(m) => Request::ListSlowBuilds {
                 threshold_ms: m.threshold_ms,
                 limit: m.limit,
-            },
-            proto::WireRequestKind::LinkZccache(m) => Request::LinkZccache {
-                link: zccache_link_from_wire(
-                    m.link
-                        .ok_or(WireDecodeError::MissingField("LinkZccache.link"))?,
-                ),
             },
             proto::WireRequestKind::CookLookup(m) => Request::CookLookup {
                 recipe_hash: vec_to_sha(&m.recipe_hash)?,

@@ -339,10 +339,9 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         archived_journal_path,
         archived_session_stats_path,
         archived_compile_journal_path,
-        private_daemon_name: session
-            .private_daemon
-            .as_ref()
-            .map(|private| private.daemon_name.clone()),
+        // soldr#1368: private managed-zccache daemons are gone; the
+        // field stays on the wire for older records.
+        private_daemon_name: None,
     });
 
     crate::daemon::db::upsert_build(&db_path, &record)

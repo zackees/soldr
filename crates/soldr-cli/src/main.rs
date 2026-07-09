@@ -1396,7 +1396,6 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                         "pid": info.pid,
                         "uptime_secs": info.uptime_secs,
                         "request_count": info.request_count,
-                        "linked_zccache": info.linked_zccache,
                         "cook": {
                             "entries": cook.entries,
                             "total_bytes": cook.total_bytes,

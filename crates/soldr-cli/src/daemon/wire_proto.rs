@@ -34,8 +34,7 @@ pub enum WireRequestKind {
     ListBuilds(WireListBuilds),
     #[prost(message, tag = "8")]
     ListSlowBuilds(WireListSlowBuilds),
-    #[prost(message, tag = "9")]
-    LinkZccache(WireLinkZccache),
+    // Tag 9 (LinkZccache) reserved — deleted in soldr#1467.
     #[prost(message, tag = "10")]
     CookLookup(WireCookLookup),
     #[prost(message, tag = "11")]
@@ -112,12 +111,6 @@ pub struct WireListSlowBuilds {
     pub threshold_ms: u64,
     #[prost(uint32, tag = "2")]
     pub limit: u32,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireLinkZccache {
-    #[prost(message, optional, tag = "1")]
-    pub link: Option<WireZccacheDaemonLink>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -332,8 +325,7 @@ pub struct WireStatusInfo {
     pub uptime_secs: u64,
     #[prost(uint64, tag = "4")]
     pub request_count: u64,
-    #[prost(message, optional, tag = "5")]
-    pub linked_zccache: Option<WireZccacheDaemonLink>,
+    // Tag 5 (linked_zccache) reserved — deleted in soldr#1467.
     #[prost(message, optional, tag = "6")]
     pub cook_stats: Option<WireCookStats>,
     /// #977 / #980 L1 — always `"embedded"` since the legacy
@@ -352,26 +344,6 @@ pub struct WireCookStats {
     pub total_bytes: u64,
     #[prost(uint64, tag = "3")]
     pub hits_this_session: u64,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireZccacheDaemonLink {
-    #[prost(string, tag = "1")]
-    pub binary_path: String,
-    #[prost(string, tag = "2")]
-    pub cache_dir: String,
-    #[prost(string, optional, tag = "3")]
-    pub session_id: Option<String>,
-    #[prost(string, tag = "4")]
-    pub source: String,
-    #[prost(bool, tag = "5")]
-    pub private_daemon: bool,
-    #[prost(string, optional, tag = "6")]
-    pub daemon_name: Option<String>,
-    #[prost(uint32, optional, tag = "7")]
-    pub owner_pid: Option<u32>,
-    #[prost(string, repeated, tag = "8")]
-    pub private_env_keys: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]
