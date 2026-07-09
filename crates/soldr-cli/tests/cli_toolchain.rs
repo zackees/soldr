@@ -841,6 +841,29 @@ fn expected_shim_path(dir: &Path, tool: &str) -> PathBuf {
     dir.join(format!("{tool}{}", std::env::consts::EXE_SUFFIX))
 }
 
+fn assert_native_shim_matches_soldr(shim: &Path, soldr_bin: &Path, tool: &str) {
+    let shim_bytes =
+        fs::read(shim).unwrap_or_else(|err| panic!("read {tool} shim {}: {err}", shim.display()));
+    let soldr_bytes = fs::read(soldr_bin)
+        .unwrap_or_else(|err| panic!("read soldr binary {}: {err}", soldr_bin.display()));
+    assert_eq!(
+        shim_bytes,
+        soldr_bytes,
+        "{tool} shim should be a native multicall copy/hardlink of {}",
+        soldr_bin.display()
+    );
+}
+
+fn expected_toolchain_link_source_soldr_bin() -> PathBuf {
+    if let Some(original) = std::env::var_os("SOLDR_ORIGINAL_EXE") {
+        let path = PathBuf::from(original);
+        if path.is_file() {
+            return path;
+        }
+    }
+    common::soldr_bin()
+}
+
 #[test]
 fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
     let workspace = unique_temp_dir("toolchain-link-fresh");
@@ -864,11 +887,11 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    let soldr_bin = expected_toolchain_link_source_soldr_bin();
     // Shims are native multicall hardlinks/copies of the running soldr
     // binary (issue #1302), so each shim must be byte-identical to the
-    // soldr binary — that's what guarantees subprocess exec lands back
+    // soldr binary - that's what guarantees subprocess exec lands back
     // on this build.
-    let soldr_bytes = fs::read(common::soldr_bin()).expect("read soldr binary");
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let shim = expected_shim_path(&shim_dir, tool);
         assert!(
@@ -876,13 +899,7 @@ fn toolchain_link_writes_every_routed_tool_into_shim_dir() {
             "expected shim at {} after link, but it's missing",
             shim.display()
         );
-        let body = fs::read(&shim).expect("read shim");
-        assert_eq!(
-            body,
-            soldr_bytes,
-            "shim for {tool} at {} must be a byte-identical multicall copy of the soldr binary",
-            shim.display()
-        );
+        assert_native_shim_matches_soldr(&shim, &soldr_bin, tool);
     }
 }
 
@@ -1092,7 +1109,7 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
             "--force must overwrite differing shim: {entry}"
         );
     }
-    let soldr_bytes = fs::read(common::soldr_bin()).expect("read soldr binary");
+    let soldr_bin = expected_toolchain_link_source_soldr_bin();
     for tool in ["cargo", "rustfmt", "clippy-driver", "rustc", "rustdoc"] {
         let path = expected_shim_path(&shim_dir, tool);
         let body = fs::read(&path).expect("read shim");
@@ -1101,11 +1118,6 @@ fn toolchain_link_force_overwrites_user_modified_shim() {
             b"USER CUSTOM".to_vec(),
             "--force must overwrite {tool} shim (still USER CUSTOM)"
         );
-        assert_eq!(
-            body,
-            soldr_bytes,
-            "forced {tool} shim at {} must be a byte-identical multicall copy of the soldr binary",
-            path.display()
-        );
+        assert_native_shim_matches_soldr(&path, &soldr_bin, tool);
     }
 }
