@@ -6,7 +6,7 @@
 use super::*;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
@@ -133,6 +133,77 @@ crate::timed_test!(timeout_error_mentions_cleanup_and_recovery, {
     assert!(
         msg.contains("SOLDR_COMPILE_REPLY_TIMEOUT_SECS"),
         "timeout message should point at fail-fast compile diagnostics: {msg}"
+    );
+    assert!(
+        msg.contains("soldr --no-cache cargo <same args>"),
+        "timeout message should point at the cache bypass retry: {msg}"
+    );
+    assert!(
+        msg.contains("ZCCACHE_DISABLE=1"),
+        "timeout message should mention the zccache disable escape hatch: {msg}"
+    );
+    assert!(
+        msg.contains("soldr logs paths"),
+        "timeout message should point at durable log discovery: {msg}"
+    );
+});
+
+crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().to_path_buf());
+    let cleanup = CargoAbortCleanupReport {
+        orphan_rmetas_pruned: 2,
+        incremental_dirs_removed: 1,
+    };
+
+    let path = append_cargo_abort_log(CargoAbortLogRequest {
+        paths: &paths,
+        session_id: 42,
+        repo_root: Path::new("repo"),
+        started_at_ms: 1_000,
+        ended_at_ms: 2_500,
+        args: &[
+            String::from("build"),
+            String::from("-p"),
+            String::from("demo"),
+        ],
+        timeout: true,
+        cleanup,
+        message: "cargo timed out",
+    })
+    .expect("append cargo abort log");
+
+    assert_eq!(path, paths.cargo_abort_log());
+    let log = std::fs::read_to_string(&path).expect("read cargo abort log");
+    let lines: Vec<_> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "expected one jsonl record: {log}");
+    let record: serde_json::Value =
+        serde_json::from_str(lines[0]).expect("cargo abort log record is JSON");
+
+    assert_eq!(record["schema_version"], serde_json::Value::from(1));
+    assert_eq!(record["event"], serde_json::Value::from("cargo_abort"));
+    assert_eq!(record["session_id"], serde_json::Value::from(42));
+    assert_eq!(record["timeout"], serde_json::Value::from(true));
+    assert_eq!(record["elapsed_ms"], serde_json::Value::from(1_500));
+    assert_eq!(
+        record["cleanup"]["orphan_rmetas_pruned"],
+        serde_json::Value::from(2)
+    );
+    assert_eq!(
+        record["cleanup"]["incremental_dirs_removed"],
+        serde_json::Value::from(1)
+    );
+    assert_eq!(
+        record["recovery"]["retry_without_cache"]["argv"],
+        serde_json::json!(["soldr", "--no-cache", "cargo", "build", "-p", "demo"])
+    );
+    assert_eq!(
+        record["recovery"]["retry_with_zccache_disabled"]["env"]["ZCCACHE_DISABLE"],
+        serde_json::Value::from("1")
+    );
+    assert_eq!(
+        record["recovery"]["inspect_logs"],
+        serde_json::json!(["soldr", "logs", "paths"])
     );
 });
 

@@ -205,6 +205,7 @@ timed_test!(
         let root = unique_temp_dir("cargo-timeout-cleanup");
         let workspace = root.join("workspace");
         let tool_dir = root.join("tool");
+        let cache_root = root.join("soldr-cache");
         let log_path = root.join("cargo.log");
         let marker = root.join("first-run.marker");
         fs::create_dir_all(workspace.join("src")).expect("workspace src");
@@ -226,6 +227,7 @@ timed_test!(
             .current_dir(&workspace)
             .env("SOLDR_TEST_CARGO_BIN", &cargo)
             .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
+            .env("SOLDR_CACHE_DIR", &cache_root)
             .output()
             .expect("first soldr cargo build");
 
@@ -252,12 +254,41 @@ timed_test!(
             !workspace.join("target/debug/incremental").exists(),
             "aborted-build cleanup should remove target/debug/incremental"
         );
+        let abort_log_path = cache_root.join("logs").join("cargo-aborts.jsonl");
+        let abort_log = fs::read_to_string(&abort_log_path).unwrap_or_else(|err| {
+            panic!(
+                "first timeout should persist cargo abort log at {}: {err}",
+                abort_log_path.display()
+            )
+        });
+        let abort_record: Value = serde_json::from_str(
+            abort_log
+                .lines()
+                .next()
+                .expect("cargo abort log should have one record"),
+        )
+        .expect("cargo abort log should be JSON");
+        assert_eq!(abort_record["event"], Value::from("cargo_abort"));
+        assert_eq!(abort_record["timeout"], Value::from(true));
+        assert_eq!(
+            abort_record["cleanup"]["incremental_dirs_removed"],
+            Value::from(1)
+        );
+        assert_eq!(
+            abort_record["recovery"]["retry_without_cache"]["argv"],
+            serde_json::json!(["soldr", "--no-cache", "cargo", "build"])
+        );
+        assert_eq!(
+            abort_record["recovery"]["retry_with_zccache_disabled"]["env"]["ZCCACHE_DISABLE"],
+            Value::from("1")
+        );
 
         let second = common::isolated_soldr_command()
             .args(["--no-cache", "cargo", "build"])
             .current_dir(&workspace)
             .env("SOLDR_TEST_CARGO_BIN", &cargo)
             .env("SOLDR_CARGO_WAIT_TIMEOUT_SECS", "1")
+            .env("SOLDR_CACHE_DIR", &cache_root)
             .output()
             .expect("second soldr cargo build");
 
