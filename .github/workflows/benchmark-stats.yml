@@ -141,14 +141,15 @@ jobs:
         working-directory: soldr
         run: |
           set -euo pipefail
-          # Only the binaries a `soldr cargo build` needs at runtime: the
-          # main CLI, the target-tracking daemon, the RUSTC_WRAPPER shim,
-          # and the embedded zccache CLI trampoline. The toolchain-tool
-          # shims (soldr-shim, soldr-clang-shim) are not exercised by the
-          # canaries and are not reliably emitted by the cached target/
-          # restore, so building the full bin set would spuriously fail
-          # the copy. Build exactly the four required bins.
-          REQUIRED_BINS="soldr soldr-daemon zccache-soldr zccache"
+          # Build exactly the three bin targets soldr-cli declares: the
+          # main CLI, the target-tracking daemon, and the embedded zccache
+          # CLI trampoline. The RUSTC_WRAPPER shim (`zccache-soldr`) is not
+          # a bin target — soldr materializes it at runtime from its own
+          # `soldr` binary — and the toolchain-tool shims are not exercised
+          # by the canaries, so naming anything else fails cargo with
+          # "no bin target named ...". Explicit --bin flags keep the copy
+          # deterministic against the cached target/ restore.
+          REQUIRED_BINS="soldr soldr-daemon zccache"
           build_args=""
           for bin in $REQUIRED_BINS; do
             build_args="$build_args --bin $bin"
