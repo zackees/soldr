@@ -49,9 +49,11 @@ fn worktree_share_across_agent_namespaces() {
     fs::create_dir_all(&cache_dir).expect("create cache dir");
     create_test_crate(&crate_dir);
 
-    // Path-remap's auto-detect requires a real `.git/` checkout — see
-    // CLAUDE.md ("Requires a real .git/ checkout — tarball/zip
-    // checkouts silently fall back to no remap.").
+    // A real `.git/` checkout gives path-remap's auto-detect its
+    // preferred worktree root. (Not strictly required since
+    // zccache#353 — no-git checkouts fall back to the cwd as the remap
+    // root — but the git-worktree shape is exactly what this test
+    // exercises.)
     git(&["init", "-q"], &crate_dir);
     git(&["add", "."], &crate_dir);
     git(

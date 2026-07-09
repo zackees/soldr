@@ -28,9 +28,10 @@ WORKTREE_B="${WORKDIR}/medium-worktree-b"
 
 mkdir -p "${CACHE}"
 
-# soldr's path-remap (#352) requires a real `.git/` checkout — tarball
-# checkouts silently fall back to no remap. `git init` + one commit
-# turns the fixture into a valid source for `git worktree add`.
+# soldr's path-remap (#352) prefers a real `.git/` checkout for root
+# discovery (since zccache#353 a no-git checkout falls back to the cwd
+# as the remap root). `git init` + one commit turns the fixture into a
+# valid source for `git worktree add`.
 (
     cd "${FIXTURE_DIR}"
     git init -q
