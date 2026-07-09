@@ -162,11 +162,13 @@ jobs:
       # plain maturin, so setup-soldr's compiler cache is not in the
       # build path. Reuse Cargo's target/registry cache here just like
       # the Lint job does; keep a separate key because this job builds
-      # native ci-release wheels on macOS/Windows.
+      # native ci-release wheels on macOS/Windows. soldr#1479 lowered
+      # ci-release opt-levels; v2 avoids restoring stale opt-level-3
+      # target trees under rust-cache's profile-blind meta-hash.
       - name: Restore cargo + target caches for wheel build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: pep517-${{ matrix.name }}-ci-release-v1
+          shared-key: pep517-${{ matrix.name }}-ci-release-v2
 
       - name: Build soldr wheel under test
         shell: pwsh
@@ -246,7 +248,9 @@ jobs:
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
-          shared-key: bootstrap-soldr-linux-gnu-ci-bootstrap-v1
+          # soldr#1479 lowered ci-bootstrap to opt-level 0; v2 keeps
+          # cache saves aligned with the new helper-binary profile.
+          shared-key: bootstrap-soldr-linux-gnu-ci-bootstrap-v2
 
       - name: Build bootstrap soldr
         if: steps.bootstrap_cache.outputs.cache-hit != 'true'
