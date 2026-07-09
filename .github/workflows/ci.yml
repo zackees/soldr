@@ -158,6 +158,16 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
+      # soldr#1438: the PEP 517 smoke builds the current wheel with
+      # plain maturin, so setup-soldr's compiler cache is not in the
+      # build path. Reuse Cargo's target/registry cache here just like
+      # the Lint job does; keep a separate key because this job builds
+      # native ci-release wheels on macOS/Windows.
+      - name: Restore cargo + target caches for wheel build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: pep517-${{ matrix.name }}-ci-release-v1
+
       - name: Build soldr wheel under test
         shell: pwsh
         run: |
