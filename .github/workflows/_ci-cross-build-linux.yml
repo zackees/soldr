@@ -371,12 +371,15 @@ jobs:
       # reuses the same target profile instead of compiling a debug tree.
       # soldr#1248: linux zigbuild lanes repeatedly spend several minutes in
       # cook restore for later builds that are already ~4 min from rust-cache.
-      # Keep the lanes and archive coverage, but skip cook for these targets
-      # until setup-soldr/cook grows a restore-only miss path.
+      # soldr#1480: x64 MSVC now builds in ~1-2 min from rust-cache +
+      # ci-release, while cook restore alone can take ~9 min on a fresh
+      # profile/cache key. Keep the lanes and archive coverage, but skip
+      # cook for these targets until setup-soldr/cook grows a restore-only
+      # miss path.
       - name: Restore cooked dependency cache
         uses: zackees/setup-soldr/cook@fcbf681004d0798db6ee2174c38c511b7e70b3d5
         with:
-          cache: ${{ (inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu') && 'false' || 'true' }}
+          cache: ${{ (inputs.target == 'x86_64-pc-windows-msvc' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu') && 'false' || 'true' }}
           target-dir: target
           flags: --profile ${{ contains(inputs.target, 'pc-windows-msvc') && 'ci-release' || 'ci-nextest' }} --target ${{ inputs.target }} --workspace
 
