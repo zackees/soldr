@@ -51,10 +51,10 @@
 //! non-cross build.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::core::{SoldrError, SoldrPaths};
 
-use super::github::http_client;
 use super::trust;
 
 /// Pinned LLVM version that soldr's managed bootstrap ships for the
@@ -72,6 +72,12 @@ pub const MANAGED_LLVM_VERSION: &str = "21.1.5";
 /// / `llvm-lib` — i.e. the same shape this module returns from
 /// `ensure_llvm_toolchain` after a managed fetch.
 const LLVM_DIR_ENV_VAR: &str = "SOLDR_LLVM_DIR";
+const LLVM_DOWNLOAD_ATTEMPTS: u32 = 4;
+const LLVM_DOWNLOAD_INITIAL_BACKOFF: Duration = Duration::from_secs(5);
+const LLVM_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
+const LLVM_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(LLVM_DOWNLOAD_TIMEOUT_SECS);
+const _: () = assert!(LLVM_DOWNLOAD_ATTEMPTS >= 2);
+const _: () = assert!(LLVM_DOWNLOAD_TIMEOUT_SECS >= 300);
 
 /// Asset descriptor for one host triple. Hard-coded URL + sha256
 /// because the upstream `manifest.json`s are not versioned per-archive
@@ -200,23 +206,7 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
         asset.plat_arch, asset.url,
     );
 
-    let client = http_client()?;
-    let resp = client
-        .get(asset.url)
-        .send()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
-    if !resp.status().is_success() {
-        return Err(SoldrError::Network(format!(
-            "LLVM download {} failed: HTTP {}",
-            asset.url,
-            resp.status()
-        )));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    let bytes = download_llvm_asset(asset).await?;
 
     // Integrity check is mandatory — the upstream archive is large
     // (~95 MiB) and a tampered blob would silently install a hostile
@@ -252,6 +242,62 @@ async fn fetch_managed_llvm(paths: &SoldrPaths) -> Result<PathBuf, SoldrError> {
     std::fs::write(&stamp, MANAGED_LLVM_VERSION)?;
     eprintln!("soldr: extracted LLVM to {}", install_dir.display());
     Ok(bin_dir)
+}
+
+async fn download_llvm_asset(asset: &LlvmAsset) -> Result<Vec<u8>, SoldrError> {
+    let client = llvm_http_client()?;
+    let mut attempt = 1;
+    let mut backoff = LLVM_DOWNLOAD_INITIAL_BACKOFF;
+    loop {
+        let result = download_llvm_asset_once(&client, asset).await;
+        match result {
+            Ok(bytes) => return Ok(bytes),
+            Err(err) if attempt < LLVM_DOWNLOAD_ATTEMPTS => {
+                eprintln!(
+                    "soldr: transient error fetching LLVM v{MANAGED_LLVM_VERSION} {} (attempt {attempt}/{LLVM_DOWNLOAD_ATTEMPTS}): {err}; retrying in {:?}",
+                    asset.plat_arch, backoff
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = backoff.saturating_mul(2);
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+fn llvm_http_client() -> Result<reqwest::Client, SoldrError> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(LLVM_DOWNLOAD_TIMEOUT)
+        .http1_only()
+        .user_agent(format!("soldr/{}", crate::core::version()))
+        .build()
+        .map_err(|e| SoldrError::Network(e.to_string()))
+}
+
+async fn download_llvm_asset_once(
+    client: &reqwest::Client,
+    asset: &LlvmAsset,
+) -> Result<Vec<u8>, SoldrError> {
+    let resp = client
+        .get(asset.url)
+        .header(reqwest::header::ACCEPT_ENCODING, "identity")
+        .send()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    if !resp.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "LLVM download {} failed: HTTP {}",
+            asset.url,
+            resp.status()
+        )));
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| SoldrError::Network(e.to_string()))?;
+    Ok(bytes.to_vec())
 }
 
 fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
