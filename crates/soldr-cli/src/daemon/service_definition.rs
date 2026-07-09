@@ -106,8 +106,8 @@ pub(crate) fn install_service_definition_to_dir(
     // `write_service_definition_v2` creates the (privately-permissioned)
     // dir, validates the service name, and writes the `.servicedef.v2`
     // protobuf.
-    let path = write_service_definition_v2(service_root, &definition)
-        .map_err(servicedef_io_error)?;
+    let path =
+        write_service_definition_v2(service_root, &definition).map_err(servicedef_io_error)?;
     debug_assert_eq!(
         path,
         service_definition_path_v2(service_root, SOLDR_DAEMON_SERVICE_NAME)
