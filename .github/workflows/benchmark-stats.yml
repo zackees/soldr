@@ -141,10 +141,23 @@ jobs:
         working-directory: soldr
         run: |
           set -euo pipefail
-          soldr cargo build --release -p soldr-cli
+          # Only the binaries a `soldr cargo build` needs at runtime: the
+          # main CLI, the target-tracking daemon, the RUSTC_WRAPPER shim,
+          # and the embedded zccache CLI trampoline. The toolchain-tool
+          # shims (soldr-shim, soldr-clang-shim) are not exercised by the
+          # canaries and are not reliably emitted by the cached target/
+          # restore, so building the full bin set would spuriously fail
+          # the copy. Build exactly the four required bins.
+          REQUIRED_BINS="soldr soldr-daemon zccache-soldr zccache"
+          build_args=""
+          for bin in $REQUIRED_BINS; do
+            build_args="$build_args --bin $bin"
+          done
+          # shellcheck disable=SC2086
+          soldr cargo build --release -p soldr-cli $build_args
           BIN_DIR="$HOME/soldr-under-test/bin"
           mkdir -p "$BIN_DIR"
-          for bin in soldr soldr-daemon soldr-shim soldr-clang-shim zccache-soldr zccache; do
+          for bin in $REQUIRED_BINS; do
             cp "target/release/$bin" "$BIN_DIR/$bin"
           done
           echo "$BIN_DIR" >> "$GITHUB_PATH"
