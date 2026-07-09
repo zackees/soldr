@@ -110,6 +110,14 @@ struct DoctorZccache {
     backend: &'static str,
     /// Compiled-in `zccache::core::VERSION`.
     version: &'static str,
+    /// Stale per-launch `zccache-daemon*` binary copies under
+    /// `<zccache-root>/*/runtime-binaries/`, left behind by old installs
+    /// or direct standalone zccache CLI use (soldr#1467). Always empty
+    /// on a healthy soldr box — the cache runs embedded in soldr-daemon.
+    stale_runtime_binaries: Vec<String>,
+    /// Running processes whose image name starts with `zccache-daemon`
+    /// (soldr#1467). Best-effort advisory scan; empty on failure.
+    standalone_daemon_processes: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -519,20 +527,184 @@ fn format_age(probed_at_unix: u64) -> String {
     format!("{days} d ago")
 }
 
-/// Collect embedded-zccache info for doctor output (soldr#1368). There
-/// is no externally-resolved zccache binary any more — compile caching
-/// runs through the soldr-daemon embedded service — so this just reports
-/// the compiled-in backend + version.
+/// Collect embedded-zccache info for doctor output (soldr#1368 +
+/// soldr#1467). There is no externally-resolved zccache binary any more —
+/// compile caching runs through the soldr-daemon embedded service — so
+/// this reports the compiled-in backend + version plus an advisory scan
+/// for standalone-zccache leftovers that should not exist on a soldr box.
 fn collect_zccache_bundle() -> Result<DoctorZccache, SoldrError> {
     Ok(DoctorZccache {
         backend: "embedded",
         version: zccache::core::VERSION,
+        stale_runtime_binaries: scan_stale_runtime_binaries(),
+        standalone_daemon_processes: scan_standalone_daemon_processes(),
     })
+}
+
+/// Test seam (soldr#1467): overrides the directory scanned for stale
+/// `*/runtime-binaries/zccache-daemon*` copies. Production default is
+/// the parent of `zccache::core::config::default_cache_dir()` (the
+/// top-level `~/.zccache/` above the per-version subdir).
+pub(crate) const SOLDR_TEST_ZCCACHE_SCAN_ROOT_ENV: &str = "SOLDR_TEST_ZCCACHE_SCAN_ROOT";
+
+/// Test seam (soldr#1467): when set, points at a file with one
+/// `pid name` pair per line that is used INSTEAD of the real process
+/// scan (`tasklist` / `ps`).
+pub(crate) const SOLDR_TEST_PROCESS_LIST_FILE_ENV: &str = "SOLDR_TEST_PROCESS_LIST_FILE";
+
+/// Image-name prefix that identifies a standalone zccache daemon, both
+/// as a process name and as a per-launch runtime-binaries copy.
+const STANDALONE_DAEMON_PREFIX: &str = "zccache-daemon";
+
+/// The directory whose `*/runtime-binaries/` children are scanned for
+/// stale daemon copies. `None` when neither the test seam nor a home
+/// directory resolves.
+fn zccache_scan_root() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os(SOLDR_TEST_ZCCACHE_SCAN_ROOT_ENV) {
+        return Some(PathBuf::from(root));
+    }
+    // `default_cache_dir()` is the *versioned* dir (`~/.zccache/v1.12.x`);
+    // stale copies from other zccache versions live in sibling versioned
+    // dirs, so scan the parent.
+    zccache::core::config::default_cache_dir()
+        .as_path()
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+/// Scan `<root>/*/runtime-binaries/` for `zccache-daemon*` files
+/// (soldr#1467). Best-effort: any I/O failure yields an empty result.
+fn scan_stale_runtime_binaries() -> Vec<String> {
+    zccache_scan_root()
+        .map(|root| scan_stale_runtime_binaries_in(&root))
+        .unwrap_or_default()
+}
+
+/// Pure scan body, seam-testable with any directory.
+fn scan_stale_runtime_binaries_in(root: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let runtime_dir = entry.path().join("runtime-binaries");
+        let Ok(copies) = std::fs::read_dir(&runtime_dir) else {
+            continue;
+        };
+        for copy in copies.flatten() {
+            let name = copy.file_name();
+            if name.to_string_lossy().starts_with(STANDALONE_DAEMON_PREFIX) {
+                found.push(copy.path().display().to_string());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// Best-effort scan for running `zccache-daemon*` processes
+/// (soldr#1467). Honors [`SOLDR_TEST_PROCESS_LIST_FILE_ENV`]; real-scan
+/// failures are silent (empty vec) — the probe is advisory.
+fn scan_standalone_daemon_processes() -> Vec<String> {
+    if let Some(file) = std::env::var_os(SOLDR_TEST_PROCESS_LIST_FILE_ENV) {
+        return std::fs::read_to_string(file)
+            .map(|text| parse_pid_name_lines(&text))
+            .unwrap_or_default();
+    }
+    real_process_scan().unwrap_or_default()
+}
+
+#[cfg(windows)]
+fn real_process_scan() -> Option<Vec<String>> {
+    let mut command = std::process::Command::new("tasklist");
+    command.args(["/FO", "CSV", "/NH"]);
+    suppress_windows_console_window(&mut command);
+    let output = command_output_with_timeout(&mut command, "tasklist /FO CSV /NH").ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_tasklist_csv(&String::from_utf8_lossy(&output.stdout)))
+}
+
+#[cfg(not(windows))]
+fn real_process_scan() -> Option<Vec<String>> {
+    let mut command = std::process::Command::new("ps");
+    command.args(["-eo", "pid=,comm="]);
+    suppress_windows_console_window(&mut command);
+    let output = command_output_with_timeout(&mut command, "ps -eo pid=,comm=").ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(parse_pid_name_lines(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// Format one matching process row; `None` when the image name is not
+/// a standalone zccache daemon.
+fn daemon_process_entry(pid: &str, name: &str) -> Option<String> {
+    let (pid, name) = (pid.trim(), name.trim());
+    if pid.is_empty() || !name.starts_with(STANDALONE_DAEMON_PREFIX) {
+        return None;
+    }
+    Some(format!("{name} (pid {pid})"))
+}
+
+/// Parse `pid name` pairs (one per line): the seam-file format, which is
+/// also exactly what `ps -eo pid=,comm=` emits on Unix.
+fn parse_pid_name_lines(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let (pid, name) = line.trim().split_once(char::is_whitespace)?;
+            daemon_process_entry(pid, name)
+        })
+        .collect()
+}
+
+/// Parse `tasklist /FO CSV /NH` output (Windows): quoted CSV rows with
+/// the image name first and the PID second.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_tasklist_csv(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.trim().trim_matches('"').split("\",\"");
+            let name = fields.next()?;
+            let pid = fields.next()?;
+            daemon_process_entry(pid, name)
+        })
+        .collect()
 }
 
 fn print_zccache_sections(bundle: &DoctorZccache) {
     println!();
     println!("zccache: {} (version {})", bundle.backend, bundle.version);
+    print_standalone_zccache_human(bundle);
+}
+
+/// Warn about standalone-zccache leftovers (soldr#1467); one quiet line
+/// when the box is clean.
+fn print_standalone_zccache_human(bundle: &DoctorZccache) {
+    let daemons = bundle.standalone_daemon_processes.len();
+    let stale = bundle.stale_runtime_binaries.len();
+    if daemons == 0 && stale == 0 {
+        println!("standalone zccache: none detected");
+        return;
+    }
+    let root_hint = zccache_scan_root()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "~/.zccache".to_string());
+    println!(
+        "standalone zccache: {daemons} running daemon process(es) / {stale} stale \
+         runtime-binaries copies — soldr uses the embedded cache only (soldr#1467); \
+         stop the daemons and delete {root_hint}{sep}*{sep}runtime-binaries to clean up.",
+        sep = std::path::MAIN_SEPARATOR,
+    );
+    for proc in &bundle.standalone_daemon_processes {
+        println!("  daemon process: {proc}");
+    }
+    for copy in &bundle.stale_runtime_binaries {
+        println!("  stale copy:     {copy}");
+    }
 }
 
 fn print_soldr_debug_info_human(summary: &DoctorSoldrDebugInfo) {
@@ -737,6 +909,132 @@ fn parse_rustup_list_output(bytes: &[u8]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Guards the `SOLDR_TEST_ZCCACHE_SCAN_ROOT` /
+    /// `SOLDR_TEST_PROCESS_LIST_FILE` seam env vars against parallel
+    /// test interference (standard in-crate pattern, e.g.
+    /// `core::toolchain_resolve`).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// RAII env-var override that restores the previous value on drop.
+    struct EnvGuard {
+        key: &'static str,
+        prior: Option<std::ffi::OsString>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
+            let prior = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, prior }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match self.prior.take() {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    // soldr#1467: a stale per-launch daemon copy under
+    // `<root>/<version>/runtime-binaries/` is reported; unrelated files
+    // in the same tree are not.
+    crate::timed_test!(stale_runtime_binaries_scan_finds_daemon_copies, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let rb = root.path().join("v1.12.14").join("runtime-binaries");
+        std::fs::create_dir_all(&rb).expect("create runtime-binaries");
+        let daemon_copy = rb.join("zccache-daemon.123.exe");
+        std::fs::write(&daemon_copy, b"stub").expect("write daemon copy");
+        std::fs::write(rb.join("zccache.exe"), b"stub").expect("write non-daemon file");
+        std::fs::write(root.path().join("v1.12.14").join("last-used.txt"), b"x")
+            .expect("write sibling file");
+
+        let found = scan_stale_runtime_binaries_in(root.path());
+        assert_eq!(
+            found,
+            vec![daemon_copy.display().to_string()],
+            "scan must report exactly the zccache-daemon copy"
+        );
+    });
+
+    // soldr#1467: a clean root (runtime-binaries absent or without
+    // daemon copies) reports nothing; a missing root is silent.
+    crate::timed_test!(stale_runtime_binaries_scan_empty_when_clean, {
+        let root = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(root.path().join("v1.12.15").join("runtime-binaries"))
+            .expect("create empty runtime-binaries");
+        assert!(scan_stale_runtime_binaries_in(root.path()).is_empty());
+        assert!(scan_stale_runtime_binaries_in(&root.path().join("does-not-exist")).is_empty());
+    });
+
+    // soldr#1467: the `SOLDR_TEST_ZCCACHE_SCAN_ROOT` seam drives the
+    // full scan entry point.
+    crate::timed_test!(stale_runtime_binaries_env_seam_overrides_root, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = tempfile::tempdir().expect("tempdir");
+        let rb = root.path().join("v1.12.14").join("runtime-binaries");
+        std::fs::create_dir_all(&rb).expect("create runtime-binaries");
+        let daemon_copy = rb.join("zccache-daemon.772359644.exe");
+        std::fs::write(&daemon_copy, b"stub").expect("write daemon copy");
+
+        let _guard = EnvGuard::set(SOLDR_TEST_ZCCACHE_SCAN_ROOT_ENV, root.path().as_os_str());
+        assert_eq!(
+            scan_stale_runtime_binaries(),
+            vec![daemon_copy.display().to_string()]
+        );
+    });
+
+    // soldr#1467: the `SOLDR_TEST_PROCESS_LIST_FILE` seam replaces the
+    // real process scan; only `zccache-daemon*` image names match.
+    crate::timed_test!(process_list_seam_reports_daemon_rows, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().expect("tempdir");
+        let list = dir.path().join("procs.txt");
+        std::fs::write(
+            &list,
+            "4242 zccache-daemon.99\n10 cargo\n11 zccache\n12 zccache-daemon.5.exe\n",
+        )
+        .expect("write process list");
+
+        let _guard = EnvGuard::set(SOLDR_TEST_PROCESS_LIST_FILE_ENV, list.as_os_str());
+        assert_eq!(
+            scan_standalone_daemon_processes(),
+            vec![
+                "zccache-daemon.99 (pid 4242)".to_string(),
+                "zccache-daemon.5.exe (pid 12)".to_string(),
+            ]
+        );
+    });
+
+    // soldr#1467: clean seams (empty scan root + empty process list)
+    // produce two empty vecs — the healthy-box baseline.
+    crate::timed_test!(standalone_zccache_probe_clean_baseline_is_empty, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let root = tempfile::tempdir().expect("tempdir");
+        let list = root.path().join("procs.txt");
+        std::fs::write(&list, "").expect("write empty process list");
+
+        let _root_guard = EnvGuard::set(SOLDR_TEST_ZCCACHE_SCAN_ROOT_ENV, root.path().as_os_str());
+        let _list_guard = EnvGuard::set(SOLDR_TEST_PROCESS_LIST_FILE_ENV, list.as_os_str());
+        assert!(scan_stale_runtime_binaries().is_empty());
+        assert!(scan_standalone_daemon_processes().is_empty());
+    });
+
+    // soldr#1467: Windows `tasklist /FO CSV /NH` rows — image name
+    // first, PID second, both quoted.
+    crate::timed_test!(tasklist_csv_parser_filters_daemon_images, {
+        let csv = "\"zccache-daemon.123.exe\",\"4567\",\"Console\",\"1\",\"10,000 K\"\r\n\
+                   \"cargo.exe\",\"99\",\"Console\",\"1\",\"5,000 K\"\r\n\
+                   \"zccache.exe\",\"100\",\"Console\",\"1\",\"5,000 K\"\r\n";
+        assert_eq!(
+            parse_tasklist_csv(csv),
+            vec!["zccache-daemon.123.exe (pid 4567)".to_string()]
+        );
+    });
 
     /// #590: cover the byte formatter at every unit boundary so the
     /// human output stays readable as cache dirs grow.
