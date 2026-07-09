@@ -126,26 +126,31 @@ codegen-units = 1
 # host-side soldr binary used only inside the same cross-build lane —
 # it never ships to a user, never gets downloaded via setup-soldr, and
 # never survives past post-step cleanup. Optimising it for size buys
-# nothing. Dropping LTO + cu=1 saves ~100–130 s per lane on the three
-# darwin/MSVC lanes where bootstrap dominates the critical path.
+# nothing. Dropping opt-level 3, LTO, and cu=1 saves the three
+# darwin/MSVC lanes from compiling an optimized helper binary that is
+# thrown away before the job exits.
 [profile.ci-bootstrap]
 inherits = "release"
+opt-level = 0
 lto = false
 codegen-units = 16
 strip = "none"
 
 # soldr#1357 — fast-compile profile for CI cross-build lanes. Same
 # rationale as ci-bootstrap but applied to Stage B of
-# `_ci-cross-build-linux.yml` where `soldr build --release --target X`
+# `_ci-cross-build-linux.yml` where `soldr build --profile ci-release --target X`
 # spends 5+ min per lane, most of it in single-threaded LLVM codegen +
 # link for the soldr-cli monocrate. CI cross-build artifacts are
 # `soldr-ci-e2e-*` — consumed only by `_ci-target-run.yml` for
 # nextest smoke runs; NOT the shipped `release-soldr-*` /
 # `pypi-soldr-*` artifacts produced by `release-auto.yml` (which
-# stays on `--release` for shipped-binary quality). Keeps
-# `strip = "symbols"` so archive size stays comparable.
+# stays on `--release` for shipped-binary quality). Keep a light
+# optimizer pass so CI still catches optimized-codegen issues without
+# paying full release opt-level 3 on every cross/PEP smoke build.
+# Keeps `strip = "symbols"` so archive size stays comparable.
 [profile.ci-release]
 inherits = "release"
+opt-level = 1
 lto = false
 codegen-units = 16
 strip = "symbols"
