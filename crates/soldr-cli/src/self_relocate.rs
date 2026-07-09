@@ -24,7 +24,14 @@ const LOCK_FILENAME: &str = ".lock";
 const GC_MARKER_FILENAME: &str = ".last-gc";
 const LAST_USED_FILENAME: &str = "last-used";
 const GC_INTERVAL_SECONDS: u64 = 24 * 60 * 60;
-const STALE_RUNTIME_SECONDS: u64 = 14 * 24 * 60 * 60;
+/// Non-current version-residue (relocated soldr / soldr-daemon binary
+/// copies keyed by `v{VERSION}-{hash}`) is collected after 48h of
+/// non-use (soldr#1495 Workstream C). These are cheap to re-materialize
+/// (a single file copy on next use), so a tight window keeps
+/// `~/.soldr/runtime/` from accreting stale toolchain versions without
+/// costing anything on the rare re-use of an older binary. The current
+/// version's dir is always exempt (see `purge_stale_runtime_copies`).
+const STALE_RUNTIME_SECONDS: u64 = 48 * 60 * 60;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 struct RuntimeGcSummary {
@@ -32,6 +39,12 @@ struct RuntimeGcSummary {
     removed_dirs: usize,
     skipped_current_dirs: usize,
     skipped_fresh_dirs: usize,
+    /// Dirs that had no `last-used` ledger stamp and were self-healed
+    /// with a fresh stamp instead of being aged out (soldr#1495): the
+    /// GC is strictly ledger-based, never mtime-based, so an unstamped
+    /// dir is treated as freshly-used this round rather than trusted to
+    /// a filesystem mtime (which lies after archive restores).
+    stamped_dirs: usize,
     failed_dirs: usize,
 }
 
@@ -358,7 +371,19 @@ fn purge_stale_runtime_copies(
             continue;
         }
 
-        let last_used = runtime_copy_last_used(&path).unwrap_or(now);
+        let Some(last_used) = runtime_copy_last_used(&path) else {
+            // No ledger stamp. The GC is strictly ledger-based — never
+            // trust the directory mtime, which lies after an archive
+            // restore (an ancient saved mtime would age out a
+            // freshly-rehydrated dir mid-build; soldr#1495 GHA safety).
+            // Self-heal by stamping `now` and treating the dir as fresh
+            // this round; it becomes eligible 48h from now if it stays
+            // unused. Guarantees stampless dirs neither leak forever nor
+            // get mtime-collected.
+            let _ = fs::write(path.join(LAST_USED_FILENAME), now.to_string());
+            summary.stamped_dirs += 1;
+            continue;
+        };
         if last_used > cutoff {
             summary.skipped_fresh_dirs += 1;
             continue;
@@ -373,16 +398,16 @@ fn purge_stale_runtime_copies(
     Ok(summary)
 }
 
+/// Read the `last-used` ledger stamp for a runtime copy. Returns `None`
+/// when the stamp is absent or unparseable — deliberately with **no
+/// mtime fallback**: filesystem mtimes survive archive save/restore and
+/// would let a stale saved timestamp age out a freshly-materialized dir
+/// (soldr#1495 Workstream C). Callers treat `None` as "unknown → keep
+/// and self-heal", never as "old".
 fn runtime_copy_last_used(path: &Path) -> Option<u64> {
     fs::read_to_string(path.join(LAST_USED_FILENAME))
         .ok()
         .and_then(|raw| raw.trim().parse::<u64>().ok())
-        .or_else(|| {
-            fs::metadata(path)
-                .ok()
-                .and_then(|metadata| metadata.modified().ok())
-                .and_then(system_time_to_unix_seconds)
-        })
 }
 
 fn current_unix_seconds() -> Result<u64, SoldrError> {
@@ -390,12 +415,6 @@ fn current_unix_seconds() -> Result<u64, SoldrError> {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .map_err(|e| SoldrError::Other(format!("system clock is before unix epoch: {e}")))
-}
-
-fn system_time_to_unix_seconds(time: SystemTime) -> Option<u64> {
-    time.duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
 }
 
 fn same_path(a: &Path, b: &Path) -> bool {
@@ -652,5 +671,99 @@ mod tests {
             fs::read_to_string(root.join(GC_MARKER_FILENAME)).expect("read marker"),
             "100"
         );
+    }
+
+    // soldr#1495 Workstream C: the version-residue window is 48h.
+    #[test]
+    fn stale_runtime_threshold_is_48_hours() {
+        assert_eq!(STALE_RUNTIME_SECONDS, 48 * 60 * 60);
+    }
+
+    // soldr#1495 GHA safety: the GC is strictly ledger-based. A dir whose
+    // filesystem mtime is ancient but whose `last-used` stamp is fresh
+    // must be KEPT — mtimes lie after an archive restore, the ledger
+    // stamp is authoritative.
+    #[test]
+    fn gc_trusts_ledger_stamp_not_mtime() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("runtime").join("soldr-self");
+        fs::create_dir_all(&root).expect("create runtime root");
+        // Fresh ledger stamp (95), well within a 50s window ending at now=100.
+        let restored = seed_runtime_dir(&root, "restored", 95);
+        // The dir itself is old on disk, but the ledger says fresh.
+        let old_stamp = seed_runtime_dir(&root, "genuinely-old", 10);
+
+        let summary = purge_stale_runtime_copies(&root, None, 100, 50).expect("runtime gc");
+
+        assert!(
+            restored.exists(),
+            "a dir with a fresh ledger stamp must be kept regardless of mtime"
+        );
+        assert!(
+            !old_stamp.exists(),
+            "a dir with a stale ledger stamp must be collected"
+        );
+        assert_eq!(summary.removed_dirs, 1);
+        assert_eq!(summary.skipped_fresh_dirs, 1);
+    }
+
+    // soldr#1495 GHA safety: a dir with NO ledger stamp is never
+    // mtime-aged-out. It is self-healed with a fresh stamp and kept this
+    // round (becomes eligible 48h later if it stays unused), so a
+    // freshly-materialized-but-unstamped dir can never be swept mid-build.
+    #[test]
+    fn gc_self_heals_unstamped_dir_instead_of_mtime_aging() {
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("runtime").join("soldr-self");
+        fs::create_dir_all(&root).expect("create runtime root");
+        // Dir with content but no `last-used` file at all.
+        let unstamped = root.join("no-stamp");
+        fs::create_dir_all(&unstamped).expect("create dir");
+        fs::write(unstamped.join("soldr.exe"), b"bin").expect("write bin");
+
+        let summary = purge_stale_runtime_copies(&root, None, 1_000_000, 50).expect("runtime gc");
+
+        assert!(unstamped.exists(), "unstamped dir must not be collected");
+        assert_eq!(summary.stamped_dirs, 1);
+        assert_eq!(summary.removed_dirs, 0);
+        let stamp = fs::read_to_string(unstamped.join(LAST_USED_FILENAME))
+            .expect("self-healed stamp written");
+        assert_eq!(stamp, "1000000", "self-heal stamps `now`");
+    }
+
+    // soldr#1495 GHA safety, structural: the version-residue GC operates
+    // only on the `runtime/` sub-tree under `~/.soldr/`. The compile
+    // cache (`~/.soldr/cache/`, what CI rehydrates via `soldr load`)
+    // lives in a sibling tree and is never walked, so a rehydrated warm
+    // cache — however old its saved timestamps — is untouched.
+    #[test]
+    fn gc_never_touches_the_compile_cache_tree() {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+
+        // A rehydrated compile cache with an ancient stamp/mtime.
+        let cache_file = paths.cache.join("artifacts").join("blob.bin");
+        fs::create_dir_all(cache_file.parent().unwrap()).expect("cache dir");
+        fs::write(&cache_file, b"warm-artifact").expect("write cache");
+
+        // A genuinely stale runtime copy that SHOULD be collected.
+        let self_root = runtime_root(&paths);
+        fs::create_dir_all(&self_root).expect("self root");
+        let stale = seed_runtime_dir(&self_root, "v0.0.0-old", 10);
+
+        // The self-runtime GC root and the cache root are disjoint sub-trees.
+        assert!(
+            !runtime_root(&paths).starts_with(&paths.cache)
+                && !daemon_runtime_root(&paths).starts_with(&paths.cache),
+            "runtime GC roots must live outside the compile cache tree"
+        );
+
+        purge_stale_runtime_copies(&self_root, None, 100, 50).expect("runtime gc");
+
+        assert!(
+            cache_file.exists(),
+            "the compile cache must never be touched by the runtime GC"
+        );
+        assert!(!stale.exists(), "the stale runtime copy is still collected");
     }
 }
