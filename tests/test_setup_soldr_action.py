@@ -235,6 +235,26 @@ def test_cross_build_nextest_archive_uses_ci_nextest_profile() -> None:
     assert 'strip = "none"' in cargo_toml
 
 
+def test_ci_only_profiles_avoid_full_release_codegen() -> None:
+    cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
+
+    ci_bootstrap = re.search(
+        r"(?ms)^\[profile\.ci-bootstrap\]\n(?P<body>.*?)(?=^\[)",
+        cargo_toml,
+    )
+    ci_release = re.search(
+        r"(?ms)^\[profile\.ci-release\]\n(?P<body>.*?)(?=^\[)",
+        cargo_toml,
+    )
+
+    assert ci_bootstrap is not None
+    assert ci_release is not None
+    assert "opt-level = 0" in ci_bootstrap.group("body")
+    assert "lto = false" in ci_bootstrap.group("body")
+    assert "opt-level = 1" in ci_release.group("body")
+    assert "lto = false" in ci_release.group("body")
+
+
 def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
