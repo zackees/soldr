@@ -10,6 +10,7 @@ use super::{home_dir, non_empty_env_path, soldr_root_from_env_var};
 use super::{SoldrError, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR};
 
 pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
+const CARGO_ABORT_LOG_FILE: &str = "cargo-aborts.jsonl";
 
 #[derive(Clone)]
 pub struct SoldrPaths {
@@ -90,6 +91,10 @@ impl SoldrPaths {
         std::fs::create_dir_all(&self.pinned_bin)?;
         std::fs::create_dir_all(&self.cache)?;
         Ok(())
+    }
+
+    pub fn cargo_abort_log(&self) -> PathBuf {
+        self.root.join("logs").join(CARGO_ABORT_LOG_FILE)
     }
 
     /// Per-version state root — `<root>/v<MANAGED_SHIM_VERSION>/`.

@@ -96,6 +96,85 @@ fn generate_build_session_id() -> u64 {
     (high << 32) | low
 }
 
+struct CargoAbortLogRequest<'a> {
+    paths: &'a SoldrPaths,
+    session_id: u64,
+    repo_root: &'a Path,
+    started_at_ms: i64,
+    ended_at_ms: i64,
+    args: &'a [String],
+    timeout: bool,
+    cleanup: CargoAbortCleanupReport,
+    message: &'a str,
+}
+
+fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, SoldrError> {
+    let CargoAbortLogRequest {
+        paths,
+        session_id,
+        repo_root,
+        started_at_ms,
+        ended_at_ms,
+        args,
+        timeout,
+        cleanup,
+        message,
+    } = request;
+    let path = paths.cargo_abort_log();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let retry_without_cache: Vec<&str> = ["soldr", "--no-cache", "cargo"]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .collect();
+    let retry_with_zccache_disabled: Vec<&str> = ["soldr", "cargo"]
+        .into_iter()
+        .chain(args.iter().map(String::as_str))
+        .collect();
+    let record = serde_json::json!({
+        "schema_version": 1,
+        "event": "cargo_abort",
+        "ts_ms": ended_at_ms,
+        "session_id": session_id,
+        "repo_root": repo_root.display().to_string(),
+        "started_at_ms": started_at_ms,
+        "ended_at_ms": ended_at_ms,
+        "elapsed_ms": (ended_at_ms - started_at_ms).max(0),
+        "timeout": timeout,
+        "cargo_args": args,
+        "message": message,
+        "cleanup": {
+            "orphan_rmetas_pruned": cleanup.orphan_rmetas_pruned,
+            "incremental_dirs_removed": cleanup.incremental_dirs_removed,
+        },
+        "recovery": {
+            "inspect_logs": ["soldr", "logs", "paths"],
+            "retry_without_cache": {
+                "argv": retry_without_cache,
+            },
+            "retry_with_zccache_disabled": {
+                "env": { "ZCCACHE_DISABLE": "1" },
+                "argv": retry_with_zccache_disabled,
+            },
+            "clean_hint": ["soldr", "--no-cache", "cargo", "clean", "-p", "<crate>"],
+            "timeout_env": {
+                "cargo_wait": CARGO_WAIT_TIMEOUT_ENV_VAR,
+                "compile_reply": "SOLDR_COMPILE_REPLY_TIMEOUT_SECS",
+            },
+        },
+    });
+    let line = serde_json::to_string(&record)
+        .map_err(|err| SoldrError::Other(format!("serialize cargo abort log: {err}")))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    writeln!(file, "{line}")?;
+    Ok(path)
+}
+
 fn new_build_record(
     session_id: u64,
     repo_root: String,
@@ -1050,9 +1129,10 @@ fn augment_aborted_cargo_error(
     if timeout {
         message.push_str(
             "; if the next build still stalls, run `soldr --no-cache cargo clean -p <crate>` \
-             or remove the affected target/*/incremental directory, then retry with \
-             `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` lowered \
-             while diagnosing",
+             or remove the affected target/*/incremental directory, then retry the same command \
+             as `soldr --no-cache cargo <same args>` or with `ZCCACHE_DISABLE=1`; use \
+             `soldr logs paths` to inspect durable logs, and lower \
+             `SOLDR_CARGO_WAIT_TIMEOUT_SECS` or `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` while diagnosing",
         );
     }
     SoldrError::Other(message)
@@ -1598,7 +1678,24 @@ pub(crate) async fn run_cargo_front_door(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
                 );
             }
-            return Err(augment_aborted_cargo_error(err, cleanup, timeout));
+            let augmented = augment_aborted_cargo_error(err, cleanup, timeout);
+            match append_cargo_abort_log(CargoAbortLogRequest {
+                paths: &paths,
+                session_id,
+                repo_root: &session_repo_root,
+                started_at_ms: session_started_at_ms,
+                ended_at_ms,
+                args,
+                timeout,
+                cleanup,
+                message: &augmented.to_string(),
+            }) {
+                Ok(path) => eprintln!("soldr: cargo abort details written to {}", path.display()),
+                Err(log_err) => {
+                    eprintln!("soldr warning: failed to write cargo abort log: {log_err}")
+                }
+            }
+            return Err(augmented);
         }
     };
     // Extract whatever stderr text we captured BEFORE the success
