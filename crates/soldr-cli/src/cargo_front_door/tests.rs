@@ -170,6 +170,7 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
         timeout: true,
         cleanup,
         message: "cargo timed out",
+        auto_retry_planned: true,
     })
     .expect("append cargo abort log");
 
@@ -184,6 +185,7 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
     assert_eq!(record["event"], serde_json::Value::from("cargo_abort"));
     assert_eq!(record["session_id"], serde_json::Value::from(42));
     assert_eq!(record["timeout"], serde_json::Value::from(true));
+    assert_eq!(record["auto_retry_planned"], serde_json::Value::from(true));
     assert_eq!(record["elapsed_ms"], serde_json::Value::from(1_500));
     assert_eq!(
         record["cleanup"]["orphan_rmetas_pruned"],
@@ -204,6 +206,43 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
     assert_eq!(
         record["recovery"]["inspect_logs"],
         serde_json::json!(["soldr", "logs", "paths"])
+    );
+});
+
+crate::timed_test!(
+    cargo_timeout_retry_policy_is_compile_like_and_cache_enabled,
+    {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::remove(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR);
+
+        for verb in [
+            "build", "b", "check", "c", "test", "t", "clippy", "doc", "d",
+        ] {
+            assert!(
+                cargo_timeout_retry_allowed(true, &[String::from(verb)]),
+                "{verb} should be eligible for a no-cache timeout retry"
+            );
+        }
+        for verb in ["run", "r", "bench", "install", "metadata", "clean"] {
+            assert!(
+                !cargo_timeout_retry_allowed(true, &[String::from(verb)]),
+                "{verb} should not be retried automatically"
+            );
+        }
+        assert!(
+            !cargo_timeout_retry_allowed(false, &[String::from("build")]),
+            "already no-cache cargo runs should not recurse into another retry"
+        );
+    }
+);
+
+crate::timed_test!(cargo_timeout_retry_policy_honors_disable_env, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::set(CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR, "1");
+
+    assert!(
+        !cargo_timeout_retry_allowed(true, &[String::from("build")]),
+        "{CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR}=1 should disable automatic retry"
     );
 });
 
