@@ -33,8 +33,7 @@
 
 use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
-use crate::daemon::protocol::WireDecodeError;
-use crate::daemon::wire::{prost_tagged_bytes, proto, REDB_TAG_PROST};
+use crate::core::wire::{prost_tagged_bytes, proto, WireDecodeError, REDB_TAG_PROST};
 use prost::Message;
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use std::path::Path;
@@ -87,7 +86,7 @@ fn wire_err(e: WireDecodeError) -> RegistryError {
 /// under it. See `cache_lib::redb_lock` for why the handle holds the
 /// lock for the entire lifetime of the [`Database`]: redb refuses
 /// concurrent in-process opens of the same file and would otherwise
-/// race with [`crate::daemon::db`] (issue #608).
+/// race with `daemon::db` (issue #608).
 fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;

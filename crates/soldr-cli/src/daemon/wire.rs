@@ -1,6 +1,11 @@
-//! Hand-written prost types + conversions for the daemon wire schema
-//! (issue #580). The `.proto` schema lives next door as
-//! [`wire.proto`](./wire.proto); keep the two in sync.
+//! Rust ↔ wire conversions for the daemon wire schema (issue #580).
+//!
+//! The pure-data half — the hand-written prost message types
+//! (`proto`), the `.proto` schema file, the redb row-tag helpers, and
+//! `WireDecodeError` — lives in [`crate::core::wire`] (#1490 Phase 0,
+//! edge E2) and is re-exported here at its historical paths. The
+//! `.proto` schema lives beside the prost types as
+//! `src/core/wire.proto`; keep the two in sync.
 //!
 //! ## Why hand-written instead of `prost-build`
 //!
@@ -39,8 +44,10 @@ use crate::daemon::protocol::{
     WireDecodeError,
 };
 
-#[path = "wire_proto.rs"]
-pub mod proto;
+/// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
+/// edge E2) so `cache_lib` can persist prost-tagged redb rows without
+/// an upward edge into `daemon`.
+pub use crate::core::wire::{prost_tagged_bytes, proto, REDB_TAG_PROST};
 
 use prost::Message as _;
 
@@ -66,25 +73,6 @@ fn vec_to_optional_sha(bytes: &[u8]) -> Result<Option<[u8; 32]>, WireDecodeError
         return Ok(None);
     }
     vec_to_sha(bytes).map(Some)
-}
-
-// =========================================================================
-// Wire-tagged byte for redb persistent rows
-// =========================================================================
-
-/// The 0x01 byte that prefixes every prost-encoded redb row written
-/// by this codebase. Reads look for it; absence (or any other byte)
-/// triggers the legacy-bincode fallback.
-pub const REDB_TAG_PROST: u8 = 0x01;
-
-/// Prepend [`REDB_TAG_PROST`] to a prost-encoded body. Used by every
-/// writer that lands a row into a redb table participating in the
-/// #580 migration.
-pub fn prost_tagged_bytes<M: prost::Message>(message: &M) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + message.encoded_len());
-    out.push(REDB_TAG_PROST);
-    message.encode(&mut out).expect("Vec write is infallible");
-    out
 }
 
 // =========================================================================

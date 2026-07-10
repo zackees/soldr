@@ -1,7 +1,9 @@
 //! Prost wire message + oneof definitions for the daemon IPC schema
 //! (soldr#580). Extracted from `wire.rs` (soldr#1368) to keep files under
-//! the 1,000-LOC guard. Declared as `#[path = "wire_proto.rs"] pub mod proto;`
-//! from `wire.rs`; the `.proto` schema lives beside it as `wire.proto`.
+//! the 1,000-LOC guard; moved to `core` with the rest of the pure wire
+//! schema in #1490 Phase 0. Declared as `#[path = "wire_proto.rs"] pub mod
+//! proto;` from `core/wire.rs`; the `.proto` schema lives beside it as
+//! `wire.proto`.
 
 use prost::{Message, Oneof};
 

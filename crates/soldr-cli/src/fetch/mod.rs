@@ -129,11 +129,9 @@ pub struct FetchResult {
     pub cached: bool,
 }
 
-/// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
-/// state. Source of truth for `SoldrPaths::versioned_root` and
-/// `SoldrPaths::versioned_shims_dir`. See zackees/soldr#743 for the
-/// layout RFC and zackees/soldr#742 for the first consumer.
-pub const MANAGED_SHIM_VERSION: &str = env!("CARGO_PKG_VERSION");
+/// Back-compat re-export: the const lives in `core` so that `core`
+/// has no upward edge into `fetch` (#1490 Phase 0, edge E1).
+pub use crate::core::MANAGED_SHIM_VERSION;
 /// Pinned crgx version that soldr's release pipeline source-builds and
 /// bundles into the combined `.tar.zst` archive (see PR follow-up to
 /// #434 — combined archive now ships zccache + crgx). Also surfaced

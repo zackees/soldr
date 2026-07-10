@@ -18,7 +18,6 @@
 //! decode-time fallback anymore.
 
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 
 /// Protocol version bump rationale:
 ///
@@ -88,22 +87,9 @@ pub const CHUNK_BYTES: usize = 64 * 1024;
 /// fork-zccache path.
 pub const MAX_BODY_BYTES: u32 = 4 * 1024 * 1024;
 
-/// Errors surfaced when decoding wire bytes into the public Rust
-/// types. Wraps prost decode failures plus the shape-validation cases
-/// proto3 cannot express (fixed-length byte arrays, non-empty oneofs).
-#[derive(Debug, Error)]
-pub enum WireDecodeError {
-    #[error("prost decode error: {0}")]
-    Prost(#[from] prost::DecodeError),
-    #[error("invalid SHA-256 length on the wire: expected 32 bytes, got {0}")]
-    InvalidShaLength(usize),
-    #[error("empty {0} oneof — payload missing a discriminant")]
-    EmptyOneof(&'static str),
-    #[error("missing required field: {0}")]
-    MissingField(&'static str),
-    #[error("unknown event kind discriminant: {0}")]
-    UnknownEventKind(u32),
-}
+/// Back-compat re-export: the decode-error type moved to `core::wire`
+/// alongside the prost message types (#1490 Phase 0, edge E2).
+pub use crate::core::wire::WireDecodeError;
 
 #[derive(Debug, Clone)]
 pub enum Request {
@@ -215,7 +201,7 @@ pub enum Request {
 /// * `args[1..]` is the rustc argument list as cargo passed it to the
 ///   wrapper.
 /// * `stdin` is typically empty — rustc reads source from disk. The
-///   wrapper's stdin-spill logic ([`crate::wrapper::spill_stdin_to_content_addressed_file`])
+///   wrapper's stdin-spill logic (`wrapper::spill_stdin_to_content_addressed_file`)
 ///   converts cargo's `-` source-on-stdin probes into a file argument
 ///   *before* the Compile request is built, so the daemon never has to
 ///   shuffle a multi-MB stdin payload across the IPC boundary.
