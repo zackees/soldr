@@ -180,6 +180,26 @@ def test_assert_second_build_is_noop_allow_empty_first_skips_baseline_check(
     assert errors == []
 
 
+def test_assert_incomplete_restore_rebuilds_workspace_unit(mod) -> None:
+    restored = (
+        "       Fresh serde v1.0.219\n"
+        "   Compiling verify-noop v0.1.0 (/tmp/verify-noop)\n"
+        "    Finished `dev` profile in 0.4s\n"
+    )
+    _, second, errors = mod.assert_incomplete_restore_rebuilds(_cold_log(), restored)
+    assert errors == []
+    assert [unit.name for unit in second.first_party_compiles] == ["verify-noop"]
+
+
+def test_assert_incomplete_restore_rejects_false_workspace_fresh(mod) -> None:
+    restored = (
+        "       Fresh verify-noop v0.1.0 (/tmp/verify-noop)\n"
+        "    Finished `dev` profile in 0.04s\n"
+    )
+    _, _, errors = mod.assert_incomplete_restore_rebuilds(_cold_log(), restored)
+    assert any("did not rebuild a first-party unit" in error for error in errors)
+
+
 # ---------------------------------------------------------------------------
 # CLI surface
 # ---------------------------------------------------------------------------
@@ -279,3 +299,25 @@ def test_cli_tolerance_flag_relaxes_third_party_gate(tmp_path: Path) -> None:
         text=True,
     )
     assert ok.returncode == 0, ok.stderr
+
+
+def test_cli_expect_incomplete_restore_requires_workspace_rebuild(tmp_path: Path) -> None:
+    first = _write(tmp_path / "first.log", _cold_log())
+    second = _write(
+        tmp_path / "second.log",
+        "   Compiling verify-noop v0.1.0 (/tmp/verify-noop)\n"
+        "    Finished `dev` profile in 0.4s\n",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT_PATH),
+            str(first),
+            str(second),
+            "--expect-incomplete-restore",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "correctly rebuilt missing primary outputs" in result.stdout

@@ -2,8 +2,8 @@
 """Assert that a thin-v2 ``manifest.v2.json`` is well-formed and on-disk.
 
 This script is the second half of the thin-v2 verifier (issue #237). The
-companion ``assert_thin_noop.py`` only inspects cargo stdout to confirm the
-second build was a no-op. That tells us cargo was happy, but it does not
+companion ``assert_thin_noop.py`` inspects cargo stdout to confirm Cargo's
+fresh/dirty decision. That tells us cargo was correct, but it does not
 prove the Phase 1 contract: that soldr-cli emitted a ``manifest.v2.json``
 next to the bundle that truthfully enumerates the files present and never
 re-lists any of the artifact categories thin-v2 is supposed to drop
@@ -59,6 +59,10 @@ _DROPPED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("macOS dSYM bundle", re.compile(r"\.dSYM(/|$)")),
     ("build-script binary (Unix)", re.compile(r"(^|/)build-script-build$")),
     ("build-script binary (Windows)", re.compile(r"(^|/)build-script-build\.exe$")),
+    (
+        "fingerprint diagnostic JSON",
+        re.compile(r"(^|/)\.fingerprint/[^/]+/[^/]+\.json$"),
+    ),
 ]
 
 

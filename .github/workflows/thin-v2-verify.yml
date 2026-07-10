@@ -1,10 +1,10 @@
 # Verifier workflow for the thin-v2 target-cache slice (issue #237, Phase 3).
 #
 # What this gate proves:
-#   With SOLDR_TARGET_CACHE_PROFILE=thin-v2, building a workspace, then
-#   building it again with the slice in place, must report a no-op on the
-#   second pass. If cargo prints "Compiling <crate>" lines on the second
-#   build, the thin slice is missing fingerprint state.
+#   With SOLDR_TARGET_CACHE_PROFILE=thin-v2, build a workspace, delete its
+#   target directory, and restore the slice with the warm-sentinel bypass
+#   disabled. Because thin-v2 intentionally omits primary rlib/rmeta outputs,
+#   Cargo must rebuild the workspace unit rather than report it Fresh.
 #
 # Why this is informational for now:
 #   This is the first end-to-end gate. Treat it as an early-warning signal
@@ -51,7 +51,7 @@ permissions:
 
 jobs:
   verify:
-    name: thin-v2 second-build no-op (${{ matrix.target }})
+    name: thin-v2 fresh-target restore (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     continue-on-error: true # informational while we iterate; see header.
     strategy:
@@ -100,6 +100,8 @@ jobs:
           # Pin a deterministic small dep so the cold build does meaningful
           # work the verifier can recognize as a baseline.
           soldr cargo add serde --no-default-features --features derive
+          printf '%s\n' 'fn main() { println!("cargo:rerun-if-changed=build-input.txt"); }' > build.rs
+          printf '%s\n' 'thin-v2 build-script input' > build-input.txt
 
       - name: Reset thin-v2 bundle dir
         run: |
@@ -118,10 +120,16 @@ jobs:
           set -o pipefail
           soldr cargo build --locked -v 2>&1 | tee first.log
 
-      - name: Second (warm) build — must be a no-op
+      - name: Delete target before restore
+        run: rm -rf "${{ runner.temp }}/verify-noop/target"
+
+      - name: Second (fresh-target restore) - missing primary outputs must rebuild
         working-directory: ${{ runner.temp }}/verify-noop
         env:
           SOLDR_TRUST_INHERITED_ENV: "1"
+          # Force the restore path even though the cold build wrote a matching
+          # in-job warm sentinel. This is the behavior the verifier exists to test.
+          SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "0"
           SOLDR_TARGET_CACHE_MODE: thin
           SOLDR_TARGET_CACHE_PROFILE: thin-v2
           SOLDR_TARGET_CACHE_BACKEND: local
@@ -130,12 +138,12 @@ jobs:
           set -o pipefail
           soldr cargo build --locked -v 2>&1 | tee second.log
 
-      - name: Assert second build was a no-op
+      - name: Assert incomplete restore remained Cargo-dirty
         run: |
           python ${{ github.workspace }}/.github/scripts/assert_thin_noop.py \
             ${{ runner.temp }}/verify-noop/first.log \
             ${{ runner.temp }}/verify-noop/second.log \
-            --allow-empty-second
+            --expect-incomplete-restore
 
       # Validate the thin-v2 manifest the soldr-cli writes alongside the
       # deterministic bundle directory. This is intentionally unconditional:
