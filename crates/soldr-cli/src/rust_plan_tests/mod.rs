@@ -9,5 +9,6 @@ mod manifest;
 mod orphan_rmeta;
 mod plan_build;
 mod prepopulated_target;
+mod restore_gc_protection;
 mod warm_restore;
 mod wire_compat;
