@@ -409,10 +409,10 @@ mod finalize_build_session_tests {
         }
     );
 
-    /// Scaling evidence for soldr#1536: the aggregate path stays flat
-    /// while the historical scan grows with retained history. Printed
-    /// timings (run with `--nocapture`) back the before/after claim;
-    /// only exactness is asserted so shared-CPU noise cannot flake CI.
+    // Scaling evidence for soldr#1536: the aggregate path stays flat
+    // while the historical scan grows with retained history. Printed
+    // timings (run with `--nocapture`) back the before/after claim;
+    // only exactness is asserted so shared-CPU noise cannot flake CI.
     timed_test!(
         finalize_scaling_evidence_across_history_sizes,
         std::time::Duration::from_secs(300),
