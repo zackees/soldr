@@ -8,6 +8,9 @@ operational and integration details.
 
 - `API.md` / `API_BOUNDARY.md` — public soldr CLI contract and the
   invariants that bound it.
+- `BUILD_PROFILE_LEVERS.md` — why `-Zshare-generics=y` and
+  `incremental = true` are deliberately not set in any zackees Rust repo
+  (#1505 audit).
 - `CI_CACHE.md` / `CI_CACHE_PHASE1.md` — usage guide and historical
   rollout notes for `zackees/setup-soldr@v0` in external CI.
 - `NATIVE_SQLITE_BENCHMARK.md` — cross-platform validation of the
