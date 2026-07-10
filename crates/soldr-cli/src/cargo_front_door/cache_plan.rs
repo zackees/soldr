@@ -1,7 +1,7 @@
 use crate::cargo_front_door::profile_debug::CargoProfileDebugDefault;
 use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
-use crate::rust_plan::{self, RustArtifactPlanContext};
+use crate::rust_plan::{self, RustArtifactPlanContext, RustPlanRestoreOutcome};
 use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
 use crate::ZccacheSourceArg;
 
@@ -168,12 +168,13 @@ impl CargoCachePlan {
             .or_else(|| super::resolve_target_dir_for_gc(args))
     }
 
-    pub(crate) fn restore_rust_artifacts(&self) -> Result<(), SoldrError> {
+    pub(crate) fn restore_rust_artifacts(&self) -> Result<RustPlanRestoreOutcome, SoldrError> {
         let Some(plan) = self.rust_artifact_plan.as_ref() else {
-            return Ok(());
+            return Ok(RustPlanRestoreOutcome::NotAttempted);
         };
         if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
             eprintln!("{reason}");
+            Ok(RustPlanRestoreOutcome::Skipped)
         } else if let Some(reason) = rust_plan::should_skip_restore_due_to_prepopulated_target(plan)
         {
             // Issue #480: refuse to restore on top of a target/ that cook
@@ -183,10 +184,13 @@ impl CargoCachePlan {
             // cargo build dies on missing rmetas. Skipping restore lets
             // cargo work with what's there.
             eprintln!("{reason}");
+            Ok(RustPlanRestoreOutcome::Skipped)
         } else {
-            rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
+            let summary = rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
+            Ok(RustPlanRestoreOutcome::Restored {
+                restored_file_count: summary.restored_file_count,
+            })
         }
-        Ok(())
     }
 
     pub(crate) fn save_rust_artifacts(&self) -> Result<(), SoldrError> {

@@ -771,7 +771,7 @@ pub(crate) fn run_zccache_rust_plan(
     plan: &RustArtifactPlanContext,
     operation: &'static str,
     _include_session: bool,
-) -> Result<(), SoldrError> {
+) -> Result<zccache::artifact::RustPlanSummary, SoldrError> {
     // soldr#1368 + zccache#960: rust-plan save/restore runs in-process
     // against the compiled-in zccache artifact library — no `zccache
     // rust-plan` subprocess and no managed daemon. `gha`/`auto` use the
@@ -872,7 +872,45 @@ pub(crate) fn run_zccache_rust_plan(
             );
         }
     }
-    Ok(())
+    Ok(summary)
+}
+
+/// What `restore_rust_artifacts` did this invocation. Consumed by the
+/// pre-cargo target-GC hook (issue #1558): a restore that just
+/// materialized files into a fresh `target/` is a liveness signal for
+/// every restored hash family, so the destructive keep-latest GC pass
+/// must not run before Cargo has evaluated them.
+///
+/// The protection is deliberately scoped to this single invocation —
+/// it is never persisted, so it "expires" the moment the process exits.
+/// The post-build GC pass still runs unconditionally, at which point
+/// Cargo has re-established authoritative `invoked.timestamp` recency
+/// for every live unit and stale families rank (and prune) correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RustPlanRestoreOutcome {
+    /// No rust-plan is active (target cache disabled) — nothing restored.
+    NotAttempted,
+    /// A plan is active but restore was skipped (warm-restore sentinel
+    /// or prepopulated-target guard). The target tree was not touched.
+    Skipped,
+    /// `rust-plan restore` ran; `restored_file_count` files were
+    /// materialized into the target dir from the verified bundle.
+    Restored { restored_file_count: u64 },
+}
+
+impl RustPlanRestoreOutcome {
+    /// Number of files the restore just materialized, when a verified
+    /// restore actually ran and produced at least one file. `None` for
+    /// every other state (no plan, skip, empty restore) — callers fall
+    /// back to the existing GC behavior in those cases.
+    pub(crate) fn materialized_file_count(&self) -> Option<u64> {
+        match self {
+            RustPlanRestoreOutcome::Restored {
+                restored_file_count,
+            } if *restored_file_count > 0 => Some(*restored_file_count),
+            _ => None,
+        }
+    }
 }
 
 /// Schema for `<thin-root>/manifest.v2.json`.

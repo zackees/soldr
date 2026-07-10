@@ -47,7 +47,7 @@ mod subcommand;
 mod target;
 mod zig_shim;
 
-use cache_plan::CargoCachePlan;
+pub(crate) use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
@@ -1125,6 +1125,49 @@ fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPrune
     }
 }
 
+/// Pre-cargo target-GC pass (#485), made restore-aware for issue #1558.
+///
+/// The keep-latest prune ranks hash families by recency and keeps only
+/// one family per artifact prefix. A rust-plan restore into a fresh
+/// `target/` legitimately materializes multiple live hash families per
+/// prefix (build-dependency vs. normal-dependency variants of the same
+/// crate, differing feature unification), all carrying the bundle's
+/// preserved timestamps. Running the destructive pass between the
+/// restore and the cargo launch therefore discarded families Cargo was
+/// about to declare Fresh, converting a correct restore into a wave of
+/// `Compiling` units ("target GC pruning 64 restored hash families").
+///
+/// When the immediately preceding verified restore materialized at
+/// least one file, the pass is skipped for this invocation only:
+/// * The protection is keyed to the verified plan — the restore itself
+///   validated toolchain/target/profile/inputs via the plan cache key,
+///   and it only runs into a target with zero populated `.fingerprint/`
+///   dirs (the #480 guard), so the tree content IS the verified bundle.
+/// * It expires conservatively — nothing is persisted; the post-build
+///   GC pass still runs unconditionally, after Cargo has re-established
+///   authoritative `invoked.timestamp` recency, so genuinely stale
+///   families are still pruned in the same build.
+/// * Unknown or partial state (no plan, skipped restore, zero files
+///   restored, restore error) falls back to today's GC behavior.
+///
+/// Returns `None` when the pass was skipped, otherwise the prune
+/// outcome for the caller to render.
+pub(crate) fn run_pre_cargo_target_gc(
+    target_dir: &std::path::Path,
+    restore_outcome: &crate::rust_plan::RustPlanRestoreOutcome,
+) -> Option<crate::cache_lib::auto_target_gc::AutoPruneOutcome> {
+    if let Some(restored) = restore_outcome.materialized_file_count() {
+        eprintln!(
+            "soldr: target-gc (before): skipped for {}; rust-plan restore just \
+             materialized {restored} file(s) — deferring to the post-build pass so \
+             cargo evaluates the restored hash families first (#1558)",
+            target_dir.display()
+        );
+        return None;
+    }
+    Some(auto_prune_target(target_dir, AutoPrunePhase::Before))
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct CargoAbortCleanupReport {
     orphan_rmetas_pruned: usize,
@@ -1674,7 +1717,7 @@ pub(crate) async fn run_cargo_front_door(
             }
         }
     }
-    cache_plan.restore_rust_artifacts()?;
+    let restore_outcome = cache_plan.restore_rust_artifacts()?;
 
     // Target-registry memoization for the wrapper hot path (#440).
     // Without this, every rustc invocation re-opens redb and writes
@@ -1696,11 +1739,18 @@ pub(crate) async fn run_cargo_front_door(
     // Uses the rust_plan target_dir when available so the hook respects
     // any CARGO_TARGET_DIR / --target-dir override the same way cargo
     // and rust_plan do.
+    //
+    // Restore-aware since issue #1558: when the verified rust-plan
+    // restore above just materialized files into a fresh target/, the
+    // destructive keep-latest pass is skipped so Cargo — the freshness
+    // authority — evaluates the restored hash families first. See
+    // `run_pre_cargo_target_gc`.
     if build_like_cargo && !gc_opt_out.before {
         let target_dir = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir.as_deref() {
-            let outcome = auto_prune_target(dir, AutoPrunePhase::Before);
-            emit_auto_prune_summary(&outcome);
+            if let Some(outcome) = run_pre_cargo_target_gc(dir, &restore_outcome) {
+                emit_auto_prune_summary(&outcome);
+            }
         }
     }
 
