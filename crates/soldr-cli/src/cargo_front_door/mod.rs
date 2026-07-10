@@ -1080,6 +1080,49 @@ fn resolve_target_dir_for_gc(args: &[String]) -> Option<std::path::PathBuf> {
     Some(manifest_dir.join("target"))
 }
 
+fn apply_target_registry_memo(
+    command: &mut std::process::Command,
+    target_dir: &std::path::Path,
+    paths: &SoldrPaths,
+) {
+    // `cargo clean` removes target/ before the next soldr invocation. The
+    // future path is still authoritative and the registry accepts paths that
+    // do not exist yet, so absence must not disable wrapper memoization.
+    let recorded = canonicalize_future_path(target_dir);
+    let db_path = crate::cache_lib::data_db_path(paths);
+    if let Ok(registry) = crate::cache_lib::target_registry::TargetRegistry::open(&db_path) {
+        let _ = registry.upsert(&recorded);
+    }
+    command.env(
+        crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
+        recorded.as_os_str(),
+    );
+}
+
+fn canonicalize_future_path(path: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return canonical;
+    }
+
+    let mut missing = Vec::new();
+    let mut ancestor = path;
+    while let Some(name) = ancestor.file_name() {
+        missing.push(name.to_os_string());
+        let Some(parent) = ancestor.parent() else {
+            break;
+        };
+        if let Ok(mut canonical) = std::fs::canonicalize(parent) {
+            for component in missing.iter().rev() {
+                canonical.push(component);
+            }
+            return canonical;
+        }
+        ancestor = parent;
+    }
+
+    path.to_path_buf()
+}
+
 fn emit_auto_prune_summary(outcome: &crate::cache_lib::auto_target_gc::AutoPruneOutcome) {
     if let Some(line) = render_summary(outcome) {
         eprintln!("{line}");
@@ -1662,19 +1705,7 @@ pub(crate) async fn run_cargo_front_door(
     if build_like_cargo {
         let target_dir_for_memo: Option<std::path::PathBuf> = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir_for_memo.as_deref() {
-            if dir.is_dir() {
-                let canon = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-                let db_path = crate::cache_lib::data_db_path(&paths);
-                if let Ok(registry) =
-                    crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
-                {
-                    let _ = registry.upsert(&canon);
-                }
-                command.env(
-                    crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
-                    canon.as_os_str(),
-                );
-            }
+            apply_target_registry_memo(&mut command, dir, &paths);
         }
     }
 

@@ -56,6 +56,82 @@ fn command_env_override(
         .map(|(_, value)| value.map(OsString::from))
 }
 
+crate::timed_test!(target_registry_memo_is_exported_for_missing_target_dir, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    paths.ensure_dirs().expect("soldr dirs");
+    let target = root.path().join("workspace").join("target");
+    let canonical_target = std::fs::canonicalize(root.path())
+        .expect("canonical temp root")
+        .join("workspace")
+        .join("target");
+    assert!(!target.exists(), "test requires a clean target directory");
+
+    let mut command = std::process::Command::new("cargo");
+    apply_target_registry_memo(&mut command, &target, &paths);
+
+    assert_eq!(
+        command_env_override(
+            &command,
+            crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
+        ),
+        Some(Some(canonical_target.clone().into_os_string())),
+        "the cargo child needs the memo marker before cargo creates target/",
+    );
+    assert!(
+        !target.exists(),
+        "memoization must not create target/ as a side effect"
+    );
+
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(
+        &crate::cache_lib::data_db_path(&paths),
+    )
+    .expect("target registry");
+    assert!(
+        registry
+            .get(&canonical_target)
+            .expect("registry read")
+            .is_some(),
+        "the front door should record the future target path once"
+    );
+});
+
+crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    paths.ensure_dirs().expect("soldr dirs");
+    let workspace = root.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("nested")).expect("workspace dirs");
+    let lexical_target = workspace.join("nested").join("..").join("target");
+    let canonical_target = std::fs::canonicalize(&workspace)
+        .expect("canonical workspace")
+        .join("target");
+    assert!(!canonical_target.exists(), "test requires a clean target");
+
+    let mut command = std::process::Command::new("cargo");
+    apply_target_registry_memo(&mut command, &lexical_target, &paths);
+
+    assert_eq!(
+        command_env_override(
+            &command,
+            crate::wrapper_target::TARGET_REGISTRY_RECORDED_ENV_VAR,
+        ),
+        Some(Some(canonical_target.clone().into_os_string())),
+    );
+    let registry = crate::cache_lib::target_registry::TargetRegistry::open(
+        &crate::cache_lib::data_db_path(&paths),
+    )
+    .expect("target registry");
+    assert!(
+        registry
+            .get(&canonical_target)
+            .expect("registry read")
+            .is_some(),
+        "the future target must use the same key it gets after creation"
+    );
+    assert_eq!(registry.len().expect("registry length"), 1);
+});
+
 #[test]
 fn cargo_wait_timeout_uses_positive_env_override_only() {
     let _lock = ENV_LOCK.lock().unwrap();
