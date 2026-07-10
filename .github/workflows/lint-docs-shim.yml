@@ -1,0 +1,31 @@
+# Inverse-path-filter shim for the required "Lint" status check (#1507).
+#
+# ci.yml skips entirely on markdown-only changes (`paths-ignore:
+# ['*.md', '**/*.md']`), but branch protection requires the "Lint"
+# check. A required check that never reports sits in the "expected"
+# state forever, and GitHub's admin merge override cannot bypass
+# expected checks — so docs-only PRs were unmergeable (first hit by
+# PR #1506).
+#
+# This workflow is the documented GitHub workaround: same job name,
+# exactly inverse path filter, no-op body.
+#   - md-only PR   → only this shim runs → "Lint" reports success.
+#   - mixed PR     → both run; the real Lint in ci.yml still gates.
+#   - code-only PR → only the real Lint runs; shim stays silent.
+name: CI (docs shim)
+
+on:
+  pull_request:
+    paths:
+      - '*.md'
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "markdown-only change — Lint satisfied by docs shim (see .github/workflows/lint-docs-shim.yml)"
