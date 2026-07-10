@@ -11,7 +11,7 @@ use std::{
 };
 
 pub(crate) const RELOCATED_EXE_ENV_VAR: &str = "SOLDR_RELOCATED_EXE";
-pub(crate) const ORIGINAL_EXE_ENV_VAR: &str = "SOLDR_ORIGINAL_EXE";
+pub const ORIGINAL_EXE_ENV_VAR: &str = "SOLDR_ORIGINAL_EXE";
 pub(crate) const FORCE_RELOCATION_ENV_VAR: &str = "SOLDR_TEST_SELF_RELOCATE_FORCE";
 
 const RUNTIME_DIR: &str = "runtime";
@@ -48,7 +48,7 @@ struct RuntimeGcSummary {
     failed_dirs: usize,
 }
 
-pub(crate) fn maybe_reexec_from_runtime(raw_args: &[String]) -> Result<Option<i32>, SoldrError> {
+pub fn maybe_reexec_from_runtime(raw_args: &[String]) -> Result<Option<i32>, SoldrError> {
     if !relocation_requested() || relocation_guard_active() {
         return Ok(None);
     }
@@ -86,7 +86,7 @@ pub(crate) fn run_periodic_runtime_gc(paths: &SoldrPaths, current_exe: Option<&P
 /// installer) — uninstall/upgrade/rm of the source no longer needs to
 /// wait for the daemon to exit. Returns `daemon_src` unchanged if the
 /// source already lives under the daemon-runtime root.
-pub(crate) fn ensure_daemon_relocated(
+pub fn ensure_daemon_relocated(
     paths: &SoldrPaths,
     daemon_src: &Path,
 ) -> Result<PathBuf, SoldrError> {
@@ -151,7 +151,7 @@ pub(crate) fn exe_depends_on_bundled_wheel_libs(exe: &Path) -> bool {
 /// Periodic GC sweep for the daemon-runtime sub-tree. Same cadence and
 /// stale threshold as the soldr-self GC so a long-lived workspace
 /// can't grow unbounded copies.
-pub(crate) fn run_periodic_daemon_runtime_gc(paths: &SoldrPaths, current_exe: Option<&Path>) {
+pub fn run_periodic_daemon_runtime_gc(paths: &SoldrPaths, current_exe: Option<&Path>) {
     run_periodic_gc_in(&daemon_runtime_root(paths), current_exe);
 }
 

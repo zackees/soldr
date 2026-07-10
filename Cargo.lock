@@ -2761,6 +2761,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "soldr-core",
  "strsim",
  "tar",
  "tempfile",
@@ -2775,6 +2776,22 @@ dependencies = [
  "zccache",
  "zip",
  "zstd",
+]
+
+[[package]]
+name = "soldr-core"
+version = "0.8.4"
+dependencies = [
+ "fs2",
+ "prost",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "url",
+ "wait-timeout",
 ]
 
 [[package]]

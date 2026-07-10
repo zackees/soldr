@@ -1,0 +1,27 @@
+[package]
+name = "soldr-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "soldr foundation: shared types, config, paths, wire schema, defender plumbing, test watchdog"
+publish = false
+
+[dependencies]
+fs2 = { workspace = true }
+prost = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+url = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+wait-timeout = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

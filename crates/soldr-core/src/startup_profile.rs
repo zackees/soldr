@@ -45,13 +45,19 @@ pub(crate) const SOLDR_PROFILE_STARTUP_ENV_VAR: &str = "SOLDR_PROFILE_STARTUP";
 /// and `finish()` right before the exec'/exit. When unset, every
 /// method is a no-op so we don't perturb the measurement of the
 /// non-instrumented path.
-pub(crate) struct WrapperProfile {
+pub struct WrapperProfile {
     enabled: bool,
     start: Option<Instant>,
     /// Pre-allocated to avoid `Vec::push` reallocs in the hot path
     /// when enabled. 16 phases is comfortably more than any
     /// realistic wrapper invocation marks today.
     phases: Vec<(&'static str, Instant)>,
+}
+
+impl Default for WrapperProfile {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WrapperProfile {

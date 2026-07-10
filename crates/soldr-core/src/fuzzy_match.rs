@@ -118,7 +118,7 @@ fn distance_threshold(query: &str) -> usize {
 /// Tie-breaking: ascending distance, then candidate order in the input
 /// list. That's deterministic for tests; the input order in production
 /// is the clap declaration order, which is fine.
-pub(crate) fn suggest_close_match<'a>(query: &str, candidates: &'a [&'a str]) -> Option<&'a str> {
+pub fn suggest_close_match<'a>(query: &str, candidates: &'a [&'a str]) -> Option<&'a str> {
     if query.is_empty() || candidates.is_empty() {
         return None;
     }

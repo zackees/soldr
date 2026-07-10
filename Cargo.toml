@@ -1,12 +1,13 @@
 [workspace]
 resolver = "2"
-# Monocrate. The former soldr-core / soldr-fetch / soldr-cache crates
-# live under `crates/soldr-cli/src/{core,fetch,cache_lib}/` as in-crate
-# modules. A regression guard at
-# `crates/soldr-cli/tests/monocrate_guard.rs` fails the workspace
-# `cargo test` run if anyone re-introduces a second crate.
+# Internal publish=false crate split (#1490, reversing the 2026-05
+# monocrate collapse): `soldr-core` is the foundation crate; the
+# remaining trees split out phase by phase (fetch, cache, daemon).
+# soldr publishes no crates, so workspace membership has no external
+# surface — the old monocrate_guard test was deleted with the split.
 members = [
     "crates/soldr-cli",
+    "crates/soldr-core",
 ]
 # The zccache submodule has its own [workspace] declaration and its
 # own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here
