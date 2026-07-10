@@ -19,10 +19,8 @@
 use crate::cache_lib::auto_target_gc::{auto_prune_target, render_summary, AutoPrunePhase};
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
 use crate::fetch::VersionSpec;
-use crate::trampoline::{refresh_sidecar_after_cargo, try_run_trampoline, TrampolineDecision};
-use crate::trampoline_workspace::{
-    detect_workspace_verb, refresh_workspace_sidecar_after_cargo, try_workspace_trampoline,
-    RawClippyCapture, WorkspaceDecision, WorkspaceVerb,
+use crate::trampoline::{
+    refresh_sidecar_after_cargo, strip_no_trampoline_flag, try_run_trampoline, TrampolineDecision,
 };
 use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
@@ -66,7 +64,7 @@ const BUILD_HISTORY_RETRY_POLL: Duration = Duration::from_millis(25);
 
 // -- Re-exports for cross-module callers --
 //
-// External modules (`gc`, `rust_plan`, `trampoline_workspace`, `main`)
+// External modules (`gc`, `rust_plan`, `main`)
 // reach into `crate::cargo_front_door::*` using the names that existed
 // on the flat file. Re-export them from the sub-modules so the public
 // API is byte-for-byte identical after the split.
@@ -905,8 +903,6 @@ pub(crate) const NO_GC_TARGET_AFTER_FLAG: &str = "--no-gc-target-after";
 /// when set to a non-empty value.
 pub(crate) const NO_GC_TARGET_ENV_VAR: &str = "SOLDR_NO_GC_TARGET";
 
-const TEST_FORCE_WORKSPACE_TRAMPOLINE_ENV_VAR: &str = "SOLDR_TEST_FORCE_WORKSPACE_TRAMPOLINE";
-
 const INHERITED_SOLDR_WORKSPACE_ENV_VARS: &[&str] = &[
     crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
     crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR,
@@ -1363,42 +1359,27 @@ pub(crate) async fn run_cargo_front_door(
         None
     };
 
-    // Workspace-level trampoline (issue #354, Tier L3 of #352). Covers
-    // `build`, `check`, `clippy` — same model as the run trampoline but
-    // multi-output. Skipping these verbs means "exit 0 with no on-disk
-    // changes" (build/check) or "replay captured diagnostics" (clippy).
-    //
-    // The trampoline is suppressed when a fake-cargo test override is set
-    // (`SOLDR_TEST_CARGO_BIN` or `SOLDR_REAL_CARGO`) so the cargo-front-door
-    // integration tests — which intentionally invoke `cargo build` from the
-    // soldr worktree CWD with a fake cargo — never get short-circuited by
-    // a workspace sidecar from a previous real build of the worktree. The
-    // `cargo run` trampoline is left enabled in test mode because the
-    // run-trampoline tests rely on `SOLDR_TEST_CARGO_BIN=<broken>` to
-    // *prove* the fast path took effect.
-    let workspace_plan =
-        if trampoline_plan.is_none() && !workspace_trampoline_suppressed_for_tests() {
-            match detect_workspace_verb(args) {
-                Some(verb) => match try_workspace_trampoline(verb, args)? {
-                    WorkspaceDecision::Skipped(code) => return Ok(code),
-                    WorkspaceDecision::FellThrough(plan) => Some(plan),
-                },
-                None => None,
-            }
-        } else {
-            None
-        };
+    // Workspace build/check/clippy freshness belongs to Cargo. The retired
+    // sidecar path did not model Cargo's complete semantic identity and could
+    // return false Fresh results (#1528). Keep accepting the historical
+    // soldr-only opt-out flag as argument-cleanup compatibility, but always
+    // invoke Cargo for these verbs.
+    let workspace_args = matches!(
+        first_cargo_subcommand(args),
+        Some("build" | "b" | "check" | "c" | "clippy")
+    )
+    .then(|| strip_no_trampoline_flag(args).0);
 
     // Use the cleaned arg vector from here on so `--no-trampoline` is
     // not forwarded to cargo.
     let owned_cleaned_args;
-    let args: &[String] = match (trampoline_plan.as_ref(), workspace_plan.as_ref()) {
+    let args: &[String] = match (trampoline_plan.as_ref(), workspace_args.as_ref()) {
         (Some(plan), _) => {
             owned_cleaned_args = plan.cleaned_args.clone();
             &owned_cleaned_args
         }
-        (None, Some(plan)) => {
-            owned_cleaned_args = plan.cleaned_args.clone();
+        (None, Some(cleaned)) => {
+            owned_cleaned_args = cleaned.clone();
             &owned_cleaned_args
         }
         (None, None) => args,
@@ -1425,8 +1406,8 @@ pub(crate) async fn run_cargo_front_door(
     // background future resolves effectively immediately so the join
     // at `CargoCachePlan::finalize` is free.
     //
-    // We *intentionally* spawn after both trampoline branches above
-    // because those paths exit without spawning cargo, and we don't
+    // We intentionally spawn after the run-trampoline branch above because
+    // that path exits without spawning cargo, and we don't
     // want to start a fetch we'll just drop. `cache_enabled` here is
     // the same flag the original synchronous `CargoCachePlan::prepare`
     // gated on; passing `false` produces a no-op `Disabled` prefetch.
@@ -1723,12 +1704,7 @@ pub(crate) async fn run_cargo_front_door(
         }
     }
 
-    // For clippy fall-through we need to TEE cargo's stdout/stderr so the
-    // user sees diagnostics live AND we have a copy to store in the
-    // sidecar for the next run. For build/check we don't need the output;
-    // just inherit fds while still enforcing the cargo wait timeout.
-    //
-    // We ALSO opt into capture when stderr is not a terminal (CI / Docker
+    // Capture when stderr is not a terminal (CI / Docker
     // / `soldr cargo build 2>file`) so the cargo_diagnostics scanner can
     // recognize the missing-host-tool failure pattern from #422 and
     // rewrap cargo's terse `failed to execute command: (os error 2)`
@@ -1737,11 +1713,7 @@ pub(crate) async fn run_cargo_front_door(
     // since changing stderr to a pipe would force cargo into its
     // non-TTY rendering mode.
     use std::io::IsTerminal;
-    let needs_clippy_capture = matches!(
-        workspace_plan.as_ref().map(|p| p.verb),
-        Some(WorkspaceVerb::Clippy)
-    );
-    let capture_for_diagnostics = !needs_clippy_capture && !std::io::stderr().is_terminal();
+    let capture_for_diagnostics = !std::io::stderr().is_terminal();
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
@@ -1750,23 +1722,14 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
-    let cargo_run_result: Result<
-        (
-            std::process::ExitStatus,
-            Option<RawClippyCapture>,
-            Option<String>,
-        ),
-        SoldrError,
-    > = if needs_clippy_capture {
-        run_command_capturing_clippy(&mut command)
-            .map(|(status, capture)| (status, Some(capture), None))
-    } else if capture_for_diagnostics {
-        run_command_capturing_diagnostic_tail(&mut command)
-            .map(|(status, captured)| (status, None, Some(captured)))
-    } else {
-        run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
-    };
-    let (status, clippy_capture, diagnostic_capture) = match cargo_run_result {
+    let cargo_run_result: Result<(std::process::ExitStatus, Option<String>), SoldrError> =
+        if capture_for_diagnostics {
+            run_command_capturing_diagnostic_tail(&mut command)
+                .map(|(status, captured)| (status, Some(captured)))
+        } else {
+            run_command_inheriting_stdio(&mut command).map(|status| (status, None))
+        };
+    let (status, diagnostic_capture) = match cargo_run_result {
         Ok(outcome) => outcome,
         Err(err) => {
             let timeout = cargo_run_error_is_timeout(&err);
@@ -1839,15 +1802,7 @@ pub(crate) async fn run_cargo_front_door(
             return Err(augmented);
         }
     };
-    // Extract whatever stderr text we captured BEFORE the success
-    // branch moves `clippy_capture` into `refresh_workspace_sidecar_after_cargo`.
-    // Used below in the !status.success() block by cargo_diagnostics.
-    let captured_stderr_for_diagnosis: Option<String> =
-        if let Some(capture) = clippy_capture.as_ref() {
-            Some(String::from_utf8_lossy(&capture.stderr).into_owned())
-        } else {
-            diagnostic_capture
-        };
+    let captured_stderr_for_diagnosis = diagnostic_capture;
 
     // Phase 2: fire BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
@@ -1899,9 +1854,6 @@ pub(crate) async fn run_cargo_front_door(
             if let Some(plan) = trampoline_plan.as_ref() {
                 refresh_sidecar_after_cargo(plan);
             }
-            if let Some(plan) = workspace_plan.as_ref() {
-                refresh_workspace_sidecar_after_cargo(plan, clippy_capture);
-            }
         } else {
             // A non-zero cargo exit can leave orphan `.rmeta` files (rmeta
             // emitted, then rustc aborted before the `.rlib` codegen pass)
@@ -1918,8 +1870,7 @@ pub(crate) async fn run_cargo_front_door(
     // After cargo fails, look at whatever stderr we captured for a
     // recognizable build-script-spawn-ENOENT pattern (#422 — minimal
     // Rust containers without a host C toolchain). The capture
-    // sources are `clippy_capture.stderr` for clippy runs and the
-    // dedicated diagnostic-tail buffer otherwise. TTY users captured
+    // source is the diagnostic-tail buffer. TTY users captured
     // nothing — they see cargo's own error untouched and skip this
     // path.
     if !status.success() {
@@ -1948,40 +1899,7 @@ pub(crate) async fn run_cargo_front_door(
     finish_result?;
     post_cargo_result?;
     drop(trampoline_plan);
-    drop(workspace_plan);
     Ok(status.code().unwrap_or(1))
-}
-
-/// Run cargo while capturing its stdout/stderr into in-memory buffers and
-/// also tee'ing the bytes back to our own stdout/stderr so the user sees
-/// them in real time. Returns the captured buffers plus the exit status so
-/// the sidecar refresh can persist them for the next clippy invocation.
-fn run_command_capturing_clippy(
-    command: &mut std::process::Command,
-) -> Result<(std::process::ExitStatus, RawClippyCapture), SoldrError> {
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    configure_cargo_child_for_timeout(command);
-    let mut child = command.spawn().map_err(|err| {
-        SoldrError::Other(format!("spawn cargo for clippy capture failed: {err}"))
-    })?;
-    let child_stdout = child.stdout.take().expect("piped");
-    let child_stderr = child.stderr.take().expect("piped");
-
-    // Read both streams in parallel using OS threads so neither side
-    // deadlocks if it fills its pipe before the consumer drains it.
-    let stdout_rx = spawn_capture_pipe_reader(child_stdout, CapturePipe::Stdout);
-    let stderr_rx = spawn_capture_pipe_reader(child_stderr, CapturePipe::Stderr);
-
-    let status = wait_for_cargo_child(&mut child, "cargo clippy")?;
-    let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo clippy stdout");
-    let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo clippy stderr");
-    let capture = RawClippyCapture {
-        stdout,
-        stderr,
-        exit_code: status.code().unwrap_or(1),
-    };
-    Ok((status, capture))
 }
 
 fn run_command_inheriting_stdio(
@@ -2015,7 +1933,7 @@ fn run_command_capturing_diagnostic_tail(
     })?;
     let child_stderr = child.stderr.take().expect("piped");
 
-    let stderr_rx = spawn_capture_pipe_reader(child_stderr, CapturePipe::Stderr);
+    let stderr_rx = spawn_capture_pipe_reader(child_stderr);
 
     let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture")?;
     let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
@@ -2023,21 +1941,12 @@ fn run_command_capturing_diagnostic_tail(
     Ok((status, captured))
 }
 
-#[derive(Clone, Copy)]
-enum CapturePipe {
-    Stdout,
-    Stderr,
-}
-
 enum CapturePipeMessage {
     Chunk(Vec<u8>),
     Eof,
 }
 
-fn spawn_capture_pipe_reader<R>(
-    mut reader: R,
-    pipe: CapturePipe,
-) -> std::sync::mpsc::Receiver<CapturePipeMessage>
+fn spawn_capture_pipe_reader<R>(mut reader: R) -> std::sync::mpsc::Receiver<CapturePipeMessage>
 where
     R: std::io::Read + Send + 'static,
 {
@@ -2049,31 +1958,15 @@ where
                 Ok(0) => break,
                 Ok(n) => {
                     let bytes = chunk[..n].to_vec();
-                    match pipe {
-                        CapturePipe::Stdout => {
-                            let stdout = std::io::stdout();
-                            let _ = stdout.lock().write_all(&bytes);
-                        }
-                        CapturePipe::Stderr => {
-                            let stderr = std::io::stderr();
-                            let _ = stderr.lock().write_all(&bytes);
-                        }
-                    }
+                    let stderr = std::io::stderr();
+                    let _ = stderr.lock().write_all(&bytes);
                     let _ = tx.send(CapturePipeMessage::Chunk(bytes));
                 }
                 Err(_) => break,
             }
         }
-        match pipe {
-            CapturePipe::Stdout => {
-                let stdout = std::io::stdout();
-                let _ = stdout.lock().flush();
-            }
-            CapturePipe::Stderr => {
-                let stderr = std::io::stderr();
-                let _ = stderr.lock().flush();
-            }
-        }
+        let stderr = std::io::stderr();
+        let _ = stderr.lock().flush();
         let _ = tx.send(CapturePipeMessage::Eof);
     });
     rx
@@ -2120,27 +2013,6 @@ fn drain_capture_pipe_after_child_exit(
             }
         }
     }
-}
-
-/// Detect a fake-cargo test harness via the same env vars the binaries
-/// resolver consults. When one is set we skip the workspace trampoline so
-/// tests that invoke `cargo build`/`check`/`clippy` from the soldr worktree
-/// CWD never get short-circuited by a stale workspace sidecar in the
-/// repo's own `target/` directory. Tests that explicitly want to exercise
-/// the workspace trampoline path (with a broken-cargo stub proving the
-/// trampoline took effect) set `SOLDR_TEST_FORCE_WORKSPACE_TRAMPOLINE=1`
-/// to opt back in.
-fn workspace_trampoline_suppressed_for_tests() -> bool {
-    if std::env::var_os(TEST_FORCE_WORKSPACE_TRAMPOLINE_ENV_VAR).is_some() {
-        return false;
-    }
-    fn non_empty(name: &str) -> bool {
-        std::env::var_os(name)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    }
-    non_empty(crate::TEST_CARGO_BIN_ENV_VAR)
-        || non_empty(&format!("{}CARGO", crate::REAL_TOOLCHAIN_BINARY_ENV_PREFIX))
 }
 
 /// Decide whether the "did you mean: cargo X?" hint applies to a typed
