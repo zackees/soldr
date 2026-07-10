@@ -249,8 +249,6 @@ pub(crate) fn run_rustc_wrapper(
         // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
         // restores the pre-#1300 hard-fail for CI lanes that want to
         // catch daemon regressions.
-        let compile_started_at_ms = crate::wrapper_target::current_unix_ms();
-        let compile_started = std::time::Instant::now();
         let result =
             match crate::compile_dispatch::compile_via_daemon_detailed(&effective_args[1..]) {
                 Ok(code) => Ok(code),
@@ -262,11 +260,6 @@ pub(crate) fn run_rustc_wrapper(
                 }
                 Err(failure) => Err(failure.into_soldr_error()),
             };
-        crate::wrapper_target::record_compile_end_for_wrapper(
-            &effective_args[2..],
-            compile_started_at_ms,
-            compile_started.elapsed(),
-        );
         return result;
     }
 

@@ -18,6 +18,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use soldr_cli::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR;
+use soldr_cli::compile_dispatch::build_compile_request;
 use soldr_cli::wrapper_target::{
     record_target_dir_in_registry, TargetTouchPath, TARGET_REGISTRY_RECORDED_ENV_VAR,
 };
@@ -108,6 +109,54 @@ fn rustc_args_for(target_root: &Path, crate_name: &str) -> Vec<String> {
         "--emit".to_string(),
         "dep-info,link".to_string(),
     ]
+}
+
+#[test]
+fn session_compile_request_carries_lifecycle_on_compile_connection() {
+    let cache_root = unique_temp_dir("compile-lifecycle-cache");
+    let home_root = unique_temp_dir("compile-lifecycle-home");
+    let workspace = unique_temp_dir("compile-lifecycle-workspace");
+    let _scope = EnvScope::set(&[
+        ("SOLDR_CACHE_DIR", cache_root.as_path()),
+        ("HOME", home_root.as_path()),
+        ("USERPROFILE", home_root.as_path()),
+    ])
+    .add(SOLDR_BUILD_SESSION_ID_ENV_VAR, "4242");
+
+    let mut argv = vec!["/toolchain/bin/rustc".to_string()];
+    argv.extend(rustc_args_for(&workspace, "demo_crate"));
+    let request = build_compile_request(&argv);
+    let lifecycle = request.lifecycle.expect("session lifecycle metadata");
+    assert_eq!(lifecycle.session_id, 4242);
+    assert_eq!(lifecycle.crate_name, "demo_crate");
+    assert!(lifecycle.target_dir.ends_with("target"));
+    assert!(lifecycle.started_at_ms > 0);
+}
+
+#[test]
+fn standalone_compile_request_has_no_lifecycle_metadata() {
+    let workspace = unique_temp_dir("compile-no-lifecycle-workspace");
+    let _scope = EnvScope::set_strs(&[]).remove(SOLDR_BUILD_SESSION_ID_ENV_VAR);
+    let mut argv = vec!["/toolchain/bin/rustc".to_string()];
+    argv.extend(rustc_args_for(&workspace, "demo_crate"));
+    assert!(build_compile_request(&argv).lifecycle.is_none());
+}
+
+#[test]
+fn embedded_wrapper_path_has_no_standalone_compile_telemetry_calls() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for relative in ["src/wrapper.rs", "src/wrapper_target.rs"] {
+        let source = std::fs::read_to_string(manifest.join(relative)).expect("read wrapper source");
+        assert!(
+            !source.contains("record_compile("),
+            "{relative} must not reopen daemon IPC for standalone compile telemetry; \
+             lifecycle metadata belongs on CompileRequest"
+        );
+        assert!(
+            !source.contains("record_compile_end_for_wrapper"),
+            "{relative} must not restore the post-compile telemetry connection"
+        );
+    }
 }
 
 #[test]

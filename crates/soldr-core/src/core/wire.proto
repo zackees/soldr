@@ -29,7 +29,8 @@ message WireRequest {
     WireUnit shutdown = 3;
     WireBuildSessionStart build_session_start = 4;
     WireBuildSessionEnd build_session_end = 5;
-    WireRecordCompile record_compile = 6;
+    // Tag 6 (WireRecordCompile) reserved — lifecycle telemetry moved
+    // onto WireCompileRequest in soldr#1537.
     WireListBuilds list_builds = 7;
     WireListSlowBuilds list_slow_builds = 8;
     // Tag 9 (WireLinkZccache link_zccache) reserved — deleted in
@@ -69,15 +70,6 @@ message WireBuildSessionEnd {
   uint64 session_id = 1;
   int32 exit_code = 2;
   int64 ended_at_ms = 3;
-}
-
-message WireRecordCompile {
-  uint64 session_id = 1;
-  string crate_name = 2;
-  string target_dir = 3;
-  int64 started_at_ms = 4;
-  // Optional via prost's `optional` keyword (proto3 syntax).
-  optional uint64 duration_us = 5;
 }
 
 message WireListBuilds {
@@ -127,6 +119,15 @@ message WireCompileRequest {
   string cwd = 2;
   repeated WireEnvEntry env = 3;
   bytes stdin = 4;
+  optional WireCompileLifecycle lifecycle = 5;
+}
+
+// soldr#1537: compile telemetry rides the existing compile connection.
+message WireCompileLifecycle {
+  uint64 session_id = 1;
+  string crate_name = 2;
+  string target_dir = 3;
+  int64 started_at_ms = 4;
 }
 
 // =========================================================================

@@ -11,10 +11,7 @@ use prost::{Message, Oneof};
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WireRequest {
-    #[prost(
-        oneof = "WireRequestKind",
-        tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15"
-    )]
+    #[prost(oneof = "WireRequestKind", tags = "1,2,3,4,5,7,8,9,10,11,12,13,14,15")]
     pub kind: Option<WireRequestKind>,
 }
 
@@ -30,8 +27,7 @@ pub enum WireRequestKind {
     BuildSessionStart(WireBuildSessionStart),
     #[prost(message, tag = "5")]
     BuildSessionEnd(WireBuildSessionEnd),
-    #[prost(message, tag = "6")]
-    RecordCompile(WireRecordCompile),
+    // Tag 6 (RecordCompile) reserved — folded into Compile in soldr#1537.
     #[prost(message, tag = "7")]
     ListBuilds(WireListBuilds),
     #[prost(message, tag = "8")]
@@ -83,20 +79,6 @@ pub struct WireBuildSessionEnd {
     pub exit_code: i32,
     #[prost(int64, tag = "3")]
     pub ended_at_ms: i64,
-}
-
-#[derive(Clone, PartialEq, Message)]
-pub struct WireRecordCompile {
-    #[prost(uint64, tag = "1")]
-    pub session_id: u64,
-    #[prost(string, tag = "2")]
-    pub crate_name: String,
-    #[prost(string, tag = "3")]
-    pub target_dir: String,
-    #[prost(int64, tag = "4")]
-    pub started_at_ms: i64,
-    #[prost(uint64, optional, tag = "5")]
-    pub duration_us: Option<u64>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -185,6 +167,20 @@ pub struct WireCompileRequest {
     pub env: Vec<WireEnvEntry>,
     #[prost(bytes = "vec", tag = "4")]
     pub stdin: Vec<u8>,
+    #[prost(message, optional, tag = "5")]
+    pub lifecycle: Option<WireCompileLifecycle>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireCompileLifecycle {
+    #[prost(uint64, tag = "1")]
+    pub session_id: u64,
+    #[prost(string, tag = "2")]
+    pub crate_name: String,
+    #[prost(string, tag = "3")]
+    pub target_dir: String,
+    #[prost(int64, tag = "4")]
+    pub started_at_ms: i64,
 }
 
 // -- Response ---------------------------------------------------------

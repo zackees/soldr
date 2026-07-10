@@ -189,9 +189,7 @@ pub fn list_slow_builds(
     }
 }
 
-/// Convenience: build session lifecycle and per-compile fire-and-forget
-/// helpers. Each one is best-effort — if the daemon isn't reachable,
-/// the cargo build still completes; we just lose the timing data.
+/// Best-effort build-session lifecycle helpers.
 pub fn build_session_start(
     paths: &SoldrPaths,
     session_id: u64,
@@ -224,27 +222,6 @@ pub fn build_session_end(
             ended_at_ms,
         },
     )
-}
-
-pub fn record_compile(
-    paths: &SoldrPaths,
-    session_id: u64,
-    crate_name: &str,
-    target_dir: &Path,
-    started_at_ms: i64,
-    duration_us: Option<u64>,
-) {
-    let sock = default_sock_path(paths);
-    let _ = submit_fire_and_forget(
-        &sock,
-        &Request::RecordCompile {
-            session_id,
-            crate_name: crate_name.to_string(),
-            target_dir: target_dir.display().to_string(),
-            started_at_ms,
-            duration_us,
-        },
-    );
 }
 
 /// PR 1 cook-index client surface (#576). PR 2 (`soldr cook`) and PR 3

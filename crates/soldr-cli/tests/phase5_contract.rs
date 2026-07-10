@@ -165,6 +165,7 @@ timed_test!(
                 ("ZCCACHE_CACHE_DIR".to_string(), "/cache".to_string()),
             ],
             stdin: Vec::new(),
+            lifecycle: None,
         };
         let r = Request::Compile(req.clone());
         let bytes = encode_request(&r);
