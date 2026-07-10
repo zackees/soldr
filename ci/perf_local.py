@@ -1,97 +1,81 @@
 #!/usr/bin/env python3
-"""Run arbitrary `cargo` commands against soldr's warmed Docker volumes.
+"""Run Cargo commands in one recycled Docker runner with warm volumes.
 
-Mirrors the `ci/perf_local.py` pattern in zackees/zccache (zccache PR
-#475). The volumes (`soldr-perf-target`, `soldr-perf-cargo-home`) live
-on Linux-native ext4 inside Docker's VFS so cargo's mtime-based
-fingerprint check actually succeeds — Windows + Docker Desktop's WSL2
-9P bind-mount layer rewrites mtimes on every container start, which
-would otherwise force cargo to rebuild the entire workspace each
-invocation.
+The stable ``soldr-perf-local`` container mounts the repository's shared git
+root at ``/repo``. Linked worktrees below that root reuse the same runner by
+changing only the ``docker exec`` working directory. Cargo target state,
+Cargo home, and soldr home live in named volumes and survive runner resets.
 
-Measured on zccache's 21-crate workspace (#593): 6 min no-op rebuild
-with host bind mounts → 1.09 s no-op with named volumes. Same lever
-applies here.
-
-## Usage
+Usage::
 
     uv run --no-project python ci/perf_local.py cargo build --release
     uv run --no-project python ci/perf_local.py cargo test --workspace
-    uv run --no-project python ci/perf_local.py cargo clippy --workspace -- -D warnings
+    uv run --no-project python ci/perf_local.py --status
+    uv run --no-project python ci/perf_local.py --stop
+    uv run --no-project python ci/perf_local.py --reset-runner
+    uv run --no-project python ci/perf_local.py --wipe
 
-Anything after the literal `cargo` token is forwarded verbatim to
-cargo inside the container — `argparse` is intentionally NOT used past
-the `cargo` boundary so flag handling stays unambiguous.
-
-## Volumes
-
-* `soldr-perf-target` → `/work/target` (cargo build state)
-* `soldr-perf-cargo-home` → `/root/.cargo` (cargo registry + downloaded
-  crates)
-* `soldr-perf-soldr-home` → `/root/.soldr` (kept warm; distinct from
-  the test-harness `cook-soldr-home` volume that `bench/cook_in_docker.sh`
-  wipes between runs).
-
-Wipe deliberately if the fingerprint state ever gets corrupted:
-
-    docker volume rm soldr-perf-target soldr-perf-cargo-home soldr-perf-soldr-home
-
-## Migration
-
-Switching to this script orphans the old host-side `target/` directory
-under the repo root. Reclaim disk with:
-
-    rm -rf target/
-
-The first run after the switch is a full cold build (~5-8 min) into
-the fresh volume; subsequent runs are seconds.
+``--stop`` and ``--reset-runner`` preserve warm volumes. ``--wipe`` is the
+explicit destructive operation that removes both the runner and its volumes.
 """
 
 from __future__ import annotations
 
+import json
+import hashlib
 import os
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 IMAGE = "soldr-cook-dev"
 DOCKERFILE = "docker/cook-shared-cache/Dockerfile"
+DOCKER_CONTEXT = "docker/cook-shared-cache"
+CONTAINER = "soldr-perf-local"
 VOLUME_TARGET = "soldr-perf-target"
 VOLUME_CARGO_HOME = "soldr-perf-cargo-home"
 VOLUME_SOLDR_HOME = "soldr-perf-soldr-home"
+RUNNER_SCHEMA = "1"
+LABEL_PREFIX = "io.soldr.perf-local"
 
 USAGE = """\
 usage: python ci/perf_local.py cargo <args...>
-       python ci/perf_local.py --wipe                # remove the perf volumes
-       python ci/perf_local.py --status              # show volume sizes / existence
+       python ci/perf_local.py --status
+       python ci/perf_local.py --stop
+       python ci/perf_local.py --reset-runner
+       python ci/perf_local.py --wipe
 
-Every argument after `cargo` is forwarded verbatim to cargo inside the
-container. See the module docstring for full notes.
+Every argument after `cargo` is forwarded verbatim to Cargo in the recycled
+runner. --stop and --reset-runner preserve named volumes; --wipe removes them.
 """
 
 
 def main(argv: list[str]) -> int:
     repo_root = Path(__file__).resolve().parent.parent
+    source_root = shared_source_root(repo_root)
     os.chdir(repo_root)
 
     if not shutil.which("docker"):
         print("error: docker not on PATH", file=sys.stderr)
         return 2
-
     if not argv:
         print(USAGE, file=sys.stderr)
         return 2
-
-    # Tiny pre-argparse subcommands. Anything else falls through to the
-    # `cargo` forwarder so flags after `cargo` don't get eaten.
     if argv[0] in ("-h", "--help"):
         print(USAGE)
         return 0
-    if argv[0] == "--wipe":
-        return wipe()
     if argv[0] == "--status":
         return status()
+    if argv[0] in ("--stop", "--reset-runner", "--wipe"):
+        with runner_lock(source_root):
+            if argv[0] == "--stop":
+                return stop_runner()
+            if argv[0] == "--reset-runner":
+                return reset_runner()
+            return wipe()
     if argv[0] != "cargo":
         print(
             f"error: expected `cargo` as the first arg, got {argv[0]!r}\n\n{USAGE}",
@@ -99,66 +83,245 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
-    # Build the image (cached; ~5 s when warm).
+    # Serialize the full command. Cargo can lock a shared target itself, but
+    # parallel LTO builds make every sample slower and invalidate perf data.
+    with runner_lock(source_root):
+        try:
+            image_id = ensure_image(repo_root)
+        except RuntimeError as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+        ensure_runner(source_root, image_id)
+        workdir = container_workdir(source_root, repo_root)
+        completed = subprocess.run(exec_command(argv, workdir, tty=tty_enabled()), check=False)
+        return completed.returncode
+
+
+def shared_source_root(repo_root: Path) -> Path:
+    """Return the checkout root whose .git directory owns all worktrees."""
+    out = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if out.returncode == 0:
+        common = Path(out.stdout.strip()).resolve()
+        if common.name == ".git":
+            return common.parent
+    return repo_root.resolve()
+
+
+def container_workdir(source_root: Path, repo_root: Path) -> str:
+    relative = repo_root.resolve().relative_to(source_root.resolve())
+    return "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
+
+
+def tty_enabled() -> bool:
+    value = os.environ.get("SOLDR_PERF_LOCAL_TTY", "").strip().lower()
+    return value in ("1", "true", "yes")
+
+
+def expected_labels(source_root: Path, image_id: str) -> dict[str, str]:
+    return {
+        f"{LABEL_PREFIX}.schema": RUNNER_SCHEMA,
+        f"{LABEL_PREFIX}.image-id": image_id,
+        f"{LABEL_PREFIX}.source-root": str(source_root.resolve()),
+    }
+
+
+def dockerfile_digest(repo_root: Path) -> str:
+    return hashlib.sha256((repo_root / DOCKERFILE).read_bytes()).hexdigest()
+
+
+def image_info() -> dict[str, object] | None:
+    inspected = subprocess.run(
+        ["docker", "image", "inspect", IMAGE],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if inspected.returncode != 0:
+        return None
+    decoded = json.loads(inspected.stdout)
+    return decoded[0] if decoded else None
+
+
+def ensure_image(repo_root: Path) -> str:
+    digest = dockerfile_digest(repo_root)
+    digest_label = f"{LABEL_PREFIX}.dockerfile-sha256"
+    info = image_info()
+    if info is not None:
+        config = info.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        image_id = info.get("Id")
+        if isinstance(labels, dict) and labels.get(digest_label) == digest and image_id:
+            return str(image_id)
+
     build = subprocess.run(
-        ["docker", "build", "-f", DOCKERFILE, "-t", IMAGE, "."],
+        [
+            "docker",
+            "build",
+            "--provenance=false",
+            "--label",
+            f"{digest_label}={digest}",
+            "-f",
+            DOCKERFILE,
+            "-t",
+            IMAGE,
+            DOCKER_CONTEXT,
+        ],
         check=False,
     )
     if build.returncode != 0:
-        return build.returncode
+        raise RuntimeError(f"docker build failed with exit code {build.returncode}")
+    info = image_info()
+    image_id = info.get("Id") if info is not None else None
+    if not image_id:
+        raise RuntimeError(f"unable to inspect image {IMAGE} after build")
+    return str(image_id)
 
-    cmd = [
-        "docker",
-        "run",
-        "--rm",
-        "--init",
-        "-v",
-        f"{repo_root}:/work",
-        "-v",
-        f"{VOLUME_SOLDR_HOME}:/root/.soldr",
-        "-v",
-        f"{VOLUME_TARGET}:/work/target",
-        "-v",
-        f"{VOLUME_CARGO_HOME}:/root/.cargo",
-        "-w",
-        "/work",
-        IMAGE,
-        *argv,
-    ]
-    # No `-it` by default. Git Bash / mintty on Windows fools
-    # sys.stdin.isatty() into returning True, which makes `docker run
-    # -it` error with "the input device is not a TTY" because the
-    # underlying console isn't a real ConPTY. Pipes work fine for
-    # `cargo build`/`test`/`clippy` — cargo's progress bar gracefully
-    # downgrades to line-buffered output when stderr is a pipe. Power
-    # users who need a real TTY can set `SOLDR_PERF_LOCAL_TTY=1`.
-    if os.environ.get("SOLDR_PERF_LOCAL_TTY", "").strip() in ("1", "true", "yes"):
-        cmd.insert(2, "-it")
-    completed = subprocess.run(cmd, check=False)
-    return completed.returncode
+
+def runner_matches(info: dict[str, object], labels: dict[str, str]) -> bool:
+    config = info.get("Config")
+    if not isinstance(config, dict):
+        return False
+    actual = config.get("Labels")
+    return isinstance(actual, dict) and all(
+        actual.get(key) == value for key, value in labels.items()
+    )
+
+
+def create_command(source_root: Path, image_id: str) -> list[str]:
+    command = ["docker", "create", "--name", CONTAINER, "--init"]
+    for key, value in expected_labels(source_root, image_id).items():
+        command.extend(["--label", f"{key}={value}"])
+    command.extend(
+        [
+            "-v",
+            f"{source_root.resolve()}:/repo",
+            "-v",
+            f"{VOLUME_SOLDR_HOME}:/root/.soldr",
+            "-v",
+            f"{VOLUME_TARGET}:/target",
+            "-v",
+            f"{VOLUME_CARGO_HOME}:/root/.cargo",
+            "-e",
+            "CARGO_TARGET_DIR=/target",
+            "-w",
+            "/repo",
+            IMAGE,
+            "tail",
+            "-f",
+            "/dev/null",
+        ]
+    )
+    return command
+
+
+def exec_command(argv: list[str], workdir: str, *, tty: bool) -> list[str]:
+    command = ["docker", "exec"]
+    if tty:
+        command.append("-it")
+    command.extend(["-w", workdir, CONTAINER, *argv])
+    return command
+
+
+def ensure_runner(source_root: Path, image_id: str) -> None:
+    labels = expected_labels(source_root, image_id)
+    inspected = subprocess.run(
+        ["docker", "inspect", CONTAINER],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    exists = inspected.returncode == 0
+    if exists:
+        info = json.loads(inspected.stdout)[0]
+        if not runner_matches(info, labels):
+            subprocess.run(["docker", "rm", "-f", CONTAINER], check=True)
+            exists = False
+    if not exists:
+        for volume in (VOLUME_TARGET, VOLUME_CARGO_HOME, VOLUME_SOLDR_HOME):
+            subprocess.run(["docker", "volume", "create", volume], check=True)
+        subprocess.run(create_command(source_root, image_id), check=True)
+
+    running = docker_output(["inspect", "--format", "{{.State.Running}}", CONTAINER])
+    if running != "true":
+        subprocess.run(["docker", "start", CONTAINER], check=True)
+
+
+def docker_output(args: list[str]) -> str:
+    out = subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+@contextmanager
+def runner_lock(source_root: Path) -> Iterator[None]:
+    lock_path = source_root / ".git" / "soldr-perf-local.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def reset_runner() -> int:
+    if not docker_output(["inspect", "--format", "{{.Id}}", CONTAINER]):
+        return 0
+    return subprocess.run(["docker", "rm", "-f", CONTAINER], check=False).returncode
+
+
+def stop_runner() -> int:
+    if not docker_output(["inspect", "--format", "{{.Id}}", CONTAINER]):
+        return 0
+    return subprocess.run(["docker", "stop", CONTAINER], check=False).returncode
 
 
 def wipe() -> int:
+    reset_runner()
     out = subprocess.run(
-        ["docker", "volume", "rm", "--force", VOLUME_TARGET, VOLUME_CARGO_HOME, VOLUME_SOLDR_HOME],
+        [
+            "docker",
+            "volume",
+            "rm",
+            "--force",
+            VOLUME_TARGET,
+            VOLUME_CARGO_HOME,
+            VOLUME_SOLDR_HOME,
+        ],
         check=False,
     )
     return out.returncode
 
 
 def status() -> int:
+    state = docker_output(["inspect", "--format", "{{.State.Status}}", CONTAINER]) or "(absent)"
+    print(f"{CONTAINER}  {state}")
     rows: list[tuple[str, str]] = []
     for name in (VOLUME_TARGET, VOLUME_CARGO_HOME, VOLUME_SOLDR_HOME):
-        out = subprocess.run(
-            ["docker", "volume", "inspect", "--format", "{{.Mountpoint}}", name],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if out.returncode == 0:
-            rows.append((name, out.stdout.strip() or "(no mountpoint)"))
-        else:
-            rows.append((name, "(absent)"))
+        mountpoint = docker_output(["volume", "inspect", "--format", "{{.Mountpoint}}", name])
+        rows.append((name, mountpoint or "(absent)"))
     width = max(len(name) for name, _ in rows)
     for name, info in rows:
         print(f"{name:<{width}}  {info}")

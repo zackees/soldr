@@ -11,11 +11,13 @@
 # volume — NEVER a bind-mount of the host path) keeps the host
 # singleton intact.
 #
-# Volume layout (issue #593): see `bench/cook_in_docker.sh` and
-# `ci/perf_local.py` for the canonical `docker run -v ...` flags.
-# Summary: `/work/target` and `/root/.cargo` are NAMED VOLUMES (not
-# host bind mounts) so cargo's mtime-based fingerprint check survives
-# container restarts. Without this, Windows + Docker Desktop's WSL2
+# Volume layout (issues #593 and #1553): see `bench/cook_in_docker.sh`
+# and `ci/perf_local.py`. The latter creates one named runner and reuses it
+# through `docker exec` instead of creating a container per invocation.
+# `perf_local.py` mounts its target volume at `/target`; the cook harness
+# retains its historical `/work/target` mount. Both use `/root/.cargo`.
+# These are NAMED VOLUMES (not host bind mounts), so cargo's mtime-based
+# fingerprint check survives container restarts. Without this, Windows + Docker Desktop's WSL2
 # 9P translation layer rewrites mtimes per container start and cargo
 # rebuilds everything (~6 min on a fresh 21-crate workspace, vs ~1 s
 # when warm).
@@ -59,8 +61,8 @@ RUN rustup default 1.94.1 \
 # migrations safe.
 ENV CARGO_HOME=/root/.cargo
 
-# Source tree is mounted by the runner at /work; no COPY here so each
-# `docker run` reuses the cached image but operates on the live worktree.
+# Source tree is mounted by the runner at /repo; no COPY here so each
+# `docker exec` operates on the live worktree.
 WORKDIR /work
 
 # Marker env var read by tests gated on the Docker harness. Bare-host
