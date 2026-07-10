@@ -306,6 +306,12 @@ crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
             ("OPT_LEVEL".into(), "3".into()),
         ],
         stdin: vec![1, 2, 3, 4],
+        lifecycle: Some(crate::daemon::protocol::CompileLifecycle {
+            session_id: 42,
+            crate_name: "foo".into(),
+            target_dir: "/home/runner/work/soldr/target".into(),
+            started_at_ms: 1_700_000_000_123,
+        }),
     });
     let bytes = encode_request(&req);
     match decode_request(&bytes).expect("decode") {
@@ -315,6 +321,11 @@ crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
             assert_eq!(decoded.env.len(), 2);
             assert_eq!(decoded.env[0], ("CARGO_PKG_NAME".into(), "soldr".into()));
             assert_eq!(decoded.stdin, vec![1, 2, 3, 4]);
+            let lifecycle = decoded.lifecycle.expect("compile lifecycle metadata");
+            assert_eq!(lifecycle.session_id, 42);
+            assert_eq!(lifecycle.crate_name, "foo");
+            assert_eq!(lifecycle.target_dir, "/home/runner/work/soldr/target");
+            assert_eq!(lifecycle.started_at_ms, 1_700_000_000_123);
         }
         other => panic!("unexpected variant: {other:?}"),
     }

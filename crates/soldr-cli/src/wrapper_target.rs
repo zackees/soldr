@@ -7,16 +7,15 @@
 //!   (i.e. this rustc invocation didn't come from `soldr cargo …`).
 //!   The wrapper writes the row directly to redb and returns. No
 //!   daemon IPC, no PID-file probe, no spawn attempt.
-//! - **Slow path** — the session id IS set. The wrapper goes through
-//!   the daemon (target-touch IPC + per-crate `RecordCompile` event)
-//!   and opportunistically auto-spawns the daemon when missing.
+//! - **Slow path** — the session id IS set. The wrapper sends the
+//!   target-touch IPC and opportunistically auto-spawns the daemon.
 //!
 //! Issue #440 added a third return path: when the cargo front door
 //! has already recorded the same `target/` dir for the current build
 //! session (signalled via `SOLDR_TARGET_REGISTRY_RECORDED=<dir>`),
 //! the wrapper skips redb and the daemon target-touch IPC entirely.
-//! The `record_compile` IPC still fires when in-session because it
-//! carries per-crate timing data the registry doesn't store.
+//! Per-crate timing data rides the existing `Request::Compile` IPC
+//! rather than opening standalone telemetry connections (soldr#1537).
 //!
 //! Lives in its own module so the lib tree exposes it for the
 //! integration tests under `tests/cli_wrapper_perf.rs` without
@@ -25,7 +24,6 @@
 
 use crate::core::SoldrPaths;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 /// Env var the cargo front door sets after recording the workspace
 /// `target/` dir for the build session. When present and matching
@@ -53,7 +51,7 @@ pub enum TargetTouchPath {
     /// `SOLDR_TARGET_REGISTRY_RECORDED` matches the resolved target
     /// dir — the cargo front door already upserted for this build
     /// session. Issue #440. No redb open, no target-touch IPC; the
-    /// daemon `record_compile` event still fires when in-session.
+    /// compile request still carries lifecycle telemetry when in-session.
     MemoSkipped,
 }
 
@@ -75,48 +73,25 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     // Memoization (issue #440): if the cargo front door already
     // upserted this target dir for this build session, the redb open
     // + write is pure repetition. Skip both the direct redb write
-    // and the daemon target-touch IPC. The per-crate `record_compile`
-    // event still fires below when in-session because it carries
-    // timing data the registry doesn't store.
+    // and the daemon target-touch IPC. Per-crate telemetry is attached
+    // later to the compile request itself.
     let memo_hit = target_registry_memo_matches(&target);
 
     if memo_hit {
-        if let Some(session_id) = session_id_opt {
-            let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
-            let started_at_ms = current_unix_ms();
-            crate::daemon::client::record_compile(
-                &paths,
-                session_id,
-                crate_name,
-                &target,
-                started_at_ms,
-                None,
-            );
-        }
         // No daemon spawn probe here — the cargo front door already
         // owns spawn for the session.
         return TargetTouchPath::MemoSkipped;
     }
 
     // Fast path: skip the daemon entirely outside a soldr-cargo build.
-    let Some(session_id) = session_id_opt else {
+    if session_id_opt.is_none() {
         write_target_direct(&paths, &target);
         return TargetTouchPath::FastDirect;
-    };
+    }
 
-    // Slow path: in-session — daemon for target-touch + record-compile.
+    // Slow path: in-session, daemon for target-touch. Compile lifecycle
+    // telemetry rides the subsequent Request::Compile connection.
     crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
-
-    let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
-    let started_at_ms = current_unix_ms();
-    crate::daemon::client::record_compile(
-        &paths,
-        session_id,
-        crate_name,
-        &target,
-        started_at_ms,
-        None,
-    );
 
     if crate::daemon::lifecycle::is_live(&paths).is_none() {
         // The spawn itself is serialized via a file lock inside
@@ -126,33 +101,6 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     }
 
     TargetTouchPath::DaemonFirst
-}
-
-pub(crate) fn record_compile_end_for_wrapper(
-    rustc_args: &[String],
-    started_at_ms: i64,
-    elapsed: Duration,
-) {
-    let Some(session_id) = read_build_session_id_env() else {
-        return;
-    };
-    let Some(target) = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)
-    else {
-        return;
-    };
-    let Ok(paths) = SoldrPaths::new() else {
-        return;
-    };
-    let crate_name = parse_crate_name(rustc_args).unwrap_or("unknown");
-    let duration_us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-    crate::daemon::client::record_compile(
-        &paths,
-        session_id,
-        crate_name,
-        &target,
-        started_at_ms,
-        Some(duration_us),
-    );
 }
 
 /// True when `SOLDR_TARGET_REGISTRY_RECORDED` is set AND its value
@@ -188,28 +136,6 @@ pub fn read_build_session_id_env() -> Option<u64> {
     std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-}
-
-pub(crate) fn current_unix_ms() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Pull `--crate-name X` (or `--crate-name=X`) from a rustc arg list.
-fn parse_crate_name(args: &[String]) -> Option<&str> {
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--crate-name" {
-            return iter.next().map(String::as_str);
-        }
-        if let Some(value) = arg.strip_prefix("--crate-name=") {
-            return Some(value);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

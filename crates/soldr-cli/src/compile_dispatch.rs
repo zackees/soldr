@@ -36,7 +36,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::daemon::client;
-use crate::daemon::protocol::CompileRequest;
+use crate::daemon::protocol::{CompileLifecycle, CompileRequest};
 
 /// Escape-hatch env var (soldr#1300): when truthy (`1`, `true`, ...),
 /// a daemon-unavailability failure after the retry budget hard-fails
@@ -162,7 +162,45 @@ pub fn build_compile_request(rustc_argv: &[String]) -> CompileRequest {
         cwd,
         env,
         stdin: Vec::new(),
+        lifecycle: build_compile_lifecycle(rustc_argv),
     }
+}
+
+fn build_compile_lifecycle(rustc_argv: &[String]) -> Option<CompileLifecycle> {
+    let session_id = std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+        .ok()?
+        .parse::<u64>()
+        .ok()?;
+    let rustc_args = rustc_argv.get(1..).unwrap_or_default();
+    let target_dir = crate::cache_lib::target_registry::resolve_workspace_target_dir(rustc_args)?;
+    Some(CompileLifecycle {
+        session_id,
+        crate_name: parse_crate_name(rustc_args)
+            .unwrap_or("unknown")
+            .to_string(),
+        target_dir: target_dir.display().to_string(),
+        started_at_ms: current_unix_ms(),
+    })
+}
+
+fn parse_crate_name(args: &[String]) -> Option<&str> {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--crate-name" {
+            return args.next().map(String::as_str);
+        }
+        if let Some(value) = arg.strip_prefix("--crate-name=") {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn current_unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Read the spawn-retry budget from env (overridable for tests) or

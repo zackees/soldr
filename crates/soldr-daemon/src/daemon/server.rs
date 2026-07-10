@@ -114,7 +114,7 @@ struct State {
     cook_hits_this_session: AtomicU64,
     shutdown: Notify,
     /// L4 (issue soldr#980) — background drain task that coalesces
-    /// per-compile redb event writes. Hot path (`Request::RecordCompile`)
+    /// per-compile redb event writes. The `Request::Compile` handler
     /// pushes into a tokio mpsc instead of opening redb directly. See
     /// [`crate::daemon::event_batcher`] for the batching contract.
     event_batcher: EventBatcher,
@@ -421,7 +421,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let compile_service = start_compile_service(&paths).await?;
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we
-    // accept any IPC traffic so the very first `RecordCompile` lands on
+    // accept any IPC traffic so the very first compile event lands on
     // a live channel. The drain task lives in the daemon's tokio runtime
     // and exits cleanly via `shutdown()` below.
     let event_batcher = EventBatcher::start(db_path.clone());
@@ -679,7 +679,7 @@ where
             let _ = db::upsert_build(&state.db_path, &record);
             // L4 (issue soldr#980): route the SessionStart event through
             // the batcher so we don't compete with the build's first
-            // RecordCompile burst for the redb writer.
+            // compile-event burst for the redb writer.
             state
                 .event_batcher
                 .record(db::Event {
@@ -751,37 +751,6 @@ where
                 })
                 .await;
             state.event_batcher.flush().await;
-        }
-        Request::RecordCompile {
-            session_id,
-            crate_name,
-            target_dir,
-            started_at_ms,
-            duration_us,
-        } => {
-            // L4 (issue soldr#980): the hot path. Pre-L4 this opened
-            // redb and did two write txns (next_event_id + event row)
-            // per compile, which fsync'd twice per call — ~3.4 s of
-            // pure-sync wait across the 171 misses observed in the
-            // cold profile. The batcher coalesces these into one fsync
-            // per 64 rows / 100 ms.
-            let kind = if duration_us.is_some() {
-                db::EventKind::CompileEnd
-            } else {
-                db::EventKind::CompileStart
-            };
-            state
-                .event_batcher
-                .record(db::Event {
-                    ts_ms: started_at_ms,
-                    session_id: Some(session_id),
-                    kind,
-                    crate_name: Some(crate_name),
-                    duration_us,
-                    target_dir: Some(target_dir),
-                    exit_code: None,
-                })
-                .await;
         }
         Request::ListBuilds { limit, since_ms } => {
             let rows = db::list_builds(&state.db_path, limit, since_ms).unwrap_or_default();
@@ -996,19 +965,32 @@ where
 
     let total = std::time::Instant::now();
 
+    // soldr#1537: lifecycle telemetry uses this already-open compile
+    // connection. A disconnected wrapper intentionally leaves a start-only
+    // event, preserving the cancellation signal used by build history.
+    let lifecycle = req.lifecycle.clone();
     let inner_started = std::time::Instant::now();
     let compile_fut = state.compile_service.compile(req);
-    let body = match race_against_disconnect(stream, compile_fut).await {
-        DispatchOutcome::Completed(Ok(body)) => body,
-        DispatchOutcome::Completed(Err(err)) => {
-            crate::daemon::compile_trace::record(
-                "inner_compile_err",
-                inner_started.elapsed().as_micros() as u64,
-                &compile_id,
-            );
-            let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
-            return write_frame_async(stream, &reply).await;
-        }
+    let body = match race_compile_with_lifecycle(
+        stream,
+        compile_fut,
+        lifecycle.as_ref(),
+        &state.event_batcher,
+    )
+    .await
+    {
+        DispatchOutcome::Completed(result) => match result {
+            Ok(body) => body,
+            Err(err) => {
+                crate::daemon::compile_trace::record(
+                    "inner_compile_err",
+                    inner_started.elapsed().as_micros() as u64,
+                    &compile_id,
+                );
+                let reply = Response::Error(format!("embedded zccache compile failed: {err}"));
+                return write_frame_async(stream, &reply).await;
+            }
+        },
         DispatchOutcome::ClientDisconnected => {
             // The wrapper is gone — its IPC fd closed mid-compile, so
             // the embedded zccache future was dropped at the `select!`
@@ -1107,6 +1089,54 @@ where
     crate::daemon::compile_trace::record("stdout_bytes", stdout_len as u64, &compile_id);
     crate::daemon::compile_trace::record("stderr_bytes", stderr_len as u64, &compile_id);
     res
+}
+
+fn compile_lifecycle_event(
+    lifecycle: &crate::daemon::protocol::CompileLifecycle,
+    duration_us: Option<u64>,
+) -> db::Event {
+    db::Event {
+        ts_ms: lifecycle.started_at_ms,
+        session_id: Some(lifecycle.session_id),
+        kind: if duration_us.is_some() {
+            db::EventKind::CompileEnd
+        } else {
+            db::EventKind::CompileStart
+        },
+        crate_name: Some(lifecycle.crate_name.clone()),
+        duration_us,
+        target_dir: Some(lifecycle.target_dir.clone()),
+        exit_code: None,
+    }
+}
+
+/// Race a compile against client disconnect while emitting lifecycle events
+/// through the daemon's existing batcher. Every accepted session compile gets
+/// a start; only a completed future (success or service error) gets an end.
+async fn race_compile_with_lifecycle<R, F>(
+    reader: &mut R,
+    fut: F,
+    lifecycle: Option<&crate::daemon::protocol::CompileLifecycle>,
+    event_batcher: &crate::daemon::event_batcher::EventBatcher,
+) -> DispatchOutcome<F::Output>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    F: std::future::Future,
+{
+    let started = std::time::Instant::now();
+    if let Some(metadata) = lifecycle {
+        event_batcher
+            .record(compile_lifecycle_event(metadata, None))
+            .await;
+    }
+    let outcome = race_against_disconnect(reader, fut).await;
+    if let (DispatchOutcome::Completed(_), Some(metadata)) = (&outcome, lifecycle) {
+        let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
+        event_batcher
+            .record(compile_lifecycle_event(metadata, Some(duration_us)))
+            .await;
+    }
+    outcome
 }
 
 /// Outcome of [`race_against_disconnect`]. Separated from the inner
@@ -1258,11 +1288,136 @@ mod cancel_on_disconnect_tests {
     //! still be sitting on a rustc compile whose output no one will
     //! read.
 
-    use super::{race_against_disconnect, DispatchOutcome};
+    use super::{
+        compile_lifecycle_event, race_against_disconnect, race_compile_with_lifecycle,
+        DispatchOutcome,
+    };
+    use crate::daemon::protocol::CompileLifecycle;
     use crate::timed_test;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    fn test_lifecycle(session_id: u64) -> CompileLifecycle {
+        CompileLifecycle {
+            session_id,
+            crate_name: "demo".to_string(),
+            target_dir: "/work/target".to_string(),
+            started_at_ms: 1_700_000_000_123,
+        }
+    }
+
+    async fn flushed_events(
+        batcher: &crate::daemon::event_batcher::EventBatcher,
+        db_path: &std::path::Path,
+        session_id: u64,
+    ) -> Vec<crate::daemon::db::Event> {
+        batcher.flush().await;
+        crate::daemon::db::list_events_for_session(db_path, session_id).expect("list events")
+    }
+
+    timed_test!(compile_lifecycle_events_preserve_history_fields, {
+        let lifecycle = test_lifecycle(42);
+        let start = compile_lifecycle_event(&lifecycle, None);
+        assert_eq!(start.kind, crate::daemon::db::EventKind::CompileStart);
+        assert_eq!(start.session_id, Some(42));
+        assert_eq!(start.crate_name.as_deref(), Some("demo"));
+        assert_eq!(start.target_dir.as_deref(), Some("/work/target"));
+        assert_eq!(start.ts_ms, 1_700_000_000_123);
+
+        let end = compile_lifecycle_event(&lifecycle, Some(987_654));
+        assert_eq!(end.kind, crate::daemon::db::EventKind::CompileEnd);
+        assert_eq!(end.duration_us, Some(987_654));
+        assert_eq!(end.session_id, start.session_id);
+        assert_eq!(end.crate_name, start.crate_name);
+        assert_eq!(end.target_dir, start.target_dir);
+    });
+
+    timed_test!(successful_compile_records_exactly_start_and_end, {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let db_path = temp.path().join("state.redb");
+            let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
+            let (server, _client) = tokio::io::duplex(64);
+            let (mut reader, _writer) = tokio::io::split(server);
+            let lifecycle = test_lifecycle(101);
+            let outcome = race_compile_with_lifecycle(
+                &mut reader,
+                async { Ok::<_, &'static str>(7_u32) },
+                Some(&lifecycle),
+                &batcher,
+            )
+            .await;
+            assert!(matches!(outcome, DispatchOutcome::Completed(Ok(7))));
+            let events = flushed_events(&batcher, &db_path, 101).await;
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
+            assert_eq!(events[1].kind, crate::daemon::db::EventKind::CompileEnd);
+            assert!(events[1].duration_us.is_some());
+        });
+    });
+
+    timed_test!(compile_service_error_still_records_end, {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let db_path = temp.path().join("state.redb");
+            let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
+            let (server, _client) = tokio::io::duplex(64);
+            let (mut reader, _writer) = tokio::io::split(server);
+            let lifecycle = test_lifecycle(102);
+            let outcome = race_compile_with_lifecycle(
+                &mut reader,
+                async { Err::<u32, _>("compile service failed") },
+                Some(&lifecycle),
+                &batcher,
+            )
+            .await;
+            assert!(matches!(outcome, DispatchOutcome::Completed(Err(_))));
+            let events = flushed_events(&batcher, &db_path, 102).await;
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
+            assert_eq!(events[1].kind, crate::daemon::db::EventKind::CompileEnd);
+        });
+    });
+
+    timed_test!(client_disconnect_records_start_without_completion, {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+        rt.block_on(async {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let db_path = temp.path().join("state.redb");
+            let batcher = crate::daemon::event_batcher::EventBatcher::start(db_path.clone());
+            let (server, client) = tokio::io::duplex(64);
+            let (mut reader, _writer) = tokio::io::split(server);
+            let lifecycle = test_lifecycle(103);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                drop(client);
+            });
+            let outcome = race_compile_with_lifecycle(
+                &mut reader,
+                async { tokio::time::sleep(Duration::from_secs(3600)).await },
+                Some(&lifecycle),
+                &batcher,
+            )
+            .await;
+            assert!(matches!(outcome, DispatchOutcome::ClientDisconnected));
+            let events = flushed_events(&batcher, &db_path, 103).await;
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].kind, crate::daemon::db::EventKind::CompileStart);
+            assert!(events[0].duration_us.is_none());
+        });
+    });
 
     /// A future that flips `aborted` to `true` if it is dropped before
     /// completing. Lets the test prove the helper actually cancelled

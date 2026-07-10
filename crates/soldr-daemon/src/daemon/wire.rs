@@ -39,9 +39,9 @@
 
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
-    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileRequest,
-    CompileResponseBody, CompileStatsInfo, CookStats, Request, Response, StatusInfo,
-    WireDecodeError,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileLifecycle,
+    CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, Request, Response,
+    StatusInfo, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -358,19 +358,6 @@ impl From<&Request> for proto::WireRequest {
                 exit_code: *exit_code,
                 ended_at_ms: *ended_at_ms,
             }),
-            Request::RecordCompile {
-                session_id,
-                crate_name,
-                target_dir,
-                started_at_ms,
-                duration_us,
-            } => proto::WireRequestKind::RecordCompile(proto::WireRecordCompile {
-                session_id: *session_id,
-                crate_name: crate_name.clone(),
-                target_dir: target_dir.clone(),
-                started_at_ms: *started_at_ms,
-                duration_us: *duration_us,
-            }),
             Request::ListBuilds { limit, since_ms } => {
                 proto::WireRequestKind::ListBuilds(proto::WireListBuilds {
                     limit: *limit,
@@ -448,6 +435,15 @@ fn compile_request_to_wire(req: &CompileRequest) -> proto::WireCompileRequest {
             })
             .collect(),
         stdin: req.stdin.clone(),
+        lifecycle: req
+            .lifecycle
+            .as_ref()
+            .map(|lifecycle| proto::WireCompileLifecycle {
+                session_id: lifecycle.session_id,
+                crate_name: lifecycle.crate_name.clone(),
+                target_dir: lifecycle.target_dir.clone(),
+                started_at_ms: lifecycle.started_at_ms,
+            }),
     }
 }
 
@@ -457,6 +453,12 @@ fn compile_request_from_wire(wire: proto::WireCompileRequest) -> CompileRequest 
         cwd: wire.cwd,
         env: wire.env.into_iter().map(|e| (e.key, e.value)).collect(),
         stdin: wire.stdin,
+        lifecycle: wire.lifecycle.map(|lifecycle| CompileLifecycle {
+            session_id: lifecycle.session_id,
+            crate_name: lifecycle.crate_name,
+            target_dir: lifecycle.target_dir,
+            started_at_ms: lifecycle.started_at_ms,
+        }),
     }
 }
 
@@ -483,13 +485,6 @@ impl TryFrom<proto::WireRequest> for Request {
                 session_id: m.session_id,
                 exit_code: m.exit_code,
                 ended_at_ms: m.ended_at_ms,
-            },
-            proto::WireRequestKind::RecordCompile(m) => Request::RecordCompile {
-                session_id: m.session_id,
-                crate_name: m.crate_name,
-                target_dir: m.target_dir,
-                started_at_ms: m.started_at_ms,
-                duration_us: m.duration_us,
             },
             proto::WireRequestKind::ListBuilds(m) => Request::ListBuilds {
                 limit: m.limit,

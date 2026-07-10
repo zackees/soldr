@@ -63,7 +63,9 @@ use serde::{Deserialize, Serialize};
 ///   `ZccacheDaemonLink`, and `StatusInfo.linked_zccache` — the
 ///   external managed-zccache daemon the link tracked was deleted in
 ///   soldr#1368, so there is nothing left to stop on daemon shutdown.
-pub const PROTOCOL_VERSION: u32 = 11;
+/// * v12 (soldr#1537): carries optional build-session lifecycle metadata
+///   on `CompileRequest`, eliminating two hot-path telemetry IPC calls.
+pub const PROTOCOL_VERSION: u32 = 12;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -115,18 +117,6 @@ pub enum Request {
         session_id: u64,
         exit_code: i32,
         ended_at_ms: i64,
-    },
-    /// Fire-and-forget: record one rustc invocation inside a build
-    /// session. `duration_us` is `None` on Unix where the wrapper
-    /// `exec()`s into zccache and never returns (only the start event
-    /// is observable from soldr's side); on Windows the wrapper waits
-    /// for the spawned process and fills the duration.
-    RecordCompile {
-        session_id: u64,
-        crate_name: String,
-        target_dir: String,
-        started_at_ms: i64,
-        duration_us: Option<u64>,
     },
     /// Request-response: return the most recent build records, newest
     /// first, up to `limit`. Optional `since_ms` filters to records
@@ -211,6 +201,16 @@ pub struct CompileRequest {
     pub cwd: String,
     pub env: Vec<(String, String)>,
     pub stdin: Vec<u8>,
+    pub lifecycle: Option<CompileLifecycle>,
+}
+
+/// Build-history metadata attached to a session-owned compile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompileLifecycle {
+    pub session_id: u64,
+    pub crate_name: String,
+    pub target_dir: String,
+    pub started_at_ms: i64,
 }
 
 /// Body of [`Response::CompileResponse`]. Carries the captured rustc
@@ -403,12 +403,9 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v11_after_link_zccache_removal, {
-        // Bumped from 10 → 11 in soldr#1467 when the dead LinkZccache
-        // request, ZccacheDaemonLink payload, and
-        // StatusInfo.linked_zccache field were deleted (their managed
-        // external zccache daemon went away in soldr#1368).
-        assert_eq!(PROTOCOL_VERSION, 11);
+    crate::timed_test!(protocol_version_is_v12_after_compile_lifecycle_folding, {
+        // Bumped from 11 to 12 when lifecycle metadata moved onto Compile.
+        assert_eq!(PROTOCOL_VERSION, 12);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
