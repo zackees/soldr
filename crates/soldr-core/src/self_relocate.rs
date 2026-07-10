@@ -245,7 +245,7 @@ fn runtime_root(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(RUNTIME_DIR).join(SELF_DIR)
 }
 
-pub(crate) fn daemon_runtime_root(paths: &SoldrPaths) -> PathBuf {
+pub fn daemon_runtime_root(paths: &SoldrPaths) -> PathBuf {
     paths.root.join(RUNTIME_DIR).join(DAEMON_DIR)
 }
 

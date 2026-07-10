@@ -388,22 +388,7 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
         return Ok(());
     }
 
-    let relocated = match (paths.as_ref(), daemon_via_self) {
-        // When falling back to the running soldr binary, skip the
-        // self_relocate dance — it's specifically for the sibling
-        // daemon binary, not for soldr-self invocations. The current
-        // exe stays where it is.
-        (_, true) => daemon_src.clone(),
-        (Some(paths), false) => crate::self_relocate::ensure_daemon_relocated(paths, &daemon_src)
-            .inspect(|r| {
-                crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
-            })
-            .unwrap_or_else(|_| daemon_src.clone()),
-        // No cache root resolved → run in place. The daemon itself
-        // tries SoldrPaths::new() at startup and will surface the
-        // same error there.
-        (None, false) => daemon_src,
-    };
+    let relocated = resolve_daemon_spawn_image(paths.as_ref(), &daemon_src);
 
     if !daemon_via_self && !crate::daemon::backend_handle_adoption::running_process_disabled() {
         let _ = crate::daemon::service_definition::install_service_definition(&relocated);
@@ -425,6 +410,37 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     }
 
     Ok(())
+}
+
+/// Resolve the on-disk image the daemon child will exec from.
+///
+/// Every spawn shape — the sibling `soldr-daemon` binary AND the
+/// via-self `soldr daemon start --foreground` fallback — routes through
+/// `ensure_daemon_relocated` into `~/.soldr/runtime/soldr-daemon/`
+/// (issue #1516). Via-self used to skip relocation and pin whatever
+/// `current_exe` resolved to; when the self-relocation guard env vars
+/// leak in from a parent process (or on slim installs), that pinned the
+/// package-manager-owned `Scripts\soldr.exe`, so `pip install
+/// --force-reinstall` wedged with WinError 5 while the daemon lived.
+/// Relocating decouples the long-lived daemon from the installed
+/// binary; `ensure_daemon_relocated` still runs maturin-repaired-wheel
+/// layouts in place (soldr#1300) and no-ops when the source already
+/// lives under the daemon runtime root.
+///
+/// Relocation failures fall back to running the source in place — a
+/// pinned daemon beats no daemon.
+fn resolve_daemon_spawn_image(paths: Option<&SoldrPaths>, daemon_src: &Path) -> PathBuf {
+    match paths {
+        Some(paths) => crate::self_relocate::ensure_daemon_relocated(paths, daemon_src)
+            .inspect(|r| {
+                crate::self_relocate::run_periodic_daemon_runtime_gc(paths, Some(r));
+            })
+            .unwrap_or_else(|_| daemon_src.to_path_buf()),
+        // No cache root resolved → run in place. The daemon itself
+        // tries SoldrPaths::new() at startup and will surface the
+        // same error there.
+        None => daemon_src.to_path_buf(),
+    }
 }
 
 fn wait_for_spawned_daemon_ready(paths: &SoldrPaths, timeout: Duration) -> bool {
@@ -789,6 +805,79 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case(expected_stem))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod daemon_spawn_image_tests {
+    use super::*;
+    use crate::core::SoldrPaths;
+    use tempfile::TempDir;
+
+    // #1516 regression: a via-self daemon (no sibling `soldr-daemon`
+    // binary) must NOT exec the invoking soldr binary in place — its
+    // image must live under the daemon runtime root so the installed
+    // binary can be deleted/replaced while the daemon is alive.
+    crate::timed_test!(
+        via_self_daemon_image_is_relocated_off_the_invoking_binary,
+        {
+            let temp = TempDir::new().expect("tempdir");
+            let install_dir = temp.path().join("Scripts");
+            std::fs::create_dir_all(&install_dir).expect("install dir");
+            let installed_soldr = install_dir.join("soldr.exe");
+            std::fs::write(&installed_soldr, b"installed-soldr").expect("write soldr");
+            let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+
+            let image = resolve_daemon_spawn_image(Some(&paths), &installed_soldr);
+
+            assert_ne!(
+                image, installed_soldr,
+                "via-self daemon must not pin the invoking binary"
+            );
+            assert!(
+                !image.starts_with(&install_dir),
+                "daemon image {} must not live in the install dir {}",
+                image.display(),
+                install_dir.display()
+            );
+            assert!(
+                image.starts_with(crate::self_relocate::daemon_runtime_root(&paths)),
+                "daemon image {} must live under the daemon runtime root",
+                image.display()
+            );
+            assert_eq!(
+                std::fs::read(&image).expect("read relocated image"),
+                b"installed-soldr",
+                "relocated image must be a byte-identical copy"
+            );
+        }
+    );
+
+    // soldr#1300 constraint: maturin-repaired wheel layouts keep
+    // running in place — the via-self relocation must not break them.
+    crate::timed_test!(via_self_daemon_in_repaired_wheel_layout_runs_in_place, {
+        let temp = TempDir::new().expect("tempdir");
+        let scripts = temp.path().join("site-packages").join("soldr.scripts");
+        std::fs::create_dir_all(&scripts).expect("scripts dir");
+        std::fs::create_dir_all(temp.path().join("site-packages").join("soldr.dylibs"))
+            .expect("dylibs dir");
+        let wheel_soldr = scripts.join("soldr");
+        std::fs::write(&wheel_soldr, b"wheel-soldr").expect("write soldr");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr-root"));
+
+        let image = resolve_daemon_spawn_image(Some(&paths), &wheel_soldr);
+        assert_eq!(
+            image, wheel_soldr,
+            "repaired-wheel binaries must run in place (soldr#1300)"
+        );
+    });
+
+    // Without a resolvable cache root the source runs in place.
+    crate::timed_test!(daemon_image_runs_in_place_without_cache_root, {
+        let temp = TempDir::new().expect("tempdir");
+        let src = temp.path().join("soldr.exe");
+        std::fs::write(&src, b"soldr").expect("write soldr");
+        assert_eq!(resolve_daemon_spawn_image(None, &src), src);
+    });
 }
 
 #[cfg(test)]
