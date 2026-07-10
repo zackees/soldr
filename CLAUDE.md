@@ -59,9 +59,9 @@ uv run maturin build --release         # Build wheel
 
 ## Architecture
 
-**Monocrate.** Single Rust crate `soldr-cli` under `crates/soldr-cli/`, four module trees inside it. The four-crate split collapsed in 2026-05; see `crates/soldr-cli/tests/monocrate_guard.rs` for the regression test that fails the build if anyone re-introduces a second crate.
+**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): `crates/soldr-core` is extracted; fetch/cache/daemon splits follow phase by phase. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `tests/timed_test_lint.rs` walks every workspace crate under `crates/`.
 
-- **`src/core.rs`** (formerly `soldr-core`) — Shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types. No I/O beyond config files.
+- **`crates/soldr-core`** — foundation crate: shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types, the daemon wire schema (`core::wire`), Windows Defender exclusion plumbing (`defender`), `self_relocate`, and the `timed_test!` watchdog. No I/O beyond config files. soldr-cli re-exports all of it at the old paths (`soldr_cli::core`, `soldr_cli::defender`, …), so consumers are unchanged.
 - **`src/fetch/`** (formerly `soldr-fetch`) — Binary resolution. Ships several sub-modules:
   - `known_tools` — registry of ecosystem tools with explicit GitHub `(owner, repo)`, cargo subcommand mapping, and optional monorepo tag prefix (e.g. `cargo-audit/v0.21.0`). Keeps dispatch off the crates.io round-trip and handles per-tool release quirks.
   - `trust` — SHA-256 computation + `SOLDR_TRUST_MODE` / `SOLDR_CHECKSUMS_FILE` enforcement. Every fetch emits a `trust: verified` or `trust: unverified` line and a pin mismatch is a hard error regardless of mode.
@@ -69,11 +69,10 @@ uv run maturin build --release         # Build wheel
   - Resolution chain: local cache → registry-or-crates.io repo lookup → GitHub Releases asset download → extract.
 - **`src/cache_lib/`** (formerly `soldr-cache`) — `RUSTC_WRAPPER` logic: hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, plus the `soldr save` / `soldr load` archive transport and the auto-GC orchestrator. The `[cook]` eviction pass lives in `cache_lib::cook_gc` (issue #589) and is kicked from `gc/auto.rs` on the same throttle as the disk-pressure tiers.
 - **`src/soldr_main.rs` + sibling cli modules** — Mode detection in `run()` (the `src/main.rs` binary is a 3-line shim calling `soldr_cli::run()` since #1490 Phase 1), clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
-- **`src/defender.rs`** — Shared Windows Defender exclusion plumbing (`is_admin`, `find_powershell`, `apply_exclusions`, `current_exclusion_list`, `PathAction`/`ExclusionAction`/`ActionStatus`, plus the `SOLDR_TEST_*` test seams). Backs `soldr optimize` (via `optimize`/`optimize_windows`/`optimize_detect`) and `soldr load --auto-defender-exclude` (via `cache_lib::save::load`'s RAII guard).
 
 `src/lib.rs` declares every module exactly once (#1490 Phase 1 removed the historical lib/bin double-declaration, which compiled ~40K LOC twice per build). The CLI entry logic lives in `src/soldr_main.rs`, glob-re-exported at the crate root so `crate::<item>` paths inside the tree resolve unchanged; integration tests keep their `use soldr_cli::core::*`-style imports.
 
-Dependency flow inside the crate: every module reaches into `crate::core::*` for shared types; `fetch` and `cache_lib` each consume `core`; the cli-side modules consume all three.
+Dependency flow: every module reaches into `crate::core::*` for shared types (resolved through the soldr-core re-export); `fetch` and `cache_lib` each consume `core`; the cli-side modules consume all three.
 
 Python package (`src/soldr/`) wraps the CLI binary via Maturin as `soldr._native`.
 

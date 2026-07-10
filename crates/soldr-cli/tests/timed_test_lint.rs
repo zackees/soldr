@@ -1,7 +1,7 @@
 //! Regression guard that enforces use of the `timed_test!` macro.
 //!
-//! This test walks every `.rs` file under `crates/soldr-cli/src/` and
-//! `crates/soldr-cli/tests/` and asserts that *new* `#[test]`
+//! This test walks every `.rs` file under each workspace crate's
+//! `src/` and `tests/` (`crates/*/`) and asserts that *new* `#[test]`
 //! attributes are wrapped by the `timed_test!` macro instead of being
 //! declared bare. A bare `#[test]` outside the legacy allowlist fails
 //! the build — the contributor must either:
@@ -46,90 +46,89 @@ mod common;
 /// stable.
 const LEGACY_ALLOWLIST: &[&str] = &[
     // ----- src/ unit-test modules -----
-    "src/binaries.rs",
-    "src/cache/session.rs",
-    "src/cache_lib/auto_gc.rs",
-    "src/cache_lib/auto_target_gc.rs",
-    "src/cache_lib/cargo_global_cache.rs",
-    "src/cache_lib/gc.rs",
-    "src/cache_lib/mod.rs",
-    "src/cache_lib/prune_target_tests.rs",
-    "src/cache_lib/state_db.rs",
-    "src/cache_lib/strip_target.rs",
-    "src/cache_lib/target_registry.rs",
-    "src/cargo_diagnostics.rs",
-    "src/cargo_front_door/clang_cl_shim.rs",
-    "src/cargo_front_door/tests.rs",
-    "src/cook_tests.rs",
-    "src/core/mod.rs",
-    "src/core/paths.rs",
-    "src/core/target_triple.rs",
-    "src/core/toolchain_manifest.rs",
-    "src/core/toolchain_resolve.rs",
-    "src/daemon/db.rs",
-    "src/daemon/ipc.rs",
-    "src/daemon/lifecycle.rs",
-    "src/defender_probe.rs",
-    "src/doctor.rs",
-    "src/fetch/github.rs",
-    "src/fetch/known_tools.rs",
-    "src/fetch/mod.rs",
-    "src/fetch/rustup_init.rs",
-    "src/fetch/trust.rs",
-    "src/fuzzy_match.rs",
-    "src/gc/tests.rs",
-    "src/linker.rs",
-    "src/main_tests.rs",
-    "src/native_cc_tests.rs",
-    "src/optimize_detect.rs",
-    "src/optimize_tests.rs",
-    "src/optimize_windows.rs",
-    "src/rust_plan_tests/bundle_walk.rs",
-    "src/rust_plan_tests/manifest.rs",
-    "src/rust_plan_tests/orphan_rmeta.rs",
-    "src/rust_plan_tests/plan_build.rs",
-    "src/rust_plan_tests/prepopulated_target.rs",
-    "src/rust_plan_tests/warm_restore.rs",
-    "src/rust_plan_tests/wire_compat.rs",
-    "src/self_relocate.rs",
-    "src/shim_dir.rs",
-    "src/startup_profile.rs",
-    "src/toolchain_ensure.rs",
-    "src/toolchain_link.rs",
-    "src/trampoline_config_tests.rs",
-    "src/trampoline_tests.rs",
-    "src/trampoline_workspace_tests.rs",
-    "src/wrapper.rs",
-    "src/wrapper_target.rs",
-    "src/zccache.rs",
+    "crates/soldr-cli/src/binaries.rs",
+    "crates/soldr-cli/src/cache/session.rs",
+    "crates/soldr-cli/src/cache_lib/auto_gc.rs",
+    "crates/soldr-cli/src/cache_lib/auto_target_gc.rs",
+    "crates/soldr-cli/src/cache_lib/cargo_global_cache.rs",
+    "crates/soldr-cli/src/cache_lib/gc.rs",
+    "crates/soldr-cli/src/cache_lib/mod.rs",
+    "crates/soldr-cli/src/cache_lib/prune_target_tests.rs",
+    "crates/soldr-cli/src/cache_lib/state_db.rs",
+    "crates/soldr-cli/src/cache_lib/strip_target.rs",
+    "crates/soldr-cli/src/cache_lib/target_registry.rs",
+    "crates/soldr-cli/src/cargo_diagnostics.rs",
+    "crates/soldr-cli/src/cargo_front_door/clang_cl_shim.rs",
+    "crates/soldr-cli/src/cargo_front_door/tests.rs",
+    "crates/soldr-cli/src/cook_tests.rs",
+    "crates/soldr-core/src/core/mod.rs",
+    "crates/soldr-core/src/core/paths.rs",
+    "crates/soldr-core/src/core/target_triple.rs",
+    "crates/soldr-core/src/core/toolchain_manifest.rs",
+    "crates/soldr-core/src/core/toolchain_resolve.rs",
+    "crates/soldr-cli/src/daemon/db.rs",
+    "crates/soldr-cli/src/daemon/ipc.rs",
+    "crates/soldr-cli/src/daemon/lifecycle.rs",
+    "crates/soldr-core/src/defender_probe.rs",
+    "crates/soldr-cli/src/doctor.rs",
+    "crates/soldr-cli/src/fetch/github.rs",
+    "crates/soldr-cli/src/fetch/known_tools.rs",
+    "crates/soldr-cli/src/fetch/mod.rs",
+    "crates/soldr-cli/src/fetch/rustup_init.rs",
+    "crates/soldr-cli/src/fetch/trust.rs",
+    "crates/soldr-core/src/fuzzy_match.rs",
+    "crates/soldr-cli/src/gc/tests.rs",
+    "crates/soldr-cli/src/linker.rs",
+    "crates/soldr-cli/src/main_tests.rs",
+    "crates/soldr-cli/src/native_cc_tests.rs",
+    "crates/soldr-cli/src/optimize_detect.rs",
+    "crates/soldr-cli/src/optimize_tests.rs",
+    "crates/soldr-cli/src/optimize_windows.rs",
+    "crates/soldr-cli/src/rust_plan_tests/bundle_walk.rs",
+    "crates/soldr-cli/src/rust_plan_tests/manifest.rs",
+    "crates/soldr-cli/src/rust_plan_tests/orphan_rmeta.rs",
+    "crates/soldr-cli/src/rust_plan_tests/plan_build.rs",
+    "crates/soldr-cli/src/rust_plan_tests/prepopulated_target.rs",
+    "crates/soldr-cli/src/rust_plan_tests/warm_restore.rs",
+    "crates/soldr-cli/src/rust_plan_tests/wire_compat.rs",
+    "crates/soldr-core/src/self_relocate.rs",
+    "crates/soldr-cli/src/shim_dir.rs",
+    "crates/soldr-core/src/startup_profile.rs",
+    "crates/soldr-cli/src/toolchain_ensure.rs",
+    "crates/soldr-cli/src/toolchain_link.rs",
+    "crates/soldr-cli/src/trampoline_config_tests.rs",
+    "crates/soldr-cli/src/trampoline_tests.rs",
+    "crates/soldr-cli/src/trampoline_workspace_tests.rs",
+    "crates/soldr-cli/src/wrapper.rs",
+    "crates/soldr-cli/src/wrapper_target.rs",
+    "crates/soldr-cli/src/zccache.rs",
     // ----- tests/ integration suites -----
-    "tests/cli_build_alias_parity.rs",
-    "tests/cli_cache.rs",
-    "tests/cli_cache_prune.rs",
-    "tests/cli_cache_trim.rs",
-    "tests/cli_cargo_basic.rs",
-    "tests/cli_cargo_linker.rs",
-    "tests/cli_cargo_run_trampoline.rs",
-    "tests/cli_cargo_trampoline_workspace.rs",
-    "tests/cli_cargo_wrappers.rs",
-    "tests/cli_cook.rs",
-    "tests/cli_daemon_builds.rs",
-    "tests/cli_daemon_lifecycle.rs",
-    "tests/cli_daemon_target_touch.rs",
-    "tests/cli_dispatch.rs",
-    "tests/cli_doctor.rs",
-    "tests/cli_gc.rs",
-    "tests/cli_gc_extras.rs",
-    "tests/cli_gc_git_checkouts.rs",
-    "tests/cli_gc_registry_src.rs",
-    "tests/cli_optimize.rs",
-    "tests/cli_rust_plan.rs",
-    "tests/cli_toolchain.rs", // partially retrofitted; still contains bare #[test]s
-    "tests/cli_unknown_session_retry.rs",
-    "tests/cli_wrapper.rs",
-    "tests/cli_wrapper_perf.rs",
-    "tests/monocrate_guard.rs",
-    "tests/save_roundtrip.rs",
+    "crates/soldr-cli/tests/cli_build_alias_parity.rs",
+    "crates/soldr-cli/tests/cli_cache.rs",
+    "crates/soldr-cli/tests/cli_cache_prune.rs",
+    "crates/soldr-cli/tests/cli_cache_trim.rs",
+    "crates/soldr-cli/tests/cli_cargo_basic.rs",
+    "crates/soldr-cli/tests/cli_cargo_linker.rs",
+    "crates/soldr-cli/tests/cli_cargo_run_trampoline.rs",
+    "crates/soldr-cli/tests/cli_cargo_trampoline_workspace.rs",
+    "crates/soldr-cli/tests/cli_cargo_wrappers.rs",
+    "crates/soldr-cli/tests/cli_cook.rs",
+    "crates/soldr-cli/tests/cli_daemon_builds.rs",
+    "crates/soldr-cli/tests/cli_daemon_lifecycle.rs",
+    "crates/soldr-cli/tests/cli_daemon_target_touch.rs",
+    "crates/soldr-cli/tests/cli_dispatch.rs",
+    "crates/soldr-cli/tests/cli_doctor.rs",
+    "crates/soldr-cli/tests/cli_gc.rs",
+    "crates/soldr-cli/tests/cli_gc_extras.rs",
+    "crates/soldr-cli/tests/cli_gc_git_checkouts.rs",
+    "crates/soldr-cli/tests/cli_gc_registry_src.rs",
+    "crates/soldr-cli/tests/cli_optimize.rs",
+    "crates/soldr-cli/tests/cli_rust_plan.rs",
+    "crates/soldr-cli/tests/cli_toolchain.rs", // partially retrofitted; still contains bare #[test]s
+    "crates/soldr-cli/tests/cli_unknown_session_retry.rs",
+    "crates/soldr-cli/tests/cli_wrapper.rs",
+    "crates/soldr-cli/tests/cli_wrapper_perf.rs",
+    "crates/soldr-cli/tests/save_roundtrip.rs",
 ];
 
 /// Files that are part of the lint itself / the watchdog impl. These
@@ -137,16 +136,22 @@ const LEGACY_ALLOWLIST: &[&str] = &[
 /// the macro recursively, and (b) the lint scanner here is a single
 /// `timed_test!` and runs under its own watchdog already.
 const LINT_OWN_FILES: &[&str] = &[
-    "src/test_util.rs",
-    "tests/test_watchdog_self_test.rs",
-    "tests/timed_test_lint.rs",
+    "crates/soldr-core/src/test_util.rs",
+    "crates/soldr-cli/tests/test_watchdog_self_test.rs",
+    "crates/soldr-cli/tests/timed_test_lint.rs",
 ];
 
-/// Resolve the absolute path to the `crates/soldr-cli` directory by
-/// walking up from `CARGO_MANIFEST_DIR`. `CARGO_MANIFEST_DIR` for an
-/// integration test is the crate root, which is exactly what we want.
-fn crate_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+/// Resolve the workspace root (two levels up from this crate's
+/// `CARGO_MANIFEST_DIR`, which is `crates/soldr-cli`). The lint scans
+/// every workspace crate under `crates/` (#1490 split) so moved
+/// modules stay covered.
+fn workspace_root() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/soldr-cli has a workspace root two levels up")
+        .to_path_buf()
 }
 
 /// Recursively collect `.rs` files under `dir`, skipping `target/`
@@ -237,10 +242,18 @@ timed_test!(every_test_uses_timed_test_macro_or_is_allowlisted, {
     if common::should_skip_source_tree_test("every_test_uses_timed_test_macro_or_is_allowlisted") {
         return;
     }
-    let root = crate_root();
+    let root = workspace_root();
     let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-    collect_rs_files(&root.join("tests"), &mut files);
+    let crates_dir = root.join("crates");
+    let entries = fs::read_dir(&crates_dir).expect("read crates/ dir");
+    for entry in entries.flatten() {
+        let crate_dir = entry.path();
+        if !crate_dir.is_dir() {
+            continue;
+        }
+        collect_rs_files(&crate_dir.join("src"), &mut files);
+        collect_rs_files(&crate_dir.join("tests"), &mut files);
+    }
 
     let allow: BTreeSet<&str> = LEGACY_ALLOWLIST
         .iter()

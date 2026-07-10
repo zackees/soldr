@@ -9,8 +9,8 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
-# Folded in from former soldr-core / soldr-fetch / soldr-cache crates
-# (see crates/soldr-cli/src/{core,fetch,cache_lib}/).
+soldr-core = { path = "../soldr-core" }
+
 clap = { workspace = true }
 filetime = { workspace = true }
 flate2 = { workspace = true }
