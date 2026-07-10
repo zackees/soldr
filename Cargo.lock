@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cli"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "clap",
  "console-subscriber",
@@ -2781,7 +2781,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-core"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "fs2",
  "prost",
@@ -2797,7 +2797,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-fetch"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "flate2",
  "fs2",
