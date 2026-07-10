@@ -92,11 +92,11 @@ pub mod zccache_lifecycle;
 // ever a `mod` in soldr-cli stays reachable as `soldr_cli::<name>` /
 // `crate::<name>` via these re-exports of the extracted soldr-core
 // crate. `timed_test` is the `#[macro_export]` watchdog macro.
+pub use soldr_cache::cache_lib;
 pub use soldr_core::{
     cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate, startup_profile,
     test_util, timed_test,
 };
-pub use soldr_cache::cache_lib;
 pub use soldr_fetch::fetch;
 
 /// CLI entry logic — formerly the `main.rs` crate root (#1490 Phase 1).
