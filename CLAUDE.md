@@ -198,6 +198,7 @@ vendored crate's own version) is what `soldr status` / `soldr doctor` /
 - `DESIGN.md` — Authoritative implementation guide, architecture decisions, phase roadmap
 - `docs/API.md` — Full CLI specification, environment variables, cache layout
 - `docs/CROSS_COMPILE.md` — blessed cross-compile recipes, including managed Windows GNU and MSVC `cargo-xwin`
+- `docs/DEBUG_SIDECARS.md` — debug-symbol sidecar policy for release archives (`.pdb` / `.dSYM` / `.dwp`, `manifest.json` `debug_info` contract)
 - `docs/TRUST_BOUNDARIES.md` — Runtime fetch policy, what integrity is enforced, what remains follow-up
 - `README.md` — User-facing motivation and prior art comparison
 
