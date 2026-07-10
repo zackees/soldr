@@ -116,8 +116,12 @@ path = "src/main.rs"
 
 def print_soldr_logs(cache_dir: Path) -> None:
     print(f"=== soldr smoke cache dir: {cache_dir} ===", flush=True)
-    if not cache_dir.exists():
-        print("cache dir does not exist", flush=True)
+    try:
+        if not cache_dir.exists():
+            print("cache dir does not exist", flush=True)
+            return
+    except OSError as exc:
+        print(f"cache dir unreadable: {exc}", flush=True)
         return
     wanted_suffixes = {".log", ".jsonl", ".txt"}
     wanted_names = {"compile-daemon-unavailable", "daemon.pid"}
@@ -128,31 +132,42 @@ def print_soldr_logs(cache_dir: Path) -> None:
         cache_dir / "logs",
         cache_dir / "runtime" / "soldr-daemon",
     ]
+    # Log dumping is best-effort diagnostics: after the running-process
+    # v2 broker migration (#1501) the daemon's runtime dirs under the
+    # cache can be permission-locked while the daemon is alive, and a
+    # bare `exists()` / `rglob()` then raises WinError 5 *after* the
+    # smoke has already succeeded (soldr#1509). Never let the log dump
+    # fail the job.
     seen: set[Path] = set()
     candidates: list[Path] = []
     for root in log_roots:
-        if not root.exists():
-            continue
-        for path in root.rglob("*"):
-            resolved = path.resolve()
-            if resolved not in seen:
-                seen.add(resolved)
-                candidates.append(path)
-    for path in sorted(candidates):
-        if not path.is_file():
-            continue
-        suffix = path.suffix.lower()
-        if suffix in binary_suffixes:
-            continue
-        if suffix not in wanted_suffixes and path.name not in wanted_names:
-            continue
         try:
+            if not root.exists():
+                continue
+            for path in root.rglob("*"):
+                resolved = path.resolve()
+                if resolved not in seen:
+                    seen.add(resolved)
+                    candidates.append(path)
+        except OSError as exc:
+            print(f"--- {root}: unreadable: {exc}", flush=True)
+            continue
+    for path in sorted(candidates):
+        try:
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix in binary_suffixes:
+                continue
+            if suffix not in wanted_suffixes and path.name not in wanted_names:
+                continue
             rel = path.relative_to(cache_dir)
             text = path.read_text(encoding="utf-8", errors="replace")
+            size = path.stat().st_size
         except OSError as exc:
             print(f"--- {path}: unreadable: {exc}", flush=True)
             continue
-        print(f"--- {rel} ({path.stat().st_size} bytes) ---", flush=True)
+        print(f"--- {rel} ({size} bytes) ---", flush=True)
         print(text[-16_000:], flush=True)
 
 
