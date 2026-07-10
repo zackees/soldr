@@ -56,7 +56,61 @@ pub fn read_registry_src_last_used(cargo_home: &Path) -> Option<HashMap<Registry
     read_registry_src_last_used_from_path(&path).ok()
 }
 
-fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<RegistrySrcKey, i64>> {
+/// Map key: `(git-db-dirname, checkout-dirname)`. The first component
+/// matches the directory name under both `$CARGO_HOME/git/db/` and
+/// `$CARGO_HOME/git/checkouts/` (cargo uses the same `<repo>-<hash>`
+/// ident for both), e.g. `soldr-76b10f3504cf35a4`. The second matches
+/// the per-commit checkout directory name (cargo's short revision,
+/// e.g. `3381ba4`).
+pub type GitCheckoutKey = (String, String);
+
+/// Read `git_checkout.timestamp` joined with `git_db.name` and return
+/// a map of last-used Unix seconds keyed by
+/// `(git-db-dirname, checkout-dirname)` (issue #1544).
+///
+/// Cargo refreshes the `git_checkout` row on every build that uses
+/// the checkout, but sets the checkout directory's mtime only once at
+/// checkout time — so an actively-used checkout looks arbitrarily old
+/// to an mtime-only walker. This reader gives gc selection the real
+/// usage recency.
+///
+/// Same failure contract as [`read_registry_src_last_used`]: any open
+/// / lock / schema-drift / column-type failure yields `None` and the
+/// caller falls back to filesystem mtime. The database is opened
+/// strictly read-only; no bytes or mtimes are mutated.
+pub fn read_git_checkout_last_used(cargo_home: &Path) -> Option<HashMap<GitCheckoutKey, i64>> {
+    let path = global_cache_db_path(cargo_home);
+    if !path.is_file() {
+        return None;
+    }
+    read_git_checkout_last_used_from_path(&path).ok()
+}
+
+fn read_git_checkout_last_used_from_path(path: &Path) -> SqlResult<HashMap<GitCheckoutKey, i64>> {
+    let conn = open_read_only(path)?;
+    // Schema verified against a live cargo 1.94 `.global-cache`:
+    //   git_db(id, name UNIQUE, timestamp)
+    //   git_checkout(git_id, name, size, timestamp,
+    //                PRIMARY KEY (git_id, name))
+    let mut stmt = conn.prepare(
+        "SELECT git_db.name, git_checkout.name, git_checkout.timestamp \
+         FROM git_checkout \
+         JOIN git_db ON git_checkout.git_id = git_db.id",
+    )?;
+
+    let mut rows = stmt.query([])?;
+    let mut out: HashMap<GitCheckoutKey, i64> = HashMap::new();
+    while let Some(row) = rows.next()? {
+        let repo_dir: String = row.get(0)?;
+        let checkout_dir: String = row.get(1)?;
+        let timestamp: i64 = row.get(2)?;
+        out.insert((repo_dir, checkout_dir), timestamp);
+    }
+    Ok(out)
+}
+
+/// Shared read-only open used by every `.global-cache` reader.
+fn open_read_only(path: &Path) -> SqlResult<Connection> {
     // Read-only open: never mutates cargo's database. `NO_MUTEX` lets
     // multiple soldr invocations open the DB concurrently — cargo's
     // own writes coordinate through its package-cache lock above the
@@ -66,6 +120,11 @@ fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<Regis
     // Read-only busy-timeout: a brief wait while cargo finishes a
     // write is preferable to an immediate SQLITE_BUSY error.
     conn.busy_timeout(std::time::Duration::from_millis(500))?;
+    Ok(conn)
+}
+
+fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<RegistrySrcKey, i64>> {
+    let conn = open_read_only(path)?;
 
     let mut stmt = conn.prepare(
         "SELECT registry_index.name, registry_src.name, registry_src.version, registry_src.timestamp \
@@ -207,6 +266,123 @@ mod tests {
         );
         assert_eq!(map.len(), 3);
     }
+
+    // ---------------------------------------------------------------
+    // git_checkout reader (issue #1544).
+    // ---------------------------------------------------------------
+
+    /// Build a minimal SQLite database matching the git tables cargo
+    /// 1.94 actually writes (verified against a live cargo-produced
+    /// `.global-cache`).
+    fn make_git_global_cache_db(cargo_home: &Path) -> PathBuf {
+        let path = global_cache_db_path(cargo_home);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            r#"
+            CREATE TABLE git_db (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+            CREATE TABLE git_checkout (
+                git_id INTEGER NOT NULL,
+                name TEXT UNIQUE NOT NULL,
+                size INTEGER,
+                timestamp INTEGER NOT NULL,
+                PRIMARY KEY (git_id, name),
+                FOREIGN KEY (git_id) REFERENCES git_db (id) ON DELETE CASCADE
+            );
+            "#,
+        )
+        .unwrap();
+        path
+    }
+
+    fn insert_git_db(conn: &Connection, name: &str, ts: i64) -> i64 {
+        conn.execute(
+            "INSERT INTO git_db (name, timestamp) VALUES (?, ?)",
+            params![name, ts],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_git_checkout(conn: &Connection, git_id: i64, name: &str, ts: i64) {
+        conn.execute(
+            "INSERT INTO git_checkout (git_id, name, size, timestamp) VALUES (?, ?, NULL, ?)",
+            params![git_id, name, ts],
+        )
+        .unwrap();
+    }
+
+    crate::timed_test!(git_checkout_returns_none_when_db_missing, {
+        let tmp = tempdir().unwrap();
+        assert!(read_git_checkout_last_used(tmp.path()).is_none());
+    });
+
+    crate::timed_test!(git_checkout_returns_none_when_file_is_not_sqlite, {
+        let tmp = tempdir().unwrap();
+        std::fs::write(global_cache_db_path(tmp.path()), b"not a database").unwrap();
+        assert!(read_git_checkout_last_used(tmp.path()).is_none());
+    });
+
+    crate::timed_test!(git_checkout_returns_none_when_schema_is_unrelated, {
+        let tmp = tempdir().unwrap();
+        let path = global_cache_db_path(tmp.path());
+        let conn = Connection::open(&path).unwrap();
+        // No `git_db` / `git_checkout` — cargo schema drift. Falling
+        // back to mtime is correct here.
+        conn.execute("CREATE TABLE unrelated (id INTEGER)", [])
+            .unwrap();
+        assert!(read_git_checkout_last_used(tmp.path()).is_none());
+    });
+
+    crate::timed_test!(git_checkout_returns_joined_map_for_well_formed_db, {
+        let tmp = tempdir().unwrap();
+        let db_path = make_git_global_cache_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        let dep = insert_git_db(&conn, "dep-76b10f3504cf35a4", 1700);
+        let other = insert_git_db(&conn, "other-1122334455667788", 1800);
+        insert_git_checkout(&conn, dep, "3381ba4", 1000);
+        insert_git_checkout(&conn, other, "abc1234", 3000);
+        drop(conn);
+
+        let map = read_git_checkout_last_used(tmp.path()).expect("populated db must return Some");
+        assert_eq!(
+            map.get(&("dep-76b10f3504cf35a4".to_string(), "3381ba4".to_string())),
+            Some(&1000)
+        );
+        assert_eq!(
+            map.get(&("other-1122334455667788".to_string(), "abc1234".to_string())),
+            Some(&3000)
+        );
+        assert_eq!(map.len(), 2);
+    });
+
+    crate::timed_test!(git_checkout_empty_tables_yield_empty_map_not_none, {
+        let tmp = tempdir().unwrap();
+        make_git_global_cache_db(tmp.path());
+        let map = read_git_checkout_last_used(tmp.path()).unwrap();
+        assert!(map.is_empty());
+    });
+
+    crate::timed_test!(git_checkout_read_never_mutates_db_bytes, {
+        // Gate (b) of #1544: the reader must never mutate cargo's
+        // database. Compare the raw file bytes before and after a
+        // successful read.
+        let tmp = tempdir().unwrap();
+        let db_path = make_git_global_cache_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        let dep = insert_git_db(&conn, "dep-76b10f3504cf35a4", 1700);
+        insert_git_checkout(&conn, dep, "3381ba4", 1000);
+        drop(conn);
+
+        let before = std::fs::read(&db_path).unwrap();
+        let map = read_git_checkout_last_used(tmp.path()).unwrap();
+        assert_eq!(map.len(), 1);
+        let after = std::fs::read(&db_path).unwrap();
+        assert_eq!(before, after, "read-only reader mutated the DB bytes");
+    });
 
     #[test]
     fn empty_tables_yield_empty_map_not_none() {

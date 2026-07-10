@@ -1,10 +1,11 @@
 //! Filesystem walks for the gc taxonomy.
 //!
 //! Owns the `cargo_registry_src` and `cargo_git_checkouts` walkers
-//! plus the shared `last-used` resolution rule that the registry-src
-//! walker uses to combine cargo's `.global-cache` SQLite tracker with
-//! the filesystem mtime fallback (#349). Also hosts the cheap
-//! parallel directory sizer that several gc surfaces share.
+//! plus the shared `last-used` resolution rule both walkers use to
+//! combine cargo's `.global-cache` SQLite tracker with the filesystem
+//! mtime fallback (#349 for registry-src, #1544 for git checkouts).
+//! Also hosts the cheap parallel directory sizer that several gc
+//! surfaces share.
 
 use super::{
     GcListEntryOutput, GcListKindFilter, KIND_CARGO_GIT_CHECKOUTS, KIND_CARGO_GIT_DB,
@@ -269,11 +270,15 @@ pub(super) fn parse_crate_owner(dir_name: &str) -> Option<String> {
 /// The worktree is fully regeneratable from the bare clone, so safety
 /// class is `derived`.
 ///
-/// `last_used_unix` is the directory's filesystem mtime today. Cargo's
-/// `$CARGO_HOME/.global-cache` SQLite tracker also records git-checkout
-/// touch events; integrating that lookup is straightforward but lives in
-/// a follow-up (mirrors the registry-src precedence introduced in #349).
-/// Until then the mtime fallback gives a usable approximation.
+/// `last_used_unix` is preferentially derived from cargo's own
+/// `$CARGO_HOME/.global-cache` SQLite tracker (#1544, mirroring the
+/// registry-src precedence from #349). Cargo sets the checkout
+/// directory's mtime once at checkout time and never touches it again
+/// — only the tracker row is refreshed on later builds — so an
+/// actively-used checkout looks arbitrarily old to an mtime-only
+/// walker and gets purge-selected, forcing a purge/re-checkout loop.
+/// When the tracker is missing, locked, schema-drifted, or has no row
+/// for a particular checkout, we fall back to the directory mtime.
 pub(super) fn walk_cargo_git_checkouts(
     cargo_home: &std::path::Path,
     now: i64,
@@ -283,6 +288,14 @@ pub(super) fn walk_cargo_git_checkouts(
         Ok(iter) => iter,
         Err(_) => return Vec::new(),
     };
+
+    // Try the global-cache tracker once up-front. None covers the
+    // "missing / locked / schema-drift" cases; every checkout then
+    // falls back to mtime. An empty Some(..) means the tracker exists
+    // but has no rows; each checkout that misses the lookup still
+    // falls back individually.
+    let global_cache =
+        crate::cache_lib::cargo_global_cache::read_git_checkout_last_used(cargo_home);
 
     let mut out: Vec<GcListEntryOutput> = Vec::new();
     for repo_entry in repo_dirs.flatten() {
@@ -314,12 +327,12 @@ pub(super) fn walk_cargo_git_checkouts(
                 None => continue,
             };
             let (size_bytes, file_count) = fast_directory_size_and_files(&commit_path);
-            let last_used_unix = commit_meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let (last_used_unix, last_used_source) = resolve_git_checkout_last_used(
+                global_cache.as_ref(),
+                &repo_dir_name,
+                &commit_dir_name,
+                &commit_meta,
+            );
             let age_seconds = now.saturating_sub(last_used_unix);
             out.push(GcListEntryOutput {
                 path: absolute_path_string(&commit_path),
@@ -336,11 +349,41 @@ pub(super) fn walk_cargo_git_checkouts(
                 owner_repo: Some(repo_dir_name.clone()),
                 owner_binary: None,
                 owner_toolchain: None,
-                last_used_source: Some(LAST_USED_FROM_FS_MTIME),
+                last_used_source: Some(last_used_source),
             });
         }
     }
     out
+}
+
+/// Pick the `last_used_unix` value (and its provenance tag) for one
+/// git checkout directory (#1544). Mirrors
+/// [`resolve_registry_src_last_used`]: prefer cargo's `.global-cache`
+/// row keyed by `(git-db-dirname, checkout-dirname)`, fall back to
+/// the directory's filesystem mtime per-checkout.
+///
+/// Returns `(unix_seconds, "global_cache" | "fs_mtime")`.
+pub(super) fn resolve_git_checkout_last_used(
+    global_cache: Option<
+        &std::collections::HashMap<crate::cache_lib::cargo_global_cache::GitCheckoutKey, i64>,
+    >,
+    repo_dir_name: &str,
+    commit_dir_name: &str,
+    meta: &std::fs::Metadata,
+) -> (i64, &'static str) {
+    if let Some(map) = global_cache {
+        let key = (repo_dir_name.to_string(), commit_dir_name.to_string());
+        if let Some(&ts) = map.get(&key) {
+            return (ts, LAST_USED_FROM_GLOBAL_CACHE);
+        }
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    (mtime, LAST_USED_FROM_FS_MTIME)
 }
 
 // ---------------------------------------------------------------------------
