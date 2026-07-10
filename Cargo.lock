@@ -2742,7 +2742,7 @@ dependencies = [
 
 [[package]]
 name = "soldr-cache"
-version = "0.8.4"
+version = "0.8.5"
 dependencies = [
  "filetime",
  "fs2",
