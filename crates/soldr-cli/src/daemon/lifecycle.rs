@@ -813,10 +813,10 @@ mod daemon_spawn_image_tests {
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
 
-    /// #1516 regression: a via-self daemon (no sibling `soldr-daemon`
-    /// binary) must NOT exec the invoking soldr binary in place — its
-    /// image must live under the daemon runtime root so the installed
-    /// binary can be deleted/replaced while the daemon is alive.
+    // #1516 regression: a via-self daemon (no sibling `soldr-daemon`
+    // binary) must NOT exec the invoking soldr binary in place — its
+    // image must live under the daemon runtime root so the installed
+    // binary can be deleted/replaced while the daemon is alive.
     crate::timed_test!(
         via_self_daemon_image_is_relocated_off_the_invoking_binary,
         {
@@ -852,8 +852,8 @@ mod daemon_spawn_image_tests {
         }
     );
 
-    /// soldr#1300 constraint: maturin-repaired wheel layouts keep
-    /// running in place — the via-self relocation must not break them.
+    // soldr#1300 constraint: maturin-repaired wheel layouts keep
+    // running in place — the via-self relocation must not break them.
     crate::timed_test!(via_self_daemon_in_repaired_wheel_layout_runs_in_place, {
         let temp = TempDir::new().expect("tempdir");
         let scripts = temp.path().join("site-packages").join("soldr.scripts");
@@ -871,7 +871,7 @@ mod daemon_spawn_image_tests {
         );
     });
 
-    /// Without a resolvable cache root the source runs in place.
+    // Without a resolvable cache root the source runs in place.
     crate::timed_test!(daemon_image_runs_in_place_without_cache_root, {
         let temp = TempDir::new().expect("tempdir");
         let src = temp.path().join("soldr.exe");
