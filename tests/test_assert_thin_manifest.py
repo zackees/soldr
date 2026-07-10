@@ -227,6 +227,10 @@ def test_strict_mode_catches_orphan(mod, tmp_path: Path) -> None:
         ("debug/deps/soldr.dSYM/Contents/Info.plist", "dSYM"),
         ("debug/build/serde-abc/build-script-build", "Unix"),
         ("debug/build/serde-abc/build-script-build.exe", "Windows"),
+        (
+            "debug/.fingerprint/serde-abc/build-script-build-script-build.json",
+            "diagnostic JSON",
+        ),
     ],
 )
 def test_dropped_category_triggers_failure(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Assert that the second build of a thin-v2 cache restore is a near no-op.
+"""Assert Cargo correctness after a thin-v2 cache restore.
 
 This script implements the verification gate described in
 ``docs/THIN_TARGET_CACHE_PRUNING.md`` (Section 5).
@@ -19,10 +19,9 @@ Why parse text instead of cargo ``--timings=json``:
 - The signal is unambiguous: a fresh build prints ``Compiling foo v1.2.3``
   per unit; a fully-fresh restore prints only one ``Finished ...`` line.
 
-The script reads two captured cargo build logs and fails if the second one
-shows more than ``--tolerance`` ``Compiling`` lines for first-party crates.
-``--tolerance`` defaults to 2 to allow trivial proc-macro re-runs that show
-up on some hosts even with a fully warm cache.
+By default the script verifies a complete restore is a near no-op. With
+``--expect-incomplete-restore``, it instead requires Cargo to rebuild a
+first-party unit when thin-v2 intentionally omitted its primary outputs.
 """
 
 from __future__ import annotations
@@ -167,6 +166,34 @@ def assert_second_build_is_noop(
     return first, second, errors
 
 
+def assert_incomplete_restore_rebuilds(
+    first_log: str,
+    second_log: str,
+) -> tuple[BuildLogSummary, BuildLogSummary, list[str]]:
+    """Verify Cargo stays authoritative when primary outputs were not restored."""
+    first = parse_build_log(first_log)
+    second = parse_build_log(second_log)
+    errors: list[str] = []
+
+    if not first.compiling_units:
+        errors.append(
+            "first build did not show any Compiling lines; the verifier "
+            "expected a cold build as the baseline."
+        )
+    if not second.finished_seen:
+        errors.append(
+            "fresh-target build did not produce a 'Finished' line; the build "
+            "likely failed or was truncated."
+        )
+    if not second.first_party_compiles:
+        errors.append(
+            "fresh-target restore did not rebuild a first-party unit even though "
+            "thin-v2 omits required rlib/rmeta outputs; refusing to claim Cargo Fresh."
+        )
+
+    return first, second, errors
+
+
 def _format_summary(label: str, summary: BuildLogSummary) -> str:
     return (
         f"{label}: compiling={len(summary.compiling_units)} "
@@ -220,6 +247,14 @@ def _build_argparser() -> argparse.ArgumentParser:
             "the calling step already fails if the second build command fails."
         ),
     )
+    parser.add_argument(
+        "--expect-incomplete-restore",
+        action="store_true",
+        help=(
+            "Require a first-party rebuild after restoring a slice that omits "
+            "primary outputs. This guards against falsely claiming Cargo Fresh."
+        ),
+    )
     return parser
 
 
@@ -232,13 +267,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"assert_thin_noop: input log not found: {exc}", file=sys.stderr)
         return 2
 
-    first, second, errors = assert_second_build_is_noop(
-        first_text,
-        second_text,
-        tolerance=args.tolerance,
-        require_first_built_something=not args.allow_empty_first,
-        allow_empty_second=args.allow_empty_second,
-    )
+    if args.expect_incomplete_restore:
+        first, second, errors = assert_incomplete_restore_rebuilds(first_text, second_text)
+    else:
+        first, second, errors = assert_second_build_is_noop(
+            first_text,
+            second_text,
+            tolerance=args.tolerance,
+            require_first_built_something=not args.allow_empty_first,
+            allow_empty_second=args.allow_empty_second,
+        )
 
     print(_format_summary("first ", first))
     print(_format_summary("second", second))
@@ -250,7 +288,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  - {err}", file=sys.stderr)
         return 1
 
-    print("assert_thin_noop: OK (second build is a no-op within tolerance)")
+    if args.expect_incomplete_restore:
+        print("assert_thin_noop: OK (Cargo correctly rebuilt missing primary outputs)")
+    else:
+        print("assert_thin_noop: OK (second build is a no-op within tolerance)")
     return 0
 
 
