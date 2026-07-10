@@ -258,7 +258,10 @@ fn terminate_pid(pid: u32) {
 #[allow(non_snake_case)]
 fn terminate_pid(pid: u32) {
     use std::os::windows::raw::HANDLE;
+    // Win32 API spelling — clippy would rename to Dword.
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     const PROCESS_TERMINATE: DWORD = 0x0001;
     extern "system" {
@@ -602,8 +605,11 @@ fn spawn_detached_windows_no_inherit(program: &Path, args: &[&str]) -> Result<()
     use std::ptr::{null, null_mut};
 
     #[allow(non_camel_case_types)]
+    // Win32 API spelling — clippy would rename to Dword.
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
     #[allow(non_camel_case_types)]
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     #[allow(non_camel_case_types)]
     type LPVOID = *mut c_void;
@@ -735,7 +741,10 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 #[allow(clippy::upper_case_acronyms, non_snake_case)]
 pub(crate) fn pid_is_alive(pid: u32) -> bool {
     use std::os::windows::raw::HANDLE;
+    // Win32 API spelling — clippy would rename to Dword.
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;
     const STILL_ACTIVE: DWORD = 259;
@@ -774,7 +783,10 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
 #[allow(clippy::upper_case_acronyms, non_snake_case)]
 pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
     use std::os::windows::raw::HANDLE;
+    // Win32 API spelling — clippy would rename to Dword.
+    #[allow(clippy::upper_case_acronyms)]
     type DWORD = u32;
+    #[allow(clippy::upper_case_acronyms)]
     type BOOL = i32;
     type WCHAR = u16;
     const PROCESS_QUERY_LIMITED_INFORMATION: DWORD = 0x1000;

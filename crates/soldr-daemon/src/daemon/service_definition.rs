@@ -22,15 +22,15 @@ use std::path::{Path, PathBuf};
 /// soldr#1495 Workstream B: the broker-owned `UpgradeDaemon` graceful
 /// handoff cannot land until running-process ships the singleton-mode
 /// Phase 4b machinery (the v2 adopt path is a stub today).
-pub(crate) const SOLDR_DAEMON_SERVICE_DEF_DEFERRED: &[&str] = &[
+pub const SOLDR_DAEMON_SERVICE_DEF_DEFERRED: &[&str] = &[
     "broker-owned UpgradeDaemon singleton handoff (upstream Phase 4b)",
     "broker-mediated backend routing once adopt returns a real endpoint",
 ];
 
 #[derive(Debug, Clone)]
-pub(crate) struct InstalledServiceDefinition {
-    pub(crate) path: PathBuf,
-    pub(crate) definition: ServiceDefinition,
+pub struct InstalledServiceDefinition {
+    pub path: PathBuf,
+    pub definition: ServiceDefinition,
 }
 
 pub(crate) fn sibling_daemon_binary(current: &Path) -> PathBuf {
@@ -87,17 +87,15 @@ fn servicedef_io_error(err: impl std::fmt::Display) -> io::Error {
     io::Error::other(err.to_string())
 }
 
-pub(crate) fn install_default_service_definition() -> io::Result<InstalledServiceDefinition> {
+pub fn install_default_service_definition() -> io::Result<InstalledServiceDefinition> {
     install_service_definition(&default_daemon_binary()?)
 }
 
-pub(crate) fn install_service_definition(
-    daemon_binary: &Path,
-) -> io::Result<InstalledServiceDefinition> {
+pub fn install_service_definition(daemon_binary: &Path) -> io::Result<InstalledServiceDefinition> {
     install_service_definition_to_dir(service_definition_dir_v2(), daemon_binary)
 }
 
-pub(crate) fn install_service_definition_to_dir(
+pub fn install_service_definition_to_dir(
     service_root: impl AsRef<Path>,
     daemon_binary: &Path,
 ) -> io::Result<InstalledServiceDefinition> {

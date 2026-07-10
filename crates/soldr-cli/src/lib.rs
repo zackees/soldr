@@ -33,7 +33,6 @@ pub mod cli_dispatch;
 /// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
 pub mod compile_dispatch;
 pub mod cook;
-pub mod daemon;
 pub mod doctor;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 pub mod env_cmd;
@@ -79,13 +78,6 @@ pub mod wrapper;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 pub mod wrapper_target;
 pub mod zccache;
-/// Issue #977 / #980 L1 — embedded zccache service wrapper. The
-/// daemon always links the embedded service; the legacy
-/// fork-zccache.exe wrapper path has been deleted. The standalone
-/// managed zccache binary is still used by `soldr update-zccache`
-/// and the perf-cluster broker, but those paths are independent of
-/// this module.
-pub mod zccache_embedded;
 pub mod zccache_lifecycle;
 
 // #1490 Phase 2 facade (mechanics rule M3): every module that was
@@ -97,6 +89,7 @@ pub use soldr_core::{
     cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate, startup_profile,
     test_util, timed_test,
 };
+pub use soldr_daemon::{daemon, zccache_embedded};
 pub use soldr_fetch::fetch;
 
 /// CLI entry logic — formerly the `main.rs` crate root (#1490 Phase 1).
