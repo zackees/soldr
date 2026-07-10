@@ -43,7 +43,10 @@ pub(crate) use purge::{
 #[cfg(test)]
 use purge::{gc_purge_worker_count_for, parse_gc_purge_answer};
 #[cfg(test)]
-use walks::{resolve_registry_src_last_used, split_dir_name};
+use walks::{
+    resolve_git_checkout_last_used, resolve_registry_src_last_used, split_dir_name,
+    walk_cargo_git_checkouts,
+};
 
 use purge::{
     gc_candidate_output, gc_largest_candidates, gc_total_reclaimable_bytes, print_gc_purge_result,
@@ -347,14 +350,15 @@ pub(super) struct GcListEntryOutput {
     /// Toolchain name for rustup toolchain entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) owner_toolchain: Option<String>,
-    /// Provenance of `last_used_unix` (#349). Present on
-    /// `cargo_registry_src` entries; omitted for `cargo_target` where
-    /// only mtime is available today. Values:
+    /// Provenance of `last_used_unix` (#349 for registry-src, #1544
+    /// for git checkouts). Present on `cargo_registry_src` and
+    /// `cargo_git_checkouts` entries; omitted for `cargo_target` where
+    /// only the soldr registry timestamp is available today. Values:
     ///
     /// - `"global_cache"` — cargo's own `$CARGO_HOME/.global-cache`
     ///   SQLite tracker produced the timestamp.
     /// - `"fs_mtime"` — the directory mtime, used when the tracker is
-    ///   missing / locked / schema-drift / has no row for this crate.
+    ///   missing / locked / schema-drift / has no row for this entry.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) last_used_source: Option<&'static str>,
 }
