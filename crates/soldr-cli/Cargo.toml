@@ -9,6 +9,7 @@ description = "CLI for soldr — instant tools, instant builds"
 publish = false
 
 [dependencies]
+soldr-cache = { path = "../soldr-cache" }
 soldr-core = { path = "../soldr-core" }
 soldr-fetch = { path = "../soldr-fetch" }
 
