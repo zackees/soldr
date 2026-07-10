@@ -1,0 +1,35 @@
+[package]
+name = "soldr-cache"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "soldr RUSTC_WRAPPER cache library: hashing, cache layout, save/load transport, auto-GC"
+publish = false
+
+[dependencies]
+soldr-core = { path = "../soldr-core" }
+
+filetime = { workspace = true }
+fs2 = { workspace = true }
+hex = { workspace = true }
+jwalk = { workspace = true }
+prost = { workspace = true }
+rayon = { workspace = true }
+redb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+rusqlite = { workspace = true }
+tar = { workspace = true }
+tracing = { workspace = true }
+zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+toml = { workspace = true }
+zstd = { workspace = true }
+
+[lints]
+workspace = true

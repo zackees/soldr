@@ -22,7 +22,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 /// Shared global lock guarding every in-process `Database::open` on
 /// `state.redb`. Both `daemon::db` and `cache_lib::cook_index` go
 /// through this lock — they open the same file.
-pub(crate) fn state_db_open_lock() -> &'static Mutex<()> {
+pub fn state_db_open_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -32,13 +32,13 @@ pub(crate) fn state_db_open_lock() -> &'static Mutex<()> {
 /// order is load-bearing: `db` is declared first so it is dropped
 /// (releasing redb's file lock) before `_guard` is dropped (letting
 /// the next opener proceed).
-pub(crate) struct StateDbHandle {
+pub struct StateDbHandle {
     db: Database,
     _guard: MutexGuard<'static, ()>,
 }
 
 impl StateDbHandle {
-    pub(crate) fn new(db: Database, guard: MutexGuard<'static, ()>) -> Self {
+    pub fn new(db: Database, guard: MutexGuard<'static, ()>) -> Self {
         Self { db, _guard: guard }
     }
 }
