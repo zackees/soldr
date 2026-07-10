@@ -8,6 +8,7 @@ resolver = "2"
 members = [
     "crates/soldr-cli",
     "crates/soldr-core",
+    "crates/soldr-fetch",
 ]
 # The zccache submodule has its own [workspace] declaration and its
 # own `[workspace.dependencies]` (arc-swap, etc.). Excluding it here

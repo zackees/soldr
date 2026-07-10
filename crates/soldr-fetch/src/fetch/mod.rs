@@ -204,7 +204,7 @@ pub async fn fetch_tool_with_paths(
 /// build target override. This is for host-executed tools such as Cargo
 /// subcommands; `cargo-zigbuild` must match the runner that executes it even
 /// when the Rust build target is `aarch64-unknown-linux-musl`.
-pub(crate) async fn fetch_tool_for_host_with_paths(
+pub async fn fetch_tool_for_host_with_paths(
     crate_name: &str,
     version: &VersionSpec,
     paths: &SoldrPaths,

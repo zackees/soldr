@@ -97,7 +97,7 @@ pub fn tool_exe_in_env(env_dir: &Path, exe_base: &str) -> PathBuf {
 /// executable and the sentinel exist — the sentinel is written last,
 /// so its absence means a prior attempt died mid-way and the dir must
 /// be rebuilt rather than served.
-pub(crate) fn env_is_complete(env_dir: &Path, exe_base: &str) -> bool {
+pub fn env_is_complete(env_dir: &Path, exe_base: &str) -> bool {
     tool_exe_in_env(env_dir, exe_base).is_file() && env_dir.join(COMPLETE_SENTINEL).is_file()
 }
 

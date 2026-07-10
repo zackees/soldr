@@ -2762,6 +2762,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "soldr-core",
+ "soldr-fetch",
  "strsim",
  "tar",
  "tempfile",
@@ -2792,6 +2793,30 @@ dependencies = [
  "toml",
  "url",
  "wait-timeout",
+]
+
+[[package]]
+name = "soldr-fetch"
+version = "0.8.4"
+dependencies = [
+ "flate2",
+ "fs2",
+ "hex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "soldr-core",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
+ "url",
+ "wait-timeout",
+ "xz2",
+ "zip",
+ "zstd",
 ]
 
 [[package]]
