@@ -3,9 +3,9 @@
 //! of issue #339.
 
 use crate::cargo_front_door::{
-    build_env_inputs, cargo_config_hash, cargo_feature_inputs, cargo_profile, cargo_target_triple,
-    file_hash_or_missing, first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
-    workspace_manifest_hashes, CargoProfileDebugDefault,
+    build_env_inputs, cargo_feature_inputs, cargo_profile, cargo_target_triple,
+    first_cargo_subcommand, path_string, rustflags_inputs, stable_hash_json,
+    CargoProfileDebugDefault,
 };
 use crate::core::{command_output_with_timeout, suppress_windows_console_window, SoldrError};
 use crate::zccache::{
@@ -24,6 +24,10 @@ use std::collections::BTreeSet;
 #[path = "rust_plan_proto.rs"]
 mod rust_plan_proto;
 
+#[path = "rust_plan_memo.rs"]
+mod rust_plan_memo;
+pub(crate) use rust_plan_memo::{ToolchainProbe, WorkspaceFileHashes};
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct CargoMetadata {
     pub(crate) packages: Vec<CargoMetadataPackage>,
@@ -36,6 +40,12 @@ pub(crate) struct CargoMetadata {
 pub(crate) struct CargoMetadataPackage {
     pub(crate) id: String,
     pub(crate) source: Option<String>,
+    /// Absolute manifest path as reported by `cargo metadata`. Consumed by
+    /// the prep memo (soldr#1540) to re-hash out-of-workspace path-dep
+    /// manifests during memo validation. `None` tolerated for synthetic
+    /// test metadata.
+    #[serde(default)]
+    pub(crate) manifest_path: Option<String>,
 }
 
 /// Returns `true` when `cache_profile` should be omitted from the serialized
@@ -159,8 +169,43 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
     // the workspace just to die on a one-character env mistake.
     rust_artifact_cache_tar_threads_from_env()?;
 
-    let metadata = cargo_metadata(cargo, args)?;
-    let toolchain = rust_toolchain_identity(cargo, rustc)?;
+    let plan_dir = session.cache_dir.join("plans");
+
+    // Prep memo (soldr#1540): serve `cargo metadata` + toolchain probe
+    // outputs from the versioned on-disk memo when the full content
+    // identity (manifests, lock, config, toolchain binaries, env, args)
+    // is provably unchanged. Any gather/load/key mismatch falls back to
+    // the authoritative subprocesses below.
+    let memo_context = if rust_plan_memo::prep_memo_enabled() {
+        rust_plan_memo::MemoContext::gather(cargo, rustc, args).ok()
+    } else {
+        None
+    };
+    let (metadata, probe, file_hashes) = match memo_context
+        .as_ref()
+        .and_then(|context| context.try_load(&plan_dir))
+    {
+        Some(hit) => hit,
+        None => {
+            let metadata = cargo_metadata(cargo, args)?;
+            let probe = toolchain_probe(cargo, rustc)?;
+            let workspace_root = normalize_path_for_compare(&metadata.workspace_root)?;
+            let file_hashes = WorkspaceFileHashes::collect(&workspace_root)?;
+            if let Some(context) = memo_context.as_ref() {
+                // Best-effort persist; a read-only cache dir must never
+                // fail the build.
+                let _ = context.store(
+                    &plan_dir,
+                    &metadata,
+                    &probe,
+                    &path_string(&workspace_root),
+                    &file_hashes,
+                );
+            }
+            (metadata, probe, file_hashes)
+        }
+    };
+    let toolchain = derive_toolchain_identity(&probe);
     let plan = build_rust_artifact_plan(
         &metadata,
         &toolchain,
@@ -169,8 +214,8 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
         profile,
         session,
         cargo_profile_debug_default,
+        &file_hashes,
     )?;
-    let plan_dir = session.cache_dir.join("plans");
     std::fs::create_dir_all(&plan_dir)?;
     let plan_path = plan_dir.join("last-rust-artifact-plan.pb");
     let plan_bytes = rust_plan_proto::plan_to_proto_bytes(&plan)?;
@@ -559,13 +604,26 @@ pub(crate) fn cargo_metadata_passthrough_args(args: &[String]) -> Vec<std::ffi::
     values
 }
 
-fn rust_toolchain_identity(
+/// Run the two authoritative toolchain probe subprocesses (`rustc -Vv`,
+/// `cargo --version`) and return their raw stdout. Parsing happens in
+/// [`derive_toolchain_identity`] so the raw outputs can be memoized
+/// (soldr#1540) while env-dependent fields stay live.
+fn toolchain_probe(
     cargo: &std::path::Path,
     rustc: &std::path::Path,
-) -> Result<RustToolchainIdentity, SoldrError> {
-    let rustc_output = tool_output(rustc, &["-Vv"])?;
-    let cargo_output = tool_output(cargo, &["--version"])?;
-    let host = rustc_output
+) -> Result<ToolchainProbe, SoldrError> {
+    Ok(ToolchainProbe {
+        rustc_verbose: tool_output(rustc, &["-Vv"])?,
+        cargo_version: tool_output(cargo, &["--version"])?,
+    })
+}
+
+/// Derive the plan toolchain identity from raw probe outputs. The channel
+/// prefers the live `RUSTUP_TOOLCHAIN` env var, so it is evaluated at plan
+/// build time rather than persisted in the prep memo.
+pub(crate) fn derive_toolchain_identity(probe: &ToolchainProbe) -> RustToolchainIdentity {
+    let host = probe
+        .rustc_verbose
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .unwrap_or("unknown")
@@ -574,19 +632,20 @@ fn rust_toolchain_identity(
         .ok()
         .filter(|value| !value.trim().is_empty())
         .or_else(|| {
-            rustc_output
+            probe
+                .rustc_verbose
                 .lines()
                 .find_map(|line| line.strip_prefix("release: "))
                 .map(str::to_string)
         })
         .unwrap_or_else(|| "unknown".to_string());
 
-    Ok(RustToolchainIdentity {
-        rustc: rustc_output.trim().to_string(),
-        cargo: cargo_output.trim().to_string(),
+    RustToolchainIdentity {
+        rustc: probe.rustc_verbose.trim().to_string(),
+        cargo: probe.cargo_version.trim().to_string(),
         channel,
         host,
-    })
+    }
 }
 
 fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrError> {
@@ -609,6 +668,7 @@ fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrErr
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_rust_artifact_plan(
     metadata: &CargoMetadata,
     toolchain: &RustToolchainIdentity,
@@ -617,6 +677,7 @@ pub(crate) fn build_rust_artifact_plan(
     cache_profile: Option<&'static str>,
     session: &ZccacheBuildSession,
     cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
+    file_hashes: &WorkspaceFileHashes,
 ) -> Result<RustArtifactPlan, SoldrError> {
     let workspace_root = normalize_path_for_compare(&metadata.workspace_root)?;
     let target_dir = normalize_path_for_compare(&metadata.target_directory)?;
@@ -670,9 +731,9 @@ pub(crate) fn build_rust_artifact_plan(
             features_hash: stable_hash_json(&cargo_feature_inputs(args)),
             rustflags_hash: stable_hash_json(&rustflags_inputs()),
             env_hash: stable_hash_json(&build_env_inputs(cargo_profile_debug_default)),
-            lockfile_hash: file_hash_or_missing(&workspace_root.join("Cargo.lock"))?,
-            cargo_config_hash: cargo_config_hash(&workspace_root)?,
-            manifest_hashes: workspace_manifest_hashes(&workspace_root)?,
+            lockfile_hash: file_hashes.lockfile_hash.clone(),
+            cargo_config_hash: file_hashes.cargo_config_hash.clone(),
+            manifest_hashes: file_hashes.manifest_hashes.clone(),
         },
         packages: RustPlanPackages {
             selected_package_ids,
