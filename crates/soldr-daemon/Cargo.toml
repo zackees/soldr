@@ -25,7 +25,20 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
+console-subscriber = { workspace = true, optional = true }
 zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
+
+[features]
+# Opt-in tokio-console support for the daemon and embedded zccache
+# service. Requires a `--cfg tokio_unstable` build to produce useful
+# Tokio task instrumentation. Forwarded from soldr-cli's feature of the
+# same name.
+tokio-console = [
+    "dep:console-subscriber",
+    "dep:tracing-subscriber",
+    "zccache/tokio-console",
+]
 
 # Unix-only PID-liveness probe (kill(pid, 0)) and detached spawn
 # (setsid); Windows uses inline OpenProcess declarations.

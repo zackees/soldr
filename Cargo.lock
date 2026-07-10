@@ -2770,7 +2770,6 @@ name = "soldr-cli"
 version = "0.8.5"
 dependencies = [
  "clap",
- "console-subscriber",
  "filetime",
  "flate2",
  "fs2",
@@ -2826,6 +2825,7 @@ dependencies = [
 name = "soldr-daemon"
 version = "0.8.5"
 dependencies = [
+ "console-subscriber",
  "fs2",
  "hex",
  "libc",
@@ -2841,6 +2841,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "zccache",
 ]
 
