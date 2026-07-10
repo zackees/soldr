@@ -207,6 +207,12 @@ pub fn build_session_start(
     )
 }
 
+/// Acknowledged finalization (soldr#1536): blocks until the daemon has
+/// rolled the session up from its in-memory aggregate, persisted the
+/// finalized BuildRecord, and flushed every staged session event to
+/// redb. `Ok(())` therefore means the wrapper can trust the persisted
+/// aggregate instead of re-scanning the event table; any error routes
+/// the caller to the direct-redb fallback exactly like before.
 pub fn build_session_end(
     paths: &SoldrPaths,
     session_id: u64,
@@ -214,14 +220,20 @@ pub fn build_session_end(
     ended_at_ms: i64,
 ) -> Result<(), ClientError> {
     let sock = default_sock_path(paths);
-    submit_fire_and_forget(
+    match submit_request(
         &sock,
         &Request::BuildSessionEnd {
             session_id,
             exit_code,
             ended_at_ms,
         },
-    )
+    )? {
+        Response::Ack => Ok(()),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected build_session_end response: {other:?}"
+        ))),
+    }
 }
 
 /// PR 1 cook-index client surface (#576). PR 2 (`soldr cook`) and PR 3

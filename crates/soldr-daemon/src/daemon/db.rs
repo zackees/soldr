@@ -212,6 +212,55 @@ pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>,
     decode_build_row(row.value()).map(Some)
 }
 
+/// Read-modify-write finalization of a BuildRecord in ONE redb open +
+/// write txn (soldr#1536). The per-call [`open_db`] cost grows with the
+/// db file size, so the session-end path avoids paying it twice for a
+/// `get_build` + `upsert_build` pair.
+pub fn finalize_build(
+    db_path: &Path,
+    session_id: u64,
+    exit_code: i32,
+    ended_at_ms: i64,
+    aggregate: (u32, Option<u64>, Option<String>),
+) -> Result<BuildRecord, RegistryError> {
+    let (crate_count, slowest_crate_us, slowest_crate_name) = aggregate;
+    let db = open_db(db_path)?;
+    init_tables(&db)?;
+    let txn = db.begin_write()?;
+    let record = {
+        let mut builds = txn.open_table(BUILDS)?;
+        let existing = match builds.get(session_id)? {
+            Some(row) => Some(decode_build_row(row.value())?),
+            None => None,
+        };
+        let mut record = existing.unwrap_or(BuildRecord {
+            session_id,
+            repo_root: String::new(),
+            started_at_ms: ended_at_ms,
+            ended_at_ms: None,
+            exit_code: None,
+            total_wall_ms: None,
+            crate_count: 0,
+            slowest_crate_us: None,
+            slowest_crate_name: None,
+            cache_summary: None,
+            log_paths: None,
+            miss_reasons: Vec::new(),
+        });
+        record.ended_at_ms = Some(ended_at_ms);
+        record.exit_code = Some(exit_code);
+        record.total_wall_ms = Some((ended_at_ms - record.started_at_ms).max(0) as u64);
+        record.crate_count = crate_count;
+        record.slowest_crate_us = slowest_crate_us;
+        record.slowest_crate_name = slowest_crate_name;
+        let bytes = prost_tagged_bytes(&wire::build_record_to_wire(&record));
+        builds.insert(session_id, bytes.as_slice())?;
+        record
+    };
+    txn.commit()?;
+    Ok(record)
+}
+
 /// Strict prost-only decoder. A row that doesn't carry the prost tag
 /// byte surfaces an `InvalidData` error — the migration pass in
 /// [`ensure_initialized`] guarantees no such rows exist post-startup,
@@ -519,6 +568,43 @@ mod tests {
         let limited = list_builds(&path, 2, None).expect("limited");
         assert_eq!(limited.len(), 2);
     }
+
+    crate::timed_test!(finalize_build_preserves_existing_fields_in_one_txn, {
+        let temp = TempDir::new().expect("tempdir");
+        let path = temp.path().join("state.redb");
+        upsert_build(
+            &path,
+            &BuildRecord {
+                session_id: 5,
+                repo_root: "/repo".into(),
+                started_at_ms: 1_000,
+                ended_at_ms: None,
+                exit_code: None,
+                total_wall_ms: None,
+                crate_count: 0,
+                slowest_crate_us: None,
+                slowest_crate_name: None,
+                cache_summary: None,
+                log_paths: None,
+                miss_reasons: Vec::new(),
+            },
+        )
+        .expect("seed record");
+        let record = finalize_build(&path, 5, 0, 3_000, (4, Some(9_000), Some("slow".into())))
+            .expect("finalize");
+        assert_eq!(record.repo_root, "/repo");
+        assert_eq!(record.started_at_ms, 1_000);
+        assert_eq!(record.total_wall_ms, Some(2_000));
+        assert_eq!(record.crate_count, 4);
+        let stored = get_build(&path, 5).expect("get").expect("record");
+        assert_eq!(stored, record);
+
+        // Unknown session: a default record is minted in the same txn.
+        let minted = finalize_build(&path, 6, 1, 4_000, (0, None, None)).expect("finalize unknown");
+        assert_eq!(minted.started_at_ms, 4_000);
+        assert_eq!(minted.exit_code, Some(1));
+        assert_eq!(minted.total_wall_ms, Some(0));
+    });
 
     #[test]
     fn prune_events_drops_old_rows() {

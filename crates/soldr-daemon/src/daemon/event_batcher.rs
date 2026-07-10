@@ -26,8 +26,16 @@
 //! On `BuildSessionEnd` and on daemon shutdown the server sends an
 //! explicit [`BatcherCmd::Flush`] with a oneshot acknowledgement so the
 //! caller can confirm every staged row landed before the session is
-//! treated as finalized (the post-session `aggregate_session` pass
-//! relies on the events being visible).
+//! treated as finalized.
+//!
+//! soldr#1536: the batcher additionally maintains an in-memory
+//! [`SessionAggregate`] per build session, updated synchronously in
+//! [`EventBatcher::record`]. `BuildSessionEnd` consumes it via
+//! [`EventBatcher::take_session_aggregate`] so finalization is
+//! proportional to the current session instead of scanning (and
+//! prost-decoding) the entire retained `daemon_events` table; the
+//! historical `aggregate_session` scan remains only as the fallback for
+//! sessions this daemon process did not observe from their start.
 //!
 //! ## Race window
 //!
@@ -42,10 +50,12 @@
 //! aborted task drains the channel one more time before exiting.
 
 use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
-use crate::daemon::db::Event;
+use crate::daemon::db::{Event, EventKind};
 use crate::daemon::wire::{self, prost_tagged_bytes};
 use redb::{Database, ReadableTable, TableDefinition};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
@@ -72,6 +82,70 @@ const MAX_BATCH_LATENCY: Duration = Duration::from_millis(100);
 /// the channel acts mostly as a queue, not a buffer.
 const CHANNEL_CAPACITY: usize = 4096;
 
+/// Upper bound on concurrently tracked per-session aggregates
+/// (soldr#1536). Realistic hosts run a handful of parallel builds; the
+/// cap only exists so sessions that never receive a `BuildSessionEnd`
+/// (wrapper killed mid-build) cannot grow the map without bound. On
+/// overflow the entry with the oldest last-observed timestamp is
+/// evicted; its finalization then falls back to the redb scan.
+const MAX_TRACKED_SESSIONS: usize = 128;
+
+/// Daemon-owned per-session rollup (soldr#1536). Mirrors the semantics
+/// of [`crate::daemon::db::aggregate_session`] — crate count is the
+/// number of `CompileEnd` events (falling back to `CompileStart` when
+/// no compile completed) and the slowest crate is tracked across every
+/// event that carries a `duration_us` — but is maintained incrementally
+/// as events flow through [`EventBatcher::record`], so build-session
+/// finalization no longer has to decode the entire retained event
+/// table.
+#[derive(Debug, Clone, Default)]
+pub struct SessionAggregate {
+    start_count: u32,
+    end_count: u32,
+    slowest_us: Option<u64>,
+    slowest_name: Option<String>,
+    /// True only when the aggregate observed the session from its
+    /// `SessionStart` event. A session first seen via a compile event
+    /// was started before this daemon process existed (daemon restart /
+    /// late auto-start mid-build), so earlier events may already sit in
+    /// redb — the aggregate is incomplete and finalization must fall
+    /// back to the historical scan.
+    complete: bool,
+    /// Timestamp of the most recent observed event; used only for
+    /// oldest-first eviction when [`MAX_TRACKED_SESSIONS`] overflows.
+    last_seen_ms: i64,
+}
+
+impl SessionAggregate {
+    fn observe(&mut self, event: &Event) {
+        self.last_seen_ms = self.last_seen_ms.max(event.ts_ms);
+        match event.kind {
+            EventKind::CompileStart => self.start_count = self.start_count.saturating_add(1),
+            EventKind::CompileEnd => self.end_count = self.end_count.saturating_add(1),
+            EventKind::SessionStart | EventKind::SessionEnd => {}
+        }
+        if let Some(d) = event.duration_us {
+            if d > self.slowest_us.unwrap_or(0) {
+                self.slowest_us = Some(d);
+                self.slowest_name = event.crate_name.clone();
+            }
+        }
+    }
+
+    /// Collapse into the `(crate_count, slowest_us, slowest_name)` tuple
+    /// [`crate::daemon::db::aggregate_session`] returns.
+    pub fn finalize(self) -> (u32, Option<u64>, Option<String>) {
+        let count = if self.end_count > 0 {
+            self.end_count
+        } else {
+            self.start_count
+        };
+        (count, self.slowest_us, self.slowest_name)
+    }
+}
+
+type SessionAggregates = Arc<Mutex<HashMap<u64, SessionAggregate>>>;
+
 /// Commands accepted by the drain task.
 enum BatcherCmd {
     /// Stage a new event for the next batch.
@@ -89,6 +163,12 @@ enum BatcherCmd {
 #[derive(Clone)]
 pub struct EventBatcher {
     tx: mpsc::Sender<BatcherCmd>,
+    /// soldr#1536: incrementally-maintained per-session rollups, updated
+    /// synchronously in [`record`](Self::record) before the event is
+    /// staged for persistence. `Request::BuildSessionEnd` consumes an
+    /// entry via [`take_session_aggregate`](Self::take_session_aggregate)
+    /// instead of scanning the whole `daemon_events` table.
+    aggregates: SessionAggregates,
 }
 
 impl EventBatcher {
@@ -101,7 +181,10 @@ impl EventBatcher {
     pub fn start(db_path: PathBuf) -> Self {
         let (tx, rx) = mpsc::channel::<BatcherCmd>(CHANNEL_CAPACITY);
         tokio::spawn(drain_loop(db_path, rx));
-        Self { tx }
+        Self {
+            tx,
+            aggregates: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 
     /// Hot path. Non-blocking on the common case (channel has free
@@ -110,9 +193,64 @@ impl EventBatcher {
     /// backpressure shape — we never want to silently drop diagnostic
     /// events.
     pub async fn record(&self, event: Event) {
+        self.observe_for_aggregate(&event);
         if self.tx.send(BatcherCmd::Insert(event)).await.is_err() {
             tracing::debug!("event_batcher: drain task gone; event dropped");
         }
+    }
+
+    /// Update the in-memory per-session rollup (soldr#1536). Runs on the
+    /// caller's task before the event is staged so the aggregate is
+    /// never behind the persistence channel.
+    fn observe_for_aggregate(&self, event: &Event) {
+        let Some(session_id) = event.session_id else {
+            return;
+        };
+        let mut map = self
+            .aggregates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match event.kind {
+            EventKind::SessionStart => {
+                // Session observed from birth: the aggregate is
+                // authoritative for the whole session.
+                let entry = map.entry(session_id).or_default();
+                entry.complete = true;
+                entry.observe(event);
+            }
+            EventKind::CompileStart | EventKind::CompileEnd => {
+                // First sight mid-session (daemon auto-started or
+                // restarted mid-build): track it, but leave `complete`
+                // false so finalization falls back to the redb scan.
+                map.entry(session_id).or_default().observe(event);
+            }
+            // The terminator is recorded by the finalizer AFTER the
+            // aggregate was consumed — never resurrect an entry for it.
+            EventKind::SessionEnd => return,
+        }
+        if map.len() > MAX_TRACKED_SESSIONS {
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, agg)| agg.last_seen_ms)
+                .map(|(id, _)| *id)
+            {
+                map.remove(&oldest);
+            }
+        }
+    }
+
+    /// Consume the per-session rollup for `session_id` (soldr#1536).
+    /// Returns `None` when the daemon did not observe the session from
+    /// its `SessionStart` (restart / late auto-start mid-build) or never
+    /// saw it at all — callers must then fall back to
+    /// [`crate::daemon::db::aggregate_session`]. The entry is removed
+    /// either way; the session is over.
+    pub fn take_session_aggregate(&self, session_id: u64) -> Option<SessionAggregate> {
+        let mut map = self
+            .aggregates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.remove(&session_id).filter(|agg| agg.complete)
     }
 
     /// Force a flush and wait for the drain task to acknowledge. Called
@@ -202,7 +340,10 @@ fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) {
 /// Open `state.redb` under the shared `state_db_open_lock`, allocate
 /// `count` event IDs in a single META insert, and insert every row in
 /// the same write txn. One fsync covers the entire batch.
-fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> {
+///
+/// `pub(crate)` so tests (soldr#1536 finalization-scaling guards) can
+/// seed large event histories in a single transaction.
+pub(crate) fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -296,6 +437,105 @@ mod tests {
             batcher.shutdown().await;
             // Build list table is untouched by the batcher.
             assert!(list_builds(&path, 10, None).expect("list").is_empty());
+        });
+    });
+
+    fn session_start_event(session: u64) -> Event {
+        Event {
+            ts_ms: 1_700_000_000_000,
+            session_id: Some(session),
+            kind: EventKind::SessionStart,
+            crate_name: None,
+            duration_us: None,
+            target_dir: None,
+            exit_code: None,
+        }
+    }
+
+    crate::timed_test!(
+        session_aggregate_matches_db_aggregate_and_is_consumed_once,
+        {
+            let rt = Builder::new_current_thread().enable_all().build().unwrap();
+            rt.block_on(async {
+                let dir = TempDir::new().expect("tempdir");
+                let path = dir.path().join("state.redb");
+                crate::daemon::db::ensure_initialized(&path).expect("init");
+                let batcher = EventBatcher::start(path.clone());
+                batcher.record(session_start_event(21)).await;
+                for i in 0..4 {
+                    batcher
+                        .record(sample_event(21, &format!("s{i}"), None))
+                        .await;
+                    batcher
+                        .record(sample_event(21, &format!("s{i}"), Some(500 + i)))
+                        .await;
+                }
+                batcher.flush().await;
+
+                let agg = batcher
+                    .take_session_aggregate(21)
+                    .expect("aggregate tracked from SessionStart");
+                let in_memory = agg.finalize();
+                let from_db = aggregate_session(&path, 21).expect("db agg");
+                assert_eq!(
+                    in_memory, from_db,
+                    "incremental rollup must mirror the scan"
+                );
+                assert_eq!(in_memory.0, 4);
+                assert_eq!(in_memory.1, Some(503));
+                assert_eq!(in_memory.2.as_deref(), Some("s3"));
+
+                // Consumed: a second take falls back to the scan path.
+                assert!(batcher.take_session_aggregate(21).is_none());
+                batcher.shutdown().await;
+            });
+        }
+    );
+
+    crate::timed_test!(session_aggregate_without_session_start_is_untrusted, {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
+            let batcher = EventBatcher::start(path.clone());
+            // Daemon (re)started mid-build: compiles arrive without a
+            // SessionStart. Earlier events may already be in redb, so
+            // the incremental rollup must NOT claim authority.
+            batcher.record(sample_event(33, "late", Some(9))).await;
+            batcher.flush().await;
+            assert!(
+                batcher.take_session_aggregate(33).is_none(),
+                "mid-session aggregates must force the redb-scan fallback"
+            );
+            batcher.shutdown().await;
+        });
+    });
+
+    crate::timed_test!(session_end_event_does_not_resurrect_aggregate, {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let path = dir.path().join("state.redb");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
+            let batcher = EventBatcher::start(path.clone());
+            batcher.record(session_start_event(55)).await;
+            assert!(batcher.take_session_aggregate(55).is_some());
+            // The finalizer records the SessionEnd terminator after the
+            // take; it must not re-create a (now-stale) entry.
+            batcher
+                .record(Event {
+                    ts_ms: 1_700_000_000_500,
+                    session_id: Some(55),
+                    kind: EventKind::SessionEnd,
+                    crate_name: None,
+                    duration_us: None,
+                    target_dir: None,
+                    exit_code: Some(0),
+                })
+                .await;
+            assert!(batcher.take_session_aggregate(55).is_none());
+            batcher.shutdown().await;
         });
     });
 
