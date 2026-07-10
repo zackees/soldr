@@ -1,0 +1,38 @@
+[package]
+name = "soldr-fetch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "soldr binary resolution: known-tools registry, trust, GitHub Releases fetch chain"
+publish = false
+
+[dependencies]
+soldr-core = { path = "../soldr-core" }
+
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+hex = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+wait-timeout = { workspace = true }
+tempfile = { workspace = true }
+toml = { workspace = true }
+url = { workspace = true }
+xz2 = { workspace = true }
+zip = { workspace = true }
+zstd = { workspace = true }
+
+[build-dependencies]
+zstd = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

@@ -10,6 +10,7 @@ publish = false
 
 [dependencies]
 soldr-core = { path = "../soldr-core" }
+soldr-fetch = { path = "../soldr-fetch" }
 
 clap = { workspace = true }
 filetime = { workspace = true }
@@ -74,10 +75,6 @@ tempfile = { workspace = true }
 # `manifest.json.zst` that `src/fetch/manifest_v6.rs` includes via
 # `include_bytes!`. See the build script's docstring for context.
 # soldr#1356 A1 — `ureq` build-dep removed; build.rs uses only std + zstd.
-[build-dependencies]
-zstd = { workspace = true }
-serde_json = { workspace = true }
-
 [features]
 # Opt-in feature that exposes `crate::test_util` outside of `cfg(test)`
 # so integration tests can spawn a child `cargo test` binary that
