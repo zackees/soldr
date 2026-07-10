@@ -37,14 +37,14 @@ dest_dir="${5:?dest-dir required}"
 case "$tool" in
   crgx)
     version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-      crates/soldr-cli/src/fetch/mod.rs | head -n1)
+      crates/soldr-fetch/src/fetch/mod.rs | head -n1)
     upstream_repo="https://github.com/yfedoseev/crgx.git"
     env_var="CRGX_SOURCE_COMMIT"
     cargo_extra_args=""
     ;;
   cargo-chef)
     version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-      crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+      crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
     upstream_repo="https://github.com/LukeMathWalker/cargo-chef.git"
     env_var="CARGO_CHEF_SOURCE_COMMIT"
     cargo_extra_args="--bin cargo-chef"

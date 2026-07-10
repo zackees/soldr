@@ -222,9 +222,9 @@ jobs:
           zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
             _vender/zccache/Cargo.toml | head -n1)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
           soldr_sha=$(sha256sum dist/package/soldr | awk '{print $1}')
           zccache_sha=$(sha256sum dist/package/zccache | awk '{print $1}')
           zccache_daemon_sha=$(sha256sum dist/package/zccache-daemon | awk '{print $1}')
@@ -594,9 +594,9 @@ jobs:
           zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
             _vender/zccache/Cargo.toml | head -n1)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
           suffix="${{ matrix.exe_suffix }}"
           case "${{ matrix.target }}" in
             x86_64-unknown-linux-*)  zccache_target=x86_64-unknown-linux-musl ;;
