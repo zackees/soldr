@@ -33,7 +33,7 @@
 //! readers never have to guess the basename. Manifest carries
 //! `cache_dir_name = "cache"` for forward compat.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Write};
 
@@ -442,18 +442,25 @@ fn archive_rel_to_path(path: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-fn cache_file_entry(cache_dir: &Path, abs: &Path) -> Result<CacheFile> {
+/// Manifest entry + the `Metadata` it was derived from. The metadata is
+/// reused for the tar header when the file is appended, so `save` /
+/// `save_delta` stat each cache file exactly once instead of once in
+/// the hash pre-pass and again at append time (#1541). This also keeps
+/// the tar header and the manifest byte-for-byte consistent even if
+/// the file mutates between the two phases.
+fn cache_file_entry(cache_dir: &Path, abs: &Path) -> Result<(CacheFile, std::fs::Metadata)> {
     let rel = abs
         .strip_prefix(cache_dir)
         .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
     let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
     let hash = hash_file(abs)?;
-    Ok(CacheFile {
+    let entry = CacheFile {
         path: rel_to_posix(rel),
         mtime_ns: mtime_ns(&meta),
         size: meta.len(),
         blake3: hash.to_vec(),
-    })
+    };
+    Ok((entry, meta))
 }
 
 // ---------- save ----------
@@ -608,8 +615,10 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     let manifest_files = source_result?;
     let cache_walk = cache_walk_result?;
     let cache_files_paths = cache_walk.included_paths;
-    let cache_manifest_files =
-        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?;
+    let (cache_manifest_files, cache_file_metas): (Vec<CacheFile>, Vec<std::fs::Metadata>) =
+        build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?
+            .into_iter()
+            .unzip();
 
     let manifest = Manifest {
         version: MANIFEST_VERSION,
@@ -687,8 +696,8 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                 .cache_dir
                 .expect("cache_files_paths non-empty implies cache_dir was set");
             cache_files = cache_files_paths.len() as u64;
-            for abs in &cache_files_paths {
-                append_cache_file_entry(&mut tar_builder, cache_dir, abs)?;
+            for (abs, meta) in cache_files_paths.iter().zip(cache_file_metas.iter()) {
+                append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)?;
             }
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
@@ -752,7 +761,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     let manifest_files = source_result?;
     let cache_walk = cache_walk_result?;
     let cache_files_paths = cache_walk.included_paths;
-    let cache_manifest_files =
+    let cache_manifest_entries =
         build_cache_manifest_entries(&pool, Some(opts.cache_dir), &cache_files_paths)?;
 
     let base_by_path: BTreeMap<&str, &CacheFile> = opts
@@ -761,15 +770,16 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         .iter()
         .map(|entry| (entry.path.as_str(), entry))
         .collect();
-    let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf)> = cache_manifest_files
-        .iter()
-        .zip(cache_files_paths.iter())
-        .map(|(entry, path)| (entry.path.as_str(), (entry, path)))
-        .collect();
+    let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf, &std::fs::Metadata)> =
+        cache_manifest_entries
+            .iter()
+            .zip(cache_files_paths.iter())
+            .map(|((entry, meta), path)| (entry.path.as_str(), (entry, path, meta)))
+            .collect();
 
     let mut delta_entries = Vec::new();
     let mut delta_paths = Vec::new();
-    for (path, (entry, abs)) in &current_by_path {
+    for (path, (entry, abs, meta)) in &current_by_path {
         match base_by_path.get(path) {
             Some(base) if cache_file_metadata_matches(base, entry) => {}
             Some(base) if cache_file_content_matches(base, entry) => {
@@ -777,7 +787,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
             }
             _ => {
                 delta_entries.push((*entry).clone());
-                delta_paths.push((*abs).clone());
+                delta_paths.push(((*abs).clone(), (*meta).clone()));
             }
         }
     }
@@ -832,11 +842,14 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     })
 }
 
+/// Hash + stat every cache file in parallel. Output order matches
+/// `cache_files_paths` (rayon's indexed collect preserves order), so
+/// callers can zip the two to append files without re-stating them.
 fn build_cache_manifest_entries(
     pool: &rayon::ThreadPool,
     cache_dir: Option<&Path>,
     cache_files_paths: &[PathBuf],
-) -> Result<Vec<CacheFile>> {
+) -> Result<Vec<(CacheFile, std::fs::Metadata)>> {
     let Some(cache_dir) = cache_dir else {
         return Ok(Vec::new());
     };
@@ -878,10 +891,14 @@ fn append_manifest_entry<W: Write>(
         .map_err(SaveLoadError::BareIo)
 }
 
+/// Append one cache file into the tar. `meta` comes from the manifest
+/// pre-pass ([`cache_file_entry`]) so the file is stat'd exactly once
+/// per save and the tar header always agrees with the manifest (#1541).
 fn append_cache_file_entry<W: Write>(
     tar_builder: &mut tar::Builder<W>,
     cache_dir: &Path,
     abs: &Path,
+    meta: &std::fs::Metadata,
 ) -> Result<()> {
     let rel = abs
         .strip_prefix(cache_dir)
@@ -891,8 +908,7 @@ fn append_cache_file_entry<W: Write>(
     let archive_path_str = rel_to_posix(&archive_path);
     let mut file = File::open(abs).map_err(|e| io(abs, e))?;
     let mut header = tar::Header::new_gnu();
-    let meta = std::fs::metadata(abs).map_err(|e| io(abs, e))?;
-    header.set_metadata(&meta);
+    header.set_metadata(meta);
     header.set_cksum();
     tar_builder
         .append_data(&mut header, archive_path_str, &mut file)
@@ -911,7 +927,7 @@ fn write_delta_archive(
     threads: Option<usize>,
     manifest: &Manifest,
     cache_dir: &Path,
-    cache_files_paths: &[PathBuf],
+    cache_files_paths: &[(PathBuf, std::fs::Metadata)],
 ) -> Result<()> {
     let manifest_bytes = encode_manifest(manifest)?;
     if let Some(parent) = out.parent() {
@@ -933,8 +949,8 @@ fn write_delta_archive(
 
         append_manifest_entry(&mut tar_builder, manifest, &manifest_bytes)?;
 
-        for abs in cache_files_paths {
-            append_cache_file_entry(&mut tar_builder, cache_dir, abs)?;
+        for (abs, meta) in cache_files_paths {
+            append_cache_file_entry(&mut tar_builder, cache_dir, abs, meta)?;
         }
         tar_builder.finish().map_err(SaveLoadError::BareIo)?;
     }
@@ -1064,9 +1080,13 @@ fn validate_load_inputs(opts: &LoadOptions<'_>) -> Result<()> {
 ///   3. **Mtime replay onto workspace sources** runs concurrently with (2)
 ///      on its own rayon task once the manifest is parsed.
 ///
-/// Per-file mtime preservation: each worker calls `filetime::set_file_mtime`
-/// after the write completes, equivalent to what `tar`'s preserve_mtime
-/// would do serially.
+/// Per-file mtime preservation: each worker restores the manifest's
+/// nanosecond mtime right after the write completes (#1541) — the tar
+/// header's second-truncated mtime is only a fallback for entries the
+/// manifest doesn't cover. Manifest entries whose payload was not in
+/// the tar (delta metadata-only updates) get their mtimes replayed in
+/// a parallel pass after extraction instead of the historical serial
+/// stat+set loop over every manifest entry.
 ///
 /// When [`LoadOptions::mtimes_only`] is `true`, only the manifest entry
 /// is consumed; any `cache/...` entry in the archive is rejected as a
@@ -1108,6 +1128,14 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
 
     let mut manifest_bytes: Option<Vec<u8>> = None;
     let mut manifest_decoded: Option<Manifest> = None;
+    // #1541: manifest-driven cache-file mtimes. Keyed by the manifest's
+    // POSIX-relative path; populated once the manifest entry is parsed
+    // (archives produced by `save` always put it first). Slots flip to
+    // `applied` when the corresponding tar entry is dispatched with the
+    // nanosecond mtime attached, so the post-extract replay pass only
+    // has to touch manifest entries whose payload was NOT in the tar
+    // (delta metadata-only updates).
+    let mut cache_mtime_index: HashMap<String, CacheMtimeSlot> = HashMap::new();
     // Env override (LOAD_WORKERS_ENV / SOLDR_LOAD_WORKERS) wins over the
     // caller-supplied --threads; otherwise the explicit --threads wins;
     // otherwise rayon picks its default (num_cpus). The pool we build here
@@ -1157,6 +1185,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             let manifest: Manifest = prost::Message::decode(&buf[..])?;
             if let Some(cache_dir) = opts.cache_dir {
                 apply_cache_tombstones(cache_dir, &manifest)?;
+                cache_mtime_index = build_cache_mtime_index(&manifest);
             }
             manifest_bytes = Some(buf);
             // Kick off the mtime replay NOW so it runs in parallel
@@ -1230,6 +1259,21 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
         // and binaries (e.g. cargo `build-script-build`) lose +x on
         // restore and fail with EACCES — see #587.
         let mode_bits = entry.header().mode().ok();
+        // #1541: prefer the manifest's nanosecond mtime over the tar
+        // header's second-truncated one. Guarded by a size match so a
+        // payload that diverged from the manifest (e.g. mutated mid-
+        // save) falls back to the header mtime, exactly like the old
+        // replay pass would have skipped it on its size check.
+        let mut mtime_ns: Option<i64> = None;
+        if !cache_mtime_index.is_empty() {
+            let rel_posix = rel_to_posix(&stripped);
+            if let Some(slot) = cache_mtime_index.get_mut(&rel_posix) {
+                if slot.size == body.len() as u64 {
+                    mtime_ns = Some(slot.mtime_ns);
+                    slot.applied = true;
+                }
+            }
+        }
 
         // Lazy-start the dispatch on first cache entry.
         let dispatch = extract_dispatch.get_or_insert_with(|| {
@@ -1247,6 +1291,7 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
             entry_type,
             body,
             mtime_secs,
+            mtime_ns,
             mode_bits,
         };
         if dispatch.send(job).is_err() {
@@ -1294,7 +1339,12 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     };
 
     if let Some(cache_dir) = opts.cache_dir {
-        replay_cache_file_mtimes(cache_dir, &manifest.cache_files)?;
+        replay_pending_cache_file_mtimes(
+            &pool,
+            cache_dir,
+            &manifest.cache_files,
+            &cache_mtime_index,
+        )?;
     }
 
     // If we kicked off the replay early, wait for it. Otherwise (no
@@ -1338,6 +1388,12 @@ struct ExtractJob {
     entry_type: tar::EntryType,
     body: Vec<u8>,
     mtime_secs: Option<u64>,
+    /// Nanosecond-precision mtime from the archive manifest (#1541).
+    /// When present it wins over `mtime_secs` (the tar header only
+    /// carries seconds) and the post-extract manifest replay pass is
+    /// skipped for this file — the worker's write is the final word,
+    /// eliminating one stat + one utimensat per restored file.
+    mtime_ns: Option<i64>,
     /// Unix file mode from the tar header, used to restore the
     /// executable bit on Unix. None when the header lacked a mode.
     /// Ignored on Windows (NTFS uses ACLs, not Unix modes; tar
@@ -1466,7 +1522,14 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
                 let perms = std::fs::Permissions::from_mode(mode);
                 std::fs::set_permissions(&job.dest, perms).map_err(|e| io(&job.dest, e))?;
             }
-            if let Some(secs) = job.mtime_secs {
+            if let Some(ns) = job.mtime_ns {
+                // Manifest-driven metadata application (#1541): restore
+                // the exact nanosecond mtime here (atime = mtime, matching
+                // what the manifest replay pass used to do serially after
+                // extraction).
+                let t = filetime::FileTime::from_system_time(ns_to_systime(ns));
+                filetime::set_file_times(&job.dest, t, t).map_err(|e| io(&job.dest, e))?;
+            } else if let Some(secs) = job.mtime_secs {
                 let ft = filetime::FileTime::from_unix_time(secs as i64, 0);
                 filetime::set_file_mtime(&job.dest, ft).map_err(|e| io(&job.dest, e))?;
             }
@@ -1751,21 +1814,73 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-fn replay_cache_file_mtimes(cache_dir: &Path, entries: &[CacheFile]) -> Result<()> {
-    for entry in entries {
-        let rel = manifest_rel_to_path(&entry.path)?;
-        let abs = cache_dir.join(rel);
-        let Ok(meta) = std::fs::metadata(&abs) else {
-            continue;
-        };
-        if !meta.is_file() || meta.len() != entry.size {
-            continue;
-        }
-        let mtime = ns_to_systime(entry.mtime_ns);
-        let t = filetime::FileTime::from_system_time(mtime);
-        filetime::set_file_times(&abs, t, t).map_err(|e| io(&abs, e))?;
+/// Per-manifest-entry slot tracking whether the extract workers already
+/// applied the nanosecond mtime for this path (#1541).
+struct CacheMtimeSlot {
+    mtime_ns: i64,
+    size: u64,
+    applied: bool,
+}
+
+fn build_cache_mtime_index(manifest: &Manifest) -> HashMap<String, CacheMtimeSlot> {
+    manifest
+        .cache_files
+        .iter()
+        .map(|entry| {
+            (
+                entry.path.clone(),
+                CacheMtimeSlot {
+                    mtime_ns: entry.mtime_ns,
+                    size: entry.size,
+                    applied: false,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Replay manifest mtimes for cache files whose payload was NOT carried
+/// by the tar stream (delta metadata-only updates, or archives whose
+/// manifest arrived after their cache entries). Entries already handled
+/// by an extract worker are skipped; the remainder runs in parallel on
+/// the load's rayon pool instead of the historical serial stat+set loop
+/// over every manifest entry (#1541).
+fn replay_pending_cache_file_mtimes(
+    pool: &rayon::ThreadPool,
+    cache_dir: &Path,
+    entries: &[CacheFile],
+    index: &HashMap<String, CacheMtimeSlot>,
+) -> Result<()> {
+    let pending: Vec<&CacheFile> = entries
+        .iter()
+        .filter(|entry| {
+            index
+                .get(entry.path.as_str())
+                .is_none_or(|slot| !slot.applied)
+        })
+        .collect();
+    if pending.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    pool.install(|| {
+        pending
+            .par_iter()
+            .try_for_each(|entry| replay_cache_file_mtime(cache_dir, entry))
+    })
+}
+
+fn replay_cache_file_mtime(cache_dir: &Path, entry: &CacheFile) -> Result<()> {
+    let rel = manifest_rel_to_path(&entry.path)?;
+    let abs = cache_dir.join(rel);
+    let Ok(meta) = std::fs::metadata(&abs) else {
+        return Ok(());
+    };
+    if !meta.is_file() || meta.len() != entry.size {
+        return Ok(());
+    }
+    let mtime = ns_to_systime(entry.mtime_ns);
+    let t = filetime::FileTime::from_system_time(mtime);
+    filetime::set_file_times(&abs, t, t).map_err(|e| io(&abs, e))
 }
 
 // ---------- thread-pool helpers ----------
@@ -1879,6 +1994,7 @@ mod tests {
             entry_type: tar::EntryType::Regular,
             body: b"unused".to_vec(),
             mtime_secs: None,
+            mtime_ns: None,
             mode_bits: None,
         };
         let err = extract_one(&job).expect_err("worker must surface the IO error");

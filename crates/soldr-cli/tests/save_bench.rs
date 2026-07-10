@@ -65,6 +65,128 @@ fn synth_cache(root: &Path, total_mb: usize) {
     }
 }
 
+/// #1541 benchmark — NOT run by default (`--ignored` opt-in). Builds
+/// two synthetic bundles ("mixed": 10K x 4KiB + 3 x 64MiB; "small":
+/// 30K x 1KiB), then times save + load over 3 reps each, printing
+/// wall-clock plus /proc/self/io logical read/write byte deltas
+/// (Linux; zeros elsewhere). Used to quantify the duplicate-I/O
+/// eliminations in save/load; asserts nothing beyond round-trip
+/// success so it can never flake CI.
+#[test]
+#[ignore = "perf measurement; opt in with --ignored --nocapture"]
+fn bench_save_load_io() {
+    fn proc_io() -> (u64, u64) {
+        // (rchar, wchar); zeros when unavailable (non-Linux).
+        let Ok(text) = fs::read_to_string("/proc/self/io") else {
+            return (0, 0);
+        };
+        let grab = |key: &str| -> u64 {
+            text.lines()
+                .find_map(|l| l.strip_prefix(key))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0)
+        };
+        (grab("rchar:"), grab("wchar:"))
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // Phase A ("mixed"): 10_000 x 4 KiB + 3 x 64 MiB — realistic bundle
+    // shape where compression cost shares the stage with per-file work.
+    let cache = dir.path().join("cache");
+    let mut lcg: u64 = 0x1541_1541_1541_1541;
+    let mut next = || {
+        lcg = lcg
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        lcg
+    };
+    for bucket in 0..100u32 {
+        for f in 0..100u32 {
+            let mut body = Vec::with_capacity(4096);
+            while body.len() < 4096 {
+                body.extend_from_slice(&next().to_le_bytes());
+                body.extend_from_slice(b"soldr-bench-padding-block-......");
+            }
+            body.truncate(4096);
+            write(&cache.join(format!("b{bucket:03}/f{f:03}.bin")), &body);
+        }
+    }
+    // 3 large files: 64 MiB each, low-compressibility.
+    for l in 0..3u32 {
+        let mut body = Vec::with_capacity(64 * 1024 * 1024);
+        while body.len() < 64 * 1024 * 1024 {
+            body.extend_from_slice(&next().to_le_bytes());
+        }
+        write(&cache.join(format!("large/blob{l}.bin")), &body);
+    }
+
+    // Phase B ("small"): 30_000 x 1 KiB compressible files — isolates the
+    // per-file syscall overhead (stat/utimensat/mkdir) that the serial
+    // post-load mtime pass and the extract workers pay per entry.
+    let small_cache = dir.path().join("cache-small");
+    for bucket in 0..150u32 {
+        for f in 0..200u32 {
+            let body = format!(
+                "soldr-bench small payload bucket={bucket} file={f} {}",
+                "x".repeat(960)
+            );
+            write(
+                &small_cache.join(format!("s{bucket:03}/f{f:03}.d")),
+                body.as_bytes(),
+            );
+        }
+    }
+
+    for (phase, cache) in [("mixed", &cache), ("small", &small_cache)] {
+        for rep in 0..3u32 {
+            let archive = dir.path().join(format!("bench-{phase}-{rep}.tar.zst"));
+            let (r0, w0) = proc_io();
+            let t0 = Instant::now();
+            let sreport = save(&SaveOptions {
+                workspace: None,
+                cache_dir: Some(cache),
+                out: &archive,
+                zstd_level: DEFAULT_ZSTD_LEVEL,
+                threads: None,
+                mtimes_only: false,
+                profile: SaveProfile::Full,
+            })
+            .expect("bench save ok");
+            let save_ms = t0.elapsed().as_millis();
+            let (r1, w1) = proc_io();
+
+            let restore = dir.path().join(format!("restore-{phase}-{rep}"));
+            let t1 = Instant::now();
+            let lreport = load(&LoadOptions {
+                archive: &archive,
+                cache_dir: Some(&restore),
+                workspace: None,
+                threads: None,
+                mtimes_only: false,
+                profile_extract: false,
+                auto_defender_exclude: false,
+            })
+            .expect("bench load ok");
+            let load_ms = t1.elapsed().as_millis();
+            let (r2, w2) = proc_io();
+
+            println!(
+                "BENCH phase={phase} rep={rep} save_ms={save_ms} save_rchar={} save_wchar={} load_ms={load_ms} load_rchar={} load_wchar={} cache_files={} restored={} archive_bytes={}",
+                r1 - r0,
+                w1 - w0,
+                r2 - r1,
+                w2 - w1,
+                sreport.cache_files,
+                lreport.cache_files_restored,
+                sreport.archive_bytes,
+            );
+            fs::remove_dir_all(&restore).unwrap();
+            fs::remove_file(&archive).unwrap();
+        }
+    }
+}
+
 #[test]
 #[ignore = "perf sanity; opt in with --ignored"]
 fn perf_roundtrip_realistic() {

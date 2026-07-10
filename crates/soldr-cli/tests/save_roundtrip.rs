@@ -1047,6 +1047,164 @@ fn profile_extract_flag_does_not_break_load() {
     );
 }
 
+// #1541 — nanosecond mtime fidelity. The manifest records cache-file
+// mtimes at nanosecond precision and `load` must restore them exactly
+// (tar headers only carry seconds; the manifest is the authority).
+// Regression guard for the manifest-driven metadata application: the
+// restored file's sub-second nanos must match the saved value, not be
+// truncated to tar's second resolution.
+timed_test!(cache_mtimes_restore_nanosecond_precision, {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = dir.path().join("cache");
+    let archive = dir.path().join("snap.tar.zst");
+    let restore = dir.path().join("restore");
+
+    let rel = "deps/nanos.rlib";
+    write(&cache.join(rel), b"nanosecond-payload");
+    // Odd sub-second component so second-truncation is detectable.
+    let want = filetime::FileTime::from_unix_time(1_700_000_123, 123_456_789);
+    filetime::set_file_times(cache.join(rel), want, want).unwrap();
+    let on_disk = fs::metadata(cache.join(rel)).unwrap().modified().unwrap();
+    let on_disk_nanos = on_disk.duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
+    // Filesystems without nanosecond mtimes can't host this assertion.
+    if on_disk_nanos != 123_456_789 {
+        eprintln!("skipping: filesystem lacks nanosecond mtime support ({on_disk_nanos})");
+        return;
+    }
+
+    save(&SaveOptions {
+        workspace: None,
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+        profile: SaveProfile::Full,
+    })
+    .expect("save ok");
+
+    load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: None,
+        threads: None,
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .expect("load ok");
+
+    let restored = fs::metadata(restore.join(rel))
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(UNIX_EPOCH)
+        .unwrap();
+    assert_eq!(restored.as_secs(), 1_700_000_123, "seconds must round-trip");
+    assert_eq!(
+        restored.subsec_nanos(),
+        123_456_789,
+        "nanosecond mtime component must round-trip exactly"
+    );
+});
+
+// #1541 — the manifest's per-cache-file blake3 must equal the hash of
+// the bytes actually archived, so a later `save --delta-from-manifest`
+// compares against reality. Guards the hash-through-tar save path.
+timed_test!(manifest_cache_hashes_match_archived_payload, {
+    let (_g, ws, cache, archive) = fixture();
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+        profile: SaveProfile::Full,
+    })
+    .expect("save ok");
+
+    let manifest = read_manifest_from_archive(&archive).expect("manifest");
+    assert_eq!(manifest.cache_files.len(), 4);
+
+    // Walk the archive itself and hash each cache/ entry body.
+    let file = fs::File::open(&archive).unwrap();
+    let reader = std::io::BufReader::new(file);
+    let zstd = zstd::stream::read::Decoder::new(reader).unwrap();
+    let mut tar = tar::Archive::new(zstd);
+    let mut seen = 0usize;
+    for entry in tar.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let path = entry.path().unwrap().to_string_lossy().replace('\\', "/");
+        let Some(rel) = path.strip_prefix("cache/").map(str::to_owned) else {
+            continue;
+        };
+        if entry.header().entry_type() != tar::EntryType::Regular {
+            continue;
+        }
+        let mut body = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut body).unwrap();
+        let manifest_entry = manifest
+            .cache_files
+            .iter()
+            .find(|e| e.path == rel)
+            .unwrap_or_else(|| panic!("archived entry {rel} missing from manifest"));
+        assert_eq!(manifest_entry.size, body.len() as u64, "size at {rel}");
+        let hash = blake3_of(&body);
+        assert_eq!(
+            manifest_entry.blake3, hash,
+            "manifest blake3 must match archived bytes at {rel}"
+        );
+        seen += 1;
+    }
+    assert_eq!(seen, 4, "all cache payloads must be visited");
+});
+
+fn blake3_of(bytes: &[u8]) -> Vec<u8> {
+    let mut hasher = zccache::hash::StreamHasher::new();
+    hasher.update(bytes);
+    hasher.finalize().as_bytes().to_vec()
+}
+
+// #1541 — corruption detection: a truncated archive must fail the load
+// loudly instead of silently restoring a partial cache.
+timed_test!(truncated_archive_load_fails_loudly, {
+    let (_g, ws, cache, archive) = fixture();
+    // Add a larger entry so truncation lands mid-payload.
+    write(&cache.join("deps/large.bin"), &vec![0x5A; 512 * 1024]);
+    save(&SaveOptions {
+        workspace: Some(&ws),
+        cache_dir: Some(&cache),
+        out: &archive,
+        zstd_level: DEFAULT_ZSTD_LEVEL,
+        threads: None,
+        mtimes_only: false,
+        profile: SaveProfile::Full,
+    })
+    .expect("save ok");
+
+    let bytes = fs::read(&archive).unwrap();
+    assert!(
+        bytes.len() > 64,
+        "archive too small to truncate meaningfully"
+    );
+    fs::write(&archive, &bytes[..bytes.len() * 3 / 5]).unwrap();
+
+    let restore = _g.path().join("restore");
+    let err = load(&LoadOptions {
+        archive: &archive,
+        cache_dir: Some(&restore),
+        workspace: Some(&ws),
+        threads: None,
+        mtimes_only: false,
+        profile_extract: false,
+        auto_defender_exclude: false,
+    })
+    .expect_err("truncated archive must fail the load");
+    let msg = err.to_string();
+    assert!(!msg.is_empty(), "error must carry a message");
+});
+
 /// soldr#587: an executable file (0o755) restored from cache must
 /// still be executable. Without the per-worker chmod that fix
 /// landed, cargo build-script-build files lose +x and fail execve
