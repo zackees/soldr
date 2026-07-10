@@ -12,6 +12,16 @@ use super::{SoldrError, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR};
 pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
 const CARGO_ABORT_LOG_FILE: &str = "cargo-aborts.jsonl";
 
+/// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
+/// state. Source of truth for `SoldrPaths::versioned_root` and
+/// `SoldrPaths::versioned_shims_dir`. See zackees/soldr#743 for the
+/// layout RFC and zackees/soldr#742 for the first consumer.
+///
+/// Lives in `core` (not `fetch`, its historical home) so that `core`
+/// has no upward edge into `fetch` (#1490 Phase 0, edge E1);
+/// `fetch::MANAGED_SHIM_VERSION` remains as a re-export.
+pub const MANAGED_SHIM_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(Clone)]
 pub struct SoldrPaths {
     pub root: PathBuf,
@@ -105,8 +115,7 @@ impl SoldrPaths {
     /// (`bin`, `cache`, `config_file`) are NOT migrated here. The first
     /// real consumer is `versioned_shims_dir` (zackees/soldr#742).
     pub fn versioned_root(&self) -> PathBuf {
-        self.root
-            .join(format!("v{}", crate::fetch::MANAGED_SHIM_VERSION))
+        self.root.join(format!("v{}", MANAGED_SHIM_VERSION))
     }
 
     /// Per-version shim directory — `<versioned_root>/shims/`.
@@ -540,7 +549,7 @@ zccache = ""
         // the version string. If anyone changes its source away from
         // `env!("CARGO_PKG_VERSION")`, this guard fires.
         assert_eq!(
-            crate::fetch::MANAGED_SHIM_VERSION,
+            MANAGED_SHIM_VERSION,
             env!("CARGO_PKG_VERSION"),
             "MANAGED_SHIM_VERSION must equal the workspace package version"
         );
@@ -551,7 +560,7 @@ zccache = ""
         let paths = SoldrPaths::with_root(root.clone());
         let v_root = paths.versioned_root();
 
-        let expected_leaf = format!("v{}", crate::fetch::MANAGED_SHIM_VERSION);
+        let expected_leaf = format!("v{}", MANAGED_SHIM_VERSION);
         assert_eq!(
             v_root,
             root.join(&expected_leaf),

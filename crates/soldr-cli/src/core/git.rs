@@ -13,7 +13,7 @@ use std::process::Command;
 
 /// Walk up from `start` looking for a `.git` directory **or** file.
 /// Git worktrees use a `.git` file that points at the real gitdir, so
-/// both shapes count.  Mirrors `crate::zccache::find_git_worktree_root`
+/// both shapes count.  Mirrors `zccache::find_git_worktree_root`
 /// but lives here so the cook surface can pull it from `core` without
 /// dragging in zccache code.
 pub fn find_git_worktree_root(start: &Path) -> Option<PathBuf> {
