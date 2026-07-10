@@ -71,7 +71,6 @@ pub mod toolchain_doctor;
 pub mod toolchain_ensure;
 pub mod toolchain_link;
 pub mod trampoline;
-pub mod trampoline_workspace;
 pub mod wrapper;
 /// `wrapper_target` holds the wrapper hot-path target-registry routing
 /// extracted out of `wrapper.rs` so integration tests under

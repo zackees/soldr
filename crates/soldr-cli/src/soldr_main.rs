@@ -14,8 +14,8 @@ use crate::{
     native_cc, optimize, optimize_detect, optimize_windows, prepare_cmd, pyo3_detect,
     release_sidecar, rust_plan, save_load, self_relocate, shim_dir, shim_materialize,
     startup_profile, target_alias, test_util, toolchain, toolchain_doctor, toolchain_ensure,
-    toolchain_link, trampoline, trampoline_workspace, wrapper, wrapper_target, zccache,
-    zccache_embedded, zccache_lifecycle,
+    toolchain_link, trampoline, wrapper, wrapper_target, zccache, zccache_embedded,
+    zccache_lifecycle,
 };
 
 pub(crate) use crate::cli_args::{
