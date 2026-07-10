@@ -13,8 +13,8 @@ name: Cross-compile soldr (bootstrap + all targets, single linux-x86_64 runner f
 #   Stage 2 (cross-compile, matrix): seven parallel linux-x86 runners.
 #     Each one downloads the bootstrap soldr from Stage 1, puts it on
 #     PATH, and uses it to drive `soldr build` for Darwin, `soldr cargo
-#     zigbuild` for Linux cross targets, or `soldr cargo xwin build` for
-#     Windows MSVC. No `pip install soldr` — every cross job consumes
+#     zigbuild` for Linux cross targets, or `soldr build` for Windows
+#     MSVC. No `pip install soldr` — every cross job consumes
 #     the freshly-compiled in-tree soldr binary, not the PyPI snapshot
 #     of the latest tagged release.
 #
@@ -299,11 +299,11 @@ jobs:
             exe_suffix: ""
           - friendly: windows-x86
             target: x86_64-pc-windows-msvc
-            tool: xwin
+            tool: soldr-build
             exe_suffix: ".exe"
           - friendly: windows-arm
             target: aarch64-pc-windows-msvc
-            tool: xwin
+            tool: soldr-build
             exe_suffix: ".exe"
 
     steps:

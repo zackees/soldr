@@ -46,6 +46,22 @@ impl Drop for EnvVarGuard {
     }
 }
 
+crate::timed_test!(prepend_path_dirs_preserves_declared_priority, {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let shim = tmp.path().join("clang-shim");
+    let llvm = tmp.path().join("llvm").join("bin");
+    let inherited = tmp.path().join("inherited").join("bin");
+    let inherited_path = std::env::join_paths([&inherited]).expect("inherited PATH");
+    let _path = EnvVarGuard::set("PATH", inherited_path);
+
+    prepend_path_dirs_to_env(&[shim.clone(), llvm.clone()]);
+
+    let actual =
+        std::env::split_paths(&std::env::var_os("PATH").expect("PATH")).collect::<Vec<_>>();
+    assert_eq!(actual, vec![shim, llvm, inherited]);
+});
+
 #[test]
 fn gc_cli_parses_summary_and_purge_modes() {
     let summary = Cli::try_parse_from(["soldr", "gc", "--json"]).unwrap();

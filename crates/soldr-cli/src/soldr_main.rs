@@ -257,12 +257,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 for (k, v) in &prep.env {
                     std::env::set_var(k, v);
                 }
-                if let Some(shim_dir) = prep.shim_path_dir.as_ref() {
-                    prepend_to_path_env(shim_dir);
-                }
-                for dir in &prep.path_dirs {
-                    prepend_to_path_env(dir);
-                }
+                prepend_path_dirs_to_env(&prep.path_prefix());
 
                 // soldr#882/#1081/#1248: auto-dispatch cargo subcommand
                 // based on target. Windows MSVC stays on plain cargo

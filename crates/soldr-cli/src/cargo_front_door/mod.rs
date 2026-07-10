@@ -2324,8 +2324,8 @@ fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<Strin
 ///     Apple SDK on disk + set `SDKROOT` env (issue #854).
 ///   - `cargo xwin build --target *-pc-windows-msvc` → ensure `clang`
 ///     shim on PATH that forces `--driver-mode=cl` (PR #849).
-///   - `cargo nextest archive --target *-apple-darwin` → reuse the
-///     blessed Apple SDK + clang/lld prep from `soldr build` (soldr#1432).
+///   - `cargo nextest archive --target {darwin,windows-msvc}` → reuse the
+///     blessed SDK + clang/lld prep from `soldr build` (soldr#1432/#1524).
 async fn append_subcommand_transitive_bin_dirs(
     sub: &str,
     args: &[String],
@@ -2450,8 +2450,14 @@ async fn append_subcommand_transitive_bin_dirs(
             }
         }
     }
-    if let Some(triple) = nextest_archive_darwin_target(args) {
+    if let Some(triple) = nextest_archive_blessed_target(args) {
         let prep = crate::blessed_build::prepare(paths, triple).await?;
+        if triple.ends_with("-pc-windows-msvc") && prep.xwin_cache_dir.is_none() {
+            return Err(SoldrError::Other(format!(
+                "cargo nextest archive for {triple} requires the managed xwin-cache; \
+                 the blessed toolchain could not materialize it"
+            )));
+        }
         append_blessed_prep_to_subcommand_bootstrap(
             prep,
             extra_bin_dirs,
@@ -2462,7 +2468,7 @@ async fn append_subcommand_transitive_bin_dirs(
     Ok(())
 }
 
-fn nextest_archive_darwin_target(args: &[String]) -> Option<&str> {
+fn nextest_archive_blessed_target(args: &[String]) -> Option<&str> {
     let sub_idx = first_cargo_subcommand_index(args)?;
     if args[sub_idx] != "nextest" {
         return None;
@@ -2471,7 +2477,7 @@ fn nextest_archive_darwin_target(args: &[String]) -> Option<&str> {
         return None;
     }
     let triple = extract_target_arg(args)?;
-    triple.ends_with("-apple-darwin").then_some(triple)
+    (triple.ends_with("-apple-darwin") || triple.ends_with("-pc-windows-msvc")).then_some(triple)
 }
 
 fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {
@@ -2509,10 +2515,7 @@ fn append_blessed_prep_to_subcommand_bootstrap(
     extra_env: &mut Vec<(String, String)>,
     extra_cargo_args: &mut Vec<String>,
 ) {
-    if let Some(shim_dir) = prep.shim_path_dir {
-        extra_bin_dirs.push(shim_dir);
-    }
-    extra_bin_dirs.extend(prep.path_dirs);
+    extra_bin_dirs.extend(prep.path_prefix());
     extra_env.extend(prep.env);
     extra_cargo_args.extend(prep.cargo_args);
 }

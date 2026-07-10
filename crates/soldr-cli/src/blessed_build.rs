@@ -72,6 +72,19 @@ pub struct BlessedPrep {
     pub cargo_args: Vec<String>,
 }
 
+impl BlessedPrep {
+    /// PATH entries in precedence order. The clang shim must stay ahead of
+    /// managed LLVM so bare `clang --target=*-pc-windows-msvc` invocations
+    /// route through clang-cl before resolving the real compiler toolchain.
+    pub(crate) fn path_prefix(&self) -> Vec<PathBuf> {
+        self.shim_path_dir
+            .iter()
+            .cloned()
+            .chain(self.path_dirs.iter().cloned())
+            .collect()
+    }
+}
+
 /// Prepare the blessed sysroot for `target`. Returns `Ok(prep)` on
 /// success; `Ok(BlessedPrep::default())` if `target` doesn't need
 /// any prep (or if the caller opted into legacy via env vars);
@@ -93,11 +106,8 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // invocations that bypass CC/CXX env:
         // xwin-cache supplies the headers/libs used by the native
         // blessed cargo path, and also lets the cargo-xwin fallback
-        // short-circuit its live MSVC download. Even when the
-        // catalogue row for a target arch isn't yet ingested (arm64
-        // today, until soldr-toolchain PR #30's recipe gets dispatched
-        // + ingested), the shim alone makes ring compile correctly —
-        // cargo-xwin's live download still works for the SDK itself.
+        // short-circuit its live MSVC download. The shim remains useful
+        // independently because ring invokes `clang` directly.
         let target_u = target_triple.replace('-', "_");
         let target_u_upper = target_u.to_uppercase();
 
@@ -119,10 +129,9 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // `CARGO_TARGET_<T>_RUSTFLAGS` so the blessed path works
         // natively without cargo-xwin in the loop (soldr#1036 — make
         // soldr build a true cargo-xwin replacement, not just a wrapper
-        // that delegates to it). If the catalogue row isn't ingested,
-        // fall through — the shim alone is enough for the win-arm64
-        // ring fix; cargo-xwin's live download still produces a working
-        // SDK.
+        // that delegates to it). On a transient catalogue failure,
+        // `soldr build` can still fall through to cargo-xwin's live SDK
+        // download; nextest archive callers require this cache explicitly.
         let (llvm_result, xwin_result) = tokio::join!(
             crate::fetch::ensure_llvm_toolchain(paths),
             crate::fetch::xwin_cache::ensure_xwin_cache(paths, target_triple)
@@ -856,16 +865,20 @@ fn xwin_msvc_cflags(cache_dir: &std::path::Path) -> String {
         .join(" ")
 }
 
-/// Build the rustc `-C link-arg=/LIBPATH:<path>` chain for the
-/// xwin-cache so lld-link finds the MSVC import libs without
-/// cargo-xwin being in the loop. Returns a whitespace-separated
-/// rustflags string consumable via `CARGO_TARGET_<T>_RUSTFLAGS`.
+/// Build the rustc lld-link + dynamic CRT flags and
+/// `-C link-arg=/LIBPATH:<path>` chain for the xwin-cache. Explicitly
+/// select the UCRT/VCRuntime import libraries: the same bundle also ships
+/// static `libucrt.lib`, which cannot satisfy `__declspec(dllimport)`
+/// references emitted by clang-cl's default `/MD` mode.
 ///
 /// The xwin tarball lays libs out per-arch as `crt/lib/<arch>/` and
 /// `sdk/lib/{um,ucrt}/<arch>/` where `<arch>` is the MS arch name
 /// (`x64`, `arm64`) — matching xwin's `--preserve-ms-arch-notation`
 /// flag in the upstream recipe.
 fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> String {
+    if !target_triple.ends_with("-pc-windows-msvc") {
+        return String::new();
+    }
     let arch_dirs: &[&str] = if target_triple.starts_with("aarch64-") {
         &["arm64", "aarch64"]
     } else if target_triple.starts_with("x86_64-") {
@@ -873,24 +886,35 @@ fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> Stri
     } else {
         return String::new();
     };
-    arch_dirs
-        .iter()
-        .flat_map(|arch| {
-            [
-                cache_dir.join("crt").join("lib").join(arch),
-                cache_dir.join("sdk").join("lib").join("um").join(arch),
-                cache_dir.join("sdk").join("lib").join("ucrt").join(arch),
-            ]
-        })
-        .filter(|p| p.is_dir())
-        .flat_map(|p| {
-            vec![
-                "-C".to_string(),
-                format!("link-arg=/LIBPATH:{}", p.display()),
-            ]
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+    let mut args = vec![
+        "-C".to_string(),
+        "linker-flavor=lld-link".to_string(),
+        "-C".to_string(),
+        "link-arg=/NODEFAULTLIB:libucrt.lib".to_string(),
+        "-C".to_string(),
+        "link-arg=/DEFAULTLIB:ucrt.lib".to_string(),
+        "-C".to_string(),
+        "link-arg=/DEFAULTLIB:vcruntime.lib".to_string(),
+    ];
+    args.extend(
+        arch_dirs
+            .iter()
+            .flat_map(|arch| {
+                [
+                    cache_dir.join("crt").join("lib").join(arch),
+                    cache_dir.join("sdk").join("lib").join("um").join(arch),
+                    cache_dir.join("sdk").join("lib").join("ucrt").join(arch),
+                ]
+            })
+            .filter(|p| p.is_dir())
+            .flat_map(|p| {
+                vec![
+                    "-C".to_string(),
+                    format!("link-arg=/LIBPATH:{}", p.display()),
+                ]
+            }),
+    );
+    args.join(" ")
 }
 
 #[cfg(test)]
@@ -1040,6 +1064,19 @@ mod tests {
             env.get("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"),
             Some(&"lld-link")
         );
+    });
+
+    crate::timed_test!(path_prefix_keeps_clang_shim_ahead_of_managed_tools, {
+        let shim = PathBuf::from("/soldr/clang-shim");
+        let llvm = PathBuf::from("/soldr/llvm/bin");
+        let cmake = PathBuf::from("/soldr/cmake/bin");
+        let prep = BlessedPrep {
+            shim_path_dir: Some(shim.clone()),
+            path_dirs: vec![llvm.clone(), cmake.clone()],
+            ..Default::default()
+        };
+
+        assert_eq!(prep.path_prefix(), vec![shim, llvm, cmake]);
     });
 
     crate::timed_test!(darwin_lld_policy_uses_host_lld_on_linux_fallback, {
@@ -1354,16 +1391,32 @@ mod tests {
         std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
 
         let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
-        // Count `-C` tokens vs `link-arg=/LIBPATH:` tokens; should be equal.
-        let dash_c = out.split_whitespace().filter(|t| *t == "-C").count();
-        let link_arg = out
-            .split_whitespace()
-            .filter(|t| t.starts_with("link-arg=/LIBPATH:"))
-            .count();
-        assert_eq!(
-            dash_c, link_arg,
-            "every link-arg must be preceded by -C: {out}"
+        let tokens = out.split_whitespace().collect::<Vec<_>>();
+        let libpath_indexes = tokens
+            .iter()
+            .enumerate()
+            .filter_map(|(index, token)| token.starts_with("link-arg=/LIBPATH:").then_some(index))
+            .collect::<Vec<_>>();
+        assert!(
+            !libpath_indexes.is_empty(),
+            "expected a /LIBPATH pair: {out}"
         );
-        assert!(dash_c >= 1, "expected at least one link-arg pair: {out}");
+        for index in libpath_indexes {
+            assert_eq!(tokens.get(index.wrapping_sub(1)), Some(&"-C"), "{out}");
+        }
+    });
+
+    crate::timed_test!(xwin_link_args_select_dynamic_crt_import_libraries, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("crt").join("lib").join("arm64")).unwrap();
+        std::fs::create_dir_all(root.join("sdk").join("lib").join("ucrt").join("arm64")).unwrap();
+
+        let out = xwin_msvc_link_args(root, "aarch64-pc-windows-msvc");
+        assert!(out.contains("linker-flavor=lld-link"), "{out}");
+        assert!(out.contains("link-arg=/NODEFAULTLIB:libucrt.lib"), "{out}");
+        assert!(out.contains("link-arg=/DEFAULTLIB:ucrt.lib"), "{out}");
+        assert!(out.contains("link-arg=/DEFAULTLIB:vcruntime.lib"), "{out}");
+        assert!(!out.contains("link-arg=/DEFAULTLIB:libucrt.lib"), "{out}");
     });
 }

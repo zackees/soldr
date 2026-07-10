@@ -408,20 +408,13 @@ jobs:
       target: x86_64-pc-windows-msvc
       artifact_name: soldr-ci-e2e-windows-x64
 
-  # ---------- Windows ARM64 (DISABLED — #1073 forge libz-ng recipe) ----------
-  # The /imsvc<path> bug was the CFLAGS gate (fixed in this PR's
-  # blessed_build.rs change); aarch64 MSVC SDK headers now resolve.
-  # Next layer down: libz-ng-sys's `arch/arm/neon_intrins.h` defines
-  # static-inline wrappers for vst1q_u16_x4 etc., but MSVC SDK's
-  # `arm64_neon.h` already provides them as MACROS — the two collide
-  # at preprocessor expansion time, producing "type specifier missing"
-  # syntax errors in libz-ng's wrapper bodies. Fix is to ship a forge-
-  # built libz-ng prebuilt for aarch64-msvc + consume via
-  # `libz_ng_sysroot.rs` (already wired). Tracked in #1073 priority 4.
+  # ---------- Windows ARM64 ----------
+  # soldr#1524: the managed ARM64 xwin cache and zlib-ng catalogue row
+  # make this the same blessed build + nextest archive path as x64 MSVC.
   e2e-windows-arm64-build:
     name: cross-build aarch64-pc-windows-msvc (linux host)
     needs: e2e-cross-bootstrap-soldr
-    if: false  # #1073 — needs forge zlib-ng-windows-arm64 prebuilt
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-pc-windows-msvc
@@ -432,7 +425,7 @@ jobs:
   e2e-windows-arm64:
     name: target-run aarch64-pc-windows-msvc
     needs: e2e-windows-arm64-build
-    if: false  # #1073
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: windows-11-arm

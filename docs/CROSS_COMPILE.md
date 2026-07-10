@@ -93,6 +93,11 @@ different blessed build surfaces:
   `soldr cargo zigbuild --target *-apple-darwin` is a legacy/diagnostic path,
   not the default macOS recipe.
 
+`x86_64-apple-darwin` is supported for local and CI cross-builds. That support
+is separate from release packaging: Intel macOS archives remain intentionally
+unpublished while hosted Intel macOS release capacity is unreliable, as
+documented in `docs/NPM_PUBLISHING.md` and `docs/RELEASE_VERIFICATION.md`.
+
 ### Recipe
 
 ```powershell
