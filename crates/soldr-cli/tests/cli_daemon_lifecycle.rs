@@ -452,21 +452,26 @@ fn install_servicedef_writes_running_process_definition() {
     );
     let body: Value = serde_json::from_slice(&out.stdout).expect("servicedef json");
     assert_eq!(body["service_name"].as_str(), Some("soldr-daemon"));
+    // #1501 moved servicedef to the running-process v2 surface; the
+    // remaining deferred item is the upstream-gated broker-owned
+    // UpgradeDaemon handoff (see SOLDR_DAEMON_SERVICE_DEF_DEFERRED).
     assert!(body["deferred"]
         .as_array()
         .expect("deferred array")
         .iter()
         .any(|item| item
             .as_str()
-            .is_some_and(|value| value.contains("connect_to_backend"))));
+            .is_some_and(|value| value.contains("UpgradeDaemon"))));
 
-    let loaded = running_process::broker::server::ServiceDefinitionLoader::new(&service_root)
+    // #1501: servicedefs are written as `.servicedef.v2` protobufs and
+    // load through the protocol_v2 loader.
+    let loaded = running_process::broker::protocol_v2::ServiceDefinitionLoader::new(&service_root)
         .load("soldr-daemon")
         .expect("running-process loader validates soldr servicedef");
     assert_eq!(loaded.service_name, "soldr-daemon");
     assert_eq!(
         loaded.isolation,
-        running_process::broker::protocol::BrokerIsolation::SharedBroker as i32,
+        running_process::broker::protocol_v2::BrokerIsolation::SharedBroker as i32,
     );
     assert_eq!(
         loaded.binary_path,
