@@ -210,8 +210,9 @@ impl SoldrZccacheService {
         })
     }
 
-    /// Drain pending writes — called from the `Request::BuildSessionEnd`
-    /// arm before the session aggregate write hits redb.
+    /// Drain pending writes — called from the `Request::FlushCaches`
+    /// arm (`soldr save` / `soldr cache flush`) so the on-disk cache
+    /// tree is complete before archiving.
     pub async fn flush(&self) -> Result<(), EmbeddedServiceError> {
         self.inner
             .flush()

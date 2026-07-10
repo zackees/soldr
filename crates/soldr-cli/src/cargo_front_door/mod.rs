@@ -58,7 +58,6 @@ const MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS: u64 = 30;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
-const COMPILE_JOURNAL_TAIL_STABLE_POLLS: usize = 3;
 const BUILD_HISTORY_RETRY_ATTEMPTS: usize = 20;
 const BUILD_HISTORY_RETRY_POLL: Duration = Duration::from_millis(25);
 
@@ -338,6 +337,12 @@ struct BuildLogHistoryRequest<'a> {
     compile_journal_start_len: u64,
     exit_code: i32,
     ended_at_ms: i64,
+    /// soldr#1536: true when the daemon acknowledged `BuildSessionEnd`,
+    /// meaning the persisted BuildRecord already carries the finalized
+    /// crate-count / slowest-crate aggregate and every session event is
+    /// durable — the wrapper must NOT redo the O(all-history)
+    /// `aggregate_session` scan in that case.
+    daemon_finalized: bool,
 }
 
 fn persist_build_log_history(request: BuildLogHistoryRequest<'_>) {
@@ -371,6 +376,7 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         compile_journal_start_len,
         exit_code,
         ended_at_ms,
+        daemon_finalized,
     } = *request;
     let db_path = crate::cache_lib::data_db_path(paths);
     let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
@@ -398,12 +404,8 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         .as_ref()
         .and_then(|summary| (summary.compilations > 0).then_some(summary.compilations));
     let compile_journal_path = embedded_compile_journal_path(paths);
-    if expected_compile_journal_entries.is_some() {
-        wait_for_compile_journal_tail(
-            &compile_journal_path,
-            compile_journal_start_len,
-            expected_compile_journal_entries,
-        );
+    if let Some(expected) = expected_compile_journal_entries {
+        wait_for_compile_journal_tail(&compile_journal_path, compile_journal_start_len, expected);
     }
     let archived_compile_journal_path = copy_session_artifact_tail(
         &compile_journal_path,
@@ -426,8 +428,18 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             .map(|path| Path::new(path.as_str()))
             .unwrap_or(&session.session_log_path),
     );
-    let (crate_count, slowest_crate_us, slowest_crate_name) =
-        crate::daemon::db::aggregate_session(&db_path, build_session_id).unwrap_or((0, None, None));
+    // soldr#1536: when the daemon acknowledged BuildSessionEnd, the
+    // record read above already carries the finalized crate-count /
+    // slowest-crate aggregate — keep it. Only the daemon-unreachable
+    // fallback still derives the aggregate from the event table.
+    if !daemon_finalized {
+        let (crate_count, slowest_crate_us, slowest_crate_name) =
+            crate::daemon::db::aggregate_session(&db_path, build_session_id)
+                .unwrap_or((0, None, None));
+        record.crate_count = crate_count;
+        record.slowest_crate_us = slowest_crate_us;
+        record.slowest_crate_name = slowest_crate_name;
+    }
     record.ended_at_ms = Some(record.ended_at_ms.unwrap_or(ended_at_ms));
     record.exit_code = Some(record.exit_code.unwrap_or(exit_code));
     record.total_wall_ms = Some(
@@ -436,9 +448,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             .map(|ended| (ended - record.started_at_ms).max(0) as u64)
             .unwrap_or(0),
     );
-    record.crate_count = crate_count;
-    record.slowest_crate_us = slowest_crate_us;
-    record.slowest_crate_name = slowest_crate_name;
     record.log_paths = Some(crate::daemon::protocol::BuildLogPaths {
         zccache_session_id: Some(session.session_id.clone()),
         cache_dir: Some(session.cache_dir.display().to_string()),
@@ -483,49 +492,65 @@ fn file_len(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-fn wait_for_compile_journal_tail(
+/// Wait for the embedded compile journal to contain the expected number
+/// of entries for this build.
+///
+/// soldr#1536: the pre-#1536 version demanded three consecutive 25 ms
+/// "stable length" polls even when the journal was already complete,
+/// putting a fixed ~75 ms floor on every finalization. Completeness is
+/// now judged directly: an entry only counts once its line is
+/// newline-terminated (the zccache journal thread writes whole lines),
+/// so as soon as `expected_entries` complete lines are visible the wait
+/// returns without sleeping at all — the common case, since the journal
+/// entries were enqueued before the last compile reply and the daemon
+/// ack round-trip already happened. The 2 s deadline only bounds the
+/// rare case where the journal writer thread lags.
+fn wait_for_compile_journal_tail(path: &Path, start_offset: u64, expected_entries: u64) -> bool {
+    wait_for_compile_journal_tail_with(
+        path,
+        start_offset,
+        expected_entries,
+        COMPILE_JOURNAL_TAIL_WAIT,
+        || std::thread::sleep(COMPILE_JOURNAL_TAIL_POLL),
+    )
+}
+
+/// Testable core of [`wait_for_compile_journal_tail`] with an injected
+/// sleep so tests can assert the zero-sleep fast path.
+fn wait_for_compile_journal_tail_with(
     path: &Path,
     start_offset: u64,
-    expected_entries: Option<u64>,
+    expected_entries: u64,
+    wait_budget: Duration,
+    mut sleep: impl FnMut(),
 ) -> bool {
-    let deadline = Instant::now() + COMPILE_JOURNAL_TAIL_WAIT;
-    let mut last_len = None;
-    let mut stable_polls = 0;
+    let deadline = Instant::now() + wait_budget;
     loop {
-        let len = file_len(path);
-        let has_tail = len > start_offset;
-        let has_expected_entries = expected_entries
-            .map(|expected| {
-                expected == 0
-                    || count_compile_journal_tail_entries(path, start_offset)
-                        .map(|count| count >= expected)
-                        .unwrap_or(false)
-            })
-            .unwrap_or(has_tail);
-        if has_tail && has_expected_entries {
-            if last_len == Some(len) {
-                stable_polls += 1;
-            } else {
-                last_len = Some(len);
-                stable_polls = 0;
-            }
-            if stable_polls >= COMPILE_JOURNAL_TAIL_STABLE_POLLS {
-                return true;
-            }
-        } else {
-            last_len = Some(len);
-            stable_polls = 0;
+        if expected_entries == 0
+            || count_complete_compile_journal_tail_entries(path, start_offset).unwrap_or(0)
+                >= expected_entries
+        {
+            return true;
         }
         if Instant::now() >= deadline {
-            return has_tail;
+            // Best effort past the deadline: report whether ANY tail
+            // showed up so the caller still archives what exists.
+            return file_len(path) > start_offset;
         }
-        std::thread::sleep(COMPILE_JOURNAL_TAIL_POLL);
+        sleep();
     }
 }
 
-fn count_compile_journal_tail_entries(path: &Path, start_offset: u64) -> Option<u64> {
+/// Count newline-terminated, non-empty journal lines past `start_offset`.
+/// A trailing line without its `\n` is still in flight (partial write by
+/// the journal thread or a concurrent build) and does not count.
+fn count_complete_compile_journal_tail_entries(path: &Path, start_offset: u64) -> Option<u64> {
     let tail = read_file_tail(path, start_offset)?;
-    Some(tail.lines().filter(|line| !line.trim().is_empty()).count() as u64)
+    Some(
+        tail.split_inclusive('\n')
+            .filter(|line| line.ends_with('\n') && !line.trim().is_empty())
+            .count() as u64,
+    )
 }
 
 fn read_file_tail(path: &Path, start_offset: u64) -> Option<String> {
@@ -561,9 +586,17 @@ fn copy_session_artifact_tail(
     start_offset: u64,
 ) -> Option<String> {
     let tail = read_file_tail(source, start_offset)?;
+    // soldr#1536: drop a trailing partial line (an in-flight write by
+    // the journal thread or a concurrent build) so the archive holds
+    // only complete JSONL records. A tail with no newline at all is
+    // kept whole — better a truncated best-effort record than nothing.
+    let complete = match tail.rfind('\n') {
+        Some(last_newline) => &tail[..=last_newline],
+        None => tail.as_str(),
+    };
     std::fs::create_dir_all(archive_dir).ok()?;
     let dest = archive_dir.join(file_name);
-    std::fs::write(&dest, tail).ok()?;
+    std::fs::write(&dest, complete).ok()?;
     Some(dest.display().to_string())
 }
 
@@ -1602,8 +1635,10 @@ pub(crate) async fn run_cargo_front_door(
 
     // Phase 2: per-build session correlation. Stamp every wrapper
     // invocation with a u64 session id and fire BuildSessionStart to
-    // the daemon (fire-and-forget). On exit we fire BuildSessionEnd
-    // so the daemon can finalize the per-crate timing aggregate.
+    // the daemon (fire-and-forget). On exit we send BuildSessionEnd —
+    // acknowledged since soldr#1536 — so the daemon finalizes the
+    // per-crate timing aggregate from its in-memory rollup and the
+    // wrapper can trust the persisted record without re-scanning.
     let session_id = generate_build_session_id();
     command.env(
         crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR,
@@ -1784,9 +1819,10 @@ pub(crate) async fn run_cargo_front_door(
         Err(err) => {
             let timeout = cargo_run_error_is_timeout(&err);
             let ended_at_ms = current_unix_ms();
-            if crate::daemon::client::build_session_end(&paths, session_id, -1, ended_at_ms)
-                .is_err()
-            {
+            let daemon_finalized =
+                crate::daemon::client::build_session_end(&paths, session_id, -1, ended_at_ms)
+                    .is_ok();
+            if !daemon_finalized {
                 persist_build_session_end_fallback(&paths, session_id, -1, ended_at_ms);
             }
             crate::cache_lib::build_active::set(false);
@@ -1803,6 +1839,7 @@ pub(crate) async fn run_cargo_front_door(
                     compile_journal_start_len,
                     exit_code: -1,
                     ended_at_ms,
+                    daemon_finalized,
                 });
             }
             if let Err(finish_err) = finish_result {
@@ -1854,18 +1891,20 @@ pub(crate) async fn run_cargo_front_door(
     };
     let captured_stderr_for_diagnosis = diagnostic_capture;
 
-    // Phase 2: fire BuildSessionEnd before the success/failure
+    // Phase 2: send BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
-    // build's own outcome.
+    // build's own outcome. soldr#1536: the daemon acknowledges once the
+    // finalized aggregate and every session event are durable; on any
+    // error we fall back to the direct-redb finalization below.
     let ended_at_ms = current_unix_ms();
-    if crate::daemon::client::build_session_end(
+    let daemon_finalized = crate::daemon::client::build_session_end(
         &paths,
         session_id,
         status.code().unwrap_or(-1),
         ended_at_ms,
     )
-    .is_err()
-    {
+    .is_ok();
+    if !daemon_finalized {
         persist_build_session_end_fallback(
             &paths,
             session_id,
@@ -1944,6 +1983,7 @@ pub(crate) async fn run_cargo_front_door(
             compile_journal_start_len,
             exit_code: status.code().unwrap_or(-1),
             ended_at_ms,
+            daemon_finalized,
         });
     }
     finish_result?;

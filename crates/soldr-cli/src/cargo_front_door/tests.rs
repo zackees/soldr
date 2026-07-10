@@ -1573,15 +1573,164 @@ crate::timed_test!(
                 .expect("write second tail");
         });
 
-        assert!(wait_for_compile_journal_tail(
-            &source,
-            start_offset,
-            Some(2)
-        ));
+        assert!(wait_for_compile_journal_tail(&source, start_offset, 2));
         assert_eq!(
-            count_compile_journal_tail_entries(&source, start_offset),
+            count_complete_compile_journal_tail_entries(&source, start_offset),
             Some(2)
         );
+    }
+);
+
+crate::timed_test!(
+    compile_journal_tail_ready_journal_returns_without_sleeping,
+    {
+        // soldr#1536: the pre-#1536 wait demanded three consecutive 25 ms
+        // "stable" polls (a fixed ~75 ms floor per build) even when the
+        // journal already held every expected entry. A complete journal
+        // must now return on the first check with ZERO sleeps.
+        let root = tempfile::tempdir().expect("temp root");
+        let source = root.path().join("compile_journal.jsonl");
+        std::fs::write(&source, "old-build\n").expect("write old journal");
+        let start_offset = std::fs::metadata(&source).expect("metadata").len();
+        std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2\n").expect("append tail");
+
+        let mut sleeps = 0usize;
+        let ready = wait_for_compile_journal_tail_with(
+            &source,
+            start_offset,
+            2,
+            Duration::from_secs(2),
+            || sleeps += 1,
+        );
+        assert!(ready);
+        assert_eq!(
+            sleeps, 0,
+            "a complete journal must not pay any polling floor"
+        );
+    }
+);
+
+crate::timed_test!(
+    compile_journal_tail_partial_trailing_line_is_not_complete,
+    {
+        // A trailing line without its newline is still being written (by
+        // the journal thread or a concurrent build) — it must not count as
+        // a complete entry. Completion of the line on the next poll ends
+        // the wait.
+        let root = tempfile::tempdir().expect("temp root");
+        let source = root.path().join("compile_journal.jsonl");
+        std::fs::write(&source, "old-build\n").expect("write old journal");
+        let start_offset = std::fs::metadata(&source).expect("metadata").len();
+        std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2").expect("partial tail");
+
+        assert_eq!(
+            count_complete_compile_journal_tail_entries(&source, start_offset),
+            Some(1)
+        );
+
+        // The injected "sleep" completes the trailing line — the wait must
+        // only return after that completion (i.e. the partial line alone
+        // did not satisfy it).
+        let finisher = source.clone();
+        let ready = wait_for_compile_journal_tail_with(
+            &source,
+            start_offset,
+            2,
+            Duration::from_secs(2),
+            move || {
+                std::fs::write(&finisher, "old-build\nnew-build-1\nnew-build-2\n")
+                    .expect("finish tail");
+            },
+        );
+        assert!(ready);
+        assert_eq!(
+            count_complete_compile_journal_tail_entries(&source, start_offset),
+            Some(2),
+            "wait must have returned only after the line was completed"
+        );
+    }
+);
+
+crate::timed_test!(compile_journal_tail_archive_drops_partial_trailing_line, {
+    let root = tempfile::tempdir().expect("temp root");
+    let source = root.path().join("compile_journal.jsonl");
+    std::fs::write(&source, "old-build\n").expect("write old journal");
+    let start_offset = std::fs::metadata(&source).expect("metadata").len();
+    std::fs::write(&source, "old-build\ncomplete-1\ncomplete-2\npart").expect("append tail");
+
+    let archived = copy_session_artifact_tail(
+        &source,
+        &root.path().join("history").join("2"),
+        "compile_journal.jsonl",
+        start_offset,
+    )
+    .expect("archive path");
+
+    let body = std::fs::read_to_string(archived).expect("archived body");
+    assert_eq!(
+        body, "complete-1\ncomplete-2\n",
+        "an in-flight partial trailing line must not land in the archive"
+    );
+});
+
+crate::timed_test!(
+    persist_build_log_history_trusts_daemon_finalized_aggregate,
+    {
+        // soldr#1536: when the daemon acknowledged BuildSessionEnd the
+        // persisted record already carries the finalized aggregate. The
+        // wrapper must keep it verbatim instead of re-deriving it with a
+        // full `daemon_events` scan (which here would zero it out —
+        // there are no events in this fresh redb).
+        let root = tempfile::tempdir().expect("temp root");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let db_path = crate::cache_lib::data_db_path(&paths);
+        let mut record = new_build_record(4242, "/repo".to_string(), 1_000);
+        record.crate_count = 7;
+        record.slowest_crate_us = Some(9_000);
+        record.slowest_crate_name = Some("daemon-said-so".to_string());
+        record.ended_at_ms = Some(2_000);
+        record.exit_code = Some(0);
+        crate::daemon::db::upsert_build(&db_path, &record).expect("seed record");
+
+        let session_dir = root.path().join("zc");
+        std::fs::create_dir_all(&session_dir).expect("session dir");
+        let session = crate::zccache_lifecycle::ZccacheBuildSession {
+            binary_path: session_dir.join("zccache"),
+            cache_dir: session_dir.clone(),
+            cache_dir_env: false,
+            session_id: "test-session".to_string(),
+            session_log_path: session_dir.join("last-session.log"),
+            journal_path: session_dir.join("last-session.jsonl"),
+            session_stats_path: session_dir.join("last-session-stats.json"),
+        };
+
+        for daemon_finalized in [true, false] {
+            persist_build_log_history_inner(&BuildLogHistoryRequest {
+                paths: &paths,
+                build_session_id: 4242,
+                repo_root: Path::new("/repo"),
+                started_at_ms: 1_000,
+                session: &session,
+                compile_journal_start_len: 0,
+                exit_code: 0,
+                ended_at_ms: 2_000,
+                daemon_finalized,
+            })
+            .expect("persist history");
+            let stored = crate::daemon::db::get_build(&db_path, 4242)
+                .expect("read")
+                .expect("record");
+            if daemon_finalized {
+                assert_eq!(stored.crate_count, 7, "daemon aggregate must be kept");
+                assert_eq!(stored.slowest_crate_us, Some(9_000));
+                assert_eq!(stored.slowest_crate_name.as_deref(), Some("daemon-said-so"));
+            } else {
+                assert_eq!(
+                    stored.crate_count, 0,
+                    "fallback path re-derives the aggregate from (empty) events"
+                );
+            }
+        }
     }
 );
 

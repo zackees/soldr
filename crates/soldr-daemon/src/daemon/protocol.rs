@@ -65,7 +65,15 @@ use serde::{Deserialize, Serialize};
 ///   soldr#1368, so there is nothing left to stop on daemon shutdown.
 /// * v12 (soldr#1537): carries optional build-session lifecycle metadata
 ///   on `CompileRequest`, eliminating two hot-path telemetry IPC calls.
-pub const PROTOCOL_VERSION: u32 = 12;
+/// * v13 (soldr#1536): `Request::BuildSessionEnd` becomes
+///   request-response — the daemon finalizes the session from its
+///   in-memory per-session aggregate and replies [`Response::Ack`] once
+///   the BuildRecord and every staged session event are durable. No
+///   message body changed shape, but the interaction pattern did: a v13
+///   client would wait on a reply a v12 daemon never sends, so the bump
+///   makes cross-version traffic fail fast (and displace the stale
+///   daemon) instead of stalling out the reply timeout.
+pub const PROTOCOL_VERSION: u32 = 13;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -111,8 +119,14 @@ pub enum Request {
         repo_root: String,
         started_at_ms: i64,
     },
-    /// Fire-and-forget: finalize a build session. Issued by the cargo
-    /// front door after cargo exits.
+    /// Request-response (since v13, soldr#1536): finalize a build
+    /// session. Issued by the cargo front door after cargo exits. The
+    /// daemon rolls the session up from its in-memory per-session
+    /// aggregate (falling back to the historical event scan only when
+    /// it did not observe the session from its start), persists the
+    /// finalized BuildRecord, flushes staged session events, and
+    /// replies [`Response::Ack`] — the wrapper can then trust the
+    /// persisted aggregate instead of re-scanning the event table.
     BuildSessionEnd {
         session_id: u64,
         exit_code: i32,
@@ -403,9 +417,11 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v12_after_compile_lifecycle_folding, {
-        // Bumped from 11 to 12 when lifecycle metadata moved onto Compile.
-        assert_eq!(PROTOCOL_VERSION, 12);
+    crate::timed_test!(protocol_version_is_v13_after_acked_session_finalization, {
+        // Bumped from 12 to 13 when BuildSessionEnd became
+        // request-response (soldr#1536): a v13 client waits for the
+        // finalization Ack, which a v12 daemon never sends.
+        assert_eq!(PROTOCOL_VERSION, 13);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
