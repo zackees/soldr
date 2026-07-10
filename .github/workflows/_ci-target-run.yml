@@ -3,7 +3,7 @@
 # Companion to `_ci-cross-build-linux.yml` (phase 3). Downloads the
 # artifact produced by the linux cross-builder + runs the pre-built
 # test binaries on the native runner. No `cargo` / `rustc` / `rustup`
-# install — just `cargo-nextest` (a single self-contained binary) and
+# install. The downloaded soldr binary resolves cargo-nextest and runs
 # the downloaded test archive.
 #
 # Sets SOLDR_BIN / SOLDR_TEST_FIXTURES_DIR / SOLDR_TEST_SKIP_SOURCE_TREE
@@ -96,11 +96,6 @@ jobs:
             fi
           done
 
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
-        with:
-          tool: cargo-nextest
-
       - name: Run pre-built tests via nextest archive
         shell: bash
         env:
@@ -123,23 +118,15 @@ jobs:
           echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
 
           # The archive's filename mirrors the artifact name + a -tests suffix.
-          # When the cross-build skips archive emission (e.g. windows-msvc,
-          # which cargo nextest archive can't drive through cargo xwin —
-          # tracked under #1068), fall back to a binary-only smoke test
-          # (--version round-trip) so the target-run lane still validates
-          # the cross-built binary actually executes on the target runner.
+          # Every target-run lane requires the real archive; a missing file is
+          # a failed cross-build contract, not a binary-only smoke fallback.
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
-          if [ -f "$archive" ]; then
-            cargo nextest run \
-              --archive-file "$archive" \
-              --workspace-remap "$GITHUB_WORKSPACE" \
-              --no-fail-fast \
-              -E "${{ inputs.skip_filter }}"
-          else
-            echo "::notice::test archive missing for ${{ inputs.artifact_name }} — running binary smoke test instead"
-            "$SOLDR_BIN" --version
-            echo "smoke test passed: $SOLDR_BIN runs on $(uname -a 2>/dev/null || echo windows)"
-          fi
+          test -f "$archive"
+          "$SOLDR_BIN" cargo nextest run \
+            --archive-file "$archive" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --no-fail-fast \
+            -E "${{ inputs.skip_filter }}"
 
       - name: Upload junit / on-failure logs
         if: failure()

@@ -48,14 +48,10 @@ const XWIN_CACHE_X86_64_URL: &str =
 const XWIN_CACHE_X86_64_SHA256: &str =
     "33c04d8026d99dab4d66f39ddbd93d75f64c68063d4ba58e5450626524bf348d";
 
-// soldr#1012 PR 3 ingests this row; sha256 is filled in by a follow-
-// up commit after the forge dispatch lands the asset in the catalogue.
-// Until then `ensure_xwin_cache(aarch64-pc-windows-msvc)` returns the
-// not-yet-ingested error; callers (Commands::Build's blessed path)
-// branch on that and fall through to the legacy cargo-xwin path.
 const XWIN_CACHE_AARCH64_URL: &str =
     "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/xwin-cache/2026-06-22/windows-aarch64-msvc/xwin-cache.tar.zst";
-const XWIN_CACHE_AARCH64_SHA256: &str = "TBD-INGEST-PENDING";
+const XWIN_CACHE_AARCH64_SHA256: &str =
+    "cb7fa0e68ce173a54f0dbc116d3e8f04c7013953529ada8284b0ac149139b9da";
 
 /// Env var consumed by cargo-xwin to short-circuit its own download.
 /// The blessed path sets this so anything else in the workflow that
@@ -80,18 +76,6 @@ pub async fn ensure_xwin_cache(
         }
     };
 
-    if expected_sha256.starts_with("TBD") {
-        return Err(SoldrError::Other(format!(
-            "xwin-cache for {target_triple} is not yet ingested into the \
-             soldr-toolchain catalogue (sha256 placeholder is \
-             {expected_sha256:?}). The recipe was added in \
-             soldr-toolchain#30 (soldr#1012 PR 3); forge dispatch + \
-             ingest follow-up will fill in the real sha256. Until then \
-             `Commands::Build` falls through to the legacy cargo-xwin \
-             path for this target.\nExpected URL: {url}"
-        )));
-    }
-
     paths.ensure_dirs()?;
     let install_dir = paths
         .root
@@ -100,17 +84,21 @@ pub async fn ensure_xwin_cache(
         .join("xwin")
         .join(MANAGED_XWIN_CACHE_VERSION);
     let stamp = install_dir.join(".complete");
-    let cache_dir = install_dir.join("xwin");
 
-    if stamp.is_file() && cache_dir.is_dir() {
-        // Repair pass for caches extracted by older soldr versions (or
-        // restored from a CI cache) that predate the case-alias fix —
-        // idempotent and cheap once the aliases exist (cross-run 28574600982 fix).
-        let aliases = ensure_xwin_case_aliases(&cache_dir)?;
-        if aliases > 0 {
-            eprintln!("soldr: added {aliases} xwin-cache case aliases");
+    if stamp.is_file() {
+        if let Some(cache_dir) = resolve_xwin_cache_dir(&install_dir) {
+            // Repair pass for caches extracted by older soldr versions (or
+            // restored from a CI cache) that predate the case-alias fix —
+            // idempotent and cheap once the aliases exist (cross-run 28574600982 fix).
+            let aliases = ensure_xwin_case_aliases(&cache_dir)?;
+            if aliases > 0 {
+                eprintln!("soldr: added {aliases} xwin-cache case aliases");
+            }
+            return Ok(cache_dir);
         }
-        return Ok(cache_dir);
+        // A stamp without a usable tree is incomplete or corrupt. Clear only
+        // the marker so the verified download below repairs the installation.
+        std::fs::remove_file(&stamp)?;
     }
 
     eprintln!(
@@ -153,6 +141,13 @@ pub async fn ensure_xwin_cache(
     std::fs::create_dir_all(&install_dir)?;
     extract_tar_zst_tree(&bytes, &install_dir)?;
 
+    let cache_dir = resolve_xwin_cache_dir(&install_dir).ok_or_else(|| {
+        SoldrError::Archive(format!(
+            "xwin-cache extract did not produce a crt/sdk root under {} \
+             (checked xwin/, package/, and the extraction root)",
+            install_dir.display()
+        ))
+    })?;
     if !cache_dir.is_dir() {
         return Err(SoldrError::Archive(format!(
             "xwin-cache extract did not produce expected directory {}",
@@ -178,6 +173,16 @@ pub async fn ensure_xwin_cache(
         cache_dir.display()
     );
     Ok(cache_dir)
+}
+
+fn resolve_xwin_cache_dir(install_dir: &Path) -> Option<PathBuf> {
+    [
+        install_dir.join("xwin"),
+        install_dir.join("package"),
+        install_dir.to_path_buf(),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.join("crt").is_dir() && candidate.join("sdk").is_dir())
 }
 
 /// Create the case-variant file aliases that make an xwin splat usable
@@ -446,31 +451,29 @@ mod tests {
                 "URL must embed MANAGED_XWIN_CACHE_VERSION ({MANAGED_XWIN_CACHE_VERSION}): {url}"
             );
         }
-        // x64 sha256 is real (catalogue row already exists).
-        assert_eq!(XWIN_CACHE_X86_64_SHA256.len(), 64);
-        assert!(XWIN_CACHE_X86_64_SHA256
-            .chars()
-            .all(|c| c.is_ascii_hexdigit()));
+        for sha256 in [XWIN_CACHE_X86_64_SHA256, XWIN_CACHE_AARCH64_SHA256] {
+            assert_eq!(sha256.len(), 64);
+            assert!(sha256.chars().all(|c| c.is_ascii_hexdigit()));
+        }
     });
 
-    crate::timed_test!(aarch64_not_yet_ingested_returns_clear_error, {
-        // Until the forge ingest cycle lands the arm64 row, this fetch
-        // must produce a descriptive error and NOT a network fetch
-        // against a 404 URL. The error message is the load-bearing
-        // contract — `Commands::Build` keys on a "not yet ingested"
-        // signal in the error string to decide whether to fall through
-        // to the legacy path.
-        let tmp = tempfile::tempdir().expect("tmpdir");
-        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-        let result = tokio::runtime::Runtime::new()
-            .unwrap()
-            .block_on(ensure_xwin_cache(&paths, "aarch64-pc-windows-msvc"));
-        let err = result.expect_err("arm64 must error until catalogue lands the row");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("not yet ingested") || msg.contains("TBD"),
-            "expected 'not yet ingested' or 'TBD' in error, got: {msg}"
+    crate::timed_test!(aarch64_asset_pin_matches_catalogue, {
+        assert!(XWIN_CACHE_AARCH64_URL.contains("windows-aarch64-msvc"));
+        assert_eq!(
+            XWIN_CACHE_AARCH64_SHA256,
+            "cb7fa0e68ce173a54f0dbc116d3e8f04c7013953529ada8284b0ac149139b9da"
         );
+    });
+
+    crate::timed_test!(cache_root_accepts_legacy_forge_and_flat_layouts, {
+        for relative in [Some("xwin"), Some("package"), None] {
+            let tmp = tempfile::tempdir().expect("tmpdir");
+            let root =
+                relative.map_or_else(|| tmp.path().to_path_buf(), |dir| tmp.path().join(dir));
+            std::fs::create_dir_all(root.join("crt")).expect("crt");
+            std::fs::create_dir_all(root.join("sdk")).expect("sdk");
+            assert_eq!(resolve_xwin_cache_dir(tmp.path()), Some(root));
+        }
     });
 
     /// Probe whether `dir`'s filesystem resolves names case-insensitively

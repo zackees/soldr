@@ -67,11 +67,7 @@ fn apply_blessed_prep_env(
         append_env(github_env_path, key, value)?;
     }
 
-    let mut path_dirs = Vec::new();
-    if let Some(shim) = prep.shim_path_dir.as_ref() {
-        path_dirs.push(shim.clone());
-    }
-    path_dirs.extend(prep.path_dirs.iter().cloned());
+    let mut path_dirs = prep.path_prefix();
     if !path_dirs.is_empty() {
         if let Some(current) = std::env::var_os("PATH") {
             path_dirs.extend(std::env::split_paths(&current));

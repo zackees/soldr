@@ -248,13 +248,26 @@ pub(crate) fn ensure_msvc_host_env_for_native(args: &[String]) {
 /// env var. Idempotent in the sense that if `dir` is already first
 /// on PATH, the value is unchanged (PATH stays clean).
 pub(crate) fn prepend_to_path_env(dir: &std::path::Path) {
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
-    if existing.first().is_some_and(|p| p == dir) {
+    let dir = dir.to_path_buf();
+    prepend_path_dirs_to_env(std::slice::from_ref(&dir));
+}
+
+/// Prepend a complete PATH prefix without reversing its priority. Repeatedly
+/// prepending individual entries would turn `[shim, llvm, cmake]` into
+/// `[cmake, llvm, shim]`, which lets managed clang bypass the MSVC shim.
+pub(crate) fn prepend_path_dirs_to_env(dirs: &[std::path::PathBuf]) {
+    if dirs.is_empty() {
         return;
     }
-    existing.insert(0, dir.to_path_buf());
-    if let Ok(joined) = std::env::join_paths(existing) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut existing: Vec<std::path::PathBuf> = std::env::split_paths(&current).collect();
+    if existing.starts_with(dirs) {
+        return;
+    }
+    let mut combined = Vec::with_capacity(dirs.len() + existing.len());
+    combined.extend_from_slice(dirs);
+    combined.append(&mut existing);
+    if let Ok(joined) = std::env::join_paths(combined) {
         std::env::set_var("PATH", joined);
     }
 }

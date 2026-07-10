@@ -1138,38 +1138,46 @@ fn argvec(s: &str) -> Vec<String> {
     s.split_whitespace().map(String::from).collect()
 }
 
-crate::timed_test!(nextest_archive_darwin_target_detects_archive_only, {
+crate::timed_test!(nextest_archive_blessed_target_detects_archive_only, {
     assert_eq!(
-        nextest_archive_darwin_target(&argvec(
+        nextest_archive_blessed_target(&argvec(
             "nextest archive --target aarch64-apple-darwin --workspace"
         )),
         Some("aarch64-apple-darwin"),
     );
     assert_eq!(
-        nextest_archive_darwin_target(&argvec(
+        nextest_archive_blessed_target(&argvec(
             "--manifest-path Cargo.toml nextest archive --target=x86_64-apple-darwin"
         )),
         Some("x86_64-apple-darwin"),
     );
     assert_eq!(
-        nextest_archive_darwin_target(&argvec(
+        nextest_archive_blessed_target(&argvec(
             "nextest --color always archive --target=x86_64-apple-darwin"
         )),
         Some("x86_64-apple-darwin"),
     );
     assert_eq!(
-        nextest_archive_darwin_target(&argvec("nextest run --archive-file dist/tests.tar.zst")),
+        nextest_archive_blessed_target(&argvec("nextest run --archive-file dist/tests.tar.zst")),
         None,
     );
     assert_eq!(
-        nextest_archive_darwin_target(&argvec("nextest run archive --target x86_64-apple-darwin")),
+        nextest_archive_blessed_target(&argvec("nextest run archive --target x86_64-apple-darwin")),
         None,
     );
     assert_eq!(
-        nextest_archive_darwin_target(&argvec(
+        nextest_archive_blessed_target(&argvec(
             "nextest archive --target x86_64-unknown-linux-musl"
         )),
         None,
+    );
+    assert_eq!(
+        nextest_archive_blessed_target(&argvec("nextest archive --target x86_64-pc-windows-msvc")),
+        Some("x86_64-pc-windows-msvc"),
+    );
+    assert_eq!(
+        nextest_archive_blessed_target(&argvec("nextest archive --target aarch64-pc-windows-msvc")),
+        Some("aarch64-pc-windows-msvc"),
     );
 });
 

@@ -90,23 +90,6 @@ jobs:
       # The deferred setup-soldr/cook subaction runs below after each
       # lane's target-specific zig/xwin/SDK setup and passes the real
       # target/profile shape.
-      # soldr#1340 — pre-cache the 1.94.1 toolchain in ~/.rustup so
-      # setup-soldr uses it (log switches to "Using runner rustup home")
-      # instead of installing to its managed RUSTUP_HOME. Empirically
-      # verified in #1341 / #1342: Setup soldr build cache drops from
-      # ~22 s to ~2 s on cache HIT. Shared cache key across all lanes
-      # + workflows.
-      - name: Cache rustup 1.94.1 in ~/.rustup
-        id: rustup_cache
-        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
-        with:
-          path: ~/.rustup/toolchains/1.94.1-x86_64-unknown-linux-gnu
-          key: rustup-1.94.1-linux-x64-v1
-
-      - name: Install rustup 1.94.1 to ~/.rustup (if not cached)
-        if: steps.rustup_cache.outputs.cache-hit != 'true'
-        run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
-
       - name: Setup soldr build cache (Rust toolchain only)
         uses: zackees/setup-soldr@fcbf681004d0798db6ee2174c38c511b7e70b3d5
         with:
@@ -116,86 +99,14 @@ jobs:
 
       - name: Add cross-compile target
         shell: bash
-        run: rustup target add ${{ inputs.target }}
+        run: soldr rustup target add ${{ inputs.target }}
 
-      # soldr#1260 — the previous "Install apt deps (baseline)" step
-      # installed build-essential + pkg-config + file + jq + xz-utils +
-      # bzip2 + zip + unzip + ca-certificates + curl + git + cmake +
-      # perl + musl-tools on every lane. Every package except musl-tools
-      # is already preinstalled on ubuntu-24.04, so the step was ~13 s
-      # of apt fetch producing zero installed packages on gnu/darwin/
-      # msvc lanes. Musl lanes now install only musl-tools; msvc/darwin
-      # fold `apt-get update` into the clang-stack install; linux-gnu
-      # lanes skip apt entirely.
-      # soldr#1296 — try install-only first; fall back to update+install
-      # if apt cache is stale. ubuntu-24.04 GHA images ship recent apt
-      # metadata, so the fast path almost always works and saves ~5 s
-      # per lane.
-      - name: Install musl-tools
-        if: contains(inputs.target, 'linux-musl')
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get install -y --no-install-recommends musl-tools \
-            || (sudo apt-get update \
-                && sudo apt-get install -y --no-install-recommends musl-tools)
-
-      - name: Install apt deps (clang stack for MSVC/darwin)
-        if: contains(inputs.target, 'pc-windows-msvc') || contains(inputs.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          # soldr#1279 — dropped llvm-dev. It pulled ~150 MB of libLLVM
-          # headers + shared library, but no crate in the dep tree links
-          # against libLLVM (grep -R llvm-sys Cargo.lock is empty).
-          # llvm-ar / llvm-ranlib come from `llvm` alone. libclang-dev
-          # stays because zccache's `clang` crate needs libclang.so at
-          # build time.
-          # soldr#1296 — same install-only fast path as musl-tools above.
-          pkgs="clang lld llvm libclang-dev"
-          sudo apt-get install -y --no-install-recommends $pkgs \
-            || (sudo apt-get update \
-                && sudo apt-get install -y --no-install-recommends $pkgs)
-
-      # zig + cargo-zigbuild — required for musl and aarch64-linux-gnu
-      # cross-builds. Darwin is intentionally EXCLUDED: since soldr#1081
-      # `pick_cross_subcommand` returns None for `*-apple-darwin` (unless
-      # `SOLDR_USE_LEGACY_ZIGBUILD=1` — never set in CI), so `soldr build`
-      # invokes plain `cargo build` with clang + Apple SDK from
-      # blessed_build::prepare. Installing zig here saved 14 s restore +
-      # 9 s post-save = ~23 s of pure waste per darwin lane. See #1262.
-      - name: Setup zig
-        if: contains(inputs.target, 'musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
-        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
-        with:
-          version: 0.15.2
-
-      - name: Install cargo-zigbuild
-        if: contains(inputs.target, 'musl') || (contains(inputs.target, 'linux-gnu') && contains(inputs.target, 'aarch64'))
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
-        with:
-          tool: cargo-zigbuild@0.23.0
-
-      # cargo-xwin — fallback for *-pc-windows-msvc when the managed
-      # xwin-cache is unavailable, and still required for the arm64
-      # lane until its managed cache row is ingested.
-      - name: Install cargo-xwin
-        if: contains(inputs.target, 'pc-windows-msvc')
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
-        with:
-          tool: cargo-xwin@0.18.6
-
-      # nextest — required for the test archive output. soldr#1291 —
-      # matches the archive step's `if:` so MSVC lanes (which skip the
-      # archive) don't install a tool they never invoke. Darwin now
-      # archives through `soldr cargo nextest archive`, which injects
-      # the same blessed Apple SDK + clang/lld env as `soldr build`
-      # (soldr#1432).
-      - name: Install cargo-nextest
-        if: (!contains(inputs.target, 'pc-windows-msvc'))
-        uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
-        with:
-          tool: cargo-nextest
+      # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
+      # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
+      # soldr-toolchain catalogue. Musl/aarch64 GNU dispatch through
+      # soldr's managed zig + cargo-zigbuild bootstrap. cargo-xwin remains
+      # an on-demand soldr-managed fallback, and `soldr cargo nextest`
+      # fetches cargo-nextest when the archive step runs.
 
       # soldr#1172 + soldr#1174 + soldr#1248 — cache the MSVC CRT+SDK
       # directory shared by the blessed `soldr build` path and the
@@ -210,7 +121,7 @@ jobs:
         uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
         with:
           path: ${{ runner.temp }}/setup-soldr-soldr/sdk/${{ inputs.target }}/xwin/2026-06-22
-          key: soldr-xwin-cache-${{ inputs.target }}-cargo-xwin-0.18.6-v2026-06-22
+          key: soldr-xwin-cache-${{ inputs.target }}-v2026-06-22
 
       # soldr#1425 - cache the target-shaped Apple SDK v14.5 fetched by
       # blessed_build::prepare on darwin targets. Cache path + key both
@@ -265,8 +176,8 @@ jobs:
       # uses it to drive `soldr build --target X` (the blessed
       # cross-compile surface). The version that setup-soldr installs
       # (~v0.7.42 today) predates both subcommands so we need a fresh
-      # binary from main HEAD. Bare cargo build to avoid a chicken-
-      # and-egg with the wrapper.
+      # binary from main HEAD. The setup-soldr binary drives this bootstrap
+      # with caching disabled; no bare Rust toolchain commands are used.
       # soldr#1162 — cache the host-side bootstrap soldr.
       # Same story as #1160 / #1161 for baseline-zero-deps: three CI lanes
       # (apple-darwin x2 + windows-msvc x1) rebuild the identical host binaries
@@ -295,11 +206,8 @@ jobs:
         if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name == '' && steps.bootstrap_cache.outputs.cache-hit != 'true'
         shell: bash
         env:
-          # soldr#1274 reverts soldr#1270: routing bootstrap through
-          # zccache 1.11.6 added ~35 s/lane of per-invocation overhead
-          # AND still reported 0 hits (the 0-hit residual — soldr#400
-          # — is real and bites here). Back to bare rustc until zccache
-          # actually delivers hits on this call pattern.
+          # Keep the throwaway bootstrap uncached while still routing the
+          # Rust toolchain through soldr.
           RUSTC_WRAPPER: ""
         run: |
           set -euo pipefail
@@ -308,7 +216,7 @@ jobs:
           # binary keeps profile.release; this only affects the bootstrap
           # binary that lives inside the same lane and is deleted at
           # post-step cleanup.
-          cargo build --profile ci-bootstrap --locked --package soldr-cli \
+          soldr --no-cache cargo build --profile ci-bootstrap --locked --package soldr-cli \
             --bin soldr \
             --target x86_64-unknown-linux-gnu
           mkdir -p "$RUNNER_TEMP/soldr-bin"
@@ -366,9 +274,8 @@ jobs:
           set -euo pipefail
           soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"
 
-      # MSVC skips nextest archives and builds the release binary with the
-      # ci-release profile. Other lanes use ci-nextest so the archive step
-      # reuses the same target profile instead of compiling a debug tree.
+      # Every target-run lane builds with ci-nextest so the archive step
+      # reuses the same target profile instead of compiling a second tree.
       # soldr#1248: linux zigbuild lanes repeatedly spend several minutes in
       # cook restore for later builds that are already ~4 min from rust-cache.
       # soldr#1248: x64 MSVC and Darwin now build quickly from
@@ -381,7 +288,7 @@ jobs:
         with:
           cache: ${{ (inputs.target == 'x86_64-pc-windows-msvc' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
           target-dir: target
-          flags: --profile ${{ contains(inputs.target, 'pc-windows-msvc') && 'ci-release' || 'ci-nextest' }} --target ${{ inputs.target }} --workspace
+          flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
 
       - name: Clean cooked first-party stubs
         shell: bash
@@ -389,9 +296,6 @@ jobs:
           set -euo pipefail
           target='${{ inputs.target }}'
           profile="ci-nextest"
-          if [[ "$target" == *-pc-windows-msvc ]]; then
-            profile="ci-release"
-          fi
           git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
           soldr cargo clean -p soldr-cli --target "$target" --profile "$profile" 2>/dev/null || true
 
@@ -428,26 +332,19 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
-          ci_profile="ci-release"
-          if [[ "$target" != *-pc-windows-msvc ]]; then
-            ci_profile="ci-nextest"
-          fi
-          # soldr#1357 — --profile ci-release drops LTO + codegen-units=1
-          # from CI-only cross-build artifacts (soldr-ci-e2e-*), saving
-          # 1-2 min per MSVC/darwin lane. Shipped release-soldr-* /
-          # pypi-soldr-* artifacts in release-auto.yml stay on --release.
-          # soldr#1248 — lanes that also build nextest archives use
-          # ci-nextest so Stage C reuses this same target profile.
+          ci_profile="ci-nextest"
+          # soldr#1248/#1524 — every target-run lane consumes a nextest
+          # archive, so Stage C reuses this same target profile.
           if [[ "$target" == *-pc-windows-msvc ]] \
              || [[ "$target" == *-apple-darwin ]]; then
             soldr build --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-unknown-linux-musl ]] \
                || [[ "$target" == aarch64-unknown-linux-gnu ]]; then
-            cargo zigbuild --profile "$ci_profile" --target "$target" \
+            soldr cargo zigbuild --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           else
-            cargo build --profile "$ci_profile" --target "$target" \
+            soldr cargo build --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           fi
           suffix=""
@@ -456,16 +353,10 @@ jobs:
           file "target/$target/$ci_profile/soldr$suffix"
 
       # Stage C — test binary archive (consumed by _ci-target-run.yml).
-      # Skipped for windows-msvc: `cargo nextest archive` doesn't go
-      # through `cargo xwin`, so it can't find MSVC `lib.exe` on linux.
-      # Tracked under #1068. Darwin archives route through
-      # `soldr cargo nextest archive --target *-apple-darwin` because it
-      # now injects the blessed Apple SDK + clang/lld env from `soldr build`
-      # (soldr#1432). The zigbuild-driven linux cross targets keep the
-      # existing workflow-installed `cargo nextest` path so their
-      # CARGO_TARGET_*_LINKER zig wrappers remain in charge.
+      # Every archive routes through soldr. Darwin and Windows MSVC inherit
+      # the blessed SDK + clang/lld env; Linux targets retain their
+      # CARGO_TARGET_*_LINKER wrappers through the cargo front door.
       - name: Build nextest archive
-        if: (!contains(inputs.target, 'pc-windows-msvc'))
         shell: bash
         env:
           # `soldr cargo nextest archive` does not treat nextest's
@@ -500,12 +391,7 @@ jobs:
           # 1.034 GB with 63 binaries; the four binary(...) excludes
           # below are already skipped at target-run time so archiving
           # them was pure wasted upload + download bytes.
-          if [[ "$target" == *-apple-darwin ]]; then
-            nextest_cmd=(soldr cargo nextest archive)
-          else
-            nextest_cmd=(cargo nextest archive)
-          fi
-          "${nextest_cmd[@]}" \
+          soldr cargo nextest archive \
             --cargo-profile "$ci_profile" \
             --target "$target" \
             --workspace \
@@ -520,10 +406,7 @@ jobs:
         run: |
           set -euo pipefail
           target='${{ inputs.target }}'
-          ci_profile="ci-release"
-          if [[ "$target" != *-pc-windows-msvc ]]; then
-            ci_profile="ci-nextest"
-          fi
+          ci_profile="ci-nextest"
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
           mkdir -p dist/package
