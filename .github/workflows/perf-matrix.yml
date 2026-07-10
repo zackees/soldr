@@ -467,6 +467,7 @@ jobs:
           set -o pipefail
 
           out_root="${RUNNER_TEMP}/perf-${M_PLATFORM}-${M_FIXTURE}"
+          rm -rf "${out_root}"
           mkdir -p "${out_root}"
           echo "out_root=${out_root}" >> "$GITHUB_OUTPUT"
 
@@ -510,6 +511,7 @@ jobs:
           name: perf-results-${{ matrix.platform }}-${{ matrix.fixture }}
           path: |
             ${{ steps.run.outputs.out_root }}/*/result.json
+            ${{ steps.run.outputs.out_root }}/*/cargo-*.jsonl
             ${{ steps.run.outputs.out_root }}/*/*-shutdown.json
             ${{ steps.run.outputs.out_root }}/*/rss-*.csv
             ${{ steps.run.outputs.out_root }}/*/warm-cache-report.json

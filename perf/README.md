@@ -39,10 +39,21 @@ single JSON line plus a markdown row to `$GITHUB_STEP_SUMMARY`:
 2. **Memory** comes from a bash sidecar that polls
    `ps -o pid,rss,vsz,comm` once per second into a CSV filtered to
    `zccache-daemon|rustc|cargo`. Peak and p95 RSS are computed
-   post-hoc from the CSV.
+   post-hoc from the CSV. The poller also includes `soldr-daemon`, and results
+   expose aggregate process-tree RSS so child and daemon memory are not split.
 3. **Disk footprint** is `du -sb $SOLDR_CACHE_DIR/cache/zccache` plus
    the size of any intermediate tarball.
 4. **Wall time** is wrapped around each build step.
+
+Timed builds run `--locked --offline`; an untimed metadata pass acquires
+dependencies first. The touch lane preserves `target/`, prunes `target/` and
+`.git/` from its mutation walk, records Cargo JSON Fresh/Dirty units, and fails
+unless exactly one first-party unit becomes Dirty. It keeps three raw warm
+samples and reports their median and median absolute deviation.
+The reported compiler-invocation count is the number of Dirty
+`compiler-artifact` messages, a Cargo-JSON proxy rather than a wrapper process
+counter. Aggregate RSS is job-wide across matching process names; it is causal
+on isolated CI workers but can be contaminated on a shared local Docker host.
 
 The raw CSV and JSON payloads are uploaded as
 `perf-results-<platform>-<fixture>-<scenario>` artifacts so you can

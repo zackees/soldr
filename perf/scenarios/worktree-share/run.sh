@@ -27,6 +27,7 @@ RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
 WORKTREE_B="${WORKDIR}/medium-worktree-b"
 
 mkdir -p "${CACHE}"
+measure::prefetch_locked "${FIXTURE_DIR}"
 
 # soldr's path-remap (#352) prefers a real `.git/` checkout for root
 # discovery (since zccache#353 a no-git checkout falls back to the cwd
@@ -50,7 +51,7 @@ trap 'measure::stop_rss_poller' EXIT
 a_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release
+    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release --locked --offline
 )
 a_elapsed_ms="$(measure::elapsed_ms "${a_start_ms}")"
 
@@ -67,7 +68,7 @@ cache_after_a_bytes="$(measure::cache_bytes "${CACHE}")"
 b_start_ms="$(measure::now_ms)"
 (
     cd "${WORKTREE_B}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release
+    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release --locked --offline
 )
 b_elapsed_ms="$(measure::elapsed_ms "${b_start_ms}")"
 

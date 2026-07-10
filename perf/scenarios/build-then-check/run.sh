@@ -37,6 +37,7 @@ CACHE="${WORKDIR}/cache-build-then-check"
 RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
 
 mkdir -p "${CACHE}"
+measure::prefetch_locked "${FIXTURE_DIR}"
 
 measure::start_rss_poller "${RSS_CSV}"
 trap 'measure::stop_rss_poller' EXIT
@@ -46,42 +47,22 @@ trap 'measure::stop_rss_poller' EXIT
 cold_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release
+    SOLDR_CACHE_DIR="${CACHE}" soldr cargo build --release --locked --offline
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
-# Cargo's check fingerprint can short-circuit when it judges build's
-# rmeta as fresh-enough — observed on Linux GHA, NOT on Windows MSVC.
-# A short-circuit means zero rustc invocations and zero zccache hits or
-# misses, which collapses this scenario to "MISSING stats" in the
-# evaluate gate.
-#
-# Advance every source-file mtime (same trick as touch-no-change) so
-# cargo's fingerprint check fails uniformly across platforms and cargo
-# is forced to ask rustc for every unit. Content is unchanged, so this
-# is still an apples-to-apples zccache test: either zccache canonical-
-# izes the cross-verb cache key (the eventual fix) and returns hits, or
-# it recompiles (status quo). Either way the (hits, misses) pair is
-# populated and the gate has a number to compare.
-#
-# One `find` walk with alternation, not three (soldr#1154). Also
-# skipped the `soldr cache flush` here — the daemon stays alive for
-# the next cargo check in the same session, so its in-memory depgraph
-# serves that request directly; on-disk durability isn't needed.
-find "${FIXTURE_DIR}" \
-    \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) \
-    -exec touch {} +
+# Cargo is authoritative here. A zero-unit check is a meaningful Fresh result,
+# not a reason to mutate source or generated files and manufacture work.
 
 # --- Cross-verb check pass -----------------------------------------
-# Source mtimes advanced; content identical. cargo refingerprints and
-# re-invokes rustc with `--emit=metadata` per unit. Each hop reaches
-# zccache; this measures whether the cross-verb cache key is canonical-
-# ized (the eventual fix) or split (status quo).
+# The JSON log records Cargo's exact natural Fresh/Dirty unit set.
 
 warm_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE}" soldr cargo check --release
+    SOLDR_CACHE_DIR="${CACHE}" soldr cargo check --release \
+        --locked --offline --message-format=json \
+        >"${WORKDIR}/cargo-warm-1.jsonl"
 )
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 

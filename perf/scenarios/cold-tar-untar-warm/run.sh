@@ -34,6 +34,7 @@ RSS_CSV="${WORKDIR}/rss-${SCENARIO}.csv"
 echo "scenario: using soldr cache save/load (round 2a)" >&2
 
 mkdir -p "${CACHE_COLD}" "${CACHE_WARM}"
+measure::prefetch_locked "${FIXTURE_DIR}"
 
 measure::start_rss_poller "${RSS_CSV}"
 trap 'measure::stop_rss_poller' EXIT
@@ -43,7 +44,7 @@ trap 'measure::stop_rss_poller' EXIT
 cold_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cargo build --release
+    SOLDR_CACHE_DIR="${CACHE_COLD}" soldr cargo build --release --locked --offline
 )
 cold_elapsed_ms="$(measure::elapsed_ms "${cold_start_ms}")"
 
@@ -101,7 +102,7 @@ soldr load \
 warm_start_ms="$(measure::now_ms)"
 (
     cd "${FIXTURE_DIR}"
-    SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cargo build --release
+    SOLDR_CACHE_DIR="${CACHE_WARM}" soldr cargo build --release --locked --offline
 )
 warm_elapsed_ms="$(measure::elapsed_ms "${warm_start_ms}")"
 
