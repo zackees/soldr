@@ -1,0 +1,36 @@
+[package]
+name = "soldr-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "soldr daemon runtime: lifecycle, IPC server, v2 broker adoption, embedded zccache service"
+publish = false
+
+[dependencies]
+soldr-core = { path = "../soldr-core" }
+soldr-cache = { path = "../soldr-cache" }
+
+fs2 = { workspace = true }
+hex = { workspace = true }
+prost = { workspace = true }
+redb = { workspace = true }
+running-process = { version = "4.5.10", default-features = false, features = ["client"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
+
+# Unix-only PID-liveness probe (kill(pid, 0)) and detached spawn
+# (setsid); Windows uses inline OpenProcess declarations.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[lints]
+workspace = true

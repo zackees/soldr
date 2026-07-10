@@ -2788,6 +2788,7 @@ dependencies = [
  "sha2",
  "soldr-cache",
  "soldr-core",
+ "soldr-daemon",
  "soldr-fetch",
  "strsim",
  "tar",
@@ -2819,6 +2820,28 @@ dependencies = [
  "toml",
  "url",
  "wait-timeout",
+]
+
+[[package]]
+name = "soldr-daemon"
+version = "0.8.5"
+dependencies = [
+ "fs2",
+ "hex",
+ "libc",
+ "prost",
+ "redb",
+ "running-process",
+ "serde",
+ "serde_json",
+ "sha2",
+ "soldr-cache",
+ "soldr-core",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "zccache",
 ]
 
 [[package]]

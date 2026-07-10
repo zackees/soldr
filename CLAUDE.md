@@ -59,7 +59,7 @@ uv run maturin build --release         # Build wheel
 
 ## Architecture
 
-**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): `crates/soldr-core` is extracted; fetch/cache/daemon splits follow phase by phase. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `tests/timed_test_lint.rs` walks every workspace crate under `crates/`.
+**Internal workspace split (#1490).** The 2026-05 monocrate collapse is being reversed into `publish = false` internal crates (the zccache pattern, no amalgamation): all five phases have landed: `soldr-core`, `soldr-fetch`, `soldr-cache`, and `soldr-daemon` are extracted, with `soldr-cli` as the facade + `[[bin]]` crate. soldr publishes no crates, so workspace membership has no external surface — the old `monocrate_guard.rs` test was deleted with the split. `tests/timed_test_lint.rs` walks every workspace crate under `crates/`.
 
 - **`crates/soldr-core`** — foundation crate: shared types, config (`~/.soldr/config.toml`), target triple resolution (MSVC default on Windows at runtime), error types, the daemon wire schema (`core::wire`), Windows Defender exclusion plumbing (`defender`), `self_relocate`, and the `timed_test!` watchdog. No I/O beyond config files. soldr-cli re-exports all of it at the old paths (`soldr_cli::core`, `soldr_cli::defender`, …), so consumers are unchanged.
 - **`crates/soldr-fetch`** — Binary resolution (re-exported as `soldr_cli::fetch`; `build.rs` + `embed/` live with it since `OUT_DIR` is per-crate). Ships several sub-modules:
@@ -68,11 +68,12 @@ uv run maturin build --release         # Build wheel
   - `install_zccache` / `rustup_init` — pinned zccache install flow + rustup auto-bootstrap.
   - Resolution chain: local cache → registry-or-crates.io repo lookup → GitHub Releases asset download → extract.
 - **`crates/soldr-cache`** — `RUSTC_WRAPPER` logic (re-exported as `soldr_cli::cache_lib`): hash inputs (blake3), check `~/.soldr/cache/`, daemon IPC (Unix socket / Windows named pipe), LRU eviction, plus the `soldr save` / `soldr load` archive transport and the auto-GC orchestrator. The `[cook]` eviction pass lives in `cache_lib::cook_gc` (issue #589) and is kicked from `gc/auto.rs` on the same throttle as the disk-pressure tiers.
+- **`crates/soldr-daemon`** — daemon runtime (re-exported as `soldr_cli::daemon` / `soldr_cli::zccache_embedded`): lifecycle (spawn/displacement/relocation), IPC server, wire codec, running-process v2 broker adoption, and the embedded zccache service the daemon hosts. Depends on soldr-core + soldr-cache.
 - **`src/soldr_main.rs` + sibling cli modules** — Mode detection in `run()` (the `src/main.rs` binary is a 3-line shim calling `soldr_cli::run()` since #1490 Phase 1), clap for built-ins, exec for tool fetch. The cargo front door (`soldr cargo ...`) inspects the first positional arg; if it matches a `known_tools` `cargo_subcommand`, the corresponding `cargo-<sub>` binary is fetched and prepended to `PATH` before cargo runs.
 
 `src/lib.rs` declares every module exactly once (#1490 Phase 1 removed the historical lib/bin double-declaration, which compiled ~40K LOC twice per build). The CLI entry logic lives in `src/soldr_main.rs`, glob-re-exported at the crate root so `crate::<item>` paths inside the tree resolve unchanged; integration tests keep their `use soldr_cli::core::*`-style imports.
 
-Dependency flow: every module reaches into `crate::core::*` for shared types (resolved through the soldr-core re-export); `fetch` and `cache_lib` each consume `core`; the cli-side modules consume all three.
+Dependency flow: every module reaches into `crate::core::*` for shared types (resolved through the soldr-core re-export); `fetch` and `cache_lib` each consume `core`; `daemon` consumes `core` + `cache_lib`; the cli-side modules consume all four.
 
 Python package (`src/soldr/`) wraps the CLI binary via Maturin as `soldr._native`.
 
