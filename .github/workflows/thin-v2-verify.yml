@@ -34,17 +34,25 @@ on:
       - "crates/soldr-cli/src/main.rs"
       - "crates/soldr-cli/src/cache_lib/**"
       - "crates/soldr-cli/src/rust_plan.rs"
+      - "_vender/zccache"
       - ".github/scripts/assert_thin_noop.py"
       - ".github/scripts/assert_thin_manifest.py"
       - ".github/workflows/thin-v2-verify.yml"
+      - "tests/test_assert_thin_noop.py"
+      - "tests/test_assert_thin_manifest.py"
+      - "tests/test_thin_v2_verify_workflow.py"
   pull_request:
     paths:
       - "crates/soldr-cli/src/main.rs"
       - "crates/soldr-cli/src/cache_lib/**"
       - "crates/soldr-cli/src/rust_plan.rs"
+      - "_vender/zccache"
       - ".github/scripts/assert_thin_noop.py"
       - ".github/scripts/assert_thin_manifest.py"
       - ".github/workflows/thin-v2-verify.yml"
+      - "tests/test_assert_thin_noop.py"
+      - "tests/test_assert_thin_manifest.py"
+      - "tests/test_thin_v2_verify_workflow.py"
 
 permissions:
   contents: read
