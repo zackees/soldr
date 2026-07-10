@@ -5,8 +5,9 @@
 use crate::rust_plan::{
     compute_plan_inputs_hash, current_unix_seconds, evaluate_warm_restore_skip,
     should_skip_warm_restore, warm_restore_sentinel_path, warm_restore_skip_enabled,
-    write_warm_restore_sentinel, RustArtifactPlan, RustArtifactPlanContext, RustPlanInputs,
-    RustPlanPackages, RustToolchainIdentity, WarmRestoreSentinel, WarmRestoreSkipInputs,
+    warm_restore_target_marker_path, write_warm_restore_sentinel, RustArtifactPlan,
+    RustArtifactPlanContext, RustPlanInputs, RustPlanPackages, RustToolchainIdentity,
+    WarmRestoreSentinel, WarmRestoreSkipInputs, WarmRestoreTargetMarker,
 };
 use crate::{SKIP_WARM_RESTORE_ENV_VAR, WARM_RESTORE_MAX_AGE_SECONDS};
 use std::ffi::{OsStr, OsString};
@@ -89,7 +90,8 @@ fn warm_restore_test_plan() -> RustArtifactPlan {
 
 fn warm_restore_test_sentinel(plan: &RustArtifactPlan) -> WarmRestoreSentinel {
     WarmRestoreSentinel {
-        schema_version: 1,
+        schema_version: 2,
+        target_generation: "generation-1".to_string(),
         plan_inputs_hash: compute_plan_inputs_hash(plan),
         target_dir: plan.target_dir.clone(),
         github_run_id: "111".to_string(),
@@ -348,7 +350,7 @@ fn warm_restore_test_context(
         backend: "fs".to_string(),
         cache_profile: Some("thin-v1"),
         plan_inputs_hash: compute_plan_inputs_hash(plan),
-        target_dir: plan.target_dir.clone(),
+        target_dir: root.join("target").display().to_string(),
     }
 }
 
@@ -367,6 +369,7 @@ fn write_warm_restore_sentinel_emits_matching_json_when_enabled() {
     let tempdir = TempDir::new().expect("create tempdir");
     let plan = warm_restore_test_plan();
     let ctx = warm_restore_test_context(&plan, &tempdir);
+    std::fs::create_dir_all(&ctx.target_dir).expect("create target dir");
 
     write_warm_restore_sentinel(&ctx);
 
@@ -376,13 +379,22 @@ fn write_warm_restore_sentinel_emits_matching_json_when_enabled() {
     let sentinel: WarmRestoreSentinel =
         serde_json::from_str(&raw).expect("sentinel JSON should parse");
 
-    assert_eq!(sentinel.schema_version, 1);
+    assert_eq!(sentinel.schema_version, 2);
+    assert!(!sentinel.target_generation.is_empty());
     assert_eq!(sentinel.plan_inputs_hash, ctx.plan_inputs_hash);
     assert_eq!(sentinel.target_dir, ctx.target_dir);
     assert_eq!(sentinel.github_run_id, "run-42");
     assert_eq!(sentinel.github_job, "test-job");
     assert_eq!(sentinel.github_run_attempt, "3");
     assert_eq!(sentinel.session_id, ctx.session_id);
+
+    let marker_raw = std::fs::read_to_string(warm_restore_target_marker_path(&ctx))
+        .expect("target marker should exist after write");
+    let marker: WarmRestoreTargetMarker =
+        serde_json::from_str(&marker_raw).expect("target marker JSON should parse");
+    assert_eq!(marker.schema_version, 1);
+    assert_eq!(marker.target_generation, sentinel.target_generation);
+    assert_eq!(marker.plan_inputs_hash, ctx.plan_inputs_hash);
 }
 
 /// When the gating env var is explicitly opted out (falsy value), the
@@ -422,24 +434,8 @@ fn should_skip_warm_restore_returns_some_on_full_match() {
     let tempdir = TempDir::new().expect("create tempdir");
     let plan = warm_restore_test_plan();
     let ctx = warm_restore_test_context(&plan, &tempdir);
-    let sentinel_path = warm_restore_sentinel_path(&ctx);
-    std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
-        .expect("create sentinel parent");
-    let sentinel = WarmRestoreSentinel {
-        schema_version: 1,
-        plan_inputs_hash: ctx.plan_inputs_hash.clone(),
-        target_dir: ctx.target_dir.clone(),
-        github_run_id: "run-7".to_string(),
-        github_job: "build".to_string(),
-        github_run_attempt: "1".to_string(),
-        session_id: "session-prev".to_string(),
-        saved_at_unix_seconds: current_unix_seconds(),
-    };
-    std::fs::write(
-        &sentinel_path,
-        serde_json::to_string(&sentinel).expect("serialize sentinel"),
-    )
-    .expect("write sentinel");
+    std::fs::create_dir_all(&ctx.target_dir).expect("create target dir");
+    write_warm_restore_sentinel(&ctx);
 
     let result = should_skip_warm_restore(&ctx);
     let reason = result.expect("expected Some(reason) on full match");
@@ -467,7 +463,8 @@ fn should_skip_warm_restore_returns_none_on_hash_mismatch() {
     std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
         .expect("create sentinel parent");
     let sentinel = WarmRestoreSentinel {
-        schema_version: 1,
+        schema_version: 2,
+        target_generation: "generation-stale-hash".to_string(),
         plan_inputs_hash: "stale-hash-from-previous-step".to_string(),
         target_dir: ctx.target_dir.clone(),
         github_run_id: "run-7".to_string(),
@@ -522,7 +519,8 @@ fn should_skip_warm_restore_returns_none_when_disabled_even_with_match() {
     std::fs::create_dir_all(sentinel_path.parent().expect("sentinel has parent dir"))
         .expect("create sentinel parent");
     let sentinel = WarmRestoreSentinel {
-        schema_version: 1,
+        schema_version: 2,
+        target_generation: "generation-disabled".to_string(),
         plan_inputs_hash: ctx.plan_inputs_hash.clone(),
         target_dir: ctx.target_dir.clone(),
         github_run_id: "run-7".to_string(),
@@ -569,3 +567,87 @@ fn warm_restore_skip_enabled_respects_explicit_falsy() {
         );
     }
 }
+
+crate::timed_test!(warm_restore_skip_rejects_target_deleted_after_save, {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+    let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-delete");
+    let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+    let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+    let tempdir = TempDir::new().expect("create tempdir");
+    let target_dir = tempdir.path().join("target");
+    std::fs::create_dir_all(&target_dir).expect("create target dir");
+    std::fs::write(target_dir.join("artifact.rlib"), b"artifact").expect("seed target artifact");
+
+    let plan = warm_restore_test_plan();
+    let ctx = warm_restore_test_context(&plan, &tempdir);
+    write_warm_restore_sentinel(&ctx);
+    assert!(
+        should_skip_warm_restore(&ctx).is_some(),
+        "an untouched target generation should skip restore"
+    );
+
+    std::fs::remove_dir_all(&target_dir).expect("simulate cargo clean");
+    assert!(
+        should_skip_warm_restore(&ctx).is_none(),
+        "deleting target/ after save must invalidate the warm-restore skip"
+    );
+});
+
+crate::timed_test!(warm_restore_skip_rejects_invalid_target_markers, {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _skip = EnvVarGuard::set(SKIP_WARM_RESTORE_ENV_VAR, "1");
+    let _run = EnvVarGuard::set("GITHUB_RUN_ID", "run-markers");
+    let _job = EnvVarGuard::set("GITHUB_JOB", "build");
+    let _attempt = EnvVarGuard::set("GITHUB_RUN_ATTEMPT", "1");
+
+    let tempdir = TempDir::new().expect("create tempdir");
+    let plan = warm_restore_test_plan();
+    let ctx = warm_restore_test_context(&plan, &tempdir);
+    std::fs::create_dir_all(&ctx.target_dir).expect("create target dir");
+    write_warm_restore_sentinel(&ctx);
+    assert!(should_skip_warm_restore(&ctx).is_some());
+
+    let marker_path = warm_restore_target_marker_path(&ctx);
+    let valid_marker = std::fs::read_to_string(&marker_path).expect("read valid marker");
+
+    std::fs::remove_file(&marker_path).expect("remove marker");
+    assert!(
+        should_skip_warm_restore(&ctx).is_none(),
+        "missing marker must force restore"
+    );
+
+    std::fs::write(&marker_path, "{\"schema_version\":").expect("write partial marker");
+    assert!(
+        should_skip_warm_restore(&ctx).is_none(),
+        "partially written marker must force restore"
+    );
+
+    let mut stale_marker: WarmRestoreTargetMarker =
+        serde_json::from_str(&valid_marker).expect("parse valid marker");
+    stale_marker.target_generation = "older-generation".to_string();
+    std::fs::write(
+        &marker_path,
+        serde_json::to_string(&stale_marker).expect("serialize stale marker"),
+    )
+    .expect("write stale marker");
+    assert!(
+        should_skip_warm_restore(&ctx).is_none(),
+        "stale generation marker must force restore"
+    );
+
+    stale_marker.target_generation = serde_json::from_str::<WarmRestoreTargetMarker>(&valid_marker)
+        .expect("parse valid marker again")
+        .target_generation;
+    stale_marker.plan_inputs_hash = "different-plan".to_string();
+    std::fs::write(
+        &marker_path,
+        serde_json::to_string(&stale_marker).expect("serialize mismatched marker"),
+    )
+    .expect("write mismatched marker");
+    assert!(
+        should_skip_warm_restore(&ctx).is_none(),
+        "plan-mismatched marker must force restore"
+    );
+});

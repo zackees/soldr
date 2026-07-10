@@ -17,6 +17,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{compute_plan_inputs_hash, RustArtifactPlanContext};
 
+/// Target-resident half of the warm-restore proof. `cargo clean` and whole
+/// target-directory replacement delete this naturally, invalidating the
+/// cache-resident sentinel without walking the target tree.
+pub(crate) const WARM_RESTORE_TARGET_MARKER_FILENAME: &str = ".soldr-warm-restore.json";
+
 /// Sentinel written by `soldr cargo ...` after a successful `rust-plan save`.
 /// Read on the next invocation by [`should_skip_warm_restore`] to decide
 /// whether the matching `restore` would be a no-op-but-touches-mtimes
@@ -29,6 +34,10 @@ pub(crate) struct WarmRestoreSentinel {
     /// Format version; bump if any field semantics change so older sentinels
     /// are treated as stale.
     pub(crate) schema_version: u32,
+    /// Unique id shared with the target-resident marker written by the same
+    /// successful save. A cache sentinel alone is not proof that `target/`
+    /// still contains that generation.
+    pub(crate) target_generation: String,
     /// Hash from [`compute_plan_inputs_hash`]. Must match the current plan.
     pub(crate) plan_inputs_hash: String,
     /// Absolute target dir the previous save wrote into. Must match the
@@ -52,9 +61,22 @@ pub(crate) struct WarmRestoreSentinel {
     pub(crate) saved_at_unix_seconds: u64,
 }
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub(crate) struct WarmRestoreTargetMarker {
+    pub(crate) schema_version: u32,
+    pub(crate) target_generation: String,
+    pub(crate) plan_inputs_hash: String,
+}
+
 /// Returns the path of the warm-restore sentinel for this plan's bundle dir.
 pub(crate) fn warm_restore_sentinel_path(plan: &RustArtifactPlanContext) -> std::path::PathBuf {
     plan.cache_dir.join(WARM_RESTORE_SENTINEL_FILENAME)
+}
+
+pub(crate) fn warm_restore_target_marker_path(
+    plan: &RustArtifactPlanContext,
+) -> std::path::PathBuf {
+    std::path::Path::new(&plan.target_dir).join(WARM_RESTORE_TARGET_MARKER_FILENAME)
 }
 
 /// Returns whether the warm-restore short-circuit is enabled for this
@@ -129,7 +151,7 @@ pub(crate) fn evaluate_warm_restore_skip(
     inputs: &WarmRestoreSkipInputs<'_>,
 ) -> Option<String> {
     let sentinel = sentinel?;
-    if sentinel.schema_version != 1 {
+    if sentinel.schema_version != 2 || sentinel.target_generation.is_empty() {
         return None;
     }
     if sentinel.plan_inputs_hash != inputs.plan_inputs_hash {
@@ -190,7 +212,18 @@ pub(crate) fn should_skip_warm_restore(plan: &RustArtifactPlanContext) -> Option
         now_unix_seconds: current_unix_seconds(),
         max_age_seconds: WARM_RESTORE_MAX_AGE_SECONDS,
     };
-    evaluate_warm_restore_skip(Some(&sentinel), &inputs)
+    let reason = evaluate_warm_restore_skip(Some(&sentinel), &inputs)?;
+
+    let marker_raw = std::fs::read_to_string(warm_restore_target_marker_path(plan)).ok()?;
+    let marker: WarmRestoreTargetMarker = serde_json::from_str(&marker_raw).ok()?;
+    if marker.schema_version != 1
+        || marker.target_generation != sentinel.target_generation
+        || marker.plan_inputs_hash != plan.plan_inputs_hash
+    {
+        return None;
+    }
+
+    Some(reason)
 }
 
 /// Persist the warm-restore sentinel after a successful `rust-plan save`.
@@ -201,8 +234,18 @@ pub(crate) fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
     if !warm_restore_skip_enabled() {
         return;
     }
+    let generation_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let target_generation = format!(
+        "{generation_nanos:x}-{}-{}",
+        std::process::id(),
+        plan.session_id
+    );
     let sentinel = WarmRestoreSentinel {
-        schema_version: 1,
+        schema_version: 2,
+        target_generation: target_generation.clone(),
         plan_inputs_hash: plan.plan_inputs_hash.clone(),
         target_dir: plan.target_dir.clone(),
         github_run_id: env_string_or_empty("GITHUB_RUN_ID"),
@@ -211,14 +254,35 @@ pub(crate) fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
         session_id: plan.session_id.clone(),
         saved_at_unix_seconds: current_unix_seconds(),
     };
+    let target_marker = WarmRestoreTargetMarker {
+        schema_version: 1,
+        target_generation,
+        plan_inputs_hash: plan.plan_inputs_hash.clone(),
+    };
     let sentinel_path = warm_restore_sentinel_path(plan);
-    let json = match serde_json::to_string_pretty(&sentinel) {
+    let sentinel_json = match serde_json::to_string_pretty(&sentinel) {
         Ok(json) => json,
         Err(e) => {
             eprintln!("soldr warning: failed to serialize warm-restore sentinel: {e}");
             return;
         }
     };
+    let target_marker_json = match serde_json::to_string_pretty(&target_marker) {
+        Ok(json) => json,
+        Err(e) => {
+            eprintln!("soldr warning: failed to serialize warm-restore target marker: {e}");
+            return;
+        }
+    };
+    let target_marker_path = warm_restore_target_marker_path(plan);
+    if let Err(e) = std::fs::write(&target_marker_path, target_marker_json) {
+        let _ = std::fs::remove_file(&sentinel_path);
+        eprintln!(
+            "soldr warning: failed to write warm-restore target marker at {}: {e}",
+            target_marker_path.display()
+        );
+        return;
+    }
     if let Some(parent) = sentinel_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!(
@@ -228,7 +292,7 @@ pub(crate) fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
             return;
         }
     }
-    if let Err(e) = std::fs::write(&sentinel_path, json) {
+    if let Err(e) = std::fs::write(&sentinel_path, sentinel_json) {
         eprintln!(
             "soldr warning: failed to write warm-restore sentinel at {}: {e}",
             sentinel_path.display()

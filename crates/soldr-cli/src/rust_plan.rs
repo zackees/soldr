@@ -240,8 +240,9 @@ pub(crate) fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
 mod warm_restore;
 pub(crate) use warm_restore::{
     current_unix_seconds, evaluate_warm_restore_skip, should_skip_warm_restore,
-    warm_restore_sentinel_path, warm_restore_skip_enabled, write_warm_restore_sentinel,
-    WarmRestoreSentinel, WarmRestoreSkipInputs,
+    warm_restore_sentinel_path, warm_restore_skip_enabled, warm_restore_target_marker_path,
+    write_warm_restore_sentinel, WarmRestoreSentinel, WarmRestoreSkipInputs,
+    WarmRestoreTargetMarker,
 };
 
 /// Walk `deps_dir` shallowly and delete every `.rmeta` file whose filename

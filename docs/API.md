@@ -1416,6 +1416,14 @@ On Windows, soldr may copy the running `soldr.exe` into `SOLDR_CACHE_DIR/runtime
 
 `SOLDR_RUST_PLAN_SKIP_WARM_RESTORE` is a default-on short-circuit for the `rust-plan restore` step. After a successful `rust-plan save`, soldr writes a sentinel next to the thin-slice bundle recording the plan inputs hash, target dir, `GITHUB_RUN_ID`, `GITHUB_JOB`, `GITHUB_RUN_ATTEMPT`, zccache session id, and a unix timestamp. On the next invocation, if the sentinel exists and every match field equals the current value — and the sentinel is no older than 5 minutes — soldr skips `rust-plan restore` and leaves the already-warm `target/` tree untouched. This avoids invalidating Cargo's mtime-based fingerprints when split CI steps share a checkout but spawn fresh shells per step (issue #229). The flag is enabled when unset; set it to a falsy value (`0`, `false`, `no`, `off`, or empty, case-insensitive) to opt out, and any other value (including the historical truthy spellings `1`, `true`, `yes`, `on`) keeps the short-circuit enabled. The gate is conservative: a missing, stale, or partially-mismatched sentinel falls through to the normal restore, so the short-circuit can never make a build less correct than the default path. Promoted to default-on after the #229 CI validation runs (PRs #247, #257, #260, #261, #262) landed cleanly on `main`.
 
+As of issue #1529, the cache-resident sentinel is only half of the proof. A
+successful save also writes a paired `.soldr-warm-restore.json` generation
+marker inside the live target directory. The next invocation skips restore
+only when both records parse and their unique generation id and plan hash
+match. `cargo clean` or whole-target deletion removes the marker naturally;
+missing, partial, corrupt, stale, and mismatched markers force the normal
+restore without a target-tree walk.
+
 ### Target cache (default off)
 
 soldr's **target-cache** (also called the "rust-plan" path) save/restores
