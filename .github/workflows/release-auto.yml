@@ -677,8 +677,8 @@ jobs:
                   print(f"staged {dest} from {matches[0]}")
 
           versions = {
-              "crgx": read_constant("crates/soldr-cli/src/fetch/mod.rs", "MANAGED_CRGX_VERSION"),
-              "cargo-chef": read_constant("crates/soldr-cli/src/fetch/known_tools.rs", "CARGO_CHEF_PINNED_VERSION"),
+              "crgx": read_constant("crates/soldr-fetch/src/fetch/mod.rs", "MANAGED_CRGX_VERSION"),
+              "cargo-chef": read_constant("crates/soldr-fetch/src/fetch/known_tools.rs", "CARGO_CHEF_PINNED_VERSION"),
           }
           fetch_tool("crgx", versions["crgx"])
           fetch_tool("cargo-chef", versions["cargo-chef"])
@@ -701,15 +701,15 @@ jobs:
           zccache_version=$(sed -n 's/^version = "\(.*\)"/\1/p' \
             _vender/zccache/Cargo.toml | head -n1)
           crgx_version=$(sed -n 's/.*MANAGED_CRGX_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/mod.rs | head -n1)
+            crates/soldr-fetch/src/fetch/mod.rs | head -n1)
           cargo_chef_version=$(sed -n 's/.*CARGO_CHEF_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
-            crates/soldr-cli/src/fetch/known_tools.rs | head -n1)
+            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
           if [ -z "$crgx_version" ]; then
-            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-cli/src/fetch/mod.rs" >&2
+            echo "could not read MANAGED_CRGX_VERSION from crates/soldr-fetch/src/fetch/mod.rs" >&2
             exit 1
           fi
           if [ -z "$cargo_chef_version" ]; then
-            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-cli/src/fetch/known_tools.rs" >&2
+            echo "could not read CARGO_CHEF_PINNED_VERSION from crates/soldr-fetch/src/fetch/known_tools.rs" >&2
             exit 1
           fi
           crgx_commit="${CRGX_SOURCE_COMMIT:-unknown}"
