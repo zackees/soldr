@@ -32,6 +32,9 @@ measure::start_rss_poller() {
             now="$(date +%s)"
             ps -A -o pid=,rss=,vsz=,comm= 2>/dev/null \
                 | awk -v t="${now}" '
+                    $4 == "soldr-daemon" {
+                        printf "%s,%s,%s,%s,%s\n", t, $1, $2, $3, $4
+                    }
                     $4 ~ /^(zccache-daemon|zccache|rustc|cargo|soldr)$/ {
                         printf "%s,%s,%s,%s,%s\n", t, $1, $2, $3, $4
                     }' \
@@ -64,11 +67,27 @@ measure::peak_daemon_rss_bytes() {
     local csv="$1"
     awk -F, '
         NR == 1 { next }
-        $5 == "zccache-daemon" || $5 == "zccache" {
-            kb = $3 + 0
-            if (kb > peak) peak = kb
+        $5 == "soldr-daemon" || $5 == "zccache-daemon" || $5 == "zccache" {
+            by_epoch[$1] += $3 + 0
         }
-        END { print (peak ? peak : 0) * 1024 }
+        END {
+            for (epoch in by_epoch) if (by_epoch[epoch] > peak) peak = by_epoch[epoch]
+            print (peak ? peak : 0) * 1024
+        }
+    ' "${csv}"
+}
+
+# Peak aggregate RSS for every matching process at a sample instant. CI jobs
+# are isolated; shared local hosts can contaminate this diagnostic.
+measure::peak_process_tree_rss_bytes() {
+    local csv="$1"
+    awk -F, '
+        NR == 1 { next }
+        { by_epoch[$1] += $3 + 0 }
+        END {
+            for (epoch in by_epoch) if (by_epoch[epoch] > peak) peak = by_epoch[epoch]
+            print (peak ? peak : 0) * 1024
+        }
     ' "${csv}"
 }
 
@@ -175,7 +194,11 @@ measure::copy_zccache_logs_from_report() {
 
 # measure::now_ms
 measure::now_ms() {
-    date +%s%3N
+    if [[ -r /proc/uptime ]]; then
+        awk '{ printf "%d\n", $1 * 1000 }' /proc/uptime
+    else
+        python3 -c 'import time; print(time.monotonic_ns() // 1000000)'
+    fi
 }
 
 # measure::elapsed_ms <start-ms>
@@ -184,6 +207,32 @@ measure::elapsed_ms() {
     local now
     now="$(measure::now_ms)"
     echo $(( now - start ))
+}
+
+# Prints `<median> <median-absolute-deviation>` for integer samples.
+measure::median_and_mad() {
+    local -a sorted deviations
+    mapfile -t sorted < <(printf '%s\n' "$@" | sort -n)
+    local count="${#sorted[@]}"
+    if (( count == 0 )); then
+        echo "0 0"
+        return
+    fi
+    local median="${sorted[$((count / 2))]}" value delta
+    for value in "${sorted[@]}"; do
+        delta=$(( value - median ))
+        (( delta < 0 )) && delta=$(( -delta ))
+        deviations+=("${delta}")
+    done
+    mapfile -t deviations < <(printf '%s\n' "${deviations[@]}" | sort -n)
+    echo "${median} ${deviations[$((count / 2))]}"
+}
+
+# Acquire dependencies outside measured intervals. Timed commands are offline.
+measure::prefetch_locked() {
+    local fixture_dir="$1"
+    (cd "${fixture_dir}" && soldr cargo metadata --locked \
+        --format-version=1 >/dev/null)
 }
 
 # --- Summary emission -----------------------------------------------

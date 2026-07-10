@@ -22,6 +22,7 @@ if [[ ! -f "${TARBALL}" ]]; then
     exit 2
 fi
 
+rm -rf "${DEST}"
 mkdir -p "${DEST}"
 tar -C "${DEST}" -xzf "${TARBALL}"
 echo "extract.sh: ${TARBALL} -> ${DEST}/${FIXTURE}"
