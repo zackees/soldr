@@ -175,16 +175,6 @@ impl CargoCachePlan {
         if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
             eprintln!("{reason}");
             Ok(RustPlanRestoreOutcome::Skipped)
-        } else if let Some(reason) = rust_plan::should_skip_restore_due_to_prepopulated_target(plan)
-        {
-            // Issue #480: refuse to restore on top of a target/ that cook
-            // (or a prior build) has already populated. The current zccache
-            // restore path reports `restored_file_count: 0 /
-            // artifact_absent_from_restored_plan: 1` and the subsequent
-            // cargo build dies on missing rmetas. Skipping restore lets
-            // cargo work with what's there.
-            eprintln!("{reason}");
-            Ok(RustPlanRestoreOutcome::Skipped)
         } else {
             let summary = rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
             Ok(RustPlanRestoreOutcome::Restored {
