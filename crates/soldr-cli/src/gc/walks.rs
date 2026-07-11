@@ -196,12 +196,11 @@ pub(super) fn resolve_registry_src_last_used(
     dir_name: &str,
     meta: &std::fs::Metadata,
 ) -> (i64, &'static str) {
-    if let (Some(map), Some((crate_name, version))) = (global_cache, split_dir_name(dir_name)) {
-        let key = (
-            registry_hash.to_string(),
-            crate_name.to_string(),
-            version.to_string(),
-        );
+    // `registry_src.name` in cargo's tracker IS the on-disk directory
+    // name (`<crate>-<version>`), so the lookup key is the dir name
+    // verbatim — no crate/version splitting (#1569).
+    if let Some(map) = global_cache {
+        let key = (registry_hash.to_string(), dir_name.to_string());
         if let Some(&ts) = map.get(&key) {
             return (ts, LAST_USED_FROM_GLOBAL_CACHE);
         }
@@ -213,25 +212,6 @@ pub(super) fn resolve_registry_src_last_used(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     (mtime, LAST_USED_FROM_FS_MTIME)
-}
-
-/// Split `<crate>-<version>` directory names into `(crate, version)`
-/// using the same rule as [`parse_crate_owner`]: the last hyphen
-/// followed by an ASCII digit is the boundary. Returns `None` for
-/// names that don't match the shape (e.g. a bare `serde/` dir).
-pub(super) fn split_dir_name(dir_name: &str) -> Option<(&str, &str)> {
-    let bytes = dir_name.as_bytes();
-    for (idx, &b) in bytes.iter().enumerate().rev() {
-        if b == b'-' && idx + 1 < bytes.len() && bytes[idx + 1].is_ascii_digit() {
-            let (name, rest) = dir_name.split_at(idx);
-            let version = &rest[1..];
-            if name.is_empty() {
-                return None;
-            }
-            return Some((name, version));
-        }
-    }
-    None
 }
 
 /// Parse `<crate>-<vers>` directory names into `Some("<crate>@<vers>")`.

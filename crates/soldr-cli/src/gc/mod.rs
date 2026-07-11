@@ -44,8 +44,8 @@ pub(crate) use purge::{
 use purge::{gc_purge_worker_count_for, parse_gc_purge_answer};
 #[cfg(test)]
 use walks::{
-    resolve_git_checkout_last_used, resolve_registry_src_last_used, split_dir_name,
-    walk_cargo_git_checkouts,
+    resolve_git_checkout_last_used, resolve_registry_src_last_used, walk_cargo_git_checkouts,
+    walk_cargo_registry_src,
 };
 
 use purge::{

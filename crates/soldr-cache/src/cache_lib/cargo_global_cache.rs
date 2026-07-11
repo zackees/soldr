@@ -8,11 +8,13 @@
 //! `walk_cargo_registry_src`, where `cargo build` re-extracting an
 //! existing crate source dir can leave the mtime stale.
 //!
-//! This module exposes a single function: open the SQLite file
-//! read-only, run a join against `registry_src` and `registry_index`,
-//! and return a map keyed by `(registry-hash, crate, version)`. Any
-//! failure (missing file, locked database, schema drift, table
-//! missing) yields `None` so the caller falls back to mtime.
+//! This module exposes read-only readers: open the SQLite file
+//! read-only, run a join against `registry_src` and `registry_index`
+//! (or `git_checkout` and `git_db`), and return a map keyed by
+//! `(registry-hash, src-dirname)` / `(git-db-dirname,
+//! checkout-dirname)`. Any failure (missing file, locked database,
+//! schema drift, table missing) yields `None` so the caller falls
+//! back to mtime.
 //!
 //! Schema documented inline in cargo's source:
 //! <https://github.com/rust-lang/cargo/blob/master/src/cargo/core/global_cache_tracker.rs>
@@ -24,10 +26,14 @@ use std::path::{Path, PathBuf};
 /// Path of the SQLite database cargo writes to.
 pub const GLOBAL_CACHE_DB_FILENAME: &str = ".global-cache";
 
-/// Map key: `(registry-hash-dirname, crate-name, version)`. The
-/// registry-hash matches the directory name under
-/// `$CARGO_HOME/registry/src/`, e.g. `index.crates.io-6f17d22bba15001f`.
-pub type RegistrySrcKey = (String, String, String);
+/// Map key: `(registry-hash-dirname, src-dirname)`. The registry-hash
+/// matches the directory name under `$CARGO_HOME/registry/src/`, e.g.
+/// `index.crates.io-6f17d22bba15001f`. The src-dirname is the crate
+/// source directory name in the `<crate>-<version>` format cargo uses
+/// both on disk and in the `registry_src.name` column, e.g.
+/// `serde-1.0.219` (#1569 — there is no separate version column in
+/// real cargo databases).
+pub type RegistrySrcKey = (String, String);
 
 /// Resolve the path of cargo's global cache database for the given
 /// `$CARGO_HOME`. Does not check that the file exists.
@@ -37,7 +43,8 @@ pub fn global_cache_db_path(cargo_home: &Path) -> PathBuf {
 
 /// Read `registry_src.timestamp` joined with `registry_index.name`
 /// (the registry-hash dirname) and return a map of last-used Unix
-/// seconds keyed by `(registry-hash, crate, version)`.
+/// seconds keyed by `(registry-hash, src-dirname)` where src-dirname
+/// is `<crate>-<version>`.
 ///
 /// Returns `None` when:
 ///
@@ -125,9 +132,15 @@ fn open_read_only(path: &Path) -> SqlResult<Connection> {
 
 fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<RegistrySrcKey, i64>> {
     let conn = open_read_only(path)?;
-
+    // Schema verified against a live cargo 1.94 `.global-cache`:
+    //   registry_index(id, name UNIQUE, timestamp)
+    //   registry_src(registry_id, name, size, timestamp,
+    //                PRIMARY KEY (registry_id, name))
+    // `registry_src.name` is the `<crate>-<version>` directory name —
+    // there is NO separate `version` column (#1569; the previous query
+    // referenced one and errored on every real installation).
     let mut stmt = conn.prepare(
-        "SELECT registry_index.name, registry_src.name, registry_src.version, registry_src.timestamp \
+        "SELECT registry_index.name, registry_src.name, registry_src.timestamp \
          FROM registry_src \
          JOIN registry_index ON registry_src.registry_id = registry_index.id",
     )?;
@@ -136,10 +149,9 @@ fn read_registry_src_last_used_from_path(path: &Path) -> SqlResult<HashMap<Regis
     let mut out: HashMap<RegistrySrcKey, i64> = HashMap::new();
     while let Some(row) = rows.next()? {
         let registry_hash: String = row.get(0)?;
-        let crate_name: String = row.get(1)?;
-        let version: String = row.get(2)?;
-        let timestamp: i64 = row.get(3)?;
-        out.insert((registry_hash, crate_name, version), timestamp);
+        let src_dir: String = row.get(1)?;
+        let timestamp: i64 = row.get(2)?;
+        out.insert((registry_hash, src_dir), timestamp);
     }
     Ok(out)
 }
@@ -150,27 +162,29 @@ mod tests {
     use rusqlite::params;
     use tempfile::tempdir;
 
-    /// Build a minimal SQLite database that matches the schema soldr
-    /// reads. We don't need a full cargo install — just the two tables
-    /// and the join columns.
+    /// Build a SQLite database whose registry tables match the REAL
+    /// schema a live cargo 1.94 writes (CREATE TABLE statements copied
+    /// verbatim from a cargo-produced `~/.cargo/.global-cache`).
+    /// `registry_src.name` is the `<crate>-<version>` directory name;
+    /// there is no `version` column (#1569 — the old synthetic fixture
+    /// invented one and hid the schema mismatch).
     fn make_global_cache_db(cargo_home: &Path) -> PathBuf {
         let path = global_cache_db_path(cargo_home);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(
             r#"
             CREATE TABLE registry_index (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT UNIQUE NOT NULL,
                 timestamp INTEGER NOT NULL
             );
             CREATE TABLE registry_src (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 registry_id INTEGER NOT NULL,
                 name TEXT NOT NULL,
-                version TEXT NOT NULL,
-                size INTEGER NOT NULL,
+                size INTEGER,
                 timestamp INTEGER NOT NULL,
-                UNIQUE (registry_id, name, version)
+                PRIMARY KEY (registry_id, name),
+                FOREIGN KEY (registry_id) REFERENCES registry_index (id) ON DELETE CASCADE
             );
             "#,
         )
@@ -187,35 +201,26 @@ mod tests {
         conn.last_insert_rowid()
     }
 
-    fn insert_registry_src(
-        conn: &Connection,
-        registry_id: i64,
-        name: &str,
-        version: &str,
-        ts: i64,
-    ) {
+    fn insert_registry_src(conn: &Connection, registry_id: i64, dir_name: &str, ts: i64) {
         conn.execute(
-            "INSERT INTO registry_src (registry_id, name, version, size, timestamp) VALUES (?, ?, ?, ?, ?)",
-            params![registry_id, name, version, 0i64, ts],
+            "INSERT INTO registry_src (registry_id, name, size, timestamp) VALUES (?, ?, ?, ?)",
+            params![registry_id, dir_name, 0i64, ts],
         )
         .unwrap();
     }
 
-    #[test]
-    fn returns_none_when_db_missing() {
+    crate::timed_test!(returns_none_when_db_missing, {
         let tmp = tempdir().unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    }
+    });
 
-    #[test]
-    fn returns_none_when_file_is_not_a_sqlite_database() {
+    crate::timed_test!(returns_none_when_file_is_not_a_sqlite_database, {
         let tmp = tempdir().unwrap();
         std::fs::write(global_cache_db_path(tmp.path()), b"not a database").unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    }
+    });
 
-    #[test]
-    fn returns_none_when_schema_is_unrelated() {
+    crate::timed_test!(returns_none_when_schema_is_unrelated, {
         let tmp = tempdir().unwrap();
         let path = global_cache_db_path(tmp.path());
         let conn = Connection::open(&path).unwrap();
@@ -225,47 +230,60 @@ mod tests {
         conn.execute("CREATE TABLE unrelated (id INTEGER)", [])
             .unwrap();
         assert!(read_registry_src_last_used(tmp.path()).is_none());
-    }
+    });
 
-    #[test]
-    fn returns_joined_map_for_well_formed_db() {
+    crate::timed_test!(returns_joined_map_for_well_formed_db, {
         let tmp = tempdir().unwrap();
         let db_path = make_global_cache_db(tmp.path());
         let conn = Connection::open(&db_path).unwrap();
         let crates_io = insert_registry(&conn, "index.crates.io-6f17d22bba15001f", 1700);
         let alt = insert_registry(&conn, "alt-registry-deadbeef", 1800);
-        insert_registry_src(&conn, crates_io, "serde", "1.0.0", 1000);
-        insert_registry_src(&conn, crates_io, "serde", "1.1.0", 2000);
-        insert_registry_src(&conn, alt, "private-thing", "0.1.0", 3000);
+        insert_registry_src(&conn, crates_io, "serde-1.0.0", 1000);
+        insert_registry_src(&conn, crates_io, "serde-1.1.0", 2000);
+        insert_registry_src(&conn, alt, "private-thing-0.1.0", 3000);
         drop(conn);
 
         let map = read_registry_src_last_used(tmp.path()).expect("populated db must return Some");
         assert_eq!(
             map.get(&(
                 "index.crates.io-6f17d22bba15001f".to_string(),
-                "serde".to_string(),
-                "1.0.0".to_string()
+                "serde-1.0.0".to_string()
             )),
             Some(&1000)
         );
         assert_eq!(
             map.get(&(
                 "index.crates.io-6f17d22bba15001f".to_string(),
-                "serde".to_string(),
-                "1.1.0".to_string()
+                "serde-1.1.0".to_string()
             )),
             Some(&2000)
         );
         assert_eq!(
             map.get(&(
                 "alt-registry-deadbeef".to_string(),
-                "private-thing".to_string(),
-                "0.1.0".to_string()
+                "private-thing-0.1.0".to_string()
             )),
             Some(&3000)
         );
         assert_eq!(map.len(), 3);
-    }
+    });
+
+    crate::timed_test!(registry_src_read_never_mutates_db_bytes, {
+        // Same read-only guarantee as the git reader: compare the raw
+        // file bytes before and after a successful read.
+        let tmp = tempdir().unwrap();
+        let db_path = make_global_cache_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        let crates_io = insert_registry(&conn, "index.crates.io-6f17d22bba15001f", 1700);
+        insert_registry_src(&conn, crates_io, "serde-1.0.0", 1000);
+        drop(conn);
+
+        let before = std::fs::read(&db_path).unwrap();
+        let map = read_registry_src_last_used(tmp.path()).unwrap();
+        assert_eq!(map.len(), 1);
+        let after = std::fs::read(&db_path).unwrap();
+        assert_eq!(before, after, "read-only reader mutated the DB bytes");
+    });
 
     // ---------------------------------------------------------------
     // git_checkout reader (issue #1544).
@@ -384,8 +402,38 @@ mod tests {
         assert_eq!(before, after, "read-only reader mutated the DB bytes");
     });
 
-    #[test]
-    fn empty_tables_yield_empty_map_not_none() {
+    crate::timed_test!(registry_src_query_does_not_error_on_real_cargo_schema, {
+        // Canary distinguishing "row absent" from "query invalid"
+        // (#1569): the raw SqlResult must be Ok against the REAL cargo
+        // schema. Before the fix the query referenced a nonexistent
+        // `registry_src.version` column — "no such column" — and the
+        // public wrapper silently degraded every real installation to
+        // the mtime fallback. A populated fixture with a row would
+        // also pass an Ok-with-empty-map bug, so assert the row too.
+        let tmp = tempdir().unwrap();
+        let db_path = make_global_cache_db(tmp.path());
+        let conn = Connection::open(&db_path).unwrap();
+        let crates_io = insert_registry(&conn, "index.crates.io-1949cf8c6b5b557f", 1_783_723_771);
+        insert_registry_src(&conn, crates_io, "serde-1.0.219", 1_783_723_771);
+        drop(conn);
+
+        let res = read_registry_src_last_used_from_path(&db_path);
+        let map = match res {
+            Ok(map) => map,
+            Err(e) => {
+                panic!("registry_src query must not error against the real cargo schema: {e:?}")
+            }
+        };
+        assert_eq!(
+            map.get(&(
+                "index.crates.io-1949cf8c6b5b557f".to_string(),
+                "serde-1.0.219".to_string()
+            )),
+            Some(&1_783_723_771)
+        );
+    });
+
+    crate::timed_test!(empty_tables_yield_empty_map_not_none, {
         // The DB exists, schema matches, but there are no rows yet —
         // an empty map (Some) tells the caller "consult me, I have
         // no data on this crate" rather than the "missing/locked DB"
@@ -394,5 +442,5 @@ mod tests {
         make_global_cache_db(tmp.path());
         let map = read_registry_src_last_used(tmp.path()).unwrap();
         assert!(map.is_empty());
-    }
+    });
 }
