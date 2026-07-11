@@ -156,6 +156,12 @@ fn allowed_artifact_classes_thin_v1_keeps_legacy_set() {
         "cargo_fingerprint",
         "build_script_metadata",
         "build_script_output",
+        // soldr#1579: thin-v1 must also retain the compiled build-script
+        // binary itself. Without it, cargo's fingerprint check for units
+        // whose build.rs output feeds their own compilation sees a stale
+        // `build_script_build` artifact and cascades a `StaleDepFingerprint`
+        // rebuild through everything downstream of that build script.
+        "build_script_build",
     ] {
         assert!(
             allowed.contains(&expected),
