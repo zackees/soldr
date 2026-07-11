@@ -342,7 +342,6 @@ fn warm_restore_test_context(
     let root = tempdir.path();
     RustArtifactPlanContext {
         path: root.join("plan.json"),
-        zccache_binary: root.join("zccache"),
         cache_dir: root.join("cache"),
         zccache_daemon_cache_dir: root.join("daemon"),
         zccache_daemon_cache_dir_env: true,

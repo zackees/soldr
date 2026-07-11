@@ -76,12 +76,22 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     };
     std::fs::create_dir_all(&cache_root)?;
     let cwd = std::env::current_dir()?;
-    let status = zccache::cli::commands::run_embedded_rustfmt(&rustfmt, args, &cwd, &cache_root);
-    Ok(if status == std::process::ExitCode::SUCCESS {
-        0
-    } else {
-        1
-    })
+    zccache::cli::commands::run_embedded_rustfmt_with_runner(
+        &rustfmt,
+        args,
+        &cwd,
+        &cache_root,
+        |command| {
+            apply_implicit_toolchain_homes(command);
+            apply_zccache_child_env(command)
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            suppress_windows_console_window(command);
+            let status = run_toolchain_command(command, "embedded rustfmt formatter")
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            Ok(status.code().unwrap_or(1))
+        },
+    )
+    .map_err(SoldrError::from)
 }
 
 /// Run rustdoc directly. zccache currently has rustc/clippy-driver

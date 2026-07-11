@@ -460,7 +460,7 @@ jobs:
             exit 1
           fi
           cp "$src" "dist/package/soldr${suffix}"
-          for stem in soldr-daemon zccache; do
+          for stem in soldr-daemon; do
             ln "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}" 2>/dev/null || \
               cp "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}"
           done
@@ -785,24 +785,20 @@ jobs:
             soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
           fi
           soldr_daemon_sha=$(sha256_of "dist/package/soldr-daemon${suffix}")
-          zccache_alias_sha=$(sha256_of "dist/package/zccache${suffix}")
           crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
           cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # schema_version 4 adds the zccache multicall alias. Installers keep
-          # accepting schema 3 archives, where that alias was not bundled.
           cat > dist/package/manifest.json <<EOF
           {
-            "schema_version": 4,
+            "schema_version": 3,
             "soldr": {
               "version": "${version}",
               "target": "${soldr_target}",
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
               "sidecars": [
-                { "name": "soldr-daemon${suffix}", "sha256": "${soldr_daemon_sha}" },
-                { "name": "zccache${suffix}",      "sha256": "${zccache_alias_sha}" }
+                { "name": "soldr-daemon${suffix}", "sha256": "${soldr_daemon_sha}" }
               ],
               "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
@@ -1332,7 +1328,7 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship soldr, its runtime aliases, crgx,
+          # Every archive must ship soldr, its daemon alias, crgx,
           # cargo-chef, and a manifest.json describing the bundle.
           # Windows archives must also ship soldr's PDB sidecar.
           suffix=""
@@ -1340,7 +1336,6 @@ jobs:
           for required in \
             "${{ matrix.binary }}" \
             "soldr-daemon${suffix}" \
-            "zccache${suffix}" \
             "crgx${suffix}" \
             "cargo-chef${suffix}" \
             "manifest.json"; do
@@ -1412,7 +1407,6 @@ jobs:
 
               # Smoke the bundled tools too — same arch gate.
               "$extract/soldr-daemon${suffix}" --help >/dev/null
-              "$extract/zccache${suffix}" --version
               "$extract/crgx${suffix}" --version
               "$extract/cargo-chef${suffix}" --version
               ;;

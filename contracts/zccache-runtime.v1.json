@@ -10,18 +10,14 @@
     "required_binaries": [
       "soldr",
       "soldr-daemon",
-      "zccache",
       "crgx",
       "cargo-chef"
     ],
-    "schema_gated_binaries": {
-      "zccache": 4
-    },
     "linux_zccache_target_libc": "musl"
   },
   "zccache": {
     "embedded": true,
-    "note": "zccache is embedded into soldr/soldr-daemon (soldr#1368); the release zccache filename is a multicall alias of soldr, not a standalone zccache binary or daemon.",
+    "note": "zccache is embedded into soldr/soldr-daemon (soldr#1368); no standalone zccache binaries are bundled or downloaded.",
     "cache_dir_env": "ZCCACHE_CACHE_DIR"
   },
   "crgx": {

@@ -80,7 +80,6 @@ fn context_for(
 ) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: plan_path.to_path_buf(),
-        zccache_binary: std::path::PathBuf::from("zccache"),
         cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir_env: false,

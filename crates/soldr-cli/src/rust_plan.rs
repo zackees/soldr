@@ -124,7 +124,6 @@ pub(crate) struct RustPlanPackages {
 
 pub(crate) struct RustArtifactPlanContext {
     pub(crate) path: std::path::PathBuf,
-    pub(crate) zccache_binary: std::path::PathBuf,
     pub(crate) cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir_env: bool,
@@ -250,7 +249,6 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
 
     Ok(Some(RustArtifactPlanContext {
         path: plan_path,
-        zccache_binary: session.binary_path.clone(),
         cache_dir: rust_artifact_plan_cache_dir(session)?,
         zccache_daemon_cache_dir: session.cache_dir.clone(),
         zccache_daemon_cache_dir_env: session.cache_dir_env,

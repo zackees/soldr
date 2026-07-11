@@ -204,15 +204,9 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
           ZCCACHE_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test/cache/zccache
         run: |
-          $exeName = if ($IsWindows) { "zccache.exe" } else { "zccache" }
-          $zccache = $null
-          $soldrBin = Join-Path -Path $env:SOLDR_CACHE_DIR -ChildPath "bin"
-          if (Test-Path -LiteralPath $soldrBin) {
-            $zccache = Get-ChildItem -LiteralPath $soldrBin -Recurse -Filter $exeName -File -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-          }
-          if ([string]::IsNullOrWhiteSpace($zccache)) {
-            Write-Host "zccache binary is unavailable; nothing to stop."
+          $soldr = Get-Command soldr -ErrorAction SilentlyContinue
+          if (-not $soldr) {
+            Write-Host "soldr is unavailable; nothing to stop."
             exit 0
           }
-          & $zccache stop
+          & $soldr.Source zccache stop

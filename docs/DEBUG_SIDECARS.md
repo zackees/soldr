@@ -39,7 +39,7 @@ is needed, the staging + manifest recording pick the artifacts up.
 
 ```bash
 tar --zstd -tf soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst
-# → soldr.exe, soldr-daemon.exe, zccache.exe, cargo-chef.exe, crgx.exe,
+# → soldr.exe, soldr-daemon.exe, cargo-chef.exe, crgx.exe,
 #   manifest.json, soldr.pdb
 
 tar --zstd -xOf … manifest.json | jq .soldr.debug_info

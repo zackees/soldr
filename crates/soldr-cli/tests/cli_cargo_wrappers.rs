@@ -1004,6 +1004,76 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
 }
 
 #[test]
+fn embedded_rustfmt_preserves_child_environment_and_exact_exit_code() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-policy-exit");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let cargo_home = cache_root.join("explicit-cargo-home");
+    let rustup_home = cache_root.join("explicit-rustup-home");
+
+    let output = isolated_soldr_command()
+        .args(["rustfmt", source_path.to_str().unwrap()])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("ZCCACHE_CACHE_DIR", cache_root.join("zccache"))
+        .env("CARGO_HOME", &cargo_home)
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("SOLDR_TEST_TOOL_EXIT_CODE", "37")
+        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("run embedded rustfmt with host-owned child policy");
+
+    assert_eq!(
+        output.status.code(),
+        Some(37),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(&log_path).expect("read fake rustfmt log");
+    assert!(
+        log.contains(&format!("cargo_home={}", cargo_home.display())),
+        "log: {log}"
+    );
+    assert!(
+        log.contains(&format!("rustup_home={}", rustup_home.display())),
+        "log: {log}"
+    );
+}
+
+#[test]
+fn embedded_rustfmt_preserves_toolchain_timeout() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-policy-timeout");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let started = std::time::Instant::now();
+
+    let output = isolated_soldr_command()
+        .args(["rustfmt", source_path.to_str().unwrap()])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("ZCCACHE_CACHE_DIR", cache_root.join("zccache"))
+        .env("SOLDR_TEST_TOOL_HANG", "1")
+        .env("SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS", "1")
+        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("run embedded rustfmt timeout case");
+
+    assert!(!output.status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("timed out after 1 seconds"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
     for (label, prefix_args, zccache_disable, include_source) in [
         ("no-cache", vec!["--no-cache", "rustfmt"], false, true),

@@ -17,21 +17,11 @@ def load_contract(path: Path = CONTRACT_PATH) -> dict[str, Any]:
 CONTRACT = load_contract()
 ARCHIVE_EXT = str(CONTRACT["release_archive"]["extension"])
 MANIFEST_NAME = str(CONTRACT["release_archive"]["manifest_name"])
-MANIFEST_MIN_SCHEMA_VERSION = int(
-    CONTRACT["release_archive"]["manifest_min_schema_version"]
-)
-ZCCACHE_BUNDLED_BINARIES = tuple(
-    CONTRACT.get("zccache", {}).get("required_binaries", ())
-)
+MANIFEST_MIN_SCHEMA_VERSION = int(CONTRACT["release_archive"]["manifest_min_schema_version"])
+ZCCACHE_BUNDLED_BINARIES = tuple(CONTRACT.get("zccache", {}).get("required_binaries", ()))
 CRGX_BUNDLED_BINARY = str(CONTRACT["crgx"]["required_binaries"][0])
 CARGO_CHEF_BUNDLED_BINARY = str(CONTRACT["cargo_chef"]["required_binaries"][0])
 RELEASE_BUNDLED_BINARIES = tuple(CONTRACT["release_archive"]["required_binaries"])
-SCHEMA_GATED_BINARIES = {
-    str(name): int(schema)
-    for name, schema in CONTRACT["release_archive"]
-    .get("schema_gated_binaries", {})
-    .items()
-}
 CRGX_LOCAL_DIR_ENV = str(CONTRACT["crgx"]["local_dir_env"])
 CARGO_CHEF_LOCAL_DIR_ENV = str(CONTRACT["cargo_chef"]["local_dir_env"])
 
@@ -40,20 +30,8 @@ def binary_name(base: str, *, windows: bool) -> str:
     return f"{base}.exe" if windows else base
 
 
-def release_bundled_binaries(schema_version: int) -> tuple[str, ...]:
-    return tuple(
-        base
-        for base in RELEASE_BUNDLED_BINARIES
-        if schema_version
-        >= SCHEMA_GATED_BINARIES.get(base, MANIFEST_MIN_SCHEMA_VERSION)
-    )
-
-
-def release_binary_names(*, windows: bool, schema_version: int = 4) -> tuple[str, ...]:
-    return tuple(
-        binary_name(base, windows=windows)
-        for base in release_bundled_binaries(schema_version)
-    )
+def release_binary_names(*, windows: bool) -> tuple[str, ...]:
+    return tuple(binary_name(base, windows=windows) for base in RELEASE_BUNDLED_BINARIES)
 
 
 def zccache_target_for_soldr_target(soldr_target: str) -> str:
@@ -139,10 +117,7 @@ def validate_release_manifest(
     extract_dir: Path,
 ) -> None:
     schema_version = manifest.get("schema_version")
-    if (
-        not isinstance(schema_version, int)
-        or schema_version < MANIFEST_MIN_SCHEMA_VERSION
-    ):
+    if not isinstance(schema_version, int) or schema_version < MANIFEST_MIN_SCHEMA_VERSION:
         raise RuntimeError(
             f"release manifest schema_version must be >= {MANIFEST_MIN_SCHEMA_VERSION}"
         )
@@ -154,13 +129,8 @@ def validate_release_manifest(
         raise RuntimeError(f"release manifest soldr.target must be {soldr_target}")
     zccache = manifest.get("zccache")
     expected_zccache_target = zccache_target_for_soldr_target(soldr_target)
-    if (
-        not isinstance(zccache, dict)
-        or zccache.get("target") != expected_zccache_target
-    ):
-        raise RuntimeError(
-            f"release manifest zccache.target must be {expected_zccache_target}"
-        )
+    if not isinstance(zccache, dict) or zccache.get("target") != expected_zccache_target:
+        raise RuntimeError(f"release manifest zccache.target must be {expected_zccache_target}")
     crgx = manifest.get("crgx")
     if not isinstance(crgx, dict) or crgx.get("target") != soldr_target:
         raise RuntimeError(f"release manifest crgx.target must be {soldr_target}")
@@ -168,9 +138,7 @@ def validate_release_manifest(
     if not isinstance(cargo_chef, dict) or cargo_chef.get("target") != soldr_target:
         raise RuntimeError(f"release manifest cargo_chef.target must be {soldr_target}")
 
-    expected_names = set(
-        release_binary_names(windows=windows, schema_version=schema_version)
-    )
+    expected_names = set(release_binary_names(windows=windows))
     manifest_binaries = _manifest_binaries(manifest)
     missing = sorted(expected_names.difference(manifest_binaries))
     if missing:
@@ -180,12 +148,8 @@ def validate_release_manifest(
 
     for name in sorted(expected_names):
         expected_sha = manifest_binaries[name].lower()
-        if len(expected_sha) != 64 or any(
-            ch not in "0123456789abcdef" for ch in expected_sha
-        ):
-            raise RuntimeError(
-                f"release manifest sha256 for {name} is not lowercase hex"
-            )
+        if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
+            raise RuntimeError(f"release manifest sha256 for {name} is not lowercase hex")
         binary_path = locate_extracted_file(extract_dir, name)
         actual_sha = _sha256_file(binary_path)
         if actual_sha != expected_sha:
@@ -205,12 +169,8 @@ def validate_release_manifest(
         if not name.lower().endswith(".pdb"):
             raise RuntimeError(f"soldr debug_info entry must name a .pdb file: {name}")
         expected_sha = str(entry["sha256"]).lower()
-        if len(expected_sha) != 64 or any(
-            ch not in "0123456789abcdef" for ch in expected_sha
-        ):
-            raise RuntimeError(
-                f"release manifest sha256 for {name} is not lowercase hex"
-            )
+        if len(expected_sha) != 64 or any(ch not in "0123456789abcdef" for ch in expected_sha):
+            raise RuntimeError(f"release manifest sha256 for {name} is not lowercase hex")
         actual_sha = _sha256_file(locate_extracted_file(extract_dir, name))
         if actual_sha != expected_sha:
             raise RuntimeError(

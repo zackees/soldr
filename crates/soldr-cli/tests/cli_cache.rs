@@ -48,11 +48,10 @@ fn status_reports_cache_control_defaults() {
         stdout.contains("soldr zccache cache dir:"),
         "status missing effective zccache cache dir: {stdout}"
     );
-    // soldr#1368: the zccache CLI is compiled-in, so status always reports
-    // the embedded backend rather than an "unfetched managed" state.
+    // soldr#1593: the zccache CLI is called in-process and has no binary.
     assert!(
-        stdout.contains("(source: embedded)"),
-        "status should report the embedded zccache backend: {stdout}"
+        stdout.contains("zccache runtime: in-process"),
+        "status should report the in-process zccache backend: {stdout}"
     );
     assert!(
         stdout.contains("zccache status: embedded in soldr-daemon"),
@@ -99,9 +98,9 @@ fn status_json_reports_stable_machine_fields() {
         json["cache_dir"],
         cache_root.join("cache").display().to_string()
     );
-    // soldr#1368: the compiled-in zccache is always present.
-    assert_eq!(json["zccache"]["binary_fetched"], true);
-    assert_eq!(json["zccache"]["binary_source"], "embedded");
+    assert_eq!(json["zccache"]["binary_path"], Value::Null);
+    assert_eq!(json["zccache"]["binary_fetched"], false);
+    assert_eq!(json["zccache"]["binary_source"], "in-process");
     assert_eq!(json["zccache"]["session_log_present"], false);
     assert_eq!(json["zccache"]["journal_present"], false);
     assert_eq!(json["zccache"]["session_stats_present"], false);
@@ -200,11 +199,11 @@ fn cache_command_reports_managed_zccache_status() {
         stdout.contains(&format!("{}", session_log.display())) && stdout.contains("(present)"),
         "cache command should report present session log: {stdout}"
     );
-    // soldr#1368: rustc compile caching lives in the embedded daemon;
-    // `soldr cache` no longer spawns an external `zccache status`.
+    // soldr#1593: rustc compile caching lives in the embedded daemon and
+    // the maintenance surface is called in-process.
     assert!(
-        stdout.contains("(source: embedded)"),
-        "cache command should report the embedded zccache backend: {stdout}"
+        stdout.contains("zccache runtime: in-process"),
+        "cache command should report the in-process zccache backend: {stdout}"
     );
     assert!(
         stdout.contains("zccache status: embedded in soldr-daemon"),
@@ -261,7 +260,8 @@ fn cache_json_reports_managed_zccache_status() {
     assert_eq!(json["zccache"]["session_log_present"], true);
     assert_eq!(json["zccache"]["journal_present"], true);
     assert_eq!(json["zccache"]["session_stats_present"], true);
-    assert_eq!(json["zccache"]["binary_fetched"], true);
+    assert_eq!(json["zccache"]["binary_path"], Value::Null);
+    assert_eq!(json["zccache"]["binary_fetched"], false);
     assert_eq!(
         json["zccache"]["cache_dir"],
         cache_root
@@ -282,8 +282,7 @@ fn cache_json_reports_managed_zccache_status() {
         json["zccache"]["session_stats_path"],
         session_stats.display().to_string()
     );
-    // soldr#1368: the embedded backend reports no external status lines.
-    assert_eq!(json["zccache"]["binary_source"], "embedded");
+    assert_eq!(json["zccache"]["binary_source"], "in-process");
 }
 
 #[test]

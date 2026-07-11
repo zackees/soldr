@@ -179,10 +179,9 @@ pub(super) fn collect_zccache_status(
     let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
     let session_stats_present = session_stats_path.exists();
 
-    // soldr#1368: rustc compile caching runs through the soldr-daemon
-    // embedded zccache service, not an externally-resolved zccache
-    // binary. Report the compiled-in trampoline + embedded backend.
-    let binary_path = crate::binaries::embedded_zccache_binary()?;
+    // soldr#1593: zccache is linked into soldr and has no standalone
+    // runtime binary. Keep the nullable reporting fields for JSON schema
+    // compatibility without materializing a fake executable alias.
     Ok(ZccacheStatusSnapshot {
         cache_dir: zccache_dir.display().to_string(),
         state_dir: zccache_dir.display().to_string(),
@@ -192,9 +191,9 @@ pub(super) fn collect_zccache_status(
         journal_present,
         session_stats_path: session_stats_path.display().to_string(),
         session_stats_present,
-        binary_path: Some(binary_path.display().to_string()),
-        binary_source: "embedded",
-        binary_fetched: true,
+        binary_path: None,
+        binary_source: "in-process",
+        binary_fetched: false,
         status_lines: Vec::new(),
         status_empty: true,
     })
@@ -270,7 +269,10 @@ fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {
             }
         }
     } else {
-        println!("zccache binary: embedded (compiled into soldr)");
+        println!("zccache runtime: in-process (compiled into soldr)");
+        println!(
+            "zccache status: embedded in soldr-daemon; use `soldr daemon status` for live daemon health"
+        );
     }
 }
 
