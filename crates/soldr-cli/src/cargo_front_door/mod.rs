@@ -108,6 +108,15 @@ struct CargoAbortLogRequest<'a> {
     auto_retry_planned: bool,
 }
 
+type CargoRunResult = Result<
+    (
+        std::process::ExitStatus,
+        Option<String>,
+        Option<Vec<String>>,
+    ),
+    SoldrError,
+>;
+
 fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, SoldrError> {
     let CargoAbortLogRequest {
         paths,
@@ -1816,14 +1825,7 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
-    let cargo_run_result: Result<
-        (
-            std::process::ExitStatus,
-            Option<String>,
-            Option<Vec<String>>,
-        ),
-        SoldrError,
-    > = if capture_cargo_artifacts {
+    let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
