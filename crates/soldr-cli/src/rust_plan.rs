@@ -825,6 +825,14 @@ pub(crate) fn allowed_artifact_classes(
             "cargo_fingerprint",
             "build_script_metadata",
             "build_script_output",
+            // soldr#1579: the compiled build-script binary itself was
+            // missing from this allowlist. Units whose `build.rs` output
+            // feeds their own compilation saw cargo's fingerprint check
+            // treat the (dropped) `build_script_build` artifact as stale,
+            // cascading a `StaleDepFingerprint` rebuild through everything
+            // downstream of that build script even though the rest of the
+            // thin-v1 slice (rlib/rmeta/dep_info) was retained.
+            "build_script_build",
         ],
     }
 }
