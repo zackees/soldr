@@ -244,14 +244,24 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
 /// Stable digest summarising every plan field cargo would consult to decide
 /// whether the cached `target/` tree is still valid. Used by the warm-restore
 /// sentinel (issue #229) to prove that an in-job repeat of `soldr cargo ...`
-/// is asking to restore into the same tree it just saved.
+/// is asking to restore into the same tree it just saved. The sentinel gates
+/// on tree identity *separately* (via [`RustArtifactPlanContext::target_dir`]
+/// alongside this hash) so the same-tree contract stays intact even though
+/// this digest itself never reads `workspace_root` / `target_dir`.
 ///
 /// We hash a tuple of (toolchain identity, target triple, profile, mode,
 /// cache profile, plan inputs, package selection) rather than the whole
 /// `RustArtifactPlan` so the sentinel does not falsely diverge on cosmetic
 /// fields (`schema_version`, `journal_log_path`, etc.).
+///
+/// Deliberately excludes `workspace_root` and `target_dir` — see
+/// [`compute_plan_content_identity`], which piggybacks on this property.
 pub(crate) fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
-    let payload = serde_json::json!({
+    stable_hash_json(&plan_content_identity_payload(plan))
+}
+
+fn plan_content_identity_payload(plan: &RustArtifactPlan) -> serde_json::Value {
+    serde_json::json!({
         "toolchain": {
             "rustc": plan.toolchain.rustc,
             "cargo": plan.toolchain.cargo,
@@ -277,8 +287,36 @@ pub(crate) fn compute_plan_inputs_hash(plan: &RustArtifactPlan) -> String {
         },
         "allowed_artifact_classes": plan.allowed_artifact_classes,
         "dropped_artifact_classes": plan.dropped_artifact_classes,
-    });
-    stable_hash_json(&payload)
+    })
+}
+
+/// Path-independent content identity for a rust artifact plan (issue #1539).
+///
+/// Two sibling worktrees checked out from the same commit — same lockfile,
+/// same manifests, same toolchain, same target triple/profile/features/env/
+/// rustflags — produce the SAME identity here even though their
+/// `workspace_root` / `target_dir` (both absolute, both worktree-specific)
+/// differ. This is intentionally a distinct, purpose-labeled function from
+/// [`compute_plan_inputs_hash`] even though the two currently compute the
+/// same digest: the inputs-hash contract is owned by the warm-restore
+/// sentinel (same-tree, same-job proof) and must stay exactly as sensitive
+/// as it is today; this identity is owned by cross-worktree comparison and
+/// is free to evolve independently (e.g. if the sentinel later needs a
+/// field that a cross-worktree identity must NOT be sensitive to, or
+/// vice versa).
+///
+/// This does not, by itself, restore or share anything across worktrees —
+/// it only proves when it is *safe* to consider two plans equivalent.
+/// `target/`-tree contents (dep-info files, `build.rs` `OUT_DIR` bakes)
+/// remain fundamentally worktree-specific and are restored per-tree via
+/// the path-sensitive [`compute_plan_inputs_hash`] / warm-restore sentinel
+/// path, never via this identity. The rustc-level compile cache is already
+/// shared cross-worktree today through `ZCCACHE_PATH_REMAP=auto` — this
+/// identity exists so a future consumer can safely recognize when that
+/// sharing opportunity exists at the plan layer too, without ever treating
+/// unproven or path-sensitive state as reusable.
+pub(crate) fn compute_plan_content_identity(plan: &RustArtifactPlan) -> String {
+    stable_hash_json(&plan_content_identity_payload(plan))
 }
 
 #[path = "rust_plan_warm_restore.rs"]

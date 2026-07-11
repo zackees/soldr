@@ -8,6 +8,7 @@ mod local_roundtrip;
 mod manifest;
 mod orphan_rmeta;
 mod plan_build;
+mod plan_content_identity;
 mod prep_memo;
 mod prepopulated_target;
 mod restore_gc_protection;
