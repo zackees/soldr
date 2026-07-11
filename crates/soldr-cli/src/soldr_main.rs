@@ -249,6 +249,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // forward otherwise unchanged.
             if let Some(target_triple) = extract_target_from_args(&full_args) {
                 let paths = crate::core::SoldrPaths::new()?;
+                // soldr#1543: start a bounded `cargo fetch --locked
+                // --target <T>` NOW so dependency acquisition overlaps
+                // the catalogue/SDK materialization below. Joined
+                // right after prep (before the front door spawns
+                // cargo), so the two cargos never race; on a prep
+                // error the child is reaped via kill_on_drop. Fetch
+                // failures are logged + ignored — the main build owns
+                // real dependency errors.
+                let dep_prefetch =
+                    crate::fetch_overlap::spawn_for_blessed_build(&full_args, &target_triple);
                 let prep = crate::blessed_build::prepare(&paths, &target_triple).await?;
                 let cargo_args = prep.cargo_args.clone();
                 // Apply prep env onto the current process env so the
@@ -277,6 +287,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     full_args = rewrite_build_args_for_subcommand(full_args, subcmd);
                 }
                 full_args = insert_cargo_config_args(full_args, &cargo_args);
+
+                // Join the overlapped dependency prefetch before the
+                // main cargo build spawns (soldr#1543).
+                if let Some(dep_prefetch) = dep_prefetch {
+                    dep_prefetch.join().await;
+                }
             } else {
                 // Native host build (no --target): the cross-compile
                 // sysroot prep doesn't apply, but the managed cmake +
