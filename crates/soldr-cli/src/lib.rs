@@ -33,6 +33,7 @@ pub mod cli_dispatch;
 /// `zccache-soldr` dispatch. Owns the hang-safe retry budget contract.
 pub mod compile_dispatch;
 pub mod cook;
+pub mod daemon_entry;
 pub mod doctor;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 pub mod env_cmd;
@@ -80,6 +81,7 @@ pub mod wrapper;
 /// `tests/cli_wrapper_perf.rs` can drive it in-process (issue #474).
 pub mod wrapper_target;
 pub mod zccache;
+pub mod zccache_entry;
 pub mod zccache_lifecycle;
 
 // #1490 Phase 2 facade (mechanics rule M3): every module that was

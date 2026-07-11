@@ -226,7 +226,7 @@ jobs:
       matrix:
         include:
           # All targets now produce a single `.tar.zst` archive that
-          # bundles the soldr binary alongside same-target soldr-daemon,
+          # bundles soldr alongside its same-target multicall aliases,
           # crgx, and cargo-chef. One fetch from
           # GitHub Releases installs the full runtime surface; registry
           # publishes are gated on that GitHub asset set being complete.
@@ -440,8 +440,7 @@ jobs:
             "${soldr_build_args[@]}" \
             build --release --locked --target "$target" \
             --package soldr-cli \
-            --bin soldr \
-            --bin soldr-daemon
+            --bin soldr
           echo "=== post-build diagnostic: target/$target/release/ ==="
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
@@ -454,16 +453,18 @@ jobs:
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
-          for stem in soldr soldr-daemon; do
-            src="target/${{ matrix.target }}/release/${stem}${suffix}"
-            if [ ! -f "$src" ]; then
-              echo "expected ${stem}${suffix} in target dir; observed release dir:" >&2
-              ls -la "target/${{ matrix.target }}/release" >&2 || true
-              exit 1
-            fi
-            cp "$src" "dist/package/${stem}${suffix}"
-            chmod +x "dist/package/${stem}${suffix}" 2>/dev/null || true
+          src="target/${{ matrix.target }}/release/soldr${suffix}"
+          if [ ! -f "$src" ]; then
+            echo "expected soldr${suffix} in target dir; observed release dir:" >&2
+            ls -la "target/${{ matrix.target }}/release" >&2 || true
+            exit 1
+          fi
+          cp "$src" "dist/package/soldr${suffix}"
+          for stem in soldr-daemon zccache; do
+            ln "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}" 2>/dev/null || \
+              cp "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}"
           done
+          chmod +x dist/package/* 2>/dev/null || true
 
           # soldr#1302: toolchain, clang, and zccache wrapper shims are
           # hardlinks/copies of `soldr` materialized at install time.
@@ -784,23 +785,24 @@ jobs:
             soldr_debug_info_json=$(printf "[%s]" "$(IFS=,; echo "${soldr_debug_info_entries[*]}")")
           fi
           soldr_daemon_sha=$(sha256_of "dist/package/soldr-daemon${suffix}")
+          zccache_alias_sha=$(sha256_of "dist/package/zccache${suffix}")
           crgx_sha=$(sha256_of "dist/package/crgx${suffix}")
           cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # schema_version 3 adds the `cargo_chef` block. Consumers that
-          # only understand v2 still get the old soldr/zccache/crgx fields,
-          # but installers now require v3 so the bundled cook path is present.
+          # schema_version 4 adds the zccache multicall alias. Installers keep
+          # accepting schema 3 archives, where that alias was not bundled.
           cat > dist/package/manifest.json <<EOF
           {
-            "schema_version": 3,
+            "schema_version": 4,
             "soldr": {
               "version": "${version}",
               "target": "${soldr_target}",
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
               "sidecars": [
-                { "name": "soldr-daemon${suffix}",       "sha256": "${soldr_daemon_sha}" }
+                { "name": "soldr-daemon${suffix}", "sha256": "${soldr_daemon_sha}" },
+                { "name": "zccache${suffix}",      "sha256": "${zccache_alias_sha}" }
               ],
               "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
@@ -1330,7 +1332,7 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship soldr, soldr-daemon, crgx,
+          # Every archive must ship soldr, its runtime aliases, crgx,
           # cargo-chef, and a manifest.json describing the bundle.
           # Windows archives must also ship soldr's PDB sidecar.
           suffix=""
@@ -1338,6 +1340,7 @@ jobs:
           for required in \
             "${{ matrix.binary }}" \
             "soldr-daemon${suffix}" \
+            "zccache${suffix}" \
             "crgx${suffix}" \
             "cargo-chef${suffix}" \
             "manifest.json"; do
@@ -1409,6 +1412,7 @@ jobs:
 
               # Smoke the bundled tools too — same arch gate.
               "$extract/soldr-daemon${suffix}" --help >/dev/null
+              "$extract/zccache${suffix}" --version
               "$extract/crgx${suffix}" --version
               "$extract/cargo-chef${suffix}" --version
               ;;

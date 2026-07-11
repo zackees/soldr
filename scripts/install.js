@@ -14,7 +14,7 @@ const PACKAGE_ROOT = path.resolve(__dirname, "..");
 const PACKAGE_JSON = require(path.join(PACKAGE_ROOT, "package.json"));
 
 // Every release ships a single .tar.zst per target that bundles soldr
-// alongside soldr-daemon, same-target crgx, and same-target
+// alongside its soldr-daemon/zccache multicall aliases, same-target crgx, and
 // cargo-chef. One fetch installs everything, and `bin/soldr.js` wires
 // SOLDR_CRGX_LOCAL_DIR and SOLDR_CARGO_CHEF_LOCAL_DIR to the install dir
 // so soldr's runtime resolver finds those bundled tools without going
@@ -275,7 +275,7 @@ async function install() {
         return filePath;
       },
     });
-    for (const baseName of BUNDLED_BINARIES) {
+    for (const baseName of zccacheContract.releaseBundledBinaries(manifest.schema_version)) {
       const fileName = `${baseName}${binaryExt}`;
       const src = findExtractedBinary(extractDir, fileName);
       if (!src) {
@@ -301,7 +301,7 @@ async function install() {
     fs.copyFileSync(manifestSrc, path.join(nativeDir, zccacheContract.MANIFEST_NAME));
 
     console.log(
-      `soldr: installed ${target.triple} (soldr + daemon + crgx + cargo-chef) into ${nativeDir}`,
+      `soldr: installed ${target.triple} (soldr + runtime aliases + crgx + cargo-chef) into ${nativeDir}`,
     );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });

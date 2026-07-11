@@ -2,7 +2,7 @@
 //!
 //! soldr's build cache runs as an embedded service inside soldr-daemon;
 //! a standalone `zccache-daemon` process must never spawn. The trampoline
-//! (`src/bin/zccache_embedded.rs`, what `soldr zccache <args>` execs)
+//! (`src/zccache_entry.rs`, selected by the `zccache` argv[0] alias)
 //! therefore only passes through daemon-free subcommands and hard-errors
 //! the rest, pointing at the embedded equivalents. It also exports
 //! `ZCCACHE_NO_SPAWN=1` (zccache#982) as defense-in-depth so even an
@@ -19,22 +19,12 @@ use std::process::{Command, Output};
 use std::time::Duration;
 
 use soldr_cli::timed_test;
+mod common;
 
-/// Resolve the trampoline binary. `env!("CARGO_BIN_EXE_zccache")` expands
-/// at compile time, baking the build machine's path into the test binary
-/// (soldr#1039). On a target runner replaying a nextest archive, nextest
-/// exports `NEXTEST_BIN_EXE_zccache` at runtime pointing into the
-/// extracted archive — prefer that. If neither resolves to an existing
-/// file (archive built without the bin), the caller skips the test.
+/// Materialize the trampoline alias from the one compiled soldr binary.
 fn trampoline_bin() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("NEXTEST_BIN_EXE_zccache") {
-        let p = PathBuf::from(p);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    let compile_time = PathBuf::from(env!("CARGO_BIN_EXE_zccache"));
-    compile_time.exists().then_some(compile_time)
+    let alias = common::zccache_bin();
+    alias.exists().then_some(alias)
 }
 
 /// Isolated invocation env: unique cache root + daemon namespace so an

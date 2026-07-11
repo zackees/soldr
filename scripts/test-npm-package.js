@@ -131,8 +131,10 @@ assert.deepStrictEqual(
   install.BUNDLED_BINARIES,
   zccacheContract.RELEASE_BUNDLED_BINARIES,
 );
-// zccache is embedded into soldr/soldr-daemon; no standalone zccache
-// binaries are bundled or downloaded.
+assert.ok(!zccacheContract.releaseBundledBinaries(3).includes("zccache"));
+assert.ok(zccacheContract.releaseBundledBinaries(4).includes("zccache"));
+// zccache is embedded; ZCCACHE_BUNDLED_BINARIES tracks standalone upstream
+// binaries, not the `zccache` multicall alias in RELEASE_BUNDLED_BINARIES.
 assert.deepStrictEqual(zccacheContract.ZCCACHE_BUNDLED_BINARIES, []);
 assert.strictEqual(zccacheContract.CRGX_BUNDLED_BINARY, "crgx");
 assert.strictEqual(zccacheContract.CARGO_CHEF_BUNDLED_BINARY, "cargo-chef");
@@ -168,8 +170,8 @@ for (const [key, target] of Object.entries(install.TARGETS || {})) {
   );
 }
 
-// BUNDLED_BINARIES must include soldr, soldr-daemon, crgx, and
-// cargo-chef. It must not require standalone zccache binaries.
+// BUNDLED_BINARIES must include soldr, its runtime aliases, crgx, and
+// cargo-chef. It must not require standalone upstream zccache binaries.
 assert.ok(
   Array.isArray(install.BUNDLED_BINARIES),
   "install.BUNDLED_BINARIES must be exported as an array",
@@ -177,6 +179,7 @@ assert.ok(
 for (const required of [
   "soldr",
   "soldr-daemon",
+  "zccache",
   "crgx",
   "cargo-chef",
 ]) {

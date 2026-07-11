@@ -116,12 +116,13 @@ const SOLDR_TRAMPOLINING_ENV_VAR: &str = "SOLDR_TRAMPOLINING";
 
 /// Full soldr CLI entry — the `src/main.rs` shim calls this and never
 /// returns control flow decisions of its own (#1490 Phase 1).
-pub fn run() {
+pub fn run() -> std::process::ExitCode {
     let raw_args: Vec<String> = std::env::args().collect();
 
     if !multicall::toolchain_shim_should_defer_to_rustc_wrapper(&raw_args) {
         match multicall::maybe_dispatch(&raw_args) {
             Some(multicall::MulticallDispatch::Exit(code)) => std::process::exit(code),
+            Some(multicall::MulticallDispatch::ExitCode(code)) => return code,
             Some(multicall::MulticallDispatch::SoldrArgs(args)) => {
                 std::process::exit(block_on_exit_code(run_with_args("soldr", &args)));
             }
@@ -909,7 +910,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // managed-binary download. The trampoline forwards straight
             // into `zccache::cli::commands::run()`.
             if crate_name == "zccache" && matches!(version, VersionSpec::Latest) {
-                let trampoline = crate::binaries::embedded_zccache_binary();
+                let trampoline = crate::binaries::embedded_zccache_binary()?;
                 let mut command = std::process::Command::new(&trampoline);
                 command.args(tool_args);
                 suppress_windows_console_window(&mut command);
@@ -1299,6 +1300,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     println!("soldr-daemon already running");
                     return Ok(());
                 }
+                let _ = crate::binaries::soldr_daemon_binary();
                 try_spawn_detached().map_err(|e| {
                     SoldrError::Other(format!("failed to spawn soldr-daemon: {e:?}"))
                 })?;

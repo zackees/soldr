@@ -316,17 +316,54 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
-/// Resolve the compiled-in `zccache` CLI trampoline that ships alongside
-/// `soldr` (soldr#1368). The trampoline is a soldr-cli `[[bin]]` named
-/// `zccache` (`src/bin/zccache_embedded.rs`), installed as a sibling of
-/// the running `soldr` executable. `soldr zccache <args>` execs it
-/// instead of downloading a managed zccache release.
-///
-/// Resolution: sibling of the current executable named `zccache`
-/// (`zccache.exe` on Windows); falls back to a bare `zccache` name so a
-/// PATH lookup can still find it in unusual install layouts.
-pub(crate) fn embedded_zccache_binary() -> std::path::PathBuf {
-    sibling_binary("zccache")
+/// Materialize and resolve the compiled-in `zccache` CLI multicall alias.
+pub(crate) fn embedded_zccache_binary() -> Result<std::path::PathBuf, SoldrError> {
+    materialize_runtime_alias("zccache")
+}
+
+/// Materialize the daemon's stable process/service identity next to soldr.
+pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
+    materialize_runtime_alias("soldr-daemon")
+}
+
+fn materialize_runtime_alias(stem: &str) -> Result<std::path::PathBuf, SoldrError> {
+    let source = crate::shim_materialize::soldr_binary_source()?;
+    let current = std::env::current_exe().map_err(SoldrError::from)?;
+    let file = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    };
+    let (current_target, source_target) = runtime_alias_targets(&source, &current, &file)?;
+    crate::shim_materialize::materialize_executable(&source, &current_target)?;
+
+    // Self-relocated wrapper invocations run from a GC-managed runtime dir,
+    // while `soldr_binary_source()` intentionally points at the package-owned
+    // original. Keep both layouts complete: lifecycle resolves beside
+    // `current_exe`, and package commands resolve beside the original.
+    if let Some(source_target) = source_target {
+        crate::shim_materialize::materialize_executable(&source, &source_target)?;
+    }
+    Ok(current_target)
+}
+
+fn runtime_alias_targets(
+    source: &std::path::Path,
+    current: &std::path::Path,
+    file: &str,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), SoldrError> {
+    let current_parent = current.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "running soldr has no parent: {}",
+            current.display()
+        ))
+    })?;
+    let current_target = current_parent.join(file);
+    let source_target = source
+        .parent()
+        .map(|parent| parent.join(file))
+        .filter(|target| *target != current_target);
+    Ok((current_target, source_target))
 }
 
 /// Materialize the `zccache-soldr` RUSTC_WRAPPER/CC shim name
@@ -371,6 +408,24 @@ fn sibling_binary(stem: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(
+        relocated_runtime_alias_is_materialized_beside_current_exe,
+        {
+            let source = std::path::Path::new("/opt/package/bin/soldr");
+            let current = std::path::Path::new("/tmp/runtime/hash/soldr");
+            let (current_target, source_target) =
+                runtime_alias_targets(source, current, "soldr-daemon").expect("alias targets");
+            assert_eq!(
+                current_target,
+                std::path::Path::new("/tmp/runtime/hash/soldr-daemon")
+            );
+            assert_eq!(
+                source_target.as_deref(),
+                Some(std::path::Path::new("/opt/package/bin/soldr-daemon"))
+            );
+        }
+    );
 
     #[test]
     fn parse_tool_spec_defaults_to_latest_version() {

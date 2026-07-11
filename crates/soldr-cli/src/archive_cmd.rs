@@ -24,7 +24,8 @@
 //! release-workflow contract `setup-soldr` already consumes):
 //!
 //! - `soldr` / `soldr.exe` - the staged binary.
-//! - `soldr-daemon` / `soldr-daemon.exe` - soldr-owned daemon binary.
+//! - `soldr-daemon` / `soldr-daemon.exe` - multicall alias of soldr.
+//! - `zccache` / `zccache.exe` - multicall alias exposing the embedded CLI.
 //! - `crgx` / `crgx.exe` - bundled crgx (optional).
 //! - `cargo-chef` / `cargo-chef.exe` - bundled cargo-chef (optional).
 //! - `manifest.json` - minimal descriptor (soldr version + target +
@@ -32,9 +33,9 @@
 //!
 //! ## Bundled binary resolution
 //!
-//! `soldr-daemon` is resolved from the same build target directory as
-//! `soldr`. The toolchain, clang, and native-cache shim names are
-//! materialized from `soldr` at install time, so no shim sidecar binaries
+//! `soldr-daemon` and `zccache` are materialized from `soldr` in the same
+//! build target directory. The toolchain, clang, and native-cache shim
+//! names are materialized from `soldr` at install time, so no shim binaries
 //! are staged. `crgx` and `cargo-chef` are looked up under the managed-
 //! cache layout `<SoldrPaths::bin>/<crate>-<version>/<binary>`. Both
 //! bundled tools are optional: a missing tool is simply omitted, never
@@ -62,7 +63,7 @@ use crate::core::{SoldrError, SoldrPaths, TargetTriple};
 /// zccache trio is no longer staged. zccache itself is embedded into
 /// soldr/soldr-daemon, so this is informational only.
 const EMBEDDED_ZCCACHE_VERSION: &str = zccache::core::VERSION;
-const SOLDR_REQUIRED_ARCHIVE_BINARIES: &[&str] = &["soldr-daemon"];
+const SOLDR_REQUIRED_ARCHIVE_BINARIES: &[&str] = &["soldr-daemon", "zccache"];
 
 /// zstd compression level for `soldr archive` output. Matches the
 /// release-workflow setting documented in `.github/workflows/release-auto.yml`
@@ -197,13 +198,7 @@ pub fn resolve_sources(
     for stem in SOLDR_REQUIRED_ARCHIVE_BINARIES {
         let binary_name = format!("{stem}{exe_suffix}");
         let source = release_dir.join(&binary_name);
-        if !source.is_file() {
-            return Err(SoldrError::Other(format!(
-                "required soldr binary not found at {} - run `soldr cargo build --release --target {} --package soldr-cli --bin soldr --bin soldr-daemon` first",
-                source.display(),
-                triple,
-            )));
-        }
+        crate::shim_materialize::materialize_executable(&soldr_binary, &source)?;
         required.push(ArchiveEntry {
             archive_name: binary_name,
             source,
@@ -608,16 +603,24 @@ mod tests {
 
     fn synthesize_sources(stage: &Path, target: &str) -> ArchiveSources {
         let soldr = write_fake(stage, "soldr", b"fake-soldr-bin");
-        let daemon = write_fake(stage, "soldr-daemon", b"fake-soldr-daemon");
+        let daemon = write_fake(stage, "soldr-daemon", b"fake-soldr-bin");
+        let zccache = write_fake(stage, "zccache", b"fake-soldr-bin");
         let crgx = write_fake(stage, "crgx", b"fake-crgx");
         let chef = write_fake(stage, "cargo-chef", b"fake-cargo-chef");
         ArchiveSources {
             soldr_binary: soldr,
-            required: vec![ArchiveEntry {
-                archive_name: "soldr-daemon".into(),
-                source: daemon,
-                sha256: None,
-            }],
+            required: vec![
+                ArchiveEntry {
+                    archive_name: "soldr-daemon".into(),
+                    source: daemon,
+                    sha256: None,
+                },
+                ArchiveEntry {
+                    archive_name: "zccache".into(),
+                    source: zccache,
+                    sha256: None,
+                },
+            ],
             optional: vec![
                 ArchiveEntry {
                     archive_name: "crgx".into(),
@@ -724,6 +727,7 @@ mod tests {
             for expected in [
                 "soldr",
                 "soldr-daemon",
+                "zccache",
                 "crgx",
                 "cargo-chef",
                 "manifest.json",

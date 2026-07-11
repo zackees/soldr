@@ -3,6 +3,6 @@
 //! (`src/soldr_main.rs`), so the lib and bin no longer compile the
 //! same ~40K LOC module tree twice per build.
 
-fn main() {
+fn main() -> std::process::ExitCode {
     soldr_cli::run()
 }
