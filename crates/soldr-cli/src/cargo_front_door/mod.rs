@@ -1824,18 +1824,17 @@ pub(crate) async fn run_cargo_front_door(
         ),
         SoldrError,
     > = if capture_cargo_artifacts {
-            let target_dir = cache_plan
-                .target_dir_for_hooks(args)
-                .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
-            run_command_capturing_cargo_json(&mut command, &target_dir).map(
-                |(status, captured, paths)| (status, Some(captured), Some(paths)),
-            )
-        } else if capture_for_diagnostics {
-            run_command_capturing_diagnostic_tail(&mut command)
-                .map(|(status, captured)| (status, Some(captured), None))
-        } else {
-            run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
-        };
+        let target_dir = cache_plan
+            .target_dir_for_hooks(args)
+            .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
+        run_command_capturing_cargo_json(&mut command, &target_dir)
+            .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
+    } else if capture_for_diagnostics {
+        run_command_capturing_diagnostic_tail(&mut command)
+            .map(|(status, captured)| (status, Some(captured), None))
+    } else {
+        run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
+    };
     let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -2018,9 +2017,8 @@ pub(crate) async fn run_cargo_front_door(
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
-    args.iter().any(|arg| {
-        arg == "--message-format" || arg.starts_with("--message-format=")
-    })
+    args.iter()
+        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
 }
 
 fn run_command_capturing_cargo_json(
@@ -2055,7 +2053,8 @@ fn parse_cargo_artifact_closure(stdout: &[u8], target_dir: &Path) -> Vec<String>
         };
         match reason {
             "compiler-artifact" => {
-                if let Some(filenames) = value.get("filenames").and_then(serde_json::Value::as_array)
+                if let Some(filenames) =
+                    value.get("filenames").and_then(serde_json::Value::as_array)
                 {
                     for filename in filenames.iter().filter_map(serde_json::Value::as_str) {
                         add_cargo_closure_path(&mut paths, Path::new(filename), target_dir);
@@ -2088,7 +2087,10 @@ fn add_cargo_closure_path(paths: &mut BTreeMap<String, ()>, path: &Path, target_
     if !relative.as_os_str().is_empty() {
         paths.insert(relative.to_string_lossy().replace('\\', "/"), ());
     }
-    if path.components().any(|component| component.as_os_str() == ".fingerprint") {
+    if path
+        .components()
+        .any(|component| component.as_os_str() == ".fingerprint")
+    {
         return;
     }
     if let Some(parent) = path.parent() {
@@ -2121,7 +2123,9 @@ fn collect_closure_files(paths: &mut BTreeMap<String, ()>, root: &Path, target_d
     }
 }
 
-fn spawn_capture_pipe_reader_to_stdout<R>(mut reader: R) -> std::sync::mpsc::Receiver<CapturePipeMessage>
+fn spawn_capture_pipe_reader_to_stdout<R>(
+    mut reader: R,
+) -> std::sync::mpsc::Receiver<CapturePipeMessage>
 where
     R: std::io::Read + Send + 'static,
 {

@@ -6,8 +6,7 @@ companion ``assert_thin_noop.py`` inspects cargo stdout to confirm Cargo's
 fresh/dirty decision. That tells us cargo was correct, but it does not
 prove the Phase 1 contract: that soldr-cli emitted a ``manifest.v2.json``
 next to the bundle that truthfully enumerates the files present and never
-re-lists any of the artifact categories thin-v2 is supposed to drop
-(``.rlib``, ``.rmeta``, incremental DB, build-script binaries, etc.).
+re-lists transient/debug artifact categories thin-v2 is supposed to drop.
 
 If a future regression silently stops emitting the manifest, or starts
 re-listing dropped categories, this script fails the gate.
@@ -52,13 +51,9 @@ from pathlib import Path
 # directory boundaries are explicit.
 _DROPPED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("incremental directory", re.compile(r"(^|/)incremental/")),
-    ("rlib output", re.compile(r"\.rlib$")),
-    ("rmeta output", re.compile(r"\.rmeta$")),
     ("split debug-info (.dwo)", re.compile(r"\.dwo$")),
     ("Windows pdb", re.compile(r"\.pdb$")),
     ("macOS dSYM bundle", re.compile(r"\.dSYM(/|$)")),
-    ("build-script binary (Unix)", re.compile(r"(^|/)build-script-build$")),
-    ("build-script binary (Windows)", re.compile(r"(^|/)build-script-build\.exe$")),
 ]
 
 _FINGERPRINT_JSON_LABEL = "non-load-bearing fingerprint diagnostic JSON"
@@ -254,7 +249,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         description=(
             "Validate a thin-v2 manifest.v2.json against its bundle directory. "
             "Confirms schema, file presence, and that no dropped-category "
-            "artifacts (rlib/rmeta/incremental/dwo/pdb/dSYM/build-script-build) "
+            "artifacts (incremental/dwo/pdb/dSYM) "
             "are listed."
         ),
     )

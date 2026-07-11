@@ -18,8 +18,8 @@ use crate::{
     TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
     WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
 };
-use serde::{Deserialize, Serialize};
 use prost::Message;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 #[path = "rust_plan_proto.rs"]
