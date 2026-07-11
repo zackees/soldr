@@ -228,9 +228,41 @@ def test_strict_mode_catches_orphan(mod, tmp_path: Path) -> None:
         ("debug/build/serde-abc/build-script-build", "Unix"),
         ("debug/build/serde-abc/build-script-build.exe", "Windows"),
         (
-            "debug/.fingerprint/serde-abc/build-script-build-script-build.json",
+            "debug/.fingerprint/serde-abc/serde-abc.json",
             "diagnostic JSON",
         ),
+        (
+            "debug/.fingerprint/serde-abc/nested/serde-abc.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/dependency-serde.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/outputting-serde.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/library-serde.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/binary-serde.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/build-script.json",
+            "diagnostic JSON",
+        ),
+        (
+            "debug/.fingerprint/serde-abc/run-build-script.json",
+            "diagnostic JSON",
+        ),
+        ("debug/.fingerprint/serde-abc/dep.json", "diagnostic JSON"),
+        ("debug/.fingerprint/serde-abc/output.json", "diagnostic JSON"),
+        ("debug/.fingerprint/serde-abc/lib.json", "diagnostic JSON"),
+        ("debug/.fingerprint/serde-abc/bin.json", "diagnostic JSON"),
     ],
 )
 def test_dropped_category_triggers_failure(
@@ -246,6 +278,30 @@ def test_dropped_category_triggers_failure(
     joined = "\n".join(errors)
     assert "dropped artifact classes" in joined
     assert label_substr in joined
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "dep-serde.json",
+        "output-serde.json",
+        "lib-serde.json",
+        "bin-serde.json",
+        "build-script-build-script-build.json",
+        "run-build-script-build-script-build.json",
+        "nested/dep-serde.json",
+    ],
+)
+def test_load_bearing_fingerprint_json_is_allowed(
+    mod, tmp_path: Path, filename: str
+) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    rel_path = f"debug/.fingerprint/serde-abc/{filename}"
+    _populate_bundle(bundle, [rel_path])
+    manifest_path = _make_manifest(bundle, [(rel_path, 1)])
+
+    assert mod.assert_manifest(manifest_path, bundle) == []
 
 
 # ---------------------------------------------------------------------------

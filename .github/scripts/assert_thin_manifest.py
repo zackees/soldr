@@ -59,11 +59,33 @@ _DROPPED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("macOS dSYM bundle", re.compile(r"\.dSYM(/|$)")),
     ("build-script binary (Unix)", re.compile(r"(^|/)build-script-build$")),
     ("build-script binary (Windows)", re.compile(r"(^|/)build-script-build\.exe$")),
-    (
-        "fingerprint diagnostic JSON",
-        re.compile(r"(^|/)\.fingerprint/[^/]+/[^/]+\.json$"),
-    ),
 ]
+
+_FINGERPRINT_JSON_LABEL = "non-load-bearing fingerprint diagnostic JSON"
+
+
+def _is_non_load_bearing_fingerprint_json(rel: str) -> bool:
+    """Mirror zccache's thin-v2 fingerprint-meta basename classifier."""
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
+    if not parts or ".fingerprint" not in parts[:-1]:
+        return False
+
+    name = parts[-1]
+    if not name.endswith(".json"):
+        return False
+
+    stem = name.removesuffix(".json")
+    # Cargo's serialized freshness records use these prefixes and are
+    # load-bearing even though their suffix is `.json` (zccache#1041).
+    if stem.startswith(("build-script-", "run-build-script-")):
+        return False
+    is_short_prefix_meta = "-" in stem and stem.split("-", 1)[0] in {
+        "dep",
+        "output",
+        "lib",
+        "bin",
+    }
+    return not is_short_prefix_meta
 
 
 def _format_drop_hits(hits: list[tuple[str, str]]) -> str:
@@ -187,10 +209,14 @@ def assert_manifest(
     #    invariant: thin-v2 must NEVER carry these classes.
     drop_hits: list[tuple[str, str]] = []
     for rel in manifest_rel_paths:
+        matched = False
         for label, pattern in _DROPPED_PATTERNS:
             if pattern.search(rel):
                 drop_hits.append((label, rel))
+                matched = True
                 break
+        if not matched and _is_non_load_bearing_fingerprint_json(rel):
+            drop_hits.append((_FINGERPRINT_JSON_LABEL, rel))
     if drop_hits:
         errors.append(
             "manifest references files in dropped artifact classes "
