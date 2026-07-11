@@ -419,15 +419,11 @@ fn cargo_input_inventory(
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "d") {
             dep_info_files.push(path.clone());
-            if path
-                .strip_prefix(target_dir)
-                .ok()
-                .is_some_and(|relative| {
-                    relative
-                        .components()
-                        .any(|component| component.as_os_str() == "build")
-                })
-            {
+            if path.strip_prefix(target_dir).ok().is_some_and(|relative| {
+                relative
+                    .components()
+                    .any(|component| component.as_os_str() == "build")
+            }) {
                 build_script_metadata = true;
             }
         }
@@ -547,10 +543,7 @@ fn makefile_tokens(input: &str) -> Vec<String> {
     tokens
 }
 
-fn workspace_files_for_save(
-    workspace: &Path,
-    threads: Option<usize>,
-) -> Result<Vec<PathBuf>> {
+fn workspace_files_for_save(workspace: &Path, threads: Option<usize>) -> Result<Vec<PathBuf>> {
     for target_dir in workspace_target_dir_candidates(workspace) {
         if let Some(files) = cargo_input_inventory(workspace, &target_dir, threads)? {
             return Ok(files);
@@ -2488,9 +2481,11 @@ mod tests {
         let target = workspace.join("target/debug/deps");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::write(target.join("broken.d"), "not makefile dep-info\n").unwrap();
-        assert!(cargo_input_inventory(&workspace, workspace.join("target").as_path(), None)
-            .unwrap()
-            .is_none());
+        assert!(
+            cargo_input_inventory(&workspace, workspace.join("target").as_path(), None)
+                .unwrap()
+                .is_none()
+        );
     });
 
     timed_test!(profile_line_matches_documented_shape, {
