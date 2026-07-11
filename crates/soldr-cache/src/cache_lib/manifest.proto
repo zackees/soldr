@@ -57,7 +57,34 @@ message Manifest {
   // Cache paths present in the base layer but absent from the delta's
   // source tree. Load applies these as tombstones before extracting the
   // delta payload so restore is base + delta with delta winning.
+  // Since #1548 this also carries tombstones for symlinks that were
+  // present in the base layer's cache_symlinks but have been removed.
   repeated string deleted_cache_paths = 11;
+
+  // Symlinks below the cache dir (#1548). Manifest-only — symlinks are
+  // NEVER carried as tar entries, so pre-#1548 readers skip this unknown
+  // field and behave exactly as before. Save records only links whose
+  // target is relative, lexically stays inside the cache root, AND
+  // resolves to something real; load re-validates the same containment
+  // property before creating any link (a crafted manifest can never make
+  // load create a link that escapes the restore root). DELTA archives
+  // carry the FULL current symlink set, not a diff.
+  repeated SymlinkEntry cache_symlinks = 12;
+}
+
+// A symlink below the cache dir (#1548).
+message SymlinkEntry {
+  // Cache-dir-relative POSIX path of the link itself.
+  string path = 1;
+
+  // Raw link target, forward slashes on every platform. Always RELATIVE:
+  // absolute or root-escaping targets are rejected at save time and
+  // re-rejected at load time before any link is created.
+  string target = 2;
+
+  // Whether the target resolved to a directory at save time. Used on
+  // Windows to pick symlink_dir vs symlink_file at restore.
+  bool is_dir = 3;
 }
 
 message SourceFile {
