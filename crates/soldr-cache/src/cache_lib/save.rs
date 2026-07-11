@@ -86,6 +86,27 @@ pub mod proto {
         pub base_manifest_blake3: ::prost::alloc::vec::Vec<u8>,
         #[prost(string, repeated, tag = "11")]
         pub deleted_cache_paths: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+        #[prost(message, repeated, tag = "12")]
+        pub cache_symlinks: ::prost::alloc::vec::Vec<SymlinkEntry>,
+    }
+
+    /// A symlink below the cache dir (#1548). Manifest-only: symlinks are
+    /// never carried as tar entries, so pre-#1548 loaders simply skip this
+    /// unknown field and behave exactly as before (no link restored).
+    #[derive(Clone, PartialEq, Message)]
+    pub struct SymlinkEntry {
+        /// Cache-dir-relative POSIX path of the link itself.
+        #[prost(string, tag = "1")]
+        pub path: ::prost::alloc::string::String,
+        /// Raw link target, forward-slashed. Always RELATIVE — absolute or
+        /// root-escaping targets are rejected at save time and re-rejected
+        /// at load time before any link is created.
+        #[prost(string, tag = "2")]
+        pub target: ::prost::alloc::string::String,
+        /// Whether the target resolved to a directory at save time. Used on
+        /// Windows to pick symlink_dir vs symlink_file at restore.
+        #[prost(bool, tag = "3")]
+        pub is_dir: bool,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -121,7 +142,7 @@ pub mod proto {
     }
 }
 
-pub use proto::{CacheFile, CacheLayerKind, Manifest, SourceFile};
+pub use proto::{CacheFile, CacheLayerKind, Manifest, SourceFile, SymlinkEntry};
 
 /// Well-known filename for the manifest inside an archive.
 pub const MANIFEST_NAME: &str = "SOLDR_MANIFEST.pb";
@@ -295,7 +316,22 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
             path: workspace.to_path_buf(),
             message: err.to_string(),
         })?;
-        if !entry.file_type().is_file() {
+        let file_type = entry.file_type();
+        let is_file = file_type.is_file();
+        // #1548: symlinked SOURCE files are surfaced via their target
+        // content when — and only when — the link target lexically stays
+        // inside the workspace and resolves to a regular file. Downstream
+        // (hash + mtime snapshot at save, replay at load) uses
+        // link-following `fs::metadata` / `hash_file`, so the entry
+        // naturally carries the target's content hash and mtime.
+        // Absolute, escaping, broken, and non-UTF-8 targets stay
+        // conservatively OMITTED (the pre-#1548 behavior for all
+        // symlinks): a missing manifest entry can only mean "no mtime
+        // replayed", i.e. Cargo rebuilds — never an underbuild.
+        let is_surfaced_symlink = !is_file
+            && file_type.is_symlink()
+            && workspace_symlink_is_surfaced(workspace, &entry.path());
+        if !is_file && !is_surfaced_symlink {
             continue;
         }
         let abs = entry.path();
@@ -308,10 +344,35 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
     Ok(out)
 }
 
+/// True when a workspace symlink should appear in the source-file snapshot
+/// (#1548): relative target, lexically contained in the workspace root, and
+/// resolving to an existing regular file.
+fn workspace_symlink_is_surfaced(workspace: &Path, abs: &Path) -> bool {
+    let Ok(rel) = abs.strip_prefix(workspace) else {
+        return false;
+    };
+    let Ok(raw) = std::fs::read_link(abs) else {
+        return false;
+    };
+    let Some(target) = symlink_target_to_posix(&raw) else {
+        return false;
+    };
+    if resolve_symlink_target_in_root(rel, &target).is_none() {
+        return false;
+    }
+    std::fs::metadata(abs).map(|m| m.is_file()).unwrap_or(false)
+}
+
 /// Like `walk_workspace_files` but does NOT exclude `target/` (because
 /// the cache dir itself is often called `cache/` or `zccache/` and we
-/// want everything below it). Returns absolute paths.
-fn walk_cache_files(cache_dir: &Path, threads: Option<usize>) -> Result<Vec<PathBuf>> {
+/// want everything below it). Returns absolute paths of regular files
+/// plus, separately, the absolute paths of symlinks encountered (#1548 —
+/// the walk never follows them; validation happens in
+/// [`walk_cache_files_for_profile`]).
+fn walk_cache_files(
+    cache_dir: &Path,
+    threads: Option<usize>,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     let walker = jwalk::WalkDir::new(cache_dir)
         .follow_links(false)
         .skip_hidden(false);
@@ -319,19 +380,23 @@ fn walk_cache_files(cache_dir: &Path, threads: Option<usize>) -> Result<Vec<Path
         Some(n) if n > 0 => walker.parallelism(jwalk::Parallelism::RayonNewPool(n)),
         _ => walker,
     };
-    let mut out = Vec::new();
+    let mut files = Vec::new();
+    let mut symlinks = Vec::new();
     for entry in walker {
         let entry = entry.map_err(|err| SaveLoadError::Walk {
             path: cache_dir.to_path_buf(),
             message: err.to_string(),
         })?;
-        if !entry.file_type().is_file() {
-            continue;
+        let file_type = entry.file_type();
+        if file_type.is_file() {
+            files.push(entry.path());
+        } else if file_type.is_symlink() {
+            symlinks.push(entry.path());
         }
-        out.push(entry.path());
     }
-    out.sort();
-    Ok(out)
+    files.sort();
+    symlinks.sort();
+    Ok((files, symlinks))
 }
 
 #[derive(Debug, Default)]
@@ -339,6 +404,11 @@ struct CacheWalk {
     included_paths: Vec<PathBuf>,
     excluded_files: u64,
     excluded_bytes: u64,
+    /// Validated in-root symlinks to record in the manifest (#1548).
+    symlinks: Vec<SymlinkEntry>,
+    /// Symlinks skipped (absolute / escaping / broken / unreadable
+    /// target). Each one warned on stderr at walk time.
+    skipped_symlinks: u64,
 }
 
 fn walk_cache_files_for_profile(
@@ -347,7 +417,8 @@ fn walk_cache_files_for_profile(
     profile: SaveProfile,
 ) -> Result<CacheWalk> {
     let mut walk = CacheWalk::default();
-    for abs in walk_cache_files(cache_dir, threads)? {
+    let (files, symlinks) = walk_cache_files(cache_dir, threads)?;
+    for abs in files {
         let rel = abs
             .strip_prefix(cache_dir)
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
@@ -359,7 +430,47 @@ fn walk_cache_files_for_profile(
             walk.included_paths.push(abs);
         }
     }
+    for abs in symlinks {
+        let rel = abs
+            .strip_prefix(cache_dir)
+            .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
+        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+            walk.excluded_files += 1;
+            continue;
+        }
+        match cache_symlink_entry(&abs, rel) {
+            Ok(entry) => walk.symlinks.push(entry),
+            Err(reason) => {
+                // Record-and-skip LOUDLY (#1548): an unsafe or broken
+                // symlink is never silently dropped from the archive.
+                // Whatever consumed it after a restore sees a missing
+                // path and conservatively rebuilds.
+                eprintln!(
+                    "soldr save: skipping symlink {} ({reason}) — not archived",
+                    abs.display()
+                );
+                walk.skipped_symlinks += 1;
+            }
+        }
+    }
     Ok(walk)
+}
+
+/// Build the manifest entry for one on-disk symlink, or explain why it is
+/// conservatively excluded from the archive.
+fn cache_symlink_entry(abs: &Path, rel: &Path) -> std::result::Result<SymlinkEntry, &'static str> {
+    let raw = std::fs::read_link(abs).map_err(|_| "unreadable link target")?;
+    let target = symlink_target_to_posix(&raw).ok_or("non-UTF-8 link target")?;
+    resolve_symlink_target_in_root(rel, &target).ok_or("absolute or root-escaping link target")?;
+    // The link must resolve to something real at save time — a dangling
+    // link is never archived (restored consumers go Dirty instead of
+    // trusting a target we could not verify).
+    let followed = std::fs::metadata(abs).map_err(|_| "broken link target")?;
+    Ok(SymlinkEntry {
+        path: rel_to_posix(rel),
+        target,
+        is_dir: followed.is_dir(),
+    })
 }
 
 /// Return true when a cache-relative path is intentionally omitted from
@@ -402,6 +513,67 @@ pub fn ci_profile_excludes_cache_path(rel: &Path) -> bool {
         || file_name.ends_with(".pid")
         || file_name.ends_with(".tmp")
         || file_name.ends_with(".temp")
+}
+
+/// Purely-LEXICAL symlink-target containment check (#1548). Resolves
+/// `target` relative to `link_rel`'s parent directory (both relative to
+/// the same root) and returns the normalized root-relative path of the
+/// resolved target, or `None` when the link is unsafe to preserve:
+///
+/// * absolute targets (`/x`, `C:\x`, UNC prefixes) — rejected outright,
+///   even if they happen to point back inside the root;
+/// * targets whose `..` traversal escapes the root;
+/// * empty targets or targets resolving to the root itself.
+///
+/// Never touches the filesystem — callers separately decide whether the
+/// resolved path must exist (save does; load does not, because the link's
+/// payload may legitimately be extracted after the link is examined).
+fn resolve_symlink_target_in_root(link_rel: &Path, target: &str) -> Option<PathBuf> {
+    if target.is_empty() {
+        return None;
+    }
+    let mut resolved: Vec<std::ffi::OsString> = link_rel
+        .parent()
+        .map(|parent| {
+            parent
+                .components()
+                .filter_map(|c| match c {
+                    std::path::Component::Normal(s) => Some(s.to_os_string()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for component in Path::new(target).components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => return None,
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                // Escaping above the root ends validation immediately.
+                resolved.pop()?;
+            }
+            std::path::Component::Normal(part) => resolved.push(part.to_os_string()),
+        }
+    }
+    if resolved.is_empty() {
+        return None;
+    }
+    Some(resolved.iter().collect())
+}
+
+/// Convert a raw `read_link` value into the forward-slashed UTF-8 string
+/// stored in the manifest. `None` for non-UTF-8 targets (conservatively
+/// skipped — they can't round-trip through the protobuf string field).
+fn symlink_target_to_posix(raw: &Path) -> Option<String> {
+    let s = raw.to_str()?;
+    #[cfg(windows)]
+    {
+        Some(s.replace('\\', "/"))
+    }
+    #[cfg(not(windows))]
+    {
+        Some(s.to_string())
+    }
 }
 
 fn rel_to_posix(rel: &Path) -> String {
@@ -505,6 +677,12 @@ pub struct SaveReport {
     pub excluded_bytes: u64,
     pub archive_bytes: u64,
     pub elapsed_ms: u64,
+    /// In-root cache symlinks recorded in the manifest (#1548).
+    pub cache_symlinks: u64,
+    /// Cache symlinks skipped at save time because their target was
+    /// absolute, escaped the cache root, or was broken (#1548). Each
+    /// skip also emits a stderr warning — never silent.
+    pub cache_symlinks_skipped: u64,
 }
 
 #[derive(Clone)]
@@ -615,6 +793,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
     let manifest_files = source_result?;
     let cache_walk = cache_walk_result?;
     let cache_files_paths = cache_walk.included_paths;
+    let cache_symlink_entries = cache_walk.symlinks;
     let (cache_manifest_files, cache_file_metas): (Vec<CacheFile>, Vec<std::fs::Metadata>) =
         build_cache_manifest_entries(&pool, opts.cache_dir, &cache_files_paths)?
             .into_iter()
@@ -647,6 +826,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
         cache_files: cache_manifest_files,
         base_manifest_blake3: Vec::new(),
         deleted_cache_paths: Vec::new(),
+        cache_symlinks: cache_symlink_entries,
     };
 
     let manifest_bytes = {
@@ -719,6 +899,8 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
         excluded_bytes: cache_walk.excluded_bytes,
         archive_bytes,
         elapsed_ms: start.elapsed().as_millis() as u64,
+        cache_symlinks: manifest.cache_symlinks.len() as u64,
+        cache_symlinks_skipped: cache_walk.skipped_symlinks,
     })
 }
 
@@ -793,12 +975,30 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
     }
 
     let current_paths: BTreeSet<&str> = current_by_path.keys().copied().collect();
-    let deleted_cache_paths: Vec<String> = base_by_path
+    let mut deleted_cache_paths: Vec<String> = base_by_path
         .keys()
         .copied()
         .filter(|path| !current_paths.contains(path))
         .map(ToOwned::to_owned)
         .collect();
+
+    // Symlink tombstones (#1548): a link present in the base layer but
+    // absent from the current cache tree (and not replaced by a regular
+    // file, which extraction would overwrite anyway) must be removed on
+    // load, exactly like a deleted regular file.
+    let current_symlink_paths: BTreeSet<&str> = cache_walk
+        .symlinks
+        .iter()
+        .map(|entry| entry.path.as_str())
+        .collect();
+    for base_link in &opts.base_manifest.cache_symlinks {
+        let path = base_link.path.as_str();
+        if !current_symlink_paths.contains(path) && !current_paths.contains(path) {
+            deleted_cache_paths.push(path.to_owned());
+        }
+    }
+    deleted_cache_paths.sort();
+    deleted_cache_paths.dedup();
 
     let manifest = Manifest {
         version: MANIFEST_VERSION,
@@ -818,6 +1018,10 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         cache_files: delta_entries,
         base_manifest_blake3: manifest_digest(opts.base_manifest)?,
         deleted_cache_paths,
+        // Deltas carry the FULL current symlink set (entries are a few
+        // bytes each): load recreates them idempotently, so base-vs-delta
+        // diffing buys nothing but complexity.
+        cache_symlinks: cache_walk.symlinks.clone(),
     };
 
     write_delta_archive(
@@ -839,6 +1043,8 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         excluded_bytes: cache_walk.excluded_bytes,
         archive_bytes,
         elapsed_ms: start.elapsed().as_millis() as u64,
+        cache_symlinks: manifest.cache_symlinks.len() as u64,
+        cache_symlinks_skipped: cache_walk.skipped_symlinks,
     })
 }
 
@@ -1037,6 +1243,13 @@ pub struct LoadReport {
     pub mtimes_skipped_size_mismatch: u64,
     pub mtimes_skipped_modified: u64,
     pub elapsed_ms: u64,
+    /// Manifest symlinks recreated inside the restore root (#1548).
+    pub cache_symlinks_restored: u64,
+    /// Manifest symlinks NOT recreated: invalid/escaping target on
+    /// re-validation, a real directory in the way, or symlink creation
+    /// failed (e.g. missing Windows privilege). Each skip warns on
+    /// stderr — never silent (#1548).
+    pub cache_symlinks_skipped: u64,
 }
 
 /// Validate load inputs:
@@ -1339,6 +1552,13 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
     };
 
     if let Some(cache_dir) = opts.cache_dir {
+        // #1548: recreate manifest symlinks AFTER extraction so their
+        // targets already exist. Every entry is re-validated against the
+        // restore root here — a crafted manifest can never make load
+        // create a link that points outside `cache_dir`.
+        let (restored, skipped) = restore_cache_symlinks(cache_dir, &manifest.cache_symlinks);
+        report.cache_symlinks_restored = restored;
+        report.cache_symlinks_skipped = skipped;
         replay_pending_cache_file_mtimes(
             &pool,
             cache_dir,
@@ -1541,8 +1761,10 @@ fn extract_one(job: &ExtractJob) -> Result<()> {
         }
         other => {
             // Symlinks / hard links / device nodes etc. are not produced
-            // by `save` today (only Regular + Directory). Reject loudly so
-            // we don't silently swallow a future archive shape change.
+            // by `save` (only Regular + Directory; symlinks travel as
+            // manifest-only `cache_symlinks` entries — #1548). Reject
+            // loudly so we don't silently swallow a future archive shape
+            // change.
             return Err(SaveLoadError::BareIo(std::io::Error::other(format!(
                 "unexpected tar entry type {other:?} at {}",
                 job.dest.display()
@@ -1802,7 +2024,13 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
         }
         let rel = manifest_rel_to_path(path)?;
         let dest = cache_dir.join(rel);
-        match std::fs::metadata(&dest) {
+        // symlink_metadata (#1548): a tombstoned SYMLINK must remove the
+        // link itself. Following `metadata` here would misclassify a
+        // link-to-dir as a directory and try remove_dir_all through it.
+        match std::fs::symlink_metadata(&dest) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                remove_symlink(&dest).map_err(|e| io(&dest, e))?
+            }
             Ok(meta) if meta.is_dir() => {
                 std::fs::remove_dir_all(&dest).map_err(|e| io(&dest, e))?
             }
@@ -1812,6 +2040,96 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remove a symlink itself (never its target). On Windows a directory
+/// symlink must be removed with `remove_dir`; try file-removal first and
+/// fall back so both flavors are covered.
+fn remove_symlink(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        #[cfg(windows)]
+        Err(_) => std::fs::remove_dir(path),
+        #[cfg(not(windows))]
+        Err(err) => Err(err),
+    }
+}
+
+/// Recreate manifest symlink entries below `cache_dir` (#1548). Returns
+/// `(restored, skipped)`. Each entry is re-validated lexically against
+/// the restore root; entries that fail validation, collide with a real
+/// directory, or whose creation fails (e.g. Windows without the symlink
+/// privilege) are skipped LOUDLY via stderr — the restore itself never
+/// hard-fails on a symlink, missing links merely force a rebuild.
+fn restore_cache_symlinks(cache_dir: &Path, entries: &[SymlinkEntry]) -> (u64, u64) {
+    let mut restored = 0u64;
+    let mut skipped = 0u64;
+    for entry in entries {
+        match restore_one_symlink(cache_dir, entry) {
+            Ok(()) => restored += 1,
+            Err(reason) => {
+                eprintln!(
+                    "soldr load: refusing to restore symlink {} -> {} ({reason})",
+                    entry.path, entry.target
+                );
+                skipped += 1;
+            }
+        }
+    }
+    (restored, skipped)
+}
+
+fn restore_one_symlink(cache_dir: &Path, entry: &SymlinkEntry) -> std::result::Result<(), String> {
+    let rel = manifest_rel_to_path(&entry.path)
+        .map_err(|_| "invalid link path in manifest".to_string())?;
+    if resolve_symlink_target_in_root(&rel, &entry.target).is_none() {
+        return Err("absolute or root-escaping link target".to_string());
+    }
+    let dest = cache_dir.join(&rel);
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("create parent dirs: {e}"))?;
+    }
+    match std::fs::symlink_metadata(&dest) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            remove_symlink(&dest).map_err(|e| format!("replace existing link: {e}"))?;
+        }
+        Ok(meta) if meta.is_dir() => {
+            // Conservative: never delete a real directory tree to make
+            // room for a link. Loud skip; the stale dir stays visible.
+            return Err("a real directory occupies the link path".to_string());
+        }
+        Ok(_) => {
+            std::fs::remove_file(&dest).map_err(|e| format!("replace existing file: {e}"))?;
+        }
+        Err(_) => {}
+    }
+    create_symlink_at(&entry.target, &dest, entry.is_dir).map_err(|e| format!("create link: {e}"))
+}
+
+/// Platform symlink creation. `target` is the manifest's forward-slashed
+/// relative string; converted to the native separator on Windows.
+fn create_symlink_at(target: &str, dest: &Path, is_dir: bool) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = is_dir;
+        std::os::unix::fs::symlink(target, dest)
+    }
+    #[cfg(windows)]
+    {
+        let native = target.replace('/', "\\");
+        if is_dir {
+            std::os::windows::fs::symlink_dir(native, dest)
+        } else {
+            std::os::windows::fs::symlink_file(native, dest)
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, dest, is_dir);
+        Err(std::io::Error::other(
+            "symlinks unsupported on this platform",
+        ))
+    }
 }
 
 /// Per-manifest-entry slot tracking whether the extract workers already
@@ -2003,5 +2321,72 @@ mod tests {
             msg.contains("not-a-dir"),
             "error must mention the offending path: {msg}"
         );
+    });
+
+    // #1548 — purely-lexical symlink-target containment. Runs on every
+    // platform (no symlink creation involved), which is what gives the
+    // Windows lanes coverage of the validation logic that the
+    // #[cfg(unix)] integration tests exercise end-to-end.
+    timed_test!(symlink_target_validation_accepts_safe_relative_targets, {
+        // Sibling file.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("deps/link.rlib"), "libfoo.rlib"),
+            Some(PathBuf::from("deps").join("libfoo.rlib"))
+        );
+        // Up-and-over that stays inside the root.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("out/link"), "../deps/libfoo.rlib"),
+            Some(PathBuf::from("deps").join("libfoo.rlib"))
+        );
+        // `.` components are harmless.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("a/link"), "./b/./c"),
+            Some(PathBuf::from("a").join("b").join("c"))
+        );
+        // Link at the root pointing at a root-level sibling.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("link"), "payload.bin"),
+            Some(PathBuf::from("payload.bin"))
+        );
+    });
+
+    timed_test!(symlink_target_validation_rejects_unsafe_targets, {
+        // Absolute POSIX target — rejected even when it would point back
+        // inside the root; we only ever preserve relative links.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("a/link"), "/etc/passwd"),
+            None
+        );
+        // Escapes the root via `..`.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("link"), "../outside.txt"),
+            None
+        );
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("a/link"), "../../../x"),
+            None
+        );
+        // Exactly-at-root resolution (empty) is meaningless for a link.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("a/link"), ".."),
+            None
+        );
+        // Empty target.
+        assert_eq!(
+            resolve_symlink_target_in_root(Path::new("a/link"), ""),
+            None
+        );
+        // Windows drive / UNC prefixes are rejected on Windows (Prefix
+        // component); on Unix "C:" is just a weird-but-contained relative
+        // component, which is harmless — so only assert the containment
+        // property that holds everywhere: no result may escape the root.
+        if let Some(resolved) = resolve_symlink_target_in_root(Path::new("a/link"), "C:/evil") {
+            assert!(
+                !resolved
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                "resolved path must stay inside the root: {resolved:?}"
+            );
+        }
     });
 }
