@@ -481,7 +481,10 @@ timed_test!(
         assert!(
             path_display_variants(&clippy_driver)
                 .iter()
-                .any(|path| zccache_line.contains(path)),
+                .any(|path| zccache_line.contains(path))
+                && path_display_variants(&rustc)
+                    .iter()
+                    .all(|path| !zccache_line.contains(path)),
             "zccache should receive clippy-driver as the wrapped compiler: {log}"
         );
         assert!(
