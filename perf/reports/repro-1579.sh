@@ -10,14 +10,23 @@
 #   SOLDR_BIN=/target/issue-1579/debug/soldr bash repro-1579.sh /target/issue-1579-repro /repo/.claude/issue-1579
 set -euo pipefail
 
-ROOT="${1:?usage: repro-1579.sh <workdir> <repo-dir>}"
-REPO="${2:?usage: repro-1579.sh <workdir> <repo-dir>}"
+ROOT="$(realpath -m "${1:?usage: repro-1579.sh <workdir> <repo-dir>}")"
+REPO="$(realpath "${2:?usage: repro-1579.sh <workdir> <repo-dir>}")"
 SOLDR_BIN="${SOLDR_BIN:?set SOLDR_BIN to the built soldr binary path}"
 FIXTURE=medium
 PERF="${REPO}/perf"
 
+if [[ "$ROOT" == "/" || "$ROOT" == "$REPO" || "$REPO" == "$ROOT/"* ]]; then
+    echo "refusing unsafe repro workdir: $ROOT" >&2
+    exit 2
+fi
+if [[ -e "$ROOT" && ! -f "$ROOT/.soldr-issue-1579-repro" ]]; then
+    echo "refusing to replace unowned repro workdir: $ROOT" >&2
+    exit 2
+fi
 rm -rf "$ROOT"
 mkdir -p "$ROOT"
+touch "$ROOT/.soldr-issue-1579-repro"
 tar -C "$ROOT" -xzf "$PERF/fixtures/$FIXTURE.tar.gz"
 SRC="$ROOT/$FIXTURE"
 
