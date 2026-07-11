@@ -3,15 +3,14 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = REPO_ROOT / "contracts" / "zccache-runtime.v1.json"
-PY_CONTRACT_PATH = (
-    REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
-)
+PY_CONTRACT_PATH = REPO_ROOT / ".github" / "actions" / "setup-soldr" / "zccache_contract.py"
 
 
 def _load_py_contract():
@@ -27,11 +26,9 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def _write_manifest_fixture(
-    root: Path, *, windows: bool = False, schema_version: int = 4
-) -> dict[str, object]:
+def _write_manifest_fixture(root: Path, *, windows: bool = False) -> dict[str, object]:
     module = _load_py_contract()
-    names = module.release_binary_names(windows=windows, schema_version=schema_version)
+    names = module.release_binary_names(windows=windows)
     payloads: dict[str, bytes] = {}
     for name in names:
         payload = f"{name}\n".encode("utf-8")
@@ -52,7 +49,7 @@ def _write_manifest_fixture(
             }
         )
     return {
-        "schema_version": schema_version,
+        "schema_version": 3,
         "soldr": {
             "version": "0.7.39",
             "target": "x86_64-unknown-linux-gnu",
@@ -63,7 +60,7 @@ def _write_manifest_fixture(
                     "name": f"{base}{suffix}",
                     "sha256": _sha256(payloads[f"{base}{suffix}"]),
                 }
-                for base in module.release_bundled_binaries(schema_version)
+                for base in module.RELEASE_BUNDLED_BINARIES
                 if base not in {"soldr", "crgx", "cargo-chef"}
             ],
             "debug_info": soldr_debug_info,
@@ -90,9 +87,7 @@ def _write_manifest_fixture(
         },
         "archive": {
             "format": module.ARCHIVE_EXT,
-            "compression_level": module.CONTRACT["release_archive"][
-                "compression_level"
-            ],
+            "compression_level": module.CONTRACT["release_archive"]["compression_level"],
         },
         "built_at": "2026-05-27T00:00:00Z",
     }
@@ -107,11 +102,9 @@ def test_contract_json_has_expected_shape() -> None:
     assert contract["release_archive"]["required_binaries"] == [
         "soldr",
         "soldr-daemon",
-        "zccache",
         "crgx",
         "cargo-chef",
     ]
-    assert contract["release_archive"]["schema_gated_binaries"] == {"zccache": 4}
     assert contract["zccache"]["embedded"] is True
     assert "required_binaries" not in contract["zccache"]
     assert contract["crgx"]["local_dir_env"] == "SOLDR_CRGX_LOCAL_DIR"
@@ -124,21 +117,6 @@ def test_python_contract_validates_release_manifest_sha256s(tmp_path: Path) -> N
     module = _load_py_contract()
     manifest = _write_manifest_fixture(tmp_path)
 
-    module.validate_release_manifest(
-        manifest,
-        soldr_target="x86_64-unknown-linux-gnu",
-        windows=False,
-        extract_dir=tmp_path,
-    )
-
-
-def test_python_contract_accepts_legacy_schema_three_without_alias(
-    tmp_path: Path,
-) -> None:
-    module = _load_py_contract()
-    manifest = _write_manifest_fixture(tmp_path, schema_version=3)
-
-    assert "zccache" not in module.release_bundled_binaries(3)
     module.validate_release_manifest(
         manifest,
         soldr_target="x86_64-unknown-linux-gnu",
@@ -211,22 +189,20 @@ def test_python_action_helpers_import_contract_constants() -> None:
     ensure_spec.loader.exec_module(ensure_soldr)
 
     assert ensure_soldr.ARCHIVE_EXT == module.ARCHIVE_EXT
-    assert ensure_soldr.release_bundled_binaries(4) == module.RELEASE_BUNDLED_BINARIES
+    assert ensure_soldr.RELEASE_BUNDLED_BINARIES == module.RELEASE_BUNDLED_BINARIES
     assert ensure_soldr.CRGX_BUNDLED_BINARY == module.CRGX_BUNDLED_BINARY
     assert ensure_soldr.CARGO_CHEF_BUNDLED_BINARY == module.CARGO_CHEF_BUNDLED_BINARY
 
 
 def test_release_workflow_and_docs_reference_contract_layout() -> None:
     contract = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-    release_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "release-auto.yml"
-    ).read_text(encoding="utf-8")
-    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(
+    release_workflow = (REPO_ROOT / ".github" / "workflows" / "release-auto.yml").read_text(
         encoding="utf-8"
     )
+    npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
+    runtime_docs = (REPO_ROOT / "docs" / "ZCCACHE_RUNTIME_CONTRACT.md").read_text(encoding="utf-8")
 
-    assert '"schema_version": 4' in release_workflow
+    assert '"schema_version": 3' in release_workflow
     assert '"format": "tar.zst"' in release_workflow
     assert '"debug_info": ${soldr_debug_info_json}' in release_workflow
     assert "CARGO_PROFILE_RELEASE_DEBUG" in release_workflow
@@ -243,3 +219,16 @@ def test_npm_package_exports_contract_files() -> None:
     assert "contracts/zccache-runtime.v1.json" in package["files"]
     assert "contracts/zccache-integration-guardrails.v1.json" in package["files"]
     assert "scripts/zccache-contract.js" in package["files"]
+
+
+def test_ci_cleanup_never_invokes_removed_bare_zccache_alias() -> None:
+    offenders: list[str] = []
+    for root in (REPO_ROOT / ".github" / "workflows", REPO_ROOT / ".github" / "actions"):
+        for path in (*root.rglob("*.yml"), *root.rglob("*.yaml")):
+            for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if line.lstrip().startswith("#"):
+                    continue
+                match = re.search(r"\bzccache\s+stop\b", line)
+                if match and "soldr" not in line[: match.start()]:
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{line_number}: {line.strip()}")
+    assert not offenders, "bare zccache cleanup commands:\n" + "\n".join(offenders)

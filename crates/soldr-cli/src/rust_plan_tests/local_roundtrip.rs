@@ -65,7 +65,6 @@ fn context_for(
         path: plan_path.to_path_buf(),
         // Retained for struct compatibility; the in-process path never
         // spawns it (soldr#1368).
-        zccache_binary: std::path::PathBuf::from("zccache"),
         cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir_env: false,

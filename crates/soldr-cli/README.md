@@ -9,17 +9,17 @@ The soldr command-line interface and its multicall aliases.
 - `soldr-daemon` (`src/daemon_entry.rs`) — long-lived daemon that owns
   target tracking, build-session correlation, and the in-process embedded
   zccache compile service.
-- `zccache` (`src/zccache_entry.rs`) — compiled-in zccache CLI
-  trampoline (`zccache::cli::commands::run()`) from the in-tree
-  `_vender/zccache` library dep. `soldr zccache <args>` execs it, so no
-  external managed zccache binary is ever downloaded (soldr#1368).
+- `soldr zccache <args>` dispatches the allowlisted zccache CLI surface
+  in-process through `zccache::cli::commands::run_with_args()` from the
+  in-tree `_vender/zccache` library dep; no zccache executable is shipped,
+  materialized, or spawned (soldr#1593).
 
 Toolchain shims (`cargo`, `rustc`, `rustfmt`, `clippy-driver`, `rustdoc`),
 clang shims (`clang`, `clang++`), and the `zccache-soldr` wrapper are
 multicall names for the main `soldr` binary. Installers create them as
 hardlinks/copies of `soldr`; the release archive does not ship separate
-shim executables. `soldr-daemon` and `zccache` use the same mechanism;
-`soldr` is the crate's only compiled `[[bin]]` target.
+shim executables. `soldr-daemon` uses the same mechanism; `soldr` is the
+crate's only compiled `[[bin]]` target.
 
 ## Library
 

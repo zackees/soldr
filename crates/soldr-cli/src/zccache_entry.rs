@@ -1,4 +1,4 @@
-//! `zccache` multicall entrypoint for the vendored CLI.
+//! In-process `soldr zccache` entrypoint for the vendored CLI.
 
 use std::process::ExitCode;
 
@@ -26,36 +26,31 @@ fn refuse(subcommand: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
-/// Run the zccache surface selected by the `zccache` argv[0] alias.
-pub fn run() -> ExitCode {
+/// Run the daemon-free zccache maintenance surface inside this soldr process.
+pub fn run_with_args(args: &[String]) -> ExitCode {
     std::env::set_var("ZCCACHE_NO_SPAWN", "1");
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    if let Some(subcommand) = first_subcommand(&args) {
+    if let Some(subcommand) = first_subcommand(args) {
         if !ALLOWED_SUBCOMMANDS.contains(&subcommand.as_str()) {
             return refuse(subcommand);
         }
     }
-    run_cli()
+    let mut full_args = Vec::with_capacity(args.len() + 1);
+    full_args.push("zccache".to_string());
+    full_args.extend(args.iter().cloned());
+    run_cli(full_args)
 }
 
-#[cfg(windows)]
-fn run_cli() -> ExitCode {
-    match std::thread::Builder::new()
+fn run_cli(args: Vec<String>) -> ExitCode {
+    let builder = std::thread::Builder::new()
         .name("zccache-cli".to_string())
-        .stack_size(8 * 1024 * 1024)
-        .spawn(zccache::cli::commands::run)
-    {
+        .stack_size(8 * 1024 * 1024);
+    match builder.spawn(move || zccache::cli::commands::run_with_args(&args)) {
         Ok(handle) => handle.join().unwrap_or(ExitCode::FAILURE),
         Err(err) => {
             eprintln!("zccache: failed to start CLI thread: {err}");
             ExitCode::FAILURE
         }
     }
-}
-
-#[cfg(not(windows))]
-fn run_cli() -> ExitCode {
-    zccache::cli::commands::run()
 }
 
 #[cfg(test)]
@@ -72,5 +67,13 @@ mod tests {
 
     crate::timed_test!(refused_subcommand_preserves_usage_exit_code, {
         assert_eq!(refuse("status"), ExitCode::from(2));
+    });
+
+    crate::timed_test!(in_process_cache_root_dispatch_succeeds, {
+        assert_eq!(
+            run_with_args(&["cache-root".into(), "--json".into()]),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(std::env::var("ZCCACHE_NO_SPAWN").as_deref(), Ok("1"));
     });
 }

@@ -910,12 +910,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             // managed-binary download. The trampoline forwards straight
             // into `zccache::cli::commands::run()`.
             if crate_name == "zccache" && matches!(version, VersionSpec::Latest) {
-                let trampoline = crate::binaries::embedded_zccache_binary()?;
-                let mut command = std::process::Command::new(&trampoline);
-                command.args(tool_args);
-                suppress_windows_console_window(&mut command);
-                let status = command.status()?;
-                std::process::exit(status.code().unwrap_or(1));
+                let status = crate::zccache_entry::run_with_args(tool_args);
+                std::process::exit(if status == std::process::ExitCode::SUCCESS {
+                    0
+                } else if status == std::process::ExitCode::from(2) {
+                    2
+                } else {
+                    1
+                });
             }
 
             // Issue #412: when the user typed a verb that LOOKS like

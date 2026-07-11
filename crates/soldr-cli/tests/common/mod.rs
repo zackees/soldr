@@ -39,7 +39,6 @@ pub(crate) fn soldr_bin() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_soldr")));
     materialize_runtime_alias(&soldr, "soldr-daemon");
-    materialize_runtime_alias(&soldr, "zccache");
     soldr
 }
 
@@ -52,10 +51,6 @@ pub(crate) fn soldr_daemon_bin() -> PathBuf {
         return PathBuf::from(p);
     }
     runtime_alias_path(&soldr_bin(), "soldr-daemon")
-}
-
-pub(crate) fn zccache_bin() -> PathBuf {
-    runtime_alias_path(&soldr_bin(), "zccache")
 }
 
 fn runtime_alias_path(soldr: &Path, stem: &str) -> PathBuf {
@@ -616,7 +611,12 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
         format!(
             "@echo off\n\
              echo {0} cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME% args=%*>>\"{1}\"\n\
-             echo {0} 1.0.0 (fake)\n",
+             if defined SOLDR_TEST_TOOL_HANG goto hang\n\
+             if defined SOLDR_TEST_TOOL_EXIT_CODE exit /b %SOLDR_TEST_TOOL_EXIT_CODE%\n\
+             echo {0} 1.0.0 (fake)\n\
+             exit /b 0\n\
+             :hang\n\
+             goto hang\n",
             tool_name,
             log_path.display()
         )
@@ -626,6 +626,8 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
         format!(
             "#!/bin/sh\n\
              echo \"{0} cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}} args=$*\" >> \"{1}\"\n\
+             if [ -n \"${{SOLDR_TEST_TOOL_HANG:-}}\" ]; then while :; do :; done; fi\n\
+             if [ -n \"${{SOLDR_TEST_TOOL_EXIT_CODE:-}}\" ]; then exit \"$SOLDR_TEST_TOOL_EXIT_CODE\"; fi\n\
              echo \"{0} 1.0.0 (fake)\"\n",
             tool_name,
             log_path.display()

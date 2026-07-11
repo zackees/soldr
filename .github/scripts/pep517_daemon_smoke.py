@@ -204,8 +204,6 @@ def main() -> int:
         soldr = venv_bin(venv) / ("soldr.exe" if os.name == "nt" else "soldr")
         run([str(soldr), "--version"])
         run([str(soldr), "zccache", "--version"])
-        zccache = venv_bin(venv) / ("zccache.exe" if os.name == "nt" else "zccache")
-        run([str(zccache), "--version"])
 
         write_project(project)
         wheelhouse.mkdir()

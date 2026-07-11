@@ -371,7 +371,6 @@ crate::timed_test!(aborted_build_cleanup_prunes_rmetas_and_incremental_dirs, {
 
     let plan = crate::rust_plan::RustArtifactPlanContext {
         path: root.path().join("plan.json"),
-        zccache_binary: root.path().join("zccache"),
         cache_dir: root.path().join("cache"),
         zccache_daemon_cache_dir: root.path().join("daemon-cache"),
         zccache_daemon_cache_dir_env: false,
@@ -1732,7 +1731,6 @@ crate::timed_test!(
         let session_dir = root.path().join("zc");
         std::fs::create_dir_all(&session_dir).expect("session dir");
         let session = crate::zccache_lifecycle::ZccacheBuildSession {
-            binary_path: session_dir.join("zccache"),
             cache_dir: session_dir.clone(),
             cache_dir_env: false,
             session_id: "test-session".to_string(),

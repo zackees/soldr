@@ -141,13 +141,13 @@ jobs:
         working-directory: soldr
         run: |
           set -euo pipefail
-          # Build the one soldr executable, then materialize the daemon and
-          # embedded-zccache argv[0] aliases used by the canaries.
+          # Build the one soldr executable, then materialize the daemon
+          # argv[0] alias used by the canaries.
           soldr cargo build --release -p soldr-cli --bin soldr
           BIN_DIR="$HOME/soldr-under-test/bin"
           mkdir -p "$BIN_DIR"
           cp target/release/soldr "$BIN_DIR/soldr"
-          for bin in soldr-daemon zccache; do
+          for bin in soldr-daemon; do
             ln "$BIN_DIR/soldr" "$BIN_DIR/$bin" 2>/dev/null || cp "$BIN_DIR/soldr" "$BIN_DIR/$bin"
           done
           echo "$BIN_DIR" >> "$GITHUB_PATH"

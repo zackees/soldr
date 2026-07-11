@@ -495,7 +495,6 @@ mod end_to_end {
                 let cache_dir = base.join("cache");
                 std::fs::create_dir_all(cache_dir.join("logs")).unwrap();
                 let session = ZccacheBuildSession {
-                    binary_path: "zccache".into(),
                     cache_dir: cache_dir.clone(),
                     cache_dir_env: true,
                     session_id: "session-memo-e2e".to_string(),

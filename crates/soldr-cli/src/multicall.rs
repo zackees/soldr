@@ -14,7 +14,6 @@ use std::process::ExitCode;
 const TOOLCHAIN_TOOLS: &[&str] = &["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"];
 const ZCCACHE_SOLDR: &str = "zccache-soldr";
 const SOLDR_DAEMON: &str = "soldr-daemon";
-const ZCCACHE: &str = "zccache";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum MulticallDispatch {
@@ -29,7 +28,6 @@ enum ShimIdentity {
     Clang(ClangTool),
     ZccacheSoldr,
     SoldrDaemon,
-    Zccache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +62,6 @@ pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
         ShimIdentity::Clang(tool) => Some(MulticallDispatch::Exit(run_clang_shim(tool))),
         ShimIdentity::ZccacheSoldr => Some(MulticallDispatch::Exit(run_zccache_soldr())),
         ShimIdentity::SoldrDaemon => Some(MulticallDispatch::Exit(crate::daemon_entry::run())),
-        ShimIdentity::Zccache => Some(MulticallDispatch::ExitCode(crate::zccache_entry::run())),
     }
 }
 
@@ -99,7 +96,6 @@ fn classify_argv0(argv0: &str) -> Option<ShimIdentity> {
         "clang++" => Some(ShimIdentity::Clang(ClangTool::ClangPP)),
         ZCCACHE_SOLDR => Some(ShimIdentity::ZccacheSoldr),
         SOLDR_DAEMON => Some(ShimIdentity::SoldrDaemon),
-        ZCCACHE => Some(ShimIdentity::Zccache),
         _ => None,
     }
 }
@@ -371,8 +367,8 @@ mod tests {
             classify_argv0("soldr-daemon.exe"),
             Some(ShimIdentity::SoldrDaemon)
         );
-        assert_eq!(classify_argv0("zccache"), Some(ShimIdentity::Zccache));
-        assert_eq!(classify_argv0("zccache.exe"), Some(ShimIdentity::Zccache));
+        assert_eq!(classify_argv0("zccache"), None);
+        assert_eq!(classify_argv0("zccache.exe"), None);
     });
 
     crate::timed_test!(filter_path_drops_self_dir, {

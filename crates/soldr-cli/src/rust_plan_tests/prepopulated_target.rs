@@ -48,7 +48,6 @@ impl Drop for EnvVarGuard {
 fn make_plan_ctx(target_dir: &std::path::Path) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: PathBuf::from("/tmp/plan.json"),
-        zccache_binary: PathBuf::from("/tmp/zccache"),
         cache_dir: PathBuf::from("/tmp/cache"),
         zccache_daemon_cache_dir: PathBuf::from("/tmp/cache"),
         zccache_daemon_cache_dir_env: true,

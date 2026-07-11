@@ -83,7 +83,6 @@ fn save_skip_test_plan() -> RustArtifactPlan {
 fn save_skip_test_context(plan: &RustArtifactPlan) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: std::path::PathBuf::from("/tmp/ws/plan.json"),
-        zccache_binary: std::path::PathBuf::from("/tmp/ws/zccache"),
         cache_dir: std::path::PathBuf::from("/tmp/ws/cache"),
         zccache_daemon_cache_dir: std::path::PathBuf::from("/tmp/ws/daemon"),
         zccache_daemon_cache_dir_env: true,

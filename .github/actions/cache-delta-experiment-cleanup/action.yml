@@ -68,7 +68,7 @@ runs:
         export SOLDR_CACHE_DIR="$CACHE_DIR"
         export ZCCACHE_CACHE_DIR="$ZCCACHE_DIR"
         soldr cache flush --json || true
-        soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true
+        soldr cache shutdown --shutdown-timeout-seconds 60 --json || soldr zccache stop || true
         exit 0
 
     - name: Package cook layer (only when cook key missed)

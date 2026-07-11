@@ -30,7 +30,6 @@ impl ZccachePrivateEnv {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ZccacheBuildSession {
-    pub(crate) binary_path: PathBuf,
     pub(crate) cache_dir: PathBuf,
     pub(crate) cache_dir_env: bool,
     pub(crate) session_id: String,

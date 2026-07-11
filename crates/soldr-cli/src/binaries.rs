@@ -316,11 +316,6 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
-/// Materialize and resolve the compiled-in `zccache` CLI multicall alias.
-pub(crate) fn embedded_zccache_binary() -> Result<std::path::PathBuf, SoldrError> {
-    materialize_runtime_alias("zccache")
-}
-
 /// Materialize the daemon's stable process/service identity next to soldr.
 pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")

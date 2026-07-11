@@ -13,11 +13,8 @@ const ARCHIVE_EXT = CONTRACT.release_archive.extension;
 const MANIFEST_NAME = CONTRACT.release_archive.manifest_name;
 const MANIFEST_MIN_SCHEMA_VERSION = CONTRACT.release_archive.manifest_min_schema_version;
 const RELEASE_BUNDLED_BINARIES = Object.freeze([...CONTRACT.release_archive.required_binaries]);
-const SCHEMA_GATED_BINARIES = Object.freeze({
-  ...((CONTRACT.release_archive && CONTRACT.release_archive.schema_gated_binaries) || {}),
-});
-// zccache is embedded into soldr/soldr-daemon. This list tracks standalone
-// upstream binaries, not the soldr multicall alias in the archive list.
+// zccache is embedded into soldr/soldr-daemon; no standalone zccache
+// binaries are bundled or downloaded.
 const ZCCACHE_BUNDLED_BINARIES = Object.freeze([
   ...((CONTRACT.zccache && CONTRACT.zccache.required_binaries) || []),
 ]);
@@ -28,14 +25,8 @@ function binaryName(baseName, platform = process.platform) {
   return `${baseName}${platform === "win32" ? ".exe" : ""}`;
 }
 
-function releaseBundledBinaries(schemaVersion) {
-  return RELEASE_BUNDLED_BINARIES.filter(
-    (baseName) => schemaVersion >= (SCHEMA_GATED_BINARIES[baseName] || MANIFEST_MIN_SCHEMA_VERSION),
-  );
-}
-
-function releaseBinaryNames(platform = process.platform, schemaVersion = 4) {
-  return releaseBundledBinaries(schemaVersion).map((baseName) => binaryName(baseName, platform));
+function releaseBinaryNames(platform = process.platform) {
+  return RELEASE_BUNDLED_BINARIES.map((baseName) => binaryName(baseName, platform));
 }
 
 function zccacheTargetForSoldrTarget(soldrTarget) {
@@ -108,7 +99,7 @@ function validateReleaseManifest(manifest, options) {
     throw new Error(`release manifest cargo_chef.target must be ${soldrTarget}`);
   }
 
-  const expectedNames = releaseBinaryNames(platform, manifest.schema_version);
+  const expectedNames = releaseBinaryNames(platform);
   const manifestBinaries = collectManifestBinaries(manifest);
   for (const name of expectedNames) {
     if (!manifestBinaries.has(name)) {
@@ -159,7 +150,6 @@ module.exports = {
   ZCCACHE_BUNDLED_BINARIES,
   binaryName,
   releaseBinaryNames,
-  releaseBundledBinaries,
   soldrDebugInfoEntries,
   validateReleaseManifest,
   zccacheTargetForSoldrTarget,

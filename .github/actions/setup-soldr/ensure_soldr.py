@@ -14,13 +14,18 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from zccache_contract import (ARCHIVE_EXT,  # noqa: E402
-                              CARGO_CHEF_BUNDLED_BINARY,
-                              CARGO_CHEF_LOCAL_DIR_ENV, CRGX_BUNDLED_BINARY,
-                              CRGX_LOCAL_DIR_ENV, MANIFEST_NAME,
-                              locate_extracted_file, release_bundled_binaries,
-                              soldr_debug_info_entries,
-                              validate_release_manifest)
+from zccache_contract import (
+    ARCHIVE_EXT,  # noqa: E402
+    CARGO_CHEF_BUNDLED_BINARY,
+    CARGO_CHEF_LOCAL_DIR_ENV,
+    CRGX_BUNDLED_BINARY,
+    CRGX_LOCAL_DIR_ENV,
+    MANIFEST_NAME,
+    locate_extracted_file,
+    RELEASE_BUNDLED_BINARIES,
+    soldr_debug_info_entries,
+    validate_release_manifest,
+)
 
 
 def _normalize_version(value: str) -> str:
@@ -115,9 +120,7 @@ def _select_asset(release: dict[str, object], target: str) -> tuple[str, str]:
         name = str(asset.get("name", ""))
         if name.endswith(suffix):
             return name, str(asset["browser_download_url"])
-    raise RuntimeError(
-        f"no release asset found for target {target} (looking for *{suffix})"
-    )
+    raise RuntimeError(f"no release asset found for target {target} (looking for *{suffix})")
 
 
 def _extract_archive(archive_path: Path, out_dir: Path) -> None:
@@ -250,11 +253,11 @@ def main() -> None:
             debug_src = _locate_binary(extract_dir, str(entry["name"]))
             shutil.copy2(debug_src, install_dir / str(entry["name"]))
 
-        # Stage soldr-owned companions next to soldr. The zccache filename is
-        # a soldr multicall alias, not a standalone upstream binary.
+        # Stage soldr-owned companion binaries next to soldr. zccache
+        # itself is embedded; there is no standalone zccache binary to copy.
         companion_bases = (
             base
-            for base in release_bundled_binaries(int(manifest["schema_version"]))
+            for base in RELEASE_BUNDLED_BINARIES
             if base not in {"soldr", CRGX_BUNDLED_BINARY, CARGO_CHEF_BUNDLED_BINARY}
         )
         for base in companion_bases:
@@ -264,10 +267,7 @@ def main() -> None:
             shutil.copy2(companion_src, companion_dst)
             if os.name != "nt":
                 companion_dst.chmod(
-                    companion_dst.stat().st_mode
-                    | stat.S_IXUSR
-                    | stat.S_IXGRP
-                    | stat.S_IXOTH,
+                    companion_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
                 )
 
         # Stage the bundled crgx next to soldr so the install dir
@@ -289,10 +289,7 @@ def main() -> None:
         shutil.copy2(cargo_chef_src, cargo_chef_dst)
         if os.name != "nt":
             cargo_chef_dst.chmod(
-                cargo_chef_dst.stat().st_mode
-                | stat.S_IXUSR
-                | stat.S_IXGRP
-                | stat.S_IXOTH,
+                cargo_chef_dst.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH,
             )
 
         shutil.copy2(manifest_path, install_dir / MANIFEST_NAME)

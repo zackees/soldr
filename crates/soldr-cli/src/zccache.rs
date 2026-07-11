@@ -416,7 +416,6 @@ async fn prepare_zccache_build(
 
     let session = ZccacheBuildSession {
         // Retained for struct compatibility only — nothing spawns it now.
-        binary_path: crate::binaries::embedded_zccache_binary()?,
         cache_dir: zccache_dir.clone(),
         cache_dir_env,
         session_id: synthetic_build_session_id(),
