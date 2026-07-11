@@ -5,9 +5,8 @@ This script implements the verification gate described in
 ``docs/THIN_TARGET_CACHE_PRUNING.md`` (Section 5).
 
 The "second build is a no-op" claim is what proves the thin-v2 slice carries
-enough state for cargo to skip work without dragging the heavy ``.rlib`` /
-``.rmeta`` / proc-macro bytes through GitHub Actions cache. If a thin-v2
-restore is missing some bit of fingerprint state, cargo will print
+enough state for cargo to skip work. If a thin-v2 restore is missing some bit
+of fingerprint state, cargo will print
 ``Compiling <crate>`` lines on the second build instead of just
 ``Finished`` — that is the signal we look for.
 
@@ -40,7 +39,10 @@ from pathlib import Path
 _COMPILING_LINE = re.compile(
     r"^\s*Compiling\s+(?P<name>\S+)\s+v(?P<version>\S+)(?:\s+\((?P<path>[^)]+)\))?\s*$"
 )
-_FINISHED_LINE = re.compile(r"^\s*Finished\s+")
+# Cargo JSON messages can be interleaved with the human status stream without
+# a newline (for example ``Finished{"reason":"build-finished"}``). Accept
+# both the normal text form and that transparent tee'd form.
+_FINISHED_LINE = re.compile(r"(?<!\w)Finished(?:\s+|(?=\{))")
 _FRESH_LINE = re.compile(r"^\s*Fresh\s+(?P<name>\S+)\s+v(?P<version>\S+)")
 
 
@@ -99,7 +101,7 @@ def parse_build_log(text: str) -> BuildLogSummary:
         if _FRESH_LINE.match(line):
             fresh += 1
             continue
-        if _FINISHED_LINE.match(line):
+        if _FINISHED_LINE.search(line):
             finished = True
     return BuildLogSummary(
         finished_seen=finished,
