@@ -358,9 +358,8 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     // deployments (which historically distributed only `soldr`) still
     // bring up the daemon now that Phase 5/7 made the embedded
     // backend mandatory. The daemon subcommand is already a clap-
-    // matched verb in `cli_args.rs`; the bin target at
-    // `src/bin/soldr_daemon.rs` is just an alias for that subcommand
-    // routed through the main binary.
+    // matched verb in `cli_args.rs`; the `soldr-daemon` argv[0] alias
+    // routes through the main binary.
     let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
     let (daemon_src, daemon_via_self) = if sibling.exists() {
         (sibling, false)

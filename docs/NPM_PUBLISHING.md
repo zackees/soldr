@@ -91,13 +91,15 @@ Do not publish an npm version until the matching GitHub Release has these files:
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
 Each archive is a `.tar.zst` at zstd compression level 19 and bundles
-soldr, soldr-daemon, crgx, cargo-chef, and a `manifest.json` at
+soldr, soldr-daemon, zccache, crgx, cargo-chef, and a `manifest.json` at
 the archive root. Windows archives also include soldr's matching PDB
 sidecar:
 
 - `soldr` (or `soldr.exe`) — the soldr CLI itself.
 - `soldr-daemon` (or `soldr-daemon.exe`) — soldr-owned daemon for the
   embedded cache service.
+- `zccache` (or `zccache.exe`) - multicall alias exposing soldr's embedded
+  zccache CLI surface.
 - Toolchain, clang, and `zccache-soldr` shim names are hardlinks/copies
   of `soldr` created at install time; they are not archive entries.
 - `soldr.pdb` or `soldr_cli.pdb` - Windows-only soldr debug symbols
@@ -105,7 +107,7 @@ sidecar:
 - `crgx` (or `crgx.exe`) - the matching-target crgx binary.
 - `cargo-chef` (or `cargo-chef.exe`) - the pinned cargo-chef binary used
   by `soldr cook`.
-- `manifest.json` - schema_version 3 descriptor with soldr / embedded
+- `manifest.json` - schema_version 4 descriptor with soldr / embedded
   zccache / crgx / cargo-chef versions, target triples, soldr
   debug-info sidecars, per-file sha256s, and archive format.
   The expected archive layout is versioned in

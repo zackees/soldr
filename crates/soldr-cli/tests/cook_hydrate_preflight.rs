@@ -144,20 +144,22 @@ impl DaemonProc {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = Instant::now() + Duration::from_secs(40);
         let pid_path = cache_root
             .join("cache")
             .join("soldr-daemon")
             .join("daemon.pid");
+        let paths = soldr_cli::core::SoldrPaths::with_root(cache_root.to_path_buf());
+        let sock = soldr_cli::daemon::client::default_sock_path(&paths);
         while Instant::now() < deadline {
-            if pid_path.exists() {
+            if pid_path.exists() && soldr_cli::daemon::client::status(&sock).is_ok() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(
-            pid_path.exists(),
-            "soldr-daemon failed to write {} within 10s",
+            pid_path.exists() && soldr_cli::daemon::client::status(&sock).is_ok(),
+            "soldr-daemon failed to become ready at {} within 40s",
             pid_path.display()
         );
         Self {

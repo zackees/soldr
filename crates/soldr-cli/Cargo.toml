@@ -56,8 +56,8 @@ zstd = { workspace = true }
 # the soldr root commits the new submodule pointer.
 #
 # soldr#1368: there is no longer a separately-downloaded managed zccache
-# binary — the `zccache` CLI ships as a compiled-in soldr-cli `[[bin]]`
-# (`src/bin/zccache_embedded.rs`) built from this same library dep.
+# binary. soldr#1592 exposes the compiled-in CLI by materializing the main
+# `soldr` executable under the `zccache` multicall name.
 zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
 # libc powers the daemon's Unix-only PID-liveness probe (kill(pid, 0))
@@ -102,19 +102,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "soldr"
 path = "src/main.rs"
-
-[[bin]]
-# Long-lived daemon that owns target/ tracking and (future phases) build
-# event correlation + linked zccache shutdown. Auto-started by the
-# wrapper on first invocation; falls back to direct redb on any error.
-name = "soldr-daemon"
-path = "src/bin/soldr_daemon.rs"
-
-[[bin]]
-# soldr#1368 — compiled-in `zccache` CLI trampoline. Forwards straight
-# into `zccache::cli::commands::run()` from the in-tree `_vender/zccache`
-# library dep, so `soldr zccache <args>` needs no externally downloaded
-# managed zccache binary. This replaces the deleted MANAGED_ZCCACHE_*
-# download/fetch subsystem.
-name = "zccache"
-path = "src/bin/zccache_embedded.rs"

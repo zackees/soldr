@@ -64,14 +64,22 @@ impl DaemonProc {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(40);
         let pid_file = cache_root
             .join("cache")
             .join("soldr-daemon")
             .join("daemon.pid");
         while Instant::now() < deadline {
             if pid_file.exists() {
-                break;
+                let status = run_soldr(&["daemon", "status", "--json"], cache_root, home_root);
+                if status.status.success()
+                    && serde_json::from_slice::<Value>(&status.stdout)
+                        .ok()
+                        .and_then(|body| body["running"].as_bool())
+                        .unwrap_or(false)
+                {
+                    break;
+                }
             }
             std::thread::sleep(Duration::from_millis(50));
         }

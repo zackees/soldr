@@ -182,7 +182,7 @@ pub(super) fn collect_zccache_status(
     // soldr#1368: rustc compile caching runs through the soldr-daemon
     // embedded zccache service, not an externally-resolved zccache
     // binary. Report the compiled-in trampoline + embedded backend.
-    let binary_path = crate::binaries::embedded_zccache_binary();
+    let binary_path = crate::binaries::embedded_zccache_binary()?;
     Ok(ZccacheStatusSnapshot {
         cache_dir: zccache_dir.display().to_string(),
         state_dir: zccache_dir.display().to_string(),

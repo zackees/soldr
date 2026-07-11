@@ -55,8 +55,10 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     }
 
     let rustfmt = resolve_toolchain_binary("rustfmt")?;
-    let zccache = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR)
-        .unwrap_or_else(crate::binaries::embedded_zccache_binary);
+    let zccache = match crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR) {
+        Some(path) => path,
+        None => crate::binaries::embedded_zccache_binary()?,
+    };
     let mut command = std::process::Command::new(zccache);
     command.arg(rustfmt);
     command.args(args);

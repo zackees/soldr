@@ -97,6 +97,7 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
         // The spawn itself is serialized via a file lock inside
         // `try_spawn_detached` so N concurrent wrapper invocations
         // don't fork N daemons (see #474 spawn-herd note).
+        let _ = crate::binaries::soldr_daemon_binary();
         let _ = crate::daemon::lifecycle::try_spawn_detached();
     }
 

@@ -110,8 +110,8 @@ standalone `zccache-daemon` or `zccache-download-daemon` process is ever
 spawned, and nothing in soldr may reach the upstream lazy-spawn entry
 points (enforced by `tests/no_standalone_spawn_lint.rs`).
 
-The compiled-in `zccache` trampoline (`src/bin/zccache_embedded.rs`, what
-`soldr zccache <args>` execs) passes through only the daemon-free
+The compiled-in `zccache` trampoline (`crates/soldr-cli/src/zccache_entry.rs`, selected when
+`soldr zccache <args>` execs its `zccache` alias) passes through only the daemon-free
 subcommands — `rust-plan`, `session-end`, `stop`, `cache-root` (plus
 `--help` / `--version`) — and hard-errors everything else, pointing at the
 embedded equivalents (`soldr status`, `soldr cache`, `soldr cargo <verb>`).

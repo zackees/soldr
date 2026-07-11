@@ -4,15 +4,15 @@
 //! soldr's build cache runs as an embedded service inside soldr-daemon
 //! (`Request::Compile`); a standalone `zccache-daemon` process must
 //! never spawn. The compiled-in `zccache` trampoline
-//! (`src/bin/zccache_embedded.rs`) is the single gated entry into the
+//! (`src/zccache_entry.rs`) is the single gated entry into the
 //! vendored zccache CLI. This lint walks every `.rs` file under
 //! `crates/soldr-cli/src/` (like `tests/timed_test_lint.rs`) and
 //! asserts the source-level invariants that keep the contract:
 //!
-//! 1. Only `src/bin/zccache_embedded.rs` may call
+//! 1. Only `src/zccache_entry.rs` may call
 //!    `zccache::cli::commands::run` — the gated trampoline is the sole
 //!    CLI entry point.
-//! 2. `src/bin/zccache_embedded.rs` keeps its gate: it must reference
+//! 2. `src/zccache_entry.rs` keeps its gate: it must reference
 //!    both `ZCCACHE_NO_SPAWN` (the zccache#982 defense-in-depth env
 //!    guard) and `ALLOWED_SUBCOMMANDS` (the daemon-free allowlist).
 //! 3. No file under `src/` references the upstream lazy-spawn entry
@@ -30,7 +30,7 @@ use soldr_cli::timed_test;
 mod common;
 
 /// The one file allowed to reference `zccache::cli::commands::run`.
-const TRAMPOLINE: &str = "src/bin/zccache_embedded.rs";
+const TRAMPOLINE: &str = "src/zccache_entry.rs";
 
 /// Upstream zccache CLI entry points that lazily spawn (or stage the
 /// binary for) a standalone `zccache-daemon`. Referencing any of these
