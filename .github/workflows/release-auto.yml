@@ -377,6 +377,12 @@ jobs:
       - name: Build release binary
         shell: bash
         env:
+          # soldr#1597 Phase 2: build.rs (crates/soldr-core/build.rs) turns
+          # this into a compile-time SOLDR_OFFICIAL_BUILD const, letting
+          # runtime code (build_provenance::is_official_build) tell a
+          # genuine CI-released binary apart from a dev/manual build.
+          # Set ONLY here — never in local dev workflows.
+          SOLDR_RELEASE_CI: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "0"
           # Native MSVC release links are too slow with the workspace's
           # size-optimized thin-LTO/single-CGU profile on hosted runners.
@@ -853,6 +859,10 @@ jobs:
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          # soldr#1597 Phase 2: this maturin-driven build also produces a
+          # shipped (PyPI) binary, so it needs the same official-build
+          # stamp as the "Build release binary" step above.
+          SOLDR_RELEASE_CI: "1"
         run: |
           set -euo pipefail
           # soldr#1083 follow-up: aggressive cache bust before maturin.
