@@ -195,6 +195,37 @@ fn read_session_baseline(
     serde_json::from_str(&raw).ok()
 }
 
+/// soldr#1538: number of rustc-wrapper invocations (cache hits + misses +
+/// non-cacheable) the daemon has recorded for this session since
+/// [`capture_build_baseline`] snapshotted the baseline, without consuming
+/// (removing) the baseline file — unlike [`finalize_build_session_stats`],
+/// which is still the sole owner of that cleanup and runs later in the
+/// invocation. Used by the rust-plan save-tail (issue #1538) to prove that
+/// a just-finished cargo invocation could not have written anything new
+/// into `target/`: `Some(0)` only when the daemon was reachable at both
+/// baseline and now, so a real zero was observed rather than assumed.
+/// `None` when the daemon was unreachable at either end — callers must
+/// treat that as "unproven" and never skip on it.
+pub(crate) fn compilations_since_baseline(
+    zccache_dir: &std::path::Path,
+    session_id: &str,
+) -> Option<u64> {
+    let paths = SoldrPaths::new().ok()?;
+    let current = embedded_compile_stats(&paths)?;
+    let baseline = read_session_baseline(zccache_dir, session_id)?;
+    compilation_delta(&baseline, &current)
+}
+
+/// Return a trustworthy cumulative-counter delta. A counter that moved
+/// backwards means the daemon restarted (or its state was reset) between
+/// snapshots, so zero is not a valid conclusion and callers must fall back to
+/// a real save.
+fn compilation_delta(baseline: &CompileStatsInfo, current: &CompileStatsInfo) -> Option<u64> {
+    current
+        .total_compilations
+        .checked_sub(baseline.total_compilations)
+}
+
 /// soldr#1368 observability restore — build-start half. Snapshot the
 /// embedded zccache compile counters (via the soldr-daemon) so
 /// [`finalize_build_session_stats`] can diff them into per-build
@@ -553,7 +584,36 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
     use super::super::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
-    use super::clear_session_artifacts;
+    use super::{clear_session_artifacts, compilation_delta};
+
+    fn compile_stats(total_compilations: u64) -> crate::daemon::protocol::CompileStatsInfo {
+        crate::daemon::protocol::CompileStatsInfo {
+            total_compilations,
+            ..Default::default()
+        }
+    }
+
+    crate::timed_test!(
+        compilation_delta_accepts_monotonic_zero_and_nonzero_counts,
+        {
+            assert_eq!(
+                compilation_delta(&compile_stats(41), &compile_stats(41)),
+                Some(0)
+            );
+            assert_eq!(
+                compilation_delta(&compile_stats(41), &compile_stats(44)),
+                Some(3)
+            );
+        }
+    );
+
+    crate::timed_test!(compilation_delta_rejects_daemon_counter_reset, {
+        assert_eq!(
+            compilation_delta(&compile_stats(41), &compile_stats(0)),
+            None,
+            "a daemon restart must be unproven, never misreported as zero compiles"
+        );
+    });
 
     #[test]
     fn clear_session_artifacts_removes_existing_files_only() {

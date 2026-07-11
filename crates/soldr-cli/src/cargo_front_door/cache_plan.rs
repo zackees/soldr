@@ -193,9 +193,32 @@ impl CargoCachePlan {
         }
     }
 
-    pub(crate) fn save_rust_artifacts(&self) -> Result<(), SoldrError> {
+    /// `restore_outcome` is what [`Self::restore_rust_artifacts`] returned
+    /// earlier this invocation (issue #1538): when it was
+    /// [`RustPlanRestoreOutcome::Skipped`] and this build's zccache session
+    /// recorded zero rustc-wrapper invocations, `target/` provably holds
+    /// exactly what the last successful save already wrote, so the save
+    /// (and its target walk/copy/rehash) is skipped entirely. The
+    /// warm-restore sentinel is still refreshed unconditionally — that's a
+    /// cheap two-small-file write, not a target walk — so the skip window
+    /// keeps sliding forward instead of going stale.
+    pub(crate) fn save_rust_artifacts(
+        &self,
+        restore_outcome: RustPlanRestoreOutcome,
+    ) -> Result<(), SoldrError> {
         if let Some(plan) = self.rust_artifact_plan.as_ref() {
-            rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+            let compilations_this_build = self.zccache_session().and_then(|session| {
+                crate::cache::compilations_since_baseline(&session.cache_dir, &session.session_id)
+            });
+            if let Some(reason) = rust_plan::should_skip_rust_plan_save(
+                plan,
+                restore_outcome,
+                compilations_this_build,
+            ) {
+                eprintln!("{reason}");
+            } else {
+                rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+            }
             rust_plan::write_warm_restore_sentinel(plan);
         }
         Ok(())

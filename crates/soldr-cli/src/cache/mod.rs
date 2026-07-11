@@ -26,8 +26,9 @@ pub(crate) use release_worktree::{
 };
 pub(crate) use report::run_cache_report_command;
 pub(crate) use session::{
-    capture_build_baseline, finalize_build_session_stats, run_cache_flush_command,
-    run_cache_shutdown_command, run_session_end_command, run_session_start_command,
+    capture_build_baseline, compilations_since_baseline, finalize_build_session_stats,
+    run_cache_flush_command, run_cache_shutdown_command, run_session_end_command,
+    run_session_start_command,
 };
 pub(crate) use trim::{run_cache_prune_target_command, run_cache_trim_target_command, TrimProfile};
 
