@@ -52,8 +52,11 @@ echo "--- restore + build (measured) ---"
     echo "warm build FAILED"; tail -60 "$ROOT/warm.err"; exit 1;
 }
 
-fresh=$(grep -c 'Fresh ' "$ROOT/warm.out" || true)
-compiling=$(grep -c '^\s*Compiling ' "$ROOT/warm.out" || true)
+# Cargo progress (`Fresh` / `Compiling`) is emitted on stderr. Keep stdout
+# separate for program output, but count the authoritative unit lines from
+# warm.err. Use a POSIX character class rather than GNU-only `\s`.
+fresh=$(grep -c 'Fresh ' "$ROOT/warm.err" || true)
+compiling=$(grep -c '^[[:space:]]*Compiling ' "$ROOT/warm.err" || true)
 total=$(( fresh + compiling ))
 stale_dep_fp=$(grep -c 'StaleDepFingerprint' "$ROOT/warm.err" || true)
 
