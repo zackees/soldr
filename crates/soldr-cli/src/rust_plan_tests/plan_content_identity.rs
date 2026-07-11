@@ -46,6 +46,8 @@ fn base_plan(workspace_root: &str, target_dir: &str) -> RustArtifactPlan {
         },
         allowed_artifact_classes: vec!["dep_info", "cargo_fingerprint_meta"],
         dropped_artifact_classes: vec!["rlib", "rmeta"],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 2,
         journal_log_path: None,
     }

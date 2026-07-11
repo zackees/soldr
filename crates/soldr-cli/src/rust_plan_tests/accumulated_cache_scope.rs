@@ -66,6 +66,8 @@ fn thin_v2_plan(
         journal_log_path: None,
         cache_profile: Some("thin-v2".to_string()),
         dropped_artifact_classes: Vec::new(),
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
     }
 }
 

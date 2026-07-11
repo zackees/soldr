@@ -214,6 +214,21 @@ impl CargoCachePlan {
         Ok(())
     }
 
+    pub(crate) fn record_cargo_artifact_closure(
+        &self,
+        paths: &[String],
+        complete: bool,
+    ) -> Result<(), SoldrError> {
+        if let Some(plan) = self.rust_artifact_plan.as_ref() {
+            rust_plan::record_cargo_artifact_closure(&plan.path, paths, complete)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_rust_artifact_plan(&self) -> bool {
+        self.rust_artifact_plan.is_some()
+    }
+
     pub(crate) fn prune_orphan_rmetas_after_failed_build(&self) -> usize {
         self.rust_artifact_plan
             .as_ref()

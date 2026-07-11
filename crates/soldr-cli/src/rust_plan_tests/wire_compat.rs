@@ -43,6 +43,8 @@ fn rust_artifact_plan_thin_v1_json_omits_new_fields_for_zccache_compat() {
         },
         allowed_artifact_classes: vec!["cargo_fingerprint"],
         dropped_artifact_classes: vec![],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 1,
         journal_log_path: None,
     };
@@ -93,6 +95,8 @@ fn rust_artifact_plan_full_mode_json_omits_new_fields() {
         },
         allowed_artifact_classes: vec![],
         dropped_artifact_classes: vec![],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 1,
         journal_log_path: None,
     };
@@ -139,6 +143,8 @@ fn rust_artifact_plan_thin_v2_json_includes_new_fields() {
         },
         allowed_artifact_classes: vec!["dep_info"],
         dropped_artifact_classes: vec!["rlib", "rmeta"],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 2,
         journal_log_path: None,
     };

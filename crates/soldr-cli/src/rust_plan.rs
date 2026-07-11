@@ -19,6 +19,7 @@ use crate::{
     WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
 };
 use serde::{Deserialize, Serialize};
+use prost::Message;
 use std::collections::BTreeSet;
 
 #[path = "rust_plan_proto.rs"]
@@ -87,6 +88,11 @@ pub(crate) struct RustArtifactPlan {
     /// with `#[serde(deny_unknown_fields)]` keep accepting the plan.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) dropped_artifact_classes: Vec<&'static str>,
+    /// Relative target paths observed in Cargo's JSON message stream. These
+    /// are written after a successful build and consumed by zccache on save.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cargo_artifact_paths: Vec<String>,
+    pub(crate) cargo_artifacts_complete: bool,
     pub(crate) cache_schema_version: u32,
     pub(crate) journal_log_path: Option<String>,
 }
@@ -139,6 +145,24 @@ pub(crate) struct RustArtifactPlanContext {
     /// restore sentinel so step 2 can verify it is being asked to restore
     /// into the same tree step 1 saved.
     pub(crate) target_dir: String,
+}
+
+pub(crate) fn record_cargo_artifact_closure(
+    plan_path: &std::path::Path,
+    paths: &[String],
+    complete: bool,
+) -> Result<(), SoldrError> {
+    let raw = std::fs::read(plan_path)?;
+    let mut proto = rust_plan_proto::wire::RustArtifactPlanV1::decode(raw.as_slice())
+        .map_err(|err| SoldrError::Other(format!("failed to decode Rust artifact plan: {err}")))?;
+    proto.cargo_artifact_paths = paths.to_vec();
+    proto.cargo_artifacts_complete = complete;
+    let mut bytes = Vec::with_capacity(proto.encoded_len());
+    proto
+        .encode(&mut bytes)
+        .map_err(|err| SoldrError::Other(format!("failed to encode Rust artifact plan: {err}")))?;
+    std::fs::write(plan_path, bytes)?;
+    Ok(())
 }
 
 pub(crate) fn maybe_prepare_rust_artifact_plan(
@@ -780,6 +804,8 @@ pub(crate) fn build_rust_artifact_plan(
         },
         allowed_artifact_classes: allowed,
         dropped_artifact_classes: dropped,
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version,
         journal_log_path: Some(path_string(&session.journal_path)),
     })
@@ -813,6 +839,15 @@ pub(crate) fn allowed_artifact_classes(
             "dep_info",
             "build_script_metadata",
             "build_script_output",
+            // Cargo JSON hydration makes these verified primary outputs
+            // available to zccache; incomplete streams still fall back to
+            // the drop list below and retain the old thin-v2 behavior.
+            "rlib",
+            "rmeta",
+            "proc_macro",
+            "shared_lib",
+            "build_script_build",
+            "cargo_fingerprint_outputs",
         ],
         // thin-v1 (default) and any unrecognized profile that arrived via a
         // future zccache that does not yet branch on `cache_profile` get the

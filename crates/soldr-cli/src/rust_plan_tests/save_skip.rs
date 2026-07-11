@@ -73,6 +73,8 @@ fn save_skip_test_plan() -> RustArtifactPlan {
         },
         allowed_artifact_classes: vec!["rlib", "rmeta"],
         dropped_artifact_classes: vec![],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 1,
         journal_log_path: None,
     }

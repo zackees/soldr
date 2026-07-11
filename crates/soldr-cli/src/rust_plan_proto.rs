@@ -42,6 +42,10 @@ pub mod wire {
         pub cache_profile: String,
         #[prost(uint32, repeated, tag = "14")]
         pub dropped_artifact_classes: Vec<u32>,
+        #[prost(string, repeated, tag = "15")]
+        pub cargo_artifact_paths: Vec<String>,
+        #[prost(bool, tag = "16")]
+        pub cargo_artifacts_complete: bool,
     }
 
     #[derive(Clone, PartialEq, Message)]
@@ -123,6 +127,8 @@ pub(super) fn plan_to_proto_bytes(plan: &RustArtifactPlan) -> Result<Vec<u8>, So
             .iter()
             .map(artifact_class_to_proto)
             .collect::<Result<Vec<_>, _>>()?,
+        cargo_artifact_paths: plan.cargo_artifact_paths.clone(),
+        cargo_artifacts_complete: plan.cargo_artifacts_complete,
     };
     let mut bytes = Vec::with_capacity(proto.encoded_len());
     proto
