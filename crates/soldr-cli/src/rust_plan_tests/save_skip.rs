@@ -11,6 +11,7 @@
 //! naive stat-based check might have looked "unchanged". The skip
 //! mechanism must never fire in that case.
 
+use super::warm_restore::ENV_LOCK;
 use crate::rust_plan::{
     compute_plan_inputs_hash, should_skip_rust_plan_save, RustArtifactPlan,
     RustArtifactPlanContext, RustPlanInputs, RustPlanPackages, RustPlanRestoreOutcome,
@@ -18,12 +19,6 @@ use crate::rust_plan::{
 };
 use crate::SKIP_WARM_RESTORE_ENV_VAR;
 use std::ffi::{OsStr, OsString};
-use std::sync::Mutex;
-
-/// Shared with `warm_restore.rs`'s equivalent lock in spirit, but scoped to
-/// this file's own env mutations so the two test files never contend on
-/// the same `Mutex` instance across compilation units.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct EnvVarGuard {
     key: &'static str,

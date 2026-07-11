@@ -19,7 +19,7 @@ use tempfile::TempDir;
 /// guard objects below restore the previous value on drop, but two
 /// tests touching the same key concurrently would still observe each
 /// other's mid-test state without this lock.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// RAII guard that sets or removes an environment variable for the
 /// duration of a test and restores the previous value on drop. Modelled

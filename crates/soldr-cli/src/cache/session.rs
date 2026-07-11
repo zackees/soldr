@@ -212,12 +212,18 @@ pub(crate) fn compilations_since_baseline(
 ) -> Option<u64> {
     let paths = SoldrPaths::new().ok()?;
     let current = embedded_compile_stats(&paths)?;
-    let baseline = read_session_baseline(zccache_dir, session_id).unwrap_or_default();
-    Some(
-        current
-            .total_compilations
-            .saturating_sub(baseline.total_compilations),
-    )
+    let baseline = read_session_baseline(zccache_dir, session_id)?;
+    compilation_delta(&baseline, &current)
+}
+
+/// Return a trustworthy cumulative-counter delta. A counter that moved
+/// backwards means the daemon restarted (or its state was reset) between
+/// snapshots, so zero is not a valid conclusion and callers must fall back to
+/// a real save.
+fn compilation_delta(baseline: &CompileStatsInfo, current: &CompileStatsInfo) -> Option<u64> {
+    current
+        .total_compilations
+        .checked_sub(baseline.total_compilations)
 }
 
 /// soldr#1368 observability restore — build-start half. Snapshot the
@@ -578,7 +584,36 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
     use super::super::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
-    use super::clear_session_artifacts;
+    use super::{clear_session_artifacts, compilation_delta};
+
+    fn compile_stats(total_compilations: u64) -> crate::daemon::protocol::CompileStatsInfo {
+        crate::daemon::protocol::CompileStatsInfo {
+            total_compilations,
+            ..Default::default()
+        }
+    }
+
+    crate::timed_test!(
+        compilation_delta_accepts_monotonic_zero_and_nonzero_counts,
+        {
+            assert_eq!(
+                compilation_delta(&compile_stats(41), &compile_stats(41)),
+                Some(0)
+            );
+            assert_eq!(
+                compilation_delta(&compile_stats(41), &compile_stats(44)),
+                Some(3)
+            );
+        }
+    );
+
+    crate::timed_test!(compilation_delta_rejects_daemon_counter_reset, {
+        assert_eq!(
+            compilation_delta(&compile_stats(41), &compile_stats(0)),
+            None,
+            "a daemon restart must be unproven, never misreported as zero compiles"
+        );
+    });
 
     #[test]
     fn clear_session_artifacts_removes_existing_files_only() {
