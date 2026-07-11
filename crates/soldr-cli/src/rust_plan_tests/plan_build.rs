@@ -5,7 +5,7 @@ use crate::cargo_front_door::{cargo_profile, cargo_target_triple, selected_cargo
 use crate::rust_plan::{
     allowed_artifact_classes, build_rust_artifact_plan, cargo_metadata_passthrough_args,
     dropped_artifact_classes, rust_artifact_cache_profile_from_env, CargoMetadata,
-    CargoMetadataPackage, RustToolchainIdentity,
+    CargoMetadataPackage, RustToolchainIdentity, WorkspaceFileHashes,
 };
 use crate::zccache::ZccacheBuildSession;
 use crate::TARGET_CACHE_PROFILE_ENV_VAR;
@@ -40,14 +40,17 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
             CargoMetadataPackage {
                 id: "path+file:///repo/app#app@0.1.0".to_string(),
                 source: None,
+                manifest_path: None,
             },
             CargoMetadataPackage {
                 id: "registry+https://github.com/rust-lang/crates.io-index#serde@1.0.0".to_string(),
                 source: Some("registry+https://github.com/rust-lang/crates.io-index".into()),
+                manifest_path: None,
             },
             CargoMetadataPackage {
                 id: "path+file:///repo/local_dep#local_dep@0.1.0".to_string(),
                 source: None,
+                manifest_path: None,
             },
         ],
     };
@@ -75,6 +78,8 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
         "x86_64-unknown-linux-gnu".to_string(),
     ];
 
+    let file_hashes =
+        WorkspaceFileHashes::collect(&metadata.workspace_root).expect("collect file hashes");
     let plan = build_rust_artifact_plan(
         &metadata,
         &toolchain,
@@ -83,6 +88,7 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
         Some("thin-v1"),
         &session,
         None,
+        &file_hashes,
     )
     .expect("build rust artifact plan");
 
@@ -245,6 +251,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         packages: vec![CargoMetadataPackage {
             id: "path+file:///repo/app#app@0.1.0".to_string(),
             source: None,
+            manifest_path: None,
         }],
     };
     let toolchain = RustToolchainIdentity {
@@ -263,6 +270,8 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         session_stats_path: root.join("cache/logs/last-session-stats.json"),
     };
 
+    let file_hashes =
+        WorkspaceFileHashes::collect(&metadata.workspace_root).expect("collect file hashes");
     let plan = build_rust_artifact_plan(
         &metadata,
         &toolchain,
@@ -271,6 +280,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         Some("thin-v2"),
         &session,
         None,
+        &file_hashes,
     )
     .expect("build rust artifact plan");
 
