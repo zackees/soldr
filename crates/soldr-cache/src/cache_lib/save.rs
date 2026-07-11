@@ -630,7 +630,9 @@ fn walk_cache_files_for_profile(
         let rel = abs
             .strip_prefix(cache_dir)
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+        if archive_always_excludes_cache_path(rel)
+            || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+        {
             let meta = std::fs::metadata(&abs).map_err(|e| io(&abs, e))?;
             walk.excluded_files += 1;
             walk.excluded_bytes = walk.excluded_bytes.saturating_add(meta.len());
@@ -642,7 +644,9 @@ fn walk_cache_files_for_profile(
         let rel = abs
             .strip_prefix(cache_dir)
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+        if archive_always_excludes_cache_path(rel)
+            || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+        {
             walk.excluded_files += 1;
             continue;
         }
@@ -679,6 +683,23 @@ fn cache_symlink_entry(abs: &Path, rel: &Path) -> std::result::Result<SymlinkEnt
         target,
         is_dir: followed.is_dir(),
     })
+}
+
+/// Runtime coordination files are local to one daemon instance and cache
+/// root. Restoring PID files, spawn locks, sockets, or failure markers into a
+/// different root can prevent the embedded compile daemon from starting.
+/// They are never cache payload, regardless of the requested save profile.
+fn archive_always_excludes_cache_path(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|component| {
+        matches!(component, std::path::Component::Normal(part)
+            if part.to_string_lossy().eq_ignore_ascii_case("soldr-daemon"))
+    })
+}
+
+fn manifest_path_is_daemon_runtime(path: &str) -> bool {
+    manifest_rel_to_path(path)
+        .ok()
+        .is_some_and(|rel| archive_always_excludes_cache_path(&rel))
 }
 
 /// Return true when a cache-relative path is intentionally omitted from
@@ -1158,6 +1179,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         .base_manifest
         .cache_files
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .map(|entry| (entry.path.as_str(), entry))
         .collect();
     let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf, &std::fs::Metadata)> =
@@ -1201,6 +1223,9 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         .collect();
     for base_link in &opts.base_manifest.cache_symlinks {
         let path = base_link.path.as_str();
+        if manifest_path_is_daemon_runtime(path) {
+            continue;
+        }
         if !current_symlink_paths.contains(path) && !current_paths.contains(path) {
             deleted_cache_paths.push(path.to_owned());
         }
@@ -1640,6 +1665,12 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
                 return Err(SaveLoadError::BadArchivePath(path.display().to_string()));
             }
         };
+        // Compatibility with archives produced before daemon runtime state
+        // became reserved: drain but never materialize those entries. A load
+        // must not overwrite the live PID/lock/socket namespace of this host.
+        if archive_always_excludes_cache_path(&stripped) {
+            continue;
+        }
         if opts.mtimes_only {
             return Err(SaveLoadError::BadArchivePath(format!(
                 "mtimes_only load refuses cache entry: {}",
@@ -2231,6 +2262,9 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
             continue;
         }
         let rel = manifest_rel_to_path(path)?;
+        if archive_always_excludes_cache_path(&rel) {
+            continue;
+        }
         let dest = cache_dir.join(rel);
         // symlink_metadata (#1548): a tombstoned SYMLINK must remove the
         // link itself. Following `metadata` here would misclassify a
@@ -2273,6 +2307,10 @@ fn restore_cache_symlinks(cache_dir: &Path, entries: &[SymlinkEntry]) -> (u64, u
     let mut restored = 0u64;
     let mut skipped = 0u64;
     for entry in entries {
+        if manifest_path_is_daemon_runtime(&entry.path) {
+            skipped += 1;
+            continue;
+        }
         match restore_one_symlink(cache_dir, entry) {
             Ok(()) => restored += 1,
             Err(reason) => {
@@ -2352,6 +2390,7 @@ fn build_cache_mtime_index(manifest: &Manifest) -> HashMap<String, CacheMtimeSlo
     manifest
         .cache_files
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .map(|entry| {
             (
                 entry.path.clone(),
@@ -2379,6 +2418,7 @@ fn replay_pending_cache_file_mtimes(
 ) -> Result<()> {
     let pending: Vec<&CacheFile> = entries
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .filter(|entry| {
             index
                 .get(entry.path.as_str())
@@ -2447,6 +2487,142 @@ fn num_cpus_for(threads: Option<usize>) -> u32 {
 mod tests {
     use super::*;
     use crate::timed_test;
+
+    timed_test!(full_profile_excludes_soldr_daemon_runtime_state, {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path();
+        std::fs::create_dir_all(cache.join("soldr-daemon")).unwrap();
+        std::fs::create_dir_all(cache.join("zccache/artifacts")).unwrap();
+        std::fs::write(cache.join("soldr-daemon/daemon.pid"), b"123\n").unwrap();
+        std::fs::write(cache.join("soldr-daemon/.spawn.lock"), b"").unwrap();
+        std::fs::write(
+            cache.join("soldr-daemon/compile-daemon-unavailable"),
+            b"stale",
+        )
+        .unwrap();
+        let payload = cache.join("zccache/artifacts/hit.bin");
+        std::fs::write(&payload, b"cache payload").unwrap();
+
+        let walk = walk_cache_files_for_profile(cache, None, SaveProfile::Full).unwrap();
+
+        assert_eq!(walk.included_paths, vec![payload]);
+        assert_eq!(walk.excluded_files, 3);
+    });
+
+    timed_test!(daemon_runtime_exclusion_is_top_level_only, {
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon/daemon.pid"
+        )));
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon/nested/state.json"
+        )));
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "Soldr-Daemon/daemon.pid"
+        )));
+        assert!(!archive_always_excludes_cache_path(Path::new(
+            "zccache/artifacts/soldr-daemon/payload.bin"
+        )));
+        assert!(!archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon-cache/payload.bin"
+        )));
+    });
+
+    timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
+        let root = tempfile::tempdir().unwrap();
+        let archived_cache = root.path().join("archived-cache");
+        let restore_cache = root.path().join("restore-cache");
+        let archived_runtime = archived_cache.join("soldr-daemon");
+        let live_runtime = restore_cache.join("soldr-daemon");
+        std::fs::create_dir_all(&archived_runtime).unwrap();
+        std::fs::create_dir_all(&live_runtime).unwrap();
+        let archived_file = archived_runtime.join("archived.pid");
+        std::fs::write(&archived_file, b"old runtime").unwrap();
+        std::fs::write(live_runtime.join("live.pid"), b"live runtime").unwrap();
+        let (archived_entry, archived_meta) =
+            cache_file_entry(&archived_cache, &archived_file).unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            cache_dir_name: CACHE_DIR_NAME.into(),
+            cache_file_count: 1,
+            cache_layer_kind: CacheLayerKind::Complete as i32,
+            cache_files: vec![archived_entry],
+            deleted_cache_paths: vec!["soldr-daemon/live.pid".into()],
+            cache_symlinks: vec![SymlinkEntry {
+                path: "soldr-daemon/link".into(),
+                target: "archived.pid".into(),
+                is_dir: false,
+            }],
+            ..Manifest::default()
+        };
+        let archive = root.path().join("legacy.tar.zst");
+        write_delta_archive(
+            &archive,
+            1,
+            None,
+            &manifest,
+            &archived_cache,
+            &[(archived_file, archived_meta)],
+        )
+        .unwrap();
+
+        let report = load(&LoadOptions {
+            archive: &archive,
+            cache_dir: Some(&restore_cache),
+            workspace: None,
+            threads: None,
+            mtimes_only: false,
+            profile_extract: false,
+            auto_defender_exclude: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.cache_files_restored, 0);
+        assert_eq!(
+            std::fs::read(live_runtime.join("live.pid")).unwrap(),
+            b"live runtime"
+        );
+        assert!(!live_runtime.join("archived.pid").exists());
+        assert!(!live_runtime.join("link").exists());
+    });
+
+    timed_test!(delta_ignores_daemon_runtime_from_legacy_base_manifest, {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let base = Manifest {
+            version: MANIFEST_VERSION,
+            cache_dir_name: CACHE_DIR_NAME.into(),
+            cache_layer_kind: CacheLayerKind::Base as i32,
+            cache_files: vec![CacheFile {
+                path: "soldr-daemon/daemon.pid".into(),
+                mtime_ns: 1,
+                size: 3,
+                blake3: vec![0; 32],
+            }],
+            cache_symlinks: vec![SymlinkEntry {
+                path: "soldr-daemon/sock".into(),
+                target: "target".into(),
+                is_dir: false,
+            }],
+            ..Manifest::default()
+        };
+        let archive = root.path().join("delta.tar.zst");
+
+        let report = save_delta(&SaveDeltaOptions {
+            workspace: None,
+            cache_dir: &cache,
+            base_manifest: &base,
+            out: &archive,
+            zstd_level: 1,
+            threads: None,
+            profile: SaveProfile::Full,
+        })
+        .unwrap();
+        let delta = read_manifest_from_archive(&archive).unwrap();
+
+        assert_eq!(report.deleted_cache_files, 0);
+        assert!(delta.deleted_cache_paths.is_empty());
+    });
 
     timed_test!(cargo_input_inventory_selects_declared_inputs, {
         let root = tempfile::tempdir().unwrap();
