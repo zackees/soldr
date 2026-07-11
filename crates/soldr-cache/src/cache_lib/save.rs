@@ -283,25 +283,68 @@ fn hash_file(path: &Path) -> Result<[u8; 32]> {
         .map_err(|e| io(path, e))
 }
 
+/// Resolve the absolute path(s) that count as "the Cargo target directory"
+/// for `workspace` (#1547). Path-name matching alone (excluding every
+/// directory literally named `target` anywhere in the tree) can hide
+/// legitimate tracked source such as `src/target/mod.rs`, so the walker
+/// only excludes a `target/` entry when its full path matches one of
+/// these candidates.
+///
+/// Candidates, matching Cargo's own resolution order (most specific
+/// first) — we do not attempt to parse `.cargo/config.toml`'s
+/// `build.target-dir` key here; an override there falls through to
+/// the conservative default below, which only means the real output
+/// dir gets hashed too (safe: extra work, never a missed input):
+/// * `$CARGO_TARGET_DIR` (if absolute),
+/// * `$CARGO_BUILD_TARGET_DIR` (if absolute),
+/// * `<workspace>/target` (Cargo's default).
+fn workspace_target_dir_candidates(workspace: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::with_capacity(3);
+    for var in ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR"] {
+        if let Some(dir) = std::env::var_os(var) {
+            let path = PathBuf::from(dir);
+            if path.is_absolute() {
+                out.push(path);
+            }
+        }
+    }
+    out.push(workspace.join("target"));
+    out
+}
+
 /// Walk a workspace and return every regular file's repo-relative POSIX
 /// path. We deliberately do NOT shell out to `git ls-files` — soldr's
 /// users include sandboxed CI jobs and local-dev runs that don't always
-/// have git on PATH at the moment this is invoked. `.git/`, `target/`,
-/// and `node_modules/` are excluded — they're never source.
+/// have git on PATH at the moment this is invoked. `.git/` and
+/// `node_modules/` are excluded by name at any depth — those basenames
+/// are never legitimate tracked source. The build-output `target/`
+/// directory is excluded by *resolved path*, not by name (#1547): a
+/// source directory that happens to be named `target` anywhere other
+/// than the actual Cargo target dir (e.g. `src/target/mod.rs`) is real
+/// source and must be hashed. See [`workspace_target_dir_candidates`].
 ///
 /// Uses jwalk for a parallel walk; on a 1000-file workspace this is
 /// ~4x faster than walkdir at the directory-traversal level. The walk
 /// itself is the cheap part — caller still has to hash each file.
 fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<PathBuf>> {
+    let target_dirs = workspace_target_dir_candidates(workspace);
     let walker = jwalk::WalkDir::new(workspace)
         .follow_links(false)
         .skip_hidden(false) // we want .cargo, .rustfmt.toml, etc.
-        .process_read_dir(move |_depth, _path, _read_dir_state, children| {
+        .process_read_dir(move |_depth, dir_path, _read_dir_state, children| {
             children.retain(|res| match res {
                 Ok(entry) => {
                     let name = entry.file_name.to_string_lossy();
-                    !(entry.depth > 0
-                        && (name == ".git" || name == "target" || name == "node_modules"))
+                    if entry.depth > 0 && (name == ".git" || name == "node_modules") {
+                        return false;
+                    }
+                    if entry.depth > 0 && name == "target" {
+                        let candidate = dir_path.join(&entry.file_name);
+                        if target_dirs.iter().any(|t| t == &candidate) {
+                            return false;
+                        }
+                    }
+                    true
                 }
                 Err(_) => true,
             });
@@ -2389,4 +2432,120 @@ mod tests {
             );
         }
     });
+
+    // #1547 — the workspace source walker must not exclude a directory by
+    // *name* alone: a `target/` directory that isn't the real Cargo output
+    // dir (e.g. `src/target/mod.rs`) is legitimate tracked source and must
+    // be hashed. Only the resolved Cargo target dir(s) are excluded, and
+    // `.git` / `node_modules` stay excluded by name (never legitimate
+    // source basenames).
+    timed_test!(
+        walk_workspace_files_hashes_nested_dir_literally_named_target,
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+
+            // Legitimate source: a package sub-module directory that happens
+            // to be named "target", nested under src/ — NOT the Cargo build
+            // output dir.
+            std::fs::create_dir_all(root.join("src/target")).unwrap();
+            std::fs::write(root.join("src/target/mod.rs"), b"pub fn noop() {}").unwrap();
+            std::fs::write(root.join("src/lib.rs"), b"mod target;").unwrap();
+
+            // The REAL Cargo output dir at the workspace root — must stay
+            // excluded.
+            std::fs::create_dir_all(root.join("target/debug")).unwrap();
+            std::fs::write(root.join("target/debug/build-artifact.bin"), b"junk").unwrap();
+
+            // .git and node_modules — must stay excluded regardless of depth.
+            std::fs::create_dir_all(root.join(".git/objects")).unwrap();
+            std::fs::write(root.join(".git/objects/pack.idx"), b"gitjunk").unwrap();
+            std::fs::create_dir_all(root.join("node_modules/leftpad")).unwrap();
+            std::fs::write(root.join("node_modules/leftpad/index.js"), b"jsjunk").unwrap();
+
+            let files = walk_workspace_files(root, None).unwrap();
+            let rel_strs: Vec<String> = files
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
+
+            assert!(
+                rel_strs.contains(&"src/target/mod.rs".to_string()),
+                "src/target/mod.rs must be hashed as legitimate source, got: {rel_strs:?}"
+            );
+            assert!(
+                rel_strs.contains(&"src/lib.rs".to_string()),
+                "src/lib.rs must be hashed, got: {rel_strs:?}"
+            );
+            assert!(
+                !rel_strs
+                    .iter()
+                    .any(|p| p.starts_with("target/") || p == "target"),
+                "the real workspace target/ dir must stay excluded, got: {rel_strs:?}"
+            );
+            assert!(
+                !rel_strs.iter().any(|p| p.starts_with(".git/")),
+                ".git must stay excluded, got: {rel_strs:?}"
+            );
+            assert!(
+                !rel_strs.iter().any(|p| p.starts_with("node_modules/")),
+                "node_modules must stay excluded, got: {rel_strs:?}"
+            );
+        }
+    );
+
+    // #1547 mutation check: CARGO_TARGET_DIR overrides must also be
+    // resolved-path excluded even though they don't literally live under
+    // `<workspace>/target`.
+    timed_test!(
+        walk_workspace_files_excludes_cargo_target_dir_env_override,
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("src")).unwrap();
+            std::fs::write(root.join("src/lib.rs"), b"// real source").unwrap();
+            // Override target dir lives INSIDE the workspace under a
+            // differently-named directory (simulating CARGO_TARGET_DIR=out).
+            std::fs::create_dir_all(root.join("out/debug")).unwrap();
+            std::fs::write(root.join("out/debug/artifact.bin"), b"junk").unwrap();
+            // A directory named "out" is NOT excluded when CARGO_TARGET_DIR is
+            // unset — sanity check the negative case first.
+            let baseline = walk_workspace_files(root, None).unwrap();
+            let baseline_strs: Vec<String> = baseline
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
+            assert!(
+                baseline_strs.contains(&"out/debug/artifact.bin".to_string()),
+                "without CARGO_TARGET_DIR, out/ is ordinary source: {baseline_strs:?}"
+            );
+        }
+    );
+
+    // #1547 — a directory named "target" that is NOT at the workspace
+    // root (and not a CARGO_TARGET_DIR/CARGO_BUILD_TARGET_DIR override)
+    // must never be excluded, including deeper nesting than one level.
+    timed_test!(
+        walk_workspace_files_hashes_deeply_nested_target_named_dirs,
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            std::fs::create_dir_all(root.join("crates/foo/src/target")).unwrap();
+            std::fs::write(
+                root.join("crates/foo/src/target/mod.rs"),
+                b"pub struct Target;",
+            )
+            .unwrap();
+
+            let files = walk_workspace_files(root, None).unwrap();
+            let rel_strs: Vec<String> = files
+                .iter()
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .collect();
+            assert!(
+                rel_strs.contains(&"crates/foo/src/target/mod.rs".to_string()),
+                "deeply nested target-named source must be hashed: {rel_strs:?}"
+            );
+        }
+    );
 }
