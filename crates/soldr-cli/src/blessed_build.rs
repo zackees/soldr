@@ -43,6 +43,13 @@ pub const USE_LEGACY_XWIN_ENV_VAR: &str = "SOLDR_USE_LEGACY_XWIN";
 /// explicit legacy cargo-zigbuild path.
 pub const USE_LEGACY_ZIGBUILD_ENV_VAR: &str = "SOLDR_USE_LEGACY_ZIGBUILD";
 
+/// soldr#1543 test seam: sleep this many milliseconds at the top of
+/// [`prepare`] to simulate slow catalogue/SDK materialization, so the
+/// dependency-prefetch overlap can be measured deterministically
+/// without depending on live catalogue latency. Ignored when unset,
+/// unparsable, or zero.
+pub const TEST_PREP_DELAY_ENV_VAR: &str = "SOLDR_TEST_BUILD_PREP_DELAY_MS";
+
 /// What the blessed-build prep accomplished, returned to the caller
 /// so `Commands::Build` can log + set the resulting env vars on the
 /// child cargo invocation.
@@ -93,6 +100,15 @@ impl BlessedPrep {
 /// Caller is responsible for applying `prep.env` and prepending
 /// `prep.shim_path_dir` to `PATH` on the child cargo invocation.
 pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedPrep, SoldrError> {
+    // soldr#1543 test seam — see TEST_PREP_DELAY_ENV_VAR.
+    if let Some(delay_ms) = std::env::var(TEST_PREP_DELAY_ENV_VAR)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+    }
+
     let target_triple_canonical = target_triple.to_ascii_lowercase();
     let target_triple = target_triple_canonical.as_str();
     let mut prep = BlessedPrep::default();

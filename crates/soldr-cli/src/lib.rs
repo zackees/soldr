@@ -38,6 +38,9 @@ pub mod doctor;
 pub mod env_cmd;
 /// soldr#1059 — `soldr exec <cmd>` PATH-prepend wrapper.
 pub mod exec_cmd;
+/// soldr#1543 — overlap `cargo fetch` with blessed SDK preparation on
+/// the `soldr build --target` surface.
+pub mod fetch_overlap;
 pub mod gc;
 pub mod install_shims;
 pub mod linker;
