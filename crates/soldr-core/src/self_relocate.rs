@@ -270,9 +270,26 @@ struct ExeIdentity {
 fn exe_identity(path: &Path) -> Result<ExeIdentity, SoldrError> {
     let hash_hex = hash_file(path)?;
     Ok(ExeIdentity {
-        dir_name: format!("v{}-{hash_hex}", env!("CARGO_PKG_VERSION")),
+        dir_name: relocation_dir_name(env!("CARGO_PKG_VERSION"), &hash_hex),
         hash_hex,
     })
+}
+
+/// soldr#1597 Phase 3: official (`release-auto.yml`-published) builds
+/// relocate to a hash-free `v{VERSION}/` directory. Dev/manual builds
+/// keep the hash-keyed `v{VERSION}-{hash}` name unconditionally — the
+/// hash is the only thing that distinguishes two dev rebuilds sharing a
+/// version but differing in content, and without it a rebuild could try
+/// to overwrite a locked, running daemon binary on Windows. Broker v2
+/// discovery is pointer-file-based (PID file + `.servicedef.v2`), never
+/// directory-scanning, so this naming choice is invisible to it either
+/// way — no broker changes are needed.
+fn relocation_dir_name(version: &str, hash_hex: &str) -> String {
+    if crate::build_provenance::is_official_build() {
+        format!("v{version}")
+    } else {
+        format!("v{version}-{hash_hex}")
+    }
 }
 
 fn exe_hash_matches(path: &Path, expected_hash: &str) -> bool {
@@ -519,6 +536,15 @@ mod tests {
     }
 
     #[test]
+    fn relocation_dir_name_is_hash_free_only_for_official_builds() {
+        // soldr#1597 Phase 3: dev/manual builds keep the hash-keyed name
+        // unconditionally (same-version-different-content safety); only
+        // an official (release-auto.yml-stamped) build gets the
+        // hash-free, version-rooted name.
+        assert_eq!(relocation_dir_name("1.2.3", "deadbeef"), "v1.2.3-deadbeef");
+    }
+
+    #[test]
     fn ensure_daemon_relocated_copies_into_daemon_subtree() {
         let temp = TempDir::new().expect("tempdir");
         let source = temp.path().join("soldr-daemon.exe");
@@ -637,6 +663,31 @@ mod tests {
         assert!(!stale.exists());
         assert!(fresh.exists());
         assert!(current.exists());
+    }
+
+    #[test]
+    fn runtime_gc_treats_hash_free_dirs_identically_to_hash_keyed_dirs() {
+        // soldr#1597 Phase 4: purge_stale_runtime_copies operates on any
+        // directory under the runtime root by ledger stamp alone, with no
+        // dependence on the naming scheme. A hash-free `v{VERSION}/` dir
+        // (official builds, Phase 3) must GC exactly like a hash-keyed
+        // `v{VERSION}-{hash}/` dir (dev builds) — no code change needed
+        // here, this locks that in as a regression test.
+        let temp = TempDir::new().expect("tempdir");
+        let root = temp.path().join("runtime").join("soldr-daemon");
+        fs::create_dir_all(&root).expect("create runtime root");
+        let stale_hash_keyed = seed_runtime_dir(&root, "v0.8.5-deadbeef", 10);
+        let stale_hash_free = seed_runtime_dir(&root, "v0.8.5", 10);
+        let fresh_hash_free = seed_runtime_dir(&root, "v0.9.0", 90);
+
+        let summary = purge_stale_runtime_copies(&root, None, 100, 50).expect("runtime gc");
+
+        assert_eq!(summary.scanned_dirs, 3);
+        assert_eq!(summary.removed_dirs, 2);
+        assert_eq!(summary.skipped_fresh_dirs, 1);
+        assert!(!stale_hash_keyed.exists());
+        assert!(!stale_hash_free.exists());
+        assert!(fresh_hash_free.exists());
     }
 
     #[test]
