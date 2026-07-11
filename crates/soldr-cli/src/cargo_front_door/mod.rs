@@ -108,6 +108,15 @@ struct CargoAbortLogRequest<'a> {
     auto_retry_planned: bool,
 }
 
+type CargoRunResult = Result<
+    (
+        std::process::ExitStatus,
+        Option<String>,
+        Option<Vec<String>>,
+    ),
+    SoldrError,
+>;
+
 fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, SoldrError> {
     let CargoAbortLogRequest {
         paths,
@@ -1719,6 +1728,15 @@ pub(crate) async fn run_cargo_front_door(
         args,
         cargo_profile_debug_default.as_ref(),
     )?;
+    let capture_cargo_artifacts = build_like_cargo
+        && cache_plan.has_rust_artifact_plan()
+        && !cargo_args_have_message_format(args);
+    if capture_cargo_artifacts {
+        // Cargo's JSON stream is line-oriented and preserves rendered
+        // diagnostics in the message payload. It lets us build an exact
+        // package-aware closure while teeing the bytes unchanged below.
+        command.arg("--message-format=json");
+    }
     if build_like_cargo {
         let probe_path = cache_plan
             .target_dir_for_hooks(args)
@@ -1807,14 +1825,19 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
-    let cargo_run_result: Result<(std::process::ExitStatus, Option<String>), SoldrError> =
-        if capture_for_diagnostics {
-            run_command_capturing_diagnostic_tail(&mut command)
-                .map(|(status, captured)| (status, Some(captured)))
-        } else {
-            run_command_inheriting_stdio(&mut command).map(|status| (status, None))
-        };
-    let (status, diagnostic_capture) = match cargo_run_result {
+    let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
+        let target_dir = cache_plan
+            .target_dir_for_hooks(args)
+            .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
+        run_command_capturing_cargo_json(&mut command, &target_dir)
+            .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
+    } else if capture_for_diagnostics {
+        run_command_capturing_diagnostic_tail(&mut command)
+            .map(|(status, captured)| (status, Some(captured), None))
+    } else {
+        run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
+    };
+    let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
         Ok(outcome) => outcome,
         Err(err) => {
             let timeout = cargo_run_error_is_timeout(&err);
@@ -1926,6 +1949,9 @@ pub(crate) async fn run_cargo_front_door(
 
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
+            if let Some(paths) = cargo_artifact_paths.as_deref() {
+                cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
+            }
             cache_plan.save_rust_artifacts(restore_outcome)?;
             // Post-compile target-GC (#485). Same gating as the pre-pass —
             // build-like cargo, no opt-out, resolve dir consistently with the
@@ -1990,6 +2016,139 @@ pub(crate) async fn run_cargo_front_door(
     post_cargo_result?;
     drop(trampoline_plan);
     Ok(status.code().unwrap_or(1))
+}
+
+fn cargo_args_have_message_format(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| arg == "--message-format" || arg.starts_with("--message-format="))
+}
+
+fn run_command_capturing_cargo_json(
+    command: &mut std::process::Command,
+    target_dir: &Path,
+) -> Result<(std::process::ExitStatus, String, Vec<String>), SoldrError> {
+    command.stdout(std::process::Stdio::piped());
+    command.stderr(std::process::Stdio::piped());
+    configure_cargo_child_for_timeout(command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
+    let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"));
+    let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"));
+    let status = wait_for_cargo_child(&mut child, "cargo JSON capture")?;
+    let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
+    let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
+    let paths = parse_cargo_artifact_closure(&stdout, target_dir);
+    Ok((status, String::from_utf8_lossy(&stderr).into_owned(), paths))
+}
+
+fn parse_cargo_artifact_closure(stdout: &[u8], target_dir: &Path) -> Vec<String> {
+    let mut paths = BTreeMap::<String, ()>::new();
+    let mut complete = true;
+    for line in String::from_utf8_lossy(stdout).lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            complete = false;
+            continue;
+        };
+        let Some(reason) = value.get("reason").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        match reason {
+            "compiler-artifact" => {
+                if let Some(filenames) =
+                    value.get("filenames").and_then(serde_json::Value::as_array)
+                {
+                    for filename in filenames.iter().filter_map(serde_json::Value::as_str) {
+                        add_cargo_closure_path(&mut paths, Path::new(filename), target_dir);
+                    }
+                } else {
+                    complete = false;
+                }
+            }
+            "build-script-executed" => {
+                if let Some(out_dir) = value.get("out_dir").and_then(serde_json::Value::as_str) {
+                    add_cargo_closure_path(&mut paths, Path::new(out_dir), target_dir);
+                } else {
+                    complete = false;
+                }
+            }
+            "compiler-message" | "build-finished" | "text" => {}
+            _ => complete = false,
+        }
+    }
+    if !complete || paths.is_empty() {
+        return Vec::new();
+    }
+    paths.into_keys().collect()
+}
+
+fn add_cargo_closure_path(paths: &mut BTreeMap<String, ()>, path: &Path, target_dir: &Path) {
+    let Ok(relative) = path.strip_prefix(target_dir) else {
+        return;
+    };
+    if !relative.as_os_str().is_empty() {
+        paths.insert(relative.to_string_lossy().replace('\\', "/"), ());
+    }
+    if path
+        .components()
+        .any(|component| component.as_os_str() == ".fingerprint")
+    {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+            let fingerprint_name = stem.strip_prefix("lib").unwrap_or(stem);
+            let fingerprint_dir = parent
+                .parent()
+                .map(|profile| profile.join(".fingerprint").join(fingerprint_name));
+            if let Some(dir) = fingerprint_dir {
+                collect_closure_files(paths, &dir, target_dir);
+            }
+        }
+    }
+    if path.is_dir() {
+        collect_closure_files(paths, path, target_dir);
+    }
+}
+
+fn collect_closure_files(paths: &mut BTreeMap<String, ()>, root: &Path, target_dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_closure_files(paths, &path, target_dir);
+        } else if path.is_file() {
+            add_cargo_closure_path(paths, &path, target_dir);
+        }
+    }
+}
+
+fn spawn_capture_pipe_reader_to_stdout<R>(
+    mut reader: R,
+) -> std::sync::mpsc::Receiver<CapturePipeMessage>
+where
+    R: std::io::Read + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut chunk = [0u8; 8192];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let bytes = chunk[..n].to_vec();
+                    let _ = std::io::stdout().lock().write_all(&bytes);
+                    let _ = tx.send(CapturePipeMessage::Chunk(bytes));
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = std::io::stdout().lock().flush();
+        let _ = tx.send(CapturePipeMessage::Eof);
+    });
+    rx
 }
 
 fn run_command_inheriting_stdio(

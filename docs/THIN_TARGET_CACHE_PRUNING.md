@@ -14,6 +14,16 @@ preserves cargo's "no work to do" verdict on the second build of the same
 inputs. Today the slice is multi-GB and includes content that cargo never
 consults to make that decision.
 
+> **Implementation note (soldr#1530 / #1546):** Cargo's freshness check also
+> requires the primary outputs to exist. A metadata-only slice therefore
+> causes Cargo to rebuild every missing unit after restore. The implementation
+> now captures Cargo's JSON `compiler-artifact` and `build-script-executed`
+> messages, derives the associated fingerprint/build-output closure, and
+> retains those verified outputs for thin-v2. If the message stream is
+> incomplete or contains an unknown layout, zccache falls back to the
+> conservative target walk. Cargo remains the freshness authority; the JSON
+> stream only narrows the save candidates.
+
 ## 1. What the thin slice actually contains today
 
 The set of files saved by `target-cache-mode: thin` is determined in two

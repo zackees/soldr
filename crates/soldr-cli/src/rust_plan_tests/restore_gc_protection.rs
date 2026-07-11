@@ -68,6 +68,8 @@ fn full_mode_plan(workspace: &std::path::Path, target_dir: &std::path::Path) -> 
         journal_log_path: None,
         cache_profile: None,
         dropped_artifact_classes: Vec::new(),
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
     }
 }
 
