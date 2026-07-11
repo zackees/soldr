@@ -1926,7 +1926,7 @@ pub(crate) async fn run_cargo_front_door(
 
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
-            cache_plan.save_rust_artifacts()?;
+            cache_plan.save_rust_artifacts(restore_outcome)?;
             // Post-compile target-GC (#485). Same gating as the pre-pass —
             // build-like cargo, no opt-out, resolve dir consistently with the
             // pre-pass. The active-cargo-lock guard inside `auto_prune_target`

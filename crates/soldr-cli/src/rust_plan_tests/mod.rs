@@ -3,6 +3,7 @@
 //! via `#[path = "rust_plan_tests/mod.rs"] mod tests;` at the bottom of
 //! `rust_plan.rs`.
 
+mod accumulated_cache_scope;
 mod bundle_walk;
 mod local_roundtrip;
 mod manifest;
@@ -12,5 +13,6 @@ mod plan_content_identity;
 mod prep_memo;
 mod prepopulated_target;
 mod restore_gc_protection;
+mod save_skip;
 mod warm_restore;
 mod wire_compat;

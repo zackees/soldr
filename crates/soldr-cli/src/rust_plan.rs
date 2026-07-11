@@ -322,10 +322,10 @@ pub(crate) fn compute_plan_content_identity(plan: &RustArtifactPlan) -> String {
 #[path = "rust_plan_warm_restore.rs"]
 mod warm_restore;
 pub(crate) use warm_restore::{
-    current_unix_seconds, evaluate_warm_restore_skip, should_skip_warm_restore,
-    warm_restore_sentinel_path, warm_restore_skip_enabled, warm_restore_target_marker_path,
-    write_warm_restore_sentinel, WarmRestoreSentinel, WarmRestoreSkipInputs,
-    WarmRestoreTargetMarker,
+    current_unix_seconds, evaluate_warm_restore_skip, should_skip_rust_plan_save,
+    should_skip_warm_restore, warm_restore_sentinel_path, warm_restore_skip_enabled,
+    warm_restore_target_marker_path, write_warm_restore_sentinel, WarmRestoreSentinel,
+    WarmRestoreSkipInputs, WarmRestoreTargetMarker,
 };
 
 /// Walk `deps_dir` shallowly and delete every `.rmeta` file whose filename
@@ -962,12 +962,37 @@ pub(crate) fn run_zccache_rust_plan(
     }
 
     if operation == "save" && plan.cache_profile == Some("thin-v2") {
-        if let Err(e) = write_thin_manifest(&plan.cache_dir, plan.cache_profile) {
+        // soldr#1538: `plan.cache_dir` is normally the *accumulated*
+        // rust-plan cache root (`rust-plan-cache/`), shared across every
+        // cache key ever saved locally (different profiles, target
+        // triples, packages, ...). Walking + sorting it here on every save
+        // — as this used to do unconditionally — re-walked every bundle
+        // the cache root has ever seen, not just the bundle
+        // `save_rust_plan_local` just produced, so the diagnostic manifest
+        // step scaled with the lifetime size of the cache directory rather
+        // than the current build.
+        //
+        // `docs/THIN_TARGET_CACHE_PRUNING.md` §5.1.b documents
+        // `assert_thin_manifest.py <bundle_dir>/manifest.v2.json
+        // <bundle_dir>` against a `SOLDR_TARGET_CACHE_BUNDLE_DIR`-pinned
+        // directory — i.e. the documented/CI-verified contract is that
+        // `plan.cache_dir` *is* the single bundle directory when the env
+        // var is explicitly set, and that behavior (walk `plan.cache_dir`
+        // as-is) is preserved unchanged here. Only the *default*,
+        // unpinned, multi-key-accumulating cache dir is rescoped to the
+        // bundle this save just produced.
+        let manifest_root = if non_empty_env_path(TARGET_CACHE_BUNDLE_DIR_ENV_VAR).is_some() {
+            plan.cache_dir.clone()
+        } else {
+            let cache_key = zccache::artifact::rust_plan_cache_key(&loaded);
+            zccache::artifact::rust_plan_bundle_dir(&plan.cache_dir, &cache_key).into_path_buf()
+        };
+        if let Err(e) = write_thin_manifest(&manifest_root, plan.cache_profile) {
             // Manifest emission is diagnostic; never fail the build because
             // we could not write it. Log so it shows up in CI logs.
             eprintln!(
                 "soldr warning: failed to write thin-slice manifest at {}: {e}",
-                plan.cache_dir.display()
+                manifest_root.display()
             );
         }
     }
