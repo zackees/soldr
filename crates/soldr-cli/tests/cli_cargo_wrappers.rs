@@ -935,6 +935,75 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
 }
 
 #[test]
+fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-formatter");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let format_cache_root = cache_root.join("explicit-zccache");
+
+    let run = || {
+        isolated_soldr_command()
+            .arg("rustfmt")
+            .arg(&source_path)
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("PATH", isolated_test_path())
+            .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("ZCCACHE_CACHE_DIR", &format_cache_root)
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .expect("failed to run soldr rustfmt through the embedded format cache")
+    };
+    let output = run();
+
+    assert!(
+        output.status.success(),
+        "embedded rustfmt format-cache route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake rustfmt log");
+    assert!(
+        log.lines().any(|line| line.starts_with("rustfmt ")),
+        "embedded format cache should invoke rustfmt: {log}"
+    );
+    assert!(
+        path_display_variants(&source_path)
+            .iter()
+            .any(|path| log.contains(path)),
+        "embedded format cache should pass the source file to rustfmt: {log}"
+    );
+
+    let cached_output = run();
+    assert!(
+        cached_output.status.success(),
+        "cached rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&cached_output.stdout),
+        String::from_utf8_lossy(&cached_output.stderr)
+    );
+    let cached_log = fs::read_to_string(&log_path).expect("failed to reread fake rustfmt log");
+    assert_eq!(
+        cached_log
+            .lines()
+            .filter(|line| line.starts_with("rustfmt "))
+            .count(),
+        1,
+        "second identical invocation should hit the embedded format cache: {cached_log}"
+    );
+    assert!(
+        format_cache_root.join("fmt").is_dir(),
+        "embedded format cache should honor the explicit ZCCACHE_CACHE_DIR"
+    );
+}
+
+#[test]
 fn rustfmt_no_cache_disable_and_version_bypass_zccache_formatter() {
     for (label, prefix_args, zccache_disable, include_source) in [
         ("no-cache", vec!["--no-cache", "rustfmt"], false, true),
