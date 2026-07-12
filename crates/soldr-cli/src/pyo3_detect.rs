@@ -108,6 +108,33 @@ impl Pyo3BuildPlan {
             eprintln!("soldr: PyO3 build plan: {message}");
         }
     }
+
+    pub async fn materialize_compatibility(
+        &mut self,
+        paths: &crate::core::SoldrPaths,
+    ) -> Result<(), crate::core::SoldrError> {
+        if !self.needs_python_sysroot {
+            return Ok(());
+        }
+        let sysroot =
+            crate::fetch::python_sysroot::ensure_python_sysroot(paths, &self.target).await?;
+        self.env
+            .extend(compatibility_sysroot_env(&sysroot.root, &sysroot.version));
+        Ok(())
+    }
+}
+
+fn compatibility_sysroot_env(root: &Path, version: &str) -> BTreeMap<String, String> {
+    let mut env = BTreeMap::new();
+    let abi_version = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    env.insert("PYO3_CROSS".into(), "1".into());
+    env.insert(
+        "PYO3_CROSS_LIB_DIR".into(),
+        root.join("lib").display().to_string(),
+    );
+    env.insert("PYO3_CROSS_PYTHON_VERSION".into(), abi_version);
+    env.insert("PYO3_CROSS_PYTHON_IMPLEMENTATION".into(), "CPython".into());
+    env
 }
 
 pub fn resolve_policy(input: PolicyInput) -> Pyo3BuildPlan {
@@ -829,6 +856,31 @@ mod tests {
         assert_eq!(plan.mode, PlanMode::CallerConfigured);
         assert!(plan.env.is_empty());
     });
+
+    crate::timed_test!(
+        compatibility_sysroot_exports_explicit_target_python_config,
+        {
+            let env = compatibility_sysroot_env(Path::new("/sdk/python/package"), "3.13.14");
+            assert_eq!(env.get("PYO3_CROSS").map(String::as_str), Some("1"));
+            let expected_lib_dir = Path::new("/sdk/python/package")
+                .join("lib")
+                .display()
+                .to_string();
+            assert_eq!(
+                env.get("PYO3_CROSS_LIB_DIR").map(String::as_str),
+                Some(expected_lib_dir.as_str())
+            );
+            assert_eq!(
+                env.get("PYO3_CROSS_PYTHON_VERSION").map(String::as_str),
+                Some("3.13")
+            );
+            assert_eq!(
+                env.get("PYO3_CROSS_PYTHON_IMPLEMENTATION")
+                    .map(String::as_str),
+                Some("CPython")
+            );
+        }
+    );
 
     crate::timed_test!(target_precedence_is_args_env_project_host, {
         let args = ["--target".into(), "win-x64".into()];

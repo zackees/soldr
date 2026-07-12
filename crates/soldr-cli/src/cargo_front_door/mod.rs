@@ -1727,11 +1727,12 @@ pub(crate) async fn run_cargo_front_door(
     if pyo3_build {
         let workspace_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+        let mut pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
             &workspace_root,
             args,
             explicit_target.as_deref(),
         );
+        pyo3_plan.materialize_compatibility(&paths).await?;
         pyo3_plan.emit_diagnostic();
         pyo3_plan.apply_to_command(&mut command);
     }
