@@ -1,0 +1,16 @@
+[package]
+name = "soldr-pyo3-policy-fixture"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "soldr_pyo3_policy_fixture"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
+
+[build-dependencies]
+pyo3-build-config = "0.29"
+
+[workspace]

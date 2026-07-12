@@ -71,14 +71,19 @@ fn build_env_plan(
 ///   `set -a` in shell or piped through `eval`).
 /// * `--shell-export`: `export KEY=VALUE` lines.
 /// * `--json`: stable JSON `{ schema_version: 1, target: …, env: { … } }`.
-pub fn run_env_command(
+pub async fn run_env_command(
     target_input: &str,
     shell_export: bool,
     json: bool,
 ) -> Result<i32, SoldrError> {
     let resolved = resolve_soldr_target(target_input).map_err(map_alias_err)?;
 
-    let (env, pyo3_plan) = build_env_plan(&resolved.rust_triple)?;
+    let (mut env, mut pyo3_plan) = build_env_plan(&resolved.rust_triple)?;
+    if pyo3_plan.needs_python_sysroot {
+        let paths = SoldrPaths::new()?;
+        pyo3_plan.materialize_compatibility(&paths).await?;
+        env.extend(pyo3_plan.env.clone());
+    }
 
     if json {
         let payload = serde_json::json!({

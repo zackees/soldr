@@ -1,0 +1,12 @@
+[build-system]
+requires = []
+build-backend = "soldr"
+
+[project]
+name = "soldr-pyo3-policy-fixture"
+version = "0.1.0"
+requires-python = ">=3.10"
+
+[tool.maturin]
+module-name = "soldr_pyo3_policy_fixture"
+bindings = "pyo3"

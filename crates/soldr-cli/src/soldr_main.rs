@@ -547,7 +547,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             shell_export,
             json,
         } => {
-            std::process::exit(env_cmd::run_env_command(&target, shell_export, json)?);
+            std::process::exit(env_cmd::run_env_command(&target, shell_export, json).await?);
         }
         Commands::Status { json } => {
             let output = cache::collect_status_output(cache_enabled)?;
@@ -1091,11 +1091,12 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
 
                 if maturin_build {
-                    let pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+                    let mut pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
                         &workspace_root,
                         tool_args,
                         Some(&maturin_target),
                     );
+                    pyo3_plan.materialize_compatibility(&paths).await?;
                     pyo3_plan.emit_diagnostic();
                     pyo3_plan.apply_to_command(&mut command);
                 }

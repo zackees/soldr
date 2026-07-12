@@ -181,6 +181,18 @@ extensions keep PyO3/maturin's normal dynamic extension behavior.
 Embedding, legacy, ambiguous, and non-ABI3 builds are never guessed to
 be ABI3. Caller-provided `PYO3_*` values always win. `soldr env --target
 ... --json` includes the resolved `pyo3_plan`.
+
+Set `SOLDR_PYO3_COMPATIBILITY=sysroot` to opt an older PyO3 or embedded
+Python cross-build into managed target-Python assets. Only this plan mode
+consults the Python rows in the toolchain catalogue. Soldr selects the
+newest published version for the target, verifies its catalogue SHA-256,
+and exports `PYO3_CROSS`, `PYO3_CROSS_LIB_DIR`,
+`PYO3_CROSS_PYTHON_VERSION`, and `PYO3_CROSS_PYTHON_IMPLEMENTATION`.
+`SOLDR_PYTHON_VERSION=X.Y.Z` requests an exact published version.
+`SOLDR_SYSLIB_ASSET_ORIGIN` overrides the asset origin for mirrors and
+controlled integration tests; the default remains the soldr-toolchain
+assets branch.
+
 The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
 `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
 (pip/uv copy the sdist to a throwaway temp dir, discarding `target/`

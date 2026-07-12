@@ -35,6 +35,9 @@ use super::trust;
 use crate::core::{SoldrError, SoldrPaths};
 
 const SYSLIB_DOWNLOAD_TIMEOUT_SECS: u64 = 30 * 60;
+pub const SYSLIB_ASSET_ORIGIN_ENV_VAR: &str = "SOLDR_SYSLIB_ASSET_ORIGIN";
+const DEFAULT_SYSLIB_ASSET_ORIGIN: &str =
+    "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets";
 
 /// Build the canonical assets-branch URL for a `(lib, version, slug)`
 /// tuple. Mirrors the layout `forge_to_catalogue.py` writes:
@@ -44,9 +47,13 @@ const SYSLIB_DOWNLOAD_TIMEOUT_SECS: u64 = 30 * 60;
 ///   assets/<lib>/<version>/<slug>/bundle.tar.zst
 /// ```
 pub fn asset_url_for(lib: &str, version: &str, slug: &str) -> String {
+    let origin = std::env::var(SYSLIB_ASSET_ORIGIN_ENV_VAR)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| DEFAULT_SYSLIB_ASSET_ORIGIN.to_string());
     format!(
-        "https://media.githubusercontent.com/media/zackees/soldr-toolchain/assets/\
-         {lib}/{version}/{slug}/bundle.tar.zst"
+        "{}/{lib}/{version}/{slug}/bundle.tar.zst",
+        origin.trim_end_matches('/')
     )
 }
 
