@@ -59,12 +59,12 @@ rustup toolchain install 1.94.1 --profile minimal --no-self-update 2>&1 \
     | tee -a "${OUT_DIR}/build.log" | tail -3
 rustup default 1.94.1 2>&1 | tee -a "${OUT_DIR}/build.log" | tail -3
 
-log "==> building soldr-cli + soldr-daemon (release + frame-pointers + debuginfo) ..."
+log "==> building soldr multicall binary (release + frame-pointers + debuginfo) ..."
 # Release mode matters: the embedded zccache compile service runs
 # inside soldr-daemon, so a debug-built daemon would underrun the
 # baseline. Keep `-C force-frame-pointers` + `-C debuginfo=2` so perf
 # still resolves clean stacks.
-cargo build --release -p soldr-cli --bin soldr --bin soldr-daemon 2>&1 \
+cargo build --release -p soldr-cli --bin soldr 2>&1 \
     | tee -a "${OUT_DIR}/build.log" | tail -5
 SOLDR_BIN=/tmp/soldr-target/release/soldr
 if [[ ! -x "${SOLDR_BIN}" ]]; then
@@ -85,7 +85,8 @@ log "soldr binary : ${SOLDR_BIN}"
 # out to /usr/local/bin decouples the driver from fixture target-dir
 # churn.
 install -m 0755 "${SOLDR_BIN}" /usr/local/bin/soldr
-install -m 0755 /tmp/soldr-target/release/soldr-daemon /usr/local/bin/soldr-daemon 2>/dev/null || true
+ln /usr/local/bin/soldr /usr/local/bin/soldr-daemon 2>/dev/null || \
+    install -m 0755 /usr/local/bin/soldr /usr/local/bin/soldr-daemon
 SOLDR_BIN=/usr/local/bin/soldr
 log "soldr installed to : ${SOLDR_BIN} ($("${SOLDR_BIN}" --version 2>/dev/null | head -1))"
 

@@ -97,6 +97,43 @@ fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
     matches!(tool_stem, "rustc" | "clippy-driver")
 }
 
+/// Cargo nests the workspace compiler inside the outer wrapper as
+/// `<outer> <workspace-compiler> <real-compiler> <compile-args...>`.
+/// Once soldr has selected the workspace compiler, that wrapper-only
+/// compiler identity must be consumed rather than forwarded as a source
+/// input. Restrict the rewrite to known executable basenames so direct
+/// invocations and ordinary source paths remain byte-for-byte intact.
+fn normalize_nested_workspace_wrapper_args<'a>(
+    args: &'a [String],
+    tool_stem: &str,
+) -> std::borrow::Cow<'a, [String]> {
+    if tool_stem != WRAPPER_PASSTHROUGH_TOOLS[1] || args.len() < 3 {
+        return std::borrow::Cow::Borrowed(args);
+    }
+
+    let nested_tool_name = std::path::Path::new(&args[2])
+        .file_name()
+        .and_then(std::ffi::OsStr::to_str);
+    let expected_name = WRAPPER_PASSTHROUGH_TOOLS[0];
+    let is_real_compiler = nested_tool_name.is_some_and(|name| {
+        name.eq_ignore_ascii_case(expected_name)
+            || name.rsplit_once('.').is_some_and(|(stem, extension)| {
+                stem.eq_ignore_ascii_case(expected_name)
+                    && ["exe", "cmd", "bat"]
+                        .iter()
+                        .any(|known| extension.eq_ignore_ascii_case(known))
+            })
+    });
+    if !is_real_compiler {
+        return std::borrow::Cow::Borrowed(args);
+    }
+
+    let mut normalized = Vec::with_capacity(args.len() - 1);
+    normalized.extend_from_slice(&args[..2]);
+    normalized.extend_from_slice(&args[3..]);
+    std::borrow::Cow::Owned(normalized)
+}
+
 pub(crate) fn run_rustc_wrapper(
     raw_args: &[String],
     mut profile: WrapperProfile,
@@ -166,6 +203,7 @@ pub(crate) fn run_rustc_wrapper(
     } else {
         std::borrow::Cow::Borrowed(raw_args)
     };
+    let compile_args = normalize_nested_workspace_wrapper_args(&effective_args, tool_stem);
 
     // L2 cold-build skip (issue #980): some rustc invocations cargo
     // issues through RUSTC_WRAPPER can NEVER hit the cache — `--print
@@ -176,7 +214,7 @@ pub(crate) fn run_rustc_wrapper(
     // and let the existing direct-exec tool-spawn path below handle
     // them instead of the zccache routing block.
     let zccache_routed_tool = routes_through_embedded_zccache(tool_stem);
-    let non_cacheable = zccache_routed_tool && is_non_cacheable_rustc(&effective_args);
+    let non_cacheable = zccache_routed_tool && is_non_cacheable_rustc(&compile_args);
     if non_cacheable {
         tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
         profile.mark("non_cacheable_bypass");
@@ -217,7 +255,7 @@ pub(crate) fn run_rustc_wrapper(
             // took the same shape — no literal "wrapper" verb.
             profile.finish("before_test_override_spawn");
             let mut command = std::process::Command::new(&zccache_bin);
-            command.args(&effective_args[1..]);
+            command.args(&compile_args[1..]);
             apply_implicit_toolchain_homes(&mut command);
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
@@ -249,21 +287,19 @@ pub(crate) fn run_rustc_wrapper(
         // propagated to cargo unchanged. `SOLDR_DAEMON_REQUIRED=1`
         // restores the pre-#1300 hard-fail for CI lanes that want to
         // catch daemon regressions.
-        let result =
-            match crate::compile_dispatch::compile_via_daemon_detailed(&effective_args[1..]) {
-                Ok(code) => Ok(code),
-                Err(failure)
-                    if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) =>
-                {
-                    crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
-                    direct_exec_tool(tool_arg, tool_stem, &effective_args, None)
-                }
-                Err(failure) => Err(failure.into_soldr_error()),
-            };
+        let result = match crate::compile_dispatch::compile_via_daemon_detailed(&compile_args[1..])
+        {
+            Ok(code) => Ok(code),
+            Err(failure) if crate::compile_dispatch::should_fall_back_to_direct_rustc(&failure) => {
+                crate::compile_dispatch::log_direct_exec_fallback_once(&failure);
+                direct_exec_tool(tool_arg, tool_stem, &compile_args, None)
+            }
+            Err(failure) => Err(failure.into_soldr_error()),
+        };
         return result;
     }
 
-    direct_exec_tool(tool_arg, tool_stem, &effective_args, Some(profile))
+    direct_exec_tool(tool_arg, tool_stem, &compile_args, Some(profile))
 }
 
 /// Direct (uncached) exec of the wrapped tool — the non-daemon path.
@@ -450,6 +486,63 @@ mod tests {
         v.extend(rustc_args.iter().map(|s| (*s).to_string()));
         v
     }
+
+    crate::timed_test!(nested_workspace_wrapper_drops_real_compiler_path, {
+        let workspace_tool = format!("{}-{}", "clippy", "driver");
+        let argv = vec![
+            "soldr".into(),
+            format!("C:/toolchain/{workspace_tool}.exe"),
+            "C:/toolchain/rustc.exe".into(),
+            "--crate-name".into(),
+            "demo".into(),
+            "src/lib.rs".into(),
+        ];
+
+        let normalized = normalize_nested_workspace_wrapper_args(&argv, &workspace_tool);
+
+        assert_eq!(
+            normalized.as_ref(),
+            &[
+                "soldr",
+                &format!("C:/toolchain/{workspace_tool}.exe"),
+                "--crate-name",
+                "demo",
+                "src/lib.rs",
+            ]
+        );
+    });
+
+    crate::timed_test!(wrapper_normalization_preserves_other_argument_shapes, {
+        let workspace_tool = format!("{}-{}", "clippy", "driver");
+        let direct_workspace_argv = vec![
+            "soldr".into(),
+            workspace_tool.clone(),
+            "--crate-name".into(),
+            "demo".into(),
+            "src/lib.rs".into(),
+        ];
+        let rustc_argv = wrapper_argv(&["--crate-name", "demo", "src/lib.rs"]);
+        let compiler_named_source_argv = vec![
+            "soldr".into(),
+            workspace_tool.clone(),
+            format!("{}.rs", WRAPPER_PASSTHROUGH_TOOLS[0]),
+            "--crate-name".into(),
+            "demo".into(),
+        ];
+
+        assert!(matches!(
+            normalize_nested_workspace_wrapper_args(&direct_workspace_argv, &workspace_tool),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            normalize_nested_workspace_wrapper_args(&rustc_argv, "rustc"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        assert!(matches!(
+            normalize_nested_workspace_wrapper_args(&compiler_named_source_argv, &workspace_tool),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    });
 
     crate::timed_test!(non_cacheable_print_mode_detected, {
         // `--print=cfg` is a metadata probe — never compiles, never

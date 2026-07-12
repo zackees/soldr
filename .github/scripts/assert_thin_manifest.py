@@ -6,8 +6,7 @@ companion ``assert_thin_noop.py`` inspects cargo stdout to confirm Cargo's
 fresh/dirty decision. That tells us cargo was correct, but it does not
 prove the Phase 1 contract: that soldr-cli emitted a ``manifest.v2.json``
 next to the bundle that truthfully enumerates the files present and never
-re-lists any of the artifact categories thin-v2 is supposed to drop
-(``.rlib``, ``.rmeta``, incremental DB, build-script binaries, etc.).
+re-lists transient/debug artifact categories thin-v2 is supposed to drop.
 
 If a future regression silently stops emitting the manifest, or starts
 re-listing dropped categories, this script fails the gate.
@@ -52,18 +51,36 @@ from pathlib import Path
 # directory boundaries are explicit.
 _DROPPED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("incremental directory", re.compile(r"(^|/)incremental/")),
-    ("rlib output", re.compile(r"\.rlib$")),
-    ("rmeta output", re.compile(r"\.rmeta$")),
     ("split debug-info (.dwo)", re.compile(r"\.dwo$")),
     ("Windows pdb", re.compile(r"\.pdb$")),
     ("macOS dSYM bundle", re.compile(r"\.dSYM(/|$)")),
-    ("build-script binary (Unix)", re.compile(r"(^|/)build-script-build$")),
-    ("build-script binary (Windows)", re.compile(r"(^|/)build-script-build\.exe$")),
-    (
-        "fingerprint diagnostic JSON",
-        re.compile(r"(^|/)\.fingerprint/[^/]+/[^/]+\.json$"),
-    ),
 ]
+
+_FINGERPRINT_JSON_LABEL = "non-load-bearing fingerprint diagnostic JSON"
+
+
+def _is_non_load_bearing_fingerprint_json(rel: str) -> bool:
+    """Mirror zccache's thin-v2 fingerprint-meta basename classifier."""
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
+    if not parts or ".fingerprint" not in parts[:-1]:
+        return False
+
+    name = parts[-1]
+    if not name.endswith(".json"):
+        return False
+
+    stem = name.removesuffix(".json")
+    # Cargo's serialized freshness records use these prefixes and are
+    # load-bearing even though their suffix is `.json` (zccache#1041).
+    if stem.startswith(("build-script-", "run-build-script-")):
+        return False
+    is_short_prefix_meta = "-" in stem and stem.split("-", 1)[0] in {
+        "dep",
+        "output",
+        "lib",
+        "bin",
+    }
+    return not is_short_prefix_meta
 
 
 def _format_drop_hits(hits: list[tuple[str, str]]) -> str:
@@ -187,10 +204,14 @@ def assert_manifest(
     #    invariant: thin-v2 must NEVER carry these classes.
     drop_hits: list[tuple[str, str]] = []
     for rel in manifest_rel_paths:
+        matched = False
         for label, pattern in _DROPPED_PATTERNS:
             if pattern.search(rel):
                 drop_hits.append((label, rel))
+                matched = True
                 break
+        if not matched and _is_non_load_bearing_fingerprint_json(rel):
+            drop_hits.append((_FINGERPRINT_JSON_LABEL, rel))
     if drop_hits:
         errors.append(
             "manifest references files in dropped artifact classes "
@@ -228,7 +249,7 @@ def _build_argparser() -> argparse.ArgumentParser:
         description=(
             "Validate a thin-v2 manifest.v2.json against its bundle directory. "
             "Confirms schema, file presence, and that no dropped-category "
-            "artifacts (rlib/rmeta/incremental/dwo/pdb/dSYM/build-script-build) "
+            "artifacts (incremental/dwo/pdb/dSYM) "
             "are listed."
         ),
     )

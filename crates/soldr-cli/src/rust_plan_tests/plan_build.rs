@@ -61,7 +61,6 @@ fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {
         host: "x86_64-unknown-test".to_string(),
     };
     let session = ZccacheBuildSession {
-        binary_path: "zccache".into(),
         cache_dir: root.join("cache"),
         cache_dir_env: true,
         session_id: "session-1".to_string(),
@@ -156,6 +155,12 @@ fn allowed_artifact_classes_thin_v1_keeps_legacy_set() {
         "cargo_fingerprint",
         "build_script_metadata",
         "build_script_output",
+        // soldr#1579: thin-v1 must also retain the compiled build-script
+        // binary itself. Without it, cargo's fingerprint check for units
+        // whose build.rs output feeds their own compilation sees a stale
+        // `build_script_build` artifact and cascades a `StaleDepFingerprint`
+        // rebuild through everything downstream of that build script.
+        "build_script_build",
     ] {
         assert!(
             allowed.contains(&expected),
@@ -165,27 +170,14 @@ fn allowed_artifact_classes_thin_v1_keeps_legacy_set() {
     assert!(dropped_artifact_classes("thin", Some("thin-v1")).is_empty());
 }
 
-/// `thin-v2` aggressively prunes the slice. The categories listed in
-/// `docs/THIN_TARGET_CACHE_PRUNING.md` Section 3.2 must NOT appear in the
-/// allowlist, and the new fingerprint split (`cargo_fingerprint_meta`,
-/// dropping `cargo_fingerprint_outputs`) must be honored.
+/// `thin-v2` keeps the freshness metadata plus the primary outputs that
+/// Cargo's JSON closure can verify. Transient/debug categories remain absent.
 #[test]
-fn allowed_artifact_classes_thin_v2_drops_heavy_categories() {
+fn allowed_artifact_classes_thin_v2_keeps_hydratable_outputs() {
     let allowed = allowed_artifact_classes("thin", Some("thin-v2"));
 
     // Drop list per design Section 3.2.
-    for forbidden in [
-        "rlib",
-        "rmeta",
-        "proc_macro",
-        "incremental",
-        "cargo_fingerprint",
-        "cargo_fingerprint_outputs",
-        "build_script_build",
-        "dwo",
-        "pdb",
-        "dsym",
-    ] {
+    for forbidden in ["incremental", "cargo_fingerprint", "dwo", "pdb", "dsym"] {
         assert!(
             !allowed.contains(&forbidden),
             "thin-v2 must drop {forbidden} from the allowlist; got {allowed:?}"
@@ -198,6 +190,12 @@ fn allowed_artifact_classes_thin_v2_drops_heavy_categories() {
         "dep_info",
         "build_script_metadata",
         "build_script_output",
+        "rlib",
+        "rmeta",
+        "proc_macro",
+        "shared_lib",
+        "build_script_build",
+        "cargo_fingerprint_outputs",
     ] {
         assert!(
             allowed.contains(&required),
@@ -261,7 +259,6 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
         host: "x86_64-unknown-test".to_string(),
     };
     let session = ZccacheBuildSession {
-        binary_path: "zccache".into(),
         cache_dir: root.join("cache"),
         cache_dir_env: true,
         session_id: "session-thinv2".to_string(),
@@ -291,7 +288,7 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
     );
     assert_eq!(plan.cache_profile, Some("thin-v2"));
     assert!(plan.allowed_artifact_classes.contains(&"dep_info"));
-    assert!(!plan.allowed_artifact_classes.contains(&"rlib"));
+    assert!(plan.allowed_artifact_classes.contains(&"rlib"));
 
     let _ = std::fs::remove_dir_all(&root);
 }

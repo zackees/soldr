@@ -165,7 +165,10 @@ impl Daemon {
             cmd.env(k, v);
         }
         let child = cmd.spawn().expect("spawn soldr-daemon");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        // A cold embedded-zccache initialization can take ~25 seconds in
+        // the shared Docker development runner. Keep the fixture bounded,
+        // but do not misclassify that cold start as a multicall failure.
+        let deadline = Instant::now() + Duration::from_secs(40);
         assert!(
             wait_for_ready(&cache_root, &home_root, deadline),
             "daemon never opened its endpoint under {}",

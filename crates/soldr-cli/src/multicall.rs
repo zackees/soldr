@@ -9,14 +9,17 @@
 use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 const TOOLCHAIN_TOOLS: &[&str] = &["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"];
 const ZCCACHE_SOLDR: &str = "zccache-soldr";
+const SOLDR_DAEMON: &str = "soldr-daemon";
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum MulticallDispatch {
     SoldrArgs(Vec<String>),
     Exit(i32),
+    ExitCode(ExitCode),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +27,7 @@ enum ShimIdentity {
     Toolchain(&'static str),
     Clang(ClangTool),
     ZccacheSoldr,
+    SoldrDaemon,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +61,7 @@ pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
         }
         ShimIdentity::Clang(tool) => Some(MulticallDispatch::Exit(run_clang_shim(tool))),
         ShimIdentity::ZccacheSoldr => Some(MulticallDispatch::Exit(run_zccache_soldr())),
+        ShimIdentity::SoldrDaemon => Some(MulticallDispatch::Exit(crate::daemon_entry::run())),
     }
 }
 
@@ -90,6 +95,7 @@ fn classify_argv0(argv0: &str) -> Option<ShimIdentity> {
         "clang" => Some(ShimIdentity::Clang(ClangTool::Clang)),
         "clang++" => Some(ShimIdentity::Clang(ClangTool::ClangPP)),
         ZCCACHE_SOLDR => Some(ShimIdentity::ZccacheSoldr),
+        SOLDR_DAEMON => Some(ShimIdentity::SoldrDaemon),
         _ => None,
     }
 }
@@ -350,6 +356,19 @@ mod tests {
             classify_argv0("zccache-soldr"),
             Some(ShimIdentity::ZccacheSoldr)
         );
+    });
+
+    crate::timed_test!(classify_argv0_recognizes_runtime_aliases, {
+        assert_eq!(
+            classify_argv0("/opt/soldr/soldr-daemon"),
+            Some(ShimIdentity::SoldrDaemon)
+        );
+        assert_eq!(
+            classify_argv0("soldr-daemon.exe"),
+            Some(ShimIdentity::SoldrDaemon)
+        );
+        assert_eq!(classify_argv0("zccache"), None);
+        assert_eq!(classify_argv0("zccache.exe"), None);
     });
 
     crate::timed_test!(filter_path_drops_self_dir, {

@@ -226,7 +226,7 @@ jobs:
       matrix:
         include:
           # All targets now produce a single `.tar.zst` archive that
-          # bundles the soldr binary alongside same-target soldr-daemon,
+          # bundles soldr alongside its same-target multicall aliases,
           # crgx, and cargo-chef. One fetch from
           # GitHub Releases installs the full runtime surface; registry
           # publishes are gated on that GitHub asset set being complete.
@@ -377,6 +377,12 @@ jobs:
       - name: Build release binary
         shell: bash
         env:
+          # soldr#1597 Phase 2: build.rs (crates/soldr-core/build.rs) turns
+          # this into a compile-time SOLDR_OFFICIAL_BUILD const, letting
+          # runtime code (build_provenance::is_official_build) tell a
+          # genuine CI-released binary apart from a dev/manual build.
+          # Set ONLY here — never in local dev workflows.
+          SOLDR_RELEASE_CI: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "0"
           # Native MSVC release links are too slow with the workspace's
           # size-optimized thin-LTO/single-CGU profile on hosted runners.
@@ -434,8 +440,7 @@ jobs:
             "${soldr_build_args[@]}" \
             build --release --locked --target "$target" \
             --package soldr-cli \
-            --bin soldr \
-            --bin soldr-daemon
+            --bin soldr
           echo "=== post-build diagnostic: target/$target/release/ ==="
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
@@ -448,16 +453,18 @@ jobs:
           suffix=""
           case "${{ matrix.target }}" in *-pc-windows-msvc) suffix=".exe" ;; esac
 
-          for stem in soldr soldr-daemon; do
-            src="target/${{ matrix.target }}/release/${stem}${suffix}"
-            if [ ! -f "$src" ]; then
-              echo "expected ${stem}${suffix} in target dir; observed release dir:" >&2
-              ls -la "target/${{ matrix.target }}/release" >&2 || true
-              exit 1
-            fi
-            cp "$src" "dist/package/${stem}${suffix}"
-            chmod +x "dist/package/${stem}${suffix}" 2>/dev/null || true
+          src="target/${{ matrix.target }}/release/soldr${suffix}"
+          if [ ! -f "$src" ]; then
+            echo "expected soldr${suffix} in target dir; observed release dir:" >&2
+            ls -la "target/${{ matrix.target }}/release" >&2 || true
+            exit 1
+          fi
+          cp "$src" "dist/package/soldr${suffix}"
+          for stem in soldr-daemon; do
+            ln "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}" 2>/dev/null || \
+              cp "dist/package/soldr${suffix}" "dist/package/${stem}${suffix}"
           done
+          chmod +x dist/package/* 2>/dev/null || true
 
           # soldr#1302: toolchain, clang, and zccache wrapper shims are
           # hardlinks/copies of `soldr` materialized at install time.
@@ -782,9 +789,6 @@ jobs:
           cargo_chef_sha=$(sha256_of "dist/package/cargo-chef${suffix}")
           built_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-          # schema_version 3 adds the `cargo_chef` block. Consumers that
-          # only understand v2 still get the old soldr/zccache/crgx fields,
-          # but installers now require v3 so the bundled cook path is present.
           cat > dist/package/manifest.json <<EOF
           {
             "schema_version": 3,
@@ -794,7 +798,7 @@ jobs:
               "binary": "soldr${suffix}",
               "sha256": "${soldr_sha}",
               "sidecars": [
-                { "name": "soldr-daemon${suffix}",       "sha256": "${soldr_daemon_sha}" }
+                { "name": "soldr-daemon${suffix}", "sha256": "${soldr_daemon_sha}" }
               ],
               "debug_info": ${soldr_debug_info_json},
               "commit_sha": "${commit_sha}"
@@ -853,6 +857,10 @@ jobs:
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+          # soldr#1597 Phase 2: this maturin-driven build also produces a
+          # shipped (PyPI) binary, so it needs the same official-build
+          # stamp as the "Build release binary" step above.
+          SOLDR_RELEASE_CI: "1"
         run: |
           set -euo pipefail
           # soldr#1083 follow-up: aggressive cache bust before maturin.
@@ -1320,7 +1328,7 @@ jobs:
           echo "--- extracted layout ---"
           ls -la "$extract"
 
-          # Every archive must ship soldr, soldr-daemon, crgx,
+          # Every archive must ship soldr, its daemon alias, crgx,
           # cargo-chef, and a manifest.json describing the bundle.
           # Windows archives must also ship soldr's PDB sidecar.
           suffix=""

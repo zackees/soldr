@@ -358,9 +358,8 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     // deployments (which historically distributed only `soldr`) still
     // bring up the daemon now that Phase 5/7 made the embedded
     // backend mandatory. The daemon subcommand is already a clap-
-    // matched verb in `cli_args.rs`; the bin target at
-    // `src/bin/soldr_daemon.rs` is just an alias for that subcommand
-    // routed through the main binary.
+    // matched verb in `cli_args.rs`; the `soldr-daemon` argv[0] alias
+    // routes through the main binary.
     let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
     let (daemon_src, daemon_via_self) = if sibling.exists() {
         (sibling, false)
@@ -538,7 +537,7 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 
 #[cfg(windows)]
 fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
-    spawn_detached_windows_no_inherit(daemon, &["--foreground"])
+    spawn_detached_windows_no_inherit(daemon, daemon, &["--foreground"])
 }
 
 /// Spawn the daemon via `<current-soldr-exe> daemon start --foreground`
@@ -553,6 +552,11 @@ fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(soldr_self);
+    // The process that discovers a missing daemon may itself be the
+    // `zccache-soldr` hardlink. Force argv[0] back to the main CLI identity;
+    // otherwise multicall dispatch treats `daemon` as a compiler path and
+    // recursively enters the wrapper fallback instead of starting a daemon.
+    force_daemon_via_self_cli_identity(&mut cmd);
     cmd.args(["daemon", "start", "--foreground"])
         .stdin(Stdio::null());
     let log_path = SoldrPaths::new()
@@ -590,14 +594,28 @@ fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+#[cfg(unix)]
+fn force_daemon_via_self_cli_identity(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.arg0("soldr");
+}
+
 #[cfg(windows)]
 fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
-    spawn_detached_windows_no_inherit(soldr_self, &["daemon", "start", "--foreground"])
+    spawn_detached_windows_no_inherit(
+        soldr_self,
+        Path::new("soldr"),
+        &["daemon", "start", "--foreground"],
+    )
 }
 
 #[cfg(windows)]
 #[allow(clippy::upper_case_acronyms)]
-fn spawn_detached_windows_no_inherit(program: &Path, args: &[&str]) -> Result<(), std::io::Error> {
+fn spawn_detached_windows_no_inherit(
+    program: &Path,
+    argv0: &Path,
+    args: &[&str],
+) -> Result<(), std::io::Error> {
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
     use std::os::windows::ffi::OsStrExt;
@@ -674,7 +692,7 @@ fn spawn_detached_windows_no_inherit(program: &Path, args: &[&str]) -> Result<()
     const FLAGS: DWORD = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
 
     let application: Vec<u16> = program.as_os_str().encode_wide().chain(Some(0)).collect();
-    let mut command_line = build_windows_command_line(program, args);
+    let mut command_line = build_windows_command_line(argv0, args);
     // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are plain Win32 POD
     // structs. Zero initialization is the documented baseline before setting
     // STARTUPINFOW.cb and passing both structs to CreateProcessW.
@@ -824,6 +842,26 @@ mod daemon_spawn_image_tests {
     use super::*;
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    crate::timed_test!(via_self_daemon_forces_main_cli_argv0, {
+        let mut command = std::process::Command::new("/bin/sh");
+        force_daemon_via_self_cli_identity(&mut command);
+        let output = command
+            .args(["-c", "printf %s \"$0\""])
+            .output()
+            .expect("run shell probe");
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "soldr");
+    });
+
+    #[cfg(windows)]
+    crate::timed_test!(via_self_daemon_windows_command_line_uses_main_cli_argv0, {
+        let command_line =
+            build_windows_command_line(Path::new("soldr"), &["daemon", "start", "--foreground"]);
+        let rendered = String::from_utf16_lossy(&command_line[..command_line.len() - 1]);
+        assert_eq!(rendered, "\"soldr\" daemon start --foreground");
+    });
 
     // #1516 regression: a via-self daemon (no sibling `soldr-daemon`
     // binary) must NOT exec the invoking soldr binary in place — its

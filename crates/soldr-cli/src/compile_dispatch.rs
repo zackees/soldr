@@ -530,6 +530,7 @@ where
     }
 
     let spawn_err = if spawn_on_first_failure {
+        let _ = crate::binaries::soldr_daemon_binary();
         crate::daemon::lifecycle::try_spawn_detached()
             .err()
             .map(|e| format!("{e:?}"))

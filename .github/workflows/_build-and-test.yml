@@ -195,5 +195,5 @@ jobs:
         run: |
           soldr cache shutdown --shutdown-timeout-seconds 30
           if ($LASTEXITCODE -ne 0) {
-            zccache stop
+            soldr zccache stop
           }

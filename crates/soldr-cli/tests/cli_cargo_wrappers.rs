@@ -481,7 +481,10 @@ timed_test!(
         assert!(
             path_display_variants(&clippy_driver)
                 .iter()
-                .any(|path| zccache_line.contains(path)),
+                .any(|path| zccache_line.contains(path))
+                && path_display_variants(&rustc)
+                    .iter()
+                    .all(|path| !zccache_line.contains(path)),
             "zccache should receive clippy-driver as the wrapped compiler: {log}"
         );
         assert!(
@@ -931,6 +934,145 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
             .iter()
             .any(|path| log.contains(path)),
         "rustfmt should receive the source file: {log}"
+    );
+}
+
+#[test]
+fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-formatter");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let format_cache_root = cache_root.join("explicit-zccache");
+
+    let run = || {
+        isolated_soldr_command()
+            .arg("rustfmt")
+            .arg(&source_path)
+            .current_dir(&cache_root)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+            .env("PATH", isolated_test_path())
+            .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+            .env_remove("CARGO_HOME")
+            .env_remove("RUSTUP_HOME")
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("ZCCACHE_CACHE_DIR", &format_cache_root)
+            .env_remove("SOLDR_MANAGED_ZCCACHE_CACHE_DIR")
+            .env_remove("ZCCACHE_DISABLE")
+            .output()
+            .expect("failed to run soldr rustfmt through the embedded format cache")
+    };
+    let output = run();
+
+    assert!(
+        output.status.success(),
+        "embedded rustfmt format-cache route failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake rustfmt log");
+    assert!(
+        log.lines().any(|line| line.starts_with("rustfmt ")),
+        "embedded format cache should invoke rustfmt: {log}"
+    );
+    assert!(
+        path_display_variants(&source_path)
+            .iter()
+            .any(|path| log.contains(path)),
+        "embedded format cache should pass the source file to rustfmt: {log}"
+    );
+
+    let cached_output = run();
+    assert!(
+        cached_output.status.success(),
+        "cached rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&cached_output.stdout),
+        String::from_utf8_lossy(&cached_output.stderr)
+    );
+    let cached_log = fs::read_to_string(&log_path).expect("failed to reread fake rustfmt log");
+    assert_eq!(
+        cached_log
+            .lines()
+            .filter(|line| line.starts_with("rustfmt "))
+            .count(),
+        1,
+        "second identical invocation should hit the embedded format cache: {cached_log}"
+    );
+    assert!(
+        format_cache_root.join("fmt").is_dir(),
+        "embedded format cache should honor the explicit ZCCACHE_CACHE_DIR"
+    );
+}
+
+#[test]
+fn embedded_rustfmt_preserves_child_environment_and_exact_exit_code() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-policy-exit");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let cargo_home = cache_root.join("explicit-cargo-home");
+    let rustup_home = cache_root.join("explicit-rustup-home");
+
+    let output = isolated_soldr_command()
+        .args(["rustfmt", source_path.to_str().unwrap()])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("ZCCACHE_CACHE_DIR", cache_root.join("zccache"))
+        .env("CARGO_HOME", &cargo_home)
+        .env("RUSTUP_HOME", &rustup_home)
+        .env("SOLDR_TEST_TOOL_EXIT_CODE", "37")
+        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("run embedded rustfmt with host-owned child policy");
+
+    assert_eq!(
+        output.status.code(),
+        Some(37),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(&log_path).expect("read fake rustfmt log");
+    assert!(
+        log.contains(&format!("cargo_home={}", cargo_home.display())),
+        "log: {log}"
+    );
+    assert!(
+        log.contains(&format!("rustup_home={}", rustup_home.display())),
+        "log: {log}"
+    );
+}
+
+#[test]
+fn embedded_rustfmt_preserves_toolchain_timeout() {
+    let cache_root = unique_temp_dir("rustfmt-embedded-policy-timeout");
+    let log_path = cache_root.join("tool.log");
+    let source_path = write_rustfmt_source(&cache_root);
+    let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
+    let started = std::time::Instant::now();
+
+    let output = isolated_soldr_command()
+        .args(["rustfmt", source_path.to_str().unwrap()])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("ZCCACHE_CACHE_DIR", cache_root.join("zccache"))
+        .env("SOLDR_TEST_TOOL_HANG", "1")
+        .env("SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS", "1")
+        .env_remove("SOLDR_TEST_ZCCACHE_BIN")
+        .env_remove("ZCCACHE_DISABLE")
+        .output()
+        .expect("run embedded rustfmt timeout case");
+
+    assert!(!output.status.success());
+    assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("timed out after 1 seconds"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 

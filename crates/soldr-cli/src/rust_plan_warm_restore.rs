@@ -15,7 +15,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::{compute_plan_inputs_hash, RustArtifactPlanContext};
+use super::{compute_plan_inputs_hash, RustArtifactPlanContext, RustPlanRestoreOutcome};
 
 /// Target-resident half of the warm-restore proof. `cargo clean` and whole
 /// target-directory replacement delete this naturally, invalidating the
@@ -298,4 +298,53 @@ pub(crate) fn write_warm_restore_sentinel(plan: &RustArtifactPlanContext) {
             sentinel_path.display()
         );
     }
+}
+
+/// Decide whether the post-build `rust-plan save` can be skipped entirely
+/// because the just-finished cargo invocation provably wrote nothing new
+/// into `target/`.
+///
+/// This reuses the exact target-generation proof [`should_skip_warm_restore`]
+/// already established for the restore side (issue #1529/#1530), plus one
+/// additional, independently-authoritative signal: `compilations_this_build`
+/// — the number of rustc-wrapper invocations (cache hits *and* misses) the
+/// soldr-daemon recorded for this session, diffed against a baseline
+/// captured before cargo ran.
+///
+/// Both signals must hold:
+/// 1. `restore_outcome` is [`RustPlanRestoreOutcome::Skipped`] — proving
+///    `target/` still carries the exact generation the last successful save
+///    produced (the same `target_generation` marker match used to skip
+///    restore).
+/// 2. `compilations_this_build` is `Some(0)` — proving the wrapper was never
+///    invoked this build, so nothing could have been written to `target/`
+///    by a compile. `None` (daemon unreachable / baseline missing) is
+///    treated conservatively as "unproven" and never skips.
+///
+/// This is deliberately NOT based on mtime or size of files under
+/// `target/` — a same-mtime/same-size content mutation is invisible to
+/// stat-based checks, but is still caught here because the *only* way new
+/// bytes land under `target/` is through a wrapper invocation this
+/// mechanism already counts. Cargo/the wrapper stay the freshness
+/// authority; this only skips the save when we can prove there was nothing
+/// new to save.
+pub(crate) fn should_skip_rust_plan_save(
+    plan: &RustArtifactPlanContext,
+    restore_outcome: RustPlanRestoreOutcome,
+    compilations_this_build: Option<u64>,
+) -> Option<String> {
+    if !warm_restore_skip_enabled() {
+        return None;
+    }
+    if !matches!(restore_outcome, RustPlanRestoreOutcome::Skipped) {
+        return None;
+    }
+    let compilations = compilations_this_build?;
+    if compilations != 0 {
+        return None;
+    }
+    Some(format!(
+        "soldr: skipping rust-plan save; target dir {} was already warm and 0 units were compiled this build",
+        plan.target_dir
+    ))
 }

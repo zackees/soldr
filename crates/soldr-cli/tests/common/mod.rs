@@ -11,13 +11,17 @@
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+static ALIAS_LOCK: Mutex<()> = Mutex::new(());
+static MATERIALIZED_ALIAS_PAIRS: Mutex<Vec<(PathBuf, PathBuf)>> = Mutex::new(Vec::new());
 
 /// Resolve the soldr binary path for tests. Prefers the `SOLDR_BIN`
 /// env var so a runner that downloaded a pre-built artifact can point
@@ -31,10 +35,11 @@ static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// production CI can set `SOLDR_BIN` explicitly without touching any
 /// test code.
 pub(crate) fn soldr_bin() -> PathBuf {
-    if let Some(p) = std::env::var_os("SOLDR_BIN") {
-        return PathBuf::from(p);
-    }
-    PathBuf::from(env!("CARGO_BIN_EXE_soldr"))
+    let soldr = std::env::var_os("SOLDR_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_soldr")));
+    materialize_runtime_alias(&soldr, "soldr-daemon");
+    soldr
 }
 
 /// Companion to `soldr_bin` for tests that need the daemon binary.
@@ -45,7 +50,82 @@ pub(crate) fn soldr_daemon_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("SOLDR_DAEMON_BIN") {
         return PathBuf::from(p);
     }
-    PathBuf::from(env!("CARGO_BIN_EXE_soldr-daemon"))
+    runtime_alias_path(&soldr_bin(), "soldr-daemon")
+}
+
+fn runtime_alias_path(soldr: &Path, stem: &str) -> PathBuf {
+    let file = if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_string()
+    };
+    soldr.parent().expect("soldr binary parent").join(file)
+}
+
+fn materialize_runtime_alias(soldr: &Path, stem: &str) {
+    let _guard = ALIAS_LOCK.lock().expect("runtime alias lock");
+    let target = runtime_alias_path(soldr, stem);
+    let pair = (soldr.to_path_buf(), target.clone());
+    let mut materialized = MATERIALIZED_ALIAS_PAIRS
+        .lock()
+        .expect("materialized alias pairs lock");
+    if materialized.contains(&pair) {
+        return;
+    }
+    if files_equal(soldr, &target) {
+        materialized.push(pair);
+        return;
+    }
+    let tmp = target.with_extension(format!("alias-tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    if std::fs::hard_link(soldr, &tmp).is_err() {
+        std::fs::copy(soldr, &tmp).unwrap_or_else(|err| {
+            panic!(
+                "failed to materialize {} from {}: {err}",
+                target.display(),
+                soldr.display()
+            )
+        });
+    }
+    let _ = std::fs::remove_file(&target);
+    std::fs::rename(&tmp, &target).expect("install runtime alias");
+    materialized.push(pair);
+}
+
+fn files_equal(left: &Path, right: &Path) -> bool {
+    let Ok(left_meta) = std::fs::metadata(left) else {
+        return false;
+    };
+    let Ok(right_meta) = std::fs::metadata(right) else {
+        return false;
+    };
+    if left_meta.len() != right_meta.len() {
+        return false;
+    }
+    let Ok(left_file) = std::fs::File::open(left) else {
+        return false;
+    };
+    let Ok(right_file) = std::fs::File::open(right) else {
+        return false;
+    };
+    let mut left = std::io::BufReader::new(left_file);
+    let mut right = std::io::BufReader::new(right_file);
+    let mut left_buf = [0_u8; 64 * 1024];
+    let mut right_buf = [0_u8; 64 * 1024];
+    loop {
+        let Ok(left_read) = left.read(&mut left_buf) else {
+            return false;
+        };
+        let Ok(right_read) = right.read(&mut right_buf) else {
+            return false;
+        };
+        if left_read != right_read || left_buf[..left_read] != right_buf[..right_read] {
+            return false;
+        }
+        if left_read == 0 {
+            return true;
+        }
+    }
 }
 
 /// soldr#1040 / #1038 phase 2: runtime skip marker for tests that
@@ -531,7 +611,12 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
         format!(
             "@echo off\n\
              echo {0} cargo_home=%CARGO_HOME% rustup_home=%RUSTUP_HOME% args=%*>>\"{1}\"\n\
-             echo {0} 1.0.0 (fake)\n",
+             if defined SOLDR_TEST_TOOL_HANG goto hang\n\
+             if defined SOLDR_TEST_TOOL_EXIT_CODE exit /b %SOLDR_TEST_TOOL_EXIT_CODE%\n\
+             echo {0} 1.0.0 (fake)\n\
+             exit /b 0\n\
+             :hang\n\
+             goto hang\n",
             tool_name,
             log_path.display()
         )
@@ -541,6 +626,8 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
         format!(
             "#!/bin/sh\n\
              echo \"{0} cargo_home=${{CARGO_HOME:-}} rustup_home=${{RUSTUP_HOME:-}} args=$*\" >> \"{1}\"\n\
+             if [ -n \"${{SOLDR_TEST_TOOL_HANG:-}}\" ]; then while :; do :; done; fi\n\
+             if [ -n \"${{SOLDR_TEST_TOOL_EXIT_CODE:-}}\" ]; then exit \"$SOLDR_TEST_TOOL_EXIT_CODE\"; fi\n\
              echo \"{0} 1.0.0 (fake)\"\n",
             tool_name,
             log_path.display()

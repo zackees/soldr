@@ -12,6 +12,27 @@ use super::{SoldrError, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR};
 pub const SOLDR_CACHE_DIR_ENV_VAR: &str = "SOLDR_CACHE_DIR";
 const CARGO_ABORT_LOG_FILE: &str = "cargo-aborts.jsonl";
 
+/// soldr#1597 Phase 1: the home-anchored default root name, split by
+/// build provenance. Official (`release-auto.yml`-published) builds keep
+/// the historical `~/.soldr`. Dev/manual builds default to a distinct
+/// `~/.soldr-dev` root instead, so a locally-built daemon and a
+/// managed/prod daemon never collide on `state.redb` / the PID file /
+/// the IPC socket when `SOLDR_CACHE_DIR` is left unset (the confirmed
+/// bug: both used to fall back to the same `~/.soldr`, defeating the
+/// broker's "dev doesn't stomp prod" design intent). An explicit
+/// `SOLDR_CACHE_DIR` always wins over this default either way.
+fn default_home_dir_name() -> &'static str {
+    default_home_dir_name_for(crate::build_provenance::is_official_build())
+}
+
+fn default_home_dir_name_for(official: bool) -> &'static str {
+    if official {
+        ".soldr"
+    } else {
+        ".soldr-dev"
+    }
+}
+
 /// The soldr version segment used by per-version `~/.soldr/v<X.Y.Z>/**`
 /// state. Source of truth for `SoldrPaths::versioned_root` and
 /// `SoldrPaths::versioned_shims_dir`. See zackees/soldr#743 for the
@@ -44,7 +65,10 @@ impl SoldrPaths {
 
     fn from_root_env_value(value: Option<&OsStr>) -> Result<Self, SoldrError> {
         let env_root = soldr_root_from_env_var(value).transpose()?;
-        Self::from_env_root_and_home(env_root, home_dir().map(|h| h.join(".soldr")))
+        Self::from_env_root_and_home(
+            env_root,
+            home_dir().map(|h| h.join(default_home_dir_name())),
+        )
     }
 
     /// Inner constructor split out so tests can inject explicit `env_root`
@@ -385,7 +409,9 @@ mod tests {
     #[test]
     fn test_paths() {
         let paths = SoldrPaths::from_root_env_value(None).unwrap();
-        assert!(paths.root.ends_with(".soldr"));
+        // soldr#1597 Phase 1: the test binary is always a dev build, so
+        // this resolves to the dev-default root, not the official one.
+        assert!(paths.root.ends_with(default_home_dir_name()));
         assert!(paths.bin.ends_with("bin"));
         assert!(paths.cache.ends_with("cache"));
     }
@@ -421,6 +447,29 @@ mod tests {
             paths.bin, paths.pinned_bin,
             "the whole point of the fix: bin and pinned_bin diverge under env override"
         );
+    }
+
+    #[test]
+    fn default_home_dir_name_diverges_by_build_provenance() {
+        // soldr#1597 Phase 1: this is the whole fix. An official build and
+        // a dev build must resolve to different home-anchored roots so a
+        // locally-built daemon and a managed/prod daemon never collide on
+        // state.redb / the PID file / the IPC socket when SOLDR_CACHE_DIR
+        // is left unset.
+        assert_eq!(default_home_dir_name_for(true), ".soldr");
+        assert_eq!(default_home_dir_name_for(false), ".soldr-dev");
+        assert_ne!(
+            default_home_dir_name_for(true),
+            default_home_dir_name_for(false)
+        );
+    }
+
+    #[test]
+    fn dev_build_under_test_defaults_to_soldr_dev_root() {
+        // The test binary is always a local/dev build (SOLDR_RELEASE_CI is
+        // never set for `cargo test` runs), so the real, non-injectable
+        // `default_home_dir_name()` must resolve to the dev root.
+        assert_eq!(default_home_dir_name(), ".soldr-dev");
     }
 
     #[test]

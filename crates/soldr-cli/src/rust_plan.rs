@@ -18,6 +18,7 @@ use crate::{
     TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
     WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
 };
+use prost::Message;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -87,6 +88,11 @@ pub(crate) struct RustArtifactPlan {
     /// with `#[serde(deny_unknown_fields)]` keep accepting the plan.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) dropped_artifact_classes: Vec<&'static str>,
+    /// Relative target paths observed in Cargo's JSON message stream. These
+    /// are written after a successful build and consumed by zccache on save.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cargo_artifact_paths: Vec<String>,
+    pub(crate) cargo_artifacts_complete: bool,
     pub(crate) cache_schema_version: u32,
     pub(crate) journal_log_path: Option<String>,
 }
@@ -118,7 +124,6 @@ pub(crate) struct RustPlanPackages {
 
 pub(crate) struct RustArtifactPlanContext {
     pub(crate) path: std::path::PathBuf,
-    pub(crate) zccache_binary: std::path::PathBuf,
     pub(crate) cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir: std::path::PathBuf,
     pub(crate) zccache_daemon_cache_dir_env: bool,
@@ -139,6 +144,24 @@ pub(crate) struct RustArtifactPlanContext {
     /// restore sentinel so step 2 can verify it is being asked to restore
     /// into the same tree step 1 saved.
     pub(crate) target_dir: String,
+}
+
+pub(crate) fn record_cargo_artifact_closure(
+    plan_path: &std::path::Path,
+    paths: &[String],
+    complete: bool,
+) -> Result<(), SoldrError> {
+    let raw = std::fs::read(plan_path)?;
+    let mut proto = rust_plan_proto::wire::RustArtifactPlanV1::decode(raw.as_slice())
+        .map_err(|err| SoldrError::Other(format!("failed to decode Rust artifact plan: {err}")))?;
+    proto.cargo_artifact_paths = paths.to_vec();
+    proto.cargo_artifacts_complete = complete;
+    let mut bytes = Vec::with_capacity(proto.encoded_len());
+    proto
+        .encode(&mut bytes)
+        .map_err(|err| SoldrError::Other(format!("failed to encode Rust artifact plan: {err}")))?;
+    std::fs::write(plan_path, bytes)?;
+    Ok(())
 }
 
 pub(crate) fn maybe_prepare_rust_artifact_plan(
@@ -226,7 +249,6 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
 
     Ok(Some(RustArtifactPlanContext {
         path: plan_path,
-        zccache_binary: session.binary_path.clone(),
         cache_dir: rust_artifact_plan_cache_dir(session)?,
         zccache_daemon_cache_dir: session.cache_dir.clone(),
         zccache_daemon_cache_dir_env: session.cache_dir_env,
@@ -322,10 +344,10 @@ pub(crate) fn compute_plan_content_identity(plan: &RustArtifactPlan) -> String {
 #[path = "rust_plan_warm_restore.rs"]
 mod warm_restore;
 pub(crate) use warm_restore::{
-    current_unix_seconds, evaluate_warm_restore_skip, should_skip_warm_restore,
-    warm_restore_sentinel_path, warm_restore_skip_enabled, warm_restore_target_marker_path,
-    write_warm_restore_sentinel, WarmRestoreSentinel, WarmRestoreSkipInputs,
-    WarmRestoreTargetMarker,
+    current_unix_seconds, evaluate_warm_restore_skip, should_skip_rust_plan_save,
+    should_skip_warm_restore, warm_restore_sentinel_path, warm_restore_skip_enabled,
+    warm_restore_target_marker_path, write_warm_restore_sentinel, WarmRestoreSentinel,
+    WarmRestoreSkipInputs, WarmRestoreTargetMarker,
 };
 
 /// Walk `deps_dir` shallowly and delete every `.rmeta` file whose filename
@@ -780,6 +802,8 @@ pub(crate) fn build_rust_artifact_plan(
         },
         allowed_artifact_classes: allowed,
         dropped_artifact_classes: dropped,
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version,
         journal_log_path: Some(path_string(&session.journal_path)),
     })
@@ -813,6 +837,15 @@ pub(crate) fn allowed_artifact_classes(
             "dep_info",
             "build_script_metadata",
             "build_script_output",
+            // Cargo JSON hydration makes these verified primary outputs
+            // available to zccache; incomplete streams still fall back to
+            // the drop list below and retain the old thin-v2 behavior.
+            "rlib",
+            "rmeta",
+            "proc_macro",
+            "shared_lib",
+            "build_script_build",
+            "cargo_fingerprint_outputs",
         ],
         // thin-v1 (default) and any unrecognized profile that arrived via a
         // future zccache that does not yet branch on `cache_profile` get the
@@ -825,6 +858,14 @@ pub(crate) fn allowed_artifact_classes(
             "cargo_fingerprint",
             "build_script_metadata",
             "build_script_output",
+            // soldr#1579: the compiled build-script binary itself was
+            // missing from this allowlist. Units whose `build.rs` output
+            // feeds their own compilation saw cargo's fingerprint check
+            // treat the (dropped) `build_script_build` artifact as stale,
+            // cascading a `StaleDepFingerprint` rebuild through everything
+            // downstream of that build script even though the rest of the
+            // thin-v1 slice (rlib/rmeta/dep_info) was retained.
+            "build_script_build",
         ],
     }
 }
@@ -962,12 +1003,37 @@ pub(crate) fn run_zccache_rust_plan(
     }
 
     if operation == "save" && plan.cache_profile == Some("thin-v2") {
-        if let Err(e) = write_thin_manifest(&plan.cache_dir, plan.cache_profile) {
+        // soldr#1538: `plan.cache_dir` is normally the *accumulated*
+        // rust-plan cache root (`rust-plan-cache/`), shared across every
+        // cache key ever saved locally (different profiles, target
+        // triples, packages, ...). Walking + sorting it here on every save
+        // — as this used to do unconditionally — re-walked every bundle
+        // the cache root has ever seen, not just the bundle
+        // `save_rust_plan_local` just produced, so the diagnostic manifest
+        // step scaled with the lifetime size of the cache directory rather
+        // than the current build.
+        //
+        // `docs/THIN_TARGET_CACHE_PRUNING.md` §5.1.b documents
+        // `assert_thin_manifest.py <bundle_dir>/manifest.v2.json
+        // <bundle_dir>` against a `SOLDR_TARGET_CACHE_BUNDLE_DIR`-pinned
+        // directory — i.e. the documented/CI-verified contract is that
+        // `plan.cache_dir` *is* the single bundle directory when the env
+        // var is explicitly set, and that behavior (walk `plan.cache_dir`
+        // as-is) is preserved unchanged here. Only the *default*,
+        // unpinned, multi-key-accumulating cache dir is rescoped to the
+        // bundle this save just produced.
+        let manifest_root = if non_empty_env_path(TARGET_CACHE_BUNDLE_DIR_ENV_VAR).is_some() {
+            plan.cache_dir.clone()
+        } else {
+            let cache_key = zccache::artifact::rust_plan_cache_key(&loaded);
+            zccache::artifact::rust_plan_bundle_dir(&plan.cache_dir, &cache_key).into_path_buf()
+        };
+        if let Err(e) = write_thin_manifest(&manifest_root, plan.cache_profile) {
             // Manifest emission is diagnostic; never fail the build because
             // we could not write it. Log so it shows up in CI logs.
             eprintln!(
                 "soldr warning: failed to write thin-slice manifest at {}: {e}",
-                plan.cache_dir.display()
+                manifest_root.display()
             );
         }
     }

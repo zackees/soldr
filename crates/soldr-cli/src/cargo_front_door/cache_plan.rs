@@ -175,16 +175,6 @@ impl CargoCachePlan {
         if let Some(reason) = rust_plan::should_skip_warm_restore(plan) {
             eprintln!("{reason}");
             Ok(RustPlanRestoreOutcome::Skipped)
-        } else if let Some(reason) = rust_plan::should_skip_restore_due_to_prepopulated_target(plan)
-        {
-            // Issue #480: refuse to restore on top of a target/ that cook
-            // (or a prior build) has already populated. The current zccache
-            // restore path reports `restored_file_count: 0 /
-            // artifact_absent_from_restored_plan: 1` and the subsequent
-            // cargo build dies on missing rmetas. Skipping restore lets
-            // cargo work with what's there.
-            eprintln!("{reason}");
-            Ok(RustPlanRestoreOutcome::Skipped)
         } else {
             let summary = rust_plan::run_zccache_rust_plan(plan, "restore", false)?;
             Ok(RustPlanRestoreOutcome::Restored {
@@ -193,12 +183,50 @@ impl CargoCachePlan {
         }
     }
 
-    pub(crate) fn save_rust_artifacts(&self) -> Result<(), SoldrError> {
+    /// `restore_outcome` is what [`Self::restore_rust_artifacts`] returned
+    /// earlier this invocation (issue #1538): when it was
+    /// [`RustPlanRestoreOutcome::Skipped`] and this build's zccache session
+    /// recorded zero rustc-wrapper invocations, `target/` provably holds
+    /// exactly what the last successful save already wrote, so the save
+    /// (and its target walk/copy/rehash) is skipped entirely. The
+    /// warm-restore sentinel is still refreshed unconditionally — that's a
+    /// cheap two-small-file write, not a target walk — so the skip window
+    /// keeps sliding forward instead of going stale.
+    pub(crate) fn save_rust_artifacts(
+        &self,
+        restore_outcome: RustPlanRestoreOutcome,
+    ) -> Result<(), SoldrError> {
         if let Some(plan) = self.rust_artifact_plan.as_ref() {
-            rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+            let compilations_this_build = self.zccache_session().and_then(|session| {
+                crate::cache::compilations_since_baseline(&session.cache_dir, &session.session_id)
+            });
+            if let Some(reason) = rust_plan::should_skip_rust_plan_save(
+                plan,
+                restore_outcome,
+                compilations_this_build,
+            ) {
+                eprintln!("{reason}");
+            } else {
+                rust_plan::run_zccache_rust_plan(plan, "save", true)?;
+            }
             rust_plan::write_warm_restore_sentinel(plan);
         }
         Ok(())
+    }
+
+    pub(crate) fn record_cargo_artifact_closure(
+        &self,
+        paths: &[String],
+        complete: bool,
+    ) -> Result<(), SoldrError> {
+        if let Some(plan) = self.rust_artifact_plan.as_ref() {
+            rust_plan::record_cargo_artifact_closure(&plan.path, paths, complete)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_rust_artifact_plan(&self) -> bool {
+        self.rust_artifact_plan.is_some()
     }
 
     pub(crate) fn prune_orphan_rmetas_after_failed_build(&self) -> usize {
@@ -300,7 +328,6 @@ mod tests {
 
     fn fake_session() -> ZccacheBuildSession {
         ZccacheBuildSession {
-            binary_path: std::path::PathBuf::from("/tmp/zccache"),
             cache_dir: std::path::PathBuf::from("/tmp/soldr-zccache"),
             cache_dir_env: true,
             session_id: "session-1".into(),

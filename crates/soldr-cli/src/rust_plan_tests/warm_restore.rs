@@ -19,7 +19,7 @@ use tempfile::TempDir;
 /// guard objects below restore the previous value on drop, but two
 /// tests touching the same key concurrently would still observe each
 /// other's mid-test state without this lock.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+pub(super) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// RAII guard that sets or removes an environment variable for the
 /// duration of a test and restores the previous value on drop. Modelled
@@ -83,6 +83,8 @@ fn warm_restore_test_plan() -> RustArtifactPlan {
         },
         allowed_artifact_classes: vec!["rlib", "rmeta"],
         dropped_artifact_classes: vec![],
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
         cache_schema_version: 1,
         journal_log_path: Some("/tmp/journal".to_string()),
     }
@@ -340,7 +342,6 @@ fn warm_restore_test_context(
     let root = tempdir.path();
     RustArtifactPlanContext {
         path: root.join("plan.json"),
-        zccache_binary: root.join("zccache"),
         cache_dir: root.join("cache"),
         zccache_daemon_cache_dir: root.join("daemon"),
         zccache_daemon_cache_dir_env: true,

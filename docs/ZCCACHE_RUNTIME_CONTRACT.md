@@ -6,7 +6,8 @@ runtime soldr ships and wires through setup-soldr and npm.
 The contract fixes these cross-runtime expectations:
 
 - Release archives are `.tar.zst` bundles containing `soldr`,
-  `soldr-daemon`, `crgx`, `cargo-chef`, and `manifest.json`. Toolchain,
+  `soldr-daemon`, `crgx`, `cargo-chef`, and `manifest.json`.
+  `soldr-daemon` is a multicall alias of `soldr`. Toolchain,
   clang, and `zccache-soldr` shim names are materialized from `soldr` at
   install time, not shipped as sidecar binaries. Windows archives also carry
   soldr's matching PDB sidecar (`soldr.pdb` or `soldr_cli.pdb`) so crash
@@ -15,7 +16,7 @@ The contract fixes these cross-runtime expectations:
   version, archive format, soldr target, embedded zccache status, bundled
   binary names, soldr debug-info sidecars, and per-file `sha256` values.
 - zccache is embedded into soldr/soldr-daemon; release archives do not bundle
-  standalone `zccache`, `zccache-daemon`, or `zccache-fp` binaries.
+  `zccache`, `zccache-daemon`, or `zccache-fp` binaries.
 - Setup-soldr and npm must use the same local crgx env var:
   `SOLDR_CRGX_LOCAL_DIR`.
 - Setup-soldr and npm must use the same local cargo-chef env var:

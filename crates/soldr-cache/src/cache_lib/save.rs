@@ -387,6 +387,171 @@ fn walk_workspace_files(workspace: &Path, threads: Option<usize>) -> Result<Vec<
     Ok(out)
 }
 
+/// Build a conservative Cargo-input inventory from compiler dep-info files.
+/// A missing, malformed, stale, or build-script-sensitive inventory returns
+/// `None`, so callers retain the broad source walk and cannot underbuild.
+fn cargo_input_inventory(
+    workspace: &Path,
+    target_dir: &Path,
+    threads: Option<usize>,
+) -> Result<Option<Vec<PathBuf>>> {
+    if !target_dir.is_dir() {
+        return Ok(None);
+    }
+    let mut dep_info_files = Vec::new();
+    let mut build_script_metadata = false;
+    let mut workspace_dep_count = 0usize;
+    let walker = jwalk::WalkDir::new(target_dir)
+        .follow_links(false)
+        .skip_hidden(false);
+    let walker = match threads {
+        Some(n) if n > 0 => walker.parallelism(jwalk::Parallelism::RayonNewPool(n)),
+        _ => walker,
+    };
+    for entry in walker {
+        let entry = entry.map_err(|err| SaveLoadError::Walk {
+            path: target_dir.to_path_buf(),
+            message: err.to_string(),
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "d") {
+            dep_info_files.push(path.clone());
+            if path.strip_prefix(target_dir).ok().is_some_and(|relative| {
+                relative
+                    .components()
+                    .any(|component| component.as_os_str() == "build")
+            }) {
+                build_script_metadata = true;
+            }
+        }
+        if path.components().any(|c| c.as_os_str() == ".fingerprint")
+            && path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().contains("run-build-script"))
+        {
+            build_script_metadata = true;
+        }
+    }
+    if dep_info_files.is_empty() || build_script_metadata {
+        return Ok(None);
+    }
+
+    let mut inventory = BTreeSet::new();
+    for dep_info in dep_info_files {
+        let text = match std::fs::read_to_string(&dep_info) {
+            Ok(text) => text,
+            Err(_) => return Ok(None),
+        };
+        let Some((_, dependencies)) = text.split_once(": ") else {
+            return Ok(None);
+        };
+        for token in makefile_tokens(dependencies) {
+            let path = PathBuf::from(token);
+            let Ok(relative) = path.strip_prefix(workspace) else {
+                continue;
+            };
+            if relative.as_os_str().is_empty() || !path.is_file() {
+                return Ok(None);
+            }
+            workspace_dep_count += 1;
+            inventory.insert(relative.to_path_buf());
+        }
+    }
+
+    // Cargo manifests and toolchain/config files are inputs even when they
+    // are absent from rustc dep-info. Walking metadata is cheap; hashing only
+    // this set is the optimization target.
+    let target_dirs = workspace_target_dir_candidates(workspace);
+    let metadata_walker = jwalk::WalkDir::new(workspace)
+        .follow_links(false)
+        .skip_hidden(false)
+        .process_read_dir(move |_depth, dir_path, _state, children| {
+            children.retain(|res| match res {
+                Ok(entry) => {
+                    let name = entry.file_name.to_string_lossy();
+                    if entry.depth > 0 && (name == ".git" || name == "node_modules") {
+                        return false;
+                    }
+                    if entry.depth > 0 && name == "target" {
+                        return !target_dirs
+                            .iter()
+                            .any(|t| t == &dir_path.join(&entry.file_name));
+                    }
+                    true
+                }
+                Err(_) => true,
+            });
+        });
+    for entry in metadata_walker {
+        let entry = entry.map_err(|err| SaveLoadError::Walk {
+            path: workspace.to_path_buf(),
+            message: err.to_string(),
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let name = entry.file_name.to_string_lossy();
+        if name == "Cargo.toml"
+            || name == "Cargo.lock"
+            || name == "build.rs"
+            || name.starts_with("rust-toolchain")
+            || name == "config"
+            || name.starts_with("config.")
+        {
+            inventory.insert(
+                entry
+                    .path()
+                    .strip_prefix(workspace)
+                    .map_err(|_| SaveLoadError::BadArchivePath(entry.path().display().to_string()))?
+                    .to_path_buf(),
+            );
+        }
+    }
+    if inventory.is_empty() || workspace_dep_count == 0 {
+        return Ok(None);
+    }
+    Ok(Some(inventory.into_iter().collect()))
+}
+
+fn makefile_tokens(input: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut escaped = false;
+    for ch in input.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if escaped {
+        current.push('\\');
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn workspace_files_for_save(workspace: &Path, threads: Option<usize>) -> Result<Vec<PathBuf>> {
+    for target_dir in workspace_target_dir_candidates(workspace) {
+        if let Some(files) = cargo_input_inventory(workspace, &target_dir, threads)? {
+            return Ok(files);
+        }
+    }
+    walk_workspace_files(workspace, threads)
+}
+
 /// True when a workspace symlink should appear in the source-file snapshot
 /// (#1548): relative target, lexically contained in the workspace root, and
 /// resolving to an existing regular file.
@@ -465,7 +630,9 @@ fn walk_cache_files_for_profile(
         let rel = abs
             .strip_prefix(cache_dir)
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+        if archive_always_excludes_cache_path(rel)
+            || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+        {
             let meta = std::fs::metadata(&abs).map_err(|e| io(&abs, e))?;
             walk.excluded_files += 1;
             walk.excluded_bytes = walk.excluded_bytes.saturating_add(meta.len());
@@ -477,7 +644,9 @@ fn walk_cache_files_for_profile(
         let rel = abs
             .strip_prefix(cache_dir)
             .map_err(|_| SaveLoadError::BadArchivePath(abs.display().to_string()))?;
-        if profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel) {
+        if archive_always_excludes_cache_path(rel)
+            || (profile == SaveProfile::Ci && ci_profile_excludes_cache_path(rel))
+        {
             walk.excluded_files += 1;
             continue;
         }
@@ -514,6 +683,23 @@ fn cache_symlink_entry(abs: &Path, rel: &Path) -> std::result::Result<SymlinkEnt
         target,
         is_dir: followed.is_dir(),
     })
+}
+
+/// Runtime coordination files are local to one daemon instance and cache
+/// root. Restoring PID files, spawn locks, sockets, or failure markers into a
+/// different root can prevent the embedded compile daemon from starting.
+/// They are never cache payload, regardless of the requested save profile.
+fn archive_always_excludes_cache_path(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|component| {
+        matches!(component, std::path::Component::Normal(part)
+            if part.to_string_lossy().eq_ignore_ascii_case("soldr-daemon"))
+    })
+}
+
+fn manifest_path_is_daemon_runtime(path: &str) -> bool {
+    manifest_rel_to_path(path)
+        .ok()
+        .is_some_and(|rel| archive_always_excludes_cache_path(&rel))
 }
 
 /// Return true when a cache-relative path is intentionally omitted from
@@ -804,7 +990,7 @@ pub fn save(opts: &SaveOptions<'_>) -> Result<SaveReport> {
                     let Some(ws) = opts.workspace else {
                         return Ok(Vec::new());
                     };
-                    let files = walk_workspace_files(ws, opts.threads)?;
+                    let files = workspace_files_for_save(ws, opts.threads)?;
                     files
                         .par_iter()
                         .map(|rel| -> Result<SourceFile> {
@@ -958,7 +1144,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
                     let Some(ws) = opts.workspace else {
                         return Ok(Vec::new());
                     };
-                    let files = walk_workspace_files(ws, opts.threads)?;
+                    let files = workspace_files_for_save(ws, opts.threads)?;
                     files
                         .par_iter()
                         .map(|rel| -> Result<SourceFile> {
@@ -993,6 +1179,7 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         .base_manifest
         .cache_files
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .map(|entry| (entry.path.as_str(), entry))
         .collect();
     let current_by_path: BTreeMap<&str, (&CacheFile, &PathBuf, &std::fs::Metadata)> =
@@ -1036,6 +1223,9 @@ pub fn save_delta(opts: &SaveDeltaOptions<'_>) -> Result<SaveReport> {
         .collect();
     for base_link in &opts.base_manifest.cache_symlinks {
         let path = base_link.path.as_str();
+        if manifest_path_is_daemon_runtime(path) {
+            continue;
+        }
         if !current_symlink_paths.contains(path) && !current_paths.contains(path) {
             deleted_cache_paths.push(path.to_owned());
         }
@@ -1475,6 +1665,12 @@ pub fn load(opts: &LoadOptions<'_>) -> Result<LoadReport> {
                 return Err(SaveLoadError::BadArchivePath(path.display().to_string()));
             }
         };
+        // Compatibility with archives produced before daemon runtime state
+        // became reserved: drain but never materialize those entries. A load
+        // must not overwrite the live PID/lock/socket namespace of this host.
+        if archive_always_excludes_cache_path(&stripped) {
+            continue;
+        }
         if opts.mtimes_only {
             return Err(SaveLoadError::BadArchivePath(format!(
                 "mtimes_only load refuses cache entry: {}",
@@ -2066,6 +2262,9 @@ fn apply_cache_tombstones(cache_dir: &Path, manifest: &Manifest) -> Result<()> {
             continue;
         }
         let rel = manifest_rel_to_path(path)?;
+        if archive_always_excludes_cache_path(&rel) {
+            continue;
+        }
         let dest = cache_dir.join(rel);
         // symlink_metadata (#1548): a tombstoned SYMLINK must remove the
         // link itself. Following `metadata` here would misclassify a
@@ -2108,6 +2307,10 @@ fn restore_cache_symlinks(cache_dir: &Path, entries: &[SymlinkEntry]) -> (u64, u
     let mut restored = 0u64;
     let mut skipped = 0u64;
     for entry in entries {
+        if manifest_path_is_daemon_runtime(&entry.path) {
+            skipped += 1;
+            continue;
+        }
         match restore_one_symlink(cache_dir, entry) {
             Ok(()) => restored += 1,
             Err(reason) => {
@@ -2187,6 +2390,7 @@ fn build_cache_mtime_index(manifest: &Manifest) -> HashMap<String, CacheMtimeSlo
     manifest
         .cache_files
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .map(|entry| {
             (
                 entry.path.clone(),
@@ -2214,6 +2418,7 @@ fn replay_pending_cache_file_mtimes(
 ) -> Result<()> {
     let pending: Vec<&CacheFile> = entries
         .iter()
+        .filter(|entry| !manifest_path_is_daemon_runtime(&entry.path))
         .filter(|entry| {
             index
                 .get(entry.path.as_str())
@@ -2282,6 +2487,182 @@ fn num_cpus_for(threads: Option<usize>) -> u32 {
 mod tests {
     use super::*;
     use crate::timed_test;
+
+    timed_test!(full_profile_excludes_soldr_daemon_runtime_state, {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path();
+        std::fs::create_dir_all(cache.join("soldr-daemon")).unwrap();
+        std::fs::create_dir_all(cache.join("zccache/artifacts")).unwrap();
+        std::fs::write(cache.join("soldr-daemon/daemon.pid"), b"123\n").unwrap();
+        std::fs::write(cache.join("soldr-daemon/.spawn.lock"), b"").unwrap();
+        std::fs::write(
+            cache.join("soldr-daemon/compile-daemon-unavailable"),
+            b"stale",
+        )
+        .unwrap();
+        let payload = cache.join("zccache/artifacts/hit.bin");
+        std::fs::write(&payload, b"cache payload").unwrap();
+
+        let walk = walk_cache_files_for_profile(cache, None, SaveProfile::Full).unwrap();
+
+        assert_eq!(walk.included_paths, vec![payload]);
+        assert_eq!(walk.excluded_files, 3);
+    });
+
+    timed_test!(daemon_runtime_exclusion_is_top_level_only, {
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon/daemon.pid"
+        )));
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon/nested/state.json"
+        )));
+        assert!(archive_always_excludes_cache_path(Path::new(
+            "Soldr-Daemon/daemon.pid"
+        )));
+        assert!(!archive_always_excludes_cache_path(Path::new(
+            "zccache/artifacts/soldr-daemon/payload.bin"
+        )));
+        assert!(!archive_always_excludes_cache_path(Path::new(
+            "soldr-daemon-cache/payload.bin"
+        )));
+    });
+
+    timed_test!(legacy_archive_cannot_mutate_live_daemon_runtime, {
+        let root = tempfile::tempdir().unwrap();
+        let archived_cache = root.path().join("archived-cache");
+        let restore_cache = root.path().join("restore-cache");
+        let archived_runtime = archived_cache.join("soldr-daemon");
+        let live_runtime = restore_cache.join("soldr-daemon");
+        std::fs::create_dir_all(&archived_runtime).unwrap();
+        std::fs::create_dir_all(&live_runtime).unwrap();
+        let archived_file = archived_runtime.join("archived.pid");
+        std::fs::write(&archived_file, b"old runtime").unwrap();
+        std::fs::write(live_runtime.join("live.pid"), b"live runtime").unwrap();
+        let (archived_entry, archived_meta) =
+            cache_file_entry(&archived_cache, &archived_file).unwrap();
+        let manifest = Manifest {
+            version: MANIFEST_VERSION,
+            cache_dir_name: CACHE_DIR_NAME.into(),
+            cache_file_count: 1,
+            cache_layer_kind: CacheLayerKind::Complete as i32,
+            cache_files: vec![archived_entry],
+            deleted_cache_paths: vec!["soldr-daemon/live.pid".into()],
+            cache_symlinks: vec![SymlinkEntry {
+                path: "soldr-daemon/link".into(),
+                target: "archived.pid".into(),
+                is_dir: false,
+            }],
+            ..Manifest::default()
+        };
+        let archive = root.path().join("legacy.tar.zst");
+        write_delta_archive(
+            &archive,
+            1,
+            None,
+            &manifest,
+            &archived_cache,
+            &[(archived_file, archived_meta)],
+        )
+        .unwrap();
+
+        let report = load(&LoadOptions {
+            archive: &archive,
+            cache_dir: Some(&restore_cache),
+            workspace: None,
+            threads: None,
+            mtimes_only: false,
+            profile_extract: false,
+            auto_defender_exclude: false,
+        })
+        .unwrap();
+
+        assert_eq!(report.cache_files_restored, 0);
+        assert_eq!(
+            std::fs::read(live_runtime.join("live.pid")).unwrap(),
+            b"live runtime"
+        );
+        assert!(!live_runtime.join("archived.pid").exists());
+        assert!(!live_runtime.join("link").exists());
+    });
+
+    timed_test!(delta_ignores_daemon_runtime_from_legacy_base_manifest, {
+        let root = tempfile::tempdir().unwrap();
+        let cache = root.path().join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let base = Manifest {
+            version: MANIFEST_VERSION,
+            cache_dir_name: CACHE_DIR_NAME.into(),
+            cache_layer_kind: CacheLayerKind::Base as i32,
+            cache_files: vec![CacheFile {
+                path: "soldr-daemon/daemon.pid".into(),
+                mtime_ns: 1,
+                size: 3,
+                blake3: vec![0; 32],
+            }],
+            cache_symlinks: vec![SymlinkEntry {
+                path: "soldr-daemon/sock".into(),
+                target: "target".into(),
+                is_dir: false,
+            }],
+            ..Manifest::default()
+        };
+        let archive = root.path().join("delta.tar.zst");
+
+        let report = save_delta(&SaveDeltaOptions {
+            workspace: None,
+            cache_dir: &cache,
+            base_manifest: &base,
+            out: &archive,
+            zstd_level: 1,
+            threads: None,
+            profile: SaveProfile::Full,
+        })
+        .unwrap();
+        let delta = read_manifest_from_archive(&archive).unwrap();
+
+        assert_eq!(report.deleted_cache_files, 0);
+        assert!(delta.deleted_cache_paths.is_empty());
+    });
+
+    timed_test!(cargo_input_inventory_selects_declared_inputs, {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let target = workspace.join("target");
+        let source = workspace.join("src/main.rs");
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(target.join("debug/deps")).unwrap();
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(workspace.join("Cargo.lock"), "# lock\n").unwrap();
+        std::fs::write(workspace.join("irrelevant.log"), "noise\n").unwrap();
+        let source_text = source.display().to_string().replace('\\', "/");
+        std::fs::write(
+            target.join("debug/deps/app.d"),
+            format!("target: {source_text}\n"),
+        )
+        .unwrap();
+
+        let files = cargo_input_inventory(&workspace, &target, None)
+            .unwrap()
+            .expect("valid dep-info should produce an inventory");
+        assert!(files.contains(&PathBuf::from("src/main.rs")));
+        assert!(files.contains(&PathBuf::from("Cargo.toml")));
+        assert!(files.contains(&PathBuf::from("Cargo.lock")));
+        assert!(!files.contains(&PathBuf::from("irrelevant.log")));
+    });
+
+    timed_test!(cargo_input_inventory_falls_back_on_malformed_dep_info, {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let target = workspace.join("target/debug/deps");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("broken.d"), "not makefile dep-info\n").unwrap();
+        assert!(
+            cargo_input_inventory(&workspace, workspace.join("target").as_path(), None)
+                .unwrap()
+                .is_none()
+        );
+    });
 
     timed_test!(profile_line_matches_documented_shape, {
         // Synthetic per-file latencies: 6 values with known order so the

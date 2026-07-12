@@ -1,12 +1,9 @@
 # soldr-cli binaries
 
-Binary targets that ship in the `soldr-cli` crate alongside the main
-`soldr` binary defined in `../main.rs`.
-
-- **`soldr_daemon.rs`** — `soldr-daemon` long-lived helper process that
-  owns target/ tracking (phase 1: `start`, `stop`, `status`).
-- **`zccache_embedded.rs`** — `zccache` CLI trampoline backed by the
-  in-tree zccache library.
+`soldr` in `../main.rs` is the crate's only compiled binary target.
+The daemon entrypoint lives in `../daemon_entry.rs` and is selected by
+argv[0]. The zccache maintenance surface is called in-process from
+`../zccache_entry.rs` by `soldr zccache`.
 
 The toolchain, clang, and `zccache-soldr` shim names are multicall names
 for `soldr` itself and are installed as hardlinks/copies of `soldr`, not

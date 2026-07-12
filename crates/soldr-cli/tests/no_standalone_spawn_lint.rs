@@ -3,16 +3,16 @@
 //!
 //! soldr's build cache runs as an embedded service inside soldr-daemon
 //! (`Request::Compile`); a standalone `zccache-daemon` process must
-//! never spawn. The compiled-in `zccache` trampoline
-//! (`src/bin/zccache_embedded.rs`) is the single gated entry into the
+//! never spawn. The in-process `soldr zccache` entrypoint
+//! (`src/zccache_entry.rs`) is the single gated entry into the
 //! vendored zccache CLI. This lint walks every `.rs` file under
 //! `crates/soldr-cli/src/` (like `tests/timed_test_lint.rs`) and
 //! asserts the source-level invariants that keep the contract:
 //!
-//! 1. Only `src/bin/zccache_embedded.rs` may call
-//!    `zccache::cli::commands::run` — the gated trampoline is the sole
+//! 1. Only `src/zccache_entry.rs` may call
+//!    `zccache::cli::commands::run_with_args` — the gated entry is the sole
 //!    CLI entry point.
-//! 2. `src/bin/zccache_embedded.rs` keeps its gate: it must reference
+//! 2. `src/zccache_entry.rs` keeps its gate: it must reference
 //!    both `ZCCACHE_NO_SPAWN` (the zccache#982 defense-in-depth env
 //!    guard) and `ALLOWED_SUBCOMMANDS` (the daemon-free allowlist).
 //! 3. No file under `src/` references the upstream lazy-spawn entry
@@ -30,7 +30,7 @@ use soldr_cli::timed_test;
 mod common;
 
 /// The one file allowed to reference `zccache::cli::commands::run`.
-const TRAMPOLINE: &str = "src/bin/zccache_embedded.rs";
+const ENTRYPOINT: &str = "src/zccache_entry.rs";
 
 /// Upstream zccache CLI entry points that lazily spawn (or stage the
 /// binary for) a standalone `zccache-daemon`. Referencing any of these
@@ -114,24 +114,32 @@ timed_test!(
                 continue;
             };
 
-            if rel == TRAMPOLINE {
+            if rel == ENTRYPOINT {
                 trampoline_seen = true;
                 // Invariant 2: the gate must stay in place.
                 assert!(
                     body.contains("ZCCACHE_NO_SPAWN"),
-                    "{TRAMPOLINE} must export the ZCCACHE_NO_SPAWN guard (zccache#982, soldr#1467)"
+                    "{ENTRYPOINT} must export the ZCCACHE_NO_SPAWN guard (zccache#982, soldr#1467)"
                 );
                 assert!(
                     body.contains("ALLOWED_SUBCOMMANDS"),
-                    "{TRAMPOLINE} must gate on ALLOWED_SUBCOMMANDS (soldr#1467)"
+                    "{ENTRYPOINT} must gate on ALLOWED_SUBCOMMANDS (soldr#1467)"
                 );
             }
 
             for (idx, line) in code_lines(&body) {
                 // Invariant 1: only the trampoline calls the CLI entry point.
-                if line.contains("zccache::cli::commands::run") && rel != TRAMPOLINE {
+                let calls_cli_entrypoint = line.contains("zccache::cli::commands::run(")
+                    || line.contains("zccache::cli::commands::run_with_args(");
+                if calls_cli_entrypoint && rel != ENTRYPOINT {
                     offenders.push(format!(
-                        "{rel}:{}: references zccache::cli::commands::run (only {TRAMPOLINE} may)",
+                        "{rel}:{}: references a zccache CLI entrypoint (only {ENTRYPOINT} may)",
+                        idx + 1
+                    ));
+                }
+                if line.contains("embedded_zccache_binary") {
+                    offenders.push(format!(
+                        "{rel}:{}: references removed standalone zccache binary resolution",
                         idx + 1
                     ));
                 }
@@ -150,7 +158,7 @@ timed_test!(
 
         assert!(
             trampoline_seen,
-            "{TRAMPOLINE} not found — the gated zccache trampoline must exist"
+            "{ENTRYPOINT} not found: the gated in-process zccache entrypoint must exist"
         );
 
         assert!(

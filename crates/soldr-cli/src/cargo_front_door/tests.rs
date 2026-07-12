@@ -371,7 +371,6 @@ crate::timed_test!(aborted_build_cleanup_prunes_rmetas_and_incremental_dirs, {
 
     let plan = crate::rust_plan::RustArtifactPlanContext {
         path: root.path().join("plan.json"),
-        zccache_binary: root.path().join("zccache"),
         cache_dir: root.path().join("cache"),
         zccache_daemon_cache_dir: root.path().join("daemon-cache"),
         zccache_daemon_cache_dir_env: false,
@@ -1061,6 +1060,43 @@ fn force_managed_cargo_subcommands_parses_truthy_strings_as_true() {
 }
 
 #[test]
+fn cargo_json_closure_includes_artifact_and_matching_fingerprint_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target/debug");
+    std::fs::create_dir_all(target.join("deps")).unwrap();
+    std::fs::create_dir_all(target.join(".fingerprint/serde-abc")).unwrap();
+    std::fs::write(target.join("deps/libserde-abc.rlib"), b"rlib").unwrap();
+    std::fs::write(
+        target.join(".fingerprint/serde-abc/dep-lib-serde"),
+        b"fingerprint",
+    )
+    .unwrap();
+    let json = format!(
+        "{}\n{}\n",
+        serde_json::json!({
+            "reason": "compiler-artifact",
+            "filenames": [target.join("deps/libserde-abc.rlib")],
+        }),
+        serde_json::json!({"reason": "build-finished", "success": true}),
+    );
+
+    let closure = parse_cargo_artifact_closure(json.as_bytes(), &target);
+    assert!(closure.iter().any(|path| path == "deps/libserde-abc.rlib"));
+    assert!(closure
+        .iter()
+        .any(|path| path == ".fingerprint/serde-abc/dep-lib-serde"));
+}
+
+#[test]
+fn cargo_json_closure_rejects_unknown_messages_for_walker_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target/debug");
+    std::fs::create_dir_all(&target).unwrap();
+    let json = b"{\"reason\":\"future-cargo-message\"}\n";
+    assert!(parse_cargo_artifact_closure(json, &target).is_empty());
+}
+
+#[test]
 fn find_on_path_locates_executable_in_a_path_dir() {
     let _guard = ENV_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
@@ -1695,7 +1731,6 @@ crate::timed_test!(
         let session_dir = root.path().join("zc");
         std::fs::create_dir_all(&session_dir).expect("session dir");
         let session = crate::zccache_lifecycle::ZccacheBuildSession {
-            binary_path: session_dir.join("zccache"),
             cache_dir: session_dir.clone(),
             cache_dir_env: false,
             session_id: "test-session".to_string(),

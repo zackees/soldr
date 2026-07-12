@@ -68,6 +68,8 @@ fn full_mode_plan(workspace: &std::path::Path, target_dir: &std::path::Path) -> 
         journal_log_path: None,
         cache_profile: None,
         dropped_artifact_classes: Vec::new(),
+        cargo_artifact_paths: Vec::new(),
+        cargo_artifacts_complete: false,
     }
 }
 
@@ -78,7 +80,6 @@ fn context_for(
 ) -> RustArtifactPlanContext {
     RustArtifactPlanContext {
         path: plan_path.to_path_buf(),
-        zccache_binary: std::path::PathBuf::from("zccache"),
         cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir: cache_dir.to_path_buf(),
         zccache_daemon_cache_dir_env: false,
@@ -284,9 +285,9 @@ crate::timed_test!(non_restore_outcomes_fall_back_to_existing_gc, {
     );
 });
 
-crate::timed_test!(prepopulated_target_restore_maps_to_skipped_outcome, {
-    // A populated target/ trips the #480 guard; the outcome must be
-    // Skipped so the pre-cargo GC keeps running exactly as before.
+crate::timed_test!(prepopulated_target_restore_uses_overlay_outcome, {
+    // A populated target/ is now safely overlaid by zccache. An empty
+    // matching bundle is still a completed restore attempt, not a guard skip.
     let workspace = unique_dir("gc1558-prepop-ws");
     let target = workspace.join("target");
     write_family(&target, NEW_HASH, 1_700_000_500);
@@ -300,11 +301,13 @@ crate::timed_test!(prepopulated_target_restore_maps_to_skipped_outcome, {
     let cache_plan = CargoCachePlan::for_test_with_rust_artifact_plan(ctx);
     let outcome = cache_plan
         .restore_rust_artifacts()
-        .expect("prepopulated restore resolves to a skip, not an error");
+        .expect("prepopulated restore resolves without an error");
     assert_eq!(
         outcome,
-        RustPlanRestoreOutcome::Skipped,
-        "prepopulated target must map to the Skipped outcome"
+        RustPlanRestoreOutcome::Restored {
+            restored_file_count: 0
+        },
+        "prepopulated target must use the overlay restore path"
     );
     assert_eq!(outcome.materialized_file_count(), None);
 

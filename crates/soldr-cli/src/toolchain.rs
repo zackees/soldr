@@ -55,16 +55,43 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     }
 
     let rustfmt = resolve_toolchain_binary("rustfmt")?;
-    let zccache = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR)
-        .unwrap_or_else(crate::binaries::embedded_zccache_binary);
-    let mut command = std::process::Command::new(zccache);
-    command.arg(rustfmt);
-    command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
-    apply_zccache_child_env(&mut command)?;
-    suppress_windows_console_window(&mut command);
-    let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
-    Ok(status.code().unwrap_or(1))
+    if let Some(zccache) = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR) {
+        let mut command = std::process::Command::new(zccache);
+        command.arg(rustfmt);
+        command.args(args);
+        apply_implicit_toolchain_homes(&mut command);
+        apply_zccache_child_env(&mut command)?;
+        suppress_windows_console_window(&mut command);
+        let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
+        return Ok(status.code().unwrap_or(1));
+    }
+
+    let cache_root = if let Some(path) =
+        crate::binaries::non_empty_env_path(crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR)
+    {
+        crate::zccache::normalize_path_for_compare(&path)?
+    } else {
+        let paths = SoldrPaths::new()?;
+        crate::zccache::managed_zccache_cache_dir(&paths)?
+    };
+    std::fs::create_dir_all(&cache_root)?;
+    let cwd = std::env::current_dir()?;
+    zccache::cli::commands::run_embedded_rustfmt_with_runner(
+        &rustfmt,
+        args,
+        &cwd,
+        &cache_root,
+        |command| {
+            apply_implicit_toolchain_homes(command);
+            apply_zccache_child_env(command)
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            suppress_windows_console_window(command);
+            let status = run_toolchain_command(command, "embedded rustfmt formatter")
+                .map_err(|err| std::io::Error::other(err.to_string()))?;
+            Ok(status.code().unwrap_or(1))
+        },
+    )
+    .map_err(SoldrError::from)
 }
 
 /// Run rustdoc directly. zccache currently has rustc/clippy-driver

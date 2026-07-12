@@ -14,15 +14,15 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from zccache_contract import (  # noqa: E402
-    ARCHIVE_EXT,
+from zccache_contract import (
+    ARCHIVE_EXT,  # noqa: E402
     CARGO_CHEF_BUNDLED_BINARY,
     CARGO_CHEF_LOCAL_DIR_ENV,
-    CRGX_LOCAL_DIR_ENV,
     CRGX_BUNDLED_BINARY,
+    CRGX_LOCAL_DIR_ENV,
     MANIFEST_NAME,
-    RELEASE_BUNDLED_BINARIES,
     locate_extracted_file,
+    RELEASE_BUNDLED_BINARIES,
     soldr_debug_info_entries,
     validate_release_manifest,
 )
@@ -136,7 +136,14 @@ def _extract_archive(archive_path: Path, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     attempts = (
         ["tar", "--zstd", "-xf", str(archive_path), "-C", str(out_dir)],
-        ["tar", "--use-compress-program=unzstd", "-xf", str(archive_path), "-C", str(out_dir)],
+        [
+            "tar",
+            "--use-compress-program=unzstd",
+            "-xf",
+            str(archive_path),
+            "-C",
+            str(out_dir),
+        ],
     )
     for cmd in attempts:
         result = subprocess.run(cmd, check=False, timeout=120)
@@ -160,7 +167,10 @@ def _extract_archive(archive_path: Path, out_dir: Path) -> None:
 
 
 def _download_file(url: str, destination: Path) -> None:
-    with urllib.request.urlopen(url, timeout=120) as response, open(destination, "wb") as fh:
+    with (
+        urllib.request.urlopen(url, timeout=120) as response,
+        open(destination, "wb") as fh,
+    ):
         shutil.copyfileobj(response, fh)
 
 

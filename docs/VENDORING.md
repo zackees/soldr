@@ -299,13 +299,11 @@ Two interactions matter:
    release notes must explicitly call out "this release ships
    non-upstreamed zccache code; track soldr#981."
 
-2. **Managed-zccache version bump while vendor is active**: legal
-   but informational only. The standalone `zccache.exe` binary
-   that soldr fetches for the perf cluster, broker, and
-   As of soldr#1368 there is no separate `soldr update-zccache` /
-   managed-binary artifact — the embedded library IS the zccache CLI
-   (compiled-in `[[bin]]`). There is now a single zccache surface: the
-   vendored library.
+2. **Vendored zccache pin/version bump while vendor is active**: legal
+   and substantive. The submodule pin is the library and CLI implementation
+   linked into soldr, and its version is recorded in `manifest.json`. As of
+   soldr#1593 there is no second executable or managed-binary version to
+   synchronize with it.
 
 When the vendor ends and we restore the released git/crates.io pin,
 only the library pin moves — there is no separate managed-binary
