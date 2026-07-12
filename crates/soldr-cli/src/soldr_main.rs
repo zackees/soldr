@@ -950,6 +950,14 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 eprintln!("soldr: downloaded {crate_name} v{}", result.version);
             }
 
+            let normalized_tool_args;
+            let tool_args = if crate_name == "maturin" {
+                normalized_tool_args =
+                    crate::pyo3_detect::normalize_explicit_target_args(tool_args);
+                normalized_tool_args.as_slice()
+            } else {
+                tool_args
+            };
             let mut command = std::process::Command::new(&result.binary_path);
             command.args(tool_args);
 
@@ -1026,18 +1034,34 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // (Windows-only; explicit user env always wins). Both
                 // cargo and maturin honor CARGO_BUILD_TARGET, so even
                 // a wrong-host cargo emits the right-target wheel.
-                if cfg!(windows) && std::env::var_os("CARGO_BUILD_TARGET").is_none() {
-                    match crate::core::TargetTriple::detect() {
-                        Ok(triple) => {
-                            command.env("CARGO_BUILD_TARGET", triple.triple());
-                        }
-                        Err(err) => eprintln!(
-                            "soldr warning: could not detect default target for \
-                             maturin; child builds for its cargo's host: {err}"
-                        ),
+                let paths = SoldrPaths::new()?;
+                let workspace_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let maturin_build = crate::pyo3_detect::maturin_args_are_build(tool_args);
+                let maturin_target =
+                    crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
+                if maturin_build
+                    && std::env::var_os("CARGO_BUILD_TARGET").is_none()
+                    && (cfg!(windows) || maturin_target != crate::pyo3_detect::host_triple())
+                {
+                    command.env("CARGO_BUILD_TARGET", &maturin_target);
+                }
+
+                // Target OS/SDK preparation is orthogonal to Python ABI
+                // policy. Direct maturin and PEP 517 builds receive the same
+                // blessed target preparation as `soldr build` before the
+                // PyO3 plan decides whether any Python variables are valid.
+                if maturin_build && maturin_target != crate::pyo3_detect::host_triple() {
+                    let target_prep =
+                        crate::blessed_build::prepare(&paths, &maturin_target).await?;
+                    for (key, value) in &target_prep.env {
+                        std::env::set_var(key, value);
+                        command.env(key, value);
+                    }
+                    for dir in target_prep.path_prefix() {
+                        prepend_to_path_env(&dir);
                     }
                 }
-                let paths = SoldrPaths::new()?;
                 command.env(
                     crate::cache_lib::CACHE_ENABLED_ENV_VAR,
                     crate::cache_lib::cache_enabled_env_value(cache_enabled),
@@ -1064,6 +1088,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
                 for dir in &prep.path_dirs {
                     prepend_to_path_env(dir);
+                }
+
+                if maturin_build {
+                    let pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+                        &workspace_root,
+                        tool_args,
+                        Some(&maturin_target),
+                    );
+                    pyo3_plan.emit_diagnostic();
+                    pyo3_plan.apply_to_command(&mut command);
                 }
             }
 

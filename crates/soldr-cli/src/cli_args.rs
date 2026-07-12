@@ -514,7 +514,7 @@ pub(crate) enum Commands {
     /// soldr#938 — print the cross-compile env block (shell-eval).
     #[command(
         name = "env",
-        long_about = "Print the cross-compile env block soldr would set internally for the given target, in shell-eval form. Use to bridge env into shells/IDE integrations that bypass `soldr cargo`:\n\n  eval \"$(soldr env --target mac-arm64)\"\n  soldr env --target win-x64 --shell-export   # `export KEY=VALUE` for sh/bash/zsh\n  soldr env --target linux-x64-musl --json    # stable JSON for tooling\n\nResolves the target via the same alias table soldr build uses (`win-x64`, `mac-arm64`, etc.; or Rust triple). The emitted block always includes SDKROOT (darwin) and PYO3_CROSS_LIB_DIR / PYO3_CROSS_PYTHON_VERSION (whenever the catalogue has the Python rows for the target). See soldr#997 + soldr#938 for the design."
+        long_about = "Print the cross-compile env block soldr would set internally for the given target, in shell-eval form. Use to bridge env into shells/IDE integrations that bypass `soldr cargo`:\n\n  eval \"$(soldr env --target mac-arm64)\"\n  soldr env --target win-x64 --shell-export   # `export KEY=VALUE` for sh/bash/zsh\n  soldr env --target linux-x64-musl --json    # stable JSON for tooling\n\nResolves the target via the same alias table soldr build uses (`win-x64`, `mac-arm64`, etc.; or Rust triple). JSON output includes the shared target-aware PyO3 plan. PYO3_NO_PYTHON is emitted only for a workspace-metadata-proven ABI3 cross extension; target Python compatibility assets are opt-in and separate from OS SDK preparation. See soldr#1610 + soldr#1614."
     )]
     Env {
         /// Target triple OR soldr alias (e.g. `win-x64`, `mac-arm64`,

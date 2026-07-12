@@ -165,6 +165,22 @@ Direct `soldr maturin ...` preserves caller-provided `CARGO`, `RUSTC`,
 and `RUSTC_WRAPPER`; `SOLDR_RUSTC_WRAPPER` only controls Soldr's
 auto-injected wrapper when `RUSTC_WRAPPER` is unset.
 
+Target resolution is shared by direct maturin and the PEP 517 backend,
+in this precedence order: an explicit `--target` argument (including
+PEP 517 config settings named `target`, `--target`, or `build-target`),
+`CARGO_BUILD_TARGET`, `[tool.maturin].target`, then the host triple.
+Before maturin starts, soldr applies the same target OS SDK preparation
+used by `soldr build`.
+
+PyO3 configuration is resolved separately from the target OS SDK. Soldr
+reads workspace dependency metadata and only injects
+`PYO3_NO_PYTHON=1` for a proven cross-compiled ABI3 extension.
+PyO3-free projects receive no Python variables; modern PyO3 Windows
+extensions use raw-dylib without a Python import library; Unix/macOS
+extensions keep PyO3/maturin's normal dynamic extension behavior.
+Embedding, legacy, ambiguous, and non-ABI3 builds are never guessed to
+be ABI3. Caller-provided `PYO3_*` values always win. `soldr env --target
+... --json` includes the resolved `pyo3_plan`.
 The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
 `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
 (pip/uv copy the sdist to a throwaway temp dir, discarding `target/`
