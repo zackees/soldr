@@ -149,5 +149,12 @@ uv.lock
 .claude/settings.local.json
 .claude/.credentials*
 
+# clud project config/runtime state: track shared settings while keeping
+# generated Docker harnesses, task ledgers, loops, and local overrides private.
+.clud/*
+!.clud/
+!.clud/settings.json
+.clud/settings.local.json
+
 # Dependent-repo checkouts coordinated via the clud-extern-repos convention.
 .extern-repos/
