@@ -66,6 +66,24 @@ def _maturin_pep517(subcommand: str, *args: str) -> None:
         ) from exc
 
 
+def _target_args(config_settings: Optional[dict]) -> "list[str]":
+    """Translate the PEP 517 target setting into maturin's explicit flag.
+
+    Explicit config settings are the highest-precedence target source. When
+    absent, the Rust-side shared plan resolves CARGO_BUILD_TARGET, then
+    ``[tool.maturin].target``, then the host triple.
+    """
+    if not config_settings:
+        return []
+    for key in ("--target", "target", "build-target"):
+        value = config_settings.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[-1] if value else None
+        if value is not None and str(value).strip():
+            return ["--target", str(value).strip()]
+    return []
+
+
 def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
     entries = []
     for name in os.listdir(directory):
@@ -79,9 +97,7 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
         entries.append((path.stat().st_mtime, name))
     if not entries:
         kind = "directory" if want_dir else "file"
-        raise RuntimeError(
-            f"soldr build backend: no {suffix} {kind} produced in {directory}"
-        )
+        raise RuntimeError(f"soldr build backend: no {suffix} {kind} produced in {directory}")
     entries.sort(reverse=True)
     return entries[0][1]
 
@@ -112,13 +128,14 @@ def prepare_metadata_for_build_wheel(
     metadata_directory: str,
     config_settings: Optional[dict] = None,
 ) -> str:
-    del config_settings
+    target_args = _target_args(config_settings)
     _maturin_pep517(
         "write-dist-info",
         "--metadata-directory",
         metadata_directory,
         "--interpreter",
         sys.executable,
+        *target_args,
     )
     return _newest_entry(metadata_directory, ".dist-info", want_dir=True)
 
@@ -133,13 +150,15 @@ def build_wheel(
 ) -> str:
     # maturin pep517 build-wheel does not accept --metadata-directory;
     # the dist-info is regenerated, which PEP 517 explicitly permits.
-    del config_settings, metadata_directory
+    target_args = _target_args(config_settings)
+    del metadata_directory
     _maturin_pep517(
         "build-wheel",
         "--interpreter",
         sys.executable,
         "--out",
         wheel_directory,
+        *target_args,
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)
 
@@ -149,7 +168,8 @@ def build_editable(
     config_settings: Optional[dict] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
-    del config_settings, metadata_directory
+    target_args = _target_args(config_settings)
+    del metadata_directory
     _maturin_pep517(
         "build-wheel",
         "--interpreter",
@@ -157,6 +177,7 @@ def build_editable(
         "--out",
         wheel_directory,
         "--editable",
+        *target_args,
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)
 

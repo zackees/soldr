@@ -28,6 +28,12 @@ use crate::target_alias::{resolve_soldr_target, AliasError};
 /// `target`. The block is target-derived but does NOT touch disk —
 /// `soldr prepare` still owns the actual asset fetching.
 pub fn build_env_block(rust_triple: &str) -> Result<BTreeMap<String, String>, SoldrError> {
+    build_env_plan(rust_triple).map(|(env, _)| env)
+}
+
+fn build_env_plan(
+    rust_triple: &str,
+) -> Result<(BTreeMap<String, String>, crate::pyo3_detect::Pyo3BuildPlan), SoldrError> {
     let mut env = BTreeMap::new();
 
     // SDKROOT for Apple targets. Uses the managed Apple SDK pin —
@@ -49,13 +55,14 @@ pub fn build_env_block(rust_triple: &str) -> Result<BTreeMap<String, String>, So
         "clang".to_string(),
     );
 
-    // PYO3_CROSS_* — populated once the Python catalogue rows ship
-    // (soldr#931 / #932 / #933). Today we emit the PYO3_NO_PYTHON
-    // marker so PyO3 build.rs short-circuits cleanly when the user
-    // hasn't pre-populated the Python sysroot.
-    env.insert("PYO3_NO_PYTHON".to_string(), "1".to_string());
+    // Python ABI policy is separate from the target SDK/linker block.
+    // The shared resolver only emits PYO3_NO_PYTHON when workspace
+    // metadata proves this is an ABI3 extension cross-build.
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let plan = crate::pyo3_detect::resolve_for_invocation(&workspace_root, &[], Some(rust_triple));
+    env.extend(plan.env.clone());
 
-    Ok(env)
+    Ok((env, plan))
 }
 
 /// Run the `env` subcommand. Three output forms:
@@ -71,7 +78,7 @@ pub fn run_env_command(
 ) -> Result<i32, SoldrError> {
     let resolved = resolve_soldr_target(target_input).map_err(map_alias_err)?;
 
-    let env = build_env_block(&resolved.rust_triple)?;
+    let (env, pyo3_plan) = build_env_plan(&resolved.rust_triple)?;
 
     if json {
         let payload = serde_json::json!({
@@ -80,6 +87,7 @@ pub fn run_env_command(
             "rust_triple": resolved.rust_triple,
             "via_alias": resolved.via_alias,
             "env": env,
+            "pyo3_plan": pyo3_plan,
         });
         println!("{}", serde_json::to_string(&payload).unwrap_or_default());
     } else if shell_export {
@@ -138,14 +146,14 @@ mod tests {
         assert!(env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER"));
     });
 
-    crate::timed_test!(env_block_always_marks_pyo3_no_python, {
+    crate::timed_test!(env_block_does_not_guess_pyo3_no_python, {
         for triple in [
             "x86_64-pc-windows-msvc",
             "aarch64-apple-darwin",
             "x86_64-unknown-linux-musl",
         ] {
             let env = build_env_block(triple).expect("ok");
-            assert_eq!(env.get("PYO3_NO_PYTHON").map(String::as_str), Some("1"));
+            assert!(!env.contains_key("PYO3_NO_PYTHON"));
         }
     });
 

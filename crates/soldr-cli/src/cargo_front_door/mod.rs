@@ -1678,6 +1678,24 @@ pub(crate) async fn run_cargo_front_door(
     // operation. The daemon process maintains its own copy via the
     // matching IPC dispatch in `daemon/server.rs`.
     crate::cache_lib::build_active::set(true);
+    let cargo_subcommand = first_cargo_subcommand(args);
+    let pyo3_build = matches!(
+        cargo_subcommand,
+        Some(
+            "b" | "build"
+                | "c"
+                | "check"
+                | "t"
+                | "test"
+                | "bench"
+                | "d"
+                | "doc"
+                | "r"
+                | "run"
+                | "clippy"
+                | "fix"
+        )
+    ) || cargo_subcommand == Some(concat!("rust", "c"));
     if build_like_cargo {
         // Cargo front door only: keep startup/low-disk warnings off unrelated
         // commands and out of the rustc-wrapper hot path.
@@ -1700,6 +1718,22 @@ pub(crate) async fn run_cargo_front_door(
     let explicit_target = target::default_cargo_build_target(args)?;
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
+    }
+    // soldr#1610/#1614: every cargo-backed build surface consumes the
+    // same target-aware PyO3 plan. The resolver is conservative: it only
+    // injects PYO3_NO_PYTHON for a proven cross ABI3 extension, never for
+    // embedding/non-ABI3 builds, and never downloads Python assets merely
+    // because PyO3 appears in metadata.
+    if pyo3_build {
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+            &workspace_root,
+            args,
+            explicit_target.as_deref(),
+        );
+        pyo3_plan.emit_diagnostic();
+        pyo3_plan.apply_to_command(&mut command);
     }
     let native_cache_target = target::known_cargo_build_target(args, explicit_target.as_deref())
         .filter(|target| target.ends_with("-apple-darwin"));
