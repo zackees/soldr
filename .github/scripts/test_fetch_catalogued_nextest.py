@@ -9,6 +9,7 @@ import tarfile
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 def load(name: str):
@@ -25,6 +26,31 @@ script = load("fetch_catalogued_nextest")
 
 
 class FetchNextestTests(unittest.TestCase):
+    def test_catalogue_lookup_normalizes_bare_and_prefixed_versions(self) -> None:
+        fixture = {
+            "version": "cargo-nextest-0.9.140",
+            "filename": "cargo-nextest.zip",
+            "urls": ["https://example.test/cargo-nextest.zip"],
+            "sha256": "0" * 64,
+        }
+        for supplied in ["0.9.140", "cargo-nextest-0.9.140"]:
+            with (
+                self.subTest(supplied=supplied),
+                mock.patch.object(script, "resolve_metadata", return_value=fixture) as resolve,
+            ):
+                self.assertIs(
+                    script.resolve_catalogued_metadata(
+                        target="aarch64-pc-windows-msvc",
+                        version=supplied,
+                        origin="https://example.test",
+                    ),
+                    fixture,
+                )
+                self.assertEqual(
+                    resolve.call_args.kwargs["version"],
+                    "cargo-nextest-0.9.140",
+                )
+
     def test_all_supported_targets_have_explicit_catalogue_mapping(self) -> None:
         targets = [
             "x86_64-unknown-linux-gnu",

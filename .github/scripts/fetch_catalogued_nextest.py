@@ -23,6 +23,8 @@ from pathlib import Path
 
 from toolchain_asset_query import resolve_metadata
 
+CARGO_NEXTEST_RELEASE_PREFIX = "cargo-nextest-"
+
 
 def query_for_target(target: str) -> tuple[str, str, str | None]:
     table = {
@@ -39,6 +41,27 @@ def query_for_target(target: str) -> tuple[str, str, str | None]:
         return table[target]
     except KeyError as exc:
         raise SystemExit(f"no cargo-nextest catalogue mapping for target {target}") from exc
+
+
+def canonical_catalogue_version(version: str) -> str:
+    """Return the component-qualified release key used by nextest's manifest."""
+    if version in {"", "latest"}:
+        return version
+    bare = version.removeprefix(CARGO_NEXTEST_RELEASE_PREFIX).removeprefix("v")
+    return f"{CARGO_NEXTEST_RELEASE_PREFIX}{bare}"
+
+
+def resolve_catalogued_metadata(*, target: str, version: str, origin: str) -> dict:
+    platform, arch, extra = query_for_target(target)
+    return resolve_metadata(
+        tool="cargo-nextest",
+        origin=origin,
+        tool_manifest_url_override=None,
+        platform=platform,
+        arch=arch,
+        extra=extra,
+        version=canonical_catalogue_version(version),
+    )
 
 
 def sha256(path: Path) -> str:
@@ -121,15 +144,10 @@ def main() -> int:
     parser.add_argument("--origin", default="https://zackees.github.io/soldr-toolchain")
     args = parser.parse_args()
 
-    platform, arch, extra = query_for_target(args.target)
-    metadata = resolve_metadata(
-        tool="cargo-nextest",
-        origin=args.origin,
-        tool_manifest_url_override=None,
-        platform=platform,
-        arch=arch,
-        extra=extra,
+    metadata = resolve_catalogued_metadata(
+        target=args.target,
         version=args.version,
+        origin=args.origin,
     )
     binary = download_verified(metadata, args.output_dir)
     metadata = {
