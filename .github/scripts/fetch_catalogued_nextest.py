@@ -40,15 +40,16 @@ def query_for_target(target: str) -> tuple[str, str, str | None]:
     try:
         return table[target]
     except KeyError as exc:
-        raise SystemExit(f"no cargo-nextest catalogue mapping for target {target}") from exc
+        raise SystemExit(
+            f"no cargo-nextest catalogue mapping for target {target}"
+        ) from exc
 
 
 def canonical_catalogue_version(version: str) -> str:
-    """Return the component-qualified release key used by nextest's manifest."""
+    """Return the semantic release key used by the soldr-toolchain catalog."""
     if version in {"", "latest"}:
         return version
-    bare = version.removeprefix(CARGO_NEXTEST_RELEASE_PREFIX).removeprefix("v")
-    return f"{CARGO_NEXTEST_RELEASE_PREFIX}{bare}"
+    return version.removeprefix(CARGO_NEXTEST_RELEASE_PREFIX).removeprefix("v")
 
 
 def resolve_catalogued_metadata(*, target: str, version: str, origin: str) -> dict:
@@ -97,7 +98,9 @@ def extract_verified(archive: Path, destination: Path) -> Path:
                     raise SystemExit("cargo-nextest archive contains an unsafe path")
                 handle.extractall(root)
         else:
-            raise SystemExit(f"unsupported cargo-nextest archive format: {archive.name}")
+            raise SystemExit(
+                f"unsupported cargo-nextest archive format: {archive.name}"
+            )
 
         candidates = [
             path
@@ -105,7 +108,9 @@ def extract_verified(archive: Path, destination: Path) -> Path:
             if path.is_file() and path.name in {"cargo-nextest", "cargo-nextest.exe"}
         ]
         if len(candidates) != 1:
-            raise SystemExit(f"expected one cargo-nextest executable, found {len(candidates)}")
+            raise SystemExit(
+                f"expected one cargo-nextest executable, found {len(candidates)}"
+            )
         destination.mkdir(parents=True, exist_ok=True)
         output = destination / candidates[0].name
         shutil.copy2(candidates[0], output)
@@ -121,8 +126,13 @@ def download_verified(metadata: dict, destination: Path) -> Path:
         last_error: Exception | None = None
         for url in metadata["urls"]:
             try:
-                request = urllib.request.Request(str(url), headers={"Accept-Encoding": "identity"})
-                with urllib.request.urlopen(request, timeout=120) as response, archive.open("wb") as handle:
+                request = urllib.request.Request(
+                    str(url), headers={"Accept-Encoding": "identity"}
+                )
+                with (
+                    urllib.request.urlopen(request, timeout=120) as response,
+                    archive.open("wb") as handle,
+                ):
                     shutil.copyfileobj(response, handle)
                 actual = sha256(archive)
                 if actual != expected:
