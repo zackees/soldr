@@ -19,9 +19,6 @@ jobs:
     timeout-minutes: 240
     env:
       SOLDR_GITHUB_TOKEN: ${{ github.token }}
-      # Cold Windows GNU builds can exceed soldr's default 30 minute
-      # cargo wait guard before Cargo reaches the next diagnostic line.
-      SOLDR_CARGO_WAIT_TIMEOUT_SECS: "7200"
       # Use explicit soldr cache-layer opt-outs instead of the global
       # ZCCACHE_DISABLE kill switch. #1409 validated that disabling only
       # native cc-rs wrapping was not enough on hosted Windows GNU: the

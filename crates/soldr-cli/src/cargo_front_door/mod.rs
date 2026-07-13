@@ -51,10 +51,8 @@ pub(crate) use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
-const DEFAULT_CARGO_WAIT_TIMEOUT_SECS: u64 = 30 * 60;
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
-const MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS: u64 = 30;
 const CAPTURE_PIPE_EOF_GRACE: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_WAIT: Duration = Duration::from_secs(2);
 const COMPILE_JOURNAL_TAIL_POLL: Duration = Duration::from_millis(25);
@@ -103,6 +101,7 @@ struct CargoAbortLogRequest<'a> {
     ended_at_ms: i64,
     args: &'a [String],
     timeout: bool,
+    cargo_wait_timeout: Option<Duration>,
     cleanup: CargoAbortCleanupReport,
     message: &'a str,
     auto_retry_planned: bool,
@@ -126,6 +125,7 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         ended_at_ms,
         args,
         timeout,
+        cargo_wait_timeout,
         cleanup,
         message,
         auto_retry_planned,
@@ -153,6 +153,11 @@ fn append_cargo_abort_log(request: CargoAbortLogRequest<'_>) -> Result<PathBuf, 
         "ended_at_ms": ended_at_ms,
         "elapsed_ms": (ended_at_ms - started_at_ms).max(0),
         "timeout": timeout,
+        "timeout_config": {
+            "explicit": cargo_wait_timeout.is_some(),
+            "source": cargo_wait_timeout.map(|_| CARGO_WAIT_TIMEOUT_ENV_VAR),
+            "duration_secs": cargo_wait_timeout.map(|duration| duration.as_secs()),
+        },
         "cargo_args": args,
         "message": message,
         "auto_retry_planned": auto_retry_planned,
@@ -212,7 +217,10 @@ fn retry_timed_out_cargo_without_cache(
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("spawn no-cache cargo retry failed: {err}")))?;
-    wait_for_no_cache_retry_child(&mut child)
+    // The nested soldr invocation inherits the explicit timeout that caused
+    // this retry and has recursion disabled above. The outer supervisor must
+    // not add a second, implicit deadline of its own.
+    wait_for_cargo_child(&mut child, "soldr no-cache cargo retry", None)
 }
 
 fn new_build_record(
@@ -748,37 +756,65 @@ fn json_u64(value: &serde_json::Value, key: &str) -> Option<u64> {
     value.get(key).and_then(serde_json::Value::as_u64)
 }
 
-fn cargo_wait_timeout() -> Duration {
-    std::env::var(CARGO_WAIT_TIMEOUT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|seconds| *seconds > 0)
-        .map(Duration::from_secs)
-        .unwrap_or_else(|| Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS))
+fn cargo_wait_timeout() -> Result<Option<Duration>, SoldrError> {
+    let value = match std::env::var(CARGO_WAIT_TIMEOUT_ENV_VAR) {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(SoldrError::Other(format!(
+                "invalid {CARGO_WAIT_TIMEOUT_ENV_VAR}: expected 0 or a positive integer number of seconds, but the value is not valid Unicode"
+            )))
+        }
+    };
+    let seconds = value.parse::<u64>().map_err(|_| {
+        SoldrError::Other(format!(
+            "invalid {CARGO_WAIT_TIMEOUT_ENV_VAR}={value:?}: expected 0 or a positive integer number of seconds"
+        ))
+    })?;
+    Ok((seconds > 0).then(|| Duration::from_secs(seconds)))
 }
 
 fn wait_for_cargo_child(
     child: &mut std::process::Child,
     context: &str,
+    timeout: Option<Duration>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
-    let timeout = cargo_wait_timeout();
+    wait_for_cargo_child_with_heartbeat(
+        child,
+        context,
+        timeout,
+        Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS),
+    )
+}
+
+fn wait_for_cargo_child_with_heartbeat(
+    child: &mut std::process::Child,
+    context: &str,
+    timeout: Option<Duration>,
+    heartbeat: Duration,
+) -> Result<std::process::ExitStatus, SoldrError> {
     let start = Instant::now();
-    let heartbeat = Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS);
     loop {
         let elapsed = start.elapsed();
-        if elapsed >= timeout {
-            return Err(cargo_timeout_error(child, context, timeout));
+        if let Some(timeout) = timeout {
+            if elapsed >= timeout {
+                return Err(cargo_timeout_error(child, context, timeout));
+            }
         }
-        let wait_for = timeout.saturating_sub(elapsed).min(heartbeat);
+        let wait_for = timeout
+            .map(|timeout| timeout.saturating_sub(elapsed).min(heartbeat))
+            .unwrap_or(heartbeat);
         match child
             .wait_timeout(wait_for)
             .map_err(|err| SoldrError::Other(format!("wait on {context} failed: {err}")))?
         {
             Some(status) => return Ok(status),
-            None if start.elapsed() >= timeout => {
-                return Err(cargo_timeout_error(child, context, timeout));
-            }
             None => {
+                if let Some(timeout) = timeout {
+                    if start.elapsed() >= timeout {
+                        return Err(cargo_timeout_error(child, context, timeout));
+                    }
+                }
                 eprintln!(
                     "{}",
                     cargo_wait_heartbeat_message(context, start.elapsed(), timeout)
@@ -788,54 +824,22 @@ fn wait_for_cargo_child(
     }
 }
 
-fn wait_for_no_cache_retry_child(
-    child: &mut std::process::Child,
-) -> Result<std::process::ExitStatus, SoldrError> {
-    let timeout =
-        cargo_wait_timeout().max(Duration::from_secs(MIN_NO_CACHE_RETRY_WAIT_TIMEOUT_SECS));
-    let start = Instant::now();
-    let heartbeat = Duration::from_secs(CARGO_WAIT_HEARTBEAT_SECS);
-    loop {
-        let elapsed = start.elapsed();
-        if elapsed >= timeout {
-            return Err(cargo_timeout_error(
-                child,
-                "soldr no-cache cargo retry",
-                timeout,
-            ));
-        }
-        let wait_for = timeout.saturating_sub(elapsed).min(heartbeat);
-        match child.wait_timeout(wait_for).map_err(|err| {
-            SoldrError::Other(format!("wait on soldr no-cache cargo retry failed: {err}"))
-        })? {
-            Some(status) => return Ok(status),
-            None if start.elapsed() >= timeout => {
-                return Err(cargo_timeout_error(
-                    child,
-                    "soldr no-cache cargo retry",
-                    timeout,
-                ));
-            }
-            None => {
-                eprintln!(
-                    "{}",
-                    cargo_wait_heartbeat_message(
-                        "soldr no-cache cargo retry",
-                        start.elapsed(),
-                        timeout
-                    )
-                );
-            }
-        }
+fn cargo_wait_heartbeat_message(
+    context: &str,
+    elapsed: Duration,
+    timeout: Option<Duration>,
+) -> String {
+    match timeout {
+        Some(timeout) => format!(
+            "soldr: {context} still running after {}s (explicit timeout {}s from {CARGO_WAIT_TIMEOUT_ENV_VAR})",
+            elapsed.as_secs(),
+            timeout.as_secs()
+        ),
+        None => format!(
+            "soldr: {context} still running after {}s (no wall-clock deadline configured)",
+            elapsed.as_secs()
+        ),
     }
-}
-
-fn cargo_wait_heartbeat_message(context: &str, elapsed: Duration, timeout: Duration) -> String {
-    format!(
-        "soldr: {context} still running after {}s (timeout {}s; set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)",
-        elapsed.as_secs(),
-        timeout.as_secs()
-    )
 }
 
 fn cargo_timeout_error(
@@ -848,7 +852,7 @@ fn cargo_timeout_error(
     let timeout_secs = timeout.as_secs();
     let mut message = format!(
         "{context} timed out after {timeout_secs} seconds \
-         (set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
+         (explicitly configured by {CARGO_WAIT_TIMEOUT_ENV_VAR}; set it to 0 to disable)"
     );
     match kill_result {
         Ok(detail) => message.push_str(&format!("; {detail}")),
@@ -1397,6 +1401,11 @@ pub(crate) async fn run_cargo_front_door(
         ));
     }
 
+    // Parse the opt-in watchdog before starting daemons, spawning Cargo, or
+    // mutating build-session state. Malformed configuration is a user-facing
+    // error, not a reason to launch a child that would need cleanup.
+    let cargo_wait_timeout = cargo_wait_timeout()?;
+
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
     let _fresh_workspace_env =
@@ -1866,13 +1875,14 @@ pub(crate) async fn run_cargo_front_door(
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
             .unwrap_or_else(|| disk::cargo_disk_space_probe_path(args));
-        run_command_capturing_cargo_json(&mut command, &target_dir)
+        run_command_capturing_cargo_json(&mut command, &target_dir, cargo_wait_timeout)
             .map(|(status, captured, paths)| (status, Some(captured), Some(paths)))
     } else if capture_for_diagnostics {
-        run_command_capturing_diagnostic_tail(&mut command)
+        run_command_capturing_diagnostic_tail(&mut command, cargo_wait_timeout)
             .map(|(status, captured)| (status, Some(captured), None))
     } else {
-        run_command_inheriting_stdio(&mut command).map(|status| (status, None, None))
+        run_command_inheriting_stdio(&mut command, cargo_wait_timeout)
+            .map(|status| (status, None, None))
     };
     let (status, diagnostic_capture, cargo_artifact_paths) = match cargo_run_result {
         Ok(outcome) => outcome,
@@ -1918,6 +1928,7 @@ pub(crate) async fn run_cargo_front_door(
                 ended_at_ms,
                 args,
                 timeout,
+                cargo_wait_timeout,
                 cleanup,
                 message: &augmented.to_string(),
                 auto_retry_planned,
@@ -2063,6 +2074,7 @@ fn cargo_args_have_message_format(args: &[String]) -> bool {
 fn run_command_capturing_cargo_json(
     command: &mut std::process::Command,
     target_dir: &Path,
+    timeout: Option<Duration>,
 ) -> Result<(std::process::ExitStatus, String, Vec<String>), SoldrError> {
     command.stdout(std::process::Stdio::piped());
     command.stderr(std::process::Stdio::piped());
@@ -2072,7 +2084,7 @@ fn run_command_capturing_cargo_json(
         .map_err(|err| SoldrError::Other(format!("spawn cargo for JSON capture failed: {err}")))?;
     let stdout_rx = spawn_capture_pipe_reader_to_stdout(child.stdout.take().expect("piped"));
     let stderr_rx = spawn_capture_pipe_reader(child.stderr.take().expect("piped"));
-    let status = wait_for_cargo_child(&mut child, "cargo JSON capture")?;
+    let status = wait_for_cargo_child(&mut child, "cargo JSON capture", timeout)?;
     let stdout = drain_capture_pipe_after_child_exit(&stdout_rx, "cargo JSON stdout");
     let stderr = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo JSON stderr");
     let paths = parse_cargo_artifact_closure(&stdout, target_dir);
@@ -2190,12 +2202,13 @@ where
 
 fn run_command_inheriting_stdio(
     command: &mut std::process::Command,
+    timeout: Option<Duration>,
 ) -> Result<std::process::ExitStatus, SoldrError> {
     configure_cargo_child_for_timeout(command);
     let mut child = command
         .spawn()
         .map_err(|err| SoldrError::Other(format!("spawn cargo failed: {err}")))?;
-    wait_for_cargo_child(&mut child, "cargo")
+    wait_for_cargo_child(&mut child, "cargo", timeout)
 }
 
 /// Run cargo with both streams tee'd to the user's stdout/stderr AND
@@ -2210,6 +2223,7 @@ fn run_command_inheriting_stdio(
 /// pipe-and-tee doesn't degrade interactive output.
 fn run_command_capturing_diagnostic_tail(
     command: &mut std::process::Command,
+    timeout: Option<Duration>,
 ) -> Result<(std::process::ExitStatus, String), SoldrError> {
     command.stderr(std::process::Stdio::piped());
     // stdout stays inherited — we don't need its bytes.
@@ -2221,7 +2235,7 @@ fn run_command_capturing_diagnostic_tail(
 
     let stderr_rx = spawn_capture_pipe_reader(child_stderr);
 
-    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture")?;
+    let status = wait_for_cargo_child(&mut child, "cargo diagnostic capture", timeout)?;
     let bytes = drain_capture_pipe_after_child_exit(&stderr_rx, "cargo diagnostic stderr");
     let captured = String::from_utf8_lossy(&bytes).into_owned();
     Ok((status, captured))

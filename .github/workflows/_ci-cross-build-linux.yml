@@ -281,7 +281,7 @@ jobs:
       - name: Restore cooked dependency cache
         uses: zackees/setup-soldr/cook@bea35cc843969b89c2544b8683f600e8edc3a258
         with:
-          cache: ${{ (inputs.target == 'x86_64-pc-windows-msvc' || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
+          cache: ${{ (contains(inputs.target, 'pc-windows-msvc') || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
           target-dir: target
           flags: --profile ci-nextest --target ${{ inputs.target }} --workspace
 
@@ -291,8 +291,19 @@ jobs:
           set -euo pipefail
           target='${{ inputs.target }}'
           profile="ci-nextest"
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          soldr cargo clean -p soldr-cli --target "$target" --profile "$profile" 2>/dev/null || true
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml
+          # rust-cache intentionally omits executables but can restore their
+          # Cargo fingerprints. Since the workspace split (#1490), cleaning
+          # only soldr-cli can therefore leave a "fresh" internal-crate test
+          # executable that is absent when nextest starts archiving. Rebuild
+          # all first-party outputs while retaining cached dependencies.
+          soldr cargo clean \
+            -p soldr-cli \
+            -p soldr-core \
+            -p soldr-fetch \
+            -p soldr-cache \
+            -p soldr-daemon \
+            --target "$target" --profile "$profile"
 
       # Stage A — lint intentionally NOT run here. `cargo fmt --check` and
       # `cargo clippy --workspace --all-targets` are both covered by the
@@ -330,8 +341,13 @@ jobs:
           ci_profile="ci-nextest"
           # soldr#1248/#1524 — every target-run lane consumes a nextest
           # archive, so Stage C reuses this same target profile.
-          if [[ "$target" == *-pc-windows-msvc ]] \
-             || [[ "$target" == *-apple-darwin ]]; then
+          # Embedded zccache currently loses Windows cross-target .exe
+          # outputs even on misses. Use soldr's documented recovery path for
+          # Windows correctness; Darwin and Linux retain their cached paths.
+          if [[ "$target" == *-pc-windows-msvc ]]; then
+            soldr --no-cache build --profile "$ci_profile" --target "$target" \
+              --package soldr-cli --bin soldr
+          elif [[ "$target" == *-apple-darwin ]]; then
             soldr build --profile "$ci_profile" --target "$target" \
               --package soldr-cli --bin soldr
           elif [[ "$target" == *-unknown-linux-musl ]] \
@@ -386,7 +402,11 @@ jobs:
           # 1.034 GB with 63 binaries; the four binary(...) excludes
           # below are already skipped at target-run time so archiving
           # them was pure wasted upload + download bytes.
-          soldr cargo nextest archive \
+          soldr_args=()
+          if [[ "$target" == *-pc-windows-msvc ]]; then
+            soldr_args+=(--no-cache)
+          fi
+          soldr "${soldr_args[@]}" cargo nextest archive \
             --cargo-profile "$ci_profile" \
             --target "$target" \
             --workspace \

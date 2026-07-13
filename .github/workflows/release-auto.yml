@@ -388,9 +388,6 @@ jobs:
           # size-optimized thin-LTO/single-CGU profile on hosted runners.
           CARGO_PROFILE_RELEASE_LTO: ${{ contains(matrix.target, 'pc-windows-msvc') && 'false' || 'thin' }}
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ contains(matrix.target, 'pc-windows-msvc') && '16' || '1' }}
-          # Native Windows release builds can exceed soldr's default
-          # 30-minute cargo child watchdog on cold hosted runners.
-          SOLDR_CARGO_WAIT_TIMEOUT_SECS: ${{ contains(matrix.target, 'pc-windows-msvc') && '7200' || '1800' }}
         run: |
           # soldr#1140 root-cause fix: restore Cargo.toml + Cargo.lock
           # + crates/soldr-cli/Cargo.toml BEFORE cargo runs.

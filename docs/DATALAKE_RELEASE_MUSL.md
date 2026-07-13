@@ -43,15 +43,18 @@ Keep `soldr --no-cache cargo ...` only for:
 - intentionally uncached release lanes where deterministic no-daemon behavior
   is more important than cache reuse
 
-If a release build is legitimately slow, prefer raising the no-response
+If a single release/LTO compile request can legitimately take more than 30
+minutes before returning a daemon reply, raise that targeted no-response
 backstop:
 
 ```bash
 SOLDR_COMPILE_REPLY_TIMEOUT_SECS=3600 soldr cargo build --release --locked --target x86_64-unknown-linux-musl
 ```
 
-Do not use `--no-cache` just to avoid the default 30-minute backstop unless the
-daemon diagnostic below is actually firing.
+Normal `soldr cargo ...` builds have no Cargo wall-clock deadline. The
+30-minute `SOLDR_COMPILE_REPLY_TIMEOUT_SECS` default above is a targeted IPC
+no-response backstop, not a limit on the full build. Do not use `--no-cache`
+unless that daemon diagnostic is actually firing.
 
 ## Manual Regression Repro
 

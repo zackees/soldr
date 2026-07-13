@@ -28,7 +28,6 @@ set -euo pipefail
 export CARGO_HOME=/root/.cargo
 export CARGO_TERM_COLOR=always
 export RUST_BACKTRACE=1
-export SOLDR_CARGO_WAIT_TIMEOUT_SECS="${SOLDR_CARGO_WAIT_TIMEOUT_SECS:-3600}"
 export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS="${SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS:-120000}"
 
 echo "## environment"
@@ -48,6 +47,14 @@ rm -rf "$CACHE" "$ARCHIVE_DIR" /tmp/cold-report.json /tmp/warm-report.json
 mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
+
+# Resolve the cargo-nextest front-door tool before starting the daemon.  The
+# first-use fetch/bootstrap path can restart the managed process while Cargo
+# is already compiling; that obscures the cacheability check with a daemon
+# lifecycle failure.  Subsequent archive builds exercise only compilation and
+# cache traffic.
+echo "## prefetch cargo-nextest"
+"$SOLDR_BIN" cargo nextest --version
 
 print_daemon_diagnostics() {
   echo "## soldr daemon diagnostics" >&2
