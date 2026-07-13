@@ -291,7 +291,7 @@ fn compute_session_stats(
     } else {
         0.0
     };
-    Some(serde_json::json!({
+    let mut stats = serde_json::json!({
         "status": "ok",
         "hits": hits,
         "misses": misses,
@@ -300,7 +300,42 @@ fn compute_session_stats(
         "compilations": compilations,
         "time_saved_ms": time_saved_ms,
         "hit_rate": hit_rate,
-    }))
+    });
+    if let Some(staged) =
+        staged_profile_delta(base.staged_profile.as_ref(), cur.staged_profile.as_ref())
+    {
+        stats["phase_profile"] = serde_json::json!({"staged": staged});
+    }
+    Some(stats)
+}
+
+fn staged_profile_delta(
+    baseline: Option<&crate::daemon::protocol::StagedProfileInfo>,
+    current: Option<&crate::daemon::protocol::StagedProfileInfo>,
+) -> Option<crate::daemon::protocol::StagedProfileInfo> {
+    let current = current?;
+    let delta = |current: &std::collections::BTreeMap<String, u64>,
+                 baseline: Option<&std::collections::BTreeMap<String, u64>>| {
+        current
+            .iter()
+            .map(|(key, value)| {
+                let baseline = baseline
+                    .and_then(|values| values.get(key))
+                    .copied()
+                    .unwrap_or(0);
+                (key.clone(), value.saturating_sub(baseline))
+            })
+            .collect()
+    };
+    Some(crate::daemon::protocol::StagedProfileInfo {
+        counters: delta(&current.counters, baseline.map(|profile| &profile.counters)),
+        timings_ns: delta(
+            &current.timings_ns,
+            baseline.map(|profile| &profile.timings_ns),
+        ),
+        bytes: delta(&current.bytes, baseline.map(|profile| &profile.bytes)),
+        failures: delta(&current.failures, baseline.map(|profile| &profile.failures)),
+    })
 }
 
 fn emit_session_start(output: &SessionStartOutput, json: bool) -> Result<(), SoldrError> {
@@ -584,7 +619,7 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
 mod tests {
     use super::super::report::zccache_analyze_failure_note;
     use super::super::{zccache_output_snippet, ZCCACHE_ANALYZE_NOTE_LIMIT};
-    use super::{clear_session_artifacts, compilation_delta};
+    use super::{clear_session_artifacts, compilation_delta, compute_session_stats};
 
     fn compile_stats(total_compilations: u64) -> crate::daemon::protocol::CompileStatsInfo {
         crate::daemon::protocol::CompileStatsInfo {
@@ -613,6 +648,33 @@ mod tests {
             None,
             "a daemon restart must be unproven, never misreported as zero compiles"
         );
+    });
+
+    crate::timed_test!(session_stats_diff_phase_profile_counters, {
+        let mut baseline = compile_stats(10);
+        baseline.staged_profile = Some(crate::daemon::protocol::StagedProfileInfo {
+            counters: [("published".to_string(), 3)].into(),
+            timings_ns: [("publish".to_string(), 100)].into(),
+            bytes: [("copied".to_string(), 20)].into(),
+            failures: Default::default(),
+        });
+        let mut current = compile_stats(15);
+        current.staged_profile = Some(crate::daemon::protocol::StagedProfileInfo {
+            counters: [("published".to_string(), 7), ("salvaged".to_string(), 1)].into(),
+            timings_ns: [("publish".to_string(), 160)].into(),
+            bytes: [("copied".to_string(), 45)].into(),
+            failures: [("copy".to_string(), 1)].into(),
+        });
+
+        let stats = compute_session_stats(Some(&baseline), Some(&current)).expect("stats");
+        assert_eq!(stats["phase_profile"]["staged"]["counters"]["published"], 4);
+        assert_eq!(stats["phase_profile"]["staged"]["counters"]["salvaged"], 1);
+        assert_eq!(
+            stats["phase_profile"]["staged"]["timings_ns"]["publish"],
+            60
+        );
+        assert_eq!(stats["phase_profile"]["staged"]["bytes"]["copied"], 25);
+        assert_eq!(stats["phase_profile"]["staged"]["failures"]["copy"], 1);
     });
 
     #[test]

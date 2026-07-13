@@ -73,7 +73,9 @@ use serde::{Deserialize, Serialize};
 ///   client would wait on a reply a v12 daemon never sends, so the bump
 ///   makes cross-version traffic fail fast (and displace the stale
 ///   daemon) instead of stalling out the reply timeout.
-pub const PROTOCOL_VERSION: u32 = 13;
+/// * v14: `CompileStatsInfo` carries zccache phase-profile telemetry so
+///   session reports can gate staged-output behavior.
+pub const PROTOCOL_VERSION: u32 = 14;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -321,6 +323,16 @@ pub struct CompileStatsInfo {
     pub non_cacheable: u64,
     pub compile_errors: u64,
     pub time_saved_ms: u64,
+    #[serde(default)]
+    pub staged_profile: Option<StagedProfileInfo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StagedProfileInfo {
+    pub counters: std::collections::BTreeMap<String, u64>,
+    pub timings_ns: std::collections::BTreeMap<String, u64>,
+    pub bytes: std::collections::BTreeMap<String, u64>,
+    pub failures: std::collections::BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,11 +429,8 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v13_after_acked_session_finalization, {
-        // Bumped from 12 to 13 when BuildSessionEnd became
-        // request-response (soldr#1536): a v13 client waits for the
-        // finalization Ack, which a v12 daemon never sends.
-        assert_eq!(PROTOCOL_VERSION, 13);
+    crate::timed_test!(protocol_version_is_v14_after_phase_profile_stats, {
+        assert_eq!(PROTOCOL_VERSION, 14);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
