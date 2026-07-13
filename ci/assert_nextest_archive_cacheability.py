@@ -35,46 +35,70 @@ rustc --version
 cargo --version
 
 echo "## bootstrap soldr"
-export CARGO_TARGET_DIR=/tmp/soldr-bootstrap-target
+export CARGO_TARGET_DIR=/root/.soldr/bootstrap-target
 cargo build -p soldr-cli --bin soldr --locked
-SOLDR_BIN=/tmp/soldr-bootstrap-target/debug/soldr
+SOLDR_BIN=/root/.soldr/bootstrap-target/debug/soldr
 "$SOLDR_BIN" --version
 
-CACHE=/tmp/soldr-cacheability/root
-ARCHIVE_DIR=/tmp/soldr-cacheability/archives
+DIAGNOSTICS_DIR=/tmp/soldr-cacheability
+CACHE="$DIAGNOSTICS_DIR/root"
+ARCHIVE_DIR="$DIAGNOSTICS_DIR/archives"
 export SOLDR_CACHE_DIR="$CACHE"
 rm -rf "$CACHE" "$ARCHIVE_DIR" /tmp/cold-report.json /tmp/warm-report.json
 mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
 
-# Resolve the cargo-nextest front-door tool before starting the daemon.  The
-# first-use fetch/bootstrap path can restart the managed process while Cargo
-# is already compiling; that obscures the cacheability check with a daemon
-# lifecycle failure.  Subsequent archive builds exercise only compilation and
-# cache traffic.
-echo "## prefetch cargo-nextest"
-"$SOLDR_BIN" cargo nextest --version
-
 print_daemon_diagnostics() {
   echo "## soldr daemon diagnostics" >&2
-  cat /tmp/soldr-daemon-status.json >&2 || true
-  cat /tmp/soldr-daemon-status.err >&2 || true
+  cat "$DIAGNOSTICS_DIR/soldr-daemon-status.json" >&2 || true
+  cat "$DIAGNOSTICS_DIR/soldr-daemon-status.err" >&2 || true
   if [ -f "$CACHE/daemon-spawn.log" ]; then
     echo "## daemon-spawn.log tail" >&2
     tail -n 200 "$CACHE/daemon-spawn.log" >&2 || true
   fi
+  echo "## soldr processes" >&2
+  ps -ef | grep -E '[s]oldr|[z]ccache' >&2 || true
+  echo "## retained diagnostic files" >&2
+  find "$DIAGNOSTICS_DIR" -maxdepth 4 -type f | wc -l | \
+    xargs printf 'file count: %s\n' >&2 || true
+  du -sh "$DIAGNOSTICS_DIR" >&2 || true
+  find "$DIAGNOSTICS_DIR" -maxdepth 4 -type f -printf '%p %s bytes\n' | \
+    sort | head -n 200 >&2 || true
 }
+
+on_exit() {
+  status=$?
+  trap - EXIT
+  if [ "$status" -ne 0 ]; then
+    set +e
+    "$SOLDR_BIN" daemon status --json \
+      > "$DIAGNOSTICS_DIR/soldr-daemon-status.json" \
+      2> "$DIAGNOSTICS_DIR/soldr-daemon-status.err"
+    print_daemon_diagnostics
+  fi
+  exit "$status"
+}
+trap on_exit EXIT
+
+# Resolve the cargo-nextest front-door tool before starting the daemon.  The
+# first-use fetch/bootstrap path can restart the managed process while Cargo
+# is already compiling; that obscures the cacheability check with a daemon
+# lifecycle failure.  Subsequent archive builds exercise only compilation and
+# cache traffic. Install the failure trap first so bootstrap failures retain
+# the same diagnostics as archive failures.
+echo "## prefetch cargo-nextest"
+"$SOLDR_BIN" cargo nextest --version
 
 ensure_soldr_daemon() {
   echo "## ensure soldr daemon"
   "$SOLDR_BIN" daemon start || true
   for _ in $(seq 1 120); do
     "$SOLDR_BIN" daemon status --json \
-      > /tmp/soldr-daemon-status.json \
-      2> /tmp/soldr-daemon-status.err || true
-    if jq -e '.running == true' /tmp/soldr-daemon-status.json > /dev/null 2>&1; then
-      cat /tmp/soldr-daemon-status.json
+      > "$DIAGNOSTICS_DIR/soldr-daemon-status.json" \
+      2> "$DIAGNOSTICS_DIR/soldr-daemon-status.err" || true
+    if jq -e '.running == true' "$DIAGNOSTICS_DIR/soldr-daemon-status.json" > /dev/null 2>&1; then
+      cat "$DIAGNOSTICS_DIR/soldr-daemon-status.json"
       return 0
     fi
     sleep 1
@@ -89,10 +113,10 @@ stop_soldr_daemon() {
   "$SOLDR_BIN" daemon stop || true
   for _ in $(seq 1 60); do
     "$SOLDR_BIN" daemon status --json \
-      > /tmp/soldr-daemon-status.json \
-      2> /tmp/soldr-daemon-status.err || true
-    if jq -e '.running == false' /tmp/soldr-daemon-status.json > /dev/null 2>&1; then
-      cat /tmp/soldr-daemon-status.json
+      > "$DIAGNOSTICS_DIR/soldr-daemon-status.json" \
+      2> "$DIAGNOSTICS_DIR/soldr-daemon-status.err" || true
+    if jq -e '.running == false' "$DIAGNOSTICS_DIR/soldr-daemon-status.json" > /dev/null 2>&1; then
+      cat "$DIAGNOSTICS_DIR/soldr-daemon-status.json"
       return 0
     fi
     sleep 1
@@ -257,6 +281,8 @@ def run_harness(image: str, volumes: list[str]) -> tuple[int, dict[str, object] 
         f"{volumes[1]}:/root/.cargo",
         "-v",
         f"{volumes[2]}:/root/.soldr",
+        "-v",
+        f"{volumes[3]}:/tmp/soldr-cacheability",
         "-w",
         "/work",
         image,
@@ -313,6 +339,7 @@ def main(argv: list[str]) -> int:
         f"soldr-nextest-cacheability-target-{suffix}",
         f"soldr-nextest-cacheability-cargo-{suffix}",
         f"soldr-nextest-cacheability-home-{suffix}",
+        f"soldr-nextest-cacheability-diagnostics-{suffix}",
     ]
     print("Docker volumes:")
     for volume in volumes:

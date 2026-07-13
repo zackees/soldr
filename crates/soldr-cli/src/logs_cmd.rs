@@ -868,84 +868,76 @@ mod tests {
         }
     }
 
-    timed_test!(
-        logs_list_reads_persisted_cache_summary,
-        Duration::from_secs(5),
-        {
-            let tmp = tempfile::tempdir().expect("tmpdir");
-            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-            let db_path = db::db_path(&paths);
-            db::upsert_build(&db_path, &seeded_build(42, 1_000)).expect("upsert");
+    timed_test!(logs_list_reads_persisted_cache_summary, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let db_path = db::db_path(&paths);
+        db::upsert_build(&db_path, &seeded_build(42, 1_000)).expect("upsert");
 
-            let output = collect_logs_list_output_for_paths(&paths, 10).expect("list");
-            assert_eq!(output.schema_version, 1);
-            assert_eq!(output.launches.len(), 1);
-            let launch = &output.launches[0];
-            assert_eq!(launch.id, "42");
-            assert_eq!(launch.cache.as_ref().expect("cache").hits, 8);
-            assert_eq!(launch.cache.as_ref().expect("cache").misses, 2);
-            assert_eq!(launch.miss_reasons[0].reason, "key_mismatch");
-            assert_eq!(
-                launch
-                    .logs
-                    .as_ref()
-                    .and_then(|paths| paths.private_daemon_name.as_deref()),
-                Some("soldr-dev-demo")
-            );
-        }
-    );
+        let output = collect_logs_list_output_for_paths(&paths, 10).expect("list");
+        assert_eq!(output.schema_version, 1);
+        assert_eq!(output.launches.len(), 1);
+        let launch = &output.launches[0];
+        assert_eq!(launch.id, "42");
+        assert_eq!(launch.cache.as_ref().expect("cache").hits, 8);
+        assert_eq!(launch.cache.as_ref().expect("cache").misses, 2);
+        assert_eq!(launch.miss_reasons[0].reason, "key_mismatch");
+        assert_eq!(
+            launch
+                .logs
+                .as_ref()
+                .and_then(|paths| paths.private_daemon_name.as_deref()),
+            Some("soldr-dev-demo")
+        );
+    });
 
-    timed_test!(
-        logs_show_accepts_hex_prefix_and_lists_slow_compiles,
-        Duration::from_secs(5),
-        {
-            let tmp = tempfile::tempdir().expect("tmpdir");
-            let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
-            let db_path = db::db_path(&paths);
-            let session_id = 0xabc_def0_1234_u64;
-            db::upsert_build(&db_path, &seeded_build(session_id, 1_000)).expect("upsert");
-            db::append_event(
-                &db_path,
-                &Event {
-                    ts_ms: 1_100,
-                    session_id: Some(session_id),
-                    kind: EventKind::CompileEnd,
-                    crate_name: Some("fast-crate".into()),
-                    duration_us: Some(250_000),
-                    target_dir: Some("/repo/target".into()),
-                    exit_code: None,
-                },
-            )
-            .expect("event");
-            db::append_event(
-                &db_path,
-                &Event {
-                    ts_ms: 1_200,
-                    session_id: Some(session_id),
-                    kind: EventKind::CompileEnd,
-                    crate_name: Some("slow-crate".into()),
-                    duration_us: Some(2_500_000),
-                    target_dir: Some("/repo/target".into()),
-                    exit_code: None,
-                },
-            )
-            .expect("event");
+    timed_test!(logs_show_accepts_hex_prefix_and_lists_slow_compiles, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let paths = SoldrPaths::with_root(tmp.path().to_path_buf());
+        let db_path = db::db_path(&paths);
+        let session_id = 0xabc_def0_1234_u64;
+        db::upsert_build(&db_path, &seeded_build(session_id, 1_000)).expect("upsert");
+        db::append_event(
+            &db_path,
+            &Event {
+                ts_ms: 1_100,
+                session_id: Some(session_id),
+                kind: EventKind::CompileEnd,
+                crate_name: Some("fast-crate".into()),
+                duration_us: Some(250_000),
+                target_dir: Some("/repo/target".into()),
+                exit_code: None,
+            },
+        )
+        .expect("event");
+        db::append_event(
+            &db_path,
+            &Event {
+                ts_ms: 1_200,
+                session_id: Some(session_id),
+                kind: EventKind::CompileEnd,
+                crate_name: Some("slow-crate".into()),
+                duration_us: Some(2_500_000),
+                target_dir: Some("/repo/target".into()),
+                exit_code: None,
+            },
+        )
+        .expect("event");
 
-            let output = collect_logs_show_output_for_paths(&paths, "00000abc").expect("show");
-            assert_eq!(output.launch.id, session_id.to_string());
-            assert_eq!(output.slow_compiles.len(), 2);
-            assert_eq!(
-                output.slow_compiles[0].crate_name.as_deref(),
-                Some("slow-crate")
-            );
-            assert!(
-                output
-                    .notes
-                    .iter()
-                    .all(|note| !note.starts_with("cache_summary")),
-                "cache summary should be present: {:?}",
-                output.notes
-            );
-        }
-    );
+        let output = collect_logs_show_output_for_paths(&paths, "00000abc").expect("show");
+        assert_eq!(output.launch.id, session_id.to_string());
+        assert_eq!(output.slow_compiles.len(), 2);
+        assert_eq!(
+            output.slow_compiles[0].crate_name.as_deref(),
+            Some("slow-crate")
+        );
+        assert!(
+            output
+                .notes
+                .iter()
+                .all(|note| !note.starts_with("cache_summary")),
+            "cache summary should be present: {:?}",
+            output.notes
+        );
+    });
 }
