@@ -1214,7 +1214,12 @@ where
     // event, preserving the cancellation signal used by build history.
     let lifecycle = req.lifecycle.clone();
     let inner_started = std::time::Instant::now();
-    let compile_fut = state.compile_service.compile(req);
+    // Keep zccache's compile future behind one heap indirection before it
+    // enters the nested lifecycle/disconnect select chain. Staged-output
+    // support substantially increased that future's concrete size; carrying
+    // it inline through both generic async helpers exhausted Tokio's 2 MiB
+    // worker stack under a parallel Cargo cold build.
+    let compile_fut = Box::pin(state.compile_service.compile(req));
     let body = match race_compile_with_lifecycle(
         stream,
         compile_fut,

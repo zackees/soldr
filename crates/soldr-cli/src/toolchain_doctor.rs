@@ -274,15 +274,19 @@ pub(crate) fn probe_rustlib_integrity() -> ProbeResult {
             };
         }
     };
-    let Some(toolchain_root) = rustc.parent().and_then(Path::parent).map(Path::to_path_buf) else {
-        return ProbeResult {
-            name: PROBE_RUSTLIB_INTEGRITY.to_string(),
-            ok: true,
-            details: json!({
-                "skipped": "cannot-derive-toolchain-root",
-                "rustc": rustc.display().to_string(),
-            }),
-        };
+    let toolchain_root = match query_rustc_sysroot(&rustc) {
+        Ok(path) => path,
+        Err(reason) => {
+            return ProbeResult {
+                name: PROBE_RUSTLIB_INTEGRITY.to_string(),
+                ok: true,
+                details: json!({
+                    "skipped": "rustc-sysroot-failed",
+                    "rustc": rustc.display().to_string(),
+                    "reason": reason,
+                }),
+            };
+        }
     };
 
     let installed = match rustup_installed_targets_active() {
@@ -343,6 +347,40 @@ pub(crate) fn probe_rustlib_integrity() -> ProbeResult {
         ok,
         details,
     }
+}
+
+/// Ask the resolved compiler for its sysroot instead of deriving it from the
+/// executable path. `resolve_toolchain_binary("rustc")` can legitimately
+/// return a soldr/rustup shim under `CARGO_HOME/bin`; the shim's parent is not
+/// the active toolchain root and treating it as one makes every installed
+/// target look corrupt.
+fn query_rustc_sysroot(rustc: &Path) -> Result<PathBuf, String> {
+    let mut command = std::process::Command::new(rustc);
+    command.args(["--print", "sysroot"]);
+    crate::binaries::apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let output = command_output_with_timeout(&mut command, "rustc --print sysroot")
+        .map_err(|err| format!("failed to execute {} --print sysroot: {err}", rustc.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "{} --print sysroot exited with {}: {}",
+            rustc.display(),
+            output.status,
+            stderr.trim()
+        ));
+    }
+    parse_rustc_sysroot_stdout(&output.stdout)
+}
+
+fn parse_rustc_sysroot_stdout(stdout: &[u8]) -> Result<PathBuf, String> {
+    let value = std::str::from_utf8(stdout)
+        .map_err(|err| format!("rustc --print sysroot emitted non-UTF-8 output: {err}"))?
+        .trim();
+    if value.is_empty() {
+        return Err("rustc --print sysroot emitted an empty path".to_string());
+    }
+    Ok(PathBuf::from(value))
 }
 
 /// Classification of `${toolchain_root}/lib/rustlib/<target>/lib/`.
@@ -647,6 +685,24 @@ mod tests {
             RustlibLibDirStatus::EmptyOrNoRlibs.label(),
             "empty-or-no-rlibs"
         );
+    });
+
+    crate::timed_test!(parse_rustc_sysroot_stdout_accepts_trimmed_absolute_path, {
+        let parsed = parse_rustc_sysroot_stdout(b"  C:\\toolchains\\1.94.1  \r\n")
+            .expect("valid sysroot output");
+        assert_eq!(parsed, PathBuf::from(r"C:\toolchains\1.94.1"));
+    });
+
+    crate::timed_test!(parse_rustc_sysroot_stdout_rejects_empty_output, {
+        let err = parse_rustc_sysroot_stdout(b" \r\n\t")
+            .expect_err("empty sysroot output must be rejected");
+        assert!(err.contains("empty path"), "unexpected error: {err}");
+    });
+
+    crate::timed_test!(parse_rustc_sysroot_stdout_rejects_non_utf8_output, {
+        let err = parse_rustc_sysroot_stdout(&[0xff, 0xfe])
+            .expect_err("non-UTF-8 sysroot output must be rejected");
+        assert!(err.contains("non-UTF-8"), "unexpected error: {err}");
     });
 
     crate::timed_test!(doctor_output_serializes_schema_version_one, {
