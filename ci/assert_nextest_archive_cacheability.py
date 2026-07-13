@@ -48,6 +48,14 @@ mkdir -p "$CACHE" "$ARCHIVE_DIR"
 
 export CARGO_TARGET_DIR=/work/target
 
+# Resolve the cargo-nextest front-door tool before starting the daemon.  The
+# first-use fetch/bootstrap path can restart the managed process while Cargo
+# is already compiling; that obscures the cacheability check with a daemon
+# lifecycle failure.  Subsequent archive builds exercise only compilation and
+# cache traffic.
+echo "## prefetch cargo-nextest"
+"$SOLDR_BIN" cargo nextest --version
+
 print_daemon_diagnostics() {
   echo "## soldr daemon diagnostics" >&2
   cat /tmp/soldr-daemon-status.json >&2 || true
