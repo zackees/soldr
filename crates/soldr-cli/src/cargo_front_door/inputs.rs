@@ -117,6 +117,11 @@ pub(crate) fn build_env_inputs(
     let mut vars = sorted_env_vars(|name| {
         name == "CARGO_BUILD_TARGET"
             || name == "CARGO_TARGET_DIR"
+            || (name.starts_with("CARGO_TARGET_") && name.ends_with("_LINKER"))
+            || matches!(name, "CC" | "CXX" | "AR" | "RANLIB" | "LD")
+            || ["CC_", "CXX_", "AR_", "RANLIB_", "LD_"]
+                .iter()
+                .any(|prefix| name.starts_with(prefix))
             || name.starts_with("CARGO_PROFILE_")
             || name.starts_with("CARGO_CFG_")
     });

@@ -25,7 +25,9 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
 
     assert "test archive missing" not in target_run
     assert '"$SOLDR_BIN" --version' not in target_run
-    assert '"$SOLDR_BIN" cargo nextest run' in target_run
+    assert '"$NEXTEST_BIN" nextest run' in target_run
+    assert "fetch_catalogued_nextest.py" in cross
+    assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
 
 
@@ -45,6 +47,30 @@ def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> Non
         "nextest_cmd=(cargo nextest archive)",
     ]:
         assert unmanaged_installer not in cross
+
+
+def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
+
+    lane_names = [
+        ("e2e-linux-arm64-build", "e2e-linux-arm64"),
+        ("e2e-linux-x64-musl-build", "e2e-linux-x64-musl"),
+        ("e2e-linux-arm64-musl-build", "e2e-linux-arm64-musl"),
+    ]
+    for job, next_job in lane_names:
+        block = _job_block(ci, job, next_job)
+        assert "needs: e2e-cross-bootstrap-soldr" in block
+        assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
+
+    download = cross[cross.index("      - name: Download shared bootstrap soldr artifact") :]
+    download = download[: download.index("      - name:", 10)]
+    assert "inputs.bootstrap_artifact_name != ''" in download
+    assert "contains(inputs.target" not in download
+
+    expose = cross[cross.index("      - name: Expose bootstrap soldr on PATH") :]
+    expose = expose[: expose.index("      #", 10)]
+    assert "inputs.bootstrap_artifact_name != ''" in expose
 
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
@@ -73,9 +99,7 @@ def test_mac_x64_cross_build_and_release_policy_are_explicit() -> None:
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(
-        encoding="utf-8"
-    )
+    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(encoding="utf-8")
 
     mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
     assert "if: false" not in mac_build

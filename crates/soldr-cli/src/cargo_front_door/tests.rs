@@ -1217,6 +1217,141 @@ crate::timed_test!(nextest_archive_blessed_target_detects_archive_only, {
     );
 });
 
+crate::timed_test!(
+    nextest_archive_zig_target_detects_linux_archive_targets_only,
+    {
+        for target in [
+            "aarch64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-musl",
+        ] {
+            assert_eq!(
+                nextest_archive_zig_target(&argvec(&format!(
+                    "nextest archive --target {target} --workspace"
+                ))),
+                Some(target),
+            );
+        }
+        assert_eq!(
+            nextest_archive_zig_target(&argvec("nextest run --target aarch64-unknown-linux-gnu")),
+            None,
+        );
+        assert_eq!(
+            nextest_archive_zig_target(&argvec(
+                "nextest archive --target x86_64-unknown-linux-gnu"
+            )),
+            None,
+        );
+    }
+);
+
+crate::timed_test!(
+    nextest_archive_linux_bootstrap_reconstructs_zig_linker_env,
+    {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let zig = tmp
+            .path()
+            .join(if cfg!(windows) { "zig.exe" } else { "zig" });
+        std::fs::write(&zig, b"fake zig").unwrap();
+        let _zig = EnvVarGuard::set("ZIG", &zig);
+
+        let targets = [
+            (
+                "aarch64-unknown-linux-gnu",
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+            ),
+            (
+                "aarch64-unknown-linux-musl",
+                "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+            ),
+        ];
+        let _linkers = remove_env_vars(&targets.map(|(_, key)| key));
+        for (target, linker_key) in targets {
+            let paths = SoldrPaths::with_root(tmp.path().join(target));
+            let mut bin_dirs = Vec::new();
+            let mut env = Vec::new();
+            let mut cargo_args = Vec::new();
+
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(append_subcommand_transitive_bin_dirs(
+                    "nextest",
+                    &argvec(&format!("nextest archive --target {target} --workspace")),
+                    &paths,
+                    &mut bin_dirs,
+                    &mut env,
+                    &mut cargo_args,
+                ))
+                .unwrap();
+
+            let map: std::collections::HashMap<_, _> = env.into_iter().collect();
+            assert!(bin_dirs.iter().any(|dir| dir == zig.parent().unwrap()));
+            assert!(
+            map.get(linker_key)
+                .is_some_and(|value| value.contains("zigbuild-shims") && value.contains(target)),
+            "{target} archive must reconstruct its target linker: {map:?}"
+        );
+        }
+    }
+);
+
+crate::timed_test!(
+    arm_cross_linker_preflight_rejects_missing_or_host_fallback,
+    {
+        let target = "aarch64-unknown-linux-gnu";
+        assert!(validate_zig_cross_linker(target, None).is_err());
+        for linker in ["clang", "clang-18", "cc", "gcc", "ld"] {
+            assert!(
+                validate_zig_cross_linker(target, Some(std::ffi::OsStr::new(linker))).is_err(),
+                "bare host linker {linker} must fail before ARM objects are built"
+            );
+        }
+        assert!(validate_zig_cross_linker(
+            target,
+            Some(std::ffi::OsStr::new(
+                "/tmp/zigbuild-shims/aarch64-unknown-linux-gnu/cc"
+            ))
+        )
+        .is_ok());
+    }
+);
+
+crate::timed_test!(build_env_cache_inputs_include_cross_toolchain_identity, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _linker = EnvVarGuard::set(
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        "/tmp/arm-linker",
+    );
+    let _cc = EnvVarGuard::set("CC_aarch64_unknown_linux_gnu", "/tmp/arm-cc");
+
+    let first_inputs = build_env_inputs(None);
+    let first_hash = stable_hash_json(&first_inputs);
+    let inputs: std::collections::HashMap<_, _> = first_inputs.into_iter().collect();
+    assert_eq!(
+        inputs
+            .get("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER")
+            .map(String::as_str),
+        Some("/tmp/arm-linker")
+    );
+    assert_eq!(
+        inputs
+            .get("CC_aarch64_unknown_linux_gnu")
+            .map(String::as_str),
+        Some("/tmp/arm-cc")
+    );
+
+    std::env::set_var(
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        "/tmp/different-arm-linker",
+    );
+    let second_hash = stable_hash_json(&build_env_inputs(None));
+    assert_ne!(
+        first_hash, second_hash,
+        "changing target linker identity must invalidate restored build metadata"
+    );
+});
+
 crate::timed_test!(cargo_global_args_insert_before_nextest_subcommand, {
     let args = argvec("--manifest-path Cargo.toml nextest archive --target x86_64-apple-darwin");
     let cargo_args = vec![
@@ -1293,6 +1428,77 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
             .is_some_and(|value| value.contains("-fuse-ld=lld")
                 && value.contains("-mmacosx-version-min=11.0")),
         "darwin rustflags must route through clang/lld with the SDK: {map:?}"
+    );
+});
+
+crate::timed_test!(explicit_cross_linker_and_rustflags_override_soldr_fast, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _soldr_linker = EnvVarGuard::set("SOLDR_LINKER", "fast");
+    let root = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+
+    for (target, linker_key, rustflags_key) in [
+        (
+            "aarch64-unknown-linux-gnu",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+        ),
+        (
+            "aarch64-unknown-linux-musl",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER",
+            "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUSTFLAGS",
+        ),
+    ] {
+        let mut command = std::process::Command::new("cargo");
+        command.env(linker_key, "/tmp/zigbuild-shims/target-linker");
+        command.env(rustflags_key, "-C link-self-contained=no");
+        target::apply_linker_override(
+            &mut command,
+            &argvec(&format!("build --target {target}")),
+            None,
+            &paths,
+        )
+        .unwrap();
+
+        assert_eq!(
+            command_env_override(&command, linker_key),
+            Some(Some("/tmp/zigbuild-shims/target-linker".into())),
+            "SOLDR_LINKER=fast must not replace the explicit {target} linker",
+        );
+        assert_eq!(
+            command_env_override(&command, rustflags_key),
+            Some(Some("-C link-self-contained=no".into())),
+            "SOLDR_LINKER=fast must not replace the explicit {target} rustflags",
+        );
+    }
+});
+
+crate::timed_test!(command_target_linker_overrides_parent_environment, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _parent = EnvVarGuard::set(
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        "/tmp/parent-linker",
+    );
+    let _soldr_linker = EnvVarGuard::set("SOLDR_LINKER", "fast");
+    let root = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let mut command = std::process::Command::new("cargo");
+    command.env(
+        "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+        "/tmp/command-linker",
+    );
+
+    target::apply_linker_override(
+        &mut command,
+        &argvec("build --target aarch64-unknown-linux-gnu"),
+        None,
+        &paths,
+    )
+    .unwrap();
+
+    assert_eq!(
+        command_env_override(&command, "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER"),
+        Some(Some("/tmp/command-linker".into())),
     );
 });
 

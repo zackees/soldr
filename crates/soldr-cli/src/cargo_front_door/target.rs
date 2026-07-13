@@ -75,13 +75,40 @@ pub(super) fn apply_linker_override(
     let target = resolve_active_target_triple(args, explicit_target)?;
     let injection = linker::resolve_for_target(choice, &target)?;
     let prefix = linker::cargo_target_env_prefix(&target);
+    let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
+    let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
+    // A target-scoped linker/rustflags value is more specific than soldr's
+    // convenience linker selection. This matters for cross builds: the
+    // workflow may already have installed a target-aware Zig wrapper while
+    // SOLDR_LINKER=fast is inherited from setup-soldr. Do not replace an
+    // explicit target toolchain with the host clang/LLD fallback.
     if let Some(linker_path) = injection.linker {
-        command.env(format!("CARGO_TARGET_{prefix}_LINKER"), linker_path);
+        if !effective_command_env_is_non_empty(command, &linker_key) {
+            command.env(&linker_key, linker_path);
+        }
     }
     if let Some(rustflags) = injection.rustflags {
-        command.env(format!("CARGO_TARGET_{prefix}_RUSTFLAGS"), rustflags);
+        if !effective_command_env_is_non_empty(command, &rustflags_key) {
+            command.env(&rustflags_key, rustflags);
+        }
     }
     Ok(())
+}
+
+/// Return whether a non-empty value will reach the cargo child. Values set
+/// directly on `command` take precedence over the parent's environment,
+/// including an explicit removal. This helper keeps linker injection from
+/// clobbering a target-specific cross toolchain with SOLDR_LINKER's host
+/// default.
+fn effective_command_env_is_non_empty(command: &std::process::Command, key: &str) -> bool {
+    if let Some(value) = command
+        .get_envs()
+        .find(|(candidate, _)| *candidate == std::ffi::OsStr::new(key))
+        .map(|(_, value)| value)
+    {
+        return value.is_some_and(|value| !value.is_empty());
+    }
+    std::env::var_os(key).is_some_and(|value| !value.is_empty())
 }
 
 fn resolve_active_target_triple(

@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Download and verify the target-native cargo-nextest catalog asset.
+
+This helper is intentionally independent of soldr's runtime resolver. The
+Linux cross-builder uses it to package the executable that the native
+target-run worker will invoke, so a missing row or checksum mismatch is a
+producer-contract failure rather than a reason to query live release APIs.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import tarfile
+import tempfile
+import urllib.error
+import urllib.request
+import zipfile
+from pathlib import Path
+
+from toolchain_asset_query import resolve_metadata
+
+
+def query_for_target(target: str) -> tuple[str, str, str | None]:
+    table = {
+        "x86_64-unknown-linux-gnu": ("linux", "x86", "gnu"),
+        "aarch64-unknown-linux-gnu": ("linux", "arm", "gnu"),
+        "x86_64-unknown-linux-musl": ("linux", "x86", "musl"),
+        "aarch64-unknown-linux-musl": ("linux", "arm", "musl"),
+        "x86_64-apple-darwin": ("mac", "x86", None),
+        "aarch64-apple-darwin": ("mac", "arm", None),
+        "x86_64-pc-windows-msvc": ("windows", "x86", "msvc"),
+        "aarch64-pc-windows-msvc": ("windows", "arm", "msvc"),
+    }
+    try:
+        return table[target]
+    except KeyError as exc:
+        raise SystemExit(f"no cargo-nextest catalogue mapping for target {target}") from exc
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def safe_member(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or (len(normalized) >= 2 and normalized[1] == ":"):
+        return False
+    return ".." not in normalized.split("/")
+
+
+def extract_verified(archive: Path, destination: Path) -> Path:
+    with tempfile.TemporaryDirectory(prefix="soldr-nextest-") as temp:
+        root = Path(temp)
+        if archive.name.endswith((".tar.gz", ".tgz")):
+            with tarfile.open(archive, "r:gz") as handle:
+                members = handle.getmembers()
+                if any(
+                    not safe_member(member.name) or member.issym() or member.islnk()
+                    for member in members
+                ):
+                    raise SystemExit("cargo-nextest archive contains an unsafe path")
+                handle.extractall(root)
+        elif archive.name.endswith(".zip"):
+            with zipfile.ZipFile(archive) as handle:
+                if any(not safe_member(name) for name in handle.namelist()):
+                    raise SystemExit("cargo-nextest archive contains an unsafe path")
+                handle.extractall(root)
+        else:
+            raise SystemExit(f"unsupported cargo-nextest archive format: {archive.name}")
+
+        candidates = [
+            path
+            for path in root.rglob("cargo-nextest*")
+            if path.is_file() and path.name in {"cargo-nextest", "cargo-nextest.exe"}
+        ]
+        if len(candidates) != 1:
+            raise SystemExit(f"expected one cargo-nextest executable, found {len(candidates)}")
+        destination.mkdir(parents=True, exist_ok=True)
+        output = destination / candidates[0].name
+        shutil.copy2(candidates[0], output)
+        if os.name != "nt":
+            output.chmod(output.stat().st_mode | 0o111)
+        return output
+
+
+def download_verified(metadata: dict, destination: Path) -> Path:
+    expected = metadata["sha256"]
+    with tempfile.TemporaryDirectory(prefix="soldr-nextest-download-") as temp:
+        archive = Path(temp) / str(metadata["filename"])
+        last_error: Exception | None = None
+        for url in metadata["urls"]:
+            try:
+                request = urllib.request.Request(str(url), headers={"Accept-Encoding": "identity"})
+                with urllib.request.urlopen(request, timeout=120) as response, archive.open("wb") as handle:
+                    shutil.copyfileobj(response, handle)
+                actual = sha256(archive)
+                if actual != expected:
+                    raise SystemExit(
+                        f"cargo-nextest sha256 mismatch: expected {expected}, got {actual}"
+                    )
+                return extract_verified(archive, destination)
+            except urllib.error.URLError as exc:
+                last_error = exc
+                continue
+        raise SystemExit(f"all catalog URLs failed: {last_error}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--origin", default="https://zackees.github.io/soldr-toolchain")
+    args = parser.parse_args()
+
+    platform, arch, extra = query_for_target(args.target)
+    metadata = resolve_metadata(
+        tool="cargo-nextest",
+        origin=args.origin,
+        tool_manifest_url_override=None,
+        platform=platform,
+        arch=arch,
+        extra=extra,
+        version=args.version,
+    )
+    binary = download_verified(metadata, args.output_dir)
+    metadata = {
+        **metadata,
+        "target": args.target,
+        "binary": binary.name,
+        "verified_sha256": sha256(binary),
+    }
+    (args.output_dir / "cargo-nextest.json").write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(metadata, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

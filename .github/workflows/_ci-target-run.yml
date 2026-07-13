@@ -95,6 +95,12 @@ jobs:
               echo "chmod +x $bin"
             fi
           done
+          for bin in artifact/package/tools/cargo-nextest; do
+            if [ -f "$bin" ]; then
+              chmod +x "$bin"
+              echo "chmod +x $bin"
+            fi
+          done
 
       - name: Run pre-built tests via nextest archive
         shell: bash
@@ -117,12 +123,30 @@ jobs:
           echo "SOLDR_BIN=$SOLDR_BIN"
           echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
 
+          NEXTEST_BIN="$GITHUB_WORKSPACE/artifact/package/tools/cargo-nextest"
+          if [ ! -f "$NEXTEST_BIN" ] && [ -f "${NEXTEST_BIN}.exe" ]; then
+            NEXTEST_BIN="${NEXTEST_BIN}.exe"
+          fi
+          test -f "$NEXTEST_BIN"
+          metadata="${NEXTEST_BIN%/*}/cargo-nextest.json"
+          test -f "$metadata"
+          expected_version=$(jq -r '.version' "$metadata" | sed 's/^v//')
+          actual_version=$("$NEXTEST_BIN" nextest --version \
+            | sed -n 's/.* \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+            | head -n1)
+          test -n "$actual_version"
+          test "$actual_version" = "$expected_version" || {
+            echo "cargo-nextest version mismatch: expected=$expected_version actual=$actual_version" >&2
+            exit 1
+          }
+          echo "cargo-nextest version=$actual_version metadata=$metadata network=not-used"
+
           # The archive's filename mirrors the artifact name + a -tests suffix.
           # Every target-run lane requires the real archive; a missing file is
           # a failed cross-build contract, not a binary-only smoke fallback.
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           test -f "$archive"
-          "$SOLDR_BIN" cargo nextest run \
+          "$NEXTEST_BIN" nextest run \
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
             --no-fail-fast \

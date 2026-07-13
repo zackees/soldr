@@ -291,11 +291,13 @@ jobs:
   # ---------- Linux ARM64 (gnu) ----------
   e2e-linux-arm64-build:
     name: cross-build aarch64-unknown-linux-gnu (linux host)
+    needs: e2e-cross-bootstrap-soldr
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-gnu
       artifact_name: soldr-ci-e2e-linux-arm64
       source_ref: ${{ github.sha }}
+      bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-arm64:
     name: target-run aarch64-unknown-linux-gnu
@@ -309,11 +311,13 @@ jobs:
   # ---------- Linux x64 (musl) ----------
   e2e-linux-x64-musl-build:
     name: cross-build x86_64-unknown-linux-musl (linux host)
+    needs: e2e-cross-bootstrap-soldr
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-x64-musl
       source_ref: ${{ github.sha }}
+      bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-x64-musl:
     name: target-run x86_64-unknown-linux-musl
@@ -327,11 +331,13 @@ jobs:
   # ---------- Linux ARM64 (musl) ----------
   e2e-linux-arm64-musl-build:
     name: cross-build aarch64-unknown-linux-musl (linux host)
+    needs: e2e-cross-bootstrap-soldr
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-unknown-linux-musl
       artifact_name: soldr-ci-e2e-linux-arm64-musl
       source_ref: ${{ github.sha }}
+      bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu
 
   e2e-linux-arm64-musl:
     name: target-run aarch64-unknown-linux-musl
