@@ -110,16 +110,14 @@ jobs:
           # Stage D) puts the soldr binary at `package/soldr[.exe]` and
           # fixtures at `package/fixtures/`. The test archive sits next to
           # `package/` at `<artifact-name>-tests.tar.zst`.
-          SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr
+          # Derive the Windows suffix from the target instead of probing a
+          # native C:\ path with Git Bash's `-f` operator.
+          SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}
           SOLDR_TEST_FIXTURES_DIR: ${{ github.workspace }}/artifact/package/fixtures
           SOLDR_TEST_SKIP_SOURCE_TREE: "1"
         run: |
           set -euo pipefail
-          if [ ! -f "$SOLDR_BIN" ] && [ -f "${SOLDR_BIN}.exe" ]; then
-            SOLDR_BIN="${SOLDR_BIN}.exe"
-            export SOLDR_BIN
-            echo "(adjusted SOLDR_BIN to .exe variant)"
-          fi
+          test -f "$SOLDR_BIN"
           echo "SOLDR_BIN=$SOLDR_BIN"
           echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
 

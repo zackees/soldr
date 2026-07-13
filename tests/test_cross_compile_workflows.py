@@ -26,6 +26,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "test archive missing" not in target_run
     assert '"$SOLDR_BIN" --version' not in target_run
     assert '"$NEXTEST_BIN" nextest run' in target_run
+    assert (
+        "SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr"
+        "${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}"
+        in target_run
+    )
+    assert 'SOLDR_BIN="${SOLDR_BIN}.exe"' not in target_run
     assert "fetch_catalogued_nextest.py" in cross
     assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
