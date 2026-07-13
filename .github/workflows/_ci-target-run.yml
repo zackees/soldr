@@ -29,7 +29,7 @@ on:
         description: Name of the artifact produced by _ci-cross-build-linux.yml.
       skip_filter:
         type: string
-        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/) and !binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/)"
+        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/) and !test(=embedded_wrapper_path_has_no_standalone_compile_telemetry_calls) and !test(=gc_list_json_reports_built_project_target_dir) and !test(=wrapper_mode_stdin_source_propagates_nonzero_exit_code) and !binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(=cli_exec) and !binary(/cli_rust_plan/) and !binary(=cli_toolchain_doctor)"
         description: |
           nextest filter expression. Default skips:
           - test names matching cook_/_real_toolchain/fetch_crgx (#1038
@@ -44,6 +44,14 @@ on:
             are named after the integration-test file, so use binary().)
             Override if a target's runner has the toolchain
             (e.g. linux-native).
+          - cli_exec and cli_toolchain_doctor binaries, which require the
+            original build environment or an installed target rustlib.
+          - embedded_wrapper_path_has_no_standalone_compile_telemetry_calls,
+            which reads Rust source from the original build checkout.
+          - gc_list_json_reports_built_project_target_dir, which builds a
+            temporary project and requires cargo/rustc on the target runner.
+          - wrapper_mode_stdin_source_propagates_nonzero_exit_code, which
+            resolves rustc through the build host's installed rustup toolchain.
 
 permissions:
   contents: read

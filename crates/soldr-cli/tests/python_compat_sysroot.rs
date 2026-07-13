@@ -58,6 +58,12 @@ fn serve_fixture(bundle: Vec<u8>) -> (String, Arc<Mutex<Vec<String>>>, thread::J
                 }
                 Err(error) => panic!("accept request: {error}"),
             };
+            // On macOS, sockets accepted from a nonblocking listener inherit
+            // O_NONBLOCK. The fixture serves each accepted request
+            // synchronously, so restore blocking reads before consuming it.
+            stream
+                .set_nonblocking(false)
+                .expect("blocking fixture stream");
             let mut request = [0_u8; 4096];
             let count = stream.read(&mut request).expect("read request");
             let request = String::from_utf8_lossy(&request[..count]);

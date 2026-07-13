@@ -291,8 +291,19 @@ jobs:
           set -euo pipefail
           target='${{ inputs.target }}'
           profile="ci-nextest"
-          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml || true
-          soldr cargo clean -p soldr-cli --target "$target" --profile "$profile" 2>/dev/null || true
+          git restore -- Cargo.toml Cargo.lock crates/soldr-cli/Cargo.toml
+          # rust-cache intentionally omits executables but can restore their
+          # Cargo fingerprints. Since the workspace split (#1490), cleaning
+          # only soldr-cli can therefore leave a "fresh" internal-crate test
+          # executable that is absent when nextest starts archiving. Rebuild
+          # all first-party outputs while retaining cached dependencies.
+          soldr cargo clean \
+            -p soldr-cli \
+            -p soldr-core \
+            -p soldr-fetch \
+            -p soldr-cache \
+            -p soldr-daemon \
+            --target "$target" --profile "$profile"
 
       # Stage A — lint intentionally NOT run here. `cargo fmt --check` and
       # `cargo clippy --workspace --all-targets` are both covered by the

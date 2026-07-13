@@ -22,6 +22,14 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
 
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
     assert "soldr cargo nextest archive" in cross
+    for first_party_package in [
+        "soldr-cli",
+        "soldr-core",
+        "soldr-fetch",
+        "soldr-cache",
+        "soldr-daemon",
+    ]:
+        assert f"-p {first_party_package}" in cross
 
     assert "test archive missing" not in target_run
     assert '"$SOLDR_BIN" --version' not in target_run
@@ -32,6 +40,14 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
         in target_run
     )
     assert 'SOLDR_BIN="${SOLDR_BIN}.exe"' not in target_run
+    for artifact_only_incompatible in [
+        "!test(=embedded_wrapper_path_has_no_standalone_compile_telemetry_calls)",
+        "!test(=gc_list_json_reports_built_project_target_dir)",
+        "!test(=wrapper_mode_stdin_source_propagates_nonzero_exit_code)",
+        "!binary(=cli_exec)",
+        "!binary(=cli_toolchain_doctor)",
+    ]:
+        assert artifact_only_incompatible in target_run
     assert "fetch_catalogued_nextest.py" in cross
     assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
