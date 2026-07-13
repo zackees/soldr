@@ -238,6 +238,61 @@ pub fn resolve_for_invocation(
         .map(normalize_target)
         .unwrap_or_else(|| resolve_build_target(args, workspace_root));
     let host = host_triple().to_string();
+    resolve_for_target(workspace_root, args, host, target)
+}
+
+/// Cargo-front-door variant that can skip metadata only when soldr has
+/// positively resolved the target Cargo will use. A missing target is not
+/// proof of a native build because `.cargo/config.toml` may select a cross
+/// target behind soldr's back.
+pub(crate) fn resolve_for_cargo_invocation(
+    workspace_root: &Path,
+    args: &[String],
+    known_target: Option<&str>,
+) -> Pyo3BuildPlan {
+    let host = host_triple().to_string();
+    // An explicit --target is Cargo's strongest target selector and must win
+    // even if the caller also exported CARGO_BUILD_TARGET. Conversely, an
+    // arbitrary --config may contain `build.target`; unless --target is
+    // present, retain the metadata path rather than treating a weaker target
+    // source as authoritative.
+    let explicit_target = explicit_target(args)
+        .map(|target| normalize_target(&target))
+        .filter(|target| !target.is_empty());
+    let config_may_select_target = explicit_target.is_none()
+        && args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg == "--config" || arg.starts_with("--config="));
+    let known_target = explicit_target.or_else(|| {
+        (!config_may_select_target)
+            .then(|| known_target.map(normalize_target))
+            .flatten()
+            .filter(|target| !target.is_empty())
+    });
+    if !host.is_empty() && known_target.as_deref() == Some(host.as_str()) {
+        return resolve_policy(PolicyInput {
+            host,
+            target: known_target.expect("checked above"),
+            detected: None,
+            caller_pyo3: BTreeMap::new(),
+            compatibility_sysroot: false,
+            raw_dylib_disabled: false,
+        });
+    }
+
+    match known_target {
+        Some(target) => resolve_for_target(workspace_root, args, host, target),
+        None => resolve_for_invocation(workspace_root, args, None),
+    }
+}
+
+fn resolve_for_target(
+    workspace_root: &Path,
+    args: &[String],
+    host: String,
+    target: String,
+) -> Pyo3BuildPlan {
     let detected = match detect_workspace_pyo3(workspace_root, args, &target) {
         Ok(value) => value,
         Err(error) => {
@@ -340,6 +395,9 @@ fn choose_build_target(
 fn explicit_target(args: &[String]) -> Option<String> {
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
+        if arg == "--" {
+            break;
+        }
         if arg == "--target" {
             return iter.next().cloned();
         }
@@ -1030,5 +1088,97 @@ mod tests {
     crate::timed_test!(host_triple_resolves_to_known_triple, {
         let host = host_triple();
         assert!(host.is_empty() || crate::core::is_canonical(host) || host.contains('-'));
+    });
+
+    crate::timed_test!(
+        known_native_cargo_resolution_does_not_require_workspace_metadata,
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let missing_workspace = temp.path().join("does-not-exist");
+            let host = host_triple();
+
+            let plan = resolve_for_cargo_invocation(&missing_workspace, &[], Some(host));
+
+            assert_eq!(plan.mode, PlanMode::Native);
+            assert!(plan.env.is_empty());
+            assert!(plan.diagnostic.is_none());
+        }
+    );
+
+    crate::timed_test!(unknown_cargo_target_does_not_assume_native, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_workspace = temp.path().join("does-not-exist");
+
+        let plan = resolve_for_cargo_invocation(&missing_workspace, &[], None);
+
+        assert_eq!(plan.mode, PlanMode::Unresolved);
+        assert!(plan
+            .diagnostic
+            .as_deref()
+            .is_some_and(|message| message.contains("metadata")));
+    });
+
+    crate::timed_test!(cargo_config_target_keeps_conservative_metadata_path, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_workspace = temp.path().join("does-not-exist");
+        let args = vec![
+            "build".to_string(),
+            "--config".to_string(),
+            "build.target=\"aarch64-unknown-linux-gnu\"".to_string(),
+        ];
+
+        let plan = resolve_for_cargo_invocation(&missing_workspace, &args, Some(host_triple()));
+
+        assert_eq!(plan.mode, PlanMode::Unresolved);
+    });
+
+    crate::timed_test!(explicit_cross_target_beats_weaker_known_native_target, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_workspace = temp.path().join("does-not-exist");
+        let cross_target = if host_triple().contains("windows") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-pc-windows-msvc"
+        };
+        let args = vec![
+            "build".to_string(),
+            "--target".to_string(),
+            cross_target.to_string(),
+        ];
+
+        let plan = resolve_for_cargo_invocation(&missing_workspace, &args, Some(host_triple()));
+
+        assert_eq!(plan.mode, PlanMode::Unresolved);
+        assert_eq!(plan.target, cross_target);
+    });
+
+    crate::timed_test!(target_after_separator_cannot_override_known_cargo_target, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_workspace = temp.path().join("does-not-exist");
+        let cross_target = if host_triple().contains("windows") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-pc-windows-msvc"
+        };
+        let args = vec![
+            "run".to_string(),
+            "--".to_string(),
+            "--target".to_string(),
+            host_triple().to_string(),
+        ];
+
+        let plan = resolve_for_cargo_invocation(&missing_workspace, &args, Some(cross_target));
+
+        assert_eq!(plan.mode, PlanMode::Unresolved);
+        assert_eq!(plan.target, cross_target);
+    });
+
+    crate::timed_test!(public_native_plan_keeps_metadata_reporting_semantics, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing_workspace = temp.path().join("does-not-exist");
+
+        let plan = resolve_for_invocation(&missing_workspace, &[], Some(host_triple()));
+
+        assert_eq!(plan.mode, PlanMode::Unresolved);
     });
 }
