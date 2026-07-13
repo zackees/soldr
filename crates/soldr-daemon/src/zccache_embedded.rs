@@ -112,9 +112,14 @@ impl SoldrZccacheService {
     /// daemon's tokio runtime (the function is `async` for exactly
     /// that reason). Creates the cache root directory if missing.
     pub async fn start(paths: &SoldrPaths) -> Result<Self, EmbeddedServiceError> {
-        let cache_root = paths.cache.join("zccache");
-        std::fs::create_dir_all(&cache_root)?;
         let identity = derive_identity(paths);
+        // soldr#1635 / zccache#1085: the embedded service must never place
+        // mutable zccache snapshots under a root that another broker-routed
+        // daemon can open. The identity is stable for the logical soldr
+        // backend (root + executable), so restarts retain their own state
+        // while relocated/dev/prod daemons get disjoint roots.
+        let cache_root = private_zccache_cache_root(paths, &identity);
+        std::fs::create_dir_all(&cache_root)?;
 
         // zccache#926 strict-validation: `AuditConfig::default()` ships
         // `mode = AuditMode::Normal` + `output_root = None`, which the
@@ -342,4 +347,39 @@ fn derive_identity(paths: &SoldrPaths) -> HostIdentity {
         instance_id: id_hex.clone(),
         workspace_id: id_hex,
     }
+}
+
+fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
+    paths
+        .cache
+        .join("zccache")
+        .join("daemon-state")
+        .join(&identity.instance_id)
+}
+
+#[cfg(test)]
+mod private_root_tests {
+    use super::*;
+
+    crate::timed_test!(private_root_is_stable_per_backend_identity, {
+        let paths = SoldrPaths::with_root(std::path::PathBuf::from("/tmp/soldr"));
+        let first = HostIdentity {
+            product: "soldr".into(),
+            instance_id: "backend-a".into(),
+            workspace_id: "workspace-a".into(),
+        };
+        let second = HostIdentity {
+            product: "soldr".into(),
+            instance_id: "backend-b".into(),
+            workspace_id: "workspace-b".into(),
+        };
+        assert_eq!(
+            private_zccache_cache_root(&paths, &first),
+            paths.cache.join("zccache/daemon-state/backend-a")
+        );
+        assert_ne!(
+            private_zccache_cache_root(&paths, &first),
+            private_zccache_cache_root(&paths, &second)
+        );
+    });
 }
