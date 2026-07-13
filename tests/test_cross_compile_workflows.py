@@ -22,6 +22,27 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
 
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
     assert "soldr cargo nextest archive" in cross
+    assert (
+        "- name: Isolate Windows cross-target zccache\n"
+        "        if: contains(inputs.target, 'pc-windows-msvc')\n"
+        "        shell: bash"
+        in cross
+    )
+    assert (
+        'echo "ZCCACHE_CACHE_DIR=$RUNNER_TEMP/soldr-windows-cross-zccache-'
+        '${{ inputs.target }}" >> "$GITHUB_ENV"'
+        in cross
+    )
+    isolation_step = cross.index("- name: Isolate Windows cross-target zccache")
+    setup_step = cross.index("- name: Setup soldr build cache")
+    cook_step = cross.index("- name: Restore cooked dependency cache")
+    assert isolation_step < setup_step < cook_step
+    assert (
+        'if [[ "$target" == *-pc-windows-msvc ]] \\\n'
+        '             || [[ "$target" == *-apple-darwin ]]; then\n'
+        '            soldr build --profile "$ci_profile"'
+        in cross
+    )
     for first_party_package in [
         "soldr-cli",
         "soldr-core",

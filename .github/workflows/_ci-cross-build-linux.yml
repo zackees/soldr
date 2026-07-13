@@ -71,6 +71,17 @@ jobs:
           submodules: recursive
           ref: ${{ inputs.source_ref != '' && inputs.source_ref || github.sha }}
 
+      # Cached Windows cross-target entries can be missing their .exe output.
+      # Select an empty job-local cache before any action can start soldr's
+      # long-lived daemon. Stage B/C retain the same RUSTC_WRAPPER path, so
+      # restored dependency fingerprints remain valid while first-party
+      # Windows outputs compile as cache misses.
+      - name: Isolate Windows cross-target zccache
+        if: contains(inputs.target, 'pc-windows-msvc')
+        shell: bash
+        run: |
+          echo "ZCCACHE_CACHE_DIR=$RUNNER_TEMP/soldr-windows-cross-zccache-${{ inputs.target }}" >> "$GITHUB_ENV"
+
       # soldr#1061 phase A: replaced the bare dtolnay/rust-toolchain
       # + Swatinem cargo-cache pair with setup-soldr's integrated
       # `prebuild-deps: soldr-cook` flow. setup-soldr handles:
