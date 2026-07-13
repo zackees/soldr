@@ -3,9 +3,10 @@
 //! The native-chain front door of `soldr build --target …` accepts
 //! either a soldr alias (`win-x64`, `mac-arm64`, `linux-x64-musl`, …)
 //! or a real Rust target triple (`x86_64-pc-windows-msvc`, …).
-//! Both routes converge on the resolved Rust triple plus the catalogue
-//! asset list that the cargo front door needs to populate env vars
-//! (SDKROOT, PYO3_CROSS_*, …) before spawning cargo.
+//! Both routes converge on the resolved Rust triple plus the target OS
+//! catalogue assets and linker environment needed before spawning cargo.
+//! Workspace-dependent policies, including PyO3 target Python compatibility,
+//! are resolved separately after target alias resolution.
 //!
 //! See [`resolve_soldr_target`] for the routing entry point.
 //!

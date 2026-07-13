@@ -193,6 +193,13 @@ and exports `PYO3_CROSS`, `PYO3_CROSS_LIB_DIR`,
 controlled integration tests; the default remains the soldr-toolchain
 assets branch.
 
+This split follows PyO3's own cross-compilation contract: target Python is
+optional for ABI3 extensions, `PYO3_CROSS_LIB_DIR` is only needed when the
+output must link libpython or consume target interpreter configuration, and
+Windows uses Rust `raw-dylib` linking without an import library. See the
+[PyO3 0.29 cross-compilation guide](https://pyo3.rs/v0.29.0/building-and-distribution.html#cross-compiling)
+and [raw-dylib configuration](https://pyo3.rs/main/building-and-distribution.html#the-pyo3_use_raw_dylib-environment-variable).
+
 The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
 `~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
 (pip/uv copy the sdist to a throwaway temp dir, discarding `target/`

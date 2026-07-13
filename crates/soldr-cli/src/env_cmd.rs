@@ -1,11 +1,10 @@
 //! `soldr env --target <triple-or-alias>` — print the cross-compile
 //! env block in shell-eval / shell-export / JSON form. soldr#938.
 //!
-//! The block is the same set soldr's cargo front door / `soldr
-//! prepare` writes internally when cross-compiling: SDKROOT for
-//! darwin lanes, PYO3_CROSS_* once the Python catalogue rows ship
-//! (soldr#931 / #932 / #933), CARGO_TARGET_*_LINKER for the clang
-//! linker selection, and so on.
+//! The target-derived block matches the OS SDK and linker settings used by
+//! soldr's cargo front door / `soldr prepare`. Python ABI configuration is
+//! resolved separately from workspace metadata: ordinary cross-builds do not
+//! receive blanket `PYO3_CROSS_*` values.
 //!
 //! Usage shapes:
 //!
@@ -15,9 +14,9 @@
 //! soldr env --target linux-x64-musl --json
 //! ```
 //!
-//! Today the block only includes env vars the catalogue actually has
-//! assets for. Phase B of soldr#997 fills in the remaining PYO3_CROSS_*
-//! values as the python.lib / python-headers rows ship.
+//! `--json` also reports the shared PyO3 build plan. Target Python assets are
+//! materialized only when the caller explicitly selects compatibility mode;
+//! they are not part of target OS SDK preparation.
 
 use std::collections::BTreeMap;
 
