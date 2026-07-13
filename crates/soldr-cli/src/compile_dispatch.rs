@@ -359,8 +359,8 @@ pub fn log_direct_exec_fallback_once(failure: &DispatchError) {
     LOGGED.call_once(|| {
         eprintln!(
             "soldr: compile daemon unavailable after {}ms — falling back to direct \
-             uncached rustc (soldr#1300)",
-            failure.budget_ms()
+             uncached rustc (soldr#1633); reason={failure}",
+            failure.budget_ms(),
         );
     });
 }
@@ -386,10 +386,37 @@ fn daemon_unavailable_marker_path(paths: &SoldrPaths) -> PathBuf {
 }
 
 fn remember_daemon_unavailable(marker_path: &Path) {
+    remember_daemon_unavailable_with_reason(marker_path, None);
+}
+
+/// Persist the terminal dispatch error alongside the cooldown marker.
+///
+/// The marker is intentionally human-readable: it is a cross-process
+/// circuit-breaker, not an authoritative state database. Keeping the original
+/// error here means a sibling rustc wrapper that skips the retry budget can
+/// still report why the first wrapper failed instead of manufacturing a new
+/// zero-duration failure.
+fn remember_daemon_unavailable_with_reason(marker_path: &Path, reason: Option<&str>) {
     if let Some(parent) = marker_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(marker_path, b"daemon unavailable\n");
+    let mut contents = String::from("daemon unavailable\n");
+    if let Some(reason) = reason {
+        let reason = reason.replace(['\r', '\n'], " ");
+        contents.push_str("reason=");
+        contents.push_str(&reason);
+        contents.push('\n');
+    }
+    let _ = std::fs::write(marker_path, contents);
+}
+
+fn read_daemon_unavailable_reason(marker_path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(marker_path).ok()?;
+    contents
+        .lines()
+        .find_map(|line| line.strip_prefix("reason="))
+        .filter(|reason| !reason.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn forget_daemon_unavailable(marker_path: &Path) {
@@ -424,22 +451,31 @@ fn should_skip_retry_after_recent_daemon_unavailable(
 
 fn recent_daemon_unavailable_error(
     sock_path: &Path,
+    marker_path: &Path,
     first_err: client::ClientError,
 ) -> DispatchError {
+    let marker_reason = read_daemon_unavailable_reason(marker_path);
+    let spawn_err = match marker_reason {
+        Some(reason) => format!(
+            "recent daemon-unavailable marker present; skipped spawn retry; \
+             prior_failure={reason}"
+        ),
+        None => "recent daemon-unavailable marker present; skipped spawn retry".to_string(),
+    };
     DispatchError::BudgetExhausted {
         budget: Duration::ZERO,
         last_err: Some(first_err),
         sock: sock_path.to_path_buf(),
-        spawn_err: Some(
-            "recent daemon-unavailable marker present; skipped spawn retry".to_string(),
-        ),
+        spawn_err: Some(spawn_err),
     }
 }
 
 fn record_dispatch_result_marker(marker_path: &Path, result: &Result<i32, DispatchError>) {
     match result {
         Ok(_) => forget_daemon_unavailable(marker_path),
-        Err(err) if err.is_daemon_unavailable() => remember_daemon_unavailable(marker_path),
+        Err(err) if err.is_daemon_unavailable() => {
+            remember_daemon_unavailable_with_reason(marker_path, Some(&err.to_string()))
+        }
         Err(_) => {}
     }
 }
@@ -525,7 +561,11 @@ where
 
     if let Some(marker_path) = marker_path {
         if should_skip_retry_after_recent_daemon_unavailable(marker_path, &first_err) {
-            return Err(recent_daemon_unavailable_error(sock_path, first_err));
+            return Err(recent_daemon_unavailable_error(
+                sock_path,
+                marker_path,
+                first_err,
+            ));
         }
     }
 
@@ -1082,6 +1122,11 @@ mod tests {
                 marker.exists(),
                 "daemon-unavailable failure should leave a marker for sibling wrappers"
             );
+            let marker_contents = std::fs::read_to_string(&marker).expect("read marker");
+            assert!(
+                marker_contents.contains("reason=soldr daemon embedded compile dispatch failed"),
+                "marker should preserve the terminal dispatch error for sibling wrappers: {marker_contents:?}"
+            );
         }
     );
 
@@ -1125,6 +1170,46 @@ mod tests {
             assert!(
                 elapsed < Duration::from_secs(1),
                 "fresh marker should avoid a per-rustc 5s retry storm; elapsed={elapsed:?}"
+            );
+        }
+    );
+
+    timed_test!(
+        recent_marker_error_includes_original_failure,
+        Duration::from_secs(5),
+        {
+            let g = EnvVarGuard::acquire(SOLDR_DAEMON_REQUIRED_ENV_VAR);
+            let temp = tempfile::tempdir().expect("tempdir");
+            let marker = temp.path().join("compile-daemon-unavailable");
+            remember_daemon_unavailable_with_reason(
+                &marker,
+                Some("daemon startup failed: state.redb: Database already open"),
+            );
+            let dead = if cfg!(windows) {
+                PathBuf::from(r"\\.\pipe\soldr-test-no-such-pipe-marker-reason")
+            } else {
+                temp.path().join("no-such-sock")
+            };
+            let argv = vec!["rustc".to_string(), "--version".to_string()];
+            let mut stdout: Vec<u8> = Vec::new();
+            let mut stderr: Vec<u8> = Vec::new();
+
+            let result = dispatch_compile_with_sock_and_marker_for_test(
+                &dead,
+                &marker,
+                &argv,
+                &mut stdout,
+                &mut stderr,
+            );
+            drop(g);
+
+            let err = result.expect_err("dead socket should fail");
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(
+                    "prior_failure=daemon startup failed: state.redb: Database already open"
+                ),
+                "sibling fallback should surface the original marker failure: {rendered}"
             );
         }
     );
