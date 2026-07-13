@@ -19,8 +19,7 @@ use crate::cache_lib::cook_archive::{
 };
 use crate::core::git::{branch_lineage, origin_url};
 use crate::core::{
-    probe_toolchain_binary, read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths,
-    TargetTriple,
+    read_rust_toolchain_manifest, CookConfig, SoldrConfig, SoldrPaths, TargetTriple,
 };
 use crate::daemon::client::{self, CookLookupOutcome};
 use std::path::{Path, PathBuf};
@@ -35,11 +34,11 @@ pub const SOLDR_COOK_AUTO_HYDRATE_ENV: &str = "SOLDR_COOK_AUTO_HYDRATE";
 /// (missing manifest, missing Cargo.lock, daemon down, parse failure,
 /// SHA mismatch, extract failure) silently returns to the caller so
 /// cargo runs normally.
-pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths) {
-    let _ = try_hydrate(args, paths);
+pub fn maybe_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) {
+    let _ = try_hydrate(args, paths, rustc);
 }
 
-fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
+fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> {
     let manifest_path = crate::trampoline::find_nearest_manifest()?;
     let manifest_dir = manifest_path.parent()?.to_path_buf();
 
@@ -61,7 +60,7 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths) -> Option<()> {
         .ok()
         .and_then(|m| m.channel)
         .unwrap_or_default();
-    let rustc_version = rustc_version_string(&manifest_dir)?;
+    let rustc_version = rustc_version_string(rustc)?;
     let origin = origin_url(&manifest_dir);
 
     let sock = client::default_sock_path(paths);
@@ -251,9 +250,7 @@ fn resolve_target_dir(manifest_dir: &Path, _args: &[String]) -> PathBuf {
     manifest_dir.join("target")
 }
 
-fn rustc_version_string(manifest_dir: &Path) -> Option<String> {
-    let rustc = probe_toolchain_binary("rustc", Some(manifest_dir))
-        .unwrap_or_else(|| PathBuf::from("rustc"));
+fn rustc_version_string(rustc: &Path) -> Option<String> {
     let out = Command::new(rustc).arg("-V").output().ok()?;
     if !out.status.success() {
         return None;

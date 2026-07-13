@@ -1644,7 +1644,7 @@ pub(crate) async fn run_cargo_front_door(
     // commands; `cargo metadata` / `cargo search` / etc. don't need
     // target/ to be populated.
     if build_like_cargo {
-        cook_hydrate::maybe_hydrate(args, &paths);
+        cook_hydrate::maybe_hydrate(args, &paths, &rustc);
     }
 
     let cargo_profile_debug_default = if build_like_cargo {
