@@ -1599,6 +1599,8 @@ pub(crate) async fn run_cargo_front_door(
         command.env(key, value);
     }
 
+    emit_zig_cross_linker_preflight(&command, args)?;
+
     let build_like_cargo = cargo_args_are_cacheable(args);
     // Issue #824 follow-up: always engage RUSTC_WRAPPER + the zccache
     // session when caching is enabled, regardless of whether the cargo
@@ -2574,6 +2576,11 @@ async fn append_subcommand_transitive_bin_dirs(
     // (apt-installed llvm/clang/lld) remain in place; sub-issue #857
     // removes them once this auto-bootstrap proves out across the
     // matrix.
+    if let Some(triple) = nextest_archive_zig_target(args) {
+        let zig_dir = crate::fetch::ensure_zig(paths).await?;
+        extra_bin_dirs.push(zig_dir);
+        append_zigbuild_env_overrides(paths, triple, extra_env)?;
+    }
     if sub == "xwin" {
         if let Some(triple) = extract_target_arg(args) {
             if triple.ends_with("-pc-windows-msvc") {
@@ -2665,6 +2672,81 @@ fn nextest_archive_blessed_target(args: &[String]) -> Option<&str> {
     }
     let triple = extract_target_arg(args)?;
     (triple.ends_with("-apple-darwin") || triple.ends_with("-pc-windows-msvc")).then_some(triple)
+}
+
+fn nextest_archive_zig_target(args: &[String]) -> Option<&str> {
+    let sub_idx = first_cargo_subcommand_index(args)?;
+    if args[sub_idx] != "nextest" || first_nextest_verb(args, sub_idx) != Some("archive") {
+        return None;
+    }
+    extract_target_arg(args).filter(|triple| is_zig_linux_cross_target(triple))
+}
+
+fn is_zig_linux_cross_target(triple: &str) -> bool {
+    triple.ends_with("-unknown-linux-musl") || triple == "aarch64-unknown-linux-gnu"
+}
+
+fn zig_cross_target(args: &[String]) -> Option<&str> {
+    if let Some(target) = nextest_archive_zig_target(args) {
+        return Some(target);
+    }
+    let sub_idx = first_cargo_subcommand_index(args)?;
+    (args[sub_idx] == "zigbuild")
+        .then(|| extract_target_arg(args))
+        .flatten()
+        .filter(|target| is_zig_linux_cross_target(target))
+}
+
+fn emit_zig_cross_linker_preflight(
+    command: &std::process::Command,
+    args: &[String],
+) -> Result<(), SoldrError> {
+    let Some(target) = zig_cross_target(args) else {
+        return Ok(());
+    };
+    let key = format!(
+        "CARGO_TARGET_{}_LINKER",
+        target.replace('-', "_").to_ascii_uppercase()
+    );
+    let linker = command
+        .get_envs()
+        .find_map(|(name, value)| (name == std::ffi::OsStr::new(&key)).then_some(value))
+        .flatten()
+        .map(std::ffi::OsStr::to_os_string)
+        .or_else(|| std::env::var_os(&key));
+    validate_zig_cross_linker(target, linker.as_deref())?;
+    eprintln!(
+        "soldr: cross-link preflight requested_target={target} effective_target={target} artifact_target={target} linker={} env={key} status=ok",
+        linker.as_deref().unwrap_or_default().to_string_lossy()
+    );
+    Ok(())
+}
+
+fn validate_zig_cross_linker(
+    target: &str,
+    linker: Option<&std::ffi::OsStr>,
+) -> Result<(), SoldrError> {
+    let linker = linker.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "cross-link preflight failed for {target}: target linker is unset"
+        ))
+    })?;
+    let path = std::path::Path::new(linker);
+    if path.components().count() == 1 {
+        let name = linker.to_string_lossy().to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        let host_fallback = matches!(name, "cc" | "gcc" | "clang" | "ld")
+            || name
+                .strip_prefix("clang-")
+                .is_some_and(|version| version.chars().all(|ch| ch.is_ascii_digit()));
+        if host_fallback {
+            return Err(SoldrError::Other(format!(
+                "cross-link preflight failed for {target}: `{}` is a bare host linker; configure the target-scoped Zig/cross linker before compiling target objects",
+                linker.to_string_lossy()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn first_nextest_verb(args: &[String], nextest_idx: usize) -> Option<&str> {

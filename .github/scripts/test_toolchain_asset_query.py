@@ -27,19 +27,19 @@ def sample_manifest() -> dict:
                 "platforms": [
                     {
                         "platform": {"os": "linux", "arch": "x86_64", "libc": "glibc"},
-                        "asset": {"urls": ["https://example.test/demo-linux-gnu.tar.xz"]},
+                        "asset": {"filename": "demo-linux-gnu.tar.xz", "size_bytes": 1, "sha256": "0" * 64, "urls": ["https://example.test/demo-linux-gnu.tar.xz"]},
                     },
                     {
                         "platform": {"os": "linux", "arch": "x86_64", "libc": "musl"},
-                        "asset": {"urls": ["https://example.test/demo-linux-musl.tar.xz"]},
+                        "asset": {"filename": "demo-linux-musl.tar.xz", "size_bytes": 1, "sha256": "1" * 64, "urls": ["https://example.test/demo-linux-musl.tar.xz"]},
                     },
                     {
                         "platform": {"os": "windows", "arch": "x86_64", "abi": "msvc"},
-                        "asset": {"urls": ["https://example.test/demo-windows.zip"]},
+                        "asset": {"filename": "demo-windows.zip", "size_bytes": 1, "sha256": "2" * 64, "urls": ["https://example.test/demo-windows.zip"]},
                     },
                     {
                         "platform": {"os": "darwin", "arch": "universal2"},
-                        "asset": {"urls": ["https://example.test/demo-darwin-universal2.tar.gz"]},
+                        "asset": {"filename": "demo-darwin-universal2.tar.gz", "size_bytes": 1, "sha256": "3" * 64, "urls": ["https://example.test/demo-darwin-universal2.tar.gz"]},
                     },
                 ],
             }
@@ -76,6 +76,14 @@ class ToolchainAssetQueryTests(unittest.TestCase):
         release = taq.find_release(sample_manifest(), "latest")
         url = taq.find_asset_url(release, taq.platform_candidates("darwin", "aarch64", None))
         self.assertTrue(url.endswith("demo-darwin-universal2.tar.gz"))
+
+    def test_json_metadata_includes_digest_and_platform(self) -> None:
+        metadata = taq.find_asset(
+            taq.find_release(sample_manifest(), "latest"),
+            taq.platform_candidates("linux", "x86_64", "gnu"),
+        )
+        self.assertEqual(metadata["sha256"], "0" * 64)
+        self.assertEqual(metadata["platform"]["libc"], "glibc")
 
 
 if __name__ == "__main__":

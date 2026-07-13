@@ -65,7 +65,7 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         binary_name: "cargo-nextest",
         repo: Some(("nextest-rs", "nextest")),
         tag_prefix: Some("cargo-nextest-"),
-        pinned_version: None,
+        pinned_version: Some(CARGO_NEXTEST_PINNED_VERSION),
         wraps_inner_cargo_build: true, // runs `cargo test`
     },
     ToolSpec {
@@ -371,6 +371,11 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
 /// `cargo-chef` entry in [`KNOWN_TOOLS`] for the rationale.
 pub const CARGO_CHEF_PINNED_VERSION: &str = "0.1.73";
 
+/// Exact cargo-nextest release consumed by the cross-build archive pipeline.
+/// Keep this synchronized with the cargo-nextest Catalog published by
+/// soldr-toolchain so target-run never resolves a moving latest release.
+pub const CARGO_NEXTEST_PINNED_VERSION: &str = "0.9.140";
+
 pub fn lookup_by_crate(crate_name: &str) -> Option<&'static ToolSpec> {
     KNOWN_TOOLS.iter().find(|t| t.crate_name == crate_name)
 }
@@ -482,6 +487,16 @@ mod tests {
             Some("cargo-chef")
         );
     }
+
+    crate::timed_test!(cargo_nextest_is_registered_and_pinned, {
+        let spec = lookup_by_crate("cargo-nextest").expect("cargo-nextest must be registered");
+        assert_eq!(spec.cargo_subcommand, Some("nextest"));
+        assert_eq!(spec.binary_name, "cargo-nextest");
+        assert_eq!(spec.repo, Some(("nextest-rs", "nextest")));
+        assert_eq!(spec.tag_prefix, Some("cargo-nextest-"));
+        assert_eq!(spec.pinned_version, Some(CARGO_NEXTEST_PINNED_VERSION));
+        assert_eq!(CARGO_NEXTEST_PINNED_VERSION, "0.9.140");
+    });
 
     #[test]
     fn crgx_is_registered_and_pinned_to_managed_version() {

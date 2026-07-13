@@ -171,24 +171,22 @@ jobs:
           # not include profile setting changes.
           shared-key: cross-build-${{ inputs.target }}-v6
 
-      # Bootstrap soldr from the current checkout. Darwin uses it to
-      # drive `soldr prepare --target ... --github-env`. Windows MSVC
-      # uses it to drive `soldr build --target X` (the blessed
-      # cross-compile surface). The version that setup-soldr installs
-      # (~v0.7.42 today) predates both subcommands so we need a fresh
-      # binary from main HEAD. The setup-soldr binary drives this bootstrap
-      # with caching disabled; no bare Rust toolchain commands are used.
+      # Bootstrap soldr from the current checkout. Linux Zig lanes need
+      # the current front door's target-linker reconstruction and preflight;
+      # Darwin/MSVC need its blessed SDK preparation. The version installed
+      # by setup-soldr is intentionally only the bootstrap seed and may
+      # predate behavior under test in this checkout.
       # soldr#1162 — cache the host-side bootstrap soldr.
       # Same story as #1160 / #1161 for baseline-zero-deps: three CI lanes
       # (apple-darwin x2 + windows-msvc x1) rebuild the identical host binaries
       # (~295 s each) with RUSTC_WRAPPER="", so there is no zccache to catch it.
       # When crates/**, Cargo.toml, Cargo.lock, rust-toolchain.toml are unchanged
       # a lane hits the cache and skips the 5-minute compile.
-      # soldr#1248: main CI builds or restores this host bootstrap once and
-      # fans it out as an artifact. Manual callers that do not pass
-      # `bootstrap_artifact_name` keep the older per-lane cache/build fallback.
+      # soldr#1248/#1604: main CI builds or restores this host bootstrap once
+      # and fans it out to every cross lane. Manual callers that omit
+      # `bootstrap_artifact_name` retain the older blessed-lane fallback.
       - name: Download shared bootstrap soldr artifact
-        if: (contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')) && inputs.bootstrap_artifact_name != ''
+        if: inputs.bootstrap_artifact_name != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ${{ inputs.bootstrap_artifact_name }}
@@ -223,7 +221,7 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/ci-bootstrap/soldr "$RUNNER_TEMP/soldr-bin/soldr"
 
       - name: Expose bootstrap soldr on PATH
-        if: contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
+        if: inputs.bootstrap_artifact_name != '' || contains(inputs.target, 'apple-darwin') || contains(inputs.target, 'pc-windows-msvc')
         shell: bash
         run: |
           set -euo pipefail
@@ -399,6 +397,24 @@ jobs:
             --archive-format tar-zst \
             -E '!binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/)'
           ls -la "$archive"
+
+      # Stage C also packages the native runner's cargo-nextest. The Linux
+      # producer must never execute this target binary; it only verifies the
+      # catalogued digest and archive shape. Target-run invokes this exact
+      # file directly, so it cannot fall back to live release/crates.io lookup.
+      - name: Fetch verified target-native cargo-nextest
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='${{ inputs.target }}'
+          version=$(sed -n 's/.*CARGO_NEXTEST_PINNED_VERSION: &str = "\(.*\)";/\1/p' \
+            crates/soldr-fetch/src/fetch/known_tools.rs | head -n1)
+          test -n "$version"
+          python3 .github/scripts/fetch_catalogued_nextest.py \
+            --target "$target" \
+            --version "$version" \
+            --output-dir dist/package/tools
+          test -s dist/package/tools/cargo-nextest.json
 
       # Stage D — stage + upload artifact bundle
       - name: Stage artifact bundle
