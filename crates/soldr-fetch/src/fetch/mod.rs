@@ -47,8 +47,9 @@ pub mod nodelib;
 /// soldr#997 Phase A — OpenSSL libs/headers bundle for Windows MSVC
 /// cross-compile (closes #943).
 pub mod openssl_sysroot;
-/// soldr#997 Phase A — Python sysroot bundle for PyO3 cross-compile
-/// (closes parts of #931, #932, #933).
+/// Target Python compatibility assets for older PyO3, embedding, and other
+/// explicitly selected build shapes. Ordinary ABI3 extension cross-builds do
+/// not fetch this bundle (soldr#1610).
 pub mod python_sysroot;
 /// soldr#1012 PR 5 — xwin-cache catalogue materialization for the
 /// blessed `*-pc-windows-msvc` cross-compile path.
