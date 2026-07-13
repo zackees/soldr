@@ -1730,6 +1730,7 @@ pub(crate) async fn run_cargo_front_door(
     if let Some(target) = explicit_target.as_deref() {
         command.env("CARGO_BUILD_TARGET", target);
     }
+    let known_cargo_target = target::known_cargo_build_target(args, explicit_target.as_deref());
     // soldr#1610/#1614: every cargo-backed build surface consumes the
     // same target-aware PyO3 plan. The resolver is conservative: it only
     // injects PYO3_NO_PYTHON for a proven cross ABI3 extension, never for
@@ -1738,17 +1739,16 @@ pub(crate) async fn run_cargo_front_door(
     if pyo3_build {
         let workspace_root =
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let mut pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
+        let mut pyo3_plan = crate::pyo3_detect::resolve_for_cargo_invocation(
             &workspace_root,
             args,
-            explicit_target.as_deref(),
+            known_cargo_target.as_deref(),
         );
         pyo3_plan.materialize_compatibility(&paths).await?;
         pyo3_plan.emit_diagnostic();
         pyo3_plan.apply_to_command(&mut command);
     }
-    let native_cache_target = target::known_cargo_build_target(args, explicit_target.as_deref())
-        .filter(|target| target.ends_with("-apple-darwin"));
+    let native_cache_target = known_cargo_target.filter(|target| target.ends_with("-apple-darwin"));
 
     target::apply_linker_override(&mut command, args, explicit_target.as_deref(), &paths)?;
 
