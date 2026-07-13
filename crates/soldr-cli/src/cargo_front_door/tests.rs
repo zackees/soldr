@@ -132,29 +132,41 @@ crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
     assert_eq!(registry.len().expect("registry length"), 1);
 });
 
-#[test]
-fn cargo_wait_timeout_uses_positive_env_override_only() {
+crate::timed_test!(cargo_wait_timeout_is_disabled_when_unset_or_zero, {
     let _lock = ENV_LOCK.lock().unwrap();
 
-    {
-        let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "7");
-        assert_eq!(cargo_wait_timeout(), Duration::from_secs(7));
-    }
+    let _guard = EnvVarGuard::remove(CARGO_WAIT_TIMEOUT_ENV_VAR);
+    assert_eq!(cargo_wait_timeout().expect("unset timeout"), None);
+    drop(_guard);
 
-    for value in ["0", "-1", "not-a-number"] {
+    let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "0");
+    assert_eq!(cargo_wait_timeout().expect("zero timeout"), None);
+});
+
+crate::timed_test!(cargo_wait_timeout_accepts_positive_seconds, {
+    let _lock = ENV_LOCK.lock().unwrap();
+    let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, "7");
+
+    assert_eq!(
+        cargo_wait_timeout().expect("positive timeout"),
+        Some(Duration::from_secs(7))
+    );
+});
+
+crate::timed_test!(cargo_wait_timeout_rejects_invalid_values, {
+    let _lock = ENV_LOCK.lock().unwrap();
+
+    for value in ["", "-1", "not-a-number", "18446744073709551616"] {
         let _guard = EnvVarGuard::set(CARGO_WAIT_TIMEOUT_ENV_VAR, value);
-        assert_eq!(
-            cargo_wait_timeout(),
-            Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS)
+        let message = cargo_wait_timeout()
+            .expect_err("invalid timeout must fail")
+            .to_string();
+        assert!(
+            message.contains(CARGO_WAIT_TIMEOUT_ENV_VAR),
+            "diagnostic must name the variable for {value:?}: {message}"
         );
     }
-
-    let _guard = EnvVarGuard::remove(CARGO_WAIT_TIMEOUT_ENV_VAR);
-    assert_eq!(
-        cargo_wait_timeout(),
-        Duration::from_secs(DEFAULT_CARGO_WAIT_TIMEOUT_SECS)
-    );
-}
+});
 
 #[cfg(windows)]
 #[test]
@@ -167,7 +179,7 @@ fn diagnostic_capture_does_not_wait_for_leaked_stderr_handle_after_cargo_exits()
 
     let start = std::time::Instant::now();
     let (status, captured) =
-        run_command_capturing_diagnostic_tail(&mut command).expect("run diagnostic capture");
+        run_command_capturing_diagnostic_tail(&mut command, None).expect("run diagnostic capture");
     let elapsed = start.elapsed();
 
     assert!(
@@ -244,6 +256,7 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
             String::from("demo"),
         ],
         timeout: true,
+        cargo_wait_timeout: Some(Duration::from_secs(30)),
         cleanup,
         message: "cargo timed out",
         auto_retry_planned: true,
@@ -261,6 +274,12 @@ crate::timed_test!(cargo_abort_log_records_timeout_cleanup_and_recovery, {
     assert_eq!(record["event"], serde_json::Value::from("cargo_abort"));
     assert_eq!(record["session_id"], serde_json::Value::from(42));
     assert_eq!(record["timeout"], serde_json::Value::from(true));
+    assert_eq!(record["timeout_config"]["explicit"], true);
+    assert_eq!(
+        record["timeout_config"]["source"],
+        CARGO_WAIT_TIMEOUT_ENV_VAR
+    );
+    assert_eq!(record["timeout_config"]["duration_secs"], 30);
     assert_eq!(record["auto_retry_planned"], serde_json::Value::from(true));
     assert_eq!(record["elapsed_ms"], serde_json::Value::from(1_500));
     assert_eq!(
@@ -322,18 +341,75 @@ crate::timed_test!(cargo_timeout_retry_policy_honors_disable_env, {
     );
 });
 
-crate::timed_test!(cargo_wait_heartbeat_names_context_and_override, {
-    let msg = cargo_wait_heartbeat_message(
+crate::timed_test!(cargo_wait_heartbeat_distinguishes_deadline_configuration, {
+    let no_deadline =
+        cargo_wait_heartbeat_message("cargo diagnostic capture", Duration::from_secs(120), None);
+    assert_eq!(
+        no_deadline,
+        "soldr: cargo diagnostic capture still running after 120s (no wall-clock deadline configured)"
+    );
+    assert!(!no_deadline.contains("timeout"));
+
+    let explicit = cargo_wait_heartbeat_message(
         "cargo diagnostic capture",
         Duration::from_secs(120),
-        Duration::from_secs(1800),
+        Some(Duration::from_secs(1800)),
     );
 
     assert_eq!(
-        msg,
+        explicit,
         format!(
-            "soldr: cargo diagnostic capture still running after 120s (timeout 1800s; set {CARGO_WAIT_TIMEOUT_ENV_VAR} to override)"
+            "soldr: cargo diagnostic capture still running after 120s (explicit timeout 1800s from {CARGO_WAIT_TIMEOUT_ENV_VAR})"
         )
+    );
+});
+
+fn spawn_slow_wait_test_child() -> std::process::Child {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", "ping -n 2 127.0.0.1 >nul"]);
+        command
+    };
+    #[cfg(unix)]
+    let mut command = {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "sleep 0.25"]);
+        command
+    };
+    configure_cargo_child_for_timeout(&mut command);
+    command.spawn().expect("spawn slow fake Cargo child")
+}
+
+crate::timed_test!(cargo_wait_none_outlives_simulated_former_default, {
+    let simulated_former_default = Duration::from_millis(50);
+
+    let mut no_deadline_child = spawn_slow_wait_test_child();
+    let started = Instant::now();
+    let status = wait_for_cargo_child_with_heartbeat(
+        &mut no_deadline_child,
+        "fake Cargo without deadline",
+        None,
+        Duration::from_millis(100),
+    )
+    .expect("unset timeout must let the child finish");
+    assert!(status.success());
+    assert!(
+        started.elapsed() > simulated_former_default,
+        "fake child must outlive the simulated former default"
+    );
+
+    let mut explicit_deadline_child = spawn_slow_wait_test_child();
+    let error = wait_for_cargo_child_with_heartbeat(
+        &mut explicit_deadline_child,
+        "fake Cargo with explicit deadline",
+        Some(simulated_former_default),
+        Duration::from_millis(100),
+    )
+    .expect_err("the same child must be killed by an explicit deadline");
+    assert!(
+        error.to_string().contains("timed out after"),
+        "explicit timeout should retain kill/reap behavior: {error}"
     );
 });
 
