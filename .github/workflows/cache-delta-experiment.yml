@@ -75,7 +75,7 @@ jobs:
         # before the release-auto workflow has built and published
         # the matching tarball; setup-soldr fetches by tag, so an
         # unpublished version 404s here.
-        uses: zackees/setup-soldr@fcbf681004d0798db6ee2174c38c511b7e70b3d5
+        uses: zackees/setup-soldr@86b1f8ebb092f2aab2d9c6ee4cd63557a838dfb6
         with:
           version: "0.7.28"
           cache: false
@@ -168,7 +168,7 @@ jobs:
         with:
           submodules: recursive
 
-      - uses: zackees/setup-soldr@fcbf681004d0798db6ee2174c38c511b7e70b3d5
+      - uses: zackees/setup-soldr@86b1f8ebb092f2aab2d9c6ee4cd63557a838dfb6
         with:
           # 0.7.29 brings `soldr cook` — see delta job above for why.
           version: "0.7.28"
