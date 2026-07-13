@@ -359,8 +359,13 @@ fn query_rustc_sysroot(rustc: &Path) -> Result<PathBuf, String> {
     command.args(["--print", "sysroot"]);
     crate::binaries::apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
-    let output = command_output_with_timeout(&mut command, "rustc --print sysroot")
-        .map_err(|err| format!("failed to execute {} --print sysroot: {err}", rustc.display()))?;
+    let output =
+        command_output_with_timeout(&mut command, "rustc --print sysroot").map_err(|err| {
+            format!(
+                "failed to execute {} --print sysroot: {err}",
+                rustc.display()
+            )
+        })?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(format!(
