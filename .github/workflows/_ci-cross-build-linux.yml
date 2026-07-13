@@ -101,6 +101,29 @@ jobs:
         shell: bash
         run: soldr rustup target add ${{ inputs.target }}
 
+      # Cached rustup state can report a target as installed while its
+      # rust-std component is incomplete. Probe the actual compiler surface
+      # and reinstall the pinned toolchain on that corruption path; otherwise
+      # the later zigbuild failure is only reported as "can't find crate for
+      # core" with no actionable repair.
+      - name: Verify target std and repair a corrupt cached toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='${{ inputs.target }}'
+          probe=/tmp/soldr-target-probe.rs
+          printf 'fn main() {}\n' > "$probe"
+          if soldr rustc --target "$target" --emit=metadata --out-dir /tmp "$probe"; then
+            exit 0
+          fi
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "rust-std for $target is corrupt in the cached toolchain; reinstalling $channel"
+          soldr rustup toolchain uninstall "$channel" || true
+          soldr rustup toolchain install "$channel" --profile minimal --no-self-update
+          soldr rustup target add "$target"
+          soldr rustc --target "$target" --emit=metadata --out-dir /tmp "$probe"
+
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
       # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
       # soldr-toolchain catalogue. Musl/aarch64 GNU dispatch through
