@@ -37,7 +37,7 @@ crate::timed_test!(flush_caches_request_round_trips, {
 });
 
 crate::timed_test!(compile_stats_verb_round_trips, {
-    use crate::daemon::protocol::CompileStatsInfo;
+    use crate::daemon::protocol::{CompileStatsInfo, StagedProfileInfo};
     assert!(matches!(
         decode_request(&encode_request(&Request::CompileStats)).expect("decode"),
         Request::CompileStats
@@ -49,6 +49,10 @@ crate::timed_test!(compile_stats_verb_round_trips, {
         non_cacheable: 4,
         compile_errors: 2,
         time_saved_ms: 123_456,
+        staged_profile: Some(StagedProfileInfo {
+            counters: [("published".to_string(), 7)].into(),
+            ..Default::default()
+        }),
     };
     match decode_response(&encode_response(&Response::CompileStats(info.clone()))).expect("decode")
     {

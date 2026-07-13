@@ -41,7 +41,7 @@ use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileLifecycle,
     CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, Request, Response,
-    StatusInfo, WireDecodeError,
+    StagedProfileInfo, StatusInfo, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -271,6 +271,15 @@ fn compile_stats_to_wire(info: &CompileStatsInfo) -> proto::WireCompileStats {
         non_cacheable: info.non_cacheable,
         compile_errors: info.compile_errors,
         time_saved_ms: info.time_saved_ms,
+        staged_profile: info
+            .staged_profile
+            .as_ref()
+            .map(|profile| proto::WireStagedProfile {
+                counters: profile.counters.clone(),
+                timings_ns: profile.timings_ns.clone(),
+                bytes: profile.bytes.clone(),
+                failures: profile.failures.clone(),
+            }),
     }
 }
 
@@ -282,6 +291,12 @@ fn compile_stats_from_wire(wire: proto::WireCompileStats) -> CompileStatsInfo {
         non_cacheable: wire.non_cacheable,
         compile_errors: wire.compile_errors,
         time_saved_ms: wire.time_saved_ms,
+        staged_profile: wire.staged_profile.map(|profile| StagedProfileInfo {
+            counters: profile.counters,
+            timings_ns: profile.timings_ns,
+            bytes: profile.bytes,
+            failures: profile.failures,
+        }),
     }
 }
 

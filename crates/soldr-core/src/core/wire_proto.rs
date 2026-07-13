@@ -241,6 +241,20 @@ pub struct WireCompileStats {
     pub compile_errors: u64,
     #[prost(uint64, tag = "6")]
     pub time_saved_ms: u64,
+    #[prost(message, optional, tag = "7")]
+    pub staged_profile: Option<WireStagedProfile>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireStagedProfile {
+    #[prost(btree_map = "string, uint64", tag = "1")]
+    pub counters: std::collections::BTreeMap<String, u64>,
+    #[prost(btree_map = "string, uint64", tag = "2")]
+    pub timings_ns: std::collections::BTreeMap<String, u64>,
+    #[prost(btree_map = "string, uint64", tag = "3")]
+    pub bytes: std::collections::BTreeMap<String, u64>,
+    #[prost(btree_map = "string, uint64", tag = "4")]
+    pub failures: std::collections::BTreeMap<String, u64>,
 }
 
 #[derive(Clone, PartialEq, Message)]

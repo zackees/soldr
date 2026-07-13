@@ -68,7 +68,9 @@ use zccache::embedded::{
 use zccache::hash::StreamHasher;
 
 use crate::core::SoldrPaths;
-use crate::daemon::protocol::{CompileRequest, CompileResponseBody, CompileStatsInfo};
+use crate::daemon::protocol::{
+    CompileRequest, CompileResponseBody, CompileStatsInfo, StagedProfileInfo,
+};
 
 /// Soldr-side handle around a started [`ZccacheService`]. Cheap to
 /// clone (the inner handle is `Arc`-shared).
@@ -237,6 +239,12 @@ impl SoldrZccacheService {
             non_cacheable: s.non_cacheable,
             compile_errors: s.compile_errors,
             time_saved_ms: s.time_saved_ms,
+            staged_profile: Some(StagedProfileInfo {
+                counters: s.phase_profile.staged.counters,
+                timings_ns: s.phase_profile.staged.timings_ns,
+                bytes: s.phase_profile.staged.bytes,
+                failures: s.phase_profile.staged.failures,
+            }),
         })
     }
 

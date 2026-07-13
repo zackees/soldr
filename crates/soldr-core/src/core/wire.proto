@@ -171,6 +171,14 @@ message WireCompileStats {
   uint64 non_cacheable = 4;
   uint64 compile_errors = 5;
   uint64 time_saved_ms = 6;
+  WireStagedProfile staged_profile = 7;
+}
+
+message WireStagedProfile {
+  map<string, uint64> counters = 1;
+  map<string, uint64> timings_ns = 2;
+  map<string, uint64> bytes = 3;
+  map<string, uint64> failures = 4;
 }
 
 message WireCompileResponse {
