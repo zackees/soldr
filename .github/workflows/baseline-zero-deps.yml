@@ -399,7 +399,7 @@ jobs:
                 > rust-toolchain.toml
               printf "%s\n" "fn main() { println!(\"hi\"); }" > src/main.rs
               soldr prepare --target x86_64-pc-windows-msvc
-              soldr cargo xwin build --target x86_64-pc-windows-msvc
+              soldr --no-cache cargo xwin build --target x86_64-pc-windows-msvc
               ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe
             ' 2> exercise4.stderr | tee exercise4.stdout
           status=$?
@@ -434,5 +434,5 @@ jobs:
             echo "  - soldr prepare --target aarch64-apple-darwin"
             echo "  - soldr cargo zigbuild --target aarch64-apple-darwin (legacy explicit path)"
             echo "  - soldr prepare --target x86_64-pc-windows-msvc"
-            echo "  - soldr cargo xwin build --target x86_64-pc-windows-msvc"
+            echo "  - soldr --no-cache cargo xwin build --target x86_64-pc-windows-msvc"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -15,33 +15,37 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    baseline = (WORKFLOWS / "baseline-zero-deps.yml").read_text(encoding="utf-8")
     arm_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
     arm_run = _job_block(ci, "e2e-windows-arm64")
     assert "if: false" not in arm_build
     assert "if: false" not in arm_run
 
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
-    assert "soldr cargo nextest archive" in cross
     assert (
-        "- name: Isolate Windows cross-target zccache\n"
-        "        if: contains(inputs.target, 'pc-windows-msvc')\n"
-        "        shell: bash"
+        'if [[ "$target" == *-pc-windows-msvc ]]; then\n'
+        '            soldr --no-cache build --profile "$ci_profile"'
         in cross
     )
     assert (
-        'echo "ZCCACHE_CACHE_DIR=$RUNNER_TEMP/soldr-windows-cross-zccache-'
-        '${{ inputs.target }}" >> "$GITHUB_ENV"'
-        in cross
-    )
-    isolation_step = cross.index("- name: Isolate Windows cross-target zccache")
-    setup_step = cross.index("- name: Setup soldr build cache")
-    cook_step = cross.index("- name: Restore cooked dependency cache")
-    assert isolation_step < setup_step < cook_step
-    assert (
-        'if [[ "$target" == *-pc-windows-msvc ]] \\\n'
-        '             || [[ "$target" == *-apple-darwin ]]; then\n'
+        'elif [[ "$target" == *-apple-darwin ]]; then\n'
         '            soldr build --profile "$ci_profile"'
         in cross
+    )
+    assert (
+        'soldr_args=()\n'
+        '          if [[ "$target" == *-pc-windows-msvc ]]; then\n'
+        '            soldr_args+=(--no-cache)\n'
+        '          fi\n'
+        '          soldr "${soldr_args[@]}" cargo nextest archive'
+        in cross
+    )
+    assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
+    assert (
+        "              soldr --no-cache cargo xwin build "
+        "--target x86_64-pc-windows-msvc\n"
+        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe"
+        in baseline
     )
     for first_party_package in [
         "soldr-cli",
