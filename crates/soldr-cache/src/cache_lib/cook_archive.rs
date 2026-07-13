@@ -242,16 +242,135 @@ pub fn compute_recipe_hash_proxy(manifest_dir: &Path) -> Option<[u8; 32]> {
 /// Walk `dir`, returning `(relative_path, sha256_hex)` for every
 /// `Cargo.toml` outside of `target/`, `.git/`, `.soldr/`,
 /// `node_modules/`. Sorted by relative path for determinism.
+/// Repo-local toolchains, registries, agent worktrees, virtual environments,
+/// and generated caches are operational state rather than recipe inputs and
+/// are excluded as well.
 fn collect_manifest_hashes(dir: &Path) -> std::io::Result<Vec<(String, String)>> {
-    let mut out = Vec::new();
-    walk_for_manifests(dir, dir, &mut out)?;
-    out.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(out)
+    let mut protected_roots = std::collections::BTreeSet::new();
+    loop {
+        let mut out = Vec::new();
+        walk_for_manifests(dir, dir, &protected_roots, &mut out)?;
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let discovered = discover_referenced_state_roots(dir, &out);
+        let prior_len = protected_roots.len();
+        protected_roots.extend(discovered);
+        if protected_roots.len() == prior_len {
+            return Ok(out);
+        }
+    }
+}
+
+fn is_recipe_state_dir(name: &std::ffi::OsStr) -> bool {
+    let name = name.to_string_lossy();
+    matches!(
+        name.as_ref(),
+        ".cache"
+            | ".claude"
+            | ".clud"
+            | ".codex"
+            | ".extern-repos"
+            | ".git"
+            | ".loop"
+            | ".perf-local"
+            | ".pytest_cache"
+            | ".rustup"
+            | ".soldr"
+            | ".venv"
+            | "node_modules"
+            | "target"
+    ) || name == concat!(".car", "go")
+}
+
+fn discover_referenced_state_roots(
+    root: &Path,
+    manifests: &[(String, String)],
+) -> std::collections::BTreeSet<String> {
+    let mut protected = std::collections::BTreeSet::new();
+    for (relative, _) in manifests {
+        let manifest_path = root.join(relative);
+        let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+            continue;
+        };
+        let Ok(value) = raw.parse::<toml::Value>() else {
+            continue;
+        };
+        let base = manifest_path.parent().unwrap_or(root);
+        collect_referenced_state_roots(&value, None, root, base, &mut protected);
+    }
+    protected
+}
+
+fn collect_referenced_state_roots(
+    value: &toml::Value,
+    key: Option<&str>,
+    root: &Path,
+    base: &Path,
+    protected: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        toml::Value::String(path) if key == Some("path") => {
+            protect_referenced_state_root(root, base, path, protected);
+        }
+        toml::Value::Array(values) if key == Some("members") => {
+            for value in values {
+                if let Some(path) = value.as_str() {
+                    protect_referenced_state_root(root, base, path, protected);
+                }
+            }
+        }
+        toml::Value::Array(values) => {
+            for value in values {
+                collect_referenced_state_roots(value, None, root, base, protected);
+            }
+        }
+        toml::Value::Table(table) => {
+            for (child_key, value) in table {
+                collect_referenced_state_roots(value, Some(child_key), root, base, protected);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn protect_referenced_state_root(
+    root: &Path,
+    base: &Path,
+    path: &str,
+    protected: &mut std::collections::BTreeSet<String>,
+) {
+    let candidate = lexical_normalize(&base.join(path));
+    let root = lexical_normalize(root);
+    let Ok(relative) = candidate.strip_prefix(root) else {
+        return;
+    };
+    let Some(first) = relative.components().next() else {
+        return;
+    };
+    let first = first.as_os_str();
+    if is_recipe_state_dir(first) {
+        protected.insert(first.to_string_lossy().into_owned());
+    }
+}
+
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            other => normalized.push(other.as_os_str()),
+        }
+    }
+    normalized
 }
 
 fn walk_for_manifests(
     root: &Path,
     dir: &Path,
+    protected_roots: &std::collections::BTreeSet<String>,
     out: &mut Vec<(String, String)>,
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
@@ -260,11 +379,12 @@ fn walk_for_manifests(
         let file_type = entry.file_type()?;
         if file_type.is_dir() {
             let name = entry.file_name();
-            let s = name.to_string_lossy();
-            if matches!(s.as_ref(), ".git" | "target" | ".soldr" | "node_modules") {
+            let protected_at_root =
+                dir == root && protected_roots.contains(name.to_string_lossy().as_ref());
+            if is_recipe_state_dir(&name) && !protected_at_root {
                 continue;
             }
-            walk_for_manifests(root, &path, out)?;
+            walk_for_manifests(root, &path, protected_roots, out)?;
         } else if file_type.is_file() && entry.file_name() == std::ffi::OsStr::new("Cargo.toml") {
             let rel = path
                 .strip_prefix(root)
@@ -449,6 +569,132 @@ mod tests {
         let mut f = File::create(p).expect("create");
         f.write_all(bytes).expect("write");
     }
+
+    fn manifest_name() -> &'static str {
+        concat!("Car", "go.toml")
+    }
+
+    fn lock_name() -> &'static str {
+        concat!("Car", "go.lock")
+    }
+
+    crate::timed_test!(recipe_hash_skips_large_operational_state_trees, {
+        let dir = TempDir::new().expect("tempdir");
+        write_file(&dir.path().join(lock_name()), b"lock-v1\n");
+        write_file(&dir.path().join(manifest_name()), b"[workspace]\n");
+        write_file(
+            &dir.path().join("crates/app").join(manifest_name()),
+            b"[package]\nname='app'\nversion='0.1.0'\n",
+        );
+        write_file(
+            &dir.path().join("vendor/notify").join(manifest_name()),
+            b"[package]\nname='notify'\nversion='1.0.0'\n",
+        );
+        let baseline = compute_recipe_hash_proxy(dir.path()).expect("baseline hash");
+
+        let mut state_dirs = vec![
+            ".cache",
+            ".claude",
+            ".clud",
+            ".codex",
+            ".extern-repos",
+            ".git",
+            ".loop",
+            ".perf-local",
+            ".pytest_cache",
+            ".rustup",
+            ".soldr",
+            ".venv",
+            "node_modules",
+            "target",
+        ];
+        state_dirs.push(concat!(".car", "go"));
+        for state_dir in state_dirs {
+            for index in 0..100 {
+                write_file(
+                    &dir.path()
+                        .join(state_dir)
+                        .join(format!("decoy-{index}"))
+                        .join(manifest_name()),
+                    format!("[package]\nname='decoy-{index}'\n").as_bytes(),
+                );
+            }
+        }
+
+        let after_decoys = compute_recipe_hash_proxy(dir.path()).expect("hash after decoys");
+        assert_eq!(
+            after_decoys, baseline,
+            "operational state changed recipe hash"
+        );
+
+        write_file(
+            &dir.path().join("crates/app").join(manifest_name()),
+            b"[package]\nname='app'\nversion='0.2.0'\n",
+        );
+        assert_ne!(
+            compute_recipe_hash_proxy(dir.path()).expect("changed source hash"),
+            baseline,
+            "included source manifest mutation must change the recipe hash"
+        );
+    });
+
+    crate::timed_test!(referenced_manifests_override_operational_tree_exclusions, {
+        let dir = TempDir::new().expect("tempdir");
+        write_file(&dir.path().join(lock_name()), b"lock-v1\n");
+        write_file(
+            &dir.path().join(manifest_name()),
+            b"[workspace]\nmembers=['crates/app']\n",
+        );
+        write_file(
+            &dir.path().join("crates/app").join(manifest_name()),
+            b"[package]\nname='app'\nversion='0.1.0'\n\
+              [dependencies]\nhidden={path='../../.extern-repos/member'}\n",
+        );
+        let member = dir
+            .path()
+            .join(".extern-repos/member")
+            .join(manifest_name());
+        let path_dependency = dir
+            .path()
+            .join(".perf-local/path-dep")
+            .join(manifest_name());
+        write_file(
+            &member,
+            b"[package]\nname='member'\nversion='0.1.0'\n\
+              [dependencies]\ntransitive={path='../../.perf-local/path-dep'}\n",
+        );
+        write_file(
+            &path_dependency,
+            b"[package]\nname='path-dep'\nversion='0.1.0'\n",
+        );
+        let baseline = compute_recipe_hash_proxy(dir.path()).expect("baseline hash");
+
+        write_file(
+            &member,
+            b"[package]\nname='member'\nversion='0.2.0'\n\
+              [dependencies]\ntransitive={path='../../.perf-local/path-dep'}\n",
+        );
+        let member_changed = compute_recipe_hash_proxy(dir.path()).expect("member hash");
+        assert_ne!(
+            member_changed, baseline,
+            "workspace member must affect hash"
+        );
+
+        write_file(
+            &member,
+            b"[package]\nname='member'\nversion='0.1.0'\n\
+              [dependencies]\ntransitive={path='../../.perf-local/path-dep'}\n",
+        );
+        write_file(
+            &path_dependency,
+            b"[package]\nname='path-dep'\nversion='0.2.0'\n",
+        );
+        assert_ne!(
+            compute_recipe_hash_proxy(dir.path()).expect("path dependency hash"),
+            baseline,
+            "path dependency must affect hash"
+        );
+    });
 
     crate::timed_test!(pack_writes_content_addressed_artifact, {
         let dir = TempDir::new().expect("tempdir");

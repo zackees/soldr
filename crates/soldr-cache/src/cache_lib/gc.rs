@@ -321,6 +321,10 @@ pub fn maybe_build_startup_warning(
     }
 
     let report = scan(registry, options)?;
+    // The marker throttles the expensive registry/filesystem scan, not only
+    // visible warnings. Without recording an empty successful scan, machines
+    // with no stale candidates repeat the full scan before every build.
+    touch_startup_warning_marker(marker_path)?;
     if report.candidates.is_empty() {
         return Ok(None);
     }
@@ -334,7 +338,6 @@ pub fn maybe_build_startup_warning(
         human_age(options.older_than_seconds as i64),
     );
 
-    touch_startup_warning_marker(marker_path)?;
     Ok(Some(message))
 }
 
@@ -677,6 +680,26 @@ mod tests {
         assert!(startup_warning_due(&marker).unwrap());
         // After we touch it, next call should not be due.
         touch_startup_warning_marker(&marker).unwrap();
+        assert!(!startup_warning_due(&marker).unwrap());
+    }
+
+    #[test]
+    fn empty_startup_scan_is_throttled() {
+        let dir = tempdir().unwrap();
+        let marker = dir.path().join(".gc_warning_marker");
+        let registry = TargetRegistry::open_in_memory().unwrap();
+        let opts = GcOptions {
+            older_than_seconds: 10 * 86_400,
+            larger_than_bytes: 1024,
+            dev_roots: vec![dir.path().to_path_buf()],
+            dry_run: true,
+        };
+
+        assert_eq!(
+            maybe_build_startup_warning(&registry, &opts, &marker).unwrap(),
+            None
+        );
+        assert!(marker.is_file(), "successful empty scan must write marker");
         assert!(!startup_warning_due(&marker).unwrap());
     }
 }
