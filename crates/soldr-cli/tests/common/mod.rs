@@ -578,7 +578,8 @@ pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
         format!(
             "@echo off\n\
              set \"rustc=%~1\"\n\
-             shift\n\
+             if \"%~1:~0,1%\"==\"-\" set \"rustc=%SOLDR_TEST_RUSTC_BIN%\"\n\
+             if not \"%~1:~0,1%\"==\"-\" shift\n\
              set \"args=\"\n\
              :collect_args\n\
              if \"%~1\"==\"\" goto run_clippy\n\
@@ -597,6 +598,10 @@ pub(crate) fn fake_clippy_driver_script(log_path: &Path) -> String {
         format!(
             "#!/bin/sh\n\
              rustc=\"$1\"\n\
+             case \"$rustc\" in\n\
+               -*) rustc=\"${{SOLDR_TEST_RUSTC_BIN:-${{RUSTC:-rustc}}}}\"; set -- \"$1\" \"$@\" ;;\n\
+               *) shift ;;\n\
+             esac\n\
              shift\n\
              echo \"clippy-driver $rustc $*\" >> \"{}\"\n\
              \"$rustc\" \"$@\"\n",
