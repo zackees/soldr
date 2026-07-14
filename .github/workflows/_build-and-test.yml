@@ -83,7 +83,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
+        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           toolchain: 1.94.1
           cache: false
@@ -137,7 +137,7 @@ jobs:
           exit $exitCode
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@bea35cc843969b89c2544b8683f600e8edc3a258
+        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
 
       # soldr#1324 — combined `Run library tests` + `Run CLI smoke tests`
       # into one cargo invocation. Workspace has one member (soldr-cli),

@@ -83,7 +83,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
 
-    assert "soldr rustup target add ${{ inputs.target }}" in cross
+    assert "cross-targets: ${{ inputs.target }}" in cross
     assert "soldr --no-cache cargo build --profile ci-bootstrap" in cross
     for unmanaged_installer in [
         "sudo apt-get",
