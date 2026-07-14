@@ -206,9 +206,11 @@ mod tests {
         let attempts = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&attempts);
 
+        let budget = Duration::from_secs(1);
+        let started = Instant::now();
         let result = open_state_db_with_retry(
             &path,
-            Duration::from_millis(25),
+            budget,
             Duration::from_millis(5),
             || {
                 observed.fetch_add(1, Ordering::Relaxed);
@@ -221,5 +223,7 @@ mod tests {
 
         assert!(matches!(error, redb::DatabaseError::DatabaseAlreadyOpen));
         assert!(attempts.load(Ordering::Relaxed) >= 2);
+        assert!(started.elapsed() >= budget);
+        assert!(started.elapsed() < Duration::from_secs(3));
     });
 }
