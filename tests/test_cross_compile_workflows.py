@@ -22,30 +22,24 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "if: false" not in arm_run
 
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
+    assert "soldr --no-cache build --profile" not in cross
     assert (
-        'if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        '            soldr --no-cache build --profile "$ci_profile"'
-        in cross
+        'if [[ "$target" == *-pc-windows-msvc ]] \\\n'
+        '             || [[ "$target" == *-apple-darwin ]]; then\n'
+        '            soldr build --profile "$ci_profile"' in cross
     )
-    assert (
-        'elif [[ "$target" == *-apple-darwin ]]; then\n'
-        '            soldr build --profile "$ci_profile"'
-        in cross
-    )
-    assert (
-        'soldr_args=()\n'
-        '          if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        '            soldr_args+=(--no-cache)\n'
-        '          fi\n'
-        '          soldr "${soldr_args[@]}" cargo nextest archive'
-        in cross
-    )
+    assert "soldr cargo nextest archive" in cross
+    assert "soldr_args+=(--no-cache)" not in cross
+    assert "Validate warm Windows cache restoration" in cross
+    assert "windows_msvc_cache_roundtrip.py" in cross
+    assert "--phase build" in cross
+    assert "--phase archive" in cross
+    assert "--no-cache" not in cross[cross.index("- name: Cross-build release binary") :]
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert (
         "              soldr --no-cache cargo xwin build "
         "--target x86_64-pc-windows-msvc\n"
-        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe"
-        in baseline
+        "              ls -l target/x86_64-pc-windows-msvc/debug/hellowin.exe" in baseline
     )
     for first_party_package in [
         "soldr-cli",
@@ -61,8 +55,7 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert '"$NEXTEST_BIN" nextest run' in target_run
     assert (
         "SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr"
-        "${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}"
-        in target_run
+        "${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}" in target_run
     )
     assert 'SOLDR_BIN="${SOLDR_BIN}.exe"' not in target_run
     for artifact_only_incompatible in [
@@ -78,6 +71,26 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "fetch_catalogued_nextest.py" in cross
     assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
+
+
+def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    policy = _job_block(ci, "windows-e2e-policy", "e2e-cross-bootstrap-soldr")
+    x64_build = _job_block(ci, "e2e-windows-x64-build", "e2e-windows-x64")
+    arm64_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
+
+    assert "windows_e2e_policy.py" in policy
+    assert "fetch-depth: 0" in policy
+    assert "run_windows_e2e" in policy
+    for block in [x64_build, arm64_build]:
+        assert "windows-e2e-policy" in block
+        assert "needs.windows-e2e-policy.outputs.run_windows_e2e == 'true'" in block
+        assert "fast-build" not in block
+
+    windows_section = ci[ci.index("# ---------- Windows x64") :]
+    assert "github.event.pull_request.labels" not in windows_section
+    assert "fast-build may skip only the Windows MSVC E2E pairs" in ci
+    assert "macOS E2E pairs always run" in ci
 
 
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
@@ -149,9 +162,7 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
 
 
 def test_windows_gnu_validation_runs_bounded_pr_runtime_smoke() -> None:
-    workflow = (WORKFLOWS / "windows-gnu-mingw-validation.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (WORKFLOWS / "windows-gnu-mingw-validation.yml").read_text(encoding="utf-8")
     assert "pull_request:" in workflow
     assert '"crates/**"' in workflow
     assert "soldr build --release --target $env:TARGET --package soldr-cli" in workflow
