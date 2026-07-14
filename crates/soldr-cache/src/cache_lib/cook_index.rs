@@ -31,7 +31,7 @@
 //! A future schema change MUST land as `cook_index_v3` rather than
 //! mutating v2 in place.
 
-use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
+use crate::cache_lib::redb_lock::{open_state_db, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
 use crate::core::wire::{prost_tagged_bytes, proto, WireDecodeError, REDB_TAG_PROST};
 use prost::Message;
@@ -88,14 +88,7 @@ fn wire_err(e: WireDecodeError) -> RegistryError {
 /// concurrent in-process opens of the same file and would otherwise
 /// race with `daemon::db` (issue #608).
 fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let guard = state_db_open_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let db = Database::builder().create(path)?;
-    Ok(StateDbHandle::new(db, guard))
+    Ok(open_state_db(path)?)
 }
 
 fn init_v2(db: &Database) -> Result<(), RegistryError> {

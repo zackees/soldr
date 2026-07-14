@@ -7,7 +7,7 @@
 //!
 //! The store lives in `~/.soldr/state.redb` alongside other soldr state.
 
-use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
+use crate::cache_lib::redb_lock::{open_state_db, StateDbHandle};
 use redb::{
     backends::InMemoryBackend, Database, ReadableDatabase, ReadableTable, ReadableTableMetadata,
     TableDefinition,
@@ -95,14 +95,7 @@ impl TargetRegistry {
     /// every rustc-wrapper call and would otherwise race with
     /// `daemon::db` / `cache_lib::cook_index` (#608).
     pub fn open(path: &Path) -> Result<Self, RegistryError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let guard = state_db_open_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let db = Database::builder().create(path)?;
-        let handle = StateDbHandle::new(db, guard);
+        let handle = open_state_db(path)?;
         Self::init_schema(&handle)?;
         Ok(Self {
             db: TargetRegistryDb::File(handle),

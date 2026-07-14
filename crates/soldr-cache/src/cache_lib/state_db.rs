@@ -3,11 +3,12 @@
 //! New state that is not relational can land here without growing ad-hoc
 //! marker files under `~/.soldr/`.
 
+use crate::cache_lib::redb_lock::{open_state_db, StateDbHandle};
 #[cfg(test)]
 use redb::ReadableDatabase;
 #[cfg(test)]
 use redb::ReadableTableMetadata;
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{ReadableTable, TableDefinition};
 use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
@@ -49,17 +50,14 @@ pub enum StateDbError {
 }
 
 pub struct StateDb {
-    db: Database,
+    db: StateDbHandle,
 }
 
 impl StateDb {
     /// Open or create the redb state database. Parent directories are created
     /// automatically.
     pub fn open(path: &Path) -> Result<Self, StateDbError> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let db = Database::builder().create(path)?;
+        let db = open_state_db(path)?;
         Ok(Self { db })
     }
 

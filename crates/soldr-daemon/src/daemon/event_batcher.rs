@@ -49,10 +49,10 @@
 //! complete, and the `Drop` semantics of the mpsc receiver mean even an
 //! aborted task drains the channel one more time before exiting.
 
-use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
+use crate::cache_lib::redb_lock::open_state_db;
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::wire::{self, prost_tagged_bytes};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{ReadableTable, TableDefinition};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -344,20 +344,8 @@ fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) {
 /// `pub(crate)` so tests (soldr#1536 finalization-scaling guards) can
 /// seed large event histories in a single transaction.
 pub(crate) fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> {
-    if let Some(parent) = db_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let guard = state_db_open_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let db = Database::builder()
-        .create(db_path)
-        .map_err(|e| std::io::Error::other(format!("redb open: {e}")))?;
-    // Keep the handle in scope for the entire txn. `StateDbHandle`'s
-    // declared field order (db before guard) guarantees the redb file
-    // lock is released before the process-wide mutex is, so a follow-up
-    // opener never races us.
-    let handle = StateDbHandle::new(db, guard);
+    let handle =
+        open_state_db(db_path).map_err(|e| std::io::Error::other(format!("redb open: {e}")))?;
     let txn = handle
         .begin_write()
         .map_err(|e| std::io::Error::other(format!("redb begin_write: {e}")))?;
