@@ -272,6 +272,10 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
     let runtime_daemon = runtime.join("soldr-daemon");
     let runtime_self = runtime.join("soldr-self");
     let cargo_abort_log = paths.cargo_abort_log();
+    let compile_daemon_fallback_log = paths
+        .root
+        .join("logs")
+        .join("compile-daemon-fallbacks.jsonl");
 
     let entries = [
         (
@@ -310,6 +314,12 @@ fn collect_log_path_entries(paths: &SoldrPaths) -> Vec<LogPathEntry> {
             cargo_abort_log,
             "Durable JSONL record of cargo front-door aborts and timeouts. Includes the \
              build-session id, elapsed time, cleanup counts, and cache-bypass recovery hints.",
+        ),
+        (
+            "soldr-compile-daemon-fallback-log",
+            compile_daemon_fallback_log,
+            "Durable JSONL record of compile-daemon cache-bypass fallbacks, including \
+             build-session correlation and the terminal startup failure.",
         ),
         (
             "soldr-daemon-runtime",
@@ -762,11 +772,19 @@ mod tests {
                 .expect("soldr-cargo-abort-log entry must exist");
             let expected = tmp.path().join("logs").join("cargo-aborts.jsonl");
             assert_eq!(entry.path, expected);
-            assert!(
-                entry.description.contains("cargo front-door aborts"),
-                "description should mention cargo aborts, got: {}",
-                entry.description
+            assert!(entry.description.contains("cargo front-door aborts"));
+            let fallback = output
+                .paths
+                .iter()
+                .find(|e| e.name == "soldr-compile-daemon-fallback-log")
+                .expect("soldr-compile-daemon-fallback-log entry must exist");
+            assert_eq!(
+                fallback.path,
+                tmp.path()
+                    .join("logs")
+                    .join("compile-daemon-fallbacks.jsonl")
             );
+            assert!(fallback.description.contains("cache-bypass fallbacks"));
         }
     );
 

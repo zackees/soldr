@@ -93,14 +93,8 @@ pub fn record_target_dir_in_registry(rustc_args: &[String]) -> TargetTouchPath {
     // telemetry rides the subsequent Request::Compile connection.
     crate::daemon::client::record_target_touch_or_fallback(&paths, &target);
 
-    if crate::daemon::lifecycle::is_live(&paths).is_none() {
-        // The spawn itself is serialized via a file lock inside
-        // `try_spawn_detached` so N concurrent wrapper invocations
-        // don't fork N daemons (see #474 spawn-herd note).
-        let _ = crate::binaries::soldr_daemon_binary();
-        let _ = crate::daemon::lifecycle::try_spawn_detached();
-    }
-
+    // Compile dispatch owns bounded daemon startup and recovery. Starting it
+    // here would duplicate alias materialization/relocation before that budget.
     TargetTouchPath::DaemonFirst
 }
 
