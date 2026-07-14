@@ -85,16 +85,56 @@ pub(crate) fn materialize_executable(
         }
     }
 
-    let _ = std::fs::remove_file(target);
-    std::fs::rename(&tmp, target).map_err(|err| {
-        let _ = std::fs::remove_file(&tmp);
-        SoldrError::Io(err)
-    })?;
+    // Concurrent first-use materialization can put several writers here.
+    // Publish first so identical winners are normally observed without being
+    // removed. For stale targets on Windows (where rename does not replace),
+    // remove and retry; bounded rechecks tolerate another writer publishing or
+    // removing an identical target between any two filesystem operations.
+    const PUBLISH_ATTEMPTS: usize = 20;
+    let mut last_error = None;
+    for attempt in 0..PUBLISH_ATTEMPTS {
+        match std::fs::rename(&tmp, target) {
+            Ok(()) => {
+                return Ok(MaterializeResult {
+                    created: true,
+                    link_mode,
+                });
+            }
+            Err(err) => last_error = Some(err),
+        }
 
-    Ok(MaterializeResult {
-        created: true,
-        link_mode,
-    })
+        if executable_matches(target, source).unwrap_or(false) {
+            let _ = std::fs::remove_file(&tmp);
+            return Ok(MaterializeResult {
+                created: false,
+                link_mode: LINK_MODE_HARDLINK_OR_COPY,
+            });
+        }
+
+        if let Err(err) = std::fs::remove_file(target) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                last_error = Some(err);
+            }
+        }
+        if attempt + 1 < PUBLISH_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    if executable_matches(target, source).unwrap_or(false) {
+        let _ = std::fs::remove_file(&tmp);
+        return Ok(MaterializeResult {
+            created: false,
+            link_mode: LINK_MODE_HARDLINK_OR_COPY,
+        });
+    }
+    let _ = std::fs::remove_file(&tmp);
+    Err(SoldrError::Io(last_error.unwrap_or_else(|| {
+        std::io::Error::other(format!(
+            "failed to publish executable shim {}",
+            target.display()
+        ))
+    })))
 }
 
 fn tmp_path_for(target: &Path) -> PathBuf {
@@ -157,6 +197,35 @@ mod tests {
         let second = materialize_executable(&source, &target).unwrap();
         assert!(!second.created);
     });
+
+    crate::timed_test!(
+        materialize_executable_accepts_an_identical_concurrent_winner,
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let source = fake_source(&tmp, b"fake-soldr-v1");
+            let target = tmp.path().join("rustc");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(16));
+            let writers = (0..16)
+                .map(|_| {
+                    let source = source.clone();
+                    let target = target.clone();
+                    let barrier = std::sync::Arc::clone(&barrier);
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        materialize_executable(&source, &target)
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            for writer in writers {
+                writer
+                    .join()
+                    .expect("materialization writer panicked")
+                    .expect("concurrent materialization failed");
+            }
+            assert_eq!(std::fs::read(target).unwrap(), b"fake-soldr-v1");
+        }
+    );
 
     crate::timed_test!(materialize_executable_replaces_different_bytes, {
         let tmp = tempfile::tempdir().unwrap();

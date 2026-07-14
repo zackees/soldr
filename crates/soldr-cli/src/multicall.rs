@@ -73,7 +73,10 @@ pub(crate) fn toolchain_shim_should_defer_to_rustc_wrapper(raw_args: &[String]) 
         return false;
     }
     let argv0 = raw_args.first().map(String::as_str).unwrap_or("");
-    matches!(classify_argv0(argv0), Some(ShimIdentity::Toolchain(_)))
+    matches!(
+        classify_argv0(argv0),
+        Some(ShimIdentity::Toolchain("rustc")) | Some(ShimIdentity::Toolchain("clippy-driver"))
+    )
 }
 
 fn is_rustc_wrapper_passthrough_tool(arg: &str) -> bool {
@@ -398,30 +401,65 @@ mod tests {
         assert_eq!(normalize_exit_code(-1), 1);
     });
 
-    crate::timed_test!(toolchain_shim_defers_rustc_wrapper_contract, {
-        assert!(toolchain_shim_should_defer_to_rustc_wrapper(&[
-            "/tmp/soldr-shims/cargo".into(),
-            "/opt/rust/bin/rustc".into(),
-            "-vV".into(),
-        ]));
-        assert!(toolchain_shim_should_defer_to_rustc_wrapper(&[
-            "cargo.exe".into(),
-            "clippy-driver.exe".into(),
-            "-vV".into(),
-        ]));
-        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
-            "/tmp/soldr-shims/cargo".into(),
-            "build".into(),
-        ]));
-        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
-            "zccache-soldr".into(),
-            "/opt/rust/bin/rustc".into(),
-            "-vV".into(),
-        ]));
-        assert!(!toolchain_shim_should_defer_to_rustc_wrapper(&[
-            "clang".into(),
-            "/opt/rust/bin/rustc".into(),
-            "-vV".into(),
-        ]));
+    crate::timed_test!(only_compiler_shims_defer_rustc_wrapper_contract, {
+        for argv in [
+            ["rustc", "/opt/rust/bin/rustc", "-vV"],
+            ["clippy-driver.exe", "/opt/rust/bin/rustc", "-vV"],
+        ] {
+            assert!(
+                toolchain_shim_should_defer_to_rustc_wrapper(&argv.map(str::to_string)),
+                "compiler shim should preserve the wrapper contract: {argv:?}"
+            );
+        }
+
+        for argv in [
+            ["cargo", "rustc", "--profile"],
+            ["cargo.exe", "clippy-driver.exe", "-vV"],
+            ["rustfmt", "/opt/rust/bin/rustc", "-vV"],
+            ["rustdoc", "/opt/rust/bin/rustc", "-vV"],
+            ["clang", "/opt/rust/bin/rustc", "-vV"],
+            ["zccache-soldr", "/opt/rust/bin/rustc", "-vV"],
+        ] {
+            assert!(
+                !toolchain_shim_should_defer_to_rustc_wrapper(&argv.map(str::to_string)),
+                "non-compiler shim must use normal multicall dispatch: {argv:?}"
+            );
+        }
+    });
+
+    crate::timed_test!(cargo_rustc_multicall_preserves_every_argument, {
+        let raw_args = [
+            "/tmp/soldr-shims/cargo",
+            "rustc",
+            "--profile",
+            "release",
+            "--message-format",
+            "json-render-diagnostics",
+        ]
+        .map(str::to_string);
+        let original_path = env::var_os("PATH");
+
+        let dispatch = maybe_dispatch(&raw_args);
+
+        if let Some(path) = original_path {
+            env::set_var("PATH", path);
+        } else {
+            env::remove_var("PATH");
+        }
+        assert_eq!(
+            dispatch,
+            Some(MulticallDispatch::SoldrArgs(
+                [
+                    "cargo",
+                    "rustc",
+                    "--profile",
+                    "release",
+                    "--message-format",
+                    "json-render-diagnostics",
+                ]
+                .map(str::to_string)
+                .into()
+            ))
+        );
     });
 }

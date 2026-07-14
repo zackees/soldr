@@ -111,6 +111,61 @@ fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
     );
 }
 
+timed_test!(
+    cargo_multicall_shim_routes_rustc_through_cargo_front_door,
+    {
+        let root = unique_temp_dir("cargo-rustc-multicall");
+        let shim_dir = root.join("shims");
+        let log_path = root.join("cargo.log");
+        fs::create_dir_all(&shim_dir).expect("create shim dir");
+        let cargo_shim = shim_dir.join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
+        let soldr = common::soldr_bin();
+        if fs::hard_link(&soldr, &cargo_shim).is_err() {
+            fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
+        }
+        let cargo = install_logging_fake_cargo(&log_path);
+
+        let mut command = Command::new(&cargo_shim);
+        common::scrub_outer_soldr_env(&mut command);
+        let output = command
+            .args([
+                "rustc",
+                "--profile",
+                "release",
+                "--message-format",
+                "json-render-diagnostics",
+            ])
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("SOLDR_CACHE_DIR", root.join("cache"))
+            .env("ZCCACHE_DISABLE", "1")
+            .output()
+            .expect("run cargo multicall shim");
+
+        assert!(
+            output.status.success(),
+            "cargo rustc must route through the cargo front door\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("Unrecognized option: 'profile'"),
+            "cargo-only --profile flag reached rustc"
+        );
+        let invocations = read_logged_cargo_invocations(&log_path);
+        assert_eq!(
+            invocations.last(),
+            Some(&vec![
+                "rustc".to_string(),
+                "--profile".to_string(),
+                "release".to_string(),
+                "--message-format".to_string(),
+                "json-render-diagnostics".to_string(),
+            ]),
+            "cargo front door must preserve the final argv after any metadata probes: {invocations:?}"
+        );
+    }
+);
+
 fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
     #[cfg(windows)]
     {

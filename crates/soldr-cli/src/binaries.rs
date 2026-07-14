@@ -316,6 +316,22 @@ pub(crate) fn current_soldr_binary() -> Result<std::path::PathBuf, SoldrError> {
     std::env::current_exe().map_err(SoldrError::from)
 }
 
+/// Materialize a compiler-named multicall shim for use as Cargo's managed
+/// wrapper. The current executable may itself be a Cargo multicall hardlink,
+/// so it is not a safe wrapper path: Cargo would invoke that alias with the
+/// compiler path and re-enter the front door. A versioned compiler identity
+/// makes the wrapper contract explicit and keeps soldr versions isolated.
+pub(crate) fn rustc_wrapper_shim_binary(
+    paths: &SoldrPaths,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let target = paths
+        .versioned_shims_dir()
+        .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+    let source = crate::shim_materialize::soldr_binary_source()?;
+    crate::shim_materialize::materialize_executable(&source, &target)?;
+    Ok(target)
+}
+
 /// Materialize the daemon's stable process/service identity next to soldr.
 pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")
@@ -403,6 +419,23 @@ fn sibling_binary(stem: &str) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    crate::timed_test!(managed_wrapper_shim_has_compiler_identity, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+
+        let wrapper = rustc_wrapper_shim_binary(&paths).expect("materialize wrapper shim");
+
+        assert!(wrapper.is_file(), "missing {}", wrapper.display());
+        assert_eq!(
+            wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
+            Some("rustc")
+        );
+        assert_eq!(
+            wrapper.parent(),
+            Some(paths.versioned_shims_dir().as_path())
+        );
+    });
 
     crate::timed_test!(
         relocated_runtime_alias_is_materialized_beside_current_exe,

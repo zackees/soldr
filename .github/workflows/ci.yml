@@ -137,8 +137,10 @@ jobs:
         include:
           - name: macos-arm64
             runner: macos-15
+            python: "3.13"
           - name: windows-x64
             runner: windows-2025
+            python: "3.13t"
     env:
       RUST_BACKTRACE: "1"
       CARGO_TERM_COLOR: always
@@ -147,6 +149,11 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           submodules: recursive
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
 
       - name: Install rustup 1.94.1
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
@@ -183,6 +190,16 @@ jobs:
           SOLDR_DAEMON_REQUIRED: "1"
           SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS: "5000"
         run: python .github/scripts/pep517_daemon_smoke.py --wheel "dist/*.whl" --timeout 180
+
+      - name: Build source wheel with installed shims first on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          python .github/scripts/source_wheel_shim_smoke.py
+          --wheel "dist/*.whl"
+          --source .
+          --timeout 900
+          --require-free-threaded
 
   # build-macos-x64 removed. The unit-test sweep for darwin runs on
   # linux x86 (same Rust code, target-independent logic) via

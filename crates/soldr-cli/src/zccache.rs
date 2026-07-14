@@ -3,9 +3,7 @@
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::zccache_lifecycle::ZccachePrivateEnv;
-use crate::{
-    current_soldr_binary, non_empty_env_path, ZccacheSourceArg, RUSTC_WRAPPER_OVERRIDE_ENV_VAR,
-};
+use crate::{non_empty_env_path, ZccacheSourceArg, RUSTC_WRAPPER_OVERRIDE_ENV_VAR};
 use std::ffi::OsStr;
 
 pub(crate) use crate::zccache_lifecycle::{
@@ -276,10 +274,11 @@ pub(crate) struct ManagedZccacheWrapperPlan {
     /// the soldr-daemon embedded service — but it still carries the
     /// zccache cache dir + per-build paths that the in-process rust-plan
     /// save/restore (rust_plan.rs) and native-C caching (native_cc.rs)
-    /// need. `binary_path` is the compiled-in trampoline and is retained
-    /// only for struct compatibility; nothing spawns it.
+    /// need. `wrapper_path` is a compiler-named soldr multicall shim so the
+    /// wrapper contract cannot be confused with a different multicall verb.
     pub(crate) session: ZccacheBuildSession,
     pub(crate) child_env: ZccacheChildEnv,
+    pub(crate) wrapper_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -312,7 +311,7 @@ impl RustcWrapperPlan {
                 // zccache binary or managed session to plumb, so clear
                 // the legacy session env and only seed the parent-cache
                 // path-remap vars.
-                cargo.env("RUSTC_WRAPPER", current_soldr_binary()?);
+                cargo.env("RUSTC_WRAPPER", &plan.wrapper_path);
                 remove_managed_zccache_env(cargo);
                 cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
                 cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
@@ -424,7 +423,12 @@ async fn prepare_zccache_build(
         session_stats_path: crate::cache_lib::session_stats_path(&zccache_dir),
     };
 
-    Ok(ManagedZccacheWrapperPlan { session, child_env })
+    let wrapper_path = crate::binaries::rustc_wrapper_shim_binary(paths)?;
+    Ok(ManagedZccacheWrapperPlan {
+        session,
+        child_env,
+        wrapper_path,
+    })
 }
 
 /// Generate a short, unique-enough id for a front-door build session
