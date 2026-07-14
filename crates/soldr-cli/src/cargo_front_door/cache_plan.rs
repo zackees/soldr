@@ -344,6 +344,7 @@ mod tests {
                 path_remap: Some("auto"),
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
             },
+            wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
         }))
     }
 
@@ -366,9 +367,10 @@ mod tests {
                 crate::cache_lib::cache_enabled_env_value(true)
             )))
         );
-        assert!(command_env_override(&command, "RUSTC_WRAPPER")
-            .and_then(|value| value)
-            .is_some());
+        assert_eq!(
+            command_env_override(&command, "RUSTC_WRAPPER"),
+            Some(Some(OsString::from("/tmp/soldr-shims/rustc")))
+        );
         // soldr#1368: the front door no longer plumbs an external zccache
         // binary or managed session — those env vars are cleared, not set.
         assert_eq!(
