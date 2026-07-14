@@ -20,7 +20,7 @@
 //! contents on disk are untouched, only the per-build timing snapshots
 //! are dropped.
 
-use crate::cache_lib::redb_lock::{state_db_open_lock, StateDbHandle};
+use crate::cache_lib::redb_lock::{open_state_db, StateDbHandle};
 use crate::cache_lib::target_registry::RegistryError;
 use crate::daemon::protocol::{BuildRecord, WireDecodeError};
 use crate::daemon::wire::{self, prost_tagged_bytes, REDB_TAG_PROST};
@@ -69,14 +69,7 @@ pub struct Event {
 /// drop, so a second opener overlapping us would error out with
 /// `Database already open. Cannot acquire lock.` (#608).
 fn open_db(path: &Path) -> Result<StateDbHandle, RegistryError> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let guard = state_db_open_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let db = Database::builder().create(path)?;
-    Ok(StateDbHandle::new(db, guard))
+    Ok(open_state_db(path)?)
 }
 
 fn init_tables(db: &Database) -> Result<(), RegistryError> {
