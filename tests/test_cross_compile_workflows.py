@@ -200,3 +200,18 @@ def test_mac_x64_cross_build_and_release_policy_are_explicit() -> None:
     assert "intentionally not published" in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
     assert "intentionally omitted" in verification_docs
+
+
+def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
+    docs = (REPO_ROOT / "docs" / "CROSS_COMPILE.md").read_text(encoding="utf-8")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+
+    assert "soldr build --release --target x86_64-pc-windows-msvc" in docs
+    assert "soldr cargo xwin build --release" in docs
+    assert "_cross-build-windows-host.yml" not in docs
+    assert "cross-build-from-windows-x64-linux" not in docs
+    assert "build-macos-x64.yml" not in ci
+    assert "macos-15-intel" in ci
+    assert "soldr#1237" not in release
+    assert "#1696" in release

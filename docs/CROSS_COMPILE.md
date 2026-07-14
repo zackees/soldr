@@ -30,7 +30,7 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | You want | Use |
 |---|---|
 | Windows x64 → Windows GNU | managed MinGW-w64 GCC + GNU syslibs ([Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc)) |
-| Linux → Windows MSVC | `cargo-xwin` ([Section 2](#2-linux--windows-msvc-via-cargo-xwin)) |
+| Linux → Windows MSVC | `soldr build` ([Section 2](#2-linux--windows-msvc-via-soldr-build)) |
 | **Windows -> Linux** | `cargo-zigbuild` ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
@@ -158,10 +158,12 @@ modern rows use the bare version plus shape slug.
 
 ### CI
 
-The reusable workflow `.github/workflows/_cross-build-windows-host.yml`
-runs this exact recipe on a `windows-2022` runner. The
-`cross-build-from-windows-x64-linux` job in `ci.yml` exercises it on every
-PR with `target = x86_64-unknown-linux-gnu` as the regression test.
+The Linux cross-build workflow `.github/workflows/_ci-cross-build-linux.yml`
+proves the MSVC targets from a Linux host, and the matching
+`e2e-windows-x64` / `e2e-windows-arm64` jobs in `ci.yml` execute the produced
+archives on native Windows runners. The separate
+`.github/workflows/windows-gnu-mingw-validation.yml` workflow covers the
+explicit Windows GNU target on Windows x64.
 
 Windows GNU is intentionally handled by the managed MinGW path in
 [Section 1](#1-windows-x64--windows-gnu-via-managed-mingw-w64-gcc), not by
@@ -169,11 +171,12 @@ the Linux-hosted zigbuild flow.
 
 ---
 
-## 2. Linux → Windows MSVC via `cargo-xwin`
+## 2. Linux → Windows MSVC via blessed `soldr build`
 
-`cargo-xwin` downloads the Microsoft CRT and Windows SDK headers/libs on
-first invocation, then sets up the link step so you can produce MSVC-ABI
-binaries from a Linux host.
+The blessed `soldr build --target <triple>` path provisions the catalogued
+Microsoft CRT/Windows SDK inputs and sets up the link step so you can produce
+MSVC-ABI binaries from a Linux host. `soldr cargo xwin` remains an explicit
+legacy passthrough for projects that need the historical cargo-xwin behavior.
 
 ### `rust-toolchain.toml`
 
@@ -189,7 +192,13 @@ cargo-xwin = { version = "0.18", locked = true }
 ### Bootstrap and build
 
 ```sh
-soldr toolchain prepare
+soldr prepare --target x86_64-pc-windows-msvc
+soldr build --release --target x86_64-pc-windows-msvc
+```
+
+Legacy fallback (explicitly bypasses the blessed surface):
+
+```sh
 soldr cargo xwin build --release --target x86_64-pc-windows-msvc
 ```
 
@@ -261,8 +270,9 @@ shells out to `clang` directly. On `aarch64-pc-windows-msvc` plain
 aarch64-pc-windows-msvc` (soldr#1012, #882). It installs the shim at
 `~/.soldr/bin/clang-shim/` ahead of system clang on `PATH` and uses
 the managed MSVC SDK cache when that target's cache row is available.
-Until the arm64 cache row is ingested, `soldr build` falls back to the
-cargo-xwin path after installing the shim.
+The managed ARM64 cache row is now available, so `soldr build` uses the same
+catalogue-backed SDK/linker path for `aarch64-pc-windows-msvc`; the explicit
+legacy cargo-xwin command remains available as a diagnostic fallback.
 
 ### Direct cargo-xwin path is unsupported
 
