@@ -2,6 +2,14 @@ name: Windows GNU MinGW Validation
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "src/**"
+      - ".github/scripts/**"
+      - ".github/workflows/windows-gnu-mingw-validation.yml"
   schedule:
     - cron: "17 10 * * 0"
 
@@ -87,6 +95,23 @@ jobs:
           soldr build -p running-process --features daemon --target $env:TARGET --color never
           soldr build -p running-process-observer-interposer-windows --target $env:TARGET --color never
           soldr build -p running-process-observer --features embed-helper --target $env:TARGET --color never
+
+      - name: Build and run soldr GNU target binary
+        shell: pwsh
+        run: |
+          soldr build --release --target $env:TARGET --package soldr-cli --bin soldr --locked
+          $binary = Join-Path $env:GITHUB_WORKSPACE "target\$env:TARGET\release\soldr.exe"
+          if (-not (Test-Path $binary)) {
+            throw "expected GNU target binary was not produced: $binary"
+          }
+          $format = (objdump -f $binary | Out-String)
+          if ($format -notmatch "pei-x86-64") {
+            throw "unexpected GNU target binary format: $format"
+          }
+          & $binary --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "GNU target binary failed to execute with exit code $LASTEXITCODE"
+          }
 
       - name: Verify GNU syslibs were materialized
         shell: pwsh
