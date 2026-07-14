@@ -746,9 +746,7 @@ fn periodic_respawn_due(
     elapsed: Duration,
     next_respawn_at: Duration,
 ) -> bool {
-    enabled
-        && client_error_indicates_daemon_unavailable(error)
-        && elapsed >= next_respawn_at
+    enabled && client_error_indicates_daemon_unavailable(error) && elapsed >= next_respawn_at
 }
 
 fn periodic_respawn_fits_budget(elapsed: Duration, budget: Duration) -> bool {
@@ -1337,10 +1335,9 @@ mod tests {
             append_compile_daemon_fallback_event(&paths, &failure)
                 .expect("append session-correlated fallback event");
             let lines = std::fs::read_to_string(&path).expect("read fallback events");
-            let correlated: serde_json::Value = serde_json::from_str(
-                lines.lines().nth(1).expect("second fallback event"),
-            )
-            .expect("valid correlated fallback JSONL");
+            let correlated: serde_json::Value =
+                serde_json::from_str(lines.lines().nth(1).expect("second fallback event"))
+                    .expect("valid correlated fallback JSONL");
             assert_eq!(correlated["session_id"], 42);
             drop(session_guard);
         }
