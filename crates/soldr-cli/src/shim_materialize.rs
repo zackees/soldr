@@ -141,8 +141,7 @@ fn tmp_path_for(target: &Path) -> PathBuf {
     // Threads in one process can observe the same clock tick, especially on
     // macOS. A colliding fallback copy can otherwise truncate another
     // thread's hardlinked temp file (and therefore the source executable).
-    static TMP_COUNTER: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(0);
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
