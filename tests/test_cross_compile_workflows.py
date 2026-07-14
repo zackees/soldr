@@ -22,20 +22,20 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "if: false" not in arm_run
 
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
+    assert "soldr --no-cache build --profile" not in cross
     assert (
-        'if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        '            soldr --no-cache build --profile "$ci_profile"' in cross
-    )
-    assert (
-        'elif [[ "$target" == *-apple-darwin ]]; then\n'
+        'if [[ "$target" == *-pc-windows-msvc ]] \\\n'
+        '             || [[ "$target" == *-apple-darwin ]]; then\n'
         '            soldr build --profile "$ci_profile"' in cross
     )
+    assert "soldr cargo nextest archive" in cross
+    assert "soldr_args+=(--no-cache)" not in cross
+    assert "Validate warm Windows cache restoration" in cross
+    assert "windows_msvc_cache_roundtrip.py" in cross
+    assert "--phase build" in cross
+    assert "--phase archive" in cross
     assert (
-        "soldr_args=()\n"
-        '          if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        "            soldr_args+=(--no-cache)\n"
-        "          fi\n"
-        '          soldr "${soldr_args[@]}" cargo nextest archive' in cross
+        "--no-cache" not in cross[cross.index("- name: Cross-build release binary") :]
     )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert (
@@ -76,6 +76,26 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "fetch_catalogued_nextest.py" in cross
     assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
+
+
+def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    policy = _job_block(ci, "windows-e2e-policy", "e2e-cross-bootstrap-soldr")
+    x64_build = _job_block(ci, "e2e-windows-x64-build", "e2e-windows-x64")
+    arm64_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
+
+    assert "windows_e2e_policy.py" in policy
+    assert "fetch-depth: 0" in policy
+    assert "run_windows_e2e" in policy
+    for block in [x64_build, arm64_build]:
+        assert "windows-e2e-policy" in block
+        assert "needs.windows-e2e-policy.outputs.run_windows_e2e == 'true'" in block
+        assert "fast-build" not in block
+
+    windows_section = ci[ci.index("# ---------- Windows x64") :]
+    assert "github.event.pull_request.labels" not in windows_section
+    assert "fast-build may skip only the Windows MSVC E2E pairs" in ci
+    assert "macOS E2E pairs always run" in ci
 
 
 def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> None:
@@ -218,3 +238,18 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "macos-15-intel" in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
     assert "Mach-O x86_64" in verification_docs
+
+
+def test_cross_compile_docs_match_current_blessed_surfaces() -> None:
+    docs = (REPO_ROOT / "docs" / "CROSS_COMPILE.md").read_text(encoding="utf-8")
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
+
+    assert "soldr build --release --target x86_64-pc-windows-msvc" in docs
+    assert "soldr cargo xwin build --release" in docs
+    assert "_cross-build-windows-host.yml" not in docs
+    assert "cross-build-from-windows-x64-linux" not in docs
+    assert "build-macos-x64.yml" not in ci
+    assert "macos-15-intel" in ci
+    assert "soldr#1237" not in release
+    assert "x86_64-apple-darwin: **intentionally omitted**" not in release

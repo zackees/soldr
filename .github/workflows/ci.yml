@@ -14,16 +14,16 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
-  # pull_request triggers exist so the `fast-build` label gate below
-  # has a `github.event.pull_request.labels` payload to inspect. On a
-  # label-only event (`labeled` / `unlabeled`) GHA re-runs the
-  # workflow, which lets contributors flip a PR between "fast" and
-  # "full" CI by toggling the label.
+  # pull_request triggers exist so the `fast-build` gates below have a
+  # labels payload. On a label-only event (`labeled` / `unlabeled`) GHA
+  # re-runs the workflow, which lets contributors request the fast path.
+  # The Windows MSVC E2E policy still overrides that request whenever a
+  # platform-sensitive path changed.
   #
-  # NOTE: pushes to main always run the full sweep — the gate's
-  # `contains(...)` check evaluates to `false` on push events because
-  # `github.event.pull_request` is null, so the `!contains(...)`
-  # condition is `true` and the heavy mac/win jobs proceed.
+  # NOTE: pushes to main always run the full sweep. Label gates evaluate
+  # open when `github.event.pull_request` is null,
+  # and windows_e2e_policy.py explicitly requires the Windows pairs on
+  # every non-PR event.
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     paths-ignore:
@@ -211,13 +211,10 @@ jobs:
           --timeout 900
           --require-free-threaded
 
-  # build-macos-x64 removed. The unit-test sweep for darwin runs on
-  # linux x86 (same Rust code, target-independent logic) via
-  # `build-linux-x64`; the `e2e-macos-x64` lane below covers
-  # darwin-runtime behavior via the cross-built binary; the
-  # standalone `build-macos-x64.yml` push:main smoke is the
-  # native-runtime guard. One mac runner per arch — goal of the
-  # consolidation pass.
+  # There is no standalone macOS x64 build workflow. The native Linux
+  # integration sweep covers target-independent logic, while the
+  # `e2e-macos-x64` lane below cross-builds on Linux and runs the produced
+  # archive on `macos-15-intel`.
 
   # build-windows-{x64,arm64} removed. The unit-test sweep for
   # windows runs on linux x86 via `build-linux-x64` (target-
@@ -227,7 +224,10 @@ jobs:
   # arch — goal of the consolidation pass.
 
   # Linux glibc/musl e2e jobs always run — they are the proof of life
-  # and are cheap. The `fast-build` label only suppresses mac/win.
+  # and are cheap. macOS E2E pairs always run.
+  # fast-build may skip only the Windows MSVC E2E pairs, and only for low-risk
+  # docs/repository metadata.
+  # The separate PEP 517 platform smoke remains label-gated as a pair.
   e2e-linux-x64:
     name: build
     uses: ./.github/workflows/_bootstrap-e2e.yml
@@ -236,6 +236,25 @@ jobs:
       target: x86_64-unknown-linux-gnu
       binary_name: soldr
       source_ref: ${{ github.sha }}
+
+  # soldr#1697: a stable, always-reported check decides whether the Windows
+  # E2E pairs may be skipped. A failed/empty classification runs them; pushes
+  # always run them. This keeps required-check behavior deterministic while a
+  # docs-only fast-build PR can still avoid two Linux builds + target runners.
+  windows-e2e-policy:
+    name: Windows E2E policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run_windows_e2e: ${{ steps.policy.outputs.run_windows_e2e }}
+      reason: ${{ steps.policy.outputs.reason }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+      - name: Classify Windows E2E requirement
+        id: policy
+        run: python3 .github/scripts/windows_e2e_policy.py
 
   # soldr#1248: darwin/MSVC cross-build lanes need a current in-tree
   # host soldr to drive the blessed `soldr build --target ...` surface.
@@ -424,8 +443,8 @@ jobs:
   # ---------- Windows x64 ----------
   e2e-windows-x64-build:
     name: cross-build x86_64-pc-windows-msvc (linux host)
-    needs: e2e-cross-bootstrap-soldr
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: x86_64-pc-windows-msvc
@@ -436,7 +455,6 @@ jobs:
   e2e-windows-x64:
     name: target-run x86_64-pc-windows-msvc
     needs: e2e-windows-x64-build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: windows-2025
@@ -448,8 +466,8 @@ jobs:
   # make this the same blessed build + nextest archive path as x64 MSVC.
   e2e-windows-arm64-build:
     name: cross-build aarch64-pc-windows-msvc (linux host)
-    needs: e2e-cross-bootstrap-soldr
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
+    needs: [e2e-cross-bootstrap-soldr, windows-e2e-policy]
+    if: ${{ needs.windows-e2e-policy.outputs.run_windows_e2e == 'true' }}
     uses: ./.github/workflows/_ci-cross-build-linux.yml
     with:
       target: aarch64-pc-windows-msvc
@@ -460,7 +478,6 @@ jobs:
   e2e-windows-arm64:
     name: target-run aarch64-pc-windows-msvc
     needs: e2e-windows-arm64-build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     uses: ./.github/workflows/_ci-target-run.yml
     with:
       runs_on: windows-11-arm
