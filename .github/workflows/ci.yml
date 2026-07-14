@@ -50,6 +50,7 @@ jobs:
     # cheap fix; required-status branch protection is the structural
     # fix and lives in repo settings.
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -77,7 +78,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
+        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           toolchain: 1.94.1
           cache: false
@@ -102,6 +103,9 @@ jobs:
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js
+
+      - name: Verify direct CI job timeouts
+        run: python3 .github/scripts/verify_ci_job_timeouts.py
 
       - name: Run clippy
         run: soldr cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -131,6 +135,8 @@ jobs:
     name: PEP 517 daemon smoke (${{ matrix.name }})
     if: ${{ github.ref_name == 'main' || !contains(github.event.pull_request.labels.*.name, 'fast-build') }}
     runs-on: ${{ matrix.runner }}
+    # Includes native wheel compilation plus 3m and 15m inner smoke limits.
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -159,7 +165,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
+        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           toolchain: 1.94.1
           cache: false
@@ -235,6 +241,8 @@ jobs:
   e2e-cross-bootstrap-soldr:
     name: bootstrap soldr for darwin/msvc cross-builds
     runs-on: ubuntu-24.04
+    # Bounds the shared prerequisite; cold-cache successes are normally under 3m.
+    timeout-minutes: 15
     env:
       CARGO_TERM_COLOR: always
     steps:

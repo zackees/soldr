@@ -69,7 +69,7 @@ jobs:
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@bea35cc843969b89c2544b8683f600e8edc3a258
+        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
         with:
           toolchain: 1.94.1
           cache: false
