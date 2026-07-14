@@ -138,12 +138,18 @@ pub(crate) fn materialize_executable(
 }
 
 fn tmp_path_for(target: &Path) -> PathBuf {
+    // Threads in one process can observe the same clock tick, especially on
+    // macOS. A colliding fallback copy can otherwise truncate another
+    // thread's hardlinked temp file (and therefore the source executable).
+    static TMP_COUNTER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     let pid = std::process::id();
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    let suffix = format!("tmp.{pid}-{nanos}");
+    let sequence = TMP_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let suffix = format!("tmp.{pid}-{nanos}-{sequence}");
     let mut path = target.as_os_str().to_os_string();
     path.push(".");
     path.push(suffix);
@@ -237,5 +243,14 @@ mod tests {
         let replaced = materialize_executable(&source, &target).unwrap();
         assert!(replaced.created);
         assert_eq!(std::fs::read(&target).unwrap(), b"fake-soldr-v2");
+    });
+
+    crate::timed_test!(temporary_paths_are_unique_within_one_process, {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("rustc");
+        let mut paths = std::collections::HashSet::new();
+        for _ in 0..1_024 {
+            assert!(paths.insert(tmp_path_for(&target)));
+        }
     });
 }
