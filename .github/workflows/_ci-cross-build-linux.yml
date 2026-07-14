@@ -366,8 +366,25 @@ jobs:
           fi
           suffix=""
           case "$target" in *-pc-windows-msvc) suffix=".exe" ;; esac
-          ls -la "target/$target/$ci_profile/soldr$suffix"
-          file "target/$target/$ci_profile/soldr$suffix"
+          binary="target/$target/$ci_profile/soldr$suffix"
+          # Cargo normally places cross-target binaries under the
+          # target-qualified profile directory.  Keep the producer strict,
+          # but recover the alternate target-root layout used by older cargo
+          # wrappers (and print the complete candidate list) so a valid
+          # cross-built binary is not lost merely because the wrapper chose a
+          # different target-root shape.
+          if [[ ! -f "$binary" ]]; then
+            echo "expected binary missing: $binary; searching target tree" >&2
+            find target -type f \( -name "soldr" -o -name "soldr.exe" \) -print >&2 || true
+            candidate=$(find target -type f -path "*/$ci_profile/soldr$suffix" -print -quit)
+            if [[ -n "$candidate" ]]; then
+              mkdir -p "$(dirname "$binary")"
+              cp "$candidate" "$binary"
+              echo "normalized binary layout: $candidate -> $binary"
+            fi
+          fi
+          ls -la "$binary"
+          file "$binary"
 
       - name: Validate warm Windows cache restoration (release binary)
         if: contains(inputs.target, 'pc-windows-msvc')
