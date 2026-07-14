@@ -246,19 +246,16 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             binary: soldr
-          # x86_64-apple-darwin is intentionally omitted. Native Intel
-          # macOS hosted capacity has been unreliable for release runs,
-          # and the current release surface keeps macOS ARM64 as the
-          # shipped macOS archive target.
+          # x86_64-apple-darwin is intentionally omitted from the current
+          # release surface. CI still cross-builds and target-runs it; the
+          # distribution decision is tracked independently in #1696.
           #
-          # Pragmatic decision: **drop x86_64-apple-darwin from the release
-          # matrix** for the 0.7.9x line. Intel Macs are a shrinking user
-          # segment (Apple stopped shipping them in 2023), and pip users on
-          # Intel Mac can still install via sdist. If/when GHA either
-          # improves macos-13 capacity or provides a hosted Rosetta path
-          # under macos-15, we re-add.
+          # The Linux-hosted blessed cross-build plus macos-15-intel target
+          # runner make a future release restoration possible without a
+          # native Intel release builder. Until #1696 lands, keep the
+          # omission explicit and consistent with npm/PyPI documentation.
           #
-          # x86_64-apple-darwin: **intentionally omitted** — see comment above.
+          # x86_64-apple-darwin: **intentionally omitted** — see #1696.
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
@@ -1659,7 +1656,8 @@ jobs:
           pypi_version="${PYPI_VERSION#v}"
           # Expected wheel count == number of PyPI wheel matrix rows in the
           # `build` job. 7 = 2 linux-gnu + 2 linux-musl + 1 darwin
-          # (aarch64-only per soldr#1237 macos-x64 drop) + 2 windows-msvc.
+          # (aarch64-only while Intel macOS omission remains, tracked by #1696;
+          # original release change was PR #1250) + 2 windows-msvc.
           expected=7
           deadline=$(( $(date +%s) + 1800 ))
           attempts=0

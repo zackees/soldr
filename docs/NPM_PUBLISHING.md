@@ -25,8 +25,10 @@ Supported npm install targets match the release workflow:
 - `aarch64-pc-windows-msvc`
 
 `x86_64-apple-darwin` is intentionally not published as a release archive
-while GitHub-hosted Intel macOS release capacity remains unreliable. Intel
-macOS users should install from PyPI sdist or build from source.
+while GitHub-hosted Intel macOS release capacity remains unreliable; restoring
+that distribution lane is tracked in [#1696](https://github.com/zackees/soldr/issues/1696).
+Intel macOS users should install from PyPI sdist or build from source until
+that issue is closed.
 
 ## Owner Setup
 

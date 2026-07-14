@@ -211,13 +211,10 @@ jobs:
           --timeout 900
           --require-free-threaded
 
-  # build-macos-x64 removed. The unit-test sweep for darwin runs on
-  # linux x86 (same Rust code, target-independent logic) via
-  # `build-linux-x64`; the `e2e-macos-x64` lane below covers
-  # darwin-runtime behavior via the cross-built binary; the
-  # standalone `build-macos-x64.yml` push:main smoke is the
-  # native-runtime guard. One mac runner per arch — goal of the
-  # consolidation pass.
+  # There is no standalone macOS x64 build workflow. The native Linux
+  # integration sweep covers target-independent logic, while the
+  # `e2e-macos-x64` lane below cross-builds on Linux and runs the produced
+  # archive on `macos-15-intel`.
 
   # build-windows-{x64,arm64} removed. The unit-test sweep for
   # windows runs on linux x86 via `build-linux-x64` (target-
