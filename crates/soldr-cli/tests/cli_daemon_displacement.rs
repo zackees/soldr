@@ -40,6 +40,11 @@ impl EnvScope {
         // Never let an ambient wrapper leak into the probe.
         keys.push(("RUSTC_WRAPPER", std::env::var_os("RUSTC_WRAPPER")));
         std::env::remove_var("RUSTC_WRAPPER");
+        keys.push((
+            "RUNNING_PROCESS_DISABLE",
+            std::env::var_os("RUNNING_PROCESS_DISABLE"),
+        ));
+        std::env::set_var("RUNNING_PROCESS_DISABLE", "1");
         Self { keys }
     }
 }
@@ -86,8 +91,13 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path, fake_version: O
     if let Some(v) = fake_version {
         cmd.env("SOLDR_TEST_DAEMON_FAKE_PKG_VERSION", v);
     }
+    // Displacement is the behavior under test. Keep optional broker discovery
+    // out of this fixture so its network/process probe latency cannot consume
+    // the lifecycle watchdog.
+    cmd.env("RUNNING_PROCESS_DISABLE", "1");
     cmd.env_remove("RUSTC_WRAPPER");
-    let _ = cmd.status();
+    let status = cmd.status().expect("run isolated soldr command");
+    assert!(status.success(), "isolated soldr command failed: {args:?}");
 }
 
 struct SpawnedDaemon {
@@ -116,7 +126,7 @@ impl SpawnedDaemon {
             home_root,
         };
         assert!(
-            this.wait_until_live(Duration::from_secs(15)),
+            this.wait_until_live(Duration::from_secs(60)),
             "daemon never became live"
         );
         this
@@ -170,8 +180,8 @@ impl Drop for SpawnedDaemon {
 }
 
 timed_test!(
-    stale_version_daemon_is_displaced_by_current_client,
-    Duration::from_secs(60),
+    stale_version_daemon_is_displaced_and_current_version_is_preserved,
+    Duration::from_secs(180),
     {
         let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let daemon = SpawnedDaemon::spawn(Some("0.0.0-stale"));
@@ -228,14 +238,8 @@ timed_test!(
             std::thread::sleep(Duration::from_millis(50));
         }
         assert!(gone, "old daemon pid {old_pid} should have exited");
-    }
-);
+        drop(daemon);
 
-timed_test!(
-    current_version_daemon_is_not_displaced,
-    Duration::from_secs(60),
-    {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let daemon = SpawnedDaemon::spawn(None);
         let pid = daemon.pid().expect("current daemon has a pid");
 

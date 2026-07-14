@@ -65,6 +65,17 @@ impl EnvScope {
             std::env::set_var(k, v);
             keys.push(*k);
         }
+        for key in [
+            SOLDR_BUILD_SESSION_ID_ENV_VAR,
+            TARGET_REGISTRY_RECORDED_ENV_VAR,
+            "CARGO_TARGET_DIR",
+        ] {
+            if !keys.contains(&key) {
+                prior.push(std::env::var_os(key));
+                std::env::remove_var(key);
+                keys.push(key);
+            }
+        }
         Self {
             keys,
             prior,
@@ -73,16 +84,20 @@ impl EnvScope {
     }
 
     fn add(mut self, key: &'static str, value: &str) -> Self {
-        self.prior.push(std::env::var_os(key));
+        if !self.keys.contains(&key) {
+            self.prior.push(std::env::var_os(key));
+            self.keys.push(key);
+        }
         std::env::set_var(key, value);
-        self.keys.push(key);
         self
     }
 
     fn remove(mut self, key: &'static str) -> Self {
-        self.prior.push(std::env::var_os(key));
+        if !self.keys.contains(&key) {
+            self.prior.push(std::env::var_os(key));
+            self.keys.push(key);
+        }
         std::env::remove_var(key);
-        self.keys.push(key);
         self
     }
 }

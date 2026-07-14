@@ -177,6 +177,10 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("SOLDR_LINKER")
         .env_remove("CARGO_BUILD_TARGET")
+        // Local Docker builders keep the outer compilation cache in a named
+        // /target volume. Test fixtures must still exercise their own
+        // workspace-local target/ trees and sidecars.
+        .env_remove("CARGO_TARGET_DIR")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         // #692: parent-cache-sharing env vars leak from the setup-soldr

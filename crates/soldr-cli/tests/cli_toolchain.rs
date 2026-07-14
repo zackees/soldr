@@ -855,12 +855,10 @@ fn assert_native_shim_matches_soldr(shim: &Path, soldr_bin: &Path, tool: &str) {
 }
 
 fn expected_toolchain_link_source_soldr_bin() -> PathBuf {
-    if let Some(original) = std::env::var_os("SOLDR_ORIGINAL_EXE") {
-        let path = PathBuf::from(original);
-        if path.is_file() {
-            return path;
-        }
-    }
+    // `isolated_soldr_command` deliberately scrubs the outer dogfooding
+    // process's relocation markers. The child therefore links from the
+    // test-built soldr binary, regardless of which installed soldr launched
+    // the outer test command.
     common::soldr_bin()
 }
 

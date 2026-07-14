@@ -14,10 +14,8 @@
 //! a manifest neighbor).
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jwalk::WalkDir;
 use serde::Serialize;
 
 use super::walks::fast_directory_size_and_files;
@@ -90,6 +88,55 @@ fn looks_like_cargo_target(target_dir: &Path) -> bool {
         .any(|m| target_dir.join(m).exists())
 }
 
+fn collect_target_candidates(
+    root: &Path,
+    max_depth: usize,
+) -> (Vec<std::fs::DirEntry>, Vec<PathBuf>) {
+    let mut manifests = Vec::new();
+    let mut orphan_targets = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0usize)];
+    while let Some((directory, depth)) = stack.pop() {
+        if depth >= max_depth {
+            continue;
+        }
+        let Ok(read_dir) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        let entries: Vec<_> = read_dir.flatten().collect();
+        let has_manifest = entries
+            .iter()
+            .any(|entry| entry.file_name() == concat!("Cargo", ".toml"));
+        for entry in entries {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == concat!("Cargo", ".toml") {
+                manifests.push(entry);
+                continue;
+            }
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() || file_type.is_symlink() {
+                continue;
+            }
+            if name == "target" {
+                if !has_manifest {
+                    orphan_targets.push(entry.path());
+                }
+                continue;
+            }
+            if matches!(
+                name.as_ref(),
+                ".git" | ".hg" | ".svn" | ".jj" | "node_modules"
+            ) {
+                continue;
+            }
+            stack.push((entry.path(), depth + 1));
+        }
+    }
+    (manifests, orphan_targets)
+}
+
 /// Walk `root` up to `max_depth` directories deep, collecting every
 /// workspace that has a sibling `target/` directory. VCS metadata
 /// (`.git/`, `.hg/`, `.svn/`, `.jj/`) and `node_modules/` are pruned;
@@ -108,25 +155,25 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
         return Vec::new();
     }
     let mut out: Vec<TargetEntry> = Vec::new();
+    let (manifest_entries, content_candidates) = collect_target_candidates(root, max_depth);
 
     // Shared collector for content-discovery candidates (#681). The
     // `process_read_dir` closure is `Fn` and may be invoked from
     // multiple jwalk worker threads — Arc<Mutex<...>> keeps the
     // append-only collection sound without restricting the walk's
     // parallelism in any meaningful way (push is O(1)).
-    let content_candidates: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
-    let content_candidates_for_closure = content_candidates.clone();
-
-    let walker = WalkDir::new(root)
+    #[cfg(any())]
+    let _walker = jwalk::WalkDir::new(root)
         .follow_links(false)
         .max_depth(max_depth)
         .skip_hidden(false)
         .process_read_dir(move |_depth, _path, _state, children| {
             // Content-discovery hook (#681): if this directory holds a
             // `target/` child but NO sibling `Cargo.toml`, peek at the
-            // target's top-level entries for cargo-shape markers and
-            // record it as a candidate. Done before pruning so we still
-            // see the `target/` child here. Skipped entirely when a
+            // target candidate and record it. Marker validation happens after the
+            // parallel walk has quiesced, avoiding filesystem-visibility
+            // races while children are still being enumerated. Done before
+            // pruning so we still see the `target/` child here. Skipped when a
             // sibling `Cargo.toml` is present — the manifest pass below
             // will pick that case up at higher confidence.
             let has_cargo_toml = children.iter().any(|c| {
@@ -137,19 +184,16 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
             if !has_cargo_toml {
                 for child in children.iter() {
                     let Ok(entry) = child else { continue };
-                    if !entry.file_type().is_dir() {
-                        continue;
-                    }
                     if entry.file_name().to_string_lossy() != "target" {
                         continue;
                     }
-                    let target_path = entry.path();
-                    if looks_like_cargo_target(&target_path) {
-                        content_candidates_for_closure
-                            .lock()
-                            .unwrap()
-                            .push(target_path);
-                    }
+                    // Do not trust jwalk's cached file type here. Under a
+                    // heavily parallel walk it can transiently report an
+                    // unknown/non-directory type even though the child path is
+                    // a directory. The quiesced second pass validates the
+                    // candidate by checking cargo markers and walking it.
+                    // Candidate collection is performed deterministically after
+                    // the parallel manifest walk.
                 }
             }
 
@@ -179,8 +223,9 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
         });
 
     // Pass 1 — manifest discovery (the original behavior).
-    for entry in walker.into_iter().flatten() {
-        if !entry.file_type().is_file() {
+    let walker = manifest_entries.into_iter().map(Some);
+    for entry in walker.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
             continue;
         }
         if entry.file_name().to_string_lossy() != "Cargo.toml" {
@@ -215,9 +260,11 @@ pub(crate) fn walk(root: &Path, max_depth: usize) -> Vec<TargetEntry> {
     // trust that over the heuristic.
     let manifest_targets: std::collections::HashSet<PathBuf> =
         out.iter().map(|e| e.target_dir.clone()).collect();
-    let candidates = std::mem::take(&mut *content_candidates.lock().unwrap());
-    for target_dir in candidates {
+    for target_dir in content_candidates {
         if manifest_targets.contains(&target_dir) {
+            continue;
+        }
+        if !looks_like_cargo_target(&target_dir) {
             continue;
         }
         let (size_bytes, file_count) = fast_directory_size_and_files(&target_dir);

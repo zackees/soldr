@@ -87,6 +87,7 @@ where
     S: AsRef<OsStr>,
 {
     let mut cmd = Command::new(soldr_bin());
+    common::scrub_outer_soldr_env(&mut cmd);
     cmd.current_dir(project);
     cmd.args(args);
     for (k, v) in env_overrides {
