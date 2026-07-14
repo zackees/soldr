@@ -30,9 +30,10 @@
 //! so a ctrl-c in the shim or wrapper cancels the embedded rustc
 //! invocation cleanly.
 
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::daemon::client;
@@ -63,6 +64,11 @@ pub const DEFAULT_SPAWN_RETRY_BUDGET_MS: u64 = 30_000;
 /// is coming up but doesn't waste an extra ~hundred-ms after the
 /// socket starts accepting.
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Re-run the spawn-herd-protected daemon startup while a wrapper is still
+/// inside its connect budget. A detached child can exit after `spawn()`
+/// succeeds; probing alone can never recover from that case.
+const RESPAWN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Freshness window for the cross-process daemon-unavailable marker.
 /// When one wrapper proves the daemon cannot be reached, sibling rustc
@@ -357,12 +363,59 @@ pub fn should_fall_back_to_direct_rustc(failure: &DispatchError) -> bool {
 pub fn log_direct_exec_fallback_once(failure: &DispatchError) {
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
+        if let Ok(paths) = SoldrPaths::new() {
+            if let Err(error) = append_compile_daemon_fallback_event(&paths, failure) {
+                eprintln!(
+                    "soldr warning: failed to persist compile-daemon fallback evidence: {error}"
+                );
+            }
+        }
         eprintln!(
             "soldr: compile daemon unavailable after {}ms — falling back to direct \
-             uncached rustc (soldr#1633); reason={failure}",
+             uncached rustc (soldr#1657); reason={failure}",
             failure.budget_ms(),
         );
     });
+}
+
+/// Append one durable build-integrity record when a wrapper bypasses the
+/// managed cache. This has its own homogeneous JSONL stream so consumers of
+/// the established cargo-abort schema never have to interpret a tagged union.
+fn append_compile_daemon_fallback_event(
+    paths: &SoldrPaths,
+    failure: &DispatchError,
+) -> std::io::Result<PathBuf> {
+    let path = paths
+        .root
+        .join("logs")
+        .join("compile-daemon-fallbacks.jsonl");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let ts_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let session_id = std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok());
+    let mut record = serde_json::to_vec(&serde_json::json!({
+        "schema_version": 1,
+        "event": "compile_daemon_fallback",
+        "ts_ms": ts_ms,
+        "session_id": session_id,
+        "pid": std::process::id(),
+        "budget_ms": failure.budget_ms(),
+        "reason": failure.to_string(),
+    }))
+    .map_err(std::io::Error::other)?;
+    record.push(b'\n');
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?
+        .write_all(&record)?;
+    Ok(path)
 }
 
 /// Direct uncached exec of the rustc-style argv (soldr#1300 fallback
@@ -569,15 +622,34 @@ where
         }
     }
 
+    let budget = resolved_spawn_retry_budget();
+    let start = Instant::now();
+    let deadline = start + budget;
+    let mut prepared_spawn = None;
     let spawn_err = if spawn_on_first_failure {
-        let _ = crate::binaries::soldr_daemon_binary();
-        crate::daemon::lifecycle::try_spawn_detached()
-            .err()
-            .map(|e| format!("{e:?}"))
+        match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
+            Ok(prepared) => {
+                prepared_spawn = prepared;
+                None
+            }
+            Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
+        }
     } else {
         None
     };
-    let result = retry_within_budget(sock_path, req, first_err, spawn_err, stdout, stderr);
+    let result = retry_within_budget(
+        sock_path,
+        req,
+        first_err,
+        spawn_err,
+        stdout,
+        stderr,
+        RespawnPlan {
+            prepared: prepared_spawn,
+            start,
+            budget,
+        },
+    );
     if let Some(marker_path) = marker_path {
         record_dispatch_result_marker(marker_path, &result);
     }
@@ -648,33 +720,111 @@ where
             Err(e) => e,
         };
 
-    retry_within_budget(sock_path, req, first_err, None, stdout, stderr)
+    let budget = resolved_spawn_retry_budget();
+    retry_within_budget(
+        sock_path,
+        req,
+        first_err,
+        None,
+        stdout,
+        stderr,
+        RespawnPlan {
+            prepared: None,
+            start: Instant::now(),
+            budget,
+        },
+    )
 }
 
 /// Shared spawn-retry loop body. Retries the streaming compile every
 /// [`RETRY_INTERVAL`] until success or budget exhaustion. `first_err`
 /// seeds `last_err` so a budget too small for even one loop iteration
 /// still reports the pre-loop attempt's failure.
+fn periodic_respawn_due(
+    enabled: bool,
+    error: &client::ClientError,
+    elapsed: Duration,
+    next_respawn_at: Duration,
+) -> bool {
+    enabled
+        && client_error_indicates_daemon_unavailable(error)
+        && elapsed >= next_respawn_at
+}
+
+fn periodic_respawn_fits_budget(elapsed: Duration, budget: Duration) -> bool {
+    budget.saturating_sub(elapsed) >= RESPAWN_INTERVAL
+}
+
+fn run_periodic_respawn_if_due<F, T>(
+    enabled: bool,
+    error: &client::ClientError,
+    elapsed: Duration,
+    next_respawn_at: Duration,
+    budget: Duration,
+    spawn: F,
+) -> Option<T>
+where
+    F: FnOnce() -> T,
+{
+    (periodic_respawn_due(enabled, error, elapsed, next_respawn_at)
+        && periodic_respawn_fits_budget(elapsed, budget))
+    .then(spawn)
+}
+
+struct RespawnPlan {
+    prepared: Option<crate::daemon::lifecycle::PreparedDaemonSpawn>,
+    start: Instant,
+    budget: Duration,
+}
+
 fn retry_within_budget<O, E>(
     sock_path: &Path,
     req: CompileRequest,
     first_err: client::ClientError,
-    spawn_err: Option<String>,
+    mut spawn_err: Option<String>,
     mut stdout: O,
     mut stderr: E,
+    plan: RespawnPlan,
 ) -> Result<i32, DispatchError>
 where
     O: Write,
     E: Write,
 {
-    let budget = resolved_spawn_retry_budget();
-    let start = Instant::now();
+    let RespawnPlan {
+        prepared: prepared_spawn,
+        start,
+        budget,
+    } = plan;
+    let deadline = start + budget;
     let mut last_err: Option<client::ClientError> = Some(first_err);
+    let mut next_respawn_at = RESPAWN_INTERVAL;
     while start.elapsed() < budget {
         std::thread::sleep(RETRY_INTERVAL);
         match client::compile_streaming(sock_path, req.clone(), &mut stdout, &mut stderr) {
             Ok(done) => return Ok(done.exit_code),
-            Err(e) => last_err = Some(e),
+            Err(e) => {
+                last_err = Some(e);
+                if let Some(respawn_result) = run_periodic_respawn_if_due(
+                    prepared_spawn.is_some(),
+                    last_err.as_ref().expect("last error assigned above"),
+                    start.elapsed(),
+                    next_respawn_at,
+                    budget,
+                    || {
+                        crate::daemon::lifecycle::try_spawn_detached_prepared_until(
+                            prepared_spawn
+                                .as_ref()
+                                .expect("respawn is enabled only with a prepared image"),
+                            deadline,
+                        )
+                    },
+                ) {
+                    if let Err(error) = respawn_result {
+                        spawn_err = Some(format!("periodic respawn failed: {error:?}"));
+                    }
+                    next_respawn_at = start.elapsed() + RESPAWN_INTERVAL;
+                }
+            }
         }
     }
     Err(DispatchError::BudgetExhausted {
@@ -1082,6 +1232,117 @@ mod tests {
                 !marker.exists(),
                 "stale marker should be cleaned up best-effort"
             );
+        }
+    );
+
+    timed_test!(
+        periodic_respawn_is_due_only_for_daemon_unavailability,
+        Duration::from_secs(5),
+        {
+            let due = RESPAWN_INTERVAL;
+            assert!(!periodic_respawn_due(
+                true,
+                &client::ClientError::NotRunning,
+                due - Duration::from_millis(1),
+                due,
+            ));
+            assert!(periodic_respawn_due(
+                true,
+                &client::ClientError::NotRunning,
+                due,
+                due,
+            ));
+            assert!(!periodic_respawn_due(
+                false,
+                &client::ClientError::NotRunning,
+                due,
+                due,
+            ));
+            assert!(!periodic_respawn_due(
+                true,
+                &client::ClientError::Protocol("compile rejected".into()),
+                due,
+                due,
+            ));
+            assert!(periodic_respawn_fits_budget(
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+            ));
+            assert!(!periodic_respawn_fits_budget(
+                Duration::from_secs(26),
+                Duration::from_secs(30),
+            ));
+            let calls = std::cell::Cell::new(0);
+            let result = run_periodic_respawn_if_due(
+                true,
+                &client::ClientError::NotRunning,
+                Duration::from_secs(5),
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                || {
+                    calls.set(calls.get() + 1);
+                    "spawned"
+                },
+            );
+            assert_eq!(result, Some("spawned"));
+            assert_eq!(calls.get(), 1);
+
+            let late = run_periodic_respawn_if_due(
+                true,
+                &client::ClientError::NotRunning,
+                Duration::from_secs(26),
+                Duration::from_secs(5),
+                Duration::from_secs(30),
+                || calls.set(calls.get() + 1),
+            );
+            assert!(late.is_none());
+            assert_eq!(calls.get(), 1, "late respawn must not exceed the budget");
+        }
+    );
+
+    timed_test!(
+        compile_daemon_fallback_appends_structured_build_integrity_event,
+        Duration::from_secs(5),
+        {
+            let session_guard =
+                EnvVarGuard::acquire(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR);
+            let temp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+            let failure = DispatchError::BudgetExhausted {
+                budget: Duration::from_secs(30),
+                last_err: Some(client::ClientError::NotRunning),
+                sock: temp.path().join("sock"),
+                spawn_err: Some("detached child exited".into()),
+            };
+
+            let path = append_compile_daemon_fallback_event(&paths, &failure)
+                .expect("append fallback event");
+            let line = std::fs::read_to_string(&path).expect("read fallback event");
+            let event: serde_json::Value =
+                serde_json::from_str(line.trim()).expect("valid fallback JSONL");
+
+            assert_eq!(event["schema_version"], 1);
+            assert_eq!(event["event"], "compile_daemon_fallback");
+            assert_eq!(event["budget_ms"], 30_000);
+            assert_eq!(event["pid"], std::process::id());
+            assert!(event["ts_ms"].as_u64().is_some());
+            assert!(event["session_id"].is_null());
+            assert!(path.ends_with("compile-daemon-fallbacks.jsonl"));
+            assert!(event["reason"]
+                .as_str()
+                .expect("reason string")
+                .contains("detached child exited"));
+
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "42");
+            append_compile_daemon_fallback_event(&paths, &failure)
+                .expect("append session-correlated fallback event");
+            let lines = std::fs::read_to_string(&path).expect("read fallback events");
+            let correlated: serde_json::Value = serde_json::from_str(
+                lines.lines().nth(1).expect("second fallback event"),
+            )
+            .expect("valid correlated fallback JSONL");
+            assert_eq!(correlated["session_id"], 42);
+            drop(session_guard);
         }
     );
 

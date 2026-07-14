@@ -93,9 +93,14 @@ timed_test!(exec_cargo_build_routes_through_child_shims_and_zccache, {
         !log.contains("direct rustup cargo"),
         "exec should resolve cargo through the soldr child shim, not direct rustup cargo: {log}"
     );
+    let cargo_line = log
+        .lines()
+        .find(|line| line.starts_with("cargo wrapper="))
+        .expect("nested cargo log line");
     assert!(
-        log.contains("cargo wrapper=") && log.contains("child_shims=1"),
-        "nested cargo should inherit the exec child-shim recursion guard: {log}"
+        cargo_line.contains("child_shims=1")
+            || (cfg!(windows) && cargo_line.contains("soldr-shims-")),
+        "nested cargo should execute through the child shim layer: {log}"
     );
     assert!(
         log.lines()

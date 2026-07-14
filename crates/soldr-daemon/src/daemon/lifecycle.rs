@@ -78,10 +78,8 @@ pub(crate) fn direct_backend_handle_probe(paths: &SoldrPaths) -> Option<u32> {
 }
 
 pub(crate) fn direct_pid_file_live(paths: &SoldrPaths) -> Option<u32> {
-    direct_pid_file_live_for_stem(
-        paths,
-        crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
-    )
+    let (pid, _exe_path) = read_pid_file(paths)?;
+    pid_is_soldr_daemon(pid).then_some(pid)
 }
 
 fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Option<u32> {
@@ -128,6 +126,11 @@ pub(crate) fn current_version_claim_matches(paths: &SoldrPaths) -> bool {
 /// wants, or a stale version to displace.
 pub fn is_live_current_version(paths: &SoldrPaths) -> Option<u32> {
     let pid = is_live(paths)?;
+    current_version_claim_matches(paths).then_some(pid)
+}
+
+fn is_live_current_version_direct(paths: &SoldrPaths) -> Option<u32> {
+    let pid = direct_pid_file_live(paths)?;
     current_version_claim_matches(paths).then_some(pid)
 }
 
@@ -186,7 +189,7 @@ pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
     //    answer the wire Shutdown verb).
     if pid_is_soldr_daemon(pid) {
         append_lifecycle_event(paths, "displace-kill-fallback");
-        terminate_pid(pid);
+        terminate_pid(pid, None);
         wait_for_pid_exit(pid, Duration::from_secs(5));
     }
 
@@ -234,19 +237,30 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
         if !pid_is_alive(pid) {
             return true;
         }
-        std::thread::sleep(Duration::from_millis(50));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50).min(remaining));
     }
     !pid_is_alive(pid)
 }
 
 #[cfg(unix)]
-fn terminate_pid(pid: u32) {
+fn terminate_pid(pid: u32, deadline: Option<Instant>) {
     // SAFETY: kill(2) with SIGTERM then (if needed) SIGKILL. The PID was
     // just verified alive + soldr-daemon by the caller.
     unsafe {
         libc::kill(pid as libc::pid_t, libc::SIGTERM);
     }
-    if wait_for_pid_exit(pid, Duration::from_secs(3)) {
+    let grace = deadline
+        .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or(Duration::from_secs(3))
+        .min(Duration::from_secs(3));
+    if grace.is_zero() || wait_for_pid_exit(pid, grace) {
+        return;
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
         return;
     }
     unsafe {
@@ -256,7 +270,7 @@ fn terminate_pid(pid: u32) {
 
 #[cfg(windows)]
 #[allow(non_snake_case)]
-fn terminate_pid(pid: u32) {
+fn terminate_pid(pid: u32, _deadline: Option<Instant>) {
     use std::os::windows::raw::HANDLE;
     // Win32 API spelling — clippy would rename to Dword.
     #[allow(clippy::upper_case_acronyms)]
@@ -349,7 +363,25 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 /// spawn owner keeps the herd lock briefly after spawn while waiting
 /// for the daemon endpoint to become live; if readiness still races or
 /// times out, callers must keep using their normal retry budget.
+#[derive(Clone, Debug)]
+pub struct PreparedDaemonSpawn {
+    executable: PathBuf,
+    via_self: bool,
+}
+
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
+    try_spawn_detached_until(None).map(|_| ())
+}
+
+/// Spawn a daemon while honoring an optional absolute startup deadline.
+///
+/// On a successful owned spawn, returns the already-relocated image so a
+/// caller can retry after an early child death without hashing or relocating
+/// the executable again.
+pub fn try_spawn_detached_until(
+    deadline: Option<Instant>,
+) -> Result<Option<PreparedDaemonSpawn>, LifecycleError> {
+    ensure_startup_deadline_remaining(deadline)?;
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
     // Prefer the sibling `soldr-daemon` binary (dev builds + maturin
     // wheels ship both). Fall back to the running soldr binary itself
@@ -377,28 +409,89 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     // can bind — this is what breaks the version shadow, both for a
     // silently-serving older release and a protocol-mismatched daemon.
     if let Some(p) = paths.as_ref() {
-        if is_live_current_version(p).is_some() {
-            return Ok(());
+        let current_is_live = if deadline.is_some() {
+            is_live_current_version_direct(p).is_some()
+        } else {
+            is_live_current_version(p).is_some()
+        };
+        if current_is_live {
+            return Ok(None);
         }
         if displacement_enabled() && stale_daemon_occupies_endpoint(p).is_some() {
-            displace_stale_daemon(p);
+            if let Some(deadline) = deadline {
+                displace_stale_daemon_before(p, deadline);
+            } else {
+                displace_stale_daemon(p);
+            }
         }
     }
     // Without the lock, another wrapper is currently mid-spawn. Don't
     // pile on — the next wrapper will reprobe.
     if paths.is_some() && _spawn_lock.is_none() {
+        return Ok(None);
+    }
+
+    ensure_startup_deadline_remaining(deadline)?;
+    // Compile-dispatch recovery is deadline-sensitive. Its source is already
+    // a stable soldr/soldr-daemon runtime image, so avoid synchronous hashing,
+    // relocation, and runtime GC here. Normal daemon startup still takes the
+    // durable relocated path below.
+    let executable = if deadline.is_some() {
+        daemon_src
+    } else {
+        resolve_daemon_spawn_image(paths.as_ref(), &daemon_src)
+    };
+    let prepared = PreparedDaemonSpawn {
+        executable,
+        via_self: daemon_via_self,
+    };
+
+    spawn_prepared_daemon(&prepared, paths.as_ref(), deadline)?;
+    Ok(Some(prepared))
+}
+
+/// Retry a daemon spawn from an image prepared by
+/// [`try_spawn_detached_until`]. This path deliberately skips executable
+/// discovery, hashing, and relocation.
+pub fn try_spawn_detached_prepared_until(
+    prepared: &PreparedDaemonSpawn,
+    deadline: Instant,
+) -> Result<(), LifecycleError> {
+    let paths = SoldrPaths::new().ok();
+    let _spawn_lock = paths.as_ref().and_then(acquire_spawn_lock);
+    if let Some(p) = paths.as_ref() {
+        if is_live_current_version_direct(p).is_some() {
+            return Ok(());
+        }
+        if displacement_enabled() && stale_daemon_occupies_endpoint(p).is_some() {
+            displace_stale_daemon_before(p, deadline);
+        }
+    }
+    if paths.is_some() && _spawn_lock.is_none() {
         return Ok(());
     }
 
-    let relocated = resolve_daemon_spawn_image(paths.as_ref(), &daemon_src);
+    spawn_prepared_daemon(prepared, paths.as_ref(), Some(deadline))
+}
 
-    if !daemon_via_self && !crate::daemon::backend_handle_adoption::running_process_disabled() {
-        let _ = crate::daemon::service_definition::install_service_definition(&relocated);
+fn spawn_prepared_daemon(
+    prepared: &PreparedDaemonSpawn,
+    paths: Option<&SoldrPaths>,
+    deadline: Option<Instant>,
+) -> Result<(), LifecycleError> {
+    ensure_startup_deadline_remaining(deadline)?;
+
+    if deadline.is_none()
+        && !prepared.via_self
+        && !crate::daemon::backend_handle_adoption::running_process_disabled()
+    {
+        let _ =
+            crate::daemon::service_definition::install_service_definition(&prepared.executable);
     }
-    let spawn_result = if daemon_via_self {
-        spawn_detached_self_inner(&relocated).map_err(LifecycleError::Spawn)
+    let spawn_result = if prepared.via_self {
+        spawn_detached_self_inner(&prepared.executable).map_err(LifecycleError::Spawn)
     } else {
-        spawn_detached_inner(&relocated).map_err(LifecycleError::Spawn)
+        spawn_detached_inner(&prepared.executable).map_err(LifecycleError::Spawn)
     };
     spawn_result?;
 
@@ -407,11 +500,61 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
     // Windows can acquire the lock sequentially in several rustc-wrapper
     // processes and spawn multiple `soldr daemon start --foreground` children
     // before the first one is ready.
-    if let Some(paths) = paths.as_ref() {
-        wait_for_spawned_daemon_ready(paths, Duration::from_secs(5));
+    if let Some(paths) = paths {
+        let readiness_timeout = deadline
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
+            .unwrap_or(Duration::from_secs(5))
+            .min(Duration::from_secs(5));
+        if !readiness_timeout.is_zero() {
+            if deadline.is_some() {
+                wait_for_spawned_daemon_ready_direct(paths, readiness_timeout);
+            } else {
+                wait_for_spawned_daemon_ready(paths, readiness_timeout);
+            }
+        }
     }
 
     Ok(())
+}
+
+fn ensure_startup_deadline_remaining(deadline: Option<Instant>) -> Result<(), LifecycleError> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(LifecycleError::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "daemon startup deadline elapsed before spawn",
+        )));
+    }
+    Ok(())
+}
+
+fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
+    let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
+        cleanup_after_displacement(paths);
+        return true;
+    };
+    if Instant::now() >= deadline {
+        return false;
+    }
+
+    // The deadline-sensitive recovery path avoids a potentially slow IPC
+    // shutdown probe. The PID identity gate is the same one used by the normal
+    // graceful-then-kill path, so an unrelated recycled PID is never signaled.
+    if pid_is_soldr_daemon(pid) {
+        append_lifecycle_event(paths, "displace-kill-fallback");
+        terminate_pid(pid, Some(deadline));
+        let remaining = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_secs(5));
+        if !remaining.is_zero() {
+            wait_for_pid_exit(pid, remaining);
+        }
+    }
+
+    let freed = !pid_is_alive(pid);
+    if freed {
+        cleanup_after_displacement(paths);
+    }
+    freed
 }
 
 /// Resolve the on-disk image the daemon child will exec from.
@@ -452,6 +595,25 @@ fn wait_for_spawned_daemon_ready(paths: &SoldrPaths, timeout: Duration) -> bool 
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
+fn wait_for_spawned_daemon_ready_direct(paths: &SoldrPaths, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        // Recovery runs inside a strict compile-dispatch budget. Avoid the full
+        // backend adoption probe here because its fallback can hash an image.
+        // PID identity plus the current-version claim are sufficient to prove
+        // that this just-spawned process reached daemon initialization.
+        if is_live_current_version_direct(paths).is_some() {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50).min(remaining));
     }
     false
 }
@@ -936,6 +1098,26 @@ mod spawn_lock_tests {
     use crate::core::SoldrPaths;
     use std::sync::{Arc, Barrier};
     use tempfile::TempDir;
+
+    #[test]
+    fn expired_startup_deadline_returns_before_spawn_work() {
+        let prepared = PreparedDaemonSpawn {
+            executable: PathBuf::from("definitely-missing-soldr-daemon"),
+            via_self: false,
+        };
+        let started = Instant::now();
+        let error = spawn_prepared_daemon(
+            &prepared,
+            None,
+            Some(Instant::now() - Duration::from_millis(1)),
+        )
+        .expect_err("expired startup deadline must fail before spawning");
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(matches!(
+            error,
+            LifecycleError::Io(ref io) if io.kind() == std::io::ErrorKind::TimedOut
+        ));
+    }
 
     #[test]
     fn spawn_lock_is_exclusive_within_a_single_process() {

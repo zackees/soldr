@@ -214,6 +214,11 @@ impl Drop for DaemonCleanup {
 
 #[test]
 fn start_status_stop_round_trip() {
+    // `running_process_disable_uses_direct_daemon_liveness` mutates the
+    // process-global RUNNING_PROCESS_DISABLE flag. Serialize the direct
+    // `is_live` assertion with that test so parallel execution cannot switch
+    // backend policy between the CLI status probe and this library probe.
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
     let daemon = Daemon::spawn();
     let cache_root = daemon.cache_root.clone();
     let home_root = daemon.home_root.clone();
@@ -281,6 +286,55 @@ fn running_process_disable_uses_direct_daemon_liveness() {
     );
 
     drop(daemon);
+}
+
+#[test]
+fn direct_recovery_accepts_slim_via_self_daemon() {
+    let _lock = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let cache_root = unique_temp_dir("daemon-via-self-cache");
+    let home_root = unique_temp_dir("daemon-via-self-home");
+    let slim_bin_dir = unique_temp_dir("daemon-via-self-bin");
+    let slim_soldr = slim_bin_dir.join(if cfg!(windows) { "soldr.exe" } else { "soldr" });
+    fs::copy(common::soldr_bin(), &slim_soldr).expect("copy slim soldr executable");
+
+    let run_slim = |args: &[&str]| {
+        let mut cmd = Command::new(&slim_soldr);
+        cmd.args(args);
+        for (key, value) in isolated_env(&cache_root, &home_root) {
+            cmd.env(key, value);
+        }
+        cmd.env("RUNNING_PROCESS_DISABLE", "1")
+            .env_remove("RUSTC_WRAPPER");
+        cmd.output().expect("run slim soldr")
+    };
+
+    let first = run_slim(&["daemon", "start", "--idle-timeout", "60"]);
+    assert!(first.status.success(), "first slim start failed: {first:?}");
+    assert!(
+        wait_for_ready(
+            &cache_root,
+            &home_root,
+            Instant::now() + Duration::from_secs(40)
+        ),
+        "slim via-self daemon did not become ready"
+    );
+    let paths = SoldrPaths::with_root(cache_root.clone());
+    let first_pid = soldr_cli::daemon::lifecycle::is_live(&paths)
+        .expect("direct liveness must accept a soldr-named daemon");
+
+    let second = run_slim(&["daemon", "start", "--idle-timeout", "60"]);
+    assert!(
+        second.status.success(),
+        "second slim start failed: {second:?}"
+    );
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::is_live(&paths),
+        Some(first_pid),
+        "recovery must preserve the already-live via-self daemon"
+    );
+
+    let stop = run_slim(&["daemon", "stop"]);
+    assert!(stop.status.success(), "slim daemon stop failed: {stop:?}");
 }
 
 #[test]
