@@ -648,17 +648,6 @@ mod private_root_tests {
             eprintln!("skipping test: rustc not found on PATH");
             return;
         };
-        let rustc_probe = std::process::Command::new(&rustc).arg("--version").output();
-        if !rustc_probe.as_ref().is_ok_and(|output| output.status.success()) {
-            let detail = rustc_probe
-                .as_ref()
-                .map(|output| String::from_utf8_lossy(&output.stderr).into_owned())
-                .unwrap_or_else(|error| error.to_string());
-            eprintln!(
-                "skipping test: discovered rustc is not executable for this archived target: {detail}"
-            );
-            return;
-        }
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("workspace");
         std::fs::create_dir_all(project.join("src")).expect("create source directory");
