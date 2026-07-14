@@ -547,8 +547,9 @@ mod build_session_start_tests {
 /// silent degrade. No env-var gating, no feature gating, no fallback.
 async fn start_compile_service(
     paths: &SoldrPaths,
+    daemon_identity: &running_process::broker::backend_handle::DaemonProcess,
 ) -> Result<Arc<SoldrZccacheService>, ServerError> {
-    match SoldrZccacheService::start(paths).await {
+    match SoldrZccacheService::start(paths, daemon_identity).await {
         Ok(svc) => {
             tracing::info!("soldr-daemon: embedded zccache backend active");
             Ok(Arc::new(svc))
@@ -699,7 +700,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // tasks. tokio-console sees the union of soldr + zccache work
     // from a single attach. Embedded is mandatory; if start fails,
     // the daemon refuses to come up.
-    let compile_service = start_compile_service(&paths).await?;
+    let compile_service = start_compile_service(&paths, &daemon_identity).await?;
 
     // L4 (issue soldr#980): start the background event-flusher BEFORE we
     // accept any IPC traffic so the very first compile event lands on

@@ -29,6 +29,9 @@ tracing-subscriber = { workspace = true, optional = true }
 console-subscriber = { workspace = true, optional = true }
 zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
+[dev-dependencies]
+zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["test-support"] }
+
 [features]
 # Opt-in tokio-console support for the daemon and embedded zccache
 # service. Requires a `--cfg tokio_unstable` build to produce useful
