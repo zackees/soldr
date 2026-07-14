@@ -98,6 +98,24 @@ def test_cross_workflow_bootstraps_toolchain_dependencies_through_soldr() -> Non
         assert unmanaged_installer not in cross
 
 
+def test_catalogue_download_consumers_require_sha256_metadata() -> None:
+    cross = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
+    baseline = (WORKFLOWS / "baseline-zero-deps.yml").read_text(encoding="utf-8")
+    fetch = (REPO_ROOT / ".github" / "scripts" / "fetch_or_build_tool.sh").read_text(
+        encoding="utf-8"
+    )
+    downloader = (REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert cross.count("--json") >= 3
+    assert cross.count("catalogue sha256 mismatch") >= 3
+    assert "--json cargo-zigbuild" in baseline
+    assert "cargo-zigbuild catalogue sha256 mismatch" in baseline
+    assert "download_catalogued_asset.py" in fetch
+    assert "sha256 mismatch" in downloader
+
+
 def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
