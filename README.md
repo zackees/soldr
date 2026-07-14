@@ -56,6 +56,10 @@ The npm package is a small launcher that downloads the matching `soldr` GitHub
 Release binary for your OS and architecture during install, verifies it against
 the published `SHA256SUMS` file, and exposes the `soldr` command.
 
+Published npm archives and PyPI wheels support both Intel (`x86_64`) and Apple
+Silicon (`arm64`) macOS. Intel artifacts are cross-built through soldr's
+blessed Apple SDK path and smoke-tested on an Intel macOS runner before release.
+
 ## GitHub Actions setup
 
 The current GitHub Actions entry point is the public `setup-soldr` action:

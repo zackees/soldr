@@ -105,10 +105,12 @@ jobs:
             "soldr-${version}-aarch64-unknown-linux-gnu.tar.zst"
             "soldr-${version}-x86_64-unknown-linux-musl.tar.zst"
             "soldr-${version}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${version}-x86_64-apple-darwin.tar.zst"
             "soldr-${version}-aarch64-apple-darwin.tar.zst"
             "soldr-${version}-x86_64-pc-windows-msvc.tar.zst"
             "soldr-${version}-aarch64-pc-windows-msvc.tar.zst"
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
             "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
@@ -246,19 +248,14 @@ jobs:
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             binary: soldr
-          # x86_64-apple-darwin is intentionally omitted. Native Intel
-          # macOS hosted capacity has been unreliable for release runs,
-          # and the current release surface keeps macOS ARM64 as the
-          # shipped macOS archive target.
-          #
-          # Pragmatic decision: **drop x86_64-apple-darwin from the release
-          # matrix** for the 0.7.9x line. Intel Macs are a shrinking user
-          # segment (Apple stopped shipping them in 2023), and pip users on
-          # Intel Mac can still install via sdist. If/when GHA either
-          # improves macos-13 capacity or provides a hosted Rosetta path
-          # under macos-15, we re-add.
-          #
-          # x86_64-apple-darwin: **intentionally omitted** — see comment above.
+          # Intel macOS is cross-built on Linux through the blessed Apple
+          # SDK path. A separate macos-15-intel job architecture-checks and
+          # executes the archive and wheel before publication, so release
+          # production does not depend on native Intel builder capacity.
+          - name: macOS x64 (cross-compiled)
+            runner: ubuntu-24.04
+            target: x86_64-apple-darwin
+            binary: soldr
           - name: macOS ARM64
             runner: macos-15
             target: aarch64-apple-darwin
@@ -438,6 +435,13 @@ jobs:
             build --release --locked --target "$target" \
             --package soldr-cli \
             --bin soldr
+
+          # `soldr build` applies the blessed Darwin environment to its
+          # child cargo process only. Persist the same target-shaped SDK,
+          # clang, linker, and PATH values for the later maturin wheel build.
+          if [[ "$RUNNER_OS" == "Linux" && "$target" == *-apple-darwin ]]; then
+            "$driver" prepare --target "$target" --github-env "$GITHUB_ENV"
+          fi
           echo "=== post-build diagnostic: target/$target/release/ ==="
           ls -la "target/$target/release/" 2>&1 | head -20 || true
           echo "==================================================="
@@ -564,6 +568,7 @@ jobs:
                   "aarch64-unknown-linux-gnu": {"os": "linux", "arch": "aarch64", "libc": "glibc"},
                   "x86_64-unknown-linux-musl": {"os": "linux", "arch": "x86_64", "libc": "musl"},
                   "aarch64-unknown-linux-musl": {"os": "linux", "arch": "aarch64", "libc": "musl"},
+                  "x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"},
                   "aarch64-apple-darwin": {"os": "darwin", "arch": "aarch64"},
                   "x86_64-pc-windows-msvc": {"os": "windows", "arch": "x86_64", "abi": "msvc"},
                   "aarch64-pc-windows-msvc": {"os": "windows", "arch": "aarch64", "abi": "msvc"},
@@ -1195,7 +1200,9 @@ jobs:
           )
 
       - name: Smoke test wheel
-        if: ${{ !contains(matrix.target, 'musl') }}
+        # Cross-OS wheels cannot execute on the Linux build host. The Intel
+        # macOS wheel is exercised by smoke_macos_x64 below.
+        if: ${{ !contains(matrix.target, 'musl') && !(runner.os == 'Linux' && contains(matrix.target, 'apple-darwin')) }}
         shell: bash
         env:
           EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
@@ -1373,8 +1380,20 @@ jobs:
           # ubuntu-24.04-arm / windows-11-arm runners are aarch64; macOS is
           # whatever the matrix entry says (Intel vs ARM).
           runner_arch=$(uname -m)
-          case "$runner_arch:${{ matrix.target }}" in
+          target="${{ matrix.target }}"
+          os_matches=false
+          arch_matches=false
+          case "$RUNNER_OS:$target" in
+            Linux:*-unknown-linux-*|macOS:*-apple-darwin|Windows:*-pc-windows-msvc)
+              os_matches=true
+              ;;
+          esac
+          case "$runner_arch:$target" in
             x86_64:x86_64-*|aarch64:aarch64-*|arm64:aarch64-*)
+              arch_matches=true
+              ;;
+          esac
+          if [[ "$os_matches" == true && "$arch_matches" == true ]]; then
               "$extract/${{ matrix.binary }}" --version
 
               # soldr#1202: `soldr version --json` is a distinct code
@@ -1406,11 +1425,9 @@ jobs:
               "$extract/soldr-daemon${suffix}" --help >/dev/null
               "$extract/crgx${suffix}" --version
               "$extract/cargo-chef${suffix}" --version
-              ;;
-            *)
-              echo "skipping --version (runner $runner_arch vs target ${{ matrix.target }})"
-              ;;
-          esac
+          else
+              echo "skipping --version (runner $RUNNER_OS/$runner_arch vs target $target)"
+          fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -1422,12 +1439,73 @@ jobs:
           name: pypi-soldr-${{ matrix.target }}
           path: dist/*.whl
 
+  smoke_macos_x64:
+    name: Smoke Intel macOS release artifacts
+    needs:
+      - prepare
+      - build
+    if: needs.prepare.outputs.should_release == 'true'
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-soldr-x86_64-apple-darwin
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: pypi-soldr-x86_64-apple-darwin
+          path: dist
+
+      - name: Architecture-check and smoke archive and wheel
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --disable-pip-version-check dist/*.whl
+
+          expected="${EXPECTED_VERSION#v}"
+          wheel_version="$(.venv/bin/soldr version --json)"
+          printf 'Intel macOS wheel version: %s\n' "$wheel_version"
+          wheel_compact="$(printf '%s' "$wheel_version" | tr -d ' \n\r\t')"
+          printf '%s' "$wheel_compact" | grep -q "\"soldr_version\":\"${expected}\""
+
+          archive="dist/soldr-${EXPECTED_VERSION}-x86_64-apple-darwin.tar.zst"
+          test -f "$archive"
+          mkdir extracted
+          .venv/bin/soldr archive --input "$archive" --extract-dir extracted
+
+          file_output="$(file extracted/soldr)"
+          printf 'Intel macOS archive architecture: %s\n' "$file_output"
+          printf '%s' "$file_output" | grep -q 'Mach-O 64-bit executable x86_64'
+          archive_archs="$(lipo -archs extracted/soldr)"
+          printf 'Intel macOS archive lipo architectures: %s\n' "$archive_archs"
+          printf '%s' "$archive_archs" | grep -qw x86_64
+          if printf '%s' "$archive_archs" | grep -qw arm64; then
+            echo "expected a thin x86_64 archive binary, found: $archive_archs" >&2
+            exit 1
+          fi
+
+          archive_version="$(extracted/soldr version --json)"
+          printf 'Intel macOS archive version: %s\n' "$archive_version"
+          archive_compact="$(printf '%s' "$archive_version" | tr -d ' \n\r\t')"
+          printf '%s' "$archive_compact" | grep -q "\"soldr_version\":\"${expected}\""
+          extracted/soldr --version
+          extracted/soldr-daemon --help >/dev/null
+          extracted/crgx --version
+          extracted/cargo-chef --version
+
   publish:
     name: Attest and publish release assets
     needs:
       - prepare
       - build
-    if: needs.prepare.outputs.should_publish_github_release == 'true'
+      - smoke_macos_x64
+    if: needs.prepare.outputs.should_publish_github_release == 'true' && needs.smoke_macos_x64.result == 'success'
     runs-on: ubuntu-24.04
 
     steps:
@@ -1439,7 +1517,7 @@ jobs:
 
       # Wheels ship as GH-release assets alongside the .tar.zst archives.
       # This is parity with what `publish-pypi` uploads to PyPI: the same
-      # 7 platform wheels become offline-installable via
+      # 8 platform wheels become offline-installable via
       # `pip install <release-asset-url>`, and the assets are attestation-
       # covered via the same SHA256SUMS file below.
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1580,10 +1658,12 @@ jobs:
             "soldr-${tag}-aarch64-unknown-linux-gnu.tar.zst"
             "soldr-${tag}-x86_64-unknown-linux-musl.tar.zst"
             "soldr-${tag}-aarch64-unknown-linux-musl.tar.zst"
+            "soldr-${tag}-x86_64-apple-darwin.tar.zst"
             "soldr-${tag}-aarch64-apple-darwin.tar.zst"
             "soldr-${tag}-x86_64-pc-windows-msvc.tar.zst"
             "soldr-${tag}-aarch64-pc-windows-msvc.tar.zst"
             "soldr-${cargo_version}-py3-none-macosx_11_0_arm64.whl"
+            "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
             "soldr-${cargo_version}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
             "soldr-${cargo_version}-py3-none-musllinux_1_2_aarch64.whl"
@@ -1658,9 +1738,9 @@ jobs:
           # Tag-style version is `vX.Y.Z`; PyPI keys releases by `X.Y.Z`.
           pypi_version="${PYPI_VERSION#v}"
           # Expected wheel count == number of PyPI wheel matrix rows in the
-          # `build` job. 7 = 2 linux-gnu + 2 linux-musl + 1 darwin
-          # (aarch64-only per soldr#1237 macos-x64 drop) + 2 windows-msvc.
-          expected=7
+          # `build` job. 8 = 2 linux-gnu + 2 linux-musl + 2 darwin +
+          # 2 windows-msvc.
+          expected=8
           deadline=$(( $(date +%s) + 1800 ))
           attempts=0
           max_attempts=60

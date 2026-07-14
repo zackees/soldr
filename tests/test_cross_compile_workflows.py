@@ -24,21 +24,18 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "if: (!contains(inputs.target, 'pc-windows-msvc'))" not in cross
     assert (
         'if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        '            soldr --no-cache build --profile "$ci_profile"'
-        in cross
+        '            soldr --no-cache build --profile "$ci_profile"' in cross
     )
     assert (
         'elif [[ "$target" == *-apple-darwin ]]; then\n'
-        '            soldr build --profile "$ci_profile"'
-        in cross
+        '            soldr build --profile "$ci_profile"' in cross
     )
     assert (
-        'soldr_args=()\n'
+        "soldr_args=()\n"
         '          if [[ "$target" == *-pc-windows-msvc ]]; then\n'
-        '            soldr_args+=(--no-cache)\n'
-        '          fi\n'
-        '          soldr "${soldr_args[@]}" cargo nextest archive'
-        in cross
+        "            soldr_args+=(--no-cache)\n"
+        "          fi\n"
+        '          soldr "${soldr_args[@]}" cargo nextest archive' in cross
     )
     assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cross
     assert (
@@ -104,9 +101,9 @@ def test_catalogue_download_consumers_require_sha256_metadata() -> None:
     fetch = (REPO_ROOT / ".github" / "scripts" / "fetch_or_build_tool.sh").read_text(
         encoding="utf-8"
     )
-    downloader = (REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py").read_text(
-        encoding="utf-8"
-    )
+    downloader = (
+        REPO_ROOT / ".github" / "scripts" / "download_catalogued_asset.py"
+    ).read_text(encoding="utf-8")
 
     assert cross.count("--json") >= 3
     assert cross.count("catalogue sha256 mismatch") >= 3
@@ -130,7 +127,9 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
         assert "needs: e2e-cross-bootstrap-soldr" in block
         assert "bootstrap_artifact_name: soldr-ci-bootstrap-linux-gnu" in block
 
-    download = cross[cross.index("      - name: Download shared bootstrap soldr artifact") :]
+    download = cross[
+        cross.index("      - name: Download shared bootstrap soldr artifact") :
+    ]
     download = download[: download.index("      - name:", 10)]
     assert "inputs.bootstrap_artifact_name != ''" in download
     assert "contains(inputs.target" not in download
@@ -163,7 +162,9 @@ def test_windows_gnu_validation_runs_bounded_pr_runtime_smoke() -> None:
 
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
-    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
+    cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(
+        encoding="utf-8"
+    )
 
     for target in [
         "x86_64-pc-windows-msvc",
@@ -182,21 +183,37 @@ def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
         assert "tool: soldr-build" in cross_all[start:end]
 
 
-def test_mac_x64_cross_build_and_release_policy_are_explicit() -> None:
+def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     release = (WORKFLOWS / "release-auto.yml").read_text(encoding="utf-8")
     install = (REPO_ROOT / "scripts" / "install.js").read_text(encoding="utf-8")
     npm_docs = (REPO_ROOT / "docs" / "NPM_PUBLISHING.md").read_text(encoding="utf-8")
-    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(encoding="utf-8")
+    verification_docs = (REPO_ROOT / "docs" / "RELEASE_VERIFICATION.md").read_text(
+        encoding="utf-8"
+    )
 
     mac_build = _job_block(ci, "e2e-macos-x64-build", "e2e-macos-x64")
     assert "if: false" not in mac_build
     assert "target: x86_64-apple-darwin" in mac_build
 
-    assert "x86_64-apple-darwin is intentionally omitted" in release
-    assert '"darwin-x64"' in install
-    assert "intentionally not published" in install
+    assert (
+        "- name: macOS x64 (cross-compiled)\n"
+        "            runner: ubuntu-24.04\n"
+        "            target: x86_64-apple-darwin" in release
+    )
+    assert '"x86_64-apple-darwin": {"os": "darwin", "arch": "x86_64"}' in release
+    assert 'prepare --target "$target" --github-env "$GITHUB_ENV"' in release
+    assert "smoke_macos_x64:" in release
+    assert "runs-on: macos-15-intel" in release
+    assert "Mach-O 64-bit executable x86_64" in release
+    assert "lipo -archs extracted/soldr" in release
+    assert "needs.smoke_macos_x64.result == 'success'" in release
+    assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
+    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" in release
+
+    assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
+    assert "intentionally not published" not in install
     assert "x86_64-apple-darwin" in npm_docs
-    assert "intentionally not published" in npm_docs
+    assert "macos-15-intel" in npm_docs
     assert "x86_64-apple-darwin" in verification_docs
-    assert "intentionally omitted" in verification_docs
+    assert "Mach-O x86_64" in verification_docs
