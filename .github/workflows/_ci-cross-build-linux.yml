@@ -376,7 +376,11 @@ jobs:
           if [[ ! -f "$binary" ]]; then
             echo "expected binary missing: $binary; searching target tree" >&2
             find target -type f \( -name "soldr" -o -name "soldr.exe" \) -print >&2 || true
-            candidate=$(find target -type f -path "*/$ci_profile/soldr$suffix" -print -quit)
+            candidate=$(find target -type f \( \
+              -path "*/$ci_profile/soldr$suffix" -o \
+              -path "*/$ci_profile/deps/soldr$suffix" -o \
+              -path "*/$ci_profile/deps/soldr" \
+            \) -print -quit)
             if [[ -n "$candidate" ]]; then
               mkdir -p "$(dirname "$binary")"
               cp "$candidate" "$binary"
@@ -385,6 +389,9 @@ jobs:
           fi
           ls -la "$binary"
           file "$binary"
+          if [[ "$target" == *-pc-windows-msvc ]]; then
+            test "$(dd if="$binary" bs=1 count=2 2>/dev/null)" = "MZ"
+          fi
 
       - name: Validate warm Windows cache restoration (release binary)
         if: contains(inputs.target, 'pc-windows-msvc')
