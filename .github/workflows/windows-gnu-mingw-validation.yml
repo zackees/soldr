@@ -62,6 +62,7 @@ jobs:
             Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Checkout running-process
+        if: github.event_name != 'pull_request'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           repository: zackees/running-process
@@ -89,6 +90,7 @@ jobs:
           gcc --version
 
       - name: Build running-process crates
+        if: github.event_name != 'pull_request'
         shell: pwsh
         working-directory: running-process
         run: |
