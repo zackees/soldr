@@ -63,11 +63,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     )
     assert 'SOLDR_BIN="${SOLDR_BIN}.exe"' not in target_run
     for artifact_only_incompatible in [
-        "!test(=cargo_front_door_forces_msvc_target_even_with_polluted_path)",
-        "!test(=embedded_wrapper_path_has_no_standalone_compile_telemetry_calls)",
-        "!test(=gc_list_json_reports_built_project_target_dir)",
-        "!test(=soldr_build_invokes_real_cargo_build)",
-        "!test(=wrapper_mode_stdin_source_propagates_nonzero_exit_code)",
+        "!test(/cargo_front_door_forces_msvc_target_even_with_polluted_path/)",
+        "!test(/embedded_wrapper_path_has_no_standalone_compile_telemetry_calls/)",
+        "!test(/gc_list_json_reports_built_project_target_dir/)",
+        "!test(/real_rustc_hit_survives_full_and_ci_save_load_relocation/)",
+        "!test(/soldr_build_invokes_real_cargo_build/)",
+        "!test(/wrapper_mode_stdin_source_propagates_nonzero_exit_code/)",
         "!binary(=cli_exec)",
         "!binary(=cli_toolchain_doctor)",
     ]:
