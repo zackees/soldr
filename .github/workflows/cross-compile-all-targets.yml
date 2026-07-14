@@ -174,17 +174,26 @@ jobs:
           # zccache ships musl-only for Linux x64 (static; runs on
           # glibc). The soldr-toolchain catalogue resolves both the URL
           # and the version pinning.
-          asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
+          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
               --platform linux --arch x86 --extra musl \
-              --version "$zccache_version" \
-              zccache)
-          asset_filename=$(basename "$asset_url")
+              --version "$zccache_version" --json zccache)
+          asset_filename=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
+          asset_url=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')
+          expected_sha=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version linux-x64-musl"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
+          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
+          test "$actual_sha" = "$expected_sha" || {
+            echo "zccache catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
+            exit 1
+          }
           tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage
           for b in zccache zccache-daemon zccache-fp; do
             src=$(find dist/zccache-stage -type f -name "${b}" -print -quit)
@@ -362,19 +371,29 @@ jobs:
           # the public download URL. Try gnu first, fall back to musl
           # (cargo-xwin ships musl-only for x64); both fallbacks
           # invoke the same Python script so no per-tool YAML logic.
-          asset_url=$(
-              python3 .github/scripts/toolchain_asset_query.py \
-                  --platform linux --arch x86 --extra gnu "$tool" \
-              || python3 .github/scripts/toolchain_asset_query.py \
-                  --platform linux --arch x86 --extra musl "$tool"
-          )
-          asset_filename=$(basename "$asset_url")
+          query_args=(--platform linux --arch x86 --extra gnu)
+          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
+              "${query_args[@]}" --json "$tool" \
+              || { query_args=(--platform linux --arch x86 --extra musl); \
+                   python3 .github/scripts/toolchain_asset_query.py \
+                     "${query_args[@]}" --json "$tool"; })
+          asset_filename=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
+          asset_url=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')
+          expected_sha=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: $tool host-asset $asset_filename"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
+          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
+          test "$actual_sha" = "$expected_sha" || {
+            echo "$tool catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
+            exit 1
+          }
           # Tarball layout differs across tools (flat vs per-triple
           # subdir). `tar -a` auto-detects the compression; `find` then
           # locates `cargo-<tool>` regardless of where in the tree it
@@ -516,15 +535,25 @@ jobs:
             aarch64-pc-windows-msvc)  q="--platform windows --arch arm --extra msvc" ;;
             *) echo "no zccache platform mapping for ${{ matrix.target }}" >&2; exit 1 ;;
           esac
-          asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
-              $q --version "$zccache_version" zccache)
-          asset_filename=$(basename "$asset_url")
+          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
+              $q --version "$zccache_version" --json zccache)
+          asset_filename=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
+          asset_url=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')
+          expected_sha=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
           echo "catalogue: zccache $zccache_version ${{ matrix.target }}"
           echo "         $asset_url"
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
               --output "/tmp/${asset_filename}" "$asset_url"
+          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
+          test "$actual_sha" = "$expected_sha" || {
+            echo "zccache catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
+            exit 1
+          }
           case "$asset_filename" in
             *.tar.gz)  tar -xzf "/tmp/${asset_filename}" -C dist/zccache-stage ;;
             *.zip)     sudo apt-get install -y --no-install-recommends unzip

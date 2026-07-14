@@ -135,17 +135,27 @@ jobs:
           set -euo pipefail
           dest_dir="${RUNNER_TEMP}/cross-bin"
           mkdir -p "$dest_dir"
-          asset_url=$(
-              python3 .github/scripts/toolchain_asset_query.py \
-                  --platform linux --arch x86 --extra gnu cargo-zigbuild \
-              || python3 .github/scripts/toolchain_asset_query.py \
-                  --platform linux --arch x86 --extra musl cargo-zigbuild
-          )
-          asset_filename=$(basename "$asset_url")
+          query_args=(--platform linux --arch x86 --extra gnu)
+          asset_metadata=$(python3 .github/scripts/toolchain_asset_query.py \
+              "${query_args[@]}" --json cargo-zigbuild \
+              || { query_args=(--platform linux --arch x86 --extra musl); \
+                   python3 .github/scripts/toolchain_asset_query.py \
+                     "${query_args[@]}" --json cargo-zigbuild; })
+          asset_filename=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["filename"])')
           curl --fail --location \
               --connect-timeout 10 --max-time 120 \
               --retry 6 --retry-delay 5 --retry-all-errors \
-              --output "/tmp/${asset_filename}" "$asset_url"
+              --output "/tmp/${asset_filename}" \
+              "$(printf '%s' "$asset_metadata" | \
+                python3 -c 'import json,sys; print(json.load(sys.stdin)["urls"][0])')"
+          expected_sha=$(printf '%s' "$asset_metadata" | \
+            python3 -c 'import json,sys; print(json.load(sys.stdin)["sha256"])')
+          actual_sha=$(sha256sum "/tmp/${asset_filename}" | awk '{print $1}')
+          test "$actual_sha" = "$expected_sha" || {
+            echo "cargo-zigbuild catalogue sha256 mismatch: expected $expected_sha, got $actual_sha" >&2
+            exit 1
+          }
           extract_tmp=$(mktemp -d)
           tar -xaf "/tmp/${asset_filename}" -C "$extract_tmp"
           binary_src=$(find "$extract_tmp" -type f -name cargo-zigbuild -print -quit)

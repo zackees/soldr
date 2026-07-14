@@ -23,8 +23,6 @@
 
 set -euo pipefail
 
-CURL_CONNECT_TIMEOUT_SECS="${FETCH_OR_BUILD_TOOL_CURL_CONNECT_TIMEOUT_SECS:-10}"
-CURL_MAX_TIME_SECS="${FETCH_OR_BUILD_TOOL_CURL_MAX_TIME_SECS:-120}"
 GIT_CLONE_TIMEOUT_SECS="${FETCH_OR_BUILD_TOOL_GIT_CLONE_TIMEOUT_SECS:-300}"
 
 tool="${1:?tool required}"
@@ -79,40 +77,47 @@ case "$target" in
 esac
 
 asset_url=""
-# toolchain_asset_query.py exits non-zero on a miss; capture stdout if it
-# succeeds. The version we ask for is the soldr-source-tree-pinned
-# version so we can never end up with a catalogue hit for some other
-# tag.
-if asset_url=$(python3 .github/scripts/toolchain_asset_query.py \
-    $q --version "$version" "$tool" 2>/dev/null); then
-  echo "catalogue hit: $tool $version $target -> $asset_url"
+# Query metadata first so the downloader can verify the catalogue SHA-256
+# before extracting anything. The version we ask for is the
+# soldr-source-tree-pinned version so we can never end up with a catalogue hit
+# for some other tag.
+catalogue_json=""
+if catalogue_json=$(python3 .github/scripts/toolchain_asset_query.py \
+    $q --version "$version" --json "$tool" 2>/dev/null); then
+  asset_filename=$(printf '%s' "$catalogue_json" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["filename"])')
+  asset_path="/tmp/${asset_filename}"
+  if ! python3 .github/scripts/download_catalogued_asset.py \
+      $q --version "$version" "$tool" --output "$asset_path" >/dev/null; then
+    echo "catalogue asset verification failed for $tool $version $target" >&2
+    exit 1
+  fi
+  asset_url=$(printf '%s' "$catalogue_json" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["urls"][0])')
+  echo "catalogue hit: $tool $version $target -> $asset_url (sha256 verified)"
 fi
 
 if [ -n "$asset_url" ]; then
-  # Fast path: download + extract the prebuilt and we're done.
-  asset_filename=$(basename "$asset_url")
-  if ! curl --fail --location \
-      --connect-timeout "$CURL_CONNECT_TIMEOUT_SECS" \
-      --max-time "$CURL_MAX_TIME_SECS" \
-      --retry 6 --retry-delay 5 --retry-all-errors \
-      --output "/tmp/${asset_filename}" "$asset_url"; then
-    echo "catalogue URL fetch failed; falling back to source build" >&2
+  # Fast path: the helper already downloaded and verified the prebuilt.
+  asset_filename=$(basename "$asset_path")
+  if [ ! -f "$asset_path" ]; then
+    echo "catalogue asset disappeared after verification; falling back to source build" >&2
     asset_url=""
   else
     extract_tmp=$(mktemp -d)
     case "$asset_filename" in
       *.tar.zst|*.tar.zstd)
         tar --use-compress-program='zstd -d' \
-            -xf "/tmp/${asset_filename}" -C "$extract_tmp"
+            -xf "$asset_path" -C "$extract_tmp"
         ;;
       *.tar.gz)
-        tar -xzf "/tmp/${asset_filename}" -C "$extract_tmp"
+        tar -xzf "$asset_path" -C "$extract_tmp"
         ;;
       *.zip)
-        unzip -oq "/tmp/${asset_filename}" -d "$extract_tmp"
+        unzip -oq "$asset_path" -d "$extract_tmp"
         ;;
       *)
-        tar -xaf "/tmp/${asset_filename}" -C "$extract_tmp" || {
+        tar -xaf "$asset_path" -C "$extract_tmp" || {
           echo "unknown archive format: $asset_filename; falling back" >&2
           asset_url=""
         }
