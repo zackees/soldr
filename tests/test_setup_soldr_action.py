@@ -155,7 +155,7 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     assert "dogfood-build-seconds=" in workflow
     assert "dogfood-test-seconds=" in workflow
     assert "Stop dogfood zccache before cache save" in workflow
-    assert "& $zccache stop" in workflow
+    assert "& $soldr.Source zccache stop" in workflow
     assert "ACTION_CACHE_DIR: ${{ steps.setup.outputs.cache-dir }}" not in workflow
     assert "[System.IO.Path]::GetFullPath($env:SOLDR_CACHE_DIR)" in workflow
 
@@ -174,13 +174,14 @@ def test_cache_delta_experiment_quiesces_before_packaging() -> None:
     workflow = (
         REPO_ROOT / ".github" / "workflows" / "cache-delta-experiment.yml"
     ).read_text(encoding="utf-8")
+    shutdown_command = (
+        "soldr cache shutdown --shutdown-timeout-seconds 60 --json "
+        "|| soldr zccache stop || true"
+    )
 
     assert "Flush + shutdown cache before packaging delta" in setup_action
     assert "soldr cache flush --json || true" in setup_action
-    assert (
-        "soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true"
-        in setup_action
-    )
+    assert shutdown_command in setup_action
     assert re.search(
         r"- name: Package build delta\s+id: delta-tar\s+if: always\(\)",
         setup_action,
@@ -192,19 +193,30 @@ def test_cache_delta_experiment_quiesces_before_packaging() -> None:
 
     assert "Quiesce cache before cleanup packaging" in cleanup_action
     assert "soldr cache flush --json || true" in cleanup_action
-    assert (
-        "soldr cache shutdown --shutdown-timeout-seconds 60 --json || zccache stop || true"
-        in cleanup_action
-    )
+    assert shutdown_command in cleanup_action
     assert 'find . -type f -print0 > "$LIST"' in cleanup_action
     assert 'tar --null -T "$LIST"' in cleanup_action
-    assert "tar --use-compress-program='zstd -19 -T0' -cf \"$ARCHIVE\" ." not in cleanup_action
+    assert (
+        "tar --use-compress-program='zstd -19 -T0' -cf \"$ARCHIVE\" ."
+        not in cleanup_action
+    )
 
     assert "Flush + shutdown baseline cache" in workflow
+    assert shutdown_command in workflow
     assert 'rm -f "${ZCCACHE_CACHE_DIR}/daemon.sock"' in workflow
     assert 'find . -type f -print0 > "$list"' in workflow
     assert 'tar --null -T "$list"' in workflow
-    assert "tar --use-compress-program='zstd -19 -T0' -cf \"$archive\" -C \"$zccache_dir\" ." not in workflow
+    assert (
+        'tar --use-compress-program=\'zstd -19 -T0\' -cf "$archive" -C "$zccache_dir" .'
+        not in workflow
+    )
+
+    assert setup_action.index(
+        "Flush + shutdown cache before packaging delta"
+    ) < setup_action.index("Package build delta")
+    assert cleanup_action.index(
+        "Quiesce cache before cleanup packaging"
+    ) < cleanup_action.index("Package cook layer")
 
 
 def test_build_and_test_documents_removed_windows_pdb_artifacts() -> None:
@@ -226,8 +238,8 @@ def test_cross_build_nextest_archive_uses_ci_nextest_profile() -> None:
     cargo_toml = (REPO_ROOT / "Cargo.toml").read_text(encoding="utf-8")
 
     assert "cargo nextest archive" in workflow
-    assert "ci_profile=\"ci-nextest\"" in workflow
-    assert "--cargo-profile \"$ci_profile\"" in workflow
+    assert 'ci_profile="ci-nextest"' in workflow
+    assert '--cargo-profile "$ci_profile"' in workflow
     assert "CARGO_PROFILE_TEST_DEBUG: line-tables-only" in workflow
     assert "[profile.ci-nextest]" in cargo_toml
     assert 'inherits = "ci-release"' in cargo_toml
@@ -260,23 +272,35 @@ def test_cross_build_uses_deferred_cook_after_target_setup() -> None:
         REPO_ROOT / ".github" / "workflows" / "_ci-cross-build-linux.yml"
     ).read_text(encoding="utf-8")
 
-    assert "uses: zackees/setup-soldr/cook@" in workflow
-    assert (
-        "flags: --profile ${{ contains(inputs.target, 'pc-windows-msvc') && "
-        "'ci-release' || 'ci-nextest' }} --target ${{ inputs.target }} --workspace"
-        in workflow
-    )
-    assert "soldr prepare --target \"${{ inputs.target }}\" --github-env \"$GITHUB_ENV\"" in workflow
-    assert "inputs.target == 'x86_64-pc-windows-msvc'" in workflow
-    assert "if [[ \"$target\" == *-pc-windows-msvc ]]; then" in workflow
-    assert "profile=\"ci-release\"" in workflow
-    assert "soldr cargo clean -p soldr-cli --target \"$target\" --profile \"$profile\"" in workflow
-    assert "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" in workflow
-
     prepare_idx = workflow.index("Prepare blessed target env for cook")
     cook_idx = workflow.index("Restore cooked dependency cache")
     clean_idx = workflow.index("Clean cooked first-party stubs")
     build_idx = workflow.index("Cross-build release binary")
+    cook_step = workflow[cook_idx:clean_idx]
+    clean_step = workflow[clean_idx:build_idx]
+
+    assert "uses: zackees/setup-soldr/cook@" in cook_step
+    assert (
+        "flags: --profile ci-nextest --target ${{ inputs.target }} --workspace"
+        in cook_step
+    )
+    assert (
+        'soldr prepare --target "${{ inputs.target }}" --github-env "$GITHUB_ENV"'
+        in workflow
+    )
+    assert "cache: ${{ (contains(inputs.target, 'pc-windows-msvc')" in cook_step
+    assert 'profile="ci-nextest"' in clean_step
+    for package in [
+        "soldr-cli",
+        "soldr-core",
+        "soldr-fetch",
+        "soldr-cache",
+        "soldr-daemon",
+    ]:
+        assert f"-p {package}" in clean_step
+    assert '--target "$target" --profile "$profile"' in clean_step
+    assert "SOLDR_BINARY=$RUNNER_TEMP/soldr-bin/soldr" in workflow
+
     assert prepare_idx < cook_idx < clean_idx < build_idx
 
 

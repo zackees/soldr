@@ -10,14 +10,14 @@
   },
   "validation_commands": [
     {
-      "id": "rust-contract-matrix",
+      "id": "rust-embedded-runtime-topology",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_zccache_contract_matrix --locked"
+      "command": "soldr --no-cache cargo test -p soldr-cli --test no_standalone_spawn_lint --locked"
     },
     {
-      "id": "rust-source-resolution",
+      "id": "rust-zccache-entry",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_install_zccache_resolution --locked"
+      "command": "soldr --no-cache cargo test -p soldr-cli --test zccache_trampoline_gate --locked"
     },
     {
       "id": "rust-wrapper-env",
@@ -25,14 +25,24 @@
       "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cargo_wrappers --locked"
     },
     {
-      "id": "rust-native-cache-unit",
+      "id": "rust-rust-plan",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --bin soldr --locked native_cc::tests"
+      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_rust_plan --locked"
     },
     {
-      "id": "rust-unknown-session-retry",
+      "id": "rust-cache-cli",
       "gate": "hard",
-      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_unknown_session_retry --locked"
+      "command": "soldr --no-cache cargo test -p soldr-cli --test cli_cache --locked"
+    },
+    {
+      "id": "rust-cache-session",
+      "gate": "hard",
+      "command": "soldr --no-cache cargo test -p soldr-cli --lib --locked cache::session::tests"
+    },
+    {
+      "id": "rust-native-cache-unit",
+      "gate": "hard",
+      "command": "soldr --no-cache cargo test -p soldr-cli --lib --locked native_cc::tests"
     },
     {
       "id": "rust-native-cache-integration",
@@ -52,7 +62,7 @@
     {
       "id": "python-setup-contracts",
       "gate": "hard",
-      "command": "uv run pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q"
+      "command": "uv run --no-sync pytest tests/test_zccache_integration_guardrails.py tests/test_zccache_runtime_contract.py tests/test_setup_soldr_action.py tests/test_setup_soldr_exporter.py tests/test_setup_soldr_ensure_soldr.py -q"
     },
     {
       "id": "node-npm-contract",
@@ -72,46 +82,46 @@
   ],
   "guardrails": [
     {
-      "id": "source-precedence",
-      "axis": "source resolution",
+      "id": "embedded-runtime-topology",
+      "axis": "embedded runtime topology",
       "gate": "hard",
       "covers": [
-        "SOLDR_TEST_ZCCACHE_BIN override",
-        "embedded soldr/soldr-daemon runtime",
-        "managed cache directory selection",
-        "system fallback diagnostics"
+        "zccache compile service stays embedded in soldr-daemon",
+        "soldr zccache uses the gated in-process entry point",
+        "standalone zccache-daemon spawn paths remain unreachable",
+        "runtime packaging declares no standalone zccache binaries"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_install_zccache_resolution.rs",
-        "crates/soldr-cli/src/fetch/zccache_contract_tests.rs",
+        "crates/soldr-cli/tests/no_standalone_spawn_lint.rs",
+        "crates/soldr-cli/tests/zccache_trampoline_gate.rs",
+        "contracts/zccache-runtime.v1.json",
         "tests/test_zccache_runtime_contract.py"
       ],
       "validation_command_ids": [
-        "rust-source-resolution",
+        "rust-embedded-runtime-topology",
+        "rust-zccache-entry",
         "python-setup-contracts"
       ]
     },
     {
-      "id": "managed-session-env",
-      "axis": "session lifecycle and child env",
+      "id": "embedded-session-env",
+      "axis": "embedded session lifecycle and child env",
       "gate": "hard",
       "covers": [
-        "zccache start",
-        "session-start",
-        "ZCCACHE_SESSION_ID propagation",
-        "ZCCACHE_CACHE_DIR propagation",
+        "RUSTC_WRAPPER routes through soldr",
+        "legacy external zccache binary and session env is cleared",
         "ZCCACHE_PATH_REMAP propagation",
         "ZCCACHE_WORKTREE_ROOT propagation",
-        "session-end stats"
+        "embedded compile-stat session baselines and summaries"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_zccache_contract_matrix.rs",
-        "crates/soldr-cli/tests/cli_cargo_basic.rs",
-        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
+        "crates/soldr-cli/tests/cli_cargo_wrappers.rs",
+        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs",
+        "crates/soldr-cli/src/cache/session.rs"
       ],
       "validation_command_ids": [
-        "rust-contract-matrix",
-        "rust-wrapper-env"
+        "rust-wrapper-env",
+        "rust-cache-session"
       ]
     },
     {
@@ -119,19 +129,19 @@
       "axis": "rust artifact plan",
       "gate": "hard",
       "covers": [
-        "restore before cargo",
-        "save after cargo",
-        "managed daemon cache dir",
+        "in-process restore before cargo",
+        "in-process save after cargo",
         "artifact bundle cache dir",
-        "partial restore warning"
+        "partial restore warning",
+        "embedded compile counts drive warm-save decisions"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_zccache_contract_matrix.rs",
         "crates/soldr-cli/tests/cli_rust_plan.rs",
-        "crates/soldr-cli/src/rust_plan_tests"
+        "crates/soldr-cli/src/rust_plan_tests",
+        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [
-        "rust-contract-matrix"
+        "rust-rust-plan"
       ]
     },
     {
@@ -139,58 +149,36 @@
       "axis": "cache scoping",
       "gate": "hard",
       "covers": [
-        "--no-cache build bypasses managed zccache",
-        "non-build cargo commands bypass managed zccache",
+        "--no-cache build bypasses the embedded compile service",
+        "non-build cargo commands preserve the documented wrapper policy",
         "SOLDR_CACHE_ENABLED=0 reaches cargo"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_zccache_contract_matrix.rs",
-        "crates/soldr-cli/tests/cli_cargo_wrappers.rs"
+        "crates/soldr-cli/tests/cli_cargo_wrappers.rs",
+        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [
-        "rust-contract-matrix",
         "rust-wrapper-env"
       ]
     },
     {
-      "id": "unknown-session-retry",
-      "axis": "wrapper recovery",
-      "gate": "hard",
-      "platforms": [
-        "windows"
-      ],
-      "covers": [
-        "one retry after zccache unknown session",
-        "fresh session allocation for retry",
-        "non-session errors do not retry"
-      ],
-      "test_files": [
-        "crates/soldr-cli/tests/cli_unknown_session_retry.rs",
-        "crates/soldr-cli/src/wrapper.rs",
-        "crates/soldr-cli/src/zccache_lifecycle.rs"
-      ],
-      "validation_command_ids": [
-        "rust-unknown-session-retry",
-        "rust-watchdog-lint"
-      ]
-    },
-    {
-      "id": "shutdown-scoping",
-      "axis": "daemon shutdown",
+      "id": "embedded-flush-shutdown",
+      "axis": "embedded cache flush and shutdown",
       "gate": "hard",
       "covers": [
-        "command-lifetime stop after session-end",
-        "failed cargo still shuts down",
-        "shutdown uses soldr-owned cache root",
-        "daemon-down diagnostics"
+        "command-lifetime durability uses embedded flush",
+        "session summaries are finalized from embedded compile stats",
+        "cache shutdown targets soldr-daemon",
+        "daemon-down diagnostics remain bounded"
       ],
       "test_files": [
-        "crates/soldr-cli/tests/cli_zccache_contract_matrix.rs",
         "crates/soldr-cli/tests/cli_cache.rs",
-        "crates/soldr-cli/tests/cli_cargo_basic.rs"
+        "crates/soldr-cli/src/cache/session.rs",
+        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [
-        "rust-contract-matrix"
+        "rust-cache-cli",
+        "rust-cache-session"
       ]
     },
     {
@@ -223,7 +211,7 @@
         "embedded zccache runtime",
         "crgx binary",
         "setup-soldr manifest validation",
-        "npm bundled contract files"
+        "npm exported contract files"
       ],
       "test_files": [
         "contracts/zccache-runtime.v1.json",
@@ -254,6 +242,7 @@
       ],
       "validation_command_ids": [
         "rust-wrapper-env",
+        "rust-wrapper-perf",
         "perf-cold-warm"
       ]
     },
@@ -331,18 +320,20 @@
       "axis": "test ownership",
       "gate": "hard",
       "covers": [
-        "new zccache integration tests live outside monolithic source modules",
-        "new tests use timed_test watchdog",
-        "wave-specific contract tests remain discoverable"
+        "zccache integration tests live outside monolithic source modules",
+        "new tests use the timed_test watchdog",
+        "embedded-runtime contract tests remain discoverable"
       ],
       "test_files": [
         "crates/soldr-cli/tests/timed_test_lint.rs",
-        "crates/soldr-cli/src/fetch/zccache_contract_tests.rs",
-        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs",
-        "crates/soldr-cli/src/zccache_lifecycle.rs"
+        "crates/soldr-cli/tests/no_standalone_spawn_lint.rs",
+        "crates/soldr-cli/tests/zccache_trampoline_gate.rs",
+        "crates/soldr-cli/src/cargo_front_door/cache_plan.rs"
       ],
       "validation_command_ids": [
-        "rust-watchdog-lint"
+        "rust-watchdog-lint",
+        "rust-embedded-runtime-topology",
+        "rust-zccache-entry"
       ]
     }
   ]

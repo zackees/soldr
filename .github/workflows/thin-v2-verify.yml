@@ -3,8 +3,9 @@
 # What this gate proves:
 #   With SOLDR_TARGET_CACHE_PROFILE=thin-v2, build a workspace, delete its
 #   target directory, and restore the slice with the warm-sentinel bypass
-#   disabled. Because thin-v2 intentionally omits primary rlib/rmeta outputs,
-#   Cargo must rebuild the workspace unit rather than report it Fresh.
+#   disabled. Thin-v2 may retain Cargo JSON-verified primary outputs; if the
+#   captured closure is incomplete, Cargo must rebuild rather than falsely
+#   report the workspace unit Fresh.
 #
 # Why this is informational for now:
 #   This is the first end-to-end gate. Treat it as an early-warning signal

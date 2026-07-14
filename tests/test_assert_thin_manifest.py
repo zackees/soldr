@@ -220,13 +220,9 @@ def test_strict_mode_catches_orphan(mod, tmp_path: Path) -> None:
     "rel_path,label_substr",
     [
         ("debug/incremental/foo.bin", "incremental"),
-        ("debug/deps/libserde-abc.rlib", "rlib"),
-        ("debug/deps/libserde-abc.rmeta", "rmeta"),
         ("debug/deps/serde-abc.dwo", "dwo"),
         ("debug/deps/soldr.pdb", "pdb"),
         ("debug/deps/soldr.dSYM/Contents/Info.plist", "dSYM"),
-        ("debug/build/serde-abc/build-script-build", "Unix"),
-        ("debug/build/serde-abc/build-script-build.exe", "Windows"),
         (
             "debug/.fingerprint/serde-abc/serde-abc.json",
             "diagnostic JSON",
@@ -278,6 +274,24 @@ def test_dropped_category_triggers_failure(
     joined = "\n".join(errors)
     assert "dropped artifact classes" in joined
     assert label_substr in joined
+
+
+@pytest.mark.parametrize(
+    "rel_path",
+    [
+        "debug/deps/libserde-abc.rlib",
+        "debug/deps/libserde-abc.rmeta",
+        "debug/build/serde-abc/build-script-build",
+        "debug/build/serde-abc/build-script-build.exe",
+    ],
+)
+def test_hydrated_primary_output_is_allowed(mod, tmp_path: Path, rel_path: str) -> None:
+    bundle = tmp_path / "bundle"
+    bundle.mkdir()
+    _populate_bundle(bundle, [rel_path])
+    manifest_path = _make_manifest(bundle, [(rel_path, 1)])
+
+    assert mod.assert_manifest(manifest_path, bundle) == []
 
 
 @pytest.mark.parametrize(
@@ -341,8 +355,8 @@ def test_cli_exits_zero_on_clean_bundle(tmp_path: Path) -> None:
 def test_cli_exits_one_on_dropped_category(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle"
     bundle.mkdir()
-    rlib = "debug/deps/libserde-abc.rlib"
-    _populate_bundle(bundle, [rlib])
+    incremental = "debug/incremental/foo.bin"
+    _populate_bundle(bundle, [incremental])
     manifest_path = bundle / "manifest.v2.json"
     manifest_path.write_text(
         json.dumps(
@@ -351,7 +365,7 @@ def test_cli_exits_one_on_dropped_category(tmp_path: Path) -> None:
                 "cache_profile": "thin-v2",
                 "bundle_root": str(bundle),
                 "generated_at_unix_seconds": 1700000000,
-                "files": [{"path": rlib, "size_bytes": 1}],
+                "files": [{"path": incremental, "size_bytes": 1}],
             }
         ),
         encoding="utf-8",
@@ -365,4 +379,4 @@ def test_cli_exits_one_on_dropped_category(tmp_path: Path) -> None:
     )
     assert result.returncode == 1
     assert "FAIL" in result.stderr
-    assert "rlib" in result.stderr
+    assert "incremental" in result.stderr
