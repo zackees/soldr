@@ -140,6 +140,14 @@ def test_linux_zig_cross_lanes_use_current_checkout_soldr_bootstrap() -> None:
     assert "inputs.bootstrap_artifact_name != ''" in expose
 
 
+def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
+    assert "github.ref_name == 'main' || github.event_name == 'pull_request'" in block
+    assert "soldr#1676" in block
+    assert "CLI, daemon, and rust-plan" in block
+
+
 def test_manual_cross_compile_workflows_use_blessed_supported_targets() -> None:
     build_all = (WORKFLOWS / "build-all-from-linux.yml").read_text(encoding="utf-8")
     cross_all = (WORKFLOWS / "cross-compile-all-targets.yml").read_text(encoding="utf-8")
