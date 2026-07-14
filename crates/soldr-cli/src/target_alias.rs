@@ -47,6 +47,35 @@ pub const CANONICAL_ALIASES: &[(&str, &str)] = &[
     ("linux-arm64-musl", "aarch64-unknown-linux-musl"),
 ];
 
+/// Replace soldr target aliases in cargo-style arguments with Rust triples.
+///
+/// The blessed build path prepares its toolchain from the resolved target and
+/// then forwards the same argument vector to cargo. Normalizing that vector
+/// keeps documented aliases from leaking through to cargo as unknown targets.
+/// Unknown values are deliberately left alone so cargo can still accept custom
+/// target specifications.
+pub fn normalize_target_aliases_in_args(args: &mut [String]) {
+    let mut index = 0;
+    while index < args.len() {
+        if let Some(input) = args[index].strip_prefix("--target=") {
+            if let Some(triple) = target_for_known_alias(input) {
+                args[index] = format!("--target={triple}");
+            }
+        } else if args[index] == "--target" && index + 1 < args.len() {
+            if let Some(triple) = target_for_known_alias(&args[index + 1]) {
+                args[index + 1] = triple.to_string();
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+}
+
+fn target_for_known_alias(input: &str) -> Option<&'static str> {
+    let lower = input.trim().to_ascii_lowercase();
+    canonical_lookup(&lower).or_else(|| synonym_lookup(&lower).and_then(canonical_lookup))
+}
+
 /// Synonym → canonical alias table. Every entry's value MUST appear
 /// in [`CANONICAL_ALIASES`]'s key column. Tests enforce this.
 const SYNONYMS: &[(&str, &str)] = &[
@@ -430,5 +459,25 @@ mod tests {
         let triples_alias: std::collections::HashSet<&str> =
             CANONICAL_ALIASES.iter().map(|(_, t)| *t).collect();
         assert_eq!(triples_const, triples_alias);
+    });
+
+    crate::timed_test!(canonical_aliases_normalize_in_cargo_arguments, {
+        for (alias, triple) in CANONICAL_ALIASES {
+            let mut split = vec![
+                "build".to_string(),
+                "--target".to_string(),
+                alias.to_string(),
+            ];
+            normalize_target_aliases_in_args(&mut split);
+            assert_eq!(split[2], *triple, "split --target form drifted for {alias}");
+
+            let mut equals = vec!["build".to_string(), format!("--target={alias}")];
+            normalize_target_aliases_in_args(&mut equals);
+            assert_eq!(
+                equals[1],
+                format!("--target={triple}"),
+                "equals --target form drifted for {alias}"
+            );
+        }
     });
 }

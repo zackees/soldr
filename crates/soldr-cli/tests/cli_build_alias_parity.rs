@@ -150,3 +150,31 @@ fn soldr_build_help_documents_blessed_surface() {
         "soldr build --help is missing the blessed-surface contract language:\n{combined}"
     );
 }
+
+soldr_cli::timed_test!(canonical_aliases_resolve_through_the_cli, {
+    let cwd = unique_temp_dir("canonical-alias-cli-parity");
+    for (alias, triple) in soldr_cli::target_alias::CANONICAL_ALIASES {
+        let output = Command::new(common::soldr_bin())
+            .args(["env", "--target", alias, "--json"])
+            .current_dir(&cwd)
+            .output()
+            .unwrap_or_else(|err| panic!("failed to resolve canonical alias {alias}: {err}"));
+        assert!(
+            output.status.success(),
+            "canonical alias {alias} failed through the CLI parser/resolver: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("invalid JSON for canonical alias {alias}: {err}"));
+        assert_eq!(
+            payload["rust_triple"].as_str(),
+            Some(*triple),
+            "canonical alias {alias} resolved to the wrong target"
+        );
+        assert_eq!(
+            payload["via_alias"], true,
+            "{alias} bypassed alias resolution"
+        );
+    }
+    let _ = std::fs::remove_dir_all(cwd);
+});

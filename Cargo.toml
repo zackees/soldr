@@ -30,10 +30,11 @@ repository = "https://github.com/zackees/soldr"
 homepage = "https://github.com/zackees/soldr"
 
 [workspace.metadata.soldr]
-# Shipping matrix consumed by `soldr prepare --target all` (RFC #914).
+# Compatibility mirror of the authoritative `ci/canonical-targets.json`,
+# consumed by `soldr prepare --target all` (RFC #914).
 # Cargo ignores `[workspace.metadata.*]` — this is the blessed way to
-# attach tool-specific config to a manifest. Kept in sync with the
-# `cross-compile-all-targets.yml` workflow matrix.
+# attach tool-specific config to a manifest. A parity guard checks every
+# runtime, workflow, release, alias, documentation, and catalogue mirror.
 targets = [
     "x86_64-pc-windows-msvc",
     "aarch64-pc-windows-msvc",

@@ -33,6 +33,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/build-all-from-linux.yml"
+      - "ci/canonical-targets.json"
 
 permissions:
   contents: read
@@ -47,21 +48,21 @@ env:
 
 jobs:
   build-all:
-    name: ${{ matrix.friendly }} (${{ matrix.target }})
+    name: ${{ matrix.alias }} (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { friendly: linux-x86,      target: x86_64-unknown-linux-gnu,    exe_suffix: "" }
-          - { friendly: linux-arm,      target: aarch64-unknown-linux-gnu,   exe_suffix: "" }
-          - { friendly: linux-x86-musl, target: x86_64-unknown-linux-musl,   exe_suffix: "" }
-          - { friendly: linux-arm-musl, target: aarch64-unknown-linux-musl,  exe_suffix: "" }
-          - { friendly: macos-x86,      target: x86_64-apple-darwin,         exe_suffix: "" }
-          - { friendly: macos-arm,      target: aarch64-apple-darwin,        exe_suffix: "" }
-          - { friendly: windows-x86,    target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
-          - { friendly: windows-arm,    target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
+          - { alias: linux-x64,       target: x86_64-unknown-linux-gnu,    exe_suffix: "" }
+          - { alias: linux-arm64,     target: aarch64-unknown-linux-gnu,   exe_suffix: "" }
+          - { alias: linux-x64-musl,  target: x86_64-unknown-linux-musl,   exe_suffix: "" }
+          - { alias: linux-arm64-musl, target: aarch64-unknown-linux-musl, exe_suffix: "" }
+          - { alias: mac-x64,         target: x86_64-apple-darwin,         exe_suffix: "" }
+          - { alias: mac-arm64,       target: aarch64-apple-darwin,        exe_suffix: "" }
+          - { alias: win-x64,         target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
+          - { alias: win-arm64,       target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -97,9 +98,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::soldr build --target ${{ matrix.target }}"
+          echo "::group::soldr build --target ${{ matrix.alias }} (${{ matrix.target }})"
           soldr build --release \
-            --target "${{ matrix.target }}" \
+            --target "${{ matrix.alias }}" \
             --package soldr-cli \
             --bin soldr
           echo "::endgroup::"

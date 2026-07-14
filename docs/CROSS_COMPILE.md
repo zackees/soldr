@@ -35,6 +35,24 @@ bind-mount error → fix mapping ([soldr#885](https://github.com/zackees/soldr/i
 | **Windows/Linux -> Mac** | `soldr build` + target-shaped Apple SDK ([Section 1a](#1a-windows--linux-via-cargo-zigbuild-and-macos-via-soldr-build-soldr988soldr1425)) |
 | Declare cross targets up-front | `[toolchain].targets` + `[soldr.plugins]` ([Section 3](#3-pinned-host-triples-per-project-current-state)) |
 
+## Canonical target aliases
+
+`ci/canonical-targets.json` is the machine-readable authority for the target,
+alias, CI, release, and catalogue contract. Raw Rust triples remain accepted.
+
+<!-- canonical-target-contract:start -->
+| Alias | Rust target | CI validation | Release |
+|---|---|---|---|
+| `win-x64` | `x86_64-pc-windows-msvc` | Cross-build + native run | Shipped |
+| `win-arm64` | `aarch64-pc-windows-msvc` | Cross-build + native run | Shipped |
+| `mac-x64` | `x86_64-apple-darwin` | Cross-build + native run | Not shipped (intentional Intel macOS exclusion) |
+| `mac-arm64` | `aarch64-apple-darwin` | Cross-build + native run | Shipped |
+| `linux-x64` | `x86_64-unknown-linux-gnu` | Native build + run | Shipped |
+| `linux-arm64` | `aarch64-unknown-linux-gnu` | Cross-build + native run | Shipped |
+| `linux-x64-musl` | `x86_64-unknown-linux-musl` | Cross-build + native run | Shipped |
+| `linux-arm64-musl` | `aarch64-unknown-linux-musl` | Cross-build + native run | Shipped |
+<!-- canonical-target-contract:end -->
+
 ---
 
 ## 1. Windows x64 → Windows GNU via managed MinGW-w64 GCC
