@@ -156,7 +156,15 @@ fn find_ancestor_dir(
     relative: &str,
 ) -> Option<std::path::PathBuf> {
     let mut current = start_dir?.to_path_buf();
+    let user_home = crate::core::user_home_dir().ok();
     loop {
+        // A project may live below the user's home, but the home directory's
+        // own `.cargo` / `.rustup` is global state, not a repository-local
+        // toolchain. Stop before inspecting it so an explicit rustup resolver
+        // (including the test seam) can choose the intended tool instead.
+        if user_home.as_deref() == Some(current.as_path()) {
+            return None;
+        }
         let candidate = current.join(relative);
         if candidate.is_dir() {
             return Some(candidate);

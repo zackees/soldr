@@ -157,6 +157,84 @@ pub(crate) fn cargo_args_are_cacheable(args: &[String]) -> bool {
     false
 }
 
+/// Return whether an unmediated Cargo invocation may write compiler outputs.
+///
+/// This is deliberately broader than [`cargo_args_are_cacheable`]. That
+/// predicate controls optional build-side hooks whose cost is inappropriate
+/// for Miri and unknown plugins. The no-cache ownership preflight is a safety
+/// boundary: a previous zccache hit may have left protected hardlinks in the
+/// target directory, and any unwrapped compiler must detach them before
+/// writing. Unknown cargo plugins therefore default to "may compile".
+pub(crate) fn cargo_args_may_compile_unmediated(args: &[String]) -> bool {
+    if cargo_args_are_cacheable(args) {
+        return true;
+    }
+
+    let Some(subcommand) = first_cargo_subcommand(args) else {
+        return false;
+    };
+
+    // These first-party commands compile without engaging Soldr's ordinary
+    // build hooks: Miri owns its driver path, while package/publish perform a
+    // verification build unless explicitly told not to. Conservatively
+    // prepare the selected target directory for all three.
+    if matches!(subcommand, "miri" | "package" | "publish") {
+        return true;
+    }
+
+    // cargo-watch runs `check` by default and accepts arbitrary `-x` Cargo
+    // verbs and `-s` shell commands. Even perfect argv parsing cannot prove an
+    // arbitrary shell does not compile, so every watch invocation takes the
+    // conservative ownership-preflight path.
+    if subcommand == "watch" {
+        return true;
+    }
+
+    // Every registered tool that wraps an inner build was accepted by
+    // `cargo_args_are_cacheable` above. The remaining registered tools are
+    // declared non-compiling in the registry and need no target traversal.
+    if crate::fetch::lookup_by_cargo_subcommand(subcommand).is_some() {
+        return false;
+    }
+
+    // Known first-party commands that do not compile. Keep this explicit so
+    // an unfamiliar future Cargo verb, or an arbitrary cargo-* plugin, takes
+    // the safe default below instead of silently bypassing the preflight.
+    if matches!(
+        subcommand,
+        "add"
+            | "clean"
+            | "config"
+            | "fetch"
+            | "fmt"
+            | "generate-lockfile"
+            | "help"
+            | "info"
+            | "init"
+            | "locate-project"
+            | "login"
+            | "logout"
+            | "metadata"
+            | "new"
+            | "owner"
+            | "pkgid"
+            | "remove"
+            | "report"
+            | "search"
+            | "tree"
+            | "uninstall"
+            | "update"
+            | "vendor"
+            | "verify-project"
+            | "version"
+            | "yank"
+    ) {
+        return false;
+    }
+
+    true
+}
+
 pub(crate) fn cargo_args_should_apply_rustfmt_shim(args: &[String]) -> bool {
     match first_cargo_subcommand(args) {
         Some("fmt") => true,

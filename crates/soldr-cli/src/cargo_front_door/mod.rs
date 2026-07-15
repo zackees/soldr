@@ -42,6 +42,7 @@ mod component_install;
 pub(crate) mod cook_hydrate;
 mod disk;
 mod inputs;
+mod no_cache_detach;
 mod profile_debug;
 mod subcommand;
 mod target;
@@ -76,7 +77,8 @@ pub(crate) use inputs::{
 };
 pub(crate) use profile_debug::CargoProfileDebugDefault;
 pub(crate) use subcommand::{
-    cargo_args_are_cacheable, cargo_args_should_apply_rustfmt_shim, cargo_args_specify_target,
+    cargo_args_are_cacheable, cargo_args_may_compile_unmediated,
+    cargo_args_should_apply_rustfmt_shim, cargo_args_specify_target,
     cargo_args_use_reserved_no_cache, first_cargo_subcommand, first_cargo_subcommand_index,
 };
 
@@ -1653,42 +1655,6 @@ pub(crate) async fn run_cargo_front_door(
         None
     };
 
-    // Phase 2: per-build session correlation. Stamp every wrapper
-    // invocation with a u64 session id and fire BuildSessionStart to
-    // the daemon (fire-and-forget). On exit we send BuildSessionEnd —
-    // acknowledged since soldr#1536 — so the daemon finalizes the
-    // per-crate timing aggregate from its in-memory rollup and the
-    // wrapper can trust the persisted record without re-scanning.
-    let session_id = generate_build_session_id();
-    command.env(
-        crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR,
-        session_id.to_string(),
-    );
-    let session_started_at_ms = current_unix_ms();
-    let session_repo_root =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    if crate::daemon::client::build_session_start(
-        &paths,
-        session_id,
-        &session_repo_root,
-        session_started_at_ms,
-    )
-    .is_err()
-    {
-        persist_build_session_start_fallback(
-            &paths,
-            session_id,
-            &session_repo_root,
-            session_started_at_ms,
-        );
-    }
-    // Issue #980 L7: gate the in-process auto-GC orchestrator (and any
-    // other long-running workers) so they sleep while this cargo
-    // invocation is running. The flag is cleared below right after
-    // `build_session_end` so the next throttle tick can resume normal
-    // operation. The daemon process maintains its own copy via the
-    // matching IPC dispatch in `daemon/server.rs`.
-    crate::cache_lib::build_active::set(true);
     let cargo_subcommand = first_cargo_subcommand(args);
     let pyo3_build = matches!(
         cargo_subcommand,
@@ -1711,11 +1677,6 @@ pub(crate) async fn run_cargo_front_door(
         // Cargo front door only: keep startup/low-disk warnings off unrelated
         // commands and out of the rustc-wrapper hot path.
         gc::emit_startup_target_warning_if_due();
-        // Issue #1286 (F5): the auto-GC trigger moved to build END (see
-        // `gc::maybe_spawn_auto_gc_sweeper` below). Kicking here — right
-        // after `build_active::set(true)` — always deferred with
-        // `reason=build_active`, so the sweep never ran on machines
-        // that only invoke soldr for builds.
     }
     let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
     path_dirs.push(cargo_bin_dir);
@@ -1818,6 +1779,30 @@ pub(crate) async fn run_cargo_front_door(
     }
     let restore_outcome = cache_plan.restore_rust_artifacts()?;
 
+    // A preceding cached build may have materialized immutable outputs as
+    // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
+    // has no managed zccache session, detach shared target files locally
+    // before the unmediated compiler can overwrite them. This must not depend
+    // on the daemon being responsive. `install` normally builds in a temporary
+    // root, so prepare it only when the caller explicitly selects a reusable
+    // target directory.
+    let cargo_install_uses_reusable_target = !matches!(cargo_subcommand, Some("install"))
+        || no_cache_detach::has_explicit_reusable_target_dir(args);
+    if cargo_args_may_compile_unmediated(args)
+        && cache_plan.zccache_session().is_none()
+        && cargo_install_uses_reusable_target
+    {
+        let report = no_cache_detach::prepare_target_for_unmediated_build(&cargo, args, &command)?;
+        if report.detached_shared > 0 || report.made_writable > 0 {
+            eprintln!(
+                "soldr: no-cache preflight prepared {}: detached {} shared file(s), made {} private file(s) writable",
+                report.target_dir.display(),
+                report.detached_shared,
+                report.made_writable,
+            );
+        }
+    }
+
     // Target-registry memoization for the wrapper hot path (#440).
     // Without this, every rustc invocation re-opens redb and writes
     // the same target row (~14 ms p50 on Windows in the issue #440
@@ -1863,6 +1848,39 @@ pub(crate) async fn run_cargo_front_door(
     // non-TTY rendering mode.
     use std::io::IsTerminal;
     let capture_for_diagnostics = !std::io::stderr().is_terminal();
+
+    // Phase 2: start session correlation only after every fallible pre-cargo
+    // preparation step (especially no-cache ownership detachment) succeeds.
+    // From here, the cargo runner's success/error paths always pair this with
+    // BuildSessionEnd and clear build_active, so a rejected preflight cannot
+    // strand daemon maintenance in the "build active" state.
+    let session_id = generate_build_session_id();
+    command.env(
+        crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR,
+        session_id.to_string(),
+    );
+    let session_started_at_ms = current_unix_ms();
+    let session_repo_root =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if crate::daemon::client::build_session_start(
+        &paths,
+        session_id,
+        &session_repo_root,
+        session_started_at_ms,
+    )
+    .is_err()
+    {
+        persist_build_session_start_fallback(
+            &paths,
+            session_id,
+            &session_repo_root,
+            session_started_at_ms,
+        );
+    }
+    // Issue #980 L7: gate long-running workers only for the interval where
+    // child Cargo may actually be active.
+    crate::cache_lib::build_active::set(true);
+
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to

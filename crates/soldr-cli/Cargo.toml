@@ -14,6 +14,8 @@ soldr-daemon = { path = "../soldr-daemon" }
 soldr-core = { path = "../soldr-core" }
 soldr-fetch = { path = "../soldr-fetch" }
 
+cap-fs-ext = { workspace = true }
+cap-std = { workspace = true }
 clap = { workspace = true }
 filetime = { workspace = true }
 flate2 = { workspace = true }
@@ -66,6 +68,12 @@ zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", 
 # extra crate is needed.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+] }
 
 [dev-dependencies]
 filetime = { workspace = true }

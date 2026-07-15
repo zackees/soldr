@@ -47,6 +47,8 @@ targets = [
 ]
 
 [workspace.dependencies]
+cap-fs-ext = "3.4.4"
+cap-std = "3.4.4"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 tracing = "0.1"

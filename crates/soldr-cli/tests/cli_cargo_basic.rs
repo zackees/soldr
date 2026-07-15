@@ -153,7 +153,10 @@ timed_test!(
         );
         let invocations = read_logged_cargo_invocations(&log_path);
         assert_eq!(
-            invocations.last(),
+            invocations.iter().find(|argv| {
+                argv.get(1).is_some_and(|arg| arg == "--profile")
+                    && argv.get(3).is_some_and(|arg| arg == "--message-format")
+            }),
             Some(&vec![
                 "rustc".to_string(),
                 "--profile".to_string(),
@@ -161,7 +164,7 @@ timed_test!(
                 "--message-format".to_string(),
                 "json-render-diagnostics".to_string(),
             ]),
-            "cargo front door must preserve the final argv after any metadata probes: {invocations:?}"
+            "cargo front door must preserve the requested argv alongside any metadata or GC probes: {invocations:?}"
         );
     }
 );
@@ -951,8 +954,9 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
         // `soldr cargo test`, because the outer soldr self-relocates and
         // exports SOLDR_RELOCATED_EXE / SOLDR_ORIGINAL_EXE in its env).
         // Leaving them set short-circuits relocation_guard_active() inside
-        // the copied soldr, so RUSTC_WRAPPER would point at the worktree
-        // copy instead of the runtime/soldr-self copy this test asserts.
+        // the copied soldr, so RUSTC_WRAPPER would point at the worktree copy
+        // instead of the cache-root/version/shims compiler identity asserted
+        // below.
         .env_remove("SOLDR_RELOCATED_EXE")
         .env_remove("SOLDR_ORIGINAL_EXE")
         .output()
@@ -967,11 +971,14 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     let wrapper = logged_cargo_wrapper(&log).expect("fake cargo should log RUSTC_WRAPPER");
+    let expected_shim_dir = cache_root
+        .join(format!("v{}", env!("CARGO_PKG_VERSION")))
+        .join("shims");
     assert!(
-        path_display_variants(&cache_root.join("runtime").join("soldr-self"))
+        path_display_variants(&expected_shim_dir)
             .iter()
             .any(|path| wrapper.contains(path)),
-        "RUSTC_WRAPPER should point at the relocated runtime copy: {log}"
+        "RUSTC_WRAPPER should point at the versioned compiler-shim directory: {log}"
     );
     assert!(
         !path_display_variants(&copied_soldr)

@@ -775,6 +775,15 @@ mod private_root_tests {
             load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
         };
 
+        let current_dir = std::env::current_dir().expect("resolve test working directory");
+        let repo_workspace = current_dir
+            .ancestors()
+            .find(|candidate| candidate.join("rust-toolchain.toml").is_file())
+            .expect("find repository rust-toolchain.toml from test working directory");
+        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(&repo_workspace)
+            .expect("read repository rust-toolchain.toml")
+            .channel
+            .expect("repository rust-toolchain.toml must declare a channel");
         let rustc = zccache::test_support::find_rustc()
             .expect("Rust compiler prerequisite failed: no compiler found on PATH");
         let compiler_version =
@@ -812,10 +821,14 @@ mod private_root_tests {
             "target/debug/deps".into(),
             "src/lib.rs".into(),
         ];
+        let mut compile_env: Vec<(String, String)> = std::env::vars()
+            .filter(|(key, _)| key != "RUSTUP_TOOLCHAIN")
+            .collect();
+        compile_env.push(("RUSTUP_TOOLCHAIN".into(), pinned_toolchain));
         let request = || CompileRequest {
             args: rustc_args.clone(),
             cwd: project.display().to_string(),
-            env: std::env::vars().collect(),
+            env: compile_env.clone(),
             stdin: Vec::new(),
             lifecycle: None,
         };
