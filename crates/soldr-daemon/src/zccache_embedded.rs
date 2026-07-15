@@ -780,7 +780,7 @@ mod private_root_tests {
             .ancestors()
             .find(|candidate| candidate.join("rust-toolchain.toml").is_file())
             .expect("find repository rust-toolchain.toml from test working directory");
-        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(&repo_workspace)
+        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(repo_workspace)
             .expect("read repository rust-toolchain.toml")
             .channel
             .expect("repository rust-toolchain.toml must declare a channel");
