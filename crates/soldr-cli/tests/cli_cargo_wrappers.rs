@@ -763,9 +763,13 @@ fn cargo_doc_keeps_rustc_wrapped_but_rustdoc_direct() {
         // An absent private marker is enabled by contract; only an explicit
         // `0` disables caching. The wrapped fake-rustc assertion below proves
         // the behavioral path instead of overfitting Windows self-relocation.
+        let cargo_doc = log
+            .lines()
+            .find(|line| line.starts_with("cargo doc wrapper="))
+            .unwrap_or_else(|| panic!("cargo doc invocation missing from log: {log}"));
         assert!(
-            log.contains("cargo doc wrapper=") && !log.contains("cache=0"),
-            "cargo doc should run with cache enabled and a wrapper: {log}"
+            !cargo_doc.contains("wrapper= ") && !cargo_doc.contains("cache=0"),
+            "cargo doc should run with cache enabled and a wrapper: {cargo_doc}"
         );
         assert_zccache_wrapped_rustc_compile(&log, &rustc, "doc_demo");
         assert!(
@@ -812,9 +816,13 @@ fn cargo_doc_tests_keep_rustc_wrapped_but_rustdoc_direct() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     // See the cargo-doc case above: absence is enabled, `0` is disabled.
+    let cargo_doc_test = log
+        .lines()
+        .find(|line| line.starts_with("cargo test --doc wrapper="))
+        .unwrap_or_else(|| panic!("cargo doctest invocation missing from log: {log}"));
     assert!(
-        log.contains("cargo test --doc wrapper=") && !log.contains("cache=0"),
-        "cargo doctest should run with cache enabled and a wrapper: {log}"
+        !cargo_doc_test.contains("wrapper= ") && !cargo_doc_test.contains("cache=0"),
+        "cargo doctest should run with cache enabled and a wrapper: {cargo_doc_test}"
     );
     assert_zccache_wrapped_rustc_compile(&log, &rustc, "doctest_demo");
     assert!(

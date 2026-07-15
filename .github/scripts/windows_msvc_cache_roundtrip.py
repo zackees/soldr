@@ -17,7 +17,6 @@ FIRST_PARTY_PACKAGES = (
     "soldr-cache",
     "soldr-daemon",
 )
-ARCHIVE_FILTER = "!binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(/cli_rust_plan/)"
 
 
 def run(command: list[str]) -> None:
@@ -106,8 +105,6 @@ def archive_roundtrip(*, target: str, profile: str, archive: Path) -> None:
             str(archive),
             "--archive-format",
             "tar-zst",
-            "-E",
-            ARCHIVE_FILTER,
         ]
     )
     members = archive_members(archive)

@@ -142,15 +142,6 @@ const LINT_OWN_FILES: &[&str] = &[
 /// `CARGO_MANIFEST_DIR`, which is `crates/soldr-cli`). The lint scans
 /// every workspace crate under `crates/` (#1490 split) so moved
 /// modules stay covered.
-fn workspace_root() -> PathBuf {
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("crates/soldr-cli has a workspace root two levels up")
-        .to_path_buf()
-}
-
 /// Recursively collect `.rs` files under `dir`, skipping `target/`
 /// and other build-output directories that should never contain
 /// hand-written tests.
@@ -234,12 +225,7 @@ fn relative_unix_path(abs: &Path, root: &Path) -> Option<String> {
 }
 
 timed_test!(every_test_uses_timed_test_macro_or_is_allowlisted, {
-    // soldr#1040 phase 2: source-tree-coupled — scans src/ + tests/
-    // directories from disk. Skip on cross-build target runners.
-    if common::should_skip_source_tree_test("every_test_uses_timed_test_macro_or_is_allowlisted") {
-        return;
-    }
-    let root = workspace_root();
+    let root = common::workspace_root();
     let mut files = Vec::new();
     let crates_dir = root.join("crates");
     let entries = fs::read_dir(&crates_dir).expect("read crates/ dir");

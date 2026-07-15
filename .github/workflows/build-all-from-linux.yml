@@ -94,7 +94,7 @@ jobs:
       # Deliberately NO `apt install clang lld llvm musl-tools`. If this
       # build needs a host cross toolchain, soldr isn't provisioning the
       # right assets — that is the bug this workflow guards against.
-      - name: Build soldr — soldr build --release --target ${{ matrix.target }}
+      - name: Build soldr — soldr build --release --target ${{ matrix.alias }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,7 +103,7 @@ jobs:
           # fix; disable only its compile cache here so this bootstrap lane
           # validates the released driver and artifact layout deterministically.
           ZCCACHE_DISABLE=1 soldr build --release \
-            --target "${{ matrix.target }}" \
+            --target "${{ matrix.alias }}" \
             --package soldr-cli \
             --bin soldr
           echo "::endgroup::"

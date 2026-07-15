@@ -42,7 +42,7 @@ const FORBIDDEN_SPAWN_ENTRY_POINTS: &[&str] = &[
 ];
 
 fn crate_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    common::crate_root()
 }
 
 /// Recursively collect `.rs` files under `dir`, skipping build output
@@ -87,13 +87,6 @@ fn code_lines(body: &str) -> impl Iterator<Item = (usize, &str)> {
 timed_test!(
     zccache_cli_run_is_only_referenced_by_the_gated_trampoline,
     {
-        // soldr#1040 phase 2: source-tree-coupled — skip on cross-build
-        // target runners that replay a nextest archive without src/.
-        if common::should_skip_source_tree_test(
-            "zccache_cli_run_is_only_referenced_by_the_gated_trampoline",
-        ) {
-            return;
-        }
         let root = crate_root();
         let mut files = Vec::new();
         collect_rs_files(&root.join("src"), &mut files);

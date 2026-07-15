@@ -15,6 +15,12 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     cross = (WORKFLOWS / "_ci-cross-build-linux.yml").read_text(encoding="utf-8")
     target_run = (WORKFLOWS / "_ci-target-run.yml").read_text(encoding="utf-8")
+    cache_roundtrip = (
+        REPO_ROOT / ".github" / "scripts" / "windows_msvc_cache_roundtrip.py"
+    ).read_text(encoding="utf-8")
+    nextest_config = (REPO_ROOT / ".config" / "nextest.toml").read_text(
+        encoding="utf-8"
+    )
     baseline = (WORKFLOWS / "baseline-zero-deps.yml").read_text(encoding="utf-8")
     arm_build = _job_block(ci, "e2e-windows-arm64-build", "e2e-windows-arm64")
     arm_run = _job_block(ci, "e2e-windows-arm64")
@@ -61,26 +67,80 @@ def test_windows_msvc_ci_builds_and_archives_real_tests() -> None:
     assert "test archive missing" not in target_run
     assert '"$SOLDR_BIN" --version' not in target_run
     assert '"$NEXTEST_BIN" nextest run' in target_run
-    assert (
-        "SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr"
-        "${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}"
-        in target_run
+    assert 'echo "SOLDR_BIN=$soldr_bin"' in target_run
+    assert 'case \'${{ inputs.target }}\' in *-pc-windows-msvc) suffix=".exe"' in target_run
+    assert 'artifact/package/soldr$suffix' in target_run
+    assert 'artifact/package/tools/cargo-nextest$suffix' in target_run
+    assert 'echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"' in target_run
+    assert "SOLDR_GITHUB_TOKEN: ${{ github.token }}" in target_run
+    assert "actions/setup-python@" in target_run
+    assert 'python-version: "3.13"' in target_run
+    assert "python3 .github/scripts/target_run_summary.py" not in target_run
+    assert '"$SOLDR_BIN" toolchain ensure --json' in target_run
+    assert '"$SOLDR_BIN" toolchain link' in target_run
+    assert '--shim-dir "$TOOLCHAIN_SHIM_DIR"' in target_run
+    assert '"$SOLDR_BIN" rustc -vV' in target_run
+    assert '"$SOLDR_BIN" cargo -V' in target_run
+    assert "skip_filter:" not in target_run
+    assert "inputs.skip_filter" not in target_run
+    assert "SOLDR_TEST_SKIP_SOURCE_TREE" not in target_run
+    assert "submodules: recursive" in target_run
+    for workflow in [cross, target_run]:
+        assert "--filter-expr" not in workflow
+        assert "\n            -E " not in workflow
+        assert "\n            --filter " not in workflow
+    assert "ARCHIVE_FILTER" not in cache_roundtrip
+    assert '"-E"' not in cache_roundtrip
+    assert "archive every test binary" in cross
+    assert "--profile target-run" in target_run
+    assert "target/nextest/target-run/junit.xml" in target_run
+    assert "target_run_summary.py" in target_run
+    assert "--require-junit" in target_run
+    assert target_run.index('if [ "$run_status" -ne 0 ]') < target_run.index(
+        'exit "$summary_status"'
     )
-    assert 'SOLDR_BIN="${SOLDR_BIN}.exe"' not in target_run
-    for artifact_only_incompatible in [
-        "!test(/cargo_front_door_forces_msvc_target_even_with_polluted_path/)",
-        "!test(/embedded_wrapper_path_has_no_standalone_compile_telemetry_calls/)",
-        "!test(/gc_list_json_reports_built_project_target_dir/)",
-        "!test(/real_rustc_hit_survives_full_and_ci_save_load_relocation/)",
-        "!test(/soldr_build_invokes_real_cargo_build/)",
-        "!test(/wrapper_mode_stdin_source_propagates_nonzero_exit_code/)",
-        "!binary(=cli_exec)",
-        "!binary(=cli_toolchain_doctor)",
-    ]:
-        assert artifact_only_incompatible in target_run
+    assert "if: always()" in target_run
+    assert "[profile.target-run.junit]" in nextest_config
+    assert 'path = "junit.xml"' in nextest_config
+    assert "default-filter" not in nextest_config
     assert "fetch_catalogued_nextest.py" in cross
     assert "cargo-nextest.json" in target_run
     assert "taiki-e/install-action" not in target_run
+
+
+def test_native_linux_runs_the_complete_workspace_suite() -> None:
+    ci = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    build_and_test = (WORKFLOWS / "_build-and-test.yml").read_text(encoding="utf-8")
+    assert "x86_64 GNU is the canonical native exception" in ci
+    assert "other seven" in ci
+    assert (
+        "soldr cargo test --workspace --lib --tests --locked "
+        "--target ${{ inputs.target }}"
+    ) in build_and_test
+    assert "soldr cargo test -p soldr-cli" not in build_and_test
+
+
+def test_archived_source_tests_use_only_runtime_workspace_resolution() -> None:
+    crates_root = REPO_ROOT / "crates"
+    allowed = {
+        crates_root / "soldr-cli" / "tests" / "common" / "mod.rs",
+        crates_root / "soldr-cli" / "src" / "prepare_cmd.rs",
+        crates_root / "soldr-fetch" / "build.rs",
+    }
+    forbidden = (
+        'env!("CARGO_MANIFEST_DIR")',
+        'option_env!("CARGO_MANIFEST_DIR")',
+        'var("CARGO_MANIFEST_DIR")',
+        'var_os("CARGO_MANIFEST_DIR")',
+    )
+    offenders = []
+    for path in crates_root.rglob("*.rs"):
+        if path in allowed:
+            continue
+        body = path.read_text(encoding="utf-8")
+        if any(pattern in body for pattern in forbidden):
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
+    assert offenders == []
 
 
 def test_fast_build_only_skips_windows_e2e_for_low_risk_changes() -> None:
@@ -170,7 +230,7 @@ def test_native_linux_integration_backstop_runs_on_pull_requests() -> None:
     block = _job_block(ci, "build-linux-x64", "pep517-daemon-smoke")
     assert "github.ref_name == 'main' || github.event_name == 'pull_request'" in block
     assert "soldr#1676" in block
-    assert "CLI, daemon, and rust-plan" in block
+    assert "canonical native exception" in block
 
 
 def test_windows_gnu_validation_runs_bounded_pr_runtime_smoke() -> None:

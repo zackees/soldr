@@ -161,7 +161,10 @@ mod tests {
         );
 
         opened.expect("open succeeded after subprocess released database");
-        assert!(observed_contention, "parent must observe subprocess contention");
+        assert!(
+            observed_contention,
+            "parent must observe subprocess contention"
+        );
         assert!(
             child.wait().expect("wait for lock-holder child").success(),
             "lock-holder subprocess failed"
@@ -208,14 +211,9 @@ mod tests {
 
         let budget = Duration::from_secs(1);
         let started = Instant::now();
-        let result = open_state_db_with_retry(
-            &path,
-            budget,
-            Duration::from_millis(5),
-            || {
-                observed.fetch_add(1, Ordering::Relaxed);
-            },
-        );
+        let result = open_state_db_with_retry(&path, budget, Duration::from_millis(5), || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
         let error = match result {
             Ok(_) => panic!("contention should outlive the retry budget"),
             Err(error) => error,

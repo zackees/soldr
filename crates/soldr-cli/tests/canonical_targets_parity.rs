@@ -15,22 +15,7 @@ use soldr_cli::core::CANONICAL_TARGETS;
 use soldr_cli::timed_test;
 
 timed_test!(canonical_const_matches_workspace_metadata, {
-    // soldr#1040 phase 2: source-tree-coupled — skip on runners that
-    // don't have the workspace checked out (target-run jobs in the
-    // cross-build CI shape).
-    if common::should_skip_source_tree_test("canonical_const_matches_workspace_metadata") {
-        return;
-    }
-    // Walk up from the test binary's directory to find the workspace
-    // root. Cargo gives us `CARGO_MANIFEST_DIR` for the bin crate
-    // (`crates/soldr-cli`); the workspace root is its parent's
-    // parent.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_toml = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root resolvable from bin manifest dir")
-        .join("Cargo.toml");
+    let workspace_toml = common::workspace_root().join("Cargo.toml");
     assert!(
         workspace_toml.is_file(),
         "expected workspace Cargo.toml at {workspace_toml:?}"

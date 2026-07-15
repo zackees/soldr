@@ -557,7 +557,11 @@ fn detect_workspace_pyo3(
     let mut child = command.spawn().map_err(|error| error.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+        if child
+            .try_wait()
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -567,7 +571,9 @@ fn detect_workspace_pyo3(
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let output = child.wait_with_output().map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }

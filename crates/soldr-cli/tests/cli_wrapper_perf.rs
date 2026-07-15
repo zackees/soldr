@@ -12,6 +12,8 @@
 
 #![allow(clippy::print_stdout)]
 
+mod common;
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -159,7 +161,7 @@ fn standalone_compile_request_has_no_lifecycle_metadata() {
 
 #[test]
 fn embedded_wrapper_path_has_no_standalone_compile_telemetry_calls() {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest = common::crate_root();
     for relative in ["src/wrapper.rs", "src/wrapper_target.rs"] {
         let source = std::fs::read_to_string(manifest.join(relative)).expect("read wrapper source");
         assert!(

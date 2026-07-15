@@ -1588,20 +1588,27 @@ mod tests {
         // — typos in soldr's own manifest fail at test time, not
         // mid-CI when `soldr prepare --target all` blows up.
         //
-        // soldr#1040 phase 2: source-tree-coupled — skip on cross-build
-        // target runners that don't have the workspace checked out.
-        if std::env::var_os("SOLDR_TEST_SKIP_SOURCE_TREE").is_some() {
-            eprintln!(
-                "skipping soldr_workspace_metadata_dogfood: \
-                 SOLDR_TEST_SKIP_SOURCE_TREE is set (soldr#1040)"
-            );
-            return;
-        }
-        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("workspace parent of crate dir")
-            .parent()
-            .expect("workspace root")
+        let manifest = std::env::var_os("SOLDR_TEST_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::current_dir().ok().and_then(|current_dir| {
+                    current_dir
+                        .ancestors()
+                        .find(|ancestor| {
+                            ancestor.join("Cargo.toml").is_file()
+                                && ancestor.join("crates/soldr-cli/Cargo.toml").is_file()
+                        })
+                        .map(std::path::Path::to_path_buf)
+                })
+            })
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("workspace parent of crate dir")
+                    .parent()
+                    .expect("workspace root")
+                    .to_path_buf()
+            })
             .join("Cargo.toml");
         assert!(manifest.is_file(), "workspace manifest at {manifest:?}");
         let meta = crate::cargo_metadata_soldr::read_soldr_metadata(&manifest)
