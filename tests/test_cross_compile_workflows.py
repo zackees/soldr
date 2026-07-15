@@ -235,7 +235,9 @@ def test_mac_x64_distribution_is_cross_built_and_intel_smoke_tested() -> None:
     assert "lipo -archs extracted/soldr" in release
     assert "needs.smoke_macos_x64.result == 'success'" in release
     assert "soldr-${version}-x86_64-apple-darwin.tar.zst" in release
-    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" in release
+    intel_wheel = "soldr-${cargo_version}-py3-none-macosx_10_12_x86_64.whl"
+    assert release.count(intel_wheel) == 2
+    assert "soldr-${cargo_version}-py3-none-macosx_11_0_x86_64.whl" not in release
 
     assert '"darwin-x64": { triple: "x86_64-apple-darwin"' in install
     assert "intentionally not published" not in install
