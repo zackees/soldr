@@ -103,10 +103,18 @@ mod tests {
 
     const LOCK_HOLDER_DIR_ENV: &str = "SOLDR_REDB_LOCK_HOLDER_DIR";
 
+    fn serial_test_guard() -> MutexGuard<'static, ()> {
+        static TEST_LOCK: Mutex<()> = Mutex::new(());
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     crate::timed_test!(subprocess_lock_holder, {
         let Some(dir) = std::env::var_os(LOCK_HOLDER_DIR_ENV).map(PathBuf::from) else {
             return;
         };
+        let _test_guard = serial_test_guard();
         let db = Database::builder()
             .create(dir.join("state.redb"))
             .expect("subprocess blocking open");
@@ -125,6 +133,7 @@ mod tests {
     });
 
     crate::timed_test!(retries_actual_subprocess_contention_until_release, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let test_name = "cache_lib::redb_lock::tests::subprocess_lock_holder";
         let mut child = Command::new(std::env::current_exe().expect("current test executable"))
@@ -172,6 +181,7 @@ mod tests {
     });
 
     crate::timed_test!(retries_cross_process_style_open_contention_until_release, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.redb");
         // Bypass the soldr mutex to model a different process holding redb's
@@ -203,6 +213,7 @@ mod tests {
     });
 
     crate::timed_test!(stops_retrying_after_injected_budget, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.redb");
         let _blocker = Database::builder().create(&path).expect("blocking open");
