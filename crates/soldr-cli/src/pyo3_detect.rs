@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -549,7 +550,24 @@ fn detect_workspace_pyo3(
     if let Some(path) = manifest_path_arg(args) {
         command.args(["--manifest-path", &path]);
     }
-    let output = command.output().map_err(|error| error.to_string())?;
+    // Metadata is advisory for PyO3 planning and must never wedge a target
+    // build. In particular, a foreign musl runner may not have a usable
+    // rustup proxy even though the compiled test binary itself is healthy.
+    // Bound the probe and fall back to the conservative unresolved plan.
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if child.try_wait().map_err(|error| error.to_string())?.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("cargo metadata probe timed out after 30s".to_string());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let output = child.wait_with_output().map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }

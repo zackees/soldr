@@ -20,15 +20,16 @@ Supported npm install targets match the release workflow:
 
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 - `x86_64-pc-windows-msvc`
 - `aarch64-pc-windows-msvc`
 
-`x86_64-apple-darwin` is intentionally not published as a release archive
-while GitHub-hosted Intel macOS release capacity remains unreliable; restoring
-that distribution lane is tracked in [#1696](https://github.com/zackees/soldr/issues/1696).
-Intel macOS users should install from PyPI sdist or build from source until
-that issue is closed.
+Intel macOS archives and wheels are cross-built on Linux through the blessed
+Apple SDK path, then architecture-checked and smoke-tested on `macos-15-intel`
+before GitHub Release, PyPI, or npm publication.
 
 ## Owner Setup
 
@@ -87,6 +88,7 @@ Do not publish an npm version until the matching GitHub Release has these files:
 - `soldr-vX.Y.Z-aarch64-unknown-linux-gnu.tar.zst`
 - `soldr-vX.Y.Z-x86_64-unknown-linux-musl.tar.zst`
 - `soldr-vX.Y.Z-aarch64-unknown-linux-musl.tar.zst`
+- `soldr-vX.Y.Z-x86_64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-aarch64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-aarch64-pc-windows-msvc.tar.zst`

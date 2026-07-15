@@ -53,13 +53,17 @@ Current release assets follow this shape:
 
 - `soldr-vX.Y.Z-x86_64-unknown-linux-gnu.tar.zst`
 - `soldr-vX.Y.Z-aarch64-unknown-linux-gnu.tar.zst`
+- `soldr-vX.Y.Z-x86_64-unknown-linux-musl.tar.zst`
+- `soldr-vX.Y.Z-aarch64-unknown-linux-musl.tar.zst`
+- `soldr-vX.Y.Z-x86_64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-aarch64-apple-darwin.tar.zst`
 - `soldr-vX.Y.Z-x86_64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-aarch64-pc-windows-msvc.tar.zst`
 - `soldr-vX.Y.Z-SHA256SUMS.txt`
 
-`x86_64-apple-darwin` is intentionally omitted from the automated release
-asset set while hosted Intel macOS release capacity remains unreliable.
+The Intel macOS archive and wheel are cross-built on Linux through the blessed
+Apple SDK path. Publication is gated on a `macos-15-intel` job that verifies
+the archive is Mach-O x86_64 and executes both the archive and wheel binaries.
 
 ## Step 1: Verify The Checksum
 

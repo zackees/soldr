@@ -15,14 +15,14 @@ def test_release_workflow_builds_and_publishes_musllinux_wheels() -> None:
     assert "Smoke test musllinux wheel on Alpine" in workflow
     assert "alpine:3.20" in workflow
     assert "--only-binary=:all:" in workflow
-    assert "expected=7" in workflow
+    assert "expected=8" in workflow
 
     stale_markers = [
         "PyPI wheel build is gnu-only for now",
         "musl rows skip wheel build by design",
         "expected=5",
         "6 platform wheels",
+        "7 platform wheels",
     ]
     for marker in stale_markers:
         assert marker not in workflow
-

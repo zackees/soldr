@@ -100,10 +100,7 @@ assert.strictEqual(
 // Default (no libc arg) falls back to detectLibc; on most CI hosts that's
 // gnu. We don't assert the triple here — just that the call resolves.
 assert.ok(install.platformTarget("linux", "x64").triple.startsWith("x86_64-unknown-linux-"));
-assert.throws(
-  () => install.platformTarget("darwin", "x64"),
-  /x86_64-apple-darwin release archives are intentionally not published/,
-);
+assert.strictEqual(install.platformTarget("darwin", "x64").triple, "x86_64-apple-darwin");
 assert.strictEqual(install.platformTarget("darwin", "arm64").triple, "aarch64-apple-darwin");
 assert.strictEqual(install.platformTarget("win32", "x64").triple, "x86_64-pc-windows-msvc");
 assert.strictEqual(install.platformTarget("win32", "arm64").triple, "aarch64-pc-windows-msvc");

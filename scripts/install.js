@@ -26,14 +26,10 @@ const TARGETS = {
   "linux-x64-musl": { triple: "x86_64-unknown-linux-musl", binary: "soldr" },
   "linux-arm64-gnu": { triple: "aarch64-unknown-linux-gnu", binary: "soldr" },
   "linux-arm64-musl": { triple: "aarch64-unknown-linux-musl", binary: "soldr" },
+  "darwin-x64": { triple: "x86_64-apple-darwin", binary: "soldr" },
   "darwin-arm64": { triple: "aarch64-apple-darwin", binary: "soldr" },
   "win32-x64": { triple: "x86_64-pc-windows-msvc", binary: "soldr.exe" },
   "win32-arm64": { triple: "aarch64-pc-windows-msvc", binary: "soldr.exe" },
-};
-
-const UNSUPPORTED_TARGETS = {
-  "darwin-x64":
-    "x86_64-apple-darwin release archives are intentionally not published; install from PyPI sdist or build from source",
 };
 
 // Files we expect to find at the root of every extracted release
@@ -90,8 +86,7 @@ function platformTarget(platform = process.platform, arch = process.arch, libc =
       : `${platform}-${arch}`;
   const target = TARGETS[key];
   if (!target) {
-    const detail = UNSUPPORTED_TARGETS[key] ? `: ${UNSUPPORTED_TARGETS[key]}` : "";
-    throw new Error(`unsupported platform for soldr npm package: ${key}${detail}`);
+    throw new Error(`unsupported platform for soldr npm package: ${key}`);
   }
   return target;
 }
