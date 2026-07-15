@@ -1,14 +1,10 @@
 # soldr#1042 / #1038 phase 4: target run-only job.
 #
-# Companion to `_ci-cross-build-linux.yml` (phase 3). Downloads the
-# artifact produced by the linux cross-builder + runs the pre-built
-# test binaries on the native runner. No `cargo` / `rustc` / `rustup`
-# install. The downloaded soldr binary resolves cargo-nextest and runs
-# the downloaded test archive.
-#
-# Sets SOLDR_BIN / SOLDR_TEST_FIXTURES_DIR / SOLDR_TEST_SKIP_SOURCE_TREE
-# so tests resolve binaries + fixtures from the artifact and skip the
-# source-tree-coupled tests (phases 1 + 2 of the refactor).
+# Companion to `_ci-cross-build-linux.yml`. Downloads the artifact produced by
+# the Linux cross-builder, provisions the pinned repository toolchain through
+# the target-native soldr binary, and runs every pre-built test binary on the
+# native runner. The checkout supplies source-tree context while SOLDR_BIN and
+# SOLDR_TEST_FIXTURES_DIR point tests at target-native packaged artifacts.
 
 name: CI target run (download + nextest run)
 
@@ -18,51 +14,15 @@ on:
       target:
         type: string
         required: true
-        description: Target triple — used to pick the runner OS + the artifact name.
+        description: Target triple used to identify the worker and diagnostics.
       runs_on:
         type: string
         required: true
-        description: GHA runs-on label (e.g. macos-15, windows-11-arm, macos-15-intel).
+        description: GitHub Actions runner label.
       artifact_name:
         type: string
         required: true
         description: Name of the artifact produced by _ci-cross-build-linux.yml.
-      skip_filter:
-        type: string
-        default: "!test(/cook_/) and !test(/_real_toolchain/) and !test(/fetch_crgx/) and !test(/cargo_front_door_forces_msvc_target_even_with_polluted_path/) and !test(/embedded_wrapper_path_has_no_standalone_compile_telemetry_calls/) and !test(/gc_list_json_reports_built_project_target_dir/) and !test(/real_rustc_hit_survives_full_and_ci_save_load_relocation/) and !test(/soldr_build_invokes_real_cargo_build/) and !test(/wrapper_mode_stdin_source_propagates_nonzero_exit_code/) and !binary(/cli_cargo_/) and !binary(/cli_daemon_/) and !binary(=cli_exec) and !binary(/cli_rust_plan/) and !binary(=cli_toolchain_doctor)"
-        description: |
-          nextest filter expression. Default skips:
-          - test names matching cook_/_real_toolchain/fetch_crgx (#1038
-            Q2) — those need cargo/rustup on the runner
-          - integration test BINARIES (i.e. the .rs files under tests/)
-            named cli_cargo_*, cli_daemon_*, cli_rust_plan — those need
-            cargo on PATH, but the cross-build artifact ships only the
-            primary `soldr` test binary. Their behavior is already covered
-            by unit tests on the cross-build linux-host side.
-            (nextest distinguishes `test(...)` for test names from
-            `binary(...)` for test-binary names — these tests' binaries
-            are named after the integration-test file, so use binary().)
-            Unit-test names are module-qualified in nextest archives, so
-            individual test exclusions use regex matches rather than exact
-            unqualified-name matches.
-            Override if a target's runner has the toolchain
-            (e.g. linux-native).
-          - cli_exec and cli_toolchain_doctor binaries, which require the
-            original build environment or an installed target rustlib.
-          - embedded_wrapper_path_has_no_standalone_compile_telemetry_calls,
-            which reads Rust source from the original build checkout.
-          - gc_list_json_reports_built_project_target_dir, which builds a
-            temporary project and requires cargo/rustc on the target runner.
-          - real_rustc_hit_survives_full_and_ci_save_load_relocation, which
-            invokes the discovered rustup proxy and requires a rustc component
-            applicable to the archive target. Cross-built archives do not
-            install target toolchains on their run-only hosts; native Windows
-            and local Linux suites cover this test instead.
-          - wrapper_mode_stdin_source_propagates_nonzero_exit_code, which
-            resolves rustc through the build host's installed rustup toolchain.
-          - cargo_front_door_forces_msvc_target_even_with_polluted_path and
-            soldr_build_invokes_real_cargo_build, which require a compatible
-            installed cargo toolchain on the target runner.
 
 permissions:
   contents: read
@@ -72,19 +32,20 @@ jobs:
     name: target-run ${{ inputs.target }}
     runs-on: ${{ inputs.runs_on }}
     timeout-minutes: 30
+    env:
+      SOLDR_GITHUB_TOKEN: ${{ github.token }}
     steps:
-      # nextest's `run --archive-file` needs the workspace Cargo.toml
-      # present (per the `--workspace-remap` docs) even when all binaries
-      # come from the archive. Shallow checkout is enough; we don't run
-      # cargo build here.
-      # soldr#1350 — dropped `submodules: recursive`. _vender/zccache is
-      # `exclude = ["_vender/zccache"]` in the workspace root Cargo.toml,
-      # so `cargo metadata` doesn't walk into the submodule. Nextest
-      # runs pre-built test binaries from the archive; no cargo build
-      # here. Saves ~4-5 s per target-run.
+      # Nextest archive replay needs the workspace manifest. Several contract
+      # tests also inspect vendored sources, so preserve complete source context.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 1
+          submodules: recursive
+
+      - name: Set up diagnostics interpreter
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.13"
 
       - name: Download cross-build artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -99,52 +60,97 @@ jobs:
           ls -la artifact/ || true
           find artifact/ -maxdepth 3 -type f | head -30 || true
 
-      # actions/download-artifact unpacks from a zip, which strips the
-      # executable bit on POSIX runners. Tests that exec SOLDR_BIN
-      # otherwise fail with "Permission denied" before any logic runs.
-      # No-op on windows runners.
+      # Artifact download uses zip and strips executable bits on POSIX workers.
       - name: Restore executable bit on artifact binaries
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
-          for bin in artifact/package/soldr; do
-            if [ -f "$bin" ]; then
-              chmod +x "$bin"
-              echo "chmod +x $bin"
-            fi
-          done
-          for bin in artifact/package/tools/cargo-nextest; do
+          for bin in artifact/package/soldr artifact/package/tools/cargo-nextest; do
             if [ -f "$bin" ]; then
               chmod +x "$bin"
               echo "chmod +x $bin"
             fi
           done
 
-      - name: Run pre-built tests via nextest archive
+      - name: Resolve packaged target tools
         shell: bash
-        env:
-          # soldr#1039 phase 1 + #1040 phase 2 env handoff.
-          # The cross-build artifact layout (from _ci-cross-build-linux.yml
-          # Stage D) puts the soldr binary at `package/soldr[.exe]` and
-          # fixtures at `package/fixtures/`. The test archive sits next to
-          # `package/` at `<artifact-name>-tests.tar.zst`.
-          # Derive the Windows suffix from the target instead of probing a
-          # native C:\ path with Git Bash's `-f` operator.
-          SOLDR_BIN: ${{ github.workspace }}/artifact/package/soldr${{ contains(inputs.target, 'pc-windows-msvc') && '.exe' || '' }}
-          SOLDR_TEST_FIXTURES_DIR: ${{ github.workspace }}/artifact/package/fixtures
-          SOLDR_TEST_SKIP_SOURCE_TREE: "1"
+        run: |
+          set -euo pipefail
+          suffix=""
+          case '${{ inputs.target }}' in *-pc-windows-msvc) suffix=".exe" ;; esac
+          soldr_bin="$GITHUB_WORKSPACE/artifact/package/soldr$suffix"
+          nextest_bin="$GITHUB_WORKSPACE/artifact/package/tools/cargo-nextest$suffix"
+          fixtures="$GITHUB_WORKSPACE/artifact/package/fixtures"
+          test -f "$soldr_bin"
+          test -f "$nextest_bin"
+          test -d "$fixtures"
+          {
+            echo "SOLDR_BIN=$soldr_bin"
+            echo "NEXTEST_BIN=$nextest_bin"
+            echo "SOLDR_TEST_WORKSPACE_ROOT=$GITHUB_WORKSPACE"
+            echo "SOLDR_TEST_FIXTURES_DIR=$fixtures"
+            echo "TOOLCHAIN_ENSURE_JSON=$RUNNER_TEMP/soldr-toolchain-ensure.json"
+            echo "TOOLCHAIN_LINK_JSON=$RUNNER_TEMP/soldr-toolchain-link.json"
+            echo "TOOLCHAIN_SHIM_DIR=$RUNNER_TEMP/soldr-toolchain-shims"
+            echo "NEXTEST_LIST_JSON=$RUNNER_TEMP/nextest-list.json"
+            echo "TARGET_RUN_SUMMARY=$RUNNER_TEMP/target-run-summary.json"
+          } >> "$GITHUB_ENV"
+          python .github/scripts/target_run_summary.py \
+            --target '${{ inputs.target }}' \
+            --output "$RUNNER_TEMP/target-run-summary.json"
+
+      - name: Provision pinned Rust toolchain through soldr
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          "$SOLDR_BIN" toolchain ensure --json > "$TOOLCHAIN_ENSURE_JSON"
+          ensure_status=$?
+          set -e
+          if [ "$ensure_status" -ne 0 ]; then
+            cat "$TOOLCHAIN_ENSURE_JSON" || true
+            echo "soldr toolchain ensure failed with status $ensure_status" >&2
+            exit "$ensure_status"
+          fi
+          set +e
+          "$SOLDR_BIN" toolchain link \
+            --shim-dir "$TOOLCHAIN_SHIM_DIR" \
+            --json > "$TOOLCHAIN_LINK_JSON"
+          link_status=$?
+          set -e
+          if [ "$link_status" -ne 0 ]; then
+            cat "$TOOLCHAIN_LINK_JSON" || true
+            echo "soldr toolchain link failed with status $link_status" >&2
+            exit "$link_status"
+          fi
+          echo "$TOOLCHAIN_SHIM_DIR" >> "$GITHUB_PATH"
+
+      - name: Verify pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          compiler_version=$("$SOLDR_BIN" rustc -vV)
+          package_manager_version=$("$SOLDR_BIN" cargo -V)
+          test -n "$compiler_version"
+          test -n "$package_manager_version"
+          {
+            echo "### Target-run toolchain"
+            echo
+            echo "- Target: \`${{ inputs.target }}\`"
+            echo "- Compiler: \`$(printf '%s\n' "$compiler_version" | sed -n '1p')\`"
+            echo "- Package manager: \`$package_manager_version\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run complete pre-built test archive
+        shell: bash
         run: |
           set -euo pipefail
           test -f "$SOLDR_BIN"
+          test -f "$NEXTEST_BIN"
           echo "SOLDR_BIN=$SOLDR_BIN"
           echo "SOLDR_TEST_FIXTURES_DIR=$SOLDR_TEST_FIXTURES_DIR"
 
-          NEXTEST_BIN="$GITHUB_WORKSPACE/artifact/package/tools/cargo-nextest"
-          if [ ! -f "$NEXTEST_BIN" ] && [ -f "${NEXTEST_BIN}.exe" ]; then
-            NEXTEST_BIN="${NEXTEST_BIN}.exe"
-          fi
-          test -f "$NEXTEST_BIN"
           metadata="${NEXTEST_BIN%/*}/cargo-nextest.json"
           test -f "$metadata"
           expected_version=$(jq -r '.version' "$metadata" | sed 's/^v//')
@@ -158,23 +164,49 @@ jobs:
           }
           echo "cargo-nextest version=$actual_version metadata=$metadata network=not-used"
 
-          # The archive's filename mirrors the artifact name + a -tests suffix.
-          # Every target-run lane requires the real archive; a missing file is
-          # a failed cross-build contract, not a binary-only smoke fallback.
           archive="artifact/${{ inputs.artifact_name }}-tests.tar.zst"
           test -f "$archive"
+          "$NEXTEST_BIN" nextest list \
+            --archive-file "$archive" \
+            --workspace-remap "$GITHUB_WORKSPACE" \
+            --profile target-run \
+            --message-format json-pretty > "$NEXTEST_LIST_JSON"
+          python .github/scripts/target_run_summary.py \
+            --target '${{ inputs.target }}' \
+            --output "$TARGET_RUN_SUMMARY" \
+            --list-json "$NEXTEST_LIST_JSON"
+
+          set +e
           "$NEXTEST_BIN" nextest run \
             --archive-file "$archive" \
             --workspace-remap "$GITHUB_WORKSPACE" \
-            --no-fail-fast \
-            -E "${{ inputs.skip_filter }}"
+            --profile target-run \
+            --no-fail-fast
+          run_status=$?
+          set -e
+          summary_status=0
+          python .github/scripts/target_run_summary.py \
+            --target '${{ inputs.target }}' \
+            --output "$TARGET_RUN_SUMMARY" \
+            --list-json "$NEXTEST_LIST_JSON" \
+            --junit "$GITHUB_WORKSPACE/target/nextest/target-run/junit.xml" \
+            --require-junit \
+            --github-summary "$GITHUB_STEP_SUMMARY" || summary_status=$?
+          if [ "$run_status" -ne 0 ]; then
+            exit "$run_status"
+          fi
+          exit "$summary_status"
 
-      - name: Upload junit / on-failure logs
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v5
+      - name: Upload target-run diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: target-run-${{ inputs.target }}-failure
+          name: target-run-${{ inputs.target }}-diagnostics
           path: |
-            target/nextest/default/*.xml
+            ${{ runner.temp }}/soldr-toolchain-ensure.json
+            ${{ runner.temp }}/soldr-toolchain-link.json
+            ${{ runner.temp }}/nextest-list.json
+            ${{ runner.temp }}/target-run-summary.json
+            target/nextest/target-run/junit.xml
           if-no-files-found: ignore
           retention-days: 7

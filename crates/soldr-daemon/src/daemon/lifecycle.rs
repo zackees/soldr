@@ -485,8 +485,7 @@ fn spawn_prepared_daemon(
         && !prepared.via_self
         && !crate::daemon::backend_handle_adoption::running_process_disabled()
     {
-        let _ =
-            crate::daemon::service_definition::install_service_definition(&prepared.executable);
+        let _ = crate::daemon::service_definition::install_service_definition(&prepared.executable);
     }
     let spawn_result = if prepared.via_self {
         spawn_detached_self_inner(&prepared.executable).map_err(LifecycleError::Spawn)

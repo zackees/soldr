@@ -87,20 +87,20 @@ timed_test!(exec_cargo_build_routes_through_child_shims_and_zccache, {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("soldr exec: PATH prefix ") && stderr.contains("soldr-shims-"),
+        "soldr exec must install its transient child-shim PATH layer: {stderr}"
+    );
 
     let log = std::fs::read_to_string(&log_path).expect("read fake tool log");
     assert!(
         !log.contains("direct rustup cargo"),
         "exec should resolve cargo through the soldr child shim, not direct rustup cargo: {log}"
     );
-    let cargo_line = log
-        .lines()
-        .find(|line| line.starts_with("cargo wrapper="))
-        .expect("nested cargo log line");
     assert!(
-        cargo_line.contains("child_shims=1")
-            || (cfg!(windows) && cargo_line.contains("soldr-shims-")),
-        "nested cargo should execute through the child shim layer: {log}"
+        log.lines().any(|line| line.starts_with("cargo wrapper=")),
+        "nested cargo must execute after child-shim installation: {log}"
     );
     assert!(
         log.lines()

@@ -148,7 +148,23 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
-    assert "soldr --no-cache cargo test -p soldr-cli --tests --locked" in workflow
+    assert "$binaryName = Split-Path -Leaf (Get-Command soldr).Source" in workflow
+    assert "[System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)" in workflow
+    assert "$rustcVersion = & soldr rustc -vV" in workflow
+    assert "$rustcExitCode = $LASTEXITCODE" in workflow
+    assert "$hostTriple = $hostLine -replace '^host:\\s*', ''" in workflow
+    assert "$candidates = if ($IsWindows)" in workflow
+    assert 'Join-Path "debug" $binaryName' in workflow
+    assert 'Join-Path (Join-Path $hostTriple "debug") $binaryName' in workflow
+    assert '$stagingDir = Join-Path $env:RUNNER_TEMP "soldr-under-test"' in workflow
+    assert "Copy-Item -LiteralPath $builtSoldr -Destination $soldrUnderTest" in workflow
+    assert "$versionJson = & $soldrUnderTest version --json" in workflow
+    assert ".soldr_version" in workflow
+    assert "Get-Content package.json -Raw" in workflow
+    assert (
+        "& $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked"
+        in workflow
+    )
     assert "id: dogfood-build-cache" in workflow
     assert "setup-soldr-dogfood-zccache-v1-" in workflow
     assert "dogfood-build-cache-hit=" in workflow

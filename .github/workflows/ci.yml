@@ -124,10 +124,9 @@ jobs:
     # added ~130 s to the CI critical path. Lint remains a required
     # status check via branch protection, so a Lint failure still blocks
     # merge — the `needs:` clause was purely a wallclock cost.
-    # soldr#1676: run the native Linux integration backstop on pull requests.
-    # Cross-target archives omit CLI, daemon, and rust-plan binaries because
-    # target runners do not install a Rust toolchain; this lane executes those
-    # suites natively with bounded PR-time coverage.
+    # soldr#1676/#1703: x86_64 GNU is the canonical native exception: run the
+    # complete workspace suite directly on its native runner. The other seven
+    # canonical targets independently replay their complete archives.
     if: github.ref_name == 'main' || github.event_name == 'pull_request'
     uses: ./.github/workflows/_build-and-test.yml
     with:

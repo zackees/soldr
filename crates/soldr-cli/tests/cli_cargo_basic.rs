@@ -153,7 +153,10 @@ timed_test!(
         );
         let invocations = read_logged_cargo_invocations(&log_path);
         assert_eq!(
-            invocations.last(),
+            invocations.iter().find(|argv| {
+                argv.get(1).is_some_and(|arg| arg == "--profile")
+                    && argv.get(3).is_some_and(|arg| arg == "--message-format")
+            }),
             Some(&vec![
                 "rustc".to_string(),
                 "--profile".to_string(),
@@ -161,7 +164,7 @@ timed_test!(
                 "--message-format".to_string(),
                 "json-render-diagnostics".to_string(),
             ]),
-            "cargo front door must preserve the final argv after any metadata probes: {invocations:?}"
+            "cargo front door must preserve the requested argv alongside any metadata or GC probes: {invocations:?}"
         );
     }
 );
@@ -282,16 +285,16 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
                 "i=1\nwhile [ \"$i\" -le 3 ]; do\n  echo \"cargo progress $i\"\n  sleep 1\n  i=$((i + 1))\ndone\n",
             ),
             "cpu" => String::from(
-                "awk 'BEGIN { deadline = systime() + 2; while (systime() < deadline) { n++ } }'\n",
+                "sleep 2 &\ncpu_timer=$!\nwhile kill -0 \"$cpu_timer\" 2>/dev/null; do\n  :\ndone\nwait \"$cpu_timer\"\n",
             ),
             "lock" => format!(
-                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nwhile [ -e \"$lock\" ]; do sleep 1; done\nwait\n",
+                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nunlocker=$!\nwhile [ -e \"$lock\" ] && kill -0 \"$unlocker\" 2>/dev/null; do sleep 1; done\nwait \"$unlocker\"\n[ ! -e \"$lock\" ]\n",
                 lock_path.display()
             ),
             other => panic!("unknown fake cargo mode: {other}"),
         };
         format!(
-            "#!/bin/sh\necho \"cargo $*\" >> \"{}\"\n{}exit 0\n",
+            "#!/bin/sh\nset -eu\necho \"cargo $*\" >> \"{}\"\n{}",
             log_path.display(),
             body
         )
@@ -333,6 +336,44 @@ fn fake_cargo_with_descendant_script(log_path: &Path, survived_path: &Path) -> S
         )
     }
 }
+
+#[cfg(not(windows))]
+timed_test!(fake_long_running_cargo_script_propagates_failures, {
+    let root = unique_temp_dir("fake-long-running-cargo-failures");
+    let tool_dir = root.join("tool");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    let lock_path = root.join("unused.lock");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+
+    let missing_log = root.join("missing").join("cargo.log");
+    write_fake_script(
+        &cargo,
+        &fake_long_running_cargo_script("cpu", &missing_log, &lock_path),
+    );
+    let setup_failure = Command::new(&cargo)
+        .arg("build")
+        .output()
+        .expect("run fake cargo with missing log directory");
+    assert!(
+        !setup_failure.status.success(),
+        "fake cargo must propagate setup failures"
+    );
+
+    let log_path = root.join("cargo.log");
+    write_fake_script(
+        &cargo,
+        &fake_long_running_cargo_script("cpu", &log_path, &lock_path),
+    );
+    let runtime_failure = Command::new(&cargo)
+        .arg("build")
+        .env("PATH", "")
+        .output()
+        .expect("run fake cargo without sleep on PATH");
+    assert!(
+        !runtime_failure.status.success(),
+        "fake cargo must propagate runtime failures"
+    );
+});
 
 timed_test!(
     cargo_without_timeout_allows_progress_cpu_and_lock_waits,
@@ -913,8 +954,9 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
         // `soldr cargo test`, because the outer soldr self-relocates and
         // exports SOLDR_RELOCATED_EXE / SOLDR_ORIGINAL_EXE in its env).
         // Leaving them set short-circuits relocation_guard_active() inside
-        // the copied soldr, so RUSTC_WRAPPER would point at the worktree
-        // copy instead of the runtime/soldr-self copy this test asserts.
+        // the copied soldr, so RUSTC_WRAPPER would point at the worktree copy
+        // instead of the cache-root/version/shims compiler identity asserted
+        // below.
         .env_remove("SOLDR_RELOCATED_EXE")
         .env_remove("SOLDR_ORIGINAL_EXE")
         .output()
@@ -929,11 +971,14 @@ fn windows_worktree_copy_relocates_wrapper_and_original_dir_can_be_removed() {
 
     let log = fs::read_to_string(&log_path).expect("failed to read fake tool log");
     let wrapper = logged_cargo_wrapper(&log).expect("fake cargo should log RUSTC_WRAPPER");
+    let expected_shim_dir = cache_root
+        .join(format!("v{}", env!("CARGO_PKG_VERSION")))
+        .join("shims");
     assert!(
-        path_display_variants(&cache_root.join("runtime").join("soldr-self"))
+        path_display_variants(&expected_shim_dir)
             .iter()
             .any(|path| wrapper.contains(path)),
-        "RUSTC_WRAPPER should point at the relocated runtime copy: {log}"
+        "RUSTC_WRAPPER should point at the versioned compiler-shim directory: {log}"
     );
     assert!(
         !path_display_variants(&copied_soldr)

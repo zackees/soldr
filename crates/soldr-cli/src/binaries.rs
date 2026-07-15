@@ -155,8 +155,30 @@ fn find_ancestor_dir(
     start_dir: Option<&std::path::Path>,
     relative: &str,
 ) -> Option<std::path::PathBuf> {
-    let mut current = start_dir?.to_path_buf();
+    let user_home = crate::core::user_home_dir().ok();
+    find_ancestor_dir_bounded(start_dir?, relative, user_home.as_deref())
+}
+
+fn find_ancestor_dir_bounded(
+    start_dir: &std::path::Path,
+    relative: &str,
+    user_home: Option<&std::path::Path>,
+) -> Option<std::path::PathBuf> {
+    // Normalize both sides before comparing. This is load-bearing on Windows,
+    // where temp paths may use an 8.3 alias (RUNNER~1) while USERPROFILE uses
+    // the long spelling; lexical equality would walk straight through the
+    // intended boundary into the runner's global toolchain homes.
+    let mut current = std::fs::canonicalize(start_dir).unwrap_or_else(|_| start_dir.to_path_buf());
+    let user_home =
+        user_home.map(|path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
     loop {
+        // A project may live below the user's home, but the home directory's
+        // own `.cargo` / `.rustup` is global state, not a repository-local
+        // toolchain. Stop before inspecting it so an explicit rustup resolver
+        // (including the test seam) can choose the intended tool instead.
+        if user_home.as_deref() == Some(current.as_path()) {
+            return None;
+        }
         let candidate = current.join(relative);
         if candidate.is_dir() {
             return Some(candidate);
@@ -454,6 +476,30 @@ mod tests {
             );
         }
     );
+
+    crate::timed_test!(ancestor_search_canonicalizes_the_user_home_boundary, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home = temp.path().join("home");
+        let nested = home.join("nested");
+        std::fs::create_dir_all(home.join(".cargo")).expect("create global toolchain directory");
+        std::fs::create_dir_all(&nested).expect("create nested directory");
+
+        let alternate_home_spelling = nested.join("..");
+        assert!(
+            find_ancestor_dir_bounded(&alternate_home_spelling, ".cargo", Some(&home)).is_none(),
+            "the user home's global toolchain directory is not repository-local"
+        );
+
+        let project = nested.join("project");
+        let project_tools = project.join(".cargo");
+        std::fs::create_dir_all(&project_tools).expect("create project-local toolchain directory");
+        let canonical_project_tools =
+            std::fs::canonicalize(&project_tools).expect("canonicalize project tool directory");
+        assert_eq!(
+            find_ancestor_dir_bounded(&project, ".cargo", Some(&home)).as_deref(),
+            Some(canonical_project_tools.as_path()),
+        );
+    });
 
     #[test]
     fn parse_tool_spec_defaults_to_latest_version() {

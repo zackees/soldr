@@ -5,14 +5,14 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # One ubuntu runner installs a PINNED, previously-released soldr from
 # PyPI and drives `soldr build --release --target X` for all 8 targets.
 # No in-tree `cargo build` of the driver (the "N-1 builds N" ratchet:
-# a released soldr compiles the next one), and — because soldr 0.8.16+
+# a released soldr compiles the next one), and — because soldr 0.8.17+
 # self-provisions the entire cross toolchain (LLVM from
 # zackees/clang-tool-chain-bins, Apple SDK + xwin-cache + cmake/ninja
 # from the soldr-toolchain catalogue) — NO host `apt install clang lld
 # llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
 # only rust + the pinned soldr wheel.
 #
-# The pin MUST be >= 0.8.16 (the first release with canonical friendly
+# The pin MUST be >= 0.8.17 (the first release with canonical friendly
 # target alias forwarding, soldr#1695). Older pins pass aliases such as
 # `mac-x64` through to rustc, which rejects them as unknown targets.
 #
@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       soldr_version:
-        description: "Pinned soldr version from PyPI (>= 0.8.16)"
+        description: "Pinned soldr version from PyPI (>= 0.8.17)"
         required: false
-        default: "0.8.16"
+        default: "0.8.17"
         type: string
   pull_request:
     paths:
@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr_version="${{ inputs.soldr_version || '0.8.16' }}"
+          soldr_version="${{ inputs.soldr_version || '0.8.17' }}"
           echo "pinned soldr driver: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
@@ -94,7 +94,7 @@ jobs:
       # Deliberately NO `apt install clang lld llvm musl-tools`. If this
       # build needs a host cross toolchain, soldr isn't provisioning the
       # right assets — that is the bug this workflow guards against.
-      - name: Build soldr — soldr build --release --target ${{ matrix.target }}
+      - name: Build soldr — soldr build --release --target ${{ matrix.alias }}
         shell: bash
         run: |
           set -euo pipefail
@@ -103,7 +103,7 @@ jobs:
           # fix; disable only its compile cache here so this bootstrap lane
           # validates the released driver and artifact layout deterministically.
           ZCCACHE_DISABLE=1 soldr build --release \
-            --target "${{ matrix.target }}" \
+            --target "${{ matrix.alias }}" \
             --package soldr-cli \
             --bin soldr
           echo "::endgroup::"

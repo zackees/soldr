@@ -83,3 +83,5 @@ def test_archive_roundtrip_rebuilds_without_bypass_and_preserves_cli(
     assert artifact.read_bytes() == b"MZvalidated-cli"
     assert len(commands) == 1
     assert commands[0][:4] == ["soldr", "cargo", "nextest", "archive"]
+    assert "-E" not in commands[0]
+    assert "--filter-expr" not in commands[0]

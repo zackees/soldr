@@ -1,0 +1,8 @@
+[profile.target-run]
+fail-fast = false
+
+[profile.target-run.junit]
+path = "junit.xml"
+report-name = "soldr-target-run"
+store-failure-output = true
+

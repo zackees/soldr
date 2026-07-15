@@ -677,6 +677,49 @@ fn cargo_args_are_not_cacheable_for_direct_miri_driver_hooks() {
     assert!(!cargo_args_are_cacheable(&argv(&["miri"])));
 }
 
+crate::timed_test!(no_cache_preflight_covers_every_compiler_capable_surface, {
+    for subcommand in [
+        "build",
+        "test",
+        "install",
+        "miri",
+        "package",
+        "publish",
+        "nextest",
+        "future-third-party-compiler",
+    ] {
+        assert!(
+            cargo_args_may_compile_unmediated(&argv(&[subcommand])),
+            "{subcommand} may compile without the managed wrapper"
+        );
+    }
+});
+
+crate::timed_test!(no_cache_preflight_skips_known_non_compiling_surfaces, {
+    for subcommand in [
+        "clean", "fetch", "fmt", "metadata", "search", "tree", "update", "audit", "deny", "machete",
+    ] {
+        assert!(
+            !cargo_args_may_compile_unmediated(&argv(&[subcommand])),
+            "{subcommand} is known not to compile"
+        );
+    }
+});
+
+crate::timed_test!(no_cache_preflight_treats_every_watch_shape_as_compiling, {
+    for args in [
+        argv(&["watch"]),
+        argv(&["watch", "-x", "miri"]),
+        argv(&["watch", "-x", "future-third-party-compiler"]),
+        argv(&["watch", "-s", "make generated-rust"]),
+    ] {
+        assert!(
+            cargo_args_may_compile_unmediated(&args),
+            "cargo watch may launch an unmediated compiler: {args:?}"
+        );
+    }
+});
+
 #[test]
 fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     // Issue #824 raised against `cargo zigbuild` specifically, but the

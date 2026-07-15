@@ -139,12 +139,9 @@ jobs:
       - name: Stop setup-soldr builder cache before tests
         uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
 
-      # soldr#1324 — combined `Run library tests` + `Run CLI smoke tests`
-      # into one cargo invocation. Workspace has one member (soldr-cli),
-      # so `--workspace --lib` ≡ `-p soldr-cli --lib`. Merging with
-      # `--tests` lets cargo's libtest scheduler interleave lib-tests
-      # and integration binaries — no wasted cargo-startup +
-      # freshness-check pass between the two former steps.
+      # soldr#1324/#1703 — run every workspace library and integration binary
+      # in one invocation. This includes the internal crates extracted after
+      # the original single-crate optimization was written.
       #
       # NOTE: this step uses setup-soldr's `soldr` (from PATH), the
       # same wrapper as `Build workspace + tests` above. Historically
@@ -168,7 +165,7 @@ jobs:
           Write-Host "Using isolated test SOLDR_CACHE_DIR=$env:SOLDR_CACHE_DIR"
           Write-Host "Using isolated test ZCCACHE_CACHE_DIR=$env:ZCCACHE_CACHE_DIR"
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr cargo test -p soldr-cli --lib --tests --locked --target ${{ inputs.target }}
+          soldr cargo test --workspace --lib --tests --locked --target ${{ inputs.target }}
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ([string]::Format(

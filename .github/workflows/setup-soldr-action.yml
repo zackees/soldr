@@ -171,8 +171,40 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
+          $binaryName = Split-Path -Leaf (Get-Command soldr).Source
+          if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
+            $targetDir = Join-Path $PWD "target"
+          } elseif ([System.IO.Path]::IsPathRooted($env:CARGO_TARGET_DIR)) {
+            $targetDir = $env:CARGO_TARGET_DIR
+          } else {
+            $targetDir = Join-Path $PWD $env:CARGO_TARGET_DIR
+          }
+          $rustcVersion = & soldr rustc -vV
+          $rustcExitCode = $LASTEXITCODE
+          $hostLine = ($rustcVersion | Select-String '^host:\s*' | Select-Object -First 1).Line
+          if ($rustcExitCode -ne 0 -or [string]::IsNullOrWhiteSpace($hostLine)) {
+            throw "could not resolve the host triple for the freshly built soldr"
+          }
+          $hostTriple = $hostLine -replace '^host:\s*', ''
+          $defaultLayout = Join-Path $targetDir (Join-Path "debug" $binaryName)
+          $hostLayout = Join-Path $targetDir (Join-Path (Join-Path $hostTriple "debug") $binaryName)
+          $candidates = if ($IsWindows) { @($hostLayout, $defaultLayout) } else { @($defaultLayout, $hostLayout) }
+          $builtSoldr = $candidates | Where-Object { Test-Path $_ -PathType Leaf } | Select-Object -First 1
+          if (-not $builtSoldr) { throw "missing freshly built soldr binary; checked: $($candidates -join ', ')" }
+          $stagingDir = Join-Path $env:RUNNER_TEMP "soldr-under-test"
+          New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+          $soldrUnderTest = Join-Path $stagingDir $binaryName
+          Copy-Item -LiteralPath $builtSoldr -Destination $soldrUnderTest -Force
+          if (-not $IsWindows) { & chmod +x -- $soldrUnderTest }
+          $versionJson = & $soldrUnderTest version --json
+          if ($LASTEXITCODE -ne 0) { throw "freshly built soldr version probe failed" }
+          $actualVersion = ($versionJson | ConvertFrom-Json).soldr_version
+          $expectedVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($actualVersion -ne $expectedVersion) {
+            throw "wrong soldr under test: expected $expectedVersion, got $actualVersion"
+          }
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr --no-cache cargo test -p soldr-cli --tests --locked
+          & $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-test-seconds={0:F3}", $timer.Elapsed.TotalSeconds))

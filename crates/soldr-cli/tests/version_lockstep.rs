@@ -31,13 +31,7 @@ mod common;
 /// `CARGO_MANIFEST_DIR` points at `<repo>/crates/soldr-cli`; we want
 /// `<repo>/`.
 fn repo_root() -> PathBuf {
-    let manifest_dir =
-        std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR set by cargo at test time");
-    PathBuf::from(manifest_dir)
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("crates/soldr-cli must live two levels under repo root")
-        .to_path_buf()
+    common::workspace_root()
 }
 
 /// Extract `[workspace.package] version = "..."` from the repo's
@@ -215,12 +209,6 @@ timed_test!(
     cargo_toml_cargo_lock_and_package_json_share_one_version,
     Duration::from_secs(15),
     {
-        if common::should_skip_source_tree_test(
-            "cargo_toml_cargo_lock_and_package_json_share_one_version",
-        ) {
-            return;
-        }
-
         let root = repo_root();
         let cargo_toml = read_cargo_toml_version(&root);
         let cargo_lock = read_cargo_lock_version(&root);
@@ -248,12 +236,6 @@ timed_test!(
     soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible,
     Duration::from_secs(15),
     {
-        if common::should_skip_source_tree_test(
-            "soldr_cli_and_embedded_zccache_shared_direct_deps_are_compatible",
-        ) {
-            return;
-        }
-
         let root = repo_root();
         let soldr_cli_manifest = root.join("crates/soldr-cli/Cargo.toml");
         let zccache_root = root.join("_vender/zccache");

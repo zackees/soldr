@@ -216,9 +216,11 @@ impl SoldrZccacheService {
             env: req.env,
             stdin: req.stdin,
         };
-        let zresp = self
-            .inner
-            .compile(zreq)
+        // Keep zccache's compile state behind one heap indirection. Its
+        // streaming implementation nests a large compile pipeline future;
+        // carrying that state inline makes this adapter's callers inherit the
+        // full stack footprint even when they only use the buffered API.
+        let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
         Ok(CompileResponseBody {
@@ -487,6 +489,70 @@ fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> st
 mod private_root_tests {
     use super::*;
 
+    #[derive(Debug)]
+    struct CompilerProbeOutput {
+        success: bool,
+        exit_code: Option<i32>,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    }
+
+    impl From<std::process::Output> for CompilerProbeOutput {
+        fn from(output: std::process::Output) -> Self {
+            Self {
+                success: output.status.success(),
+                exit_code: output.status.code(),
+                stdout: output.stdout,
+                stderr: output.stderr,
+            }
+        }
+    }
+
+    fn validate_compiler_probe(
+        path: &std::path::Path,
+        output: Result<CompilerProbeOutput, std::io::Error>,
+    ) -> Result<String, String> {
+        let output = output.map_err(|error| {
+            format!(
+                "Rust compiler prerequisite failed: path={} spawn_error={error}",
+                path.display()
+            )
+        })?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
+            return Err(format!(
+                "Rust compiler prerequisite failed: path={} exit_code={:?}\nstdout:\n{}\nstderr:\n{}",
+                path.display(),
+                output.exit_code,
+                stdout,
+                stderr
+            ));
+        }
+        let version = stdout.trim();
+        let mut lines = version.lines();
+        let has_rustc_version = lines.next().is_some_and(|line| line.starts_with("rustc "));
+        let has_host = lines.any(|line| line.starts_with("host: "));
+        if !has_rustc_version || !has_host {
+            return Err(format!(
+                "Rust compiler prerequisite failed: path={} exit_code={:?} unexpected rustc -vV output\nstdout:\n{}\nstderr:\n{}",
+                path.display(),
+                output.exit_code,
+                stdout,
+                stderr
+            ));
+        }
+        Ok(version.to_string())
+    }
+
+    fn probe_working_compiler(path: &std::path::Path) -> Result<String, String> {
+        let output = std::process::Command::new(path)
+            .arg("-vV")
+            .output()
+            .map(CompilerProbeOutput::from);
+        validate_compiler_probe(path, output)
+    }
+
     fn test_daemon_identity() -> DaemonProcess {
         use running_process::broker::protocol::Endpoint;
         DaemonProcess::current_process(
@@ -638,16 +704,95 @@ mod private_root_tests {
         );
     });
 
+    #[cfg(unix)]
+    crate::timed_test!(working_fake_compiler_probe_is_accepted, {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let compiler = temp.path().join("fake-compiler");
+        std::fs::write(
+            &compiler,
+            "#!/bin/sh\nprintf 'rustc 1.94.1 (fake)\\nhost: fake-target\\n'\n",
+        )
+        .expect("write fake compiler");
+        let mut permissions = std::fs::metadata(&compiler)
+            .expect("fake compiler metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&compiler, permissions).expect("make fake compiler executable");
+
+        let version = probe_working_compiler(&compiler).expect("working compiler probe");
+        assert!(version.contains("rustc 1.94.1 (fake)"));
+    });
+
+    crate::timed_test!(unusable_proxy_probe_reports_complete_diagnostics, {
+        let compiler = std::path::Path::new("rustc-proxy");
+        let error = validate_compiler_probe(
+            compiler,
+            Ok(CompilerProbeOutput {
+                success: false,
+                exit_code: Some(1),
+                stdout: b"proxy stdout".to_vec(),
+                stderr: b"compiler component is not applicable".to_vec(),
+            }),
+        )
+        .expect_err("unusable proxy must fail");
+        assert!(error.contains("path=rustc-proxy"));
+        assert!(error.contains("exit_code=Some(1)"));
+        assert!(error.contains("proxy stdout"));
+        assert!(error.contains("compiler component is not applicable"));
+    });
+
+    crate::timed_test!(successful_non_compiler_probe_is_rejected, {
+        let compiler = std::path::Path::new("not-rustc");
+        let error = validate_compiler_probe(
+            compiler,
+            Ok(CompilerProbeOutput {
+                success: true,
+                exit_code: Some(0),
+                stdout: b"some unrelated executable\n".to_vec(),
+                stderr: b"unexpected shim diagnostics".to_vec(),
+            }),
+        )
+        .expect_err("non-rustc output must fail");
+        assert!(error.contains("path=not-rustc"));
+        assert!(error.contains("unexpected rustc -vV output"));
+        assert!(error.contains("some unrelated executable"));
+        assert!(error.contains("unexpected shim diagnostics"));
+    });
+
+    crate::timed_test!(missing_compiler_probe_reports_path_and_spawn_error, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let compiler = temp.path().join("missing-compiler");
+        let error = probe_working_compiler(&compiler).expect_err("missing compiler must fail");
+        assert!(error.contains(&format!("path={}", compiler.display())));
+        assert!(error.contains("spawn_error="));
+    });
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn real_rustc_hit_survives_full_and_ci_save_load_relocation() {
         use crate::cache_lib::save::{
             load, save, LoadOptions, SaveOptions, SaveProfile, DEFAULT_ZSTD_LEVEL,
         };
 
-        let Some(rustc) = zccache::test_support::find_rustc() else {
-            eprintln!("skipping test: rustc not found on PATH");
-            return;
-        };
+        let current_dir = std::env::current_dir().expect("resolve test working directory");
+        let repo_workspace = current_dir
+            .ancestors()
+            .find(|candidate| candidate.join("rust-toolchain.toml").is_file())
+            .expect("find repository rust-toolchain.toml from test working directory");
+        let pinned_toolchain = crate::core::read_rust_toolchain_manifest(repo_workspace)
+            .expect("read repository rust-toolchain.toml")
+            .channel
+            .expect("repository rust-toolchain.toml must declare a channel");
+        let rustc = zccache::test_support::find_rustc()
+            .expect("Rust compiler prerequisite failed: no compiler found on PATH");
+        let compiler_version =
+            probe_working_compiler(rustc.as_path()).unwrap_or_else(|error| panic!("{error}"));
+        eprintln!(
+            "using verified compiler {}: {}",
+            rustc.as_path().display(),
+            compiler_version.lines().next().unwrap_or("unknown version")
+        );
         let temp = tempfile::tempdir().expect("tempdir");
         let project = temp.path().join("workspace");
         std::fs::create_dir_all(project.join("src")).expect("create source directory");
@@ -676,10 +821,14 @@ mod private_root_tests {
             "target/debug/deps".into(),
             "src/lib.rs".into(),
         ];
+        let mut compile_env: Vec<(String, String)> = std::env::vars()
+            .filter(|(key, _)| key != "RUSTUP_TOOLCHAIN")
+            .collect();
+        compile_env.push(("RUSTUP_TOOLCHAIN".into(), pinned_toolchain));
         let request = || CompileRequest {
             args: rustc_args.clone(),
             cwd: project.display().to_string(),
-            env: std::env::vars().collect(),
+            env: compile_env.clone(),
             stdin: Vec::new(),
             lifecycle: None,
         };

@@ -102,6 +102,17 @@ mod tests {
     use std::sync::{mpsc, Arc};
 
     const LOCK_HOLDER_DIR_ENV: &str = "SOLDR_REDB_LOCK_HOLDER_DIR";
+    // Plain libtest runs these cases concurrently inside one process, where
+    // they intentionally share the production state-db mutex. Nextest gives
+    // each case its own process and tempdir, so cross-test serialization is
+    // unnecessary there.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn serial_test_guard() -> MutexGuard<'static, ()> {
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     crate::timed_test!(subprocess_lock_holder, {
         let Some(dir) = std::env::var_os(LOCK_HOLDER_DIR_ENV).map(PathBuf::from) else {
@@ -125,6 +136,7 @@ mod tests {
     });
 
     crate::timed_test!(retries_actual_subprocess_contention_until_release, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let test_name = "cache_lib::redb_lock::tests::subprocess_lock_holder";
         let mut child = Command::new(std::env::current_exe().expect("current test executable"))
@@ -161,7 +173,10 @@ mod tests {
         );
 
         opened.expect("open succeeded after subprocess released database");
-        assert!(observed_contention, "parent must observe subprocess contention");
+        assert!(
+            observed_contention,
+            "parent must observe subprocess contention"
+        );
         assert!(
             child.wait().expect("wait for lock-holder child").success(),
             "lock-holder subprocess failed"
@@ -169,6 +184,7 @@ mod tests {
     });
 
     crate::timed_test!(retries_cross_process_style_open_contention_until_release, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.redb");
         // Bypass the soldr mutex to model a different process holding redb's
@@ -200,6 +216,7 @@ mod tests {
     });
 
     crate::timed_test!(stops_retrying_after_injected_budget, {
+        let _test_guard = serial_test_guard();
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("state.redb");
         let _blocker = Database::builder().create(&path).expect("blocking open");
@@ -208,14 +225,9 @@ mod tests {
 
         let budget = Duration::from_secs(1);
         let started = Instant::now();
-        let result = open_state_db_with_retry(
-            &path,
-            budget,
-            Duration::from_millis(5),
-            || {
-                observed.fetch_add(1, Ordering::Relaxed);
-            },
-        );
+        let result = open_state_db_with_retry(&path, budget, Duration::from_millis(5), || {
+            observed.fetch_add(1, Ordering::Relaxed);
+        });
         let error = match result {
             Ok(_) => panic!("contention should outlive the retry budget"),
             Err(error) => error,
