@@ -148,7 +148,13 @@ def test_setup_soldr_smoke_tests_disable_nested_cache() -> None:
     ).read_text(encoding="utf-8")
 
     assert "Remove-Item Env:ZCCACHE_CACHE_DIR" in workflow
-    assert "soldr --no-cache cargo test -p soldr-cli --tests --locked" in workflow
+    assert '$soldrUnderTest = Join-Path $PWD "target/debug/soldr"' in workflow
+    assert 'if ($IsWindows) { $soldrUnderTest += ".exe" }' in workflow
+    assert "Test-Path $soldrUnderTest -PathType Leaf" in workflow
+    assert (
+        "& $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked"
+        in workflow
+    )
     assert "id: dogfood-build-cache" in workflow
     assert "setup-soldr-dogfood-zccache-v1-" in workflow
     assert "dogfood-build-cache-hit=" in workflow

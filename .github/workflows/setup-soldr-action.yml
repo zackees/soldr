@@ -171,8 +171,13 @@ jobs:
           SOLDR_CACHE_DIR: ${{ runner.temp }}/soldr-build-under-test
         run: |
           Remove-Item Env:ZCCACHE_CACHE_DIR -ErrorAction SilentlyContinue
+          $soldrUnderTest = Join-Path $PWD "target/debug/soldr"
+          if ($IsWindows) { $soldrUnderTest += ".exe" }
+          if (-not (Test-Path $soldrUnderTest -PathType Leaf)) {
+            throw "missing freshly built soldr binary: $soldrUnderTest"
+          }
           $timer = [Diagnostics.Stopwatch]::StartNew()
-          soldr --no-cache cargo test -p soldr-cli --tests --locked
+          & $soldrUnderTest --no-cache cargo test -p soldr-cli --tests --locked
           $exitCode = $LASTEXITCODE
           $timer.Stop()
           Write-Host ([string]::Format([Globalization.CultureInfo]::InvariantCulture, "dogfood-test-seconds={0:F3}", $timer.Elapsed.TotalSeconds))
