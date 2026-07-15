@@ -101,8 +101,15 @@ crate::timed_test!(final_rename_failure_preserves_the_private_copy, {
     assert_eq!(preserved.len(), 1);
     assert_eq!(std::fs::read(&preserved[0]).unwrap(), b"cached bytes");
     let message = error.to_string();
-    assert!(message.contains("private copy was preserved at"));
-    assert!(message.contains(&preserved[0].display().to_string()));
+    let reported = message
+        .split_once("private copy was preserved at ")
+        .map(|(_, path)| PathBuf::from(path))
+        .unwrap_or_else(|| panic!("missing preserved-copy path in error: {message}"));
+    assert_eq!(
+        std::fs::canonicalize(&reported).unwrap(),
+        std::fs::canonicalize(&preserved[0]).unwrap(),
+        "error reported the wrong preserved-copy path: {message}"
+    );
 });
 
 crate::timed_test!(private_readonly_file_becomes_writable_without_copy, {
