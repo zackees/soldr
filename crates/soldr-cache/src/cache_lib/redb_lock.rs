@@ -102,9 +102,13 @@ mod tests {
     use std::sync::{mpsc, Arc};
 
     const LOCK_HOLDER_DIR_ENV: &str = "SOLDR_REDB_LOCK_HOLDER_DIR";
+    // Plain libtest runs these cases concurrently inside one process, where
+    // they intentionally share the production state-db mutex. Nextest gives
+    // each case its own process and tempdir, so cross-test serialization is
+    // unnecessary there.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn serial_test_guard() -> MutexGuard<'static, ()> {
-        static TEST_LOCK: Mutex<()> = Mutex::new(());
         TEST_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -114,7 +118,6 @@ mod tests {
         let Some(dir) = std::env::var_os(LOCK_HOLDER_DIR_ENV).map(PathBuf::from) else {
             return;
         };
-        let _test_guard = serial_test_guard();
         let db = Database::builder()
             .create(dir.join("state.redb"))
             .expect("subprocess blocking open");
