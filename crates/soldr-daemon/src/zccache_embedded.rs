@@ -216,9 +216,11 @@ impl SoldrZccacheService {
             env: req.env,
             stdin: req.stdin,
         };
-        let zresp = self
-            .inner
-            .compile(zreq)
+        // Keep zccache's compile state behind one heap indirection. Its
+        // streaming implementation nests a large compile pipeline future;
+        // carrying that state inline makes this adapter's callers inherit the
+        // full stack footprint even when they only use the buffered API.
+        let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
         Ok(CompileResponseBody {
