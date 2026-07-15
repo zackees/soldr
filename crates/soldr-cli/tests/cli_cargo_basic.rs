@@ -282,16 +282,16 @@ fn fake_long_running_cargo_script(mode: &str, log_path: &Path, lock_path: &Path)
                 "i=1\nwhile [ \"$i\" -le 3 ]; do\n  echo \"cargo progress $i\"\n  sleep 1\n  i=$((i + 1))\ndone\n",
             ),
             "cpu" => String::from(
-                "awk 'BEGIN { deadline = systime() + 2; while (systime() < deadline) { n++ } }'\n",
+                "sleep 2 &\ncpu_timer=$!\nwhile kill -0 \"$cpu_timer\" 2>/dev/null; do\n  :\ndone\nwait \"$cpu_timer\"\n",
             ),
             "lock" => format!(
-                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nwhile [ -e \"$lock\" ]; do sleep 1; done\nwait\n",
+                "lock='{0}'\n: > \"$lock\"\n(sleep 2; rm -f \"$lock\") &\nunlocker=$!\nwhile [ -e \"$lock\" ] && kill -0 \"$unlocker\" 2>/dev/null; do sleep 1; done\nwait \"$unlocker\"\n[ ! -e \"$lock\" ]\n",
                 lock_path.display()
             ),
             other => panic!("unknown fake cargo mode: {other}"),
         };
         format!(
-            "#!/bin/sh\necho \"cargo $*\" >> \"{}\"\n{}exit 0\n",
+            "#!/bin/sh\nset -eu\necho \"cargo $*\" >> \"{}\"\n{}",
             log_path.display(),
             body
         )
@@ -333,6 +333,44 @@ fn fake_cargo_with_descendant_script(log_path: &Path, survived_path: &Path) -> S
         )
     }
 }
+
+#[cfg(not(windows))]
+timed_test!(fake_long_running_cargo_script_propagates_failures, {
+    let root = unique_temp_dir("fake-long-running-cargo-failures");
+    let tool_dir = root.join("tool");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    let lock_path = root.join("unused.lock");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+
+    let missing_log = root.join("missing").join("cargo.log");
+    write_fake_script(
+        &cargo,
+        &fake_long_running_cargo_script("cpu", &missing_log, &lock_path),
+    );
+    let setup_failure = Command::new(&cargo)
+        .arg("build")
+        .output()
+        .expect("run fake cargo with missing log directory");
+    assert!(
+        !setup_failure.status.success(),
+        "fake cargo must propagate setup failures"
+    );
+
+    let log_path = root.join("cargo.log");
+    write_fake_script(
+        &cargo,
+        &fake_long_running_cargo_script("cpu", &log_path, &lock_path),
+    );
+    let runtime_failure = Command::new(&cargo)
+        .arg("build")
+        .env("PATH", "")
+        .output()
+        .expect("run fake cargo without sleep on PATH");
+    assert!(
+        !runtime_failure.status.success(),
+        "fake cargo must propagate runtime failures"
+    );
+});
 
 timed_test!(
     cargo_without_timeout_allows_progress_cpu_and_lock_waits,
