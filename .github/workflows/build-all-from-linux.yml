@@ -99,7 +99,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "::group::soldr build --target ${{ matrix.alias }} (${{ matrix.target }})"
-          soldr build --release \
+          # The pinned wheel predates the vendored zccache cross-target output
+          # fix; disable only its compile cache here so this bootstrap lane
+          # validates the released driver and artifact layout deterministically.
+          ZCCACHE_DISABLE=1 soldr build --release \
             --target "${{ matrix.target }}" \
             --package soldr-cli \
             --bin soldr
