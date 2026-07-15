@@ -243,6 +243,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             let mut full_args = Vec::with_capacity(args.len() + 1);
             full_args.push("build".to_string());
             full_args.extend(args);
+            target_alias::normalize_target_aliases_in_args(&mut full_args);
 
             // Try to recognize a target from argv so we can prep
             // before invoking cargo. If the user didn't pass `--target`,

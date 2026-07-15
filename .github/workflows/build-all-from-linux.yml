@@ -5,16 +5,16 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # One ubuntu runner installs a PINNED, previously-released soldr from
 # PyPI and drives `soldr build --release --target X` for all 8 targets.
 # No in-tree `cargo build` of the driver (the "N-1 builds N" ratchet:
-# a released soldr compiles the next one), and — because soldr 0.7.100+
+# a released soldr compiles the next one), and — because soldr 0.8.16+
 # self-provisions the entire cross toolchain (LLVM from
 # zackees/clang-tool-chain-bins, Apple SDK + xwin-cache + cmake/ninja
 # from the soldr-toolchain catalogue) — NO host `apt install clang lld
 # llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
 # only rust + the pinned soldr wheel.
 #
-# The pin MUST be >= 0.7.100 (the release that shipped the darwin/msvc
-# LLVM-bootstrap fix, soldr#1310). An older pin fails the darwin lane
-# with "cc-rs: failed to find tool llvm-ar".
+# The pin MUST be >= 0.8.16 (the first release with canonical friendly
+# target alias forwarding, soldr#1695). Older pins pass aliases such as
+# `mac-x64` through to rustc, which rejects them as unknown targets.
 #
 # Dry-run: builds + format-verifies each binary; no packaging/publish.
 #
@@ -26,13 +26,14 @@ on:
   workflow_dispatch:
     inputs:
       soldr_version:
-        description: "Pinned soldr version from PyPI (>= 0.7.100)"
+        description: "Pinned soldr version from PyPI (>= 0.8.16)"
         required: false
-        default: "0.7.100"
+        default: "0.8.16"
         type: string
   pull_request:
     paths:
       - ".github/workflows/build-all-from-linux.yml"
+      - "ci/canonical-targets.json"
 
 permissions:
   contents: read
@@ -47,21 +48,21 @@ env:
 
 jobs:
   build-all:
-    name: ${{ matrix.friendly }} (${{ matrix.target }})
+    name: ${{ matrix.alias }} (${{ matrix.target }})
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { friendly: linux-x86,      target: x86_64-unknown-linux-gnu,    exe_suffix: "" }
-          - { friendly: linux-arm,      target: aarch64-unknown-linux-gnu,   exe_suffix: "" }
-          - { friendly: linux-x86-musl, target: x86_64-unknown-linux-musl,   exe_suffix: "" }
-          - { friendly: linux-arm-musl, target: aarch64-unknown-linux-musl,  exe_suffix: "" }
-          - { friendly: macos-x86,      target: x86_64-apple-darwin,         exe_suffix: "" }
-          - { friendly: macos-arm,      target: aarch64-apple-darwin,        exe_suffix: "" }
-          - { friendly: windows-x86,    target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
-          - { friendly: windows-arm,    target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
+          - { alias: linux-x64,       target: x86_64-unknown-linux-gnu,    exe_suffix: "" }
+          - { alias: linux-arm64,     target: aarch64-unknown-linux-gnu,   exe_suffix: "" }
+          - { alias: linux-x64-musl,  target: x86_64-unknown-linux-musl,   exe_suffix: "" }
+          - { alias: linux-arm64-musl, target: aarch64-unknown-linux-musl, exe_suffix: "" }
+          - { alias: mac-x64,         target: x86_64-apple-darwin,         exe_suffix: "" }
+          - { alias: mac-arm64,       target: aarch64-apple-darwin,        exe_suffix: "" }
+          - { alias: win-x64,         target: x86_64-pc-windows-msvc,      exe_suffix: ".exe" }
+          - { alias: win-arm64,       target: aarch64-pc-windows-msvc,     exe_suffix: ".exe" }
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -82,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr_version="${{ inputs.soldr_version || '0.7.100' }}"
+          soldr_version="${{ inputs.soldr_version || '0.8.16' }}"
           echo "pinned soldr driver: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
@@ -97,8 +98,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "::group::soldr build --target ${{ matrix.target }}"
-          soldr build --release \
+          echo "::group::soldr build --target ${{ matrix.alias }} (${{ matrix.target }})"
+          # The pinned wheel predates the vendored zccache cross-target output
+          # fix; disable only its compile cache here so this bootstrap lane
+          # validates the released driver and artifact layout deterministically.
+          ZCCACHE_DISABLE=1 soldr build --release \
             --target "${{ matrix.target }}" \
             --package soldr-cli \
             --bin soldr
