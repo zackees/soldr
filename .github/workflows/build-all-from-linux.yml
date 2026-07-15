@@ -5,16 +5,16 @@ name: Build all targets from Linux (pinned soldr, zero host toolchain)
 # One ubuntu runner installs a PINNED, previously-released soldr from
 # PyPI and drives `soldr build --release --target X` for all 8 targets.
 # No in-tree `cargo build` of the driver (the "N-1 builds N" ratchet:
-# a released soldr compiles the next one), and — because soldr 0.7.100+
+# a released soldr compiles the next one), and — because soldr 0.8.16+
 # self-provisions the entire cross toolchain (LLVM from
 # zackees/clang-tool-chain-bins, Apple SDK + xwin-cache + cmake/ninja
 # from the soldr-toolchain catalogue) — NO host `apt install clang lld
 # llvm musl-tools`. soldr is a bootstrapping tool: the runner brings
 # only rust + the pinned soldr wheel.
 #
-# The pin MUST be >= 0.7.100 (the release that shipped the darwin/msvc
-# LLVM-bootstrap fix, soldr#1310). An older pin fails the darwin lane
-# with "cc-rs: failed to find tool llvm-ar".
+# The pin MUST be >= 0.8.16 (the first release with canonical friendly
+# target alias forwarding, soldr#1695). Older pins pass aliases such as
+# `mac-x64` through to rustc, which rejects them as unknown targets.
 #
 # Dry-run: builds + format-verifies each binary; no packaging/publish.
 #
@@ -26,9 +26,9 @@ on:
   workflow_dispatch:
     inputs:
       soldr_version:
-        description: "Pinned soldr version from PyPI (>= 0.7.100)"
+        description: "Pinned soldr version from PyPI (>= 0.8.16)"
         required: false
-        default: "0.7.100"
+        default: "0.8.16"
         type: string
   pull_request:
     paths:
@@ -83,7 +83,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr_version="${{ inputs.soldr_version || '0.7.100' }}"
+          soldr_version="${{ inputs.soldr_version || '0.8.16' }}"
           echo "pinned soldr driver: $soldr_version"
           python3 -m venv "$RUNNER_TEMP/soldr-venv"
           "$RUNNER_TEMP/soldr-venv/bin/pip" install --disable-pip-version-check \
