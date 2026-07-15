@@ -100,7 +100,7 @@ jobs:
           set -euo pipefail
           echo "::group::soldr build --target ${{ matrix.alias }} (${{ matrix.target }})"
           soldr build --release \
-            --target "${{ matrix.alias }}" \
+            --target "${{ matrix.target }}" \
             --package soldr-cli \
             --bin soldr
           echo "::endgroup::"
