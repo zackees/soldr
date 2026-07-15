@@ -1783,15 +1783,10 @@ pub(crate) async fn run_cargo_front_door(
     // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
     // has no managed zccache session, detach shared target files locally
     // before the unmediated compiler can overwrite them. This must not depend
-    // on the daemon being responsive. `install` normally builds in a temporary
-    // root, so prepare it only when the caller explicitly selects a reusable
-    // target directory.
-    let cargo_install_uses_reusable_target = !matches!(cargo_subcommand, Some("install"))
-        || no_cache_detach::has_explicit_reusable_target_dir(args);
-    if cargo_args_may_compile_unmediated(args)
-        && cache_plan.zccache_session().is_none()
-        && cargo_install_uses_reusable_target
-    {
+    // on the daemon being responsive. Conservatively include `install`:
+    // configuration can select a persistent target root without a visible
+    // command-line or environment override.
+    if cargo_args_may_compile_unmediated(args) && cache_plan.zccache_session().is_none() {
         let report = no_cache_detach::prepare_target_for_unmediated_build(&cargo, args, &command)?;
         if report.detached_shared > 0 || report.made_writable > 0 {
             eprintln!(

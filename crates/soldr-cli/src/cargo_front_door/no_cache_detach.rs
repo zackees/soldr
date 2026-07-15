@@ -48,18 +48,6 @@ pub(super) fn prepare_target_for_unmediated_build(
     detach_target_tree(&target_dir)
 }
 
-pub(super) fn has_explicit_reusable_target_dir(args: &[String]) -> bool {
-    has_explicit_reusable_target_dir_with_env(args, std::env::var_os("CARGO_TARGET_DIR").as_deref())
-}
-
-fn has_explicit_reusable_target_dir_with_env(
-    args: &[String],
-    cargo_target_dir: Option<&OsStr>,
-) -> bool {
-    super::disk::cargo_arg_value(args, "--target-dir").is_some()
-        || cargo_target_dir.is_some_and(|value| !value.is_empty())
-}
-
 /// Resolve the target root in the build tool's own order. Explicit CLI/env
 /// overrides are cheap and authoritative; otherwise metadata is the only
 /// reliable way to honor workspace discovery plus `.cargo/config.toml`
@@ -397,6 +385,16 @@ enum PreparedFile {
 }
 
 fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, SoldrError> {
+    prepare_file_with_final_rename(parent, name, |directory, temp_name, final_name| {
+        directory.rename(temp_name, directory, final_name)
+    })
+}
+
+fn prepare_file_with_final_rename(
+    parent: &OpenDirectory,
+    name: &OsStr,
+    final_rename: impl FnOnce(&Dir, &OsStr, &OsStr) -> std::io::Result<()>,
+) -> Result<PreparedFile, SoldrError> {
     let display_path = parent.display_path.join(name);
     let mut source = match open_source_for_detach(&parent.dir, Path::new(name)) {
         Ok(source) => source,
@@ -428,7 +426,7 @@ fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, So
 
     let (temp_name, mut temp) = create_private_temp(&parent.dir, name)
         .map_err(|error| detach_error(&display_path, "create detach temporary file", error))?;
-    let result = (|| {
+    let prepare_result = (|| {
         std::io::copy(&mut source, &mut temp)?;
         temp.flush()?;
         set_private_permissions(&temp, &metadata)?;
@@ -438,18 +436,40 @@ fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, So
             Some(filetime::FileTime::from_last_modification_time(&metadata)),
         )?;
         temp.sync_all()?;
-        remove_shared_alias(&parent.dir, name, source)?;
-        drop(temp);
-        parent.dir.rename(&temp_name, &parent.dir, name)?;
         Ok::<(), std::io::Error>(())
     })();
-    if let Err(error) = result {
+    if let Err(error) = prepare_result {
+        drop(temp);
         let _ = parent.dir.remove_file(&temp_name);
         return Err(detach_error(
             &display_path,
             "detach shared target file",
             error,
         ));
+    }
+
+    if let Err(error) = remove_shared_alias(&parent.dir, name, source) {
+        drop(temp);
+        let _ = parent.dir.remove_file(&temp_name);
+        return Err(detach_error(
+            &display_path,
+            "detach shared target file",
+            error,
+        ));
+    }
+
+    // The original directory entry no longer exists. From this point onward,
+    // the temporary is the sole private copy and must never be cleaned up on
+    // error. The capability-relative rename is atomic when it succeeds; when
+    // it fails, retain the copy under its exact reported recovery path.
+    drop(temp);
+    if let Err(error) = final_rename(&parent.dir, &temp_name, name) {
+        let preserved_path = parent.display_path.join(&temp_name);
+        return Err(SoldrError::Other(format!(
+            "no-cache preflight could not finalize detached target file {}: {error}; the shared alias was removed and the private copy was preserved at {}",
+            display_path.display(),
+            preserved_path.display(),
+        )));
     }
     Ok(PreparedFile::DetachedShared)
 }

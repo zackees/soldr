@@ -681,6 +681,7 @@ crate::timed_test!(no_cache_preflight_covers_every_compiler_capable_surface, {
     for subcommand in [
         "build",
         "test",
+        "install",
         "miri",
         "package",
         "publish",

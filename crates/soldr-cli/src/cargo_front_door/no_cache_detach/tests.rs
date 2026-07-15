@@ -64,6 +64,47 @@ crate::timed_test!(
     }
 );
 
+crate::timed_test!(final_rename_failure_preserves_the_private_copy, {
+    let root = tempfile::tempdir().unwrap();
+    let cache = root.path().join("cache");
+    let target = root.path().join("target");
+    std::fs::create_dir_all(&cache).unwrap();
+    std::fs::create_dir_all(&target).unwrap();
+    let blob = cache.join("blob");
+    let output = target.join("artifact");
+    std::fs::write(&blob, b"cached bytes").unwrap();
+    std::fs::hard_link(&blob, &output).unwrap();
+    mark_readonly(&blob);
+
+    let directory = opened_root(&target);
+    let error = prepare_file_with_final_rename(
+        &directory,
+        OsStr::new("artifact"),
+        |_directory, _temp_name, _final_name| {
+            Err(std::io::Error::other("injected final rename failure"))
+        },
+    )
+    .unwrap_err();
+
+    assert!(!output.exists(), "the shared target alias was removed");
+    assert_eq!(link_count(&blob), 1);
+    assert!(std::fs::metadata(&blob).unwrap().permissions().readonly());
+    let preserved: Vec<PathBuf> = std::fs::read_dir(&target)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(OsStr::to_str)
+                .is_some_and(|name| name.starts_with(DETACH_TEMP_PREFIX))
+        })
+        .collect();
+    assert_eq!(preserved.len(), 1);
+    assert_eq!(std::fs::read(&preserved[0]).unwrap(), b"cached bytes");
+    let message = error.to_string();
+    assert!(message.contains("private copy was preserved at"));
+    assert!(message.contains(&preserved[0].display().to_string()));
+});
+
 crate::timed_test!(private_readonly_file_becomes_writable_without_copy, {
     let root = tempfile::tempdir().unwrap();
     let target = root.path().join("target");
@@ -374,29 +415,4 @@ crate::timed_test!(test_cargo_override_uses_default_target_without_metadata, {
             panic!("production resolution must not use the test seam")
         });
     assert!(metadata_result.is_err());
-});
-
-crate::timed_test!(target_dir_cli_override_is_explicitly_reusable, {
-    let separate = [
-        "install".into(),
-        "--target-dir".into(),
-        "reused-target".into(),
-    ];
-    let joined = ["install".into(), "--target-dir=reused-target".into()];
-    let no_override = ["install".into()];
-
-    assert!(has_explicit_reusable_target_dir_with_env(&separate, None));
-    assert!(has_explicit_reusable_target_dir_with_env(&joined, None));
-    assert!(has_explicit_reusable_target_dir_with_env(
-        &no_override,
-        Some(OsStr::new("env-target"))
-    ));
-    assert!(!has_explicit_reusable_target_dir_with_env(
-        &no_override,
-        None
-    ));
-    assert!(!has_explicit_reusable_target_dir_with_env(
-        &no_override,
-        Some(OsStr::new(""))
-    ));
 });
