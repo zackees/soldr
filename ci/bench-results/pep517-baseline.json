@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "captured": "2026-07-16",
+  "project": "FastLED/fbuild",
+  "platform": "Windows MSVC",
+  "conditions": {
+    "backend": "custom setuptools setup.py",
+    "temporary_environments": true,
+    "global_cargo_and_zccache_caches_preserved": true,
+    "user_caches_deleted": false,
+    "source_tree_changed": false,
+    "measurement_type": "single wall-clock sample"
+  },
+  "seconds": {
+    "editable_first_install": 345.787,
+    "editable_forced_reinstall": 6.903,
+    "wheel_first_install": 7.235,
+    "wheel_forced_reinstall": 6.351
+  },
+  "notes": [
+    "The editable cold build compiled fbuild CLI, daemon, and PyO3 extension.",
+    "The fresh environment also provisioned setuptools/wheel because the current project uses a no-build-isolation development path.",
+    "These are baseline measurements only; no speedup claim is made until the soldr-backed fbuild migration is measured under the same conditions."
+  ]
+}
