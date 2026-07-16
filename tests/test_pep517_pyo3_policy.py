@@ -164,6 +164,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
             observed["wheel"] = (wheel_directory, config_settings, metadata_directory)
             observed["wheel_wrapper"] = os.environ.get("RUSTC_WRAPPER")
             observed["wheel_target"] = os.environ.get("CARGO_TARGET_DIR")
+            observed["wheel_profile"] = os.environ.get("SOLDR_PEP517_PROFILE")
             return "demo-0.1.0-py3-none-any.whl"
 
         def build_editable(wheel_directory, config_settings, metadata_directory):
@@ -207,8 +208,43 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(observed["requires_wrapper"], "caller")
         self.assertEqual(observed["wheel_wrapper"], "caller")
         self.assertIsNotNone(observed["wheel_target"])
+        self.assertEqual(observed["wheel_profile"], "dev")
         self.assertEqual(observed["requires"], {"profile": "dev"})
         self.assertEqual(observed["editable"], {"editable": "1"})
+
+    def test_delegate_profile_setting_overrides_environment_temporarily(self) -> None:
+        observed = {}
+        delegate = types.ModuleType("pep517_profile_delegate_test")
+
+        def build_wheel(wheel_directory, config_settings, metadata_directory):
+            observed["wheel_profile"] = os.environ.get("SOLDR_PEP517_PROFILE")
+            return "demo-0.1.0-py3-none-any.whl"
+
+        def build_editable(wheel_directory, config_settings, metadata_directory):
+            observed["editable_profile"] = os.environ.get("SOLDR_PEP517_PROFILE")
+            return "demo-0.1.0-py3-none-any.whl"
+
+        delegate.build_wheel = build_wheel
+        delegate.build_editable = build_editable
+        with mock.patch.dict(sys.modules, {"pep517_profile_delegate_test": delegate}):
+            with mock.patch.object(
+                self.backend,
+                "_project_soldr_options",
+                return_value={"delegate-backend": "pep517_profile_delegate_test"},
+            ):
+                with mock.patch.dict(
+                    os.environ,
+                    {"SOLDR_PEP517_PROFILE": "caller"},
+                    clear=False,
+                ):
+                    self.backend.build_wheel("wheel", {"profile": "release"}, None)
+                    self.backend.build_editable(
+                        "wheel", {"editable-profile": "dev"}, None
+                    )
+                    self.assertEqual(os.environ["SOLDR_PEP517_PROFILE"], "caller")
+
+        self.assertEqual(observed["wheel_profile"], "release")
+        self.assertEqual(observed["editable_profile"], "dev")
 
     def test_delegate_backend_rejects_recursive_soldr(self) -> None:
         with mock.patch.object(
