@@ -251,6 +251,12 @@ to stderr. Set `SOLDR_PEP517_STATS=off` to silence it; `SOLDR_PEP517_STATS=full`
 (and detected verbose `pip`/`uv` frontends) also prints the complete session
 statistics payload.
 
+Soldr also caches the last successful wheel for each project/build mode under
+`~/.soldr/pep517/wheels/`. Before packaging it scans source and staged-artifact
+metadata (relative path, size, and modification time); an unchanged tree
+hardlinks the cached wheel into pip's requested output directory and skips
+wheel rebuilding/compression. Set `SOLDR_PEP517_WHEEL_CACHE=off` to opt out.
+
 Projects whose packaging backend is not maturin can use soldr as a managed
 wrapper by selecting a delegate in `pyproject.toml`:
 
