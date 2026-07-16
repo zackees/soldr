@@ -153,6 +153,9 @@ def _prep_env() -> "dict[str, str]":
     env = os.environ.copy()
     env.setdefault("RUSTC_WRAPPER", "soldr")
     env.setdefault("ZCCACHE_PATH_REMAP", "auto")
+    # Ask soldr's maturin dispatch to use the automatic fast-linker policy.
+    # An explicit SOLDR_LINKER value still wins in the Rust child.
+    env.setdefault("SOLDR_PEP517_LINKER", "auto")
     # These are defaults for the backend-selected local `dev` profile. A
     # project-level Cargo profile setting wins by omission, and a caller-set
     # environment value always wins through setdefault. Release/custom

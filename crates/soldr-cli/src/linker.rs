@@ -11,9 +11,18 @@
 //! and `CARGO_TARGET_*_RUSTFLAGS` via the env hash, so no separate
 //! invalidation hook is required.
 
-use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
+use fs2::FileExt;
+use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::str::FromStr;
+
+const PEP517_LINKER_POLICY_ENV: &str = "SOLDR_PEP517_LINKER";
+const PEP517_LINKER_FALLBACK_FILE: &str = "pep517-linker-fallback-v1.tsv";
 
 /// User-facing linker choices accepted by `SOLDR_LINKER` and the
 /// `linker = "..."` config field.
@@ -62,6 +71,31 @@ impl FromStr for LinkerChoice {
 pub struct LinkerInjection {
     pub linker: Option<String>,
     pub rustflags: Option<String>,
+}
+
+/// State carried from maturin command preparation to its process runner.
+/// `injected_env` contains only values soldr added, so an automatic retry can
+/// remove them without clobbering an explicit project/caller linker setting.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Pep517LinkerState {
+    pub automatic_fast: bool,
+    pub explicit_fast: bool,
+    pub cached_fallback: bool,
+    pub cache_key: Option<String>,
+    pub candidate: Option<String>,
+    pub injected_env: Vec<String>,
+}
+
+impl Pep517LinkerState {
+    pub fn should_retry(&self) -> bool {
+        self.automatic_fast && !self.cached_fallback && !self.injected_env.is_empty()
+    }
+
+    pub fn clear_injected_env(&self, command: &mut Command) {
+        for key in &self.injected_env {
+            command.env_remove(key);
+        }
+    }
 }
 
 impl LinkerInjection {
@@ -184,6 +218,271 @@ pub fn resolve_for_target_with_probe(
             }
         },
     }
+}
+
+/// Apply the automatic fast-linker policy used by the PEP backend. Direct
+/// `soldr cargo` remains governed by `SOLDR_LINKER` / config.toml; the Python
+/// backend opts into this policy with `SOLDR_PEP517_LINKER=auto`.
+pub fn apply_pep517_override(
+    command: &mut Command,
+    target: &str,
+    paths: &SoldrPaths,
+) -> Result<Pep517LinkerState, SoldrError> {
+    let config = paths.load_config();
+    let explicit_env = std::env::var_os(crate::LINKER_ENV_VAR);
+    let explicit_config = config.linker.as_deref();
+    let automatic_fast = explicit_env.is_none()
+        && explicit_config.is_none()
+        && std::env::var(PEP517_LINKER_POLICY_ENV)
+            .ok()
+            .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"));
+    let choice = if automatic_fast {
+        LinkerChoice::Fast
+    } else {
+        from_env_and_config(explicit_env.as_deref(), explicit_config)?
+    };
+    let injection = resolve_for_target(choice, target)?;
+    let prefix = cargo_target_env_prefix(target);
+    let linker_key = format!("CARGO_TARGET_{prefix}_LINKER");
+    let rustflags_key = format!("CARGO_TARGET_{prefix}_RUSTFLAGS");
+    let mut injected_env = Vec::new();
+
+    let cache_key = if automatic_fast && injection != LinkerInjection::default() {
+        pep517_fallback_key(target, &injection)
+    } else {
+        None
+    };
+    let cached_fallback = cache_key
+        .as_deref()
+        .is_some_and(|key| fallback_cache_contains(paths, key));
+
+    if !cached_fallback {
+        if let Some(linker) = injection.linker.as_deref() {
+            if !effective_command_env_is_non_empty(command, &linker_key)
+                && project_target_config_value(target, "linker").is_none()
+            {
+                command.env(&linker_key, linker);
+                injected_env.push(linker_key.clone());
+            }
+        }
+        if let Some(rustflags) = injection.rustflags.as_deref() {
+            if !effective_command_env_is_non_empty(command, &rustflags_key)
+                && project_target_config_value(target, "rustflags").is_none()
+            {
+                command.env(&rustflags_key, rustflags);
+                injected_env.push(rustflags_key.clone());
+            }
+        }
+    }
+
+    let explicit_fast = !automatic_fast && choice == LinkerChoice::Fast;
+    Ok(Pep517LinkerState {
+        automatic_fast,
+        explicit_fast,
+        cached_fallback,
+        cache_key,
+        candidate: if injection == LinkerInjection::default() {
+            None
+        } else {
+            Some(linker_description(&injection))
+        },
+        injected_env,
+    })
+}
+
+fn effective_command_env_is_non_empty(command: &Command, key: &str) -> bool {
+    if let Some(value) = command
+        .get_envs()
+        .find(|(candidate, _)| *candidate == OsStr::new(key))
+        .map(|(_, value)| value)
+    {
+        return value.is_some_and(|value| !value.is_empty());
+    }
+    std::env::var_os(key).is_some_and(|value| !value.is_empty())
+}
+
+fn linker_description(injection: &LinkerInjection) -> String {
+    match (&injection.linker, &injection.rustflags) {
+        (Some(linker), Some(flags)) => format!("{linker} ({flags})"),
+        (Some(linker), None) => linker.clone(),
+        (None, Some(flags)) => flags.clone(),
+        (None, None) => "platform default".to_string(),
+    }
+}
+
+fn project_root(start: &Path) -> PathBuf {
+    for directory in start.ancestors() {
+        if directory.join("Cargo.toml").is_file() {
+            return directory.to_path_buf();
+        }
+    }
+    start.to_path_buf()
+}
+
+fn project_target_config_value(target: &str, key: &str) -> Option<String> {
+    let current = std::env::current_dir().ok()?;
+    let root = project_root(&current);
+    for relative in [".cargo/config.toml", ".cargo/config"] {
+        let path = root.join(relative);
+        let Ok(contents) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let Ok(value) = contents.parse::<toml::Value>() else {
+            continue;
+        };
+        let configured = value
+            .get("target")
+            .and_then(|targets| targets.get(target))
+            .and_then(|target_config| target_config.get(key));
+        if let Some(value) = configured {
+            let text = match value {
+                toml::Value::String(value) => value.clone(),
+                toml::Value::Array(values) => values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                _ => value.to_string(),
+            };
+            if !text.trim().is_empty() {
+                return Some(text);
+            }
+        }
+    }
+    None
+}
+
+fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<String> {
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| OsStr::new("rustc").to_os_string());
+    let rustc_identity = Command::new(&rustc).arg("-vV").output().ok()?;
+    if !rustc_identity.status.success() {
+        return None;
+    }
+
+    let mut hasher = Sha256::new();
+    hash_field(&mut hasher, b"schema", b"pep517-linker-fallback-v1");
+    hash_field(&mut hasher, b"target", target.as_bytes());
+    hash_field(
+        &mut hasher,
+        b"injection",
+        linker_description(injection).as_bytes(),
+    );
+    hash_field(&mut hasher, b"rustc", &rustc_identity.stdout);
+    for name in [
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTFLAGS",
+        "PATH",
+        "CC",
+        "CXX",
+        "AR",
+        "CMAKE",
+        "SDKROOT",
+        "MACOSX_DEPLOYMENT_TARGET",
+        "VCToolsInstallDir",
+        "WindowsSdkDir",
+        "LIB",
+        "SOLDR_PEP517_PROFILE",
+        PEP517_LINKER_POLICY_ENV,
+    ] {
+        hash_field(
+            &mut hasher,
+            name.as_bytes(),
+            std::env::var_os(name)
+                .as_deref()
+                .unwrap_or_else(|| OsStr::new(""))
+                .to_string_lossy()
+                .as_bytes(),
+        );
+    }
+
+    let current = std::env::current_dir().ok()?;
+    let root = project_root(&current);
+    for relative in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        ".cargo/config",
+    ] {
+        let path = root.join(relative);
+        if let Ok(bytes) = std::fs::read(&path) {
+            hash_field(&mut hasher, relative.as_bytes(), &bytes);
+        }
+    }
+    Some(hex::encode(hasher.finalize()))
+}
+
+fn hash_field(hasher: &mut Sha256, name: &[u8], value: &[u8]) {
+    hasher.update((name.len() as u64).to_le_bytes());
+    hasher.update(name);
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+fn fallback_cache_path(paths: &SoldrPaths) -> PathBuf {
+    paths.cache.join(PEP517_LINKER_FALLBACK_FILE)
+}
+
+fn fallback_cache_contains(paths: &SoldrPaths, key: &str) -> bool {
+    std::fs::read_to_string(fallback_cache_path(paths))
+        .map(|contents| contents.lines().any(|line| line.trim() == key))
+        .unwrap_or(false)
+}
+
+pub fn record_pep517_fallback(paths: &SoldrPaths, key: Option<&str>) -> Result<(), SoldrError> {
+    let Some(key) = key else { return Ok(()) };
+    paths.ensure_dirs()?;
+    let path = fallback_cache_path(paths);
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(true)
+        .open(path)?;
+    file.lock_exclusive()?;
+    file.seek(SeekFrom::Start(0))?;
+    let mut existing = String::new();
+    file.read_to_string(&mut existing)?;
+    if !existing.lines().any(|line| line.trim() == key) {
+        file.seek(SeekFrom::End(0))?;
+        writeln!(file, "{key}")?;
+    }
+    file.unlock()?;
+    Ok(())
+}
+
+/// Keep linker retry conservative: only output with an explicit linker
+/// signal and a failure marker is eligible for the one-shot fallback.
+pub fn looks_like_linker_failure(output: &Output) -> bool {
+    if output.status.success() {
+        return false;
+    }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    looks_like_linker_failure_text(&text)
+}
+
+fn looks_like_linker_failure_text(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    let linker_signal = [
+        "linking with",
+        "linker",
+        "link.exe",
+        "lld-link",
+        "fuse-ld",
+        "mold",
+        "ld returned",
+    ];
+    let failure_signal = [
+        "failed",
+        "error",
+        "not found",
+        "cannot",
+        "could not",
+        "exit status",
+    ];
+    linker_signal.iter().any(|needle| text.contains(needle))
+        && failure_signal.iter().any(|needle| text.contains(needle))
 }
 
 /// Probe whether `mold` is on `PATH`. Best-effort: any failure (missing
@@ -424,6 +723,28 @@ mod tests {
         let i = resolve_for_target_with_probe(LinkerChoice::Fast, WIN_MSVC, &always_false).unwrap();
         assert_eq!(i.linker.as_deref(), Some("rust-lld"));
         assert!(i.rustflags.is_none());
+    }
+
+    #[test]
+    fn linker_failure_classifier_ignores_non_linker_failures() {
+        assert!(!looks_like_linker_failure_text(
+            "error: failed to parse source file"
+        ));
+        assert!(looks_like_linker_failure_text(
+            "error: linking with `clang` failed: mold not found"
+        ));
+    }
+
+    #[test]
+    fn fallback_record_is_idempotent_and_corruption_tolerant() {
+        let root = tempfile::tempdir().expect("temporary soldr root");
+        let paths = SoldrPaths::with_root(root.path().to_path_buf());
+        record_pep517_fallback(&paths, Some("key-a")).expect("record fallback");
+        record_pep517_fallback(&paths, Some("key-a")).expect("record duplicate fallback");
+        record_pep517_fallback(&paths, Some("key-b")).expect("record second fallback");
+        let contents = std::fs::read_to_string(fallback_cache_path(&paths)).unwrap();
+        assert_eq!(contents.lines().collect::<Vec<_>>(), ["key-a", "key-b"]);
+        assert!(!fallback_cache_contains(&paths, "key-corrupt"));
     }
 
     #[test]

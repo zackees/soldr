@@ -5,6 +5,7 @@
 #![allow(dead_code, unused_imports)]
 
 use clap::Parser;
+use std::io::Write;
 
 use crate::{
     archive_cmd, binaries, blessed_build, bootstrap, build_from_source_cmd, cache, cache_lib,
@@ -961,6 +962,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
             let mut command = std::process::Command::new(&result.binary_path);
             command.args(tool_args);
+            let mut pep517_linker_state = None;
+            let mut pep517_paths = None;
 
             // soldr#1264: `soldr maturin ...` is the engine behind the
             // PEP 517 build backend (src/soldr/__init__.py). maturin
@@ -1092,6 +1095,19 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 }
 
                 if maturin_build {
+                    pep517_paths = Some(paths.clone());
+                    let state = crate::linker::apply_pep517_override(
+                        &mut command,
+                        &maturin_target,
+                        &paths,
+                    )?;
+                    if state.cached_fallback {
+                        eprintln!(
+                            "soldr warning: fast linker `{}` was unavailable on the previous PEP 517 build; using the working standard linker",
+                            state.candidate.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    pep517_linker_state = Some(state);
                     let mut pyo3_plan = crate::pyo3_detect::resolve_for_invocation(
                         &workspace_root,
                         tool_args,
@@ -1128,13 +1144,61 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             };
 
             suppress_windows_console_window(&mut command);
-            let status = command.status()?;
+            let status = if let Some(state) = pep517_linker_state.as_ref() {
+                if state.should_retry() || state.explicit_fast {
+                    let first = command.output()?;
+                    emit_child_output(&first);
+                    if state.should_retry() && crate::linker::looks_like_linker_failure(&first) {
+                        eprintln!(
+                            "soldr warning: automatic fast linker `{}` failed; retrying once with the standard linker",
+                            state.candidate.as_deref().unwrap_or("unknown")
+                        );
+                        state.clear_injected_env(&mut command);
+                        let fallback = command.output()?;
+                        emit_child_output(&fallback);
+                        if fallback.status.success() {
+                            if let Err(err) = crate::linker::record_pep517_fallback(
+                                pep517_paths
+                                    .as_ref()
+                                    .expect("maturin linker paths prepared"),
+                                state.cache_key.as_deref(),
+                            ) {
+                                eprintln!(
+                                    "soldr warning: could not persist the working linker fallback: {err}"
+                                );
+                            }
+                            eprintln!(
+                                "soldr: standard linker fallback succeeded; future equivalent PEP 517 builds will reuse it"
+                            );
+                        }
+                        fallback.status
+                    } else {
+                        if state.explicit_fast
+                            && crate::linker::looks_like_linker_failure(&first)
+                        {
+                            eprintln!(
+                                "soldr warning: explicitly requested SOLDR_LINKER=fast failed; no linker fallback was attempted"
+                            );
+                        }
+                        first.status
+                    }
+                } else {
+                    command.status()?
+                }
+            } else {
+                command.status()?
+            };
 
             std::process::exit(status.code().unwrap_or(1));
         }
     }
 
     Ok(())
+}
+
+fn emit_child_output(output: &std::process::Output) {
+    let _ = std::io::stdout().write_all(&output.stdout);
+    let _ = std::io::stderr().write_all(&output.stderr);
 }
 
 /// soldr#1264 follow-on: maturin provisioning ladder. `auto` (default)

@@ -165,6 +165,17 @@ should continue to select an explicit release profile. A project's
 `SOLDR_PEP517_PROFILE` environment variable are authoritative. Set
 `SOLDR_PEP517_PROFILE=none` to preserve maturin's profile selection entirely.
 
+The local PEP 517 path also sets `SOLDR_PEP517_LINKER=auto` by default. Soldr
+tries the fastest supported linker for the active target, retries once with
+the platform linker only for a linker-availability failure, and records that
+successful fallback in versioned state under the soldr cache. Equivalent later
+builds skip the failed candidate and warn that the standard linker was
+previously verified. Set `SOLDR_PEP517_LINKER=none` to disable the automatic
+policy. A user-specified `SOLDR_LINKER=fast` remains explicit and never
+silently falls back; it emits an actionable warning instead. Target-specific
+linker or rustflags settings from the command environment or project
+`.cargo/config.toml` retain precedence.
+
 Every pin defers to a pre-set user env var. Maturin acquisition is a
 ladder controlled by `SOLDR_MATURIN_PROVISIONER` (`auto` default:
 pinned prebuilt binary from GitHub Releases, falling back to the PyPI
@@ -1416,6 +1427,7 @@ Commands:
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
 | `SCCACHE_DIR` | sccache cache-root override soldr injects when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has not set it themselves | `~/.soldr/cache/sccache` |
 | `SOLDR_PEP517_STABLE_TARGET_DIR` | PEP 517 backend only: set to `0` / `false` / `no` / `off` to skip pinning `CARGO_TARGET_DIR` to `~/.soldr/cargo-target/wheel-build` for isolated builds (see [PEP 517 Build Backend](#pep-517-build-backend)). A caller-provided `CARGO_TARGET_DIR` always wins regardless. | unset (pin enabled) |
+| `SOLDR_PEP517_LINKER` | PEP 517 backend only: `auto` (default) tries the fastest supported linker and caches a verified platform-linker fallback after a linker-availability failure; `none` / `default` / `off` disables the automatic attempt. An explicit `SOLDR_LINKER=fast` remains non-fallbacking. | `auto` |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |
 | `SOLDR_RUST_PLAN_MEMO` | Default-on: memoize the target-cache preparation subprocess outputs (`cargo metadata --format-version 1`, `rustc -Vv`, `cargo --version`) in a versioned protobuf memo under `<zccache cache dir>/plans/`, keyed by a content-identity hash over the workspace manifests, `Cargo.lock`, hierarchical `.cargo/config*`, metadata passthrough args, toolchain binary identity (path + size + mtime), rust-toolchain pins, rustup `settings.toml`, and the steering env vars (issue #1540). Any key mismatch, decode error, or discovery error falls back to the authoritative subprocesses. Set to a falsy value (`0` / `false` / `no` / `off`) to disable. | unset (on) |
