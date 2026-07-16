@@ -20,16 +20,147 @@ acquisition itself.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
 
 
+_FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
+_DISABLE_PROFILE_VALUES = {"", "none", "default", "off", "false", "0"}
+
+
+def _project_root() -> Path:
+    """Find the project root used by the PEP 517 invocation.
+
+    PEP 517 frontends invoke the backend from the source tree, while the
+    backend package itself lives in the isolated build environment. Walking
+    from the current directory therefore works for both an in-tree backend
+    test and an installed soldr wheel.
+    """
+    current = Path.cwd().resolve()
+    for directory in (current, *current.parents):
+        if (directory / "pyproject.toml").is_file():
+            return directory
+    return current
+
+
+def _toml_section_values(path: Path, section: str) -> "dict[str, str]":
+    """Read the small TOML subset needed before Python 3.11's tomllib.
+
+    The backend must remain dependency-free in an isolated build environment.
+    Use tomllib when available and a deliberately narrow fallback parser on
+    Python 3.10. A malformed or unreadable optional config is ignored here;
+    maturin/Cargo remains responsible for reporting the authoritative TOML
+    error during the build.
+    """
+    try:
+        import tomllib  # type: ignore[import-not-found]
+
+        with path.open("rb") as stream:
+            document = tomllib.load(stream)
+        value = document
+        for component in section.split("."):
+            if not isinstance(value, dict):
+                return {}
+            value = value.get(component)
+        if not isinstance(value, dict):
+            return {}
+        return {
+            str(key): str(item)
+            for key, item in value.items()
+            if isinstance(item, (str, int, float, bool))
+        }
+    except (ImportError, OSError, ValueError):
+        pass
+
+    values: dict[str, str] = {}
+    active = False
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return values
+    for line in lines:
+        stripped = line.split("#", 1)[0].strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            active = stripped[1:-1].strip() == section
+            continue
+        if not active or "=" not in stripped:
+            continue
+        key, raw = (part.strip() for part in stripped.split("=", 1))
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+            continue
+        match = re.fullmatch(r"[\"'](.*)[\"']", raw)
+        if match:
+            values[key] = match.group(1)
+        elif raw in {"true", "false"}:
+            values[key] = raw
+    return values
+
+
+def _project_maturin_options() -> "dict[str, str]":
+    return _toml_section_values(_project_root() / "pyproject.toml", "tool.maturin")
+
+
+def _project_dev_profile_options() -> "dict[str, str]":
+    return _toml_section_values(_project_root() / "Cargo.toml", "profile.dev")
+
+
+def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]:
+    if not config_settings:
+        return None
+    for key in keys:
+        value = config_settings.get(key)
+        if isinstance(value, (list, tuple)):
+            value = value[-1] if value else None
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _profile_args(
+    config_settings: Optional[dict], *, editable: bool = False
+) -> "list[str]":
+    """Select the fast local profile without overriding explicit settings."""
+    explicit = _setting_value(
+        config_settings,
+        "--profile",
+        "profile",
+        "editable-profile" if editable else "profile",
+    )
+    if explicit:
+        return ["--profile", explicit]
+
+    selected = os.environ.get(_FAST_PROFILE_ENV)
+    if selected is not None:
+        selected = selected.strip()
+        if selected.lower() in _DISABLE_PROFILE_VALUES:
+            return []
+        return ["--profile", selected]
+
+    options = _project_maturin_options()
+    configured = options.get("editable-profile" if editable else "profile") or options.get(
+        "profile"
+    )
+    if configured:
+        return []
+
+    return ["--profile", "dev"]
+
+
 def _prep_env() -> "dict[str, str]":
     env = os.environ.copy()
     env.setdefault("RUSTC_WRAPPER", "soldr")
     env.setdefault("ZCCACHE_PATH_REMAP", "auto")
+    # These are defaults for the backend-selected local `dev` profile. A
+    # project-level Cargo profile setting wins by omission, and a caller-set
+    # environment value always wins through setdefault. Release/custom
+    # profiles are not affected.
+    if not _project_dev_profile_options():
+        env.setdefault("CARGO_PROFILE_DEV_DEBUG", "line-tables-only")
+        env.setdefault("CARGO_PROFILE_DEV_LTO", "false")
+        env.setdefault("CARGO_PROFILE_DEV_INCREMENTAL", "true")
     # Stable CARGO_TARGET_DIR for PEP 517 isolated builds. When pip/uv
     # build from an sdist they copy the sources to a throwaway temp dir,
     # so `<srcdir>/target/` is discarded after every build and cargo
@@ -158,6 +289,7 @@ def build_wheel(
         sys.executable,
         "--out",
         wheel_directory,
+        *_profile_args(config_settings),
         *target_args,
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)
@@ -177,6 +309,7 @@ def build_editable(
         "--out",
         wheel_directory,
         "--editable",
+        *_profile_args(config_settings, editable=True),
         *target_args,
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)

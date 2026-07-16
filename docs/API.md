@@ -156,6 +156,15 @@ maturin. The dispatch pins the child's toolchain before exec:
 | `CMAKE` / `CMAKE_GENERATOR=Ninja` | managed cmake + ninja from the soldr toolchain archive for cmake-based `*-sys` crates. |
 | `RUSTC_WRAPPER=soldr` | compilation caching. The Python backend sets this before calling `soldr maturin pep517`; direct `soldr maturin build` / `develop` auto-inject it when cache is enabled and `RUSTC_WRAPPER` is unset. |
 
+For local PEP 517 wheel and editable builds, the backend defaults to Cargo's
+`dev` profile and sets `debug = "line-tables-only"`, `lto = false`, and
+`incremental = true` when the project has not explicitly configured those
+`profile.dev` fields. This keeps manual installs fast; release pipelines
+should continue to select an explicit release profile. A project's
+`[tool.maturin] profile` / `editable-profile`, PEP config settings, or the
+`SOLDR_PEP517_PROFILE` environment variable are authoritative. Set
+`SOLDR_PEP517_PROFILE=none` to preserve maturin's profile selection entirely.
+
 Every pin defers to a pre-set user env var. Maturin acquisition is a
 ladder controlled by `SOLDR_MATURIN_PROVISIONER` (`auto` default:
 pinned prebuilt binary from GitHub Releases, falling back to the PyPI
