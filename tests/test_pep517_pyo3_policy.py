@@ -419,6 +419,53 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         self.assertEqual(len(calls), 2)
 
+    def test_wheel_cache_ignores_generated_egg_info_metadata(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+            metadata = Path(raw) / "metadata"
+            dist_info = metadata / "demo-0.1.0.dist-info"
+            dist_info.mkdir(parents=True)
+            (dist_info / "METADATA").write_text("Name: demo\nVersion: 0.1.0\n")
+            egg_info = metadata / "demo.egg-info"
+            egg_info.mkdir()
+            sources = egg_info / "SOURCES.txt"
+            sources.write_text("pyproject.toml\n")
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            cache = Path(raw) / "cache"
+            first.mkdir()
+            second.mkdir()
+
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args))
+                out = Path(args[args.index("--out") + 1])
+                (out / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.object(self.backend, "_project_root", return_value=root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "SOLDR_CACHE_DIR": str(cache),
+                        "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
+                    },
+                    clear=False,
+                ):
+                    with mock.patch.object(
+                        self.backend, "_maturin_pep517", fake_pep517
+                    ):
+                        self.backend.build_wheel(
+                            str(first), metadata_directory=str(metadata)
+                        )
+                        sources.write_text("pyproject.toml\npython/demo.egg-info\n")
+                        self.backend.build_wheel(
+                            str(second), metadata_directory=str(metadata)
+                        )
+
+        self.assertEqual(len(calls), 1)
+
     def test_wheel_cache_reuses_delegate_artifacts(self) -> None:
         calls = []
         delegate = types.ModuleType("pep517_cache_delegate")
@@ -435,6 +482,14 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
             def build_wheel(wheel_directory, config_settings, metadata_directory):
                 calls.append((wheel_directory, config_settings, metadata_directory))
+                # Setuptools creates these under the project while preparing a
+                # wheel. They must not invalidate the post-build cache entry.
+                generated = root / "build" / "lib"
+                generated.mkdir(parents=True)
+                (generated / "generated.py").write_text("generated\n")
+                egg_info = root / "demo.egg-info"
+                egg_info.mkdir()
+                (egg_info / "PKG-INFO").write_text("Metadata-Version: 2.1\n")
                 (Path(wheel_directory) / "demo-0.1.0-py3-none-any.whl").write_bytes(
                     b"wheel"
                 )
