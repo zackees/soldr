@@ -245,6 +245,23 @@ debug information, no LTO, and incremental compilation. Explicit maturin/Cargo
 profiles and `SOLDR_PEP517_PROFILE` remain authoritative; release pipelines
 should select their release profile explicitly.
 
+Projects whose packaging backend is not maturin can use soldr as a managed
+wrapper by selecting a delegate in `pyproject.toml`:
+
+```toml
+[build-system]
+requires = ["soldr", "setuptools>=64"]
+build-backend = "soldr"
+
+[tool.soldr.pep517]
+delegate-backend = "setuptools.build_meta"
+```
+
+The delegate receives the normal PEP 517/660 hooks and return values while
+soldr supplies its target, profile, linker, and cache environment. This is
+intended for projects with custom staging such as native CLI scripts plus a
+PyO3 extension. Maturin remains the default when no delegate is configured.
+
 The backend also asks soldr to try its fastest supported linker locally. If
 that linker fails with a linker-availability error, soldr retries once with
 the platform linker and remembers the successful fallback in its cache. An

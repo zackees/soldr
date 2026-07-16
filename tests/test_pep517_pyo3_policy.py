@@ -4,6 +4,7 @@ import importlib.util
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -149,6 +150,74 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertIn(sys.executable, args)
         target_index = args.index("--target")
         self.assertEqual(args[target_index + 1], "x86_64-pc-windows-msvc")
+
+    def test_delegate_backend_receives_hooks_under_managed_environment(self) -> None:
+        observed = {}
+        delegate = types.ModuleType("pep517_delegate_test")
+
+        def get_requires(config_settings):
+            observed["requires"] = config_settings
+            observed["requires_wrapper"] = os.environ.get("RUSTC_WRAPPER")
+            return ["setuptools"]
+
+        def build_wheel(wheel_directory, config_settings, metadata_directory):
+            observed["wheel"] = (wheel_directory, config_settings, metadata_directory)
+            observed["wheel_wrapper"] = os.environ.get("RUSTC_WRAPPER")
+            observed["wheel_target"] = os.environ.get("CARGO_TARGET_DIR")
+            return "demo-0.1.0-py3-none-any.whl"
+
+        def build_editable(wheel_directory, config_settings, metadata_directory):
+            observed["editable"] = config_settings
+            return "demo-0.1.0-py3-none-any.whl"
+
+        def prepare_metadata(metadata_directory, config_settings):
+            observed["metadata"] = config_settings
+            return "demo-0.1.0.dist-info"
+
+        delegate.get_requires_for_build_wheel = get_requires
+        delegate.build_wheel = build_wheel
+        delegate.build_editable = build_editable
+        delegate.prepare_metadata_for_build_wheel = prepare_metadata
+
+        with mock.patch.dict(sys.modules, {"pep517_delegate_test": delegate}):
+            with mock.patch.object(
+                self.backend,
+                "_project_soldr_options",
+                return_value={"delegate-backend": "pep517_delegate_test"},
+            ):
+                with mock.patch.dict(os.environ, {"RUSTC_WRAPPER": "caller"}, clear=False):
+                    self.assertEqual(
+                        self.backend.get_requires_for_build_wheel({"profile": "dev"}),
+                        ["setuptools"],
+                    )
+                    self.assertEqual(
+                        self.backend.build_wheel("wheel", {"profile": "dev"}, "meta"),
+                        "demo-0.1.0-py3-none-any.whl",
+                    )
+                    self.assertEqual(
+                        self.backend.build_editable("wheel", {"editable": "1"}, None),
+                        "demo-0.1.0-py3-none-any.whl",
+                    )
+                    self.assertEqual(
+                        self.backend.prepare_metadata_for_build_wheel("meta", None),
+                        "demo-0.1.0.dist-info",
+                    )
+                    self.assertEqual(os.environ["RUSTC_WRAPPER"], "caller")
+
+        self.assertEqual(observed["requires_wrapper"], "caller")
+        self.assertEqual(observed["wheel_wrapper"], "caller")
+        self.assertIsNotNone(observed["wheel_target"])
+        self.assertEqual(observed["requires"], {"profile": "dev"})
+        self.assertEqual(observed["editable"], {"editable": "1"})
+
+    def test_delegate_backend_rejects_recursive_soldr(self) -> None:
+        with mock.patch.object(
+            self.backend,
+            "_project_soldr_options",
+            return_value={"delegate-backend": "soldr"},
+        ):
+            with self.assertRaisesRegex(RuntimeError, "cannot delegate back to soldr"):
+                self.backend.get_requires_for_build_wheel()
 
 
 if __name__ == "__main__":
