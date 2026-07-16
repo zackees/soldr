@@ -197,10 +197,11 @@ profile; without an explicit setting, the fast local `dev` policy remains in
 effect.
 
 For local PEP 517 wheel and editable builds, the backend defaults to Cargo's
-`dev` profile and sets `debug = "line-tables-only"`, `lto = false`, and
-`incremental = true` when the project has not explicitly configured those
-`profile.dev` fields. This keeps manual installs fast; release pipelines
-should continue to select an explicit release profile. A project's
+`dev` profile and sets `opt-level = 0`, `codegen-units = 256`,
+`debug = "line-tables-only"`, `lto = false`, and `incremental = true` for
+every field the project has not explicitly configured in `profile.dev`. This
+keeps manual installs fast; release pipelines should continue to select an
+explicit release profile. A project's
 `[tool.maturin] profile` / `editable-profile`, PEP config settings, or the
 `SOLDR_PEP517_PROFILE` environment variable are authoritative. Set
 `SOLDR_PEP517_PROFILE=none` to preserve maturin's profile selection entirely.

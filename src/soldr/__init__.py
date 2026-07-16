@@ -39,6 +39,8 @@ _PEP517_ENV_KEYS = {
     "SOLDR_PEP517_LINKER",
     "SOLDR_PEP517_PROJECT_ID",
     "CARGO_TARGET_DIR",
+    "CARGO_PROFILE_DEV_OPT_LEVEL",
+    "CARGO_PROFILE_DEV_CODEGEN_UNITS",
     "CARGO_PROFILE_DEV_DEBUG",
     "CARGO_PROFILE_DEV_LTO",
     "CARGO_PROFILE_DEV_INCREMENTAL",
@@ -49,7 +51,14 @@ _PEP517_ENV_KEYS = {
     "SOLDR_LINKER",
 }
 _MISSING = object()
-_PEP517_TARGET_SCHEMA = b"pep517-target-v2"
+_PEP517_TARGET_SCHEMA = b"pep517-target-v3"
+_FAST_DEV_PROFILE_DEFAULTS = {
+    "CARGO_PROFILE_DEV_OPT_LEVEL": ("opt-level", "0"),
+    "CARGO_PROFILE_DEV_CODEGEN_UNITS": ("codegen-units", "256"),
+    "CARGO_PROFILE_DEV_DEBUG": ("debug", "line-tables-only"),
+    "CARGO_PROFILE_DEV_LTO": ("lto", "false"),
+    "CARGO_PROFILE_DEV_INCREMENTAL": ("incremental", "true"),
+}
 
 
 def _project_root() -> Path:
@@ -248,6 +257,8 @@ def _project_build_identity(environment: Optional[dict[str, str]] = None) -> str
         "SOLDR_PEP517_PROFILE",
         "SOLDR_PEP517_LINKER",
         "SOLDR_LINKER",
+        "CARGO_PROFILE_DEV_OPT_LEVEL",
+        "CARGO_PROFILE_DEV_CODEGEN_UNITS",
         "CARGO_PROFILE_DEV_DEBUG",
         "CARGO_PROFILE_DEV_LTO",
         "CARGO_PROFILE_DEV_INCREMENTAL",
@@ -335,13 +346,13 @@ def _prep_env(
     # An explicit SOLDR_LINKER value still wins in the Rust child.
     env.setdefault("SOLDR_PEP517_LINKER", "auto")
     # These are defaults for the backend-selected local `dev` profile. A
-    # project-level Cargo profile setting wins by omission, and a caller-set
-    # environment value always wins through setdefault. Release/custom
-    # profiles are not affected.
-    if not _project_dev_profile_options():
-        env.setdefault("CARGO_PROFILE_DEV_DEBUG", "line-tables-only")
-        env.setdefault("CARGO_PROFILE_DEV_LTO", "false")
-        env.setdefault("CARGO_PROFILE_DEV_INCREMENTAL", "true")
+    # project-level Cargo setting wins per field, and a caller-set environment
+    # value always wins through setdefault. Release/custom profiles are not
+    # affected.
+    project_dev_options = _project_dev_profile_options()
+    for environment_key, (cargo_key, default) in _FAST_DEV_PROFILE_DEFAULTS.items():
+        if cargo_key not in project_dev_options:
+            env.setdefault(environment_key, default)
     # Stable CARGO_TARGET_DIR for PEP 517 isolated builds. When pip/uv
     # build from an sdist they copy the sources to a throwaway temp dir,
     # so `<srcdir>/target/` is discarded after every build and cargo
