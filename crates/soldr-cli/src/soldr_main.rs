@@ -1179,9 +1179,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                         }
                         fallback.status
                     } else {
-                        if state.explicit_fast
-                            && crate::linker::looks_like_linker_failure(&first)
-                        {
+                        if state.explicit_fast && crate::linker::looks_like_linker_failure(&first) {
                             eprintln!(
                                 "soldr warning: explicitly requested SOLDR_LINKER=fast failed; no linker fallback was attempted"
                             );
