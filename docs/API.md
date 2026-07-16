@@ -156,6 +156,24 @@ maturin. The dispatch pins the child's toolchain before exec:
 | `CMAKE` / `CMAKE_GENERATOR=Ninja` | managed cmake + ninja from the soldr toolchain archive for cmake-based `*-sys` crates. |
 | `RUSTC_WRAPPER=soldr` | compilation caching. The Python backend sets this before calling `soldr maturin pep517`; direct `soldr maturin build` / `develop` auto-inject it when cache is enabled and `RUSTC_WRAPPER` is unset. |
 
+For a project whose packaging logic is not maturin, soldr can wrap another
+PEP 517/660 backend while keeping the same managed environment:
+
+```toml
+[build-system]
+requires = ["soldr", "setuptools>=64"]
+build-backend = "soldr"
+
+[tool.soldr.pep517]
+delegate-backend = "setuptools.build_meta"
+```
+
+All standard wheel, editable, metadata, sdist, and dynamic-requirements hooks
+are forwarded to the delegate. The delegate runs with soldr's target/profile/
+linker/cache environment, and the caller environment is restored after each
+hook. Maturin remains the default when `delegate-backend` is absent; recursive
+delegation back to `soldr` is rejected.
+
 For local PEP 517 wheel and editable builds, the backend defaults to Cargo's
 `dev` profile and sets `debug = "line-tables-only"`, `lto = false`, and
 `incremental = true` when the project has not explicitly configured those

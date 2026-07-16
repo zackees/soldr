@@ -19,17 +19,36 @@ git-worktree caches share via path normalization.
 acquisition itself.
 """
 
+import importlib
 import os
 import re
 import hashlib
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _DISABLE_PROFILE_VALUES = {"", "none", "default", "off", "false", "0"}
+_DELEGATE_BACKEND_SECTION = "tool.soldr.pep517"
+_PEP517_ENV_KEYS = {
+    "RUSTC_WRAPPER",
+    "ZCCACHE_PATH_REMAP",
+    "SOLDR_PEP517_LINKER",
+    "SOLDR_PEP517_PROJECT_ID",
+    "CARGO_TARGET_DIR",
+    "CARGO_PROFILE_DEV_DEBUG",
+    "CARGO_PROFILE_DEV_LTO",
+    "CARGO_PROFILE_DEV_INCREMENTAL",
+    "CARGO_BUILD_TARGET",
+    "CARGO_ENCODED_RUSTFLAGS",
+    "RUSTFLAGS",
+    "SOLDR_PEP517_PROFILE",
+    "SOLDR_LINKER",
+}
+_MISSING = object()
 _PEP517_TARGET_SCHEMA = b"pep517-target-v2"
 
 
@@ -107,6 +126,67 @@ def _project_maturin_options() -> "dict[str, str]":
 
 def _project_dev_profile_options() -> "dict[str, str]":
     return _toml_section_values(_project_root() / "Cargo.toml", "profile.dev")
+
+
+def _project_soldr_options() -> "dict[str, str]":
+    return _toml_section_values(_project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION)
+
+
+def _delegate_backend_name() -> Optional[str]:
+    value = _project_soldr_options().get("delegate-backend")
+    return value.strip() if value and value.strip() else None
+
+
+def _delegate_backend() -> object | None:
+    name = _delegate_backend_name()
+    if not name:
+        return None
+    module_name, separator, attribute = name.partition(":")
+    if module_name == "soldr" or module_name.startswith("soldr."):
+        raise RuntimeError(
+            "soldr PEP 517 delegate-backend cannot delegate back to soldr; "
+            "select a concrete backend such as setuptools.build_meta"
+        )
+    backend = importlib.import_module(module_name)
+    if separator and attribute:
+        return getattr(backend, attribute)
+    if separator:
+        raise RuntimeError(f"invalid soldr delegate-backend `{name}`")
+    return backend
+
+
+@contextmanager
+def _managed_pep517_environment() -> Iterator[None]:
+    """Apply soldr's child-build environment around a delegated backend."""
+    prepared = _prep_env()
+    previous: dict[str, object] = {
+        key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS
+    }
+    try:
+        for key in _PEP517_ENV_KEYS:
+            value = prepared.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is _MISSING:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = str(value)
+
+
+def _delegate_hook(name: str, *args: object, fallback: Optional[str] = None, **kwargs: object):
+    backend = _delegate_backend()
+    if backend is None:
+        return None
+    hook_name = name if hasattr(backend, name) else fallback
+    if hook_name is None or not hasattr(backend, hook_name):
+        return [] if name.startswith("get_requires_for_build_") else None
+    with _managed_pep517_environment():
+        return getattr(backend, hook_name)(*args, **kwargs)
 
 
 def _hash_identity_field(hasher: "hashlib._Hash", name: str, value: bytes) -> None:
@@ -306,17 +386,23 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
 
 
 def get_requires_for_build_wheel(config_settings: Optional[dict] = None):
-    del config_settings
+    delegated = _delegate_hook("get_requires_for_build_wheel", config_settings)
+    if delegated is not None:
+        return delegated
     return []
 
 
 def get_requires_for_build_sdist(config_settings: Optional[dict] = None):
-    del config_settings
+    delegated = _delegate_hook("get_requires_for_build_sdist", config_settings)
+    if delegated is not None:
+        return delegated
     return []
 
 
 def get_requires_for_build_editable(config_settings: Optional[dict] = None):
-    del config_settings
+    delegated = _delegate_hook("get_requires_for_build_editable", config_settings)
+    if delegated is not None:
+        return delegated
     return []
 
 
@@ -324,6 +410,11 @@ def prepare_metadata_for_build_wheel(
     metadata_directory: str,
     config_settings: Optional[dict] = None,
 ) -> str:
+    delegated = _delegate_hook(
+        "prepare_metadata_for_build_wheel", metadata_directory, config_settings
+    )
+    if delegated is not None:
+        return delegated
     target_args = _target_args(config_settings)
     _maturin_pep517(
         "write-dist-info",
@@ -336,7 +427,19 @@ def prepare_metadata_for_build_wheel(
     return _newest_entry(metadata_directory, ".dist-info", want_dir=True)
 
 
-prepare_metadata_for_build_editable = prepare_metadata_for_build_wheel
+def prepare_metadata_for_build_editable(
+    metadata_directory: str,
+    config_settings: Optional[dict] = None,
+) -> str:
+    delegated = _delegate_hook(
+        "prepare_metadata_for_build_editable",
+        metadata_directory,
+        config_settings,
+        fallback="prepare_metadata_for_build_wheel",
+    )
+    if delegated is not None:
+        return delegated
+    return prepare_metadata_for_build_wheel(metadata_directory, config_settings)
 
 
 def build_wheel(
@@ -344,6 +447,11 @@ def build_wheel(
     config_settings: Optional[dict] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
+    delegated = _delegate_hook(
+        "build_wheel", wheel_directory, config_settings, metadata_directory
+    )
+    if delegated is not None:
+        return delegated
     # maturin pep517 build-wheel does not accept --metadata-directory;
     # the dist-info is regenerated, which PEP 517 explicitly permits.
     target_args = _target_args(config_settings)
@@ -365,6 +473,11 @@ def build_editable(
     config_settings: Optional[dict] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
+    delegated = _delegate_hook(
+        "build_editable", wheel_directory, config_settings, metadata_directory
+    )
+    if delegated is not None:
+        return delegated
     target_args = _target_args(config_settings)
     del metadata_directory
     _maturin_pep517(
@@ -384,7 +497,9 @@ def build_sdist(
     sdist_directory: str,
     config_settings: Optional[dict] = None,
 ) -> str:
-    del config_settings
+    delegated = _delegate_hook("build_sdist", sdist_directory, config_settings)
+    if delegated is not None:
+        return delegated
     _maturin_pep517(
         "write-sdist",
         "--sdist-directory",
