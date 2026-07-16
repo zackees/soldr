@@ -69,6 +69,22 @@ Current cache-control behavior:
 
 This is the normal build entry point.
 
+### Prefer a newer global Soldr
+
+Projects can opt in to using an installed global Soldr when it is newer than
+the checkout-local executable. Add this to the root manifest:
+
+```toml
+[workspace.metadata.soldr]
+prefer_newer_global = true
+```
+
+Soldr resolves the first different `soldr` executable on `PATH`, probes its
+`--version`, and delegates only when its SemVer version is strictly higher.
+Failures to locate or probe a global executable leave the local invocation
+unchanged. Explicit `soldr --as <version>` / `SOLDR_AS` pins remain
+authoritative.
+
 ### Mode 2: Tool Fetcher
 
 ```bash
