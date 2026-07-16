@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -27,7 +31,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
     def test_native_env_never_forces_no_python(self) -> None:
         previous = os.environ.pop("PYO3_NO_PYTHON", None)
         try:
-            with mock.patch.dict(os.environ, {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"}, clear=False):
+            with mock.patch.dict(
+                os.environ, {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"}, clear=False
+            ):
                 env = self.backend._prep_env()
         finally:
             if previous is not None:
@@ -65,7 +71,137 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_DEV_OPT_LEVEL"], "1")
         self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "32")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
-        self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
+        self.assertEqual(
+            self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"]
+        )
+
+    def test_wheel_build_prints_default_cache_summary(self) -> None:
+        calls = []
+        build_calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            if command[1] == "session-start":
+                payload = {"command": "session-start", "session_id": "pep517-1"}
+            else:
+                payload = {
+                    "command": "session-end",
+                    "stats": {
+                        "hits": 9,
+                        "misses": 3,
+                        "hit_rate": 0.75,
+                        "time_saved_ms": 1500,
+                    },
+                }
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        stream = io.StringIO()
+        with mock.patch.object(self.backend, "_prep_env", return_value={}):
+            with mock.patch.object(
+                self.backend.subprocess, "run", side_effect=fake_run
+            ):
+                with mock.patch.object(
+                    self.backend.subprocess,
+                    "check_call",
+                    side_effect=lambda *args, **kwargs: build_calls.append(
+                        (args, kwargs)
+                    ),
+                ):
+                    with mock.patch.object(
+                        self.backend.time, "perf_counter", side_effect=[10.0, 12.25]
+                    ):
+                        with contextlib.redirect_stderr(stream):
+                            self.backend._maturin_pep517(
+                                "build-wheel", build_label="wheel"
+                            )
+
+        self.assertEqual(calls[0][0], ["soldr", "session-start", "--json"])
+        self.assertEqual(
+            calls[1][0], ["soldr", "session-end", "--id", "pep517-1", "--json"]
+        )
+        self.assertEqual(build_calls[0][1]["env"]["ZCCACHE_SESSION_ID"], "pep517-1")
+        self.assertIn("built wheel in 2.2s", stream.getvalue())
+        self.assertIn(
+            "cache 9 hits / 3 misses (75.0%) | saved 1.5s",
+            stream.getvalue(),
+        )
+
+    def test_verbose_build_prints_full_session_stats(self) -> None:
+        self.assertEqual(self.backend._stats_mode({"PIP_VERBOSE": "1"}), "full")
+        self.assertEqual(self.backend._stats_mode({"SOLDR_PEP517_STATS": "off"}), "off")
+        self.assertEqual(
+            self.backend._stats_mode(
+                {"PIP_VERBOSE": "1", "SOLDR_PEP517_STATS": "short"}
+            ),
+            "short",
+        )
+
+        def fake_run(command, **kwargs):
+            payload = (
+                {"command": "session-start", "session_id": "pep517-2"}
+                if command[1] == "session-start"
+                else {
+                    "command": "session-end",
+                    "stats": {
+                        "hits": 1,
+                        "misses": 0,
+                        "phase_profile": {"staged": {}},
+                    },
+                }
+            )
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        stream = io.StringIO()
+        with mock.patch.object(
+            self.backend, "_prep_env", return_value={"SOLDR_PEP517_STATS": "full"}
+        ):
+            with mock.patch.object(
+                self.backend.subprocess, "run", side_effect=fake_run
+            ):
+                with mock.patch.object(self.backend.subprocess, "check_call"):
+                    with mock.patch.object(
+                        self.backend.time, "perf_counter", side_effect=[1.0, 2.0]
+                    ):
+                        with contextlib.redirect_stderr(stream):
+                            self.backend._maturin_pep517(
+                                "build-wheel", build_label="wheel"
+                            )
+
+        self.assertIn("soldr PEP 517 details:", stream.getvalue())
+        self.assertIn('"phase_profile": {"staged": {}}', stream.getvalue())
+
+    def test_failed_wheel_build_ends_session_without_success_summary(
+        self,
+    ) -> None:
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            payload = (
+                {"command": "session-start", "session_id": "pep517-fail"}
+                if command[1] == "session-start"
+                else {"command": "session-end", "stats": {"hits": 0, "misses": 1}}
+            )
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        stream = io.StringIO()
+        with mock.patch.object(self.backend, "_prep_env", return_value={}):
+            with mock.patch.object(
+                self.backend.subprocess, "run", side_effect=fake_run
+            ):
+                with mock.patch.object(
+                    self.backend.subprocess,
+                    "check_call",
+                    side_effect=subprocess.CalledProcessError(1, "soldr"),
+                ):
+                    with contextlib.redirect_stderr(stream):
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            self.backend._maturin_pep517(
+                                "build-wheel", build_label="wheel"
+                            )
+
+        self.assertEqual(calls[-1][1], "session-end")
+        self.assertEqual(stream.getvalue(), "")
 
     def test_project_dev_profile_overrides_only_its_explicit_fields(self) -> None:
         with mock.patch.object(
@@ -96,7 +232,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 second = self.backend._project_build_identity()
         self.assertNotEqual(first, second)
 
-    def test_stable_target_is_project_scoped_and_cargo_remains_authoritative(self) -> None:
+    def test_stable_target_is_project_scoped_and_cargo_remains_authoritative(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as raw:
             with mock.patch.dict(
                 os.environ,
@@ -134,7 +272,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_explicit_target_config_has_stable_precedence(self) -> None:
         self.assertEqual(
-            self.backend._target_args({"target": "mac-arm64", "build-target": "win-x64"}),
+            self.backend._target_args(
+                {"target": "mac-arm64", "build-target": "win-x64"}
+            ),
             ["--target", "mac-arm64"],
         )
         self.assertEqual(
@@ -161,16 +301,19 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as raw:
             wheel_dir = Path(raw)
 
-            def fake_pep517(subcommand, *args):
-                calls.append((subcommand, args))
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args, kwargs))
                 (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
 
             with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
-                produced = self.backend.build_wheel(raw, {"target": "x86_64-pc-windows-msvc"})
+                produced = self.backend.build_wheel(
+                    raw, {"target": "x86_64-pc-windows-msvc"}
+                )
 
         self.assertEqual(produced, "demo-0.1.0-py3-none-any.whl")
-        subcommand, args = calls[0]
+        subcommand, args, kwargs = calls[0]
         self.assertEqual(subcommand, "build-wheel")
+        self.assertEqual(kwargs["build_label"], "wheel")
         self.assertIn(sys.executable, args)
         target_index = args.index("--target")
         self.assertEqual(args[target_index + 1], "x86_64-pc-windows-msvc")
@@ -210,7 +353,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 "_project_soldr_options",
                 return_value={"delegate-backend": "pep517_delegate_test"},
             ):
-                with mock.patch.dict(os.environ, {"RUSTC_WRAPPER": "caller"}, clear=False):
+                with mock.patch.dict(
+                    os.environ, {"RUSTC_WRAPPER": "caller"}, clear=False
+                ):
                     self.assertEqual(
                         self.backend.get_requires_for_build_wheel({"profile": "dev"}),
                         ["setuptools"],
