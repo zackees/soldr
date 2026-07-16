@@ -174,6 +174,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self,
     ) -> None:
         calls = []
+        stream = io.StringIO()
 
         def fake_run(command, **kwargs):
             calls.append(command)
@@ -305,10 +306,13 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 calls.append((subcommand, args, kwargs))
                 (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
 
-            with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
-                produced = self.backend.build_wheel(
-                    raw, {"target": "x86_64-pc-windows-msvc"}
-                )
+            with mock.patch.dict(
+                os.environ, {"SOLDR_PEP517_WHEEL_CACHE": "off"}, clear=False
+            ):
+                with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
+                    produced = self.backend.build_wheel(
+                        raw, {"target": "x86_64-pc-windows-msvc"}
+                    )
 
         self.assertEqual(produced, "demo-0.1.0-py3-none-any.whl")
         subcommand, args, kwargs = calls[0]
@@ -317,6 +321,148 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertIn(sys.executable, args)
         target_index = args.index("--target")
         self.assertEqual(args[target_index + 1], "x86_64-pc-windows-msvc")
+
+    def test_wheel_cache_reuses_last_artifact_and_invalidates_on_source_change(
+        self,
+    ) -> None:
+        calls = []
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+            (root / "Cargo.toml").write_text("[package]\nname='demo'\n")
+            source = root / "native.bin"
+            source.write_bytes(b"first")
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            third = Path(raw) / "third"
+            cache = Path(raw) / "cache"
+            for directory in (first, second, third):
+                directory.mkdir()
+
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args))
+                out = Path(args[args.index("--out") + 1])
+                (out / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.object(self.backend, "_project_root", return_value=root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "SOLDR_CACHE_DIR": str(cache),
+                        "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
+                    },
+                    clear=False,
+                ):
+                    with mock.patch.object(
+                        self.backend, "_maturin_pep517", fake_pep517
+                    ):
+                        self.assertEqual(
+                            self.backend.build_wheel(str(first)),
+                            "demo-0.1.0-py3-none-any.whl",
+                        )
+                        with contextlib.redirect_stderr(stream):
+                            self.assertEqual(
+                                self.backend.build_wheel(str(second)),
+                                "demo-0.1.0-py3-none-any.whl",
+                            )
+                        source.write_bytes(b"other")
+                        modified = source.stat()
+                        os.utime(
+                            source,
+                            ns=(
+                                modified.st_atime_ns,
+                                modified.st_mtime_ns + 1_000_000_000,
+                            ),
+                        )
+                        self.assertEqual(
+                            self.backend.build_wheel(str(third)),
+                            "demo-0.1.0-py3-none-any.whl",
+                        )
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(
+                (second / "demo-0.1.0-py3-none-any.whl").read_bytes(), b"wheel"
+            )
+            self.assertIn("wheel cache hit", stream.getvalue())
+            self.assertEqual(len(list(cache.rglob("*.whl"))), 1)
+
+    def test_wheel_cache_can_be_disabled(self) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+            (root / "Cargo.toml").write_text("[package]\nname='demo'\n")
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            first.mkdir()
+            second.mkdir()
+
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args))
+                out = Path(args[args.index("--out") + 1])
+                (out / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.object(self.backend, "_project_root", return_value=root):
+                with mock.patch.dict(
+                    os.environ,
+                    {"SOLDR_PEP517_WHEEL_CACHE": "off"},
+                    clear=False,
+                ):
+                    with mock.patch.object(
+                        self.backend, "_maturin_pep517", fake_pep517
+                    ):
+                        self.backend.build_wheel(str(first))
+                        self.backend.build_wheel(str(second))
+
+        self.assertEqual(len(calls), 2)
+
+    def test_wheel_cache_reuses_delegate_artifacts(self) -> None:
+        calls = []
+        delegate = types.ModuleType("pep517_cache_delegate")
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+            (root / "Cargo.toml").write_text("[package]\nname='demo'\n")
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            cache = Path(raw) / "cache"
+            first.mkdir()
+            second.mkdir()
+
+            def build_wheel(wheel_directory, config_settings, metadata_directory):
+                calls.append((wheel_directory, config_settings, metadata_directory))
+                (Path(wheel_directory) / "demo-0.1.0-py3-none-any.whl").write_bytes(
+                    b"wheel"
+                )
+                return "demo-0.1.0-py3-none-any.whl"
+
+            setattr(delegate, "build_wheel", build_wheel)
+            with mock.patch.dict(sys.modules, {"pep517_cache_delegate": delegate}):
+                with mock.patch.object(
+                    self.backend, "_project_root", return_value=root
+                ):
+                    with mock.patch.object(
+                        self.backend,
+                        "_project_soldr_options",
+                        return_value={"delegate-backend": "pep517_cache_delegate"},
+                    ):
+                        with mock.patch.dict(
+                            os.environ,
+                            {
+                                "SOLDR_CACHE_DIR": str(cache),
+                                "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
+                            },
+                            clear=False,
+                        ):
+                            self.backend.build_wheel(str(first))
+                            self.backend.build_wheel(str(second))
+
+            self.assertEqual(len(calls), 1)
+            self.assertTrue((second / "demo-0.1.0-py3-none-any.whl").is_file())
 
     def test_delegate_backend_receives_hooks_under_managed_environment(self) -> None:
         observed = {}

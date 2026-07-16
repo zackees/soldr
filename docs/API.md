@@ -212,6 +212,15 @@ timing and cache summary to stderr. `SOLDR_PEP517_STATS=off` disables it;
 second stderr line. Soldr also selects `full` when `PIP_VERBOSE` or
 `UV_VERBOSE` is set by the frontend or caller.
 
+For wheel and editable hooks, soldr keeps the last successful artifact under
+`~/.soldr/pep517/wheels/`. It performs a metadata-only recursive scan of the
+project (relative path, size, and modification time), staged files included,
+and also hashes supplied prepared metadata by content. If that fingerprint and
+the build settings match, soldr hardlinks the cached wheel into the frontend's
+output directory (copying only when hardlinks are unavailable) and skips the
+backend's packaging/compression work. Set `SOLDR_PEP517_WHEEL_CACHE=off` to
+disable reuse.
+
 The local PEP 517 path also sets `SOLDR_PEP517_LINKER=auto` by default. Soldr
 tries the fastest supported linker for the active target, retries once with
 the platform linker only for a linker-availability failure, and records that
@@ -1478,6 +1487,8 @@ Commands:
 | `SOLDR_PEP517_STABLE_TARGET_DIR` | PEP 517 backend only: set to `0` / `false` / `no` / `off` to skip pinning `CARGO_TARGET_DIR` to the content-identified `~/.soldr/cargo-target/pep517/<project-id>` namespace for isolated builds (see [PEP 517 Build Backend](#pep-517-build-backend)). A caller-provided `CARGO_TARGET_DIR` always wins regardless. | unset (pin enabled) |
 | `SOLDR_PEP517_PROJECT_ID` | Read-only diagnostic/cache identity exported by the PEP 517 backend. It identifies manifests, lockfile, toolchain/configuration, maturin settings, and build-policy environment; source freshness remains Cargo's responsibility. | content-derived |
 | `SOLDR_PEP517_STATS` | PEP 517 wheel/editable build diagnostics: `off` (also `0` / `false`) suppresses stderr statistics; `full` emits the cache-session JSON after the default one-line summary; any other nonempty value selects the one-line summary. When unset, verbose frontends detected through `PIP_VERBOSE` or `UV_VERBOSE` select `full`. | concise summary |
+| `SOLDR_PEP517_STATS` | PEP 517 wheel/editable build diagnostics: `off` (also `0` / `false`) suppresses stderr statistics; `full` emits the cache-session JSON after the default one-line summary; any other nonempty value selects the one-line summary. When unset, verbose frontends detected through `PIP_VERBOSE` or `UV_VERBOSE` select `full`. | concise summary |
+| `SOLDR_PEP517_WHEEL_CACHE` | PEP 517 wheel/editable hooks: reuse the last successful wheel when the metadata fingerprint of sources, staged artifacts, prepared metadata, and build settings matches. `off` (also `0` / `false` / `none`) disables reuse. | unset (on) |
 | `SOLDR_PEP517_LINKER` | PEP 517 backend only: `auto` (default) tries the fastest supported linker and caches a verified platform-linker fallback after a linker-availability failure; `none` / `default` / `off` disables the automatic attempt. An explicit `SOLDR_LINKER=fast` remains non-fallbacking. | `auto` |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |

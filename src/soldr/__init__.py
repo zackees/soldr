@@ -24,8 +24,10 @@ import importlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import sysconfig
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -33,6 +35,7 @@ from typing import Iterator, Optional
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
+_WHEEL_CACHE_ENV = "SOLDR_PEP517_WHEEL_CACHE"
 _DISABLE_PROFILE_VALUES = {"", "none", "default", "off", "false", "0"}
 _DELEGATE_BACKEND_SECTION = "tool.soldr.pep517"
 _PEP517_ENV_KEYS = {
@@ -54,6 +57,22 @@ _PEP517_ENV_KEYS = {
 }
 _MISSING = object()
 _PEP517_TARGET_SCHEMA = b"pep517-target-v3"
+_WHEEL_CACHE_SCHEMA = b"pep517-wheel-cache-v1"
+_WHEEL_CACHE_IGNORED_DIRECTORIES = {
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+    "target",
+    "venv",
+}
 _FAST_DEV_PROFILE_DEFAULTS = {
     "CARGO_PROFILE_DEV_OPT_LEVEL": ("opt-level", "0"),
     "CARGO_PROFILE_DEV_CODEGEN_UNITS": ("codegen-units", "256"),
@@ -522,6 +541,282 @@ def _maturin_pep517(
         )
 
 
+def _wheel_cache_root(environment: "dict[str, str]") -> Path:
+    root = environment.get("SOLDR_CACHE_DIR")
+    return Path(root).expanduser() if root else Path.home() / ".soldr"
+
+
+def _hash_metadata_tree(
+    hasher: "hashlib._Hash",
+    root: Path,
+    label: str,
+    ignored_directories: "set[str] | None" = None,
+) -> None:
+    """Hash paths plus metadata without reading staged native artifacts."""
+    try:
+        root = root.resolve()
+    except OSError:
+        return
+    if not root.is_dir():
+        _hash_identity_field(hasher, label, b"missing")
+        return
+    ignored = _WHEEL_CACHE_IGNORED_DIRECTORIES | (ignored_directories or set())
+
+    for directory, directories, files in os.walk(root):
+        directories[:] = sorted(item for item in directories if item not in ignored)
+        current = Path(directory)
+        for filename in sorted(files):
+            path = current / filename
+            try:
+                relative = path.relative_to(root).as_posix()
+                stat = path.stat()
+            except OSError:
+                continue
+            if not path.is_file():
+                continue
+            _hash_identity_field(
+                hasher,
+                f"{label}/{relative}",
+                f"{stat.st_size}:{stat.st_mtime_ns}".encode(),
+            )
+
+
+def _hash_metadata_directory(
+    hasher: "hashlib._Hash", metadata_directory: Optional[str]
+) -> None:
+    """Hash PEP 517 prepared metadata by content, not its temporary path."""
+    if not metadata_directory:
+        _hash_identity_field(hasher, "metadata", b"none")
+        return
+    root = Path(metadata_directory)
+    if not root.is_dir():
+        _hash_identity_field(hasher, "metadata", b"missing")
+        return
+    for directory, _, files in os.walk(root):
+        current = Path(directory)
+        for filename in sorted(files):
+            path = current / filename
+            try:
+                relative = path.relative_to(root).as_posix()
+                contents = path.read_bytes()
+            except OSError:
+                continue
+            _hash_identity_field(hasher, f"metadata/{relative}", contents)
+
+
+def _delegate_backend_stamp() -> str:
+    """Return a version marker without baking an isolated-env path into a key."""
+    name = _delegate_backend_name()
+    if not name:
+        return "maturin"
+    module_name = name.partition(":")[0]
+    package = module_name.split(".", 1)[0]
+    try:
+        from importlib import metadata
+    except ImportError:
+        return name
+
+    try:
+        versions = metadata.packages_distributions().get(package, [])
+        return (
+            ";".join(
+                f"{distribution}={metadata.version(distribution)}"
+                for distribution in sorted(versions)
+            )
+            or name
+        )
+    except metadata.PackageNotFoundError:
+        return name
+
+
+def _wheel_cache_context(
+    kind: str,
+    config_settings: Optional[dict],
+    metadata_directory: Optional[str],
+) -> "tuple[Path, str] | None":
+    environment = _prep_env(config_settings, editable=kind == "editable")
+    cache_knob = environment.get(_WHEEL_CACHE_ENV)
+    if cache_knob is not None and cache_knob.strip().lower() in _DISABLE_PROFILE_VALUES:
+        return None
+
+    hasher = hashlib.sha256()
+    _hash_identity_field(hasher, "schema", _WHEEL_CACHE_SCHEMA)
+    _hash_identity_field(hasher, "kind", kind.encode())
+    _hash_identity_field(
+        hasher,
+        "config-settings",
+        json.dumps(config_settings or {}, sort_keys=True, default=str).encode(),
+    )
+    _hash_identity_field(hasher, "backend", _delegate_backend_stamp().encode())
+    _hash_identity_field(
+        hasher,
+        "python",
+        f"{sys.implementation.name}:{sys.version_info[:2]}:{sysconfig.get_platform()}".encode(),
+    )
+    for name, value in sorted(environment.items()):
+        if name.startswith(
+            ("CARGO_", "MATURIN_", "PYO3_", "RUST", "SOLDR_")
+        ) or name in {
+            "AR",
+            "CC",
+            "CXX",
+            "MACOSX_DEPLOYMENT_TARGET",
+            "SDKROOT",
+            "SOURCE_DATE_EPOCH",
+        }:
+            _hash_identity_field(hasher, f"environment/{name}", value.encode())
+    root = _project_root()
+    ignored_directories: set[str] = set()
+    try:
+        relative_cache_root = (
+            (_wheel_cache_root(environment) / "pep517")
+            .resolve()
+            .relative_to(root.resolve())
+        )
+        if relative_cache_root.parts:
+            ignored_directories.add(relative_cache_root.parts[0])
+    except (OSError, ValueError):
+        pass
+    _hash_metadata_tree(hasher, root, "source", ignored_directories)
+    _hash_metadata_directory(hasher, metadata_directory)
+    return (
+        _wheel_cache_root(environment)
+        / "pep517"
+        / "wheels"
+        / _project_build_identity(environment)
+        / kind,
+        hasher.hexdigest(),
+    )
+
+
+def _wheel_cache_restore(
+    context: "tuple[Path, str] | None", wheel_directory: str
+) -> Optional[str]:
+    if context is None:
+        return None
+    directory, fingerprint = context
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        filename = manifest["filename"]
+        artifact_name = manifest["artifact"]
+        artifact = directory / artifact_name
+    except (KeyError, OSError, TypeError, ValueError):
+        return None
+    if (
+        manifest.get("schema") != 1
+        or manifest.get("fingerprint") != fingerprint
+        or not isinstance(filename, str)
+        or Path(filename).name != filename
+        or not filename.endswith(".whl")
+        or not isinstance(artifact_name, str)
+        or Path(artifact_name).name != artifact_name
+        or not artifact.is_file()
+    ):
+        return None
+    destination = Path(wheel_directory) / filename
+    try:
+        destination.unlink(missing_ok=True)
+        os.link(artifact, destination)
+    except OSError:
+        try:
+            shutil.copy2(artifact, destination)
+        except OSError:
+            return None
+    return filename
+
+
+def _wheel_cache_store(
+    context: "tuple[Path, str] | None", wheel_directory: str, filename: str
+) -> None:
+    if (
+        context is None
+        or Path(filename).name != filename
+        or not filename.endswith(".whl")
+    ):
+        return
+    source = Path(wheel_directory) / filename
+    if not source.is_file():
+        return
+    directory, fingerprint = context
+    artifact_name = f"{fingerprint}.whl"
+    artifact = directory / artifact_name
+    temporary = directory / f".{artifact_name}.{os.getpid()}.tmp"
+    manifest = directory / "manifest.json"
+    previous_artifact: Optional[str] = None
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            previous = json.loads(manifest.read_text(encoding="utf-8"))
+            candidate = previous.get("artifact")
+            if isinstance(candidate, str) and Path(candidate).name == candidate:
+                previous_artifact = candidate
+        except (OSError, TypeError, ValueError):
+            pass
+        temporary.unlink(missing_ok=True)
+        try:
+            os.link(source, temporary)
+        except OSError:
+            shutil.copy2(source, temporary)
+        os.replace(temporary, artifact)
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema": 1,
+                    "fingerprint": fingerprint,
+                    "filename": filename,
+                    "artifact": artifact_name,
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        if previous_artifact and previous_artifact != artifact_name:
+            (directory / previous_artifact).unlink(missing_ok=True)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+
+
+def _wheel_cache_finish(
+    kind: str,
+    wheel_directory: str,
+    config_settings: Optional[dict],
+    metadata_directory: Optional[str],
+    filename: str,
+) -> str:
+    # Re-scan after a successful build: setuptools/fbuild can create or update
+    # staged files during packaging, and the next invocation must observe them.
+    _wheel_cache_store(
+        _wheel_cache_context(kind, config_settings, metadata_directory),
+        wheel_directory,
+        filename,
+    )
+    return filename
+
+
+def _emit_wheel_cache_hit(
+    kind: str, config_settings: Optional[dict], elapsed_seconds: float
+) -> None:
+    env = _prep_env(config_settings, editable=kind == "editable")
+    mode = _stats_mode(env)
+    if mode == "off":
+        return
+    label = "editable wheel" if kind == "editable" else "wheel"
+    print(
+        f"soldr PEP 517: reused cached {label} in {elapsed_seconds:.1f}s | "
+        "wheel cache hit",
+        file=sys.stderr,
+    )
+    if mode == "full":
+        print(
+            "soldr PEP 517 details: "
+            + json.dumps(
+                {"build_seconds": round(elapsed_seconds, 3), "wheel_cache": "hit"},
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+
+
 def _target_args(config_settings: Optional[dict]) -> "list[str]":
     """Translate the PEP 517 target setting into maturin's explicit flag.
 
@@ -645,6 +940,16 @@ def build_wheel(
     config_settings: Optional[dict] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
+    started_at = time.perf_counter()
+    cached = _wheel_cache_restore(
+        _wheel_cache_context("wheel", config_settings, metadata_directory),
+        wheel_directory,
+    )
+    if cached is not None:
+        _emit_wheel_cache_hit(
+            "wheel", config_settings, time.perf_counter() - started_at
+        )
+        return cached
     delegated = _delegate_hook(
         "build_wheel",
         wheel_directory,
@@ -653,11 +958,12 @@ def build_wheel(
         _config_settings=config_settings,
     )
     if delegated is not None:
-        return delegated
+        return _wheel_cache_finish(
+            "wheel", wheel_directory, config_settings, metadata_directory, delegated
+        )
     # maturin pep517 build-wheel does not accept --metadata-directory;
     # the dist-info is regenerated, which PEP 517 explicitly permits.
     target_args = _target_args(config_settings)
-    del metadata_directory
     _maturin_pep517(
         "build-wheel",
         "--interpreter",
@@ -668,7 +974,13 @@ def build_wheel(
         *target_args,
         build_label="wheel",
     )
-    return _newest_entry(wheel_directory, ".whl", want_dir=False)
+    return _wheel_cache_finish(
+        "wheel",
+        wheel_directory,
+        config_settings,
+        metadata_directory,
+        _newest_entry(wheel_directory, ".whl", want_dir=False),
+    )
 
 
 def build_editable(
@@ -676,6 +988,16 @@ def build_editable(
     config_settings: Optional[dict] = None,
     metadata_directory: Optional[str] = None,
 ) -> str:
+    started_at = time.perf_counter()
+    cached = _wheel_cache_restore(
+        _wheel_cache_context("editable", config_settings, metadata_directory),
+        wheel_directory,
+    )
+    if cached is not None:
+        _emit_wheel_cache_hit(
+            "editable", config_settings, time.perf_counter() - started_at
+        )
+        return cached
     delegated = _delegate_hook(
         "build_editable",
         wheel_directory,
@@ -684,9 +1006,10 @@ def build_editable(
         _config_settings=config_settings,
     )
     if delegated is not None:
-        return delegated
+        return _wheel_cache_finish(
+            "editable", wheel_directory, config_settings, metadata_directory, delegated
+        )
     target_args = _target_args(config_settings)
-    del metadata_directory
     _maturin_pep517(
         "build-wheel",
         "--interpreter",
@@ -698,7 +1021,13 @@ def build_editable(
         *target_args,
         build_label="editable wheel",
     )
-    return _newest_entry(wheel_directory, ".whl", want_dir=False)
+    return _wheel_cache_finish(
+        "editable",
+        wheel_directory,
+        config_settings,
+        metadata_directory,
+        _newest_entry(wheel_directory, ".whl", want_dir=False),
+    )
 
 
 def build_sdist(
