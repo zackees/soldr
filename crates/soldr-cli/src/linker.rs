@@ -366,6 +366,11 @@ fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<Stri
         b"injection",
         linker_description(injection).as_bytes(),
     );
+    hash_field(
+        &mut hasher,
+        b"linker-identity",
+        &linker_candidate_identity(injection),
+    );
     hash_field(&mut hasher, b"rustc", &rustc_identity.stdout);
     for name in [
         "CARGO_BUILD_TARGET",
@@ -410,6 +415,39 @@ fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<Stri
         }
     }
     Some(hex::encode(hasher.finalize()))
+}
+
+fn linker_candidate_identity(injection: &LinkerInjection) -> Vec<u8> {
+    let mut candidates = Vec::new();
+    if let Some(linker) = injection.linker.as_deref() {
+        candidates.push(linker.to_string());
+    }
+    if let Some(rustflags) = injection.rustflags.as_deref() {
+        for candidate in ["mold", "ld.lld"] {
+            if rustflags.contains(&format!("-fuse-ld={candidate}")) {
+                candidates.push(candidate.to_string());
+            }
+        }
+    }
+
+    let mut identity = Vec::new();
+    for candidate in candidates {
+        identity.extend_from_slice(candidate.as_bytes());
+        identity.push(0);
+        let mut command = Command::new(&candidate);
+        command.arg("--version");
+        suppress_windows_console_window(&mut command);
+        match command.output() {
+            Ok(output) => {
+                identity.extend_from_slice(&output.stdout);
+                identity.extend_from_slice(&output.stderr);
+                identity.extend_from_slice(&output.status.code().unwrap_or(-1).to_le_bytes());
+            }
+            Err(err) => identity.extend_from_slice(err.to_string().as_bytes()),
+        }
+        identity.push(0xff);
+    }
+    identity
 }
 
 fn hash_field(hasher: &mut Sha256, name: &[u8], value: &[u8]) {
