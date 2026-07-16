@@ -231,8 +231,11 @@ pub fn apply_pep517_override(
     let config = paths.load_config();
     let explicit_env = std::env::var_os(crate::LINKER_ENV_VAR);
     let explicit_config = config.linker.as_deref();
+    let project_target_linker_configured = project_target_config_value(target, "linker").is_some()
+        || project_target_config_value(target, "rustflags").is_some();
     let automatic_fast = explicit_env.is_none()
         && explicit_config.is_none()
+        && !project_target_linker_configured
         && std::env::var(PEP517_LINKER_POLICY_ENV)
             .ok()
             .is_some_and(|value| value.trim().eq_ignore_ascii_case("auto"));
@@ -258,17 +261,13 @@ pub fn apply_pep517_override(
 
     if !cached_fallback {
         if let Some(linker) = injection.linker.as_deref() {
-            if !effective_command_env_is_non_empty(command, &linker_key)
-                && project_target_config_value(target, "linker").is_none()
-            {
+            if !effective_command_env_is_non_empty(command, &linker_key) {
                 command.env(&linker_key, linker);
                 injected_env.push(linker_key.clone());
             }
         }
         if let Some(rustflags) = injection.rustflags.as_deref() {
-            if !effective_command_env_is_non_empty(command, &rustflags_key)
-                && project_target_config_value(target, "rustflags").is_none()
-            {
+            if !effective_command_env_is_non_empty(command, &rustflags_key) {
                 command.env(&rustflags_key, rustflags);
                 injected_env.push(rustflags_key.clone());
             }
