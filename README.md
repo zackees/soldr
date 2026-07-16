@@ -240,9 +240,10 @@ files touched. What you get over `build-backend = "maturin"`:
 - **Compilation caching** — rustc invocations run under soldr's
   `RUSTC_WRAPPER`, so repeat builds hit the cache.
 
-Local PEP 517 builds use a lightweight `dev` profile by default: line-table
-debug information, no LTO, and incremental compilation. Explicit maturin/Cargo
-profiles and `SOLDR_PEP517_PROFILE` remain authoritative; release pipelines
+Local PEP 517 builds use an explicit fast `dev` profile by default:
+`opt-level = 0`, 256 codegen units, line-table debug information, no LTO, and
+incremental compilation. Explicit Maturin/Cargo settings and
+`SOLDR_PEP517_PROFILE` remain authoritative per setting; release pipelines
 should select their release profile explicitly.
 
 Projects whose packaging backend is not maturin can use soldr as a managed

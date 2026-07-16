@@ -34,13 +34,15 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 os.environ["PYO3_NO_PYTHON"] = previous
         self.assertNotIn("PYO3_NO_PYTHON", env)
 
-    def test_local_profile_defaults_to_lightweight_incremental_dev(self) -> None:
+    def test_local_profile_defaults_to_explicit_fast_dev(self) -> None:
         with mock.patch.dict(
             os.environ,
             {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
             clear=False,
         ):
             env = self.backend._prep_env()
+        self.assertEqual(env["CARGO_PROFILE_DEV_OPT_LEVEL"], "0")
+        self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "256")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
         self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
         self.assertEqual(env["CARGO_PROFILE_DEV_INCREMENTAL"], "true")
@@ -52,14 +54,36 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
             os.environ,
             {
                 "SOLDR_PEP517_PROFILE": "release",
+                "CARGO_PROFILE_DEV_OPT_LEVEL": "1",
+                "CARGO_PROFILE_DEV_CODEGEN_UNITS": "32",
                 "CARGO_PROFILE_DEV_DEBUG": "2",
                 "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
             },
             clear=False,
         ):
             env = self.backend._prep_env()
+        self.assertEqual(env["CARGO_PROFILE_DEV_OPT_LEVEL"], "1")
+        self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "32")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
         self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
+
+    def test_project_dev_profile_overrides_only_its_explicit_fields(self) -> None:
+        with mock.patch.object(
+            self.backend,
+            "_project_dev_profile_options",
+            return_value={"opt-level": "1", "codegen-units": "32"},
+        ):
+            with mock.patch.dict(
+                os.environ,
+                {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
+                clear=True,
+            ):
+                env = self.backend._prep_env()
+        self.assertNotIn("CARGO_PROFILE_DEV_OPT_LEVEL", env)
+        self.assertNotIn("CARGO_PROFILE_DEV_CODEGEN_UNITS", env)
+        self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+        self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
+        self.assertEqual(env["CARGO_PROFILE_DEV_INCREMENTAL"], "true")
 
     def test_project_identity_changes_for_build_configuration_changes(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
