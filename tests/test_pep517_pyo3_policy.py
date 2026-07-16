@@ -33,6 +33,50 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 os.environ["PYO3_NO_PYTHON"] = previous
         self.assertNotIn("PYO3_NO_PYTHON", env)
 
+    def test_local_profile_defaults_to_lightweight_incremental_dev(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"},
+            clear=False,
+        ):
+            env = self.backend._prep_env()
+        self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "line-tables-only")
+        self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
+        self.assertEqual(env["CARGO_PROFILE_DEV_INCREMENTAL"], "true")
+        self.assertEqual(self.backend._profile_args(None), ["--profile", "dev"])
+
+    def test_caller_profile_and_environment_values_win(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SOLDR_PEP517_PROFILE": "release",
+                "CARGO_PROFILE_DEV_DEBUG": "2",
+                "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
+            },
+            clear=False,
+        ):
+            env = self.backend._prep_env()
+        self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
+        self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
+
+    def test_project_maturin_profile_is_not_overridden(self) -> None:
+        with mock.patch.object(
+            self.backend,
+            "_project_maturin_options",
+            return_value={"profile": "release", "editable-profile": "dev"},
+        ):
+            self.assertEqual(self.backend._profile_args(None), [])
+            self.assertEqual(self.backend._profile_args(None, editable=True), [])
+
+    def test_explicit_soldr_profile_overrides_project_profile(self) -> None:
+        with mock.patch.dict(os.environ, {"SOLDR_PEP517_PROFILE": "ci"}, clear=False):
+            with mock.patch.object(
+                self.backend,
+                "_project_maturin_options",
+                return_value={"profile": "release"},
+            ):
+                self.assertEqual(self.backend._profile_args(None), ["--profile", "ci"])
+
     def test_explicit_target_config_has_stable_precedence(self) -> None:
         self.assertEqual(
             self.backend._target_args({"target": "mac-arm64", "build-target": "win-x64"}),

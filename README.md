@@ -240,6 +240,11 @@ files touched. What you get over `build-backend = "maturin"`:
 - **Compilation caching** — rustc invocations run under soldr's
   `RUSTC_WRAPPER`, so repeat builds hit the cache.
 
+Local PEP 517 builds use a lightweight `dev` profile by default: line-table
+debug information, no LTO, and incremental compilation. Explicit maturin/Cargo
+profiles and `SOLDR_PEP517_PROFILE` remain authoritative; release pipelines
+should select their release profile explicitly.
+
 Note: soldr's own wheel is built with plain `build-backend = "maturin"`,
 not with itself — using soldr as its own build backend created a
 bootstrap cycle where a broken installed soldr made the fix in this
