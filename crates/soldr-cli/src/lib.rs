@@ -43,6 +43,9 @@ pub mod exec_cmd;
 /// the `soldr build --target` surface.
 pub mod fetch_overlap;
 pub mod gc;
+/// Project policy that can hand a local checkout invocation to a newer
+/// globally-installed soldr binary.
+pub mod global_upgrade;
 pub mod install_shims;
 pub mod linker;
 /// soldr#820 — `soldr logs` discoverable runtime-log surface.

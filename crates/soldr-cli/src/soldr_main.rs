@@ -157,6 +157,8 @@ fn run_main(raw_args: Vec<String>) -> i32 {
             if should_trampoline(&version) {
                 return block_on_exit_code(run_trampoline(&version, &raw_args[1..]));
             }
+        } else if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
+            return code;
         }
         profile.mark("pin_check_done");
         return wrapper::run_rustc_wrapper(&raw_args, profile).unwrap_or_else(report_and_exit);
@@ -180,6 +182,10 @@ fn run_main(raw_args: Vec<String>) -> i32 {
         // Short-circuit: requested version == current. Continue with args
         // that have `--as <ver>` stripped.
         return block_on_exit_code(run_with_args(&raw_args[0], &trampoline_args));
+    }
+
+    if let Some(code) = crate::global_upgrade::maybe_delegate(&raw_args) {
+        return code;
     }
 
     block_on_exit_code(run_with_args(&raw_args[0], &raw_args[1..]))

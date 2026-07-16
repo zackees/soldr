@@ -68,6 +68,10 @@ pub struct SoldrMetadata {
     /// declares it builds for. Consumed by `soldr prepare --target all`.
     #[serde(default)]
     pub targets: Vec<String>,
+    /// Prefer a newer `soldr` found globally on PATH over the binary launched
+    /// from this checkout. Disabled unless the project opts in.
+    #[serde(default)]
+    pub prefer_newer_global: bool,
 }
 
 /// Read soldr metadata from the `Cargo.toml` at `path`. Returns the
@@ -125,6 +129,38 @@ pub fn find_cargo_toml(start_dir: &Path) -> Option<PathBuf> {
             None => return None,
         }
     }
+}
+
+/// Whether any Cargo manifest from `start_dir` through its ancestor chain
+/// opts into handing off local soldr invocations to a newer global binary.
+///
+/// Walking the full chain matters when the command starts in a workspace
+/// member: its nearest manifest usually has package metadata while the policy
+/// belongs to the root's `[workspace.metadata.soldr]` table.
+pub fn prefer_newer_global_from(start_dir: &Path) -> bool {
+    let mut current = start_dir;
+    loop {
+        let candidate = current.join("Cargo.toml");
+        if candidate.is_file()
+            && read_soldr_metadata(&candidate)
+                .map(|metadata| metadata.prefer_newer_global)
+                .unwrap_or(false)
+        {
+            return true;
+        }
+        match current.parent() {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+/// Best-effort current-directory wrapper around [`prefer_newer_global_from`].
+/// An unreadable working directory simply leaves the opt-in policy disabled.
+pub fn prefer_newer_global_from_cwd() -> bool {
+    std::env::current_dir()
+        .ok()
+        .is_some_and(|cwd| prefer_newer_global_from(&cwd))
 }
 
 /// Resolve `--target all` to the explicit target list.
@@ -260,6 +296,24 @@ version = "0.1.0"
         );
         let meta = read_soldr_metadata(&p).expect("parse");
         assert!(meta.targets.is_empty());
+    });
+
+    crate::timed_test!(reads_prefer_newer_global, {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let root = tmp.path().join("workspace");
+        let nested = root.join("member").join("src");
+        std::fs::create_dir_all(&nested).expect("nested workspace member");
+        write_fixture(
+            &root,
+            "[workspace]\n\n[workspace.metadata.soldr]\nprefer_newer_global = true\n",
+        );
+        std::fs::write(
+            root.join("member").join("Cargo.toml"),
+            "[package]\nname = \"member\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("member manifest");
+
+        assert!(prefer_newer_global_from(&nested));
     });
 
     crate::timed_test!(malformed_toml_errors_with_path, {
