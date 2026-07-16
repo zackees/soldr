@@ -60,6 +60,35 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
         self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
 
+    def test_project_identity_changes_for_build_configuration_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "pyproject.toml").write_text("[tool.maturin]\nmodule-name='demo'\n")
+            (root / "Cargo.toml").write_text("[package]\nname='demo'\n")
+            with mock.patch.object(self.backend, "_project_root", return_value=root):
+                first = self.backend._project_build_identity()
+                (root / "Cargo.lock").write_text("version = 4\n")
+                second = self.backend._project_build_identity()
+        self.assertNotEqual(first, second)
+
+    def test_stable_target_is_project_scoped_and_cargo_remains_authoritative(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "SOLDR_PEP517_STABLE_TARGET_DIR": "1",
+                    "USERPROFILE": raw,
+                    "HOME": raw,
+                },
+                clear=True,
+            ):
+                env = self.backend._prep_env()
+                expected_id = self.backend._project_build_identity()
+                expected_target = self.backend._pep517_target_dir()
+        self.assertEqual(env["SOLDR_PEP517_PROJECT_ID"], expected_id)
+        self.assertEqual(env["CARGO_TARGET_DIR"], str(expected_target))
+        self.assertEqual(Path(env["CARGO_TARGET_DIR"]).parent.name, "pep517")
+
     def test_project_maturin_profile_is_not_overridden(self) -> None:
         with mock.patch.object(
             self.backend,
