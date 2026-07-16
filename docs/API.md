@@ -175,7 +175,6 @@ policy. A user-specified `SOLDR_LINKER=fast` remains explicit and never
 silently falls back; it emits an actionable warning instead. Target-specific
 linker or rustflags settings from the command environment or project
 `.cargo/config.toml` retain precedence.
-
 Every pin defers to a pre-set user env var. Maturin acquisition is a
 ladder controlled by `SOLDR_MATURIN_PROVISIONER` (`auto` default:
 pinned prebuilt binary from GitHub Releases, falling back to the PyPI

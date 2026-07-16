@@ -252,7 +252,6 @@ equivalent later build uses the fallback immediately and prints a warning.
 Set `SOLDR_PEP517_LINKER=none` to disable this policy. An explicit
 `SOLDR_LINKER=fast` is treated as a deliberate choice: it reports the failure
 without silently downgrading to the system linker.
-
 Note: soldr's own wheel is built with plain `build-backend = "maturin"`,
 not with itself — using soldr as its own build backend created a
 bootstrap cycle where a broken installed soldr made the fix in this
