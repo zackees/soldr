@@ -261,6 +261,9 @@ The delegate receives the normal PEP 517/660 hooks and return values while
 soldr supplies its target, profile, linker, and cache environment. This is
 intended for projects with custom staging such as native CLI scripts plus a
 PyO3 extension. Maturin remains the default when no delegate is configured.
+The same explicit profile settings work for delegates as for maturin; for
+example, `pip install . --config-settings profile=release` selects the
+release profile, while an ordinary install uses the fast local `dev` profile.
 
 The backend also asks soldr to try its fastest supported linker locally. If
 that linker fails with a linker-availability error, soldr retries once with

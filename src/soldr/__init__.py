@@ -156,9 +156,13 @@ def _delegate_backend() -> object | None:
 
 
 @contextmanager
-def _managed_pep517_environment() -> Iterator[None]:
+def _managed_pep517_environment(
+    config_settings: Optional[dict] = None,
+    *,
+    editable: bool = False,
+) -> Iterator[None]:
     """Apply soldr's child-build environment around a delegated backend."""
-    prepared = _prep_env()
+    prepared = _prep_env(config_settings, editable=editable)
     previous: dict[str, object] = {
         key: os.environ.get(key, _MISSING) for key in _PEP517_ENV_KEYS
     }
@@ -178,14 +182,23 @@ def _managed_pep517_environment() -> Iterator[None]:
                 os.environ[key] = str(value)
 
 
-def _delegate_hook(name: str, *args: object, fallback: Optional[str] = None, **kwargs: object):
+def _delegate_hook(
+    name: str,
+    *args: object,
+    fallback: Optional[str] = None,
+    _config_settings: Optional[dict] = None,
+    **kwargs: object,
+):
     backend = _delegate_backend()
     if backend is None:
         return None
     hook_name = name if hasattr(backend, name) else fallback
     if hook_name is None or not hasattr(backend, hook_name):
         return [] if name.startswith("get_requires_for_build_") else None
-    with _managed_pep517_environment():
+    with _managed_pep517_environment(
+        _config_settings,
+        editable=name.endswith("_editable"),
+    ):
         return getattr(backend, hook_name)(*args, **kwargs)
 
 
@@ -197,7 +210,7 @@ def _hash_identity_field(hasher: "hashlib._Hash", name: str, value: bytes) -> No
     hasher.update(value)
 
 
-def _project_build_identity() -> str:
+def _project_build_identity(environment: Optional[dict[str, str]] = None) -> str:
     """Return a path-independent identity for the PEP build configuration.
 
     This selects a stable target namespace; it is not a replacement for
@@ -227,6 +240,7 @@ def _project_build_identity() -> str:
         except OSError:
             continue
         _hash_identity_field(hasher, relative, contents)
+    values = os.environ if environment is None else environment
     for name in (
         "CARGO_BUILD_TARGET",
         "CARGO_ENCODED_RUSTFLAGS",
@@ -238,12 +252,14 @@ def _project_build_identity() -> str:
         "CARGO_PROFILE_DEV_LTO",
         "CARGO_PROFILE_DEV_INCREMENTAL",
     ):
-        _hash_identity_field(hasher, name, os.environ.get(name, "").encode())
+        _hash_identity_field(hasher, name, values.get(name, "").encode())
     return hasher.hexdigest()[:24]
 
 
-def _pep517_target_dir() -> Path:
-    return Path.home() / ".soldr" / "cargo-target" / "pep517" / _project_build_identity()
+def _pep517_target_dir(project_id: Optional[str] = None) -> Path:
+    if project_id is None:
+        project_id = _project_build_identity()
+    return Path.home() / ".soldr" / "cargo-target" / "pep517" / project_id
 
 
 def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]:
@@ -256,6 +272,15 @@ def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]
         if value is not None and str(value).strip():
             return str(value).strip()
     return None
+
+
+def _explicit_profile(
+    config_settings: Optional[dict], *, editable: bool = False
+) -> Optional[str]:
+    keys = ("--profile", "profile")
+    if editable:
+        keys += ("editable-profile",)
+    return _setting_value(config_settings, *keys)
 
 
 def _profile_args(
@@ -288,8 +313,22 @@ def _profile_args(
     return ["--profile", "dev"]
 
 
-def _prep_env() -> "dict[str, str]":
+def _prep_env(
+    config_settings: Optional[dict] = None,
+    *,
+    editable: bool = False,
+) -> "dict[str, str]":
     env = os.environ.copy()
+    explicit_profile = _explicit_profile(config_settings, editable=editable)
+    if explicit_profile:
+        # Match _profile_args precedence for delegated backends: an explicit
+        # PEP setting wins over SOLDR_PEP517_PROFILE from the caller. This
+        # value is also included in the project identity below so dev/release
+        # delegated builds never share an ambiguous target namespace.
+        env[_FAST_PROFILE_ENV] = explicit_profile
+    identity_environment = os.environ.copy()
+    if explicit_profile:
+        identity_environment[_FAST_PROFILE_ENV] = explicit_profile
     env.setdefault("RUSTC_WRAPPER", "soldr")
     env.setdefault("ZCCACHE_PATH_REMAP", "auto")
     # Ask soldr's maturin dispatch to use the automatic fast-linker policy.
@@ -320,13 +359,13 @@ def _prep_env() -> "dict[str, str]":
     # Escape hatches: a caller-provided CARGO_TARGET_DIR always wins
     # (setdefault), and SOLDR_PEP517_STABLE_TARGET_DIR=0 (or false/no/
     # off) skips the pin entirely.
-    project_id = _project_build_identity()
+    project_id = _project_build_identity(identity_environment)
     env.setdefault("SOLDR_PEP517_PROJECT_ID", project_id)
     knob = env.get("SOLDR_PEP517_STABLE_TARGET_DIR", "").strip().lower()
     if knob not in ("0", "false", "no", "off"):
         env.setdefault(
             "CARGO_TARGET_DIR",
-            str(_pep517_target_dir()),
+            str(_pep517_target_dir(project_id)),
         )
     return env
 
@@ -386,21 +425,33 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
 
 
 def get_requires_for_build_wheel(config_settings: Optional[dict] = None):
-    delegated = _delegate_hook("get_requires_for_build_wheel", config_settings)
+    delegated = _delegate_hook(
+        "get_requires_for_build_wheel",
+        config_settings=config_settings,
+        _config_settings=config_settings,
+    )
     if delegated is not None:
         return delegated
     return []
 
 
 def get_requires_for_build_sdist(config_settings: Optional[dict] = None):
-    delegated = _delegate_hook("get_requires_for_build_sdist", config_settings)
+    delegated = _delegate_hook(
+        "get_requires_for_build_sdist",
+        config_settings=config_settings,
+        _config_settings=config_settings,
+    )
     if delegated is not None:
         return delegated
     return []
 
 
 def get_requires_for_build_editable(config_settings: Optional[dict] = None):
-    delegated = _delegate_hook("get_requires_for_build_editable", config_settings)
+    delegated = _delegate_hook(
+        "get_requires_for_build_editable",
+        config_settings=config_settings,
+        _config_settings=config_settings,
+    )
     if delegated is not None:
         return delegated
     return []
@@ -411,7 +462,10 @@ def prepare_metadata_for_build_wheel(
     config_settings: Optional[dict] = None,
 ) -> str:
     delegated = _delegate_hook(
-        "prepare_metadata_for_build_wheel", metadata_directory, config_settings
+        "prepare_metadata_for_build_wheel",
+        metadata_directory,
+        config_settings=config_settings,
+        _config_settings=config_settings,
     )
     if delegated is not None:
         return delegated
@@ -434,8 +488,9 @@ def prepare_metadata_for_build_editable(
     delegated = _delegate_hook(
         "prepare_metadata_for_build_editable",
         metadata_directory,
-        config_settings,
         fallback="prepare_metadata_for_build_wheel",
+        config_settings=config_settings,
+        _config_settings=config_settings,
     )
     if delegated is not None:
         return delegated
@@ -448,7 +503,11 @@ def build_wheel(
     metadata_directory: Optional[str] = None,
 ) -> str:
     delegated = _delegate_hook(
-        "build_wheel", wheel_directory, config_settings, metadata_directory
+        "build_wheel",
+        wheel_directory,
+        config_settings=config_settings,
+        metadata_directory=metadata_directory,
+        _config_settings=config_settings,
     )
     if delegated is not None:
         return delegated
@@ -474,7 +533,11 @@ def build_editable(
     metadata_directory: Optional[str] = None,
 ) -> str:
     delegated = _delegate_hook(
-        "build_editable", wheel_directory, config_settings, metadata_directory
+        "build_editable",
+        wheel_directory,
+        config_settings=config_settings,
+        metadata_directory=metadata_directory,
+        _config_settings=config_settings,
     )
     if delegated is not None:
         return delegated
@@ -497,7 +560,12 @@ def build_sdist(
     sdist_directory: str,
     config_settings: Optional[dict] = None,
 ) -> str:
-    delegated = _delegate_hook("build_sdist", sdist_directory, config_settings)
+    delegated = _delegate_hook(
+        "build_sdist",
+        sdist_directory,
+        config_settings=config_settings,
+        _config_settings=config_settings,
+    )
     if delegated is not None:
         return delegated
     _maturin_pep517(

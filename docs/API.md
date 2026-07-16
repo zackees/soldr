@@ -174,6 +174,12 @@ linker/cache environment, and the caller environment is restored after each
 hook. Maturin remains the default when `delegate-backend` is absent; recursive
 delegation back to `soldr` is rejected.
 
+The `profile`, `--profile`, and (for editable hooks) `editable-profile` PEP
+config settings are also applied to delegated builds. For example,
+`pip install . --config-settings profile=release` selects an explicit release
+profile; without an explicit setting, the fast local `dev` policy remains in
+effect.
+
 For local PEP 517 wheel and editable builds, the backend defaults to Cargo's
 `dev` profile and sets `debug = "line-tables-only"`, `lto = false`, and
 `incremental = true` when the project has not explicitly configured those
