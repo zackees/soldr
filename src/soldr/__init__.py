@@ -19,18 +19,20 @@ git-worktree caches share via path normalization.
 acquisition itself.
 """
 
+import hashlib
 import importlib
+import json
 import os
 import re
-import hashlib
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator, Optional
 
-
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
+_STATS_ENV = "SOLDR_PEP517_STATS"
 _DISABLE_PROFILE_VALUES = {"", "none", "default", "off", "false", "0"}
 _DELEGATE_BACKEND_SECTION = "tool.soldr.pep517"
 _PEP517_ENV_KEYS = {
@@ -138,7 +140,9 @@ def _project_dev_profile_options() -> "dict[str, str]":
 
 
 def _project_soldr_options() -> "dict[str, str]":
-    return _toml_section_values(_project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION)
+    return _toml_section_values(
+        _project_root() / "pyproject.toml", _DELEGATE_BACKEND_SECTION
+    )
 
 
 def _delegate_backend_name() -> Optional[str]:
@@ -315,9 +319,9 @@ def _profile_args(
         return ["--profile", selected]
 
     options = _project_maturin_options()
-    configured = options.get("editable-profile" if editable else "profile") or options.get(
-        "profile"
-    )
+    configured = options.get(
+        "editable-profile" if editable else "profile"
+    ) or options.get("profile")
     if configured:
         return []
 
@@ -381,15 +385,141 @@ def _prep_env(
     return env
 
 
-def _maturin_pep517(subcommand: str, *args: str) -> None:
+def _frontend_is_verbose(env: "dict[str, str]") -> bool:
+    """Best-effort verbosity detection for common PEP 517 frontends."""
+    for key in ("PIP_VERBOSE", "UV_VERBOSE"):
+        value = env.get(key, "").strip().lower()
+        if value and value not in _DISABLE_PROFILE_VALUES:
+            return True
+    return False
+
+
+def _stats_mode(env: "dict[str, str]") -> str:
+    raw = env.get(_STATS_ENV)
+    if raw is None:
+        return "full" if _frontend_is_verbose(env) else "short"
+    value = raw.strip().lower()
+    if value in _DISABLE_PROFILE_VALUES:
+        return "off"
+    if value == "full":
+        return "full"
+    return "short"
+
+
+def _session_command(
+    subcommand: str, env: "dict[str, str]", *args: str
+) -> "dict | None":
+    """Run a best-effort session command without perturbing a wheel build."""
+    try:
+        result = subprocess.run(
+            ["soldr", subcommand, *args, "--json"],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads(result.stdout)
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _emit_build_stats(
+    env: "dict[str, str]",
+    session_id: "str | None",
+    elapsed_seconds: float,
+    label: str,
+) -> None:
+    mode = _stats_mode(env)
+    if mode == "off":
+        return
+
+    end = (
+        _session_command("session-end", env, "--id", session_id)
+        if session_id is not None
+        else None
+    )
+    stats = end.get("stats") if end else None
+    elapsed = f"{elapsed_seconds:.1f}s"
+    if not isinstance(stats, dict):
+        print(
+            f"soldr PEP 517: built {label} in {elapsed} | cache stats unavailable",
+            file=sys.stderr,
+        )
+        return
+
+    hits = stats.get("hits", 0)
+    misses = stats.get("misses", 0)
+    hit_rate = stats.get("hit_rate", 0.0)
+    saved_ms = stats.get("time_saved_ms", 0)
+    try:
+        rate = float(hit_rate) * 100.0
+    except (TypeError, ValueError):
+        rate = 0.0
+    try:
+        saved = float(saved_ms) / 1000.0
+    except (TypeError, ValueError):
+        saved = 0.0
+    print(
+        f"soldr PEP 517: built {label} in {elapsed} | "
+        f"cache {hits} hits / {misses} misses ({rate:.1f}%) | "
+        f"saved {saved:.1f}s",
+        file=sys.stderr,
+    )
+    if mode == "full":
+        print(
+            "soldr PEP 517 details: "
+            + json.dumps(
+                {"build_seconds": round(elapsed_seconds, 3), "cache": stats},
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+
+
+def _maturin_pep517(
+    subcommand: str, *args: str, build_label: "str | None" = None
+) -> None:
+    env = _prep_env()
+    mode = _stats_mode(env)
+    started_at = time.perf_counter()
+    start = (
+        _session_command("session-start", env)
+        if build_label and mode != "off"
+        else None
+    )
+    session_id = start.get("session_id") if start else None
+    if isinstance(session_id, str):
+        env["ZCCACHE_SESSION_ID"] = session_id
+    else:
+        session_id = None
     cmd = ["soldr", "maturin", "pep517", subcommand, *args]
     try:
-        subprocess.check_call(cmd, env=_prep_env(), timeout=600)
+        subprocess.check_call(cmd, env=env, timeout=600)
     except subprocess.TimeoutExpired as exc:
+        if session_id is not None:
+            _session_command("session-end", env, "--id", session_id)
         raise RuntimeError(
             "soldr maturin pep517 exceeded 600s; suspect zccache daemon wedge - "
             "try `soldr status` to inspect."
         ) from exc
+    except Exception:
+        if session_id is not None:
+            _session_command("session-end", env, "--id", session_id)
+        raise
+    if build_label:
+        _emit_build_stats(
+            env,
+            session_id,
+            time.perf_counter() - started_at,
+            build_label,
+        )
 
 
 def _target_args(config_settings: Optional[dict]) -> "list[str]":
@@ -423,7 +553,9 @@ def _newest_entry(directory: str, suffix: str, *, want_dir: bool) -> str:
         entries.append((path.stat().st_mtime, name))
     if not entries:
         kind = "directory" if want_dir else "file"
-        raise RuntimeError(f"soldr build backend: no {suffix} {kind} produced in {directory}")
+        raise RuntimeError(
+            f"soldr build backend: no {suffix} {kind} produced in {directory}"
+        )
     entries.sort(reverse=True)
     return entries[0][1]
 
@@ -534,6 +666,7 @@ def build_wheel(
         wheel_directory,
         *_profile_args(config_settings),
         *target_args,
+        build_label="wheel",
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)
 
@@ -563,6 +696,7 @@ def build_editable(
         "--editable",
         *_profile_args(config_settings, editable=True),
         *target_args,
+        build_label="editable wheel",
     )
     return _newest_entry(wheel_directory, ".whl", want_dir=False)
 

@@ -246,6 +246,11 @@ incremental compilation. Explicit Maturin/Cargo settings and
 `SOLDR_PEP517_PROFILE` remain authoritative per setting; release pipelines
 should select their release profile explicitly.
 
+Successful wheel and editable builds print a one-line cache and timing summary
+to stderr. Set `SOLDR_PEP517_STATS=off` to silence it; `SOLDR_PEP517_STATS=full`
+(and detected verbose `pip`/`uv` frontends) also prints the complete session
+statistics payload.
+
 Projects whose packaging backend is not maturin can use soldr as a managed
 wrapper by selecting a delegate in `pyproject.toml`:
 
