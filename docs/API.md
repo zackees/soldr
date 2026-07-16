@@ -219,13 +219,16 @@ Windows uses Rust `raw-dylib` linking without an import library. See the
 [PyO3 0.29 cross-compilation guide](https://pyo3.rs/v0.29.0/building-and-distribution.html#cross-compiling)
 and [raw-dylib configuration](https://pyo3.rs/main/building-and-distribution.html#the-pyo3_use_raw_dylib-environment-variable).
 
-The backend also pins `CARGO_TARGET_DIR` to the stable per-user path
-`~/.soldr/cargo-target/wheel-build` so PEP 517 isolated builds
+The backend also pins `CARGO_TARGET_DIR` to a stable per-project path under
+`~/.soldr/cargo-target/pep517/<project-id>` so PEP 517 isolated builds
 (pip/uv copy the sdist to a throwaway temp dir, discarding `target/`
-after every build) keep cargo's incremental cache hot across
-invocations — ingested from FastLED/fbuild's `setup.py` (fbuild#829).
-A caller-provided `CARGO_TARGET_DIR` always wins, and
-`SOLDR_PEP517_STABLE_TARGET_DIR=0` disables the pin entirely.
+after every build) keep Cargo's incremental cache hot across invocations.
+The project ID is a content identity over build configuration (not Rust
+source); Cargo remains authoritative for source freshness. This keeps
+temporary source directories warm without sharing target state between
+unrelated projects. `SOLDR_PEP517_PROJECT_ID` exposes the identity to soldr
+diagnostics and cache keys. A caller-provided `CARGO_TARGET_DIR` always wins,
+and `SOLDR_PEP517_STABLE_TARGET_DIR=0` disables the pin entirely.
 
 ### Mode 3: Internal Wrapper Mode
 
@@ -1425,7 +1428,8 @@ Commands:
 | `ZCCACHE_PATH_REMAP` | zccache path-remap mode. soldr seeds `auto` on the child cargo for managed-zccache builds so multiple git worktrees of the same repo share cache hits (issue #352, Tier L1.x). Caller-supplied values are preserved. Works for non-git checkouts too: since zccache#353, `ZCCACHE_PATH_REMAP=auto` with no `.git/` ancestor falls back to the cwd as the remap root and still injects `--remap-path-prefix=<cwd>=.`, so tarball/zip/git-archive checkouts produce path-independent artifacts and share hits (the `.git/` walk is only how the preferred worktree root is discovered). | unset (soldr injects `auto`) |
 | `SOLDR_PATH_REMAP` | Escape hatch for the default `ZCCACHE_PATH_REMAP=auto` injection. `off` (case-insensitive) suppresses the injection; any other value, or unset, keeps the default behavior. | unset (`auto`) |
 | `SCCACHE_DIR` | sccache cache-root override soldr injects when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has not set it themselves | `~/.soldr/cache/sccache` |
-| `SOLDR_PEP517_STABLE_TARGET_DIR` | PEP 517 backend only: set to `0` / `false` / `no` / `off` to skip pinning `CARGO_TARGET_DIR` to `~/.soldr/cargo-target/wheel-build` for isolated builds (see [PEP 517 Build Backend](#pep-517-build-backend)). A caller-provided `CARGO_TARGET_DIR` always wins regardless. | unset (pin enabled) |
+| `SOLDR_PEP517_STABLE_TARGET_DIR` | PEP 517 backend only: set to `0` / `false` / `no` / `off` to skip pinning `CARGO_TARGET_DIR` to the content-identified `~/.soldr/cargo-target/pep517/<project-id>` namespace for isolated builds (see [PEP 517 Build Backend](#pep-517-build-backend)). A caller-provided `CARGO_TARGET_DIR` always wins regardless. | unset (pin enabled) |
+| `SOLDR_PEP517_PROJECT_ID` | Read-only diagnostic/cache identity exported by the PEP 517 backend. It identifies manifests, lockfile, toolchain/configuration, maturin settings, and build-policy environment; source freshness remains Cargo's responsibility. | content-derived |
 | `SOLDR_PEP517_LINKER` | PEP 517 backend only: `auto` (default) tries the fastest supported linker and caches a verified platform-linker fallback after a linker-availability failure; `none` / `default` / `off` disables the automatic attempt. An explicit `SOLDR_LINKER=fast` remains non-fallbacking. | `auto` |
 | `SOLDR_LOG` | Log level | `warn` |
 | `SOLDR_OFFLINE` | Disable network access for tool fetches | `false` |

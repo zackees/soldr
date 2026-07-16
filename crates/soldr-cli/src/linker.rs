@@ -387,6 +387,7 @@ fn pep517_fallback_key(target: &str, injection: &LinkerInjection) -> Option<Stri
         "WindowsSdkDir",
         "LIB",
         "SOLDR_PEP517_PROFILE",
+        "SOLDR_PEP517_PROJECT_ID",
         PEP517_LINKER_POLICY_ENV,
     ] {
         hash_field(

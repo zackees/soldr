@@ -21,6 +21,7 @@ acquisition itself.
 
 import os
 import re
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
@@ -29,6 +30,7 @@ from typing import Optional
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _DISABLE_PROFILE_VALUES = {"", "none", "default", "off", "false", "0"}
+_PEP517_TARGET_SCHEMA = b"pep517-target-v2"
 
 
 def _project_root() -> Path:
@@ -107,6 +109,63 @@ def _project_dev_profile_options() -> "dict[str, str]":
     return _toml_section_values(_project_root() / "Cargo.toml", "profile.dev")
 
 
+def _hash_identity_field(hasher: "hashlib._Hash", name: str, value: bytes) -> None:
+    name_bytes = name.encode("utf-8")
+    hasher.update(len(name_bytes).to_bytes(8, "little"))
+    hasher.update(name_bytes)
+    hasher.update(len(value).to_bytes(8, "little"))
+    hasher.update(value)
+
+
+def _project_build_identity() -> str:
+    """Return a path-independent identity for the PEP build configuration.
+
+    This selects a stable target namespace; it is not a replacement for
+    Cargo's fingerprints. Rust source changes intentionally keep the same
+    namespace so Cargo can reuse valid artifacts and decide what is stale.
+    """
+    root = _project_root()
+    hasher = hashlib.sha256()
+    _hash_identity_field(hasher, "schema", _PEP517_TARGET_SCHEMA)
+    configuration_files = [
+        "pyproject.toml",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "rust-toolchain",
+        ".cargo/config.toml",
+        ".cargo/config",
+    ]
+    configuration_files.extend(
+        str(path.relative_to(root)).replace("\\", "/")
+        for path in sorted(root.glob("crates/**/Cargo.toml"))
+    )
+    for relative in configuration_files:
+        path = root / relative
+        try:
+            contents = path.read_bytes()
+        except OSError:
+            continue
+        _hash_identity_field(hasher, relative, contents)
+    for name in (
+        "CARGO_BUILD_TARGET",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTFLAGS",
+        "SOLDR_PEP517_PROFILE",
+        "SOLDR_PEP517_LINKER",
+        "SOLDR_LINKER",
+        "CARGO_PROFILE_DEV_DEBUG",
+        "CARGO_PROFILE_DEV_LTO",
+        "CARGO_PROFILE_DEV_INCREMENTAL",
+    ):
+        _hash_identity_field(hasher, name, os.environ.get(name, "").encode())
+    return hasher.hexdigest()[:24]
+
+
+def _pep517_target_dir() -> Path:
+    return Path.home() / ".soldr" / "cargo-target" / "pep517" / _project_build_identity()
+
+
 def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]:
     if not config_settings:
         return None
@@ -172,19 +231,22 @@ def _prep_env() -> "dict[str, str]":
     # fingerprint cache hot across isolated builds.
     #
     # Ingested from FastLED/fbuild's setup.py (`WHEEL_BUILD_TARGET_DIR`,
-    # FastLED/fbuild#829): one shared `wheel-build` dir, deliberately
-    # separate from any dev `<repo>/target/` so `pip install` and the
-    # dev CLI don't invalidate each other's artifacts. Cargo keys
-    # artifacts by package, so sharing one dir across projects is safe.
+    # FastLED/fbuild#829): keep PEP builds separate from any dev
+    # `<repo>/target/` so `pip install` and the dev CLI do not invalidate
+    # each other's artifacts. The namespace is content-derived from the
+    # project build configuration, so temporary PEP source directories
+    # reuse the same target while unrelated projects do not share state.
     #
     # Escape hatches: a caller-provided CARGO_TARGET_DIR always wins
     # (setdefault), and SOLDR_PEP517_STABLE_TARGET_DIR=0 (or false/no/
     # off) skips the pin entirely.
+    project_id = _project_build_identity()
+    env.setdefault("SOLDR_PEP517_PROJECT_ID", project_id)
     knob = env.get("SOLDR_PEP517_STABLE_TARGET_DIR", "").strip().lower()
     if knob not in ("0", "false", "no", "off"):
         env.setdefault(
             "CARGO_TARGET_DIR",
-            str(Path.home() / ".soldr" / "cargo-target" / "wheel-build"),
+            str(_pep517_target_dir()),
         )
     return env
 
