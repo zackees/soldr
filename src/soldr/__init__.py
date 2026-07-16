@@ -59,6 +59,7 @@ _MISSING = object()
 _PEP517_TARGET_SCHEMA = b"pep517-target-v3"
 _WHEEL_CACHE_SCHEMA = b"pep517-wheel-cache-v1"
 _WHEEL_CACHE_IGNORED_DIRECTORIES = {
+    "build",
     ".git",
     ".hg",
     ".mypy_cache",
@@ -73,6 +74,7 @@ _WHEEL_CACHE_IGNORED_DIRECTORIES = {
     "target",
     "venv",
 }
+_WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES = (".dist-info", ".egg-info")
 _FAST_DEV_PROFILE_DEFAULTS = {
     "CARGO_PROFILE_DEV_OPT_LEVEL": ("opt-level", "0"),
     "CARGO_PROFILE_DEV_CODEGEN_UNITS": ("codegen-units", "256"),
@@ -563,7 +565,12 @@ def _hash_metadata_tree(
     ignored = _WHEEL_CACHE_IGNORED_DIRECTORIES | (ignored_directories or set())
 
     for directory, directories, files in os.walk(root):
-        directories[:] = sorted(item for item in directories if item not in ignored)
+        directories[:] = sorted(
+            item
+            for item in directories
+            if item not in ignored
+            and not item.endswith(_WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES)
+        )
         current = Path(directory)
         for filename in sorted(files):
             path = current / filename
@@ -592,7 +599,13 @@ def _hash_metadata_directory(
     if not root.is_dir():
         _hash_identity_field(hasher, "metadata", b"missing")
         return
-    for directory, _, files in os.walk(root):
+    for directory, directories, files in os.walk(root):
+        # setuptools leaves a regenerated ``*.egg-info`` tree beside the
+        # PEP 517 ``*.dist-info`` result.  It is build bookkeeping rather
+        # than hook metadata, and its SOURCES.txt changes after a first build.
+        directories[:] = sorted(
+            item for item in directories if not item.endswith(".egg-info")
+        )
         current = Path(directory)
         for filename in sorted(files):
             path = current / filename
@@ -785,12 +798,28 @@ def _wheel_cache_finish(
 ) -> str:
     # Re-scan after a successful build: setuptools/fbuild can create or update
     # staged files during packaging, and the next invocation must observe them.
-    _wheel_cache_store(
-        _wheel_cache_context(kind, config_settings, metadata_directory),
-        wheel_directory,
-        filename,
-    )
+    context = _wheel_cache_context(kind, config_settings, metadata_directory)
+    _wheel_cache_store(context, wheel_directory, filename)
+    _emit_wheel_cache_event(kind, config_settings, "stored", context)
     return filename
+
+
+def _emit_wheel_cache_event(
+    kind: str,
+    config_settings: Optional[dict],
+    state: str,
+    context: "tuple[Path, str] | None",
+) -> None:
+    """Write cache-key diagnostics only when callers requested full stats."""
+    env = _prep_env(config_settings, editable=kind == "editable")
+    if _stats_mode(env) != "full":
+        return
+    payload: dict[str, str] = {"wheel_cache": state, "kind": kind}
+    if context is not None:
+        payload["fingerprint"] = context[1]
+    print(
+        f"soldr PEP 517 detail: {json.dumps(payload, sort_keys=True)}", file=sys.stderr
+    )
 
 
 def _emit_wheel_cache_hit(
@@ -941,15 +970,15 @@ def build_wheel(
     metadata_directory: Optional[str] = None,
 ) -> str:
     started_at = time.perf_counter()
-    cached = _wheel_cache_restore(
-        _wheel_cache_context("wheel", config_settings, metadata_directory),
-        wheel_directory,
-    )
+    context = _wheel_cache_context("wheel", config_settings, metadata_directory)
+    cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
+        _emit_wheel_cache_event("wheel", config_settings, "hit", context)
         _emit_wheel_cache_hit(
             "wheel", config_settings, time.perf_counter() - started_at
         )
         return cached
+    _emit_wheel_cache_event("wheel", config_settings, "miss", context)
     delegated = _delegate_hook(
         "build_wheel",
         wheel_directory,
@@ -989,15 +1018,15 @@ def build_editable(
     metadata_directory: Optional[str] = None,
 ) -> str:
     started_at = time.perf_counter()
-    cached = _wheel_cache_restore(
-        _wheel_cache_context("editable", config_settings, metadata_directory),
-        wheel_directory,
-    )
+    context = _wheel_cache_context("editable", config_settings, metadata_directory)
+    cached = _wheel_cache_restore(context, wheel_directory)
     if cached is not None:
+        _emit_wheel_cache_event("editable", config_settings, "hit", context)
         _emit_wheel_cache_hit(
             "editable", config_settings, time.perf_counter() - started_at
         )
         return cached
+    _emit_wheel_cache_event("editable", config_settings, "miss", context)
     delegated = _delegate_hook(
         "build_editable",
         wheel_directory,
