@@ -44,6 +44,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_DEV_LTO"], "false")
         self.assertEqual(env["CARGO_PROFILE_DEV_INCREMENTAL"], "true")
         self.assertEqual(self.backend._profile_args(None), ["--profile", "dev"])
+        self.assertEqual(env["SOLDR_PEP517_LINKER"], "auto")
 
     def test_caller_profile_and_environment_values_win(self) -> None:
         with mock.patch.dict(
