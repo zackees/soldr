@@ -181,6 +181,15 @@ pub fn purge_one(
         let _ = registry.remove(path);
         return Ok(false);
     }
+    let _cargo_locks = match super::cargo_lock::probe(path).map_err(RegistryError::Io)? {
+        super::cargo_lock::CargoLockProbe::Idle(guard) => guard,
+        super::cargo_lock::CargoLockProbe::Active(lock) => {
+            return Err(RegistryError::Io(std::io::Error::other(format!(
+                "active cargo lock at {}; refusing to delete",
+                lock.display()
+            ))));
+        }
+    };
     let result = std::fs::remove_dir_all(path);
     match result {
         Ok(_) => {
@@ -200,6 +209,23 @@ pub fn delete_candidate_dir(candidate: GcCandidate) -> GcDeleteOutcome {
         };
     }
 
+    let _cargo_locks = match super::cargo_lock::probe(&candidate.path) {
+        Ok(super::cargo_lock::CargoLockProbe::Idle(guard)) => guard,
+        Ok(super::cargo_lock::CargoLockProbe::Active(lock)) => {
+            return GcDeleteOutcome {
+                candidate,
+                removed: false,
+                error: Some(format!("active cargo lock at {}; refusing to delete", lock.display())),
+            };
+        }
+        Err(error) => {
+            return GcDeleteOutcome {
+                candidate,
+                removed: false,
+                error: Some(format!("cargo lock probe failed closed: {error}")),
+            };
+        }
+    };
     match std::fs::remove_dir_all(&candidate.path) {
         Ok(()) => GcDeleteOutcome {
             candidate,

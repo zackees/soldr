@@ -639,21 +639,11 @@ pub(crate) fn parse_gc_purge_answer(input: &str) -> bool {
 }
 
 fn find_active_cargo_lock(target_dir: &std::path::Path) -> Option<std::path::PathBuf> {
-    let top_lock = target_dir.join(".cargo-lock");
-    if top_lock.exists() {
-        return Some(top_lock);
+    match crate::cache_lib::cargo_lock::probe(target_dir) {
+        Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Active(path)) => Some(path),
+        Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Idle(_)) => None,
+        Err(_) => Some(target_dir.join(".cargo-lock")),
     }
-    let profiles = std::fs::read_dir(target_dir).ok()?;
-    for entry in profiles.flatten() {
-        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let candidate = entry.path().join(".cargo-lock");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
@@ -663,7 +653,21 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
         Err(err) => return Err(err),
     };
     if metadata.is_dir() {
-        std::fs::remove_dir_all(path)
+        return match crate::cache_lib::cargo_lock::probe(path) {
+            Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Idle(_guard)) => {
+                std::fs::remove_dir_all(path)
+            }
+            Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Active(lock)) => {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    format!("active cargo lock at {}; refusing to delete", lock.display()),
+                ))
+            }
+            Err(error) => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("cargo lock probe failed closed: {error}"),
+            )),
+        };
     } else {
         std::fs::remove_file(path)
     }

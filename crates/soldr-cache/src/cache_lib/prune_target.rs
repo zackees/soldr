@@ -153,12 +153,15 @@ pub fn prune_target(opts: &PruneTargetOptions) -> Result<PruneTargetReport, Regi
         )));
     }
 
-    if let Some(lock) = find_active_cargo_lock(target_dir) {
-        return Err(RegistryError::Io(std::io::Error::other(format!(
-            "cargo lock present at {} (active build?); refusing to prune",
-            lock.display()
-        ))));
-    }
+    let _cargo_locks = match super::cargo_lock::probe(target_dir).map_err(RegistryError::Io)? {
+        super::cargo_lock::CargoLockProbe::Idle(guard) => guard,
+        super::cargo_lock::CargoLockProbe::Active(lock) => {
+            return Err(RegistryError::Io(std::io::Error::other(format!(
+                "active cargo lock at {}; refusing to prune",
+                lock.display()
+            ))));
+        }
+    };
 
     let scan_dirs = collect_scan_dirs(target_dir);
     let mut entries: Vec<PruneTargetEntry> = Vec::new();
@@ -477,26 +480,6 @@ fn collect_scan_dirs(target_dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-/// Walk the `target/` directory looking for an active cargo lock file.
-/// Returns the first match, if any.
-fn find_active_cargo_lock(target_dir: &Path) -> Option<PathBuf> {
-    let top_lock = target_dir.join(".cargo-lock");
-    if top_lock.exists() {
-        return Some(top_lock);
-    }
-    let profiles = fs::read_dir(target_dir).ok()?;
-    for entry in profiles.flatten() {
-        if !entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
-            continue;
-        }
-        let candidate = entry.path().join(".cargo-lock");
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-    None
 }
 
 /// Recognize cargo's `<prefix>-<hash>` naming. The hash is 13+ chars
