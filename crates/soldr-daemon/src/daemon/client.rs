@@ -189,7 +189,8 @@ pub fn list_slow_builds(
     }
 }
 
-/// Best-effort build-session lifecycle helpers.
+/// Acknowledged build-session lifecycle helper. The daemon only returns Ok
+/// after the start record and SessionStart event are persisted.
 pub fn build_session_start(
     paths: &SoldrPaths,
     session_id: u64,
@@ -197,14 +198,20 @@ pub fn build_session_start(
     started_at_ms: i64,
 ) -> Result<(), ClientError> {
     let sock = default_sock_path(paths);
-    submit_fire_and_forget(
+    match submit_request(
         &sock,
         &Request::BuildSessionStart {
             session_id,
             repo_root: repo_root.display().to_string(),
             started_at_ms,
         },
-    )
+    )? {
+        Response::Ack => Ok(()),
+        Response::Error(msg) => Err(ClientError::Protocol(msg)),
+        other => Err(ClientError::Protocol(format!(
+            "unexpected build_session_start response: {other:?}"
+        ))),
+    }
 }
 
 /// Acknowledged finalization (soldr#1536): blocks until the daemon has
