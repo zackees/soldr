@@ -446,7 +446,9 @@ pub(crate) fn run_gc_sweep_command(args: GcSweepArgs) -> Result<(), SoldrError> 
 
     // 4. Aggressive second cargo pass.
     let cargo_gc_aggressive = if args.aggressive && cargo_gc_enabled {
-        let cfg = paths.load_config();
+        let cfg = paths
+            .load_config()
+            .map_err(|error| SoldrError::Other(error.to_string()))?;
         let floor = cfg.auto_gc.min_age_secs;
         let aggressive_args = aggressive_cargo_args(args.json, args.dry_run, floor);
         Some(invoke_cargo_native_gc(&aggressive_args, true)?)
@@ -510,12 +512,14 @@ fn run_soldr_target_purge_for_sweep(
 ) -> Result<SoldrTargetsSummary, SoldrError> {
     use crate::cache_lib::gc::{parse_duration, parse_size, scan, GcOptions};
     let paths = SoldrPaths::new()?;
-    let dev_roots = resolve_gc_dev_roots(&paths);
+    let dev_roots = resolve_gc_dev_roots(&paths)?;
     let db_path = crate::cache_lib::data_db_path(&paths);
     let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
 
-    let cfg = paths.load_config();
+    let cfg = paths
+        .load_config()
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
     let older_than_seconds = crate::cache_lib::auto_gc::clamp_age_to_floor(
         parse_duration("10d").map_err(SoldrError::Other)?,
         cfg.auto_gc.min_age_secs,

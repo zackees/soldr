@@ -671,8 +671,12 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
 
 /// Resolve the configured `gc.allowlist_roots`, falling back to
 /// `~/dev` when unset.
-pub(super) fn resolve_gc_dev_roots(paths: &SoldrPaths) -> Vec<std::path::PathBuf> {
-    let config = paths.load_config();
+pub(super) fn resolve_gc_dev_roots(
+    paths: &SoldrPaths,
+) -> Result<Vec<std::path::PathBuf>, crate::core::SoldrError> {
+    let config = paths
+        .load_config()
+        .map_err(|error| crate::core::SoldrError::Other(error.to_string()))?;
     let configured = config
         .gc
         .allowlist_roots
@@ -683,10 +687,10 @@ pub(super) fn resolve_gc_dev_roots(paths: &SoldrPaths) -> Vec<std::path::PathBuf
         .map(|r| crate::core::expand_user_home(&r))
         .collect::<Vec<_>>();
     if !configured.is_empty() {
-        return configured;
+        return Ok(configured);
     }
     if let Ok(home) = crate::core::user_home_dir() {
-        return vec![home.join("dev")];
+        return Ok(vec![home.join("dev")]);
     }
-    Vec::new()
+    Ok(Vec::new())
 }

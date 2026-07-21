@@ -48,7 +48,13 @@ fn try_hydrate(args: &[String], paths: &SoldrPaths, rustc: &Path) -> Option<()> 
     }
 
     // Auto-hydrate gating (env > rust-toolchain.toml > config.toml).
-    let config = SoldrConfig::load(&paths.config_file);
+    let config = match SoldrConfig::load(&paths.config_file) {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(%error, "disabling cook auto-hydration because soldr config is invalid");
+            return None;
+        }
+    };
     if !auto_hydrate_enabled(&manifest_dir, &config.cook) {
         return None;
     }

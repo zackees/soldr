@@ -228,7 +228,13 @@ pub fn apply_pep517_override(
     target: &str,
     paths: &SoldrPaths,
 ) -> Result<Pep517LinkerState, SoldrError> {
-    let config = paths.load_config();
+    let config = match paths.load_config() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::warn!(%error, "ignoring invalid soldr config while applying linker settings");
+            crate::core::SoldrConfig::default()
+        }
+    };
     let explicit_env = std::env::var_os(crate::LINKER_ENV_VAR);
     let explicit_config = config.linker.as_deref();
     let project_target_linker_configured = project_target_config_value(target, "linker").is_some()

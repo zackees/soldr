@@ -226,7 +226,7 @@ pub(crate) fn run_gc_command(invocation: GcInvocation) -> Result<(), SoldrError>
     let is_summary = matches!(invocation.mode, GcMode::Summary);
 
     let paths = SoldrPaths::new()?;
-    let dev_roots = resolve_gc_dev_roots(&paths);
+    let dev_roots = resolve_gc_dev_roots(&paths)?;
     let db_path = crate::cache_lib::data_db_path(&paths);
     let registry = crate::cache_lib::target_registry::TargetRegistry::open(&db_path)
         .map_err(|e| SoldrError::Other(format!("failed to open soldr registry: {e}")))?;
@@ -524,7 +524,7 @@ pub(crate) fn emit_startup_target_warning_if_due() {
     let options = crate::cache_lib::gc::GcOptions {
         older_than_seconds: crate::cache_lib::target_registry::DEFAULT_STALE_AGE_SECONDS,
         larger_than_bytes: crate::cache_lib::target_registry::DEFAULT_STALE_SIZE_BYTES,
-        dev_roots: resolve_gc_dev_roots(&paths),
+        dev_roots: resolve_gc_dev_roots(&paths).unwrap_or_default(),
         dry_run: true,
     };
     let marker = crate::cache_lib::gc_warning_marker_path(&paths);
