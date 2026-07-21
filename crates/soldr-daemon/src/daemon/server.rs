@@ -1123,14 +1123,24 @@ async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Resul
         "soldr-daemon Windows named-pipe listener pool ready"
     );
     for index in 0..pool_size {
-        let pipe_name = pipe_name.clone();
-        let state = state.clone();
-        tokio::spawn(async move {
-            let _ = accept_windows_pipe_instance(pipe_name, state, index == 0).await;
-        });
+        spawn_windows_pipe_instance(pipe_name.clone(), state.clone(), index == 0);
     }
     std::future::pending::<()>().await;
     Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_instance: bool) {
+    // Keep this launcher synchronous. Calling `tokio::spawn` directly from
+    // `accept_windows_pipe_instance` would make the async function's opaque
+    // future recursively depend on itself, which Windows rejects because its
+    // `Send` bound cannot be inferred.
+    tokio::spawn(async move {
+        if let Err(error) = accept_windows_pipe_instance(pipe_name, state, first_pipe_instance).await
+        {
+            tracing::debug!(%error, "Windows named-pipe listener exited");
+        }
+    });
 }
 
 #[cfg(windows)]
@@ -1146,14 +1156,10 @@ async fn accept_windows_pipe_instance(
     if server.connect().await.is_ok() {
         // Replenish before parsing the connected request, keeping the pool
         // admission capacity independent from compile execution throughput.
-        tokio::spawn(accept_windows_pipe_instance(
-            pipe_name,
-            state.clone(),
-            false,
-        ));
+        spawn_windows_pipe_instance(pipe_name, state.clone(), false);
         let _ = handle_connection(server, state).await;
     } else {
-        tokio::spawn(accept_windows_pipe_instance(pipe_name, state, false));
+        spawn_windows_pipe_instance(pipe_name, state, false);
     }
     Ok(())
 }
