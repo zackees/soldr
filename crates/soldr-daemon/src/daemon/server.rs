@@ -18,15 +18,15 @@ use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, Request, Response, StatusInfo, CHUNK_BYTES, COMPILE_BACKEND_EMBEDDED,
-    PROTOCOL_VERSION,
+    BuildRecord, CookStats, IpcBurstStats, Request, Response, StatusInfo, CHUNK_BYTES,
+    COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
 };
 use crate::zccache_embedded::SoldrZccacheService;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 /// Upper bound on the drift diagnostic returned in [`Response::CookMiss`].
 /// Keeps the body well under [`crate::daemon::protocol::MAX_BODY_BYTES`]
@@ -37,6 +37,235 @@ const COOK_DRIFT_LIMIT: usize = 8;
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
+const IPC_BACKPRESSURE_RETRY_AFTER_MS: u32 = 25;
+const IPC_QUEUE_CAPACITY_MAX: usize = 1024;
+
+/// A bounded outer admission queue for compile IPC. Once admitted, callers
+/// wait in the embedded zccache service's fair compile semaphore; holding an
+/// owned permit while waiting makes the total queue bounded without changing
+/// zccache's user-configured `ZCCACHE_MAX_PARALLEL_COMPILES` policy.
+struct CompileAdmission {
+    permits: Arc<Semaphore>,
+    capacity: u64,
+    expected_compile_slots: u64,
+    accepted: AtomicU64,
+    queued: AtomicU64,
+    backpressured: AtomicU64,
+    busy_retries: AtomicU64,
+    active: AtomicU64,
+    queue_high_water: AtomicU64,
+}
+
+struct CompileAdmissionPermit<'a> {
+    _permit: OwnedSemaphorePermit,
+    admission: &'a CompileAdmission,
+}
+
+impl Drop for CompileAdmissionPermit<'_> {
+    fn drop(&mut self) {
+        self.admission.active.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+impl CompileAdmission {
+    fn new(capacity: usize, expected_compile_slots: usize) -> Self {
+        Self {
+            permits: Arc::new(Semaphore::new(capacity)),
+            capacity: capacity as u64,
+            expected_compile_slots: expected_compile_slots.max(1) as u64,
+            accepted: AtomicU64::new(0),
+            queued: AtomicU64::new(0),
+            backpressured: AtomicU64::new(0),
+            busy_retries: AtomicU64::new(0),
+            active: AtomicU64::new(0),
+            queue_high_water: AtomicU64::new(0),
+        }
+    }
+
+    fn try_admit(&self) -> Option<CompileAdmissionPermit<'_>> {
+        let permit = match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.backpressured.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
+        let active = self.active.fetch_add(1, Ordering::Relaxed) + 1;
+        self.accepted.fetch_add(1, Ordering::Relaxed);
+        if active > self.expected_compile_slots {
+            self.queued.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut high_water = self.queue_high_water.load(Ordering::Relaxed);
+        while active > high_water {
+            match self.queue_high_water.compare_exchange_weak(
+                high_water,
+                active,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => high_water = observed,
+            }
+        }
+        Some(CompileAdmissionPermit {
+            _permit: permit,
+            admission: self,
+        })
+    }
+
+    fn record_busy_retries(&self, retries: u32) {
+        self.busy_retries
+            .fetch_add(u64::from(retries), Ordering::Relaxed);
+    }
+
+    fn stats(&self) -> IpcBurstStats {
+        IpcBurstStats {
+            accepted: self.accepted.load(Ordering::Relaxed),
+            queued: self.queued.load(Ordering::Relaxed),
+            backpressured: self.backpressured.load(Ordering::Relaxed),
+            busy_retries: self.busy_retries.load(Ordering::Relaxed),
+            queue_high_water: self.queue_high_water.load(Ordering::Relaxed),
+        }
+    }
+}
+
+fn positive_env_value<F>(name: &str, lookup: F) -> Option<usize>
+where
+    F: FnOnce(&str) -> Option<String>,
+{
+    lookup(name)?
+        .trim()
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+}
+
+fn windows_listener_pool_size_from(logical_cpus: usize, override_value: Option<usize>) -> usize {
+    override_value.unwrap_or_else(|| logical_cpus.saturating_mul(4).clamp(16, 128))
+}
+
+fn windows_listener_pool_size() -> usize {
+    let logical = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    windows_listener_pool_size_from(
+        logical,
+        positive_env_value("SOLDR_WINDOWS_PIPE_LISTENER_POOL", |name| {
+            std::env::var(name).ok()
+        }),
+    )
+}
+
+fn ipc_queue_capacity(listener_pool_size: usize) -> usize {
+    positive_env_value("SOLDR_WINDOWS_PIPE_QUEUE_CAPACITY", |name| {
+        std::env::var(name).ok()
+    })
+    .unwrap_or_else(|| listener_pool_size.saturating_mul(4))
+    .clamp(1, IPC_QUEUE_CAPACITY_MAX)
+}
+
+fn expected_compile_slots() -> usize {
+    positive_env_value("ZCCACHE_MAX_PARALLEL_COMPILES", |name| {
+        std::env::var(name).ok()
+    })
+    .unwrap_or_else(|| {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    })
+}
+
+#[cfg(test)]
+mod ipc_burst_tests {
+    use super::*;
+    use tokio::sync::{mpsc, Mutex};
+
+    crate::timed_test!(listener_pool_defaults_and_override_are_bounded, {
+        assert_eq!(windows_listener_pool_size_from(1, None), 16);
+        assert_eq!(windows_listener_pool_size_from(12, None), 48);
+        assert_eq!(windows_listener_pool_size_from(64, None), 128);
+        assert_eq!(windows_listener_pool_size_from(2, Some(3)), 3);
+    });
+
+    crate::timed_test!(compile_admission_is_bounded_and_reports_backpressure, {
+        let admission = CompileAdmission::new(2, 1);
+        let first = admission.try_admit().expect("first request admitted");
+        let second = admission.try_admit().expect("second request queued");
+        assert!(
+            admission.try_admit().is_none(),
+            "third request must backpressure"
+        );
+        let stats = admission.stats();
+        assert_eq!(stats.accepted, 2);
+        assert_eq!(stats.queued, 1);
+        assert_eq!(stats.backpressured, 1);
+        assert_eq!(stats.queue_high_water, 2);
+        drop(first);
+        drop(second);
+        assert!(
+            admission.try_admit().is_some(),
+            "capacity recovers after completion"
+        );
+    });
+
+    crate::timed_test!(
+        windows_burst_policy_keeps_four_pool_sizes_fifo_and_recovers,
+        {
+            // This is intentionally platform-neutral: it exercises the exact
+            // bounded-admission and fair Tokio semaphore policy used by the
+            // Windows named-pipe listener, so Linux Docker can validate it while
+            // the Windows matrix owns the actual pipe transport.
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("runtime");
+            runtime.block_on(async {
+                const LISTENER_POOL: usize = 16;
+                const CLIENTS: usize = LISTENER_POOL * 4;
+                let admission = Arc::new(CompileAdmission::new(CLIENTS, 1));
+                let compile_gate = Arc::new(Semaphore::new(1));
+                let held_compile = compile_gate.clone().acquire_owned().await.expect("permit");
+                let completion_order = Arc::new(Mutex::new(Vec::with_capacity(CLIENTS)));
+                let (ready_tx, mut ready_rx) = mpsc::channel(CLIENTS);
+                let mut joins = Vec::with_capacity(CLIENTS);
+
+                // Queue each request in a known order before submitting the next.
+                // Tokio's semaphore preserves this waiter order when the small
+                // compile gate opens, which is the FIFO contract for the burst.
+                for index in 0..CLIENTS {
+                    let admission = admission.clone();
+                    let compile_gate = compile_gate.clone();
+                    let completion_order = completion_order.clone();
+                    let ready_tx = ready_tx.clone();
+                    joins.push(tokio::spawn(async move {
+                        let _admission = admission.try_admit().expect("queue has room");
+                        ready_tx.send(()).await.expect("ready receiver");
+                        let _compile = compile_gate.acquire_owned().await.expect("compile permit");
+                        completion_order.lock().await.push(index);
+                    }));
+                    ready_rx.recv().await.expect("request admitted before next");
+                }
+                drop(held_compile);
+                for join in joins {
+                    join.await.expect("queued request completes");
+                }
+                assert_eq!(
+                    *completion_order.lock().await,
+                    (0..CLIENTS).collect::<Vec<_>>(),
+                    "bounded waiting line must preserve FIFO order"
+                );
+                let stats = admission.stats();
+                assert_eq!(stats.accepted, CLIENTS as u64);
+                assert_eq!(stats.backpressured, 0);
+                assert_eq!(stats.queue_high_water, CLIENTS as u64);
+                assert!(
+                    admission.try_admit().is_some(),
+                    "all capacity recovers after the burst drains"
+                );
+            });
+        }
+    );
+}
 
 #[derive(Debug, Clone)]
 pub struct ServerOptions {
@@ -124,6 +353,7 @@ struct State {
     /// fallible at daemon boot; if it fails the daemon refuses to
     /// start rather than silently degrade.
     compile_service: Arc<SoldrZccacheService>,
+    compile_admission: CompileAdmission,
 }
 
 impl State {
@@ -157,6 +387,7 @@ impl State {
             // Always "embedded" since #980 L1 second pass; field
             // retained for telemetry stability.
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
+            ipc_burst_stats: self.compile_admission.stats(),
         }
     }
 }
@@ -736,6 +967,10 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         shutdown: Notify::new(),
         event_batcher,
         compile_service,
+        compile_admission: CompileAdmission::new(
+            ipc_queue_capacity(windows_listener_pool_size()),
+            expected_compile_slots(),
+        ),
     });
 
     write_pid_file(&paths).map_err(|e| match e {
@@ -879,26 +1114,54 @@ async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Resul
 
 #[cfg(windows)]
 async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
-    use tokio::net::windows::named_pipe::ServerOptions;
     let pipe_name = format!(r"\\.\pipe\{}", crate::cache_lib::daemon_pipe_name(&paths));
-    let mut server = ServerOptions::new()
-        .first_pipe_instance(true)
-        .create(&pipe_name)?;
-    loop {
-        if server.connect().await.is_err() {
-            // Re-arm the listener on connect error.
-            server = ServerOptions::new().create(&pipe_name)?;
-            continue;
-        }
-        let connected = server;
-        // Pre-create the next listener instance so we don't drop the
-        // pipe name between clients (issue analogous to socket re-bind).
-        server = ServerOptions::new().create(&pipe_name)?;
-        let state = state.clone();
-        tokio::spawn(async move {
-            let _ = handle_connection(connected, state).await;
-        });
+    let pool_size = windows_listener_pool_size();
+    tracing::info!(
+        pool_size,
+        queue_capacity = state.compile_admission.capacity,
+        expected_compile_slots = state.compile_admission.expected_compile_slots,
+        "soldr-daemon Windows named-pipe listener pool ready"
+    );
+    for index in 0..pool_size {
+        spawn_windows_pipe_instance(pipe_name.clone(), state.clone(), index == 0);
     }
+    std::future::pending::<()>().await;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_instance: bool) {
+    // Keep this launcher synchronous. Calling `tokio::spawn` directly from
+    // `accept_windows_pipe_instance` would make the async function's opaque
+    // future recursively depend on itself, which Windows rejects because its
+    // `Send` bound cannot be inferred.
+    tokio::spawn(async move {
+        if let Err(error) = accept_windows_pipe_instance(pipe_name, state, first_pipe_instance).await
+        {
+            tracing::debug!(%error, "Windows named-pipe listener exited");
+        }
+    });
+}
+
+#[cfg(windows)]
+async fn accept_windows_pipe_instance(
+    pipe_name: String,
+    state: Arc<State>,
+    first_pipe_instance: bool,
+) -> std::io::Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let server = ServerOptions::new()
+        .first_pipe_instance(first_pipe_instance)
+        .create(&pipe_name)?;
+    if server.connect().await.is_ok() {
+        // Replenish before parsing the connected request, keeping the pool
+        // admission capacity independent from compile execution throughput.
+        spawn_windows_pipe_instance(pipe_name, state.clone(), false);
+        let _ = handle_connection(server, state).await;
+    } else {
+        spawn_windows_pipe_instance(pipe_name, state, false);
+    }
+    Ok(())
 }
 
 async fn handle_connection<S>(mut stream: S, state: Arc<State>) -> std::io::Result<()>
@@ -1224,6 +1487,24 @@ where
             // the daemon drops the compile future immediately so rustc
             // is cleaned up by its `kill_on_drop` chain rather than
             // grinding to completion on output no one will read.
+            #[cfg(windows)]
+            let _admission = match state.compile_admission.try_admit() {
+                Some(permit) => permit,
+                None => {
+                    let _ = write_frame_async(
+                        &mut stream,
+                        &Response::Backpressure {
+                            retry_after_ms: IPC_BACKPRESSURE_RETRY_AFTER_MS,
+                        },
+                    )
+                    .await;
+                    return Ok(());
+                }
+            };
+            #[cfg(windows)]
+            state
+                .compile_admission
+                .record_busy_retries(req.ipc_busy_retries);
             if let Err(err) = dispatch_compile_streaming(&state, req, &mut stream).await {
                 tracing::warn!("soldr-daemon: streaming compile dispatch failed: {err}");
             }

@@ -77,7 +77,9 @@ use serde::{Deserialize, Serialize};
 ///   session reports can gate staged-output behavior.
 /// * v15 (#1675): `BuildSessionStart` is request-response so persistence
 ///   failures cannot be acknowledged as successful.
-pub const PROTOCOL_VERSION: u32 = 15;
+/// * v16 (soldr#1735): a bounded Windows IPC queue reports backpressure
+///   and exposes its burst counters through daemon status.
+pub const PROTOCOL_VERSION: u32 = 16;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -221,6 +223,9 @@ pub struct CompileRequest {
     pub env: Vec<(String, String)>,
     pub stdin: Vec<u8>,
     pub lifecycle: Option<CompileLifecycle>,
+    /// Number of transient `ERROR_PIPE_BUSY` retries before this client
+    /// connected. The daemon includes it in its process-local burst report.
+    pub ipc_busy_retries: u32,
 }
 
 /// Build-history metadata attached to a session-owned compile.
@@ -255,6 +260,11 @@ pub enum Response {
     ShuttingDown,
     Builds(Vec<BuildRecord>),
     Error(String),
+    /// The daemon is alive but its bounded compile-admission queue is full.
+    /// Clients reconnect after the supplied delay; this never means restart.
+    Backpressure {
+        retry_after_ms: u32,
+    },
     /// Reply to [`Request::CookLookup`] on hit. Carries the on-disk
     /// path to the `<sha256>.tar.zst` artifact, the recorded sha256
     /// (PR 3 verifies it before extraction), the byte size for
@@ -352,6 +362,19 @@ pub struct StatusInfo {
     /// stay stable for telemetry consumers.
     #[serde(default)]
     pub compile_backend: String,
+    #[serde(default)]
+    pub ipc_burst_stats: IpcBurstStats,
+}
+
+/// Process-local named-pipe burst diagnostics. Unix daemons report zeros,
+/// preserving a stable status schema for all callers.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IpcBurstStats {
+    pub accepted: u64,
+    pub queued: u64,
+    pub backpressured: u64,
+    pub busy_retries: u64,
+    pub queue_high_water: u64,
 }
 
 /// Canonical `compile_backend` value emitted by the daemon. The
@@ -432,8 +455,8 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v15_after_event_persistence_errors, {
-        assert_eq!(PROTOCOL_VERSION, 15);
+    crate::timed_test!(protocol_version_is_v16_after_ipc_backpressure, {
+        assert_eq!(PROTOCOL_VERSION, 16);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
@@ -451,6 +474,7 @@ mod tests {
             request_count: 0,
             cook_stats: None,
             compile_backend: COMPILE_BACKEND_EMBEDDED.to_string(),
+            ipc_burst_stats: IpcBurstStats::default(),
         };
         assert_eq!(info.cook_stats_or_zero(), CookStats::default());
     });

@@ -831,6 +831,7 @@ mod private_root_tests {
             env: compile_env.clone(),
             stdin: Vec::new(),
             lifecycle: None,
+            ipc_busy_retries: 0,
         };
         let daemon = test_daemon_identity();
         let cold = SoldrPaths::with_root(temp.path().join("cold-root"));

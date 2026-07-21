@@ -40,8 +40,8 @@
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileLifecycle,
-    CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, Request, Response,
-    StagedProfileInfo, StatusInfo, WireDecodeError,
+    CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, IpcBurstStats, Request,
+    Response, StagedProfileInfo, StatusInfo, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -316,6 +316,26 @@ fn cook_stats_from_wire(wire: proto::WireCookStats) -> CookStats {
     }
 }
 
+fn ipc_burst_stats_to_wire(stats: &IpcBurstStats) -> proto::WireIpcBurstStats {
+    proto::WireIpcBurstStats {
+        accepted: stats.accepted,
+        queued: stats.queued,
+        backpressured: stats.backpressured,
+        busy_retries: stats.busy_retries,
+        queue_high_water: stats.queue_high_water,
+    }
+}
+
+fn ipc_burst_stats_from_wire(wire: proto::WireIpcBurstStats) -> IpcBurstStats {
+    IpcBurstStats {
+        accepted: wire.accepted,
+        queued: wire.queued,
+        backpressured: wire.backpressured,
+        busy_retries: wire.busy_retries,
+        queue_high_water: wire.queue_high_water,
+    }
+}
+
 pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
     proto::WireStatusInfo {
         version: info.version,
@@ -324,6 +344,7 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
         request_count: info.request_count,
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
         compile_backend: info.compile_backend.clone(),
+        ipc_burst_stats: Some(ipc_burst_stats_to_wire(&info.ipc_burst_stats)),
     }
 }
 
@@ -335,6 +356,10 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
         request_count: wire.request_count,
         cook_stats: wire.cook_stats.map(cook_stats_from_wire),
         compile_backend: wire.compile_backend,
+        ipc_burst_stats: wire
+            .ipc_burst_stats
+            .map(ipc_burst_stats_from_wire)
+            .unwrap_or_default(),
     }
 }
 
@@ -459,6 +484,7 @@ fn compile_request_to_wire(req: &CompileRequest) -> proto::WireCompileRequest {
                 target_dir: lifecycle.target_dir.clone(),
                 started_at_ms: lifecycle.started_at_ms,
             }),
+        ipc_busy_retries: req.ipc_busy_retries,
     }
 }
 
@@ -474,6 +500,7 @@ fn compile_request_from_wire(wire: proto::WireCompileRequest) -> CompileRequest 
             target_dir: lifecycle.target_dir,
             started_at_ms: lifecycle.started_at_ms,
         }),
+        ipc_busy_retries: wire.ipc_busy_retries,
     }
 }
 
@@ -551,6 +578,11 @@ impl From<&Response> for proto::WireResponse {
                 items: rows.iter().map(build_record_to_wire).collect(),
             }),
             Response::Error(msg) => proto::WireResponseKind::Error(msg.clone()),
+            Response::Backpressure { retry_after_ms } => {
+                proto::WireResponseKind::Backpressure(proto::WireBackpressure {
+                    retry_after_ms: *retry_after_ms,
+                })
+            }
             Response::CookHit {
                 sha256,
                 path,
@@ -630,6 +662,9 @@ impl TryFrom<proto::WireResponse> for Response {
                 Response::Builds(m.items.into_iter().map(build_record_from_wire).collect())
             }
             proto::WireResponseKind::Error(msg) => Response::Error(msg),
+            proto::WireResponseKind::Backpressure(m) => Response::Backpressure {
+                retry_after_ms: m.retry_after_ms,
+            },
             proto::WireResponseKind::CookHit(m) => Response::CookHit {
                 sha256: vec_to_sha(&m.sha256)?,
                 path: m.path,
