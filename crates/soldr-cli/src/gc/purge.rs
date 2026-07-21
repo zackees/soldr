@@ -663,10 +663,9 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
                     format!("active cargo lock at {}; refusing to delete", lock.display()),
                 ))
             }
-            Err(error) => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("cargo lock probe failed closed: {error}"),
-            )),
+            Err(error) => Err(std::io::Error::other(format!(
+                "cargo lock probe failed closed: {error}"
+            ))),
         };
     } else {
         std::fs::remove_file(path)
