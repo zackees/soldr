@@ -451,6 +451,7 @@ fn split_numeric_suffix(s: &str) -> (&str, &str) {
 mod tests {
     use super::super::target_registry::TargetRegistry;
     use super::*;
+    use fs2::FileExt;
     use std::path::PathBuf;
     use tempfile::tempdir;
 
@@ -662,7 +663,14 @@ mod tests {
         let dir = tempdir().unwrap();
         let registry = TargetRegistry::open_in_memory().unwrap();
         let (_, target) = make_workspace(dir.path(), "repo", 4096);
-        std::fs::write(target.join(".cargo-lock"), b"").unwrap();
+        let cargo_lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(target.join(".cargo-lock"))
+            .unwrap();
+        cargo_lock.try_lock_exclusive().unwrap();
 
         let now = current_unix_seconds().unwrap();
         registry

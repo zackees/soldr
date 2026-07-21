@@ -120,6 +120,7 @@ pub fn render_summary(outcome: &AutoPruneOutcome) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs2::FileExt;
     use std::fs::{self, File};
     use std::io::Write as _;
     use tempfile::tempdir;
@@ -129,6 +130,21 @@ mod tests {
             fs::create_dir_all(parent).unwrap();
         }
         File::create(path).unwrap();
+    }
+
+    fn hold_cargo_lock(path: &std::path::Path) -> File {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        let file = File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .unwrap();
+        file.try_lock_exclusive().unwrap();
+        file
     }
 
     fn write_bytes(path: &std::path::Path, n: usize) {
@@ -155,7 +171,7 @@ mod tests {
         let target = temp.path();
         touch(&target.join("debug/deps/libfoo-aaaaaaaaaaaaa.rlib"));
         touch(&target.join("debug/deps/libfoo-bbbbbbbbbbbbb.rlib"));
-        touch(&target.join(".cargo-lock"));
+        let _cargo_lock = hold_cargo_lock(&target.join(".cargo-lock"));
         let outcome = auto_prune_target(target, AutoPrunePhase::Before);
         assert!(
             outcome.skipped_for_active_lock,

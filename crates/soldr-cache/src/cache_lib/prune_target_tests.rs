@@ -3,6 +3,7 @@
 //! file stays within the project LOC budget.
 
 use super::*;
+use fs2::FileExt;
 use std::fs::File;
 use tempfile::tempdir;
 
@@ -16,6 +17,21 @@ fn touch(path: &Path) {
         fs::create_dir_all(parent).unwrap();
     }
     File::create(path).unwrap();
+}
+
+fn hold_cargo_lock(path: &Path) -> File {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .unwrap();
+    file.try_lock_exclusive().unwrap();
+    file
 }
 
 fn touch_dir(path: &Path) {
@@ -207,13 +223,13 @@ fn dry_run_does_not_delete() {
 }
 
 #[test]
-fn refuses_when_cargo_lock_present() {
+fn refuses_when_cargo_lock_is_held() {
     let temp = tempdir().unwrap();
     let target = temp.path().to_path_buf();
     let parent = target.join("debug").join(".fingerprint");
     let entry = parent.join("foo-aaaaaaaaaaaaa");
     touch_dir(&entry);
-    touch(&target.join(".cargo-lock"));
+    let _cargo_lock = hold_cargo_lock(&target.join(".cargo-lock"));
 
     let err = prune_target(&PruneTargetOptions {
         target_dir: target.clone(),
@@ -227,13 +243,13 @@ fn refuses_when_cargo_lock_present() {
 }
 
 #[test]
-fn refuses_when_profile_cargo_lock_present() {
+fn refuses_when_profile_cargo_lock_is_held() {
     let temp = tempdir().unwrap();
     let target = temp.path().to_path_buf();
     let parent = target.join("debug").join(".fingerprint");
     let entry = parent.join("foo-aaaaaaaaaaaaa");
     touch_dir(&entry);
-    touch(&target.join("debug").join(".cargo-lock"));
+    let _cargo_lock = hold_cargo_lock(&target.join("debug").join(".cargo-lock"));
 
     let err = prune_target(&PruneTargetOptions {
         target_dir: target,
@@ -394,7 +410,7 @@ fn keep_latest_respects_cargo_lock_guard() {
     let deps_b = target.join("debug/deps/libfoo-bbbbbbbbbbbbb.rlib");
     touch(&deps_a);
     touch(&deps_b);
-    touch(&target.join(".cargo-lock"));
+    let _cargo_lock = hold_cargo_lock(&target.join(".cargo-lock"));
 
     let err = prune_target(&PruneTargetOptions {
         target_dir: target.clone(),
