@@ -5,6 +5,8 @@ use crate::core::{SoldrError, SoldrPaths};
 use crate::zccache::managed_zccache_cache_dir;
 use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use super::{print_json, zccache_output_snippet, EMBEDDED_ZCCACHE_VERSION};
 
@@ -22,6 +24,15 @@ pub(super) struct CacheReportOutput {
     journal_path: String,
     /// Whether the journal file exists on disk.
     journal_present: bool,
+    /// Build session selected for this report, when build history is available.
+    session_id: Option<String>,
+    /// Workspace from which the report was requested.
+    workspace_root: String,
+    /// Unix timestamp (milliseconds) of the selected stats file, when available.
+    stats_written_at: Option<i64>,
+    /// Whether this report selected immutable workspace history or the legacy
+    /// global last-writer-wins files.
+    session_source: &'static str,
     /// Verbatim contents of `last-session-stats.json`, parsed into a JSON
     /// value. `null` if the file is missing or unparseable. Kept as a raw
     /// `Value` (not a typed struct) on purpose: zccache evolves its
@@ -43,23 +54,47 @@ pub(super) struct CacheReportOutput {
     notes: Vec<String>,
 }
 
+struct SelectedSession {
+    stats_path: PathBuf,
+    journal_path: PathBuf,
+    session_id: Option<String>,
+    source: &'static str,
+}
+
 fn collect_cache_report_output() -> Result<CacheReportOutput, SoldrError> {
     let paths = SoldrPaths::new()?;
-    collect_cache_report_output_for_paths(&paths)
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    collect_cache_report_output_for_workspace(&paths, &workspace_root)
 }
 
 fn collect_cache_report_output_for_paths(
     paths: &SoldrPaths,
 ) -> Result<CacheReportOutput, SoldrError> {
+    let workspace_root = std::env::current_dir().map_err(SoldrError::from)?;
+    collect_cache_report_output_for_workspace(paths, &workspace_root)
+}
+
+fn collect_cache_report_output_for_workspace(
+    paths: &SoldrPaths,
+    workspace_root: &Path,
+) -> Result<CacheReportOutput, SoldrError> {
     // soldr#1368: no private managed-zccache daemon any more — report on
     // the shared soldr-managed zccache dir.
     let zccache_dir = managed_zccache_cache_dir(paths)?;
-    let session_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
-    let journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
+    let global_stats_path = crate::cache_lib::session_stats_path(&zccache_dir);
+    let global_journal_path = crate::cache_lib::session_journal_path(&zccache_dir);
+    let mut notes: Vec<String> = Vec::new();
+    let selected = select_workspace_session(
+        paths,
+        workspace_root,
+        global_stats_path,
+        global_journal_path,
+        &mut notes,
+    );
+    let session_stats_path = selected.stats_path;
+    let journal_path = selected.journal_path;
     let session_stats_present = session_stats_path.exists();
     let journal_present = journal_path.exists();
-
-    let mut notes: Vec<String> = Vec::new();
 
     let last_session = if session_stats_present {
         match std::fs::read_to_string(&session_stats_path) {
@@ -99,6 +134,9 @@ fn collect_cache_report_output_for_paths(
             .push("rollups: journal missing — soldr writes it on cache-enabled builds".to_string());
     }
 
+    let mut diagnoses = Vec::new();
+    add_publication_diagnosis(&last_session, &mut diagnoses);
+
     Ok(CacheReportOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache report",
@@ -108,11 +146,115 @@ fn collect_cache_report_output_for_paths(
         session_stats_present,
         journal_path: journal_path.display().to_string(),
         journal_present,
+        session_id: selected.session_id,
+        workspace_root: workspace_root.display().to_string(),
+        stats_written_at: file_modified_unix_ms(&session_stats_path),
+        session_source: selected.source,
         last_session,
         rollups,
-        diagnoses: Vec::new(),
+        diagnoses,
         notes,
     })
+}
+
+fn select_workspace_session(
+    paths: &SoldrPaths,
+    workspace_root: &Path,
+    global_stats_path: PathBuf,
+    global_journal_path: PathBuf,
+    notes: &mut Vec<String>,
+) -> SelectedSession {
+    let db_path = crate::daemon::db::db_path(paths);
+    match crate::daemon::db::list_builds(&db_path, 10_000, None) {
+        Ok(records) => {
+            for record in records {
+                if !same_workspace_path(Path::new(&record.repo_root), workspace_root) {
+                    continue;
+                }
+                let Some(log_paths) = record.log_paths else {
+                    continue;
+                };
+                let Some(stats_path) = log_paths.archived_session_stats_path.map(PathBuf::from)
+                else {
+                    continue;
+                };
+                if !stats_path.is_file() {
+                    continue;
+                }
+                let journal_path = log_paths
+                    .archived_journal_path
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| stats_path.with_file_name("last-session.jsonl"));
+                notes.push(format!(
+                    "provenance: workspace history session {} ({})",
+                    record.session_id,
+                    stats_path.display()
+                ));
+                return SelectedSession {
+                    stats_path,
+                    journal_path,
+                    session_id: Some(record.session_id.to_string()),
+                    source: "workspace-history",
+                };
+            }
+            notes.push(format!(
+                "provenance: no archived build history matches workspace {}; using global last-writer-wins stats {} (originating workspace: unknown)",
+                workspace_root.display(),
+                global_stats_path.display(),
+            ));
+        }
+        Err(error) => notes.push(format!(
+            "provenance: could not read build history ({error}); using global last-writer-wins stats {} (originating workspace: unknown)",
+            global_stats_path.display(),
+        )),
+    }
+    SelectedSession {
+        stats_path: global_stats_path,
+        journal_path: global_journal_path,
+        session_id: None,
+        source: "global-fallback",
+    }
+}
+
+fn same_workspace_path(left: &Path, right: &Path) -> bool {
+    let left = std::fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = std::fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+fn file_modified_unix_ms(path: &Path) -> Option<i64> {
+    let duration = std::fs::metadata(path)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
+fn add_publication_diagnosis(
+    last_session: &Option<serde_json::Value>,
+    diagnoses: &mut Vec<serde_json::Value>,
+) {
+    let Some(stats) = last_session else {
+        return;
+    };
+    let misses = stats.get("misses").and_then(serde_json::Value::as_u64);
+    let publication_success = stats
+        .pointer("/phase_profile/staged/counters/publication_success")
+        .and_then(serde_json::Value::as_u64);
+    if matches!((misses, publication_success), (Some(misses), Some(0)) if misses > 0) {
+        diagnoses.push(serde_json::json!({
+            "kind": "cache_publication_failed",
+            "severity": "warning",
+            "message": "cacheable compilations succeeded but none became durable; the cache will not warm",
+        }));
+    }
 }
 
 pub(super) fn zccache_analyze_failure_note(
@@ -144,6 +286,12 @@ pub(crate) fn run_cache_report_command(json: bool) -> Result<(), SoldrError> {
 
 fn print_cache_report_output(output: &CacheReportOutput) {
     println!("soldr cache report");
+    println!("  workspace:     {}", output.workspace_root);
+    println!(
+        "  session:       {} ({})",
+        output.session_id.as_deref().unwrap_or("unknown"),
+        output.session_source
+    );
     println!(
         "  session-stats: {} ({})",
         output.session_stats_path,
@@ -186,6 +334,17 @@ fn print_cache_report_output(output: &CacheReportOutput) {
             }
         }
     }
+    for diagnosis in &output.diagnoses {
+        if diagnosis
+            .get("severity")
+            .and_then(serde_json::Value::as_str)
+            == Some("warning")
+        {
+            if let Some(message) = diagnosis.get("message").and_then(serde_json::Value::as_str) {
+                println!("  WARNING: {message}");
+            }
+        }
+    }
     if !output.notes.is_empty() {
         println!("  notes:");
         for note in &output.notes {
@@ -196,12 +355,40 @@ fn print_cache_report_output(output: &CacheReportOutput) {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_cache_report_output_for_paths;
+    use super::{collect_cache_report_output_for_paths, collect_cache_report_output_for_workspace};
     use crate::core::SoldrPaths;
+    use crate::daemon::protocol::{BuildLogPaths, BuildRecord};
+
+    fn build_record(session_id: u64, repo_root: String, stats_path: String) -> BuildRecord {
+        BuildRecord {
+            session_id,
+            repo_root,
+            started_at_ms: session_id as i64,
+            ended_at_ms: Some(session_id as i64 + 1),
+            exit_code: Some(0),
+            total_wall_ms: Some(1),
+            crate_count: 0,
+            slowest_crate_us: None,
+            slowest_crate_name: None,
+            cache_summary: None,
+            log_paths: Some(BuildLogPaths {
+                zccache_session_id: Some(session_id.to_string()),
+                cache_dir: None,
+                session_log_path: None,
+                journal_path: None,
+                session_stats_path: None,
+                compile_journal_path: None,
+                archived_session_log_path: None,
+                archived_journal_path: None,
+                archived_session_stats_path: Some(stats_path),
+                archived_compile_journal_path: None,
+                private_daemon_name: None,
+            }),
+            miss_reasons: Vec::new(),
+        }
+    }
 
     crate::timed_test!(cache_report_reads_session_stats_from_shared_zccache_dir, {
-        // soldr#1368: the report reads the last-session stats file from the
-        // shared soldr-managed zccache dir (no private-daemon dir any more).
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("soldr"));
         let zccache_dir = crate::zccache::managed_zccache_cache_dir(&paths).expect("zccache dir");
@@ -214,8 +401,33 @@ mod tests {
         )
         .expect("write stats");
 
+        let workspace_root = std::env::current_dir().expect("current dir");
+        let archived_stats_path = paths
+            .cache
+            .join("zccache/history/42/last-session-stats.json");
+        std::fs::create_dir_all(archived_stats_path.parent().expect("archive parent"))
+            .expect("create archive dir");
+        std::fs::write(
+            &archived_stats_path,
+            r#"{"status":"ok","session_id":"42","hits":23,"misses":5,"hit_rate":0.82}"#,
+        )
+        .expect("write archived stats");
+        crate::daemon::db::upsert_build(
+            &crate::daemon::db::db_path(&paths),
+            &build_record(
+                42,
+                workspace_root.display().to_string(),
+                archived_stats_path.display().to_string(),
+            ),
+        )
+        .expect("seed matching build history");
+
         let report = collect_cache_report_output_for_paths(&paths).expect("collect report");
-        assert_eq!(report.session_stats_path, stats_path.display().to_string());
+        assert_eq!(
+            report.session_stats_path,
+            archived_stats_path.display().to_string(),
+            "the active workspace must use its archived build session, not the global last-writer-wins file",
+        );
         assert!(report.session_stats_present);
         assert_eq!(
             report
@@ -223,7 +435,7 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.get("hits"))
                 .and_then(serde_json::Value::as_u64),
-            Some(17)
+            Some(23)
         );
         assert_eq!(
             report
@@ -231,7 +443,59 @@ mod tests {
                 .as_ref()
                 .and_then(|v| v.get("misses"))
                 .and_then(serde_json::Value::as_u64),
-            Some(2)
+            Some(5)
         );
+        assert_eq!(report.session_id.as_deref(), Some("42"));
+        assert_eq!(report.session_source, "workspace-history");
+        assert_eq!(
+            report.workspace_root,
+            workspace_root.display().to_string(),
+            "report provenance names the workspace that selected this archived session"
+        );
+        let json = serde_json::to_value(&report).expect("serialize report");
+        assert_eq!(json["session_id"], "42");
+        assert_eq!(json["workspace_root"], workspace_root.display().to_string());
+        assert!(
+            json["stats_written_at"].as_i64().is_some(),
+            "JSON report carries the archived stats file timestamp: {json:#?}"
+        );
+    });
+
+    crate::timed_test!(cache_report_warns_when_cacheable_misses_do_not_publish, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+        let workspace_root = temp.path().join("workspace");
+        std::fs::create_dir_all(&workspace_root).expect("create workspace");
+        let archived_stats_path = paths
+            .cache
+            .join("zccache/history/99/last-session-stats.json");
+        std::fs::create_dir_all(archived_stats_path.parent().expect("archive parent"))
+            .expect("create archive dir");
+        std::fs::write(
+            &archived_stats_path,
+            r#"{
+                "status":"ok",
+                "hits":0,
+                "misses":7,
+                "phase_profile":{"staged":{"counters":{"publication_success":0}}}
+            }"#,
+        )
+        .expect("write archived stats");
+        crate::daemon::db::upsert_build(
+            &crate::daemon::db::db_path(&paths),
+            &build_record(
+                99,
+                workspace_root.display().to_string(),
+                archived_stats_path.display().to_string(),
+            ),
+        )
+        .expect("seed matching build history");
+
+        let report = collect_cache_report_output_for_workspace(&paths, &workspace_root)
+            .expect("collect report");
+        assert!(report.diagnoses.iter().any(|diagnosis| {
+            diagnosis.get("kind").and_then(serde_json::Value::as_str)
+                == Some("cache_publication_failed")
+        }));
     });
 }
