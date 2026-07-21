@@ -583,15 +583,17 @@ mod tests {
         let rt = Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             let dir = TempDir::new().expect("tempdir");
-            let parent = dir.path().join("created-after-failure");
+            let parent = dir.path().join("file-parent");
             let path = parent.join("state.redb");
+            std::fs::write(&parent, "not a directory").expect("create blocking parent");
             let batcher = EventBatcher::start(path.clone());
             batcher
                 .record(sample_event(101, "retained", Some(7)))
                 .await
                 .expect("queue event");
-            assert!(batcher.flush().await.is_err(), "missing parent must fail");
+            assert!(batcher.flush().await.is_err(), "file parent must fail");
 
+            std::fs::remove_file(&parent).expect("remove blocking parent");
             std::fs::create_dir(&parent).expect("create db parent");
             crate::daemon::db::ensure_initialized(&path).expect("init");
             batcher.flush().await.expect("retry flush");
