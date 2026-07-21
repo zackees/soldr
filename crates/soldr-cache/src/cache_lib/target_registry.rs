@@ -512,6 +512,7 @@ pub fn workspace_root_for_target(target_dir: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fs2::FileExt;
     use tempfile::tempdir;
 
     fn fixed_now() -> i64 {
@@ -722,7 +723,14 @@ mod tests {
         let target_dir = dir.path().join("repo").join("target");
         std::fs::create_dir_all(&target_dir).unwrap();
         let workspace = target_dir.parent().unwrap().to_path_buf();
-        std::fs::write(target_dir.join(".cargo-lock"), b"").unwrap();
+        let cargo_lock = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(target_dir.join(".cargo-lock"))
+            .unwrap();
+        cargo_lock.try_lock_exclusive().unwrap();
 
         let outcome = evaluate_safety_guards(
             &target_dir,
