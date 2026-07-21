@@ -23,6 +23,11 @@ on:
       - ".github/scripts/verify_vendor_state.py"
       - ".github/workflows/vendor-state.yml"
 
+# This workflow only checks repository contents; it never needs to write
+# contents, create releases, or mutate pull requests.
+permissions:
+  contents: read
+
 jobs:
   verify:
     name: verify_vendor_state.py
