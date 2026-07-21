@@ -413,6 +413,7 @@ pub(crate) fn write_batch(db_path: &Path, buf: &[Event]) -> std::io::Result<()> 
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod tests {
     use super::*;
     use crate::daemon::db::{aggregate_session, list_builds, EventKind};

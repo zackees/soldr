@@ -259,6 +259,7 @@ async fn finalize_build_session(
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod finalize_build_session_tests {
     //! soldr#1536 regression guards: build-session finalization must be
     //! proportional to the CURRENT session, not to the full retained
@@ -492,6 +493,7 @@ mod finalize_build_session_tests {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod build_session_start_tests {
     use super::merge_build_session_start;
     use crate::daemon::protocol::{BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord};
@@ -1555,6 +1557,7 @@ pub fn server_sock_path(paths: &SoldrPaths) -> PathBuf {
 }
 
 #[cfg(test)]
+#[allow(unused_must_use)]
 mod cancel_on_disconnect_tests {
     //! TDD regression guard for: "when the soldr CLI is terminated, the
     //! soldr daemon should cancel its outstanding build, and do so
