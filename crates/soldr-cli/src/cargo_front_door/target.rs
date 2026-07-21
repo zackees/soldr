@@ -60,7 +60,9 @@ pub(super) fn apply_linker_override(
     explicit_target: Option<&str>,
     paths: &SoldrPaths,
 ) -> Result<(), SoldrError> {
-    let config = paths.load_config();
+    let config = paths
+        .load_config()
+        .map_err(|error| SoldrError::Other(error.to_string()))?;
     let choice = linker::from_env_and_config(
         std::env::var_os(LINKER_ENV_VAR).as_deref(),
         config.linker.as_deref(),

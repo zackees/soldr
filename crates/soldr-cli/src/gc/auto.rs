@@ -49,7 +49,13 @@ pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
     if auto_gc_env_disabled() {
         return;
     }
-    let cfg = paths.load_config();
+    let cfg = match paths.load_config() {
+        Ok(cfg) => cfg,
+        Err(error) => {
+            tracing::error!(%error, "not spawning auto-GC with invalid soldr config");
+            return;
+        }
+    };
     let disk_pressure_enabled = cfg.auto_gc.enabled;
     let cook_enabled = cfg.cook.max_total_gb > 0 || cfg.cook.max_age_days > 0;
     if !disk_pressure_enabled && !cook_enabled {
@@ -182,7 +188,17 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         }
     }
 
-    let full_config = paths.load_config();
+    let full_config = match paths.load_config() {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = append_auto_gc_log_line(
+                &log_path,
+                &format!("auto-gc status=deferred reason=invalid_config error={error}"),
+            );
+            rearm_auto_gc_marker(&paths);
+            return;
+        }
+    };
     let config = full_config.auto_gc.clone();
     let cook_config = full_config.cook.clone();
     let (validated, warnings) = crate::cache_lib::auto_gc::validate_config(&config);
@@ -541,7 +557,13 @@ fn run_soldr_target_purge_background(
     let options = GcOptions {
         older_than_seconds,
         larger_than_bytes,
-        dev_roots: resolve_gc_dev_roots(paths),
+        dev_roots: match resolve_gc_dev_roots(paths) {
+            Ok(roots) => roots,
+            Err(error) => {
+                tracing::error!(%error, "refusing target cleanup with invalid soldr config");
+                return Tier2Outcome::default();
+            }
+        },
         dry_run: false,
     };
     let report = match scan(&registry, &options) {

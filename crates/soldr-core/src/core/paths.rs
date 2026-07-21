@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use thiserror::Error;
 
 use super::{home_dir, non_empty_env_path, soldr_root_from_env_var};
 use super::{SoldrError, CARGO_HOME_ENV_VAR, RUSTUP_HOME_ENV_VAR};
@@ -152,10 +153,12 @@ impl SoldrPaths {
         self.versioned_root().join("shims")
     }
 
-    /// Load the soldr config from `config.toml` if it exists. Missing
-    /// or malformed files yield `Default::default()` so callers can
-    /// proceed with reasonable defaults.
-    pub fn load_config(&self) -> SoldrConfig {
+    /// Load the soldr config from `config.toml` if it exists.
+    ///
+    /// A missing file intentionally keeps the historical default behavior,
+    /// but an unreadable or malformed file is an error. Cleanup callers must
+    /// never mistake a broken config for an absent one.
+    pub fn load_config(&self) -> Result<SoldrConfig, SoldrConfigLoadError> {
         SoldrConfig::load(&self.config_file)
     }
 }
@@ -237,6 +240,7 @@ impl PinsConfig {
 /// zstd_long_window = 27
 /// ```
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct CookConfig {
     /// Whether `soldr cargo ...` should pre-flight `CookLookup` against
     /// the daemon and hydrate `target/` on hit. The env var
@@ -309,6 +313,7 @@ impl Default for CookConfig {
 /// allowlist_roots = ["~/dev", "/work/repos"]
 /// ```
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GcConfig {
     /// Roots that `soldr gc` will consider for reclamation. If unset
     /// (or empty after expansion), callers should fall back to
@@ -328,6 +333,7 @@ pub struct GcConfig {
 /// min_age_secs    = 3600    # never touch files modified in this window
 /// ```
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct AutoGcConfig {
     /// Whether soldr should automatically reclaim disk space when free
     /// space on a soldr-relevant volume drops below `trigger_free_gb`.
@@ -376,12 +382,25 @@ impl Default for AutoGcConfig {
 }
 
 impl SoldrConfig {
-    pub fn load(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else {
-            return Self::default();
+    pub fn load(path: &Path) -> Result<Self, SoldrConfigLoadError> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(source) => return Err(SoldrConfigLoadError::Read { path: path.to_path_buf(), source }),
         };
-        toml::from_str(&text).unwrap_or_default()
+        toml::from_str(&text).map_err(|source| SoldrConfigLoadError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })
     }
+}
+
+#[derive(Debug, Error)]
+pub enum SoldrConfigLoadError {
+    #[error("failed to read soldr config {path}: {source}")]
+    Read { path: PathBuf, #[source] source: std::io::Error },
+    #[error("failed to parse soldr config {path}: {source}")]
+    Parse { path: PathBuf, #[source] source: toml::de::Error },
 }
 
 /// Resolve `$CARGO_HOME` if set and non-empty, otherwise `~/.cargo`.
@@ -405,6 +424,7 @@ pub fn resolve_rustup_home() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn test_paths() {
@@ -649,5 +669,32 @@ zccache = ""
             shims.starts_with(&v_root),
             "versioned_shims_dir must live under versioned_root"
         );
+    });
+
+    crate::timed_test!(config_load_distinguishes_missing_and_invalid, Duration::from_secs(5), {
+        let temp = tempfile::tempdir().unwrap();
+        let missing = temp.path().join("missing.toml");
+        assert!(SoldrConfig::load(&missing).unwrap().auto_gc.enabled);
+
+        let malformed = temp.path().join("malformed.toml");
+        std::fs::write(&malformed, "[auto_gc\nenabled = true").unwrap();
+        assert!(matches!(SoldrConfig::load(&malformed), Err(SoldrConfigLoadError::Parse { .. })));
+
+        let unreadable = temp.path().join("directory");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(matches!(SoldrConfig::load(&unreadable), Err(SoldrConfigLoadError::Read { .. })));
+    });
+
+    crate::timed_test!(config_load_rejects_unknown_destructive_fields, Duration::from_secs(5), {
+        let temp = tempfile::tempdir().unwrap();
+        for (name, text) in [
+            ("gc.toml", "[gc]\nallowlist_roots = [\"/tmp\"]\nunknown = true\n"),
+            ("auto.toml", "[auto_gc]\nenabled = true\nunknown = true\n"),
+            ("cook.toml", "[cook]\nauto_hydrate = true\nunknown = true\n"),
+        ] {
+            let path = temp.path().join(name);
+            std::fs::write(&path, text).unwrap();
+            assert!(SoldrConfig::load(&path).is_err(), "{name} should reject unknown fields");
+        }
     });
 }
