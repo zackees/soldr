@@ -41,6 +41,7 @@ impl BuildActivityLease {
             .create(true)
             .read(true)
             .write(true)
+            .truncate(false)
             .open(&path)?;
         file.try_lock_exclusive()?;
         Ok(Self { file, path })
