@@ -318,6 +318,71 @@ pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
     Ok(code)
 }
 
+/// Prepare the channel needed by the cargo front door using the long
+/// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
+pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
+    let workspace_root = std::env::current_dir()?;
+    let manifest = crate::core::read_rust_toolchain_manifest(&workspace_root)?;
+    let channel = explicit_channel
+        .map(str::trim)
+        .filter(|channel| !channel.is_empty())
+        .or_else(|| {
+            manifest
+                .channel
+                .as_deref()
+                .map(str::trim)
+                .filter(|channel| !channel.is_empty())
+        });
+    let Some(channel) = channel else {
+        return Ok(());
+    };
+
+    let mut list = std::process::Command::new(rustup_binary());
+    list.args(["toolchain", "list"]);
+    apply_implicit_toolchain_homes(&mut list);
+    let installed = crate::core::command_output_with_timeout(&mut list, "toolchain list")
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
+                line.split_whitespace().next().is_some_and(|name| {
+                    name == channel
+                        || name
+                            .strip_prefix(channel)
+                            .is_some_and(|suffix| suffix.starts_with('-'))
+                })
+            })
+        })
+        .unwrap_or(false);
+    if !installed {
+        let code = rustup_toolchain_install_with_profile(channel, manifest.profile.as_deref())?;
+        if code != 0 {
+            return Err(SoldrError::Other(format!(
+                "toolchain install {channel} exited with code {code}"
+            )));
+        }
+    }
+    if let Some(components) = manifest.components.as_deref() {
+        for component in components {
+            let code = rustup_component_add(channel, component)?;
+            if code != 0 {
+                return Err(SoldrError::Other(format!(
+                    "component add {component} exited with code {code}"
+                )));
+            }
+        }
+    }
+    if let Some(targets) = manifest.targets.as_deref() {
+        for target in targets {
+            let code = rustup_target_add(channel, target)?;
+            if code != 0 {
+                return Err(SoldrError::Other(format!(
+                    "target add {target} exited with code {code}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Summary of what `prepare` actually did, used by
 /// [`crate::toolchain_ensure`] to populate the JSON payload.
 #[derive(Debug, Default)]
@@ -339,7 +404,7 @@ pub(crate) fn run_prepare_inner(
 ) -> Result<(i32, PrepareSummary), SoldrError> {
     let mut summary = PrepareSummary::default();
 
-    let install_code = rustup_toolchain_install(channel)?;
+    let install_code = rustup_toolchain_install_with_profile(channel, manifest.profile.as_deref())?;
     if install_code != 0 {
         return Ok((install_code, summary));
     }
@@ -454,13 +519,20 @@ fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i3
 }
 
 fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
+    rustup_toolchain_install_with_profile(channel, None)
+}
+
+fn rustup_toolchain_install_with_profile(
+    channel: &str,
+    profile: Option<&str>,
+) -> Result<i32, SoldrError> {
     let mut command = std::process::Command::new(rustup_binary());
     command.args([
         "toolchain",
         "install",
         channel,
         "--profile",
-        "minimal",
+        profile.unwrap_or("minimal"),
         "--no-self-update",
     ]);
     apply_implicit_toolchain_homes(&mut command);

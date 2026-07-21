@@ -1481,6 +1481,7 @@ pub(crate) async fn run_cargo_front_door(
         (None, None) => args,
     };
 
+    crate::toolchain::ensure_cargo_toolchain(explicit_toolchain)?;
     let cargo = resolve_toolchain_binary_for_channel("cargo", explicit_toolchain)?;
     let rustc = resolve_toolchain_binary_for_channel("rustc", explicit_toolchain)?;
     let cargo_bin_dir = cargo
