@@ -653,7 +653,7 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
         Err(err) => return Err(err),
     };
     if metadata.is_dir() {
-        return match crate::cache_lib::cargo_lock::probe(path) {
+        match crate::cache_lib::cargo_lock::probe(path) {
             Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Idle(_guard)) => {
                 std::fs::remove_dir_all(path)
             }
@@ -666,7 +666,7 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
             Err(error) => Err(std::io::Error::other(format!(
                 "cargo lock probe failed closed: {error}"
             ))),
-        };
+        }
     } else {
         std::fs::remove_file(path)
     }
