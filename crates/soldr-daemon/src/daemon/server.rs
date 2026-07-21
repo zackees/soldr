@@ -216,22 +216,29 @@ async fn finalize_build_session(
     session_id: u64,
     exit_code: i32,
     ended_at_ms: i64,
-) {
-    let aggregate = match event_batcher.take_session_aggregate(session_id) {
-        Some(aggregate) => aggregate.finalize(),
+) -> Result<(), String> {
+    let owned_aggregate = event_batcher.take_session_aggregate(session_id);
+    let aggregate = match owned_aggregate.as_ref() {
+        Some(aggregate) => aggregate.clone().finalize(),
         None => {
-            event_batcher.flush().await;
-            db::aggregate_session(db_path, session_id).unwrap_or((0u32, None, None))
+            event_batcher.flush().await.map_err(|err| err.to_string())?;
+            db::aggregate_session(db_path, session_id)
+                .map_err(|err| format!("aggregate build session: {err}"))?
         }
     };
     // One redb open + write txn for the read-modify-write (soldr#1536):
     // the per-open cost grows with db size, so don't pay it twice for a
     // get_build + upsert_build pair.
-    let _ = db::finalize_build(db_path, session_id, exit_code, ended_at_ms, aggregate);
+    if let Err(err) = db::finalize_build(db_path, session_id, exit_code, ended_at_ms, aggregate) {
+        if let Some(aggregate) = owned_aggregate {
+            event_batcher.restore_session_aggregate(session_id, aggregate);
+        }
+        return Err(format!("persist build session: {err}"));
+    }
     // The SessionEnd terminator rides the batcher, then one final flush
     // makes the terminator AND any still-staged per-compile events
     // durable before the Ack goes out.
-    event_batcher
+    if let Err(err) = event_batcher
         .record(db::Event {
             ts_ms: ended_at_ms,
             session_id: Some(session_id),
@@ -241,8 +248,14 @@ async fn finalize_build_session(
             target_dir: None,
             exit_code: Some(exit_code),
         })
-        .await;
-    event_batcher.flush().await;
+        .await
+    {
+        return Err(format!("queue session end event: {err}"));
+    }
+    event_batcher
+        .flush()
+        .await
+        .map_err(|err| format!("flush session events: {err}"))
 }
 
 #[cfg(test)]
@@ -788,7 +801,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // has staged in memory before the daemon process exits. Must run
     // BEFORE the redb file lock is released so the final write txn
     // succeeds; `shutdown()` awaits the drain task's ack.
-    state.event_batcher.shutdown().await;
+    let _ = state.event_batcher.shutdown().await;
 
     // Issue #977 / #980 L1: drain the embedded zccache service before
     // any other shutdown work so pending writes flush through.
@@ -928,10 +941,12 @@ where
             // flush` call this before archiving — otherwise the state
             // is memory-only until a graceful daemon exit and archives
             // taken from a live daemon restore with zero rustc hits.
-            state.event_batcher.flush().await;
-            let response = match state.compile_service.flush().await {
-                Ok(_) => Response::Ack,
-                Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
+            let response = match state.event_batcher.flush().await {
+                Err(err) => Response::Error(format!("event persistence flush failed: {err}")),
+                Ok(()) => match state.compile_service.flush().await {
+                    Ok(_) => Response::Ack,
+                    Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
+                },
             };
             let _ = write_frame_async(&mut stream, &response).await;
         }
@@ -956,13 +971,16 @@ where
             // daemon-resident auto-GC tick) skips its tick. Cleared on
             // `BuildSessionEnd` below.
             crate::cache_lib::build_active::set(true);
-            let existing = db::get_build(&state.db_path, session_id).ok().flatten();
-            let record = merge_build_session_start(existing, session_id, repo_root, started_at_ms);
-            let _ = db::upsert_build(&state.db_path, &record);
+            let response = async {
+                let existing = db::get_build(&state.db_path, session_id)
+                    .map_err(|err| format!("read build session: {err}"))?;
+                let record = merge_build_session_start(existing, session_id, repo_root, started_at_ms);
+                db::upsert_build(&state.db_path, &record)
+                    .map_err(|err| format!("persist build session start: {err}"))?;
             // L4 (issue soldr#980): route the SessionStart event through
             // the batcher so we don't compete with the build's first
             // compile-event burst for the redb writer.
-            state
+                state
                 .event_batcher
                 .record(db::Event {
                     ts_ms: started_at_ms,
@@ -973,7 +991,19 @@ where
                     target_dir: None,
                     exit_code: None,
                 })
-                .await;
+                    .await
+                    .map_err(|err| format!("queue session start event: {err}"))?;
+                state.event_batcher.flush().await.map_err(|err| format!("flush session start event: {err}"))?;
+                Ok::<(), String>(())
+            }.await;
+            let response = match response {
+                Ok(()) => Response::Ack,
+                Err(err) => {
+                    crate::cache_lib::build_active::set(false);
+                    Response::Error(err)
+                }
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::BuildSessionEnd {
             session_id,
@@ -983,31 +1013,39 @@ where
             // Issue #980 L7: paired with the `set(true)` in
             // BuildSessionStart above. Re-enables periodic workers.
             crate::cache_lib::build_active::set(false);
-            finalize_build_session(
+            let response = match finalize_build_session(
                 &state.db_path,
                 &state.event_batcher,
                 session_id,
                 exit_code,
                 ended_at_ms,
             )
-            .await;
+            .await {
+                Ok(()) => Response::Ack,
+                Err(err) => Response::Error(err),
+            };
             // soldr#1536: acknowledge the finalization. When the wrapper
             // sees this Ack, the BuildRecord aggregate is persisted and
             // every staged session event is durable in redb, so it can
             // skip its own full-table aggregate re-scan.
-            let _ = write_frame_async(&mut stream, &Response::Ack).await;
+            let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::ListBuilds { limit, since_ms } => {
-            let rows = db::list_builds(&state.db_path, limit, since_ms).unwrap_or_default();
-            let _ = write_frame_async(&mut stream, &Response::Builds(rows)).await;
+            let response = match db::list_builds(&state.db_path, limit, since_ms) {
+                Ok(rows) => Response::Builds(rows),
+                Err(err) => Response::Error(format!("list builds: {err}")),
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::ListSlowBuilds {
             threshold_ms,
             limit,
         } => {
-            let rows =
-                db::list_slow_builds(&state.db_path, threshold_ms, limit).unwrap_or_default();
-            let _ = write_frame_async(&mut stream, &Response::Builds(rows)).await;
+            let response = match db::list_slow_builds(&state.db_path, threshold_ms, limit) {
+                Ok(rows) => Response::Builds(rows),
+                Err(err) => Response::Error(format!("list slow builds: {err}")),
+            };
+            let _ = write_frame_async(&mut stream, &response).await;
         }
         Request::CookLookup {
             recipe_hash,
@@ -1375,14 +1413,14 @@ where
 {
     let started = std::time::Instant::now();
     if let Some(metadata) = lifecycle {
-        event_batcher
+        let _ = event_batcher
             .record(compile_lifecycle_event(metadata, None))
             .await;
     }
     let outcome = race_against_disconnect(reader, fut).await;
     if let (DispatchOutcome::Completed(_), Some(metadata)) = (&outcome, lifecycle) {
         let duration_us = u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX);
-        event_batcher
+        let _ = event_batcher
             .record(compile_lifecycle_event(metadata, Some(duration_us)))
             .await;
     }

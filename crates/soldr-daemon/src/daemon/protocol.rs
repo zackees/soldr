@@ -75,7 +75,9 @@ use serde::{Deserialize, Serialize};
 ///   daemon) instead of stalling out the reply timeout.
 /// * v14: `CompileStatsInfo` carries zccache phase-profile telemetry so
 ///   session reports can gate staged-output behavior.
-pub const PROTOCOL_VERSION: u32 = 14;
+/// * v15 (#1675): `BuildSessionStart` is request-response so persistence
+///   failures cannot be acknowledged as successful.
+pub const PROTOCOL_VERSION: u32 = 15;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -114,8 +116,9 @@ pub enum Request {
     /// Request-response: ask the daemon to drain and exit. Used by
     /// `soldr daemon stop` and (Phase 3) linked-zccache shutdown.
     Shutdown,
-    /// Fire-and-forget: open a build session. Issued by the cargo
-    /// front door immediately before spawning cargo.
+    /// Request-response: open a build session. Issued by the cargo
+    /// front door immediately before spawning cargo; the Ack means the
+    /// start record and SessionStart event are durable.
     BuildSessionStart {
         session_id: u64,
         repo_root: String,
@@ -429,8 +432,8 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v14_after_phase_profile_stats, {
-        assert_eq!(PROTOCOL_VERSION, 14);
+    crate::timed_test!(protocol_version_is_v15_after_event_persistence_errors, {
+        assert_eq!(PROTOCOL_VERSION, 15);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {

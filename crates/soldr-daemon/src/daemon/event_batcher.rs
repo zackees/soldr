@@ -152,10 +152,21 @@ enum BatcherCmd {
     Insert(Event),
     /// Flush whatever is buffered NOW; reply via the oneshot after the
     /// commit succeeds (or after the failed write is logged).
-    Flush(oneshot::Sender<()>),
+    Flush(oneshot::Sender<Result<(), String>>),
     /// Drain and exit. Reply via the oneshot to acknowledge.
-    Shutdown(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<Result<(), String>>),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventBatcherError(pub String);
+
+impl std::fmt::Display for EventBatcherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for EventBatcherError {}
 
 /// Cheap-to-clone handle. Each request handler in
 /// [`crate::daemon::server`] holds one; the inner `mpsc::Sender` is
@@ -192,11 +203,12 @@ impl EventBatcher {
     /// awaits until the drain task makes room, which is the desired
     /// backpressure shape — we never want to silently drop diagnostic
     /// events.
-    pub async fn record(&self, event: Event) {
+    pub async fn record(&self, event: Event) -> Result<(), EventBatcherError> {
         self.observe_for_aggregate(&event);
         if self.tx.send(BatcherCmd::Insert(event)).await.is_err() {
-            tracing::debug!("event_batcher: drain task gone; event dropped");
+            return Err(EventBatcherError("event batcher drain task stopped".into()));
         }
+        Ok(())
     }
 
     /// Update the in-memory per-session rollup (soldr#1536). Runs on the
@@ -253,27 +265,42 @@ impl EventBatcher {
         map.remove(&session_id).filter(|agg| agg.complete)
     }
 
+    /// Put a consumed aggregate back when finalization could not be persisted.
+    /// This keeps a later retry lossless.
+    pub fn restore_session_aggregate(&self, session_id: u64, aggregate: SessionAggregate) {
+        let mut map = self
+            .aggregates
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.insert(session_id, aggregate);
+    }
+
     /// Force a flush and wait for the drain task to acknowledge. Called
     /// from `Request::BuildSessionEnd` before the session-level
     /// aggregation runs, so the aggregator sees every event recorded
     /// during the session.
-    pub async fn flush(&self) {
+    pub async fn flush(&self) -> Result<(), EventBatcherError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self.tx.send(BatcherCmd::Flush(ack_tx)).await.is_err() {
-            tracing::debug!("event_batcher: drain task gone; flush is a no-op");
-            return;
+            return Err(EventBatcherError("event batcher drain task stopped".into()));
         }
-        let _ = ack_rx.await;
+        ack_rx
+            .await
+            .map_err(|_| EventBatcherError("event batcher dropped flush acknowledgement".into()))?
+            .map_err(EventBatcherError)
     }
 
     /// Final flush + drain task exit. Called from the daemon shutdown
     /// path before the redb file lock is released.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> Result<(), EventBatcherError> {
         let (ack_tx, ack_rx) = oneshot::channel();
         if self.tx.send(BatcherCmd::Shutdown(ack_tx)).await.is_err() {
-            return;
+            return Err(EventBatcherError("event batcher drain task stopped".into()));
         }
-        let _ = ack_rx.await;
+        ack_rx
+            .await
+            .map_err(|_| EventBatcherError("event batcher dropped shutdown acknowledgement".into()))?
+            .map_err(EventBatcherError)
     }
 }
 
@@ -292,28 +319,29 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
                 Some(BatcherCmd::Insert(event)) => {
                     buf.push(event);
                     if buf.len() >= MAX_BATCH_ROWS {
-                        flush_batch(&db_path, &mut buf);
+                        let _ = flush_batch(&db_path, &mut buf);
                     }
                 }
                 Some(BatcherCmd::Flush(ack)) => {
-                    flush_batch(&db_path, &mut buf);
-                    let _ = ack.send(());
+                    let result = flush_batch(&db_path, &mut buf);
+                    let _ = ack.send(result);
                 }
                 Some(BatcherCmd::Shutdown(ack)) => {
-                    flush_batch(&db_path, &mut buf);
-                    let _ = ack.send(());
-                    return;
+                    let result = flush_batch(&db_path, &mut buf);
+                    let done = result.is_ok();
+                    let _ = ack.send(result);
+                    if done { return; }
                 }
                 None => {
                     // Last sender dropped. Drain whatever is left and
                     // exit — no one is around to receive an ack.
-                    flush_batch(&db_path, &mut buf);
+                    let _ = flush_batch(&db_path, &mut buf);
                     return;
                 }
             },
             _ = interval.tick() => {
                 if !buf.is_empty() {
-                    flush_batch(&db_path, &mut buf);
+                    let _ = flush_batch(&db_path, &mut buf);
                 }
             }
         }
@@ -325,16 +353,18 @@ async fn drain_loop(db_path: PathBuf, mut rx: mpsc::Receiver<BatcherCmd>) {
 /// logged at `debug` and swallowed: the diagnostic events are
 /// best-effort and we never want a failed flush to take down the
 /// daemon.
-fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) {
+fn flush_batch(db_path: &Path, buf: &mut Vec<Event>) -> Result<(), String> {
     if buf.is_empty() {
-        return;
+        return Ok(());
     }
     let count = buf.len();
     tracing::debug!("event_batcher: flushing {count} pending event rows");
     if let Err(err) = write_batch(db_path, buf) {
-        tracing::debug!("event_batcher: flush failed: {err}");
+        tracing::error!("event_batcher: flush failed; retaining {count} pending event rows: {err}");
+        return Err(err.to_string());
     }
     buf.clear();
+    Ok(())
 }
 
 /// Open `state.redb` under the shared `state_db_open_lock`, allocate
@@ -545,6 +575,28 @@ mod tests {
             let (count, _, _) = aggregate_session(&path, 7).expect("agg");
             assert_eq!(count as usize, MAX_BATCH_ROWS + 7);
             batcher.shutdown().await;
+        });
+    });
+
+    crate::timed_test!(failed_flush_retains_rows_for_retry, {
+        let rt = Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let dir = TempDir::new().expect("tempdir");
+            let parent = dir.path().join("created-after-failure");
+            let path = parent.join("state.redb");
+            let batcher = EventBatcher::start(path.clone());
+            batcher
+                .record(sample_event(101, "retained", Some(7)))
+                .await
+                .expect("queue event");
+            assert!(batcher.flush().await.is_err(), "missing parent must fail");
+
+            std::fs::create_dir(&parent).expect("create db parent");
+            crate::daemon::db::ensure_initialized(&path).expect("init");
+            batcher.flush().await.expect("retry flush");
+            let (count, _, _) = aggregate_session(&path, 101).expect("aggregate");
+            assert_eq!(count, 1, "failed batch must be retried, not dropped");
+            batcher.shutdown().await.expect("shutdown");
         });
     });
 }
