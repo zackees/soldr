@@ -674,6 +674,7 @@ pub fn run(opts: ServerOptions) -> Result<(), ServerError> {
 pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let paths = SoldrPaths::new()?;
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
+    init_embedded_service_file_tracing(&paths);
 
     if let Some(existing) = is_live(&paths) {
         return Err(ServerError::AlreadyRunning(existing));
@@ -813,6 +814,32 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     };
     append_lifecycle_event(&paths, event);
     Ok(())
+}
+
+/// The embedded zccache service runs in-process, so its `tracing::warn!`
+/// events otherwise have no durable destination in the normal daemon mode.
+/// Keep a daily rolling file under soldr's daemon state for post-build
+/// investigation; startup must remain best-effort when the cache is on a
+/// read-only or otherwise unusual filesystem.
+fn init_embedded_service_file_tracing(paths: &SoldrPaths) {
+    let log_dir = embedded_service_log_dir(paths);
+    if let Err(error) = std::fs::create_dir_all(&log_dir) {
+        eprintln!(
+            "soldr-daemon: cannot create embedded zccache warning log directory {}: {error}",
+            log_dir.display()
+        );
+        return;
+    }
+    let appender = tracing_appender::rolling::daily(log_dir, "embedded-zccache.warn.log");
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .with_writer(appender)
+        .try_init();
+}
+
+fn embedded_service_log_dir(paths: &SoldrPaths) -> PathBuf {
+    soldr_daemon_dir(paths).join("logs")
 }
 
 #[cfg(unix)]

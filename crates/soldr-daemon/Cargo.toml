@@ -25,7 +25,8 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 console-subscriber = { workspace = true, optional = true }
 zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", default-features = false, features = ["cli"] }
 
@@ -39,7 +40,6 @@ zccache = { version = "1.12.15", path = "../../_vender/zccache/crates/zccache", 
 # same name.
 tokio-console = [
     "dep:console-subscriber",
-    "dep:tracing-subscriber",
     "zccache/tokio-console",
 ]
 
