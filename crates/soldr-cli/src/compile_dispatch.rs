@@ -169,6 +169,7 @@ pub fn build_compile_request(rustc_argv: &[String]) -> CompileRequest {
         env,
         stdin: Vec::new(),
         lifecycle: build_compile_lifecycle(rustc_argv),
+        ipc_busy_retries: 0,
     }
 }
 

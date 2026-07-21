@@ -143,6 +143,7 @@ fn build_request(env: Vec<(String, String)>) -> CompileRequest {
             target_dir: "/repo/target".to_string(),
             started_at_ms: 1_752_000_000_000,
         }),
+        ipc_busy_retries: 0,
     }
 }
 

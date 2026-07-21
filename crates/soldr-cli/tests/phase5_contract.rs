@@ -166,6 +166,7 @@ timed_test!(
             ],
             stdin: Vec::new(),
             lifecycle: None,
+            ipc_busy_retries: 0,
         };
         let r = Request::Compile(req.clone());
         let bytes = encode_request(&r);

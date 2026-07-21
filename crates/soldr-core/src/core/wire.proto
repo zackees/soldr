@@ -123,6 +123,7 @@ message WireCompileRequest {
   repeated WireEnvEntry env = 3;
   bytes stdin = 4;
   optional WireCompileLifecycle lifecycle = 5;
+  uint32 ipc_busy_retries = 6;
 }
 
 // soldr#1537: compile telemetry rides the existing compile connection.
@@ -161,6 +162,8 @@ message WireResponse {
     WireCompileDone compile_done = 11;
     // soldr#1368 — reply to compile_stats.
     WireCompileStats compile_stats = 12;
+    // soldr#1735 — bounded admission is full; retry without restart.
+    WireBackpressure backpressure = 13;
   }
 }
 
@@ -172,6 +175,10 @@ message WireCompileStats {
   uint64 compile_errors = 5;
   uint64 time_saved_ms = 6;
   WireStagedProfile staged_profile = 7;
+}
+
+message WireBackpressure {
+  uint32 retry_after_ms = 1;
 }
 
 message WireStagedProfile {
@@ -247,6 +254,15 @@ message WireStatusInfo {
   // fork-zccache.exe backend was removed in #980 L1's second pass;
   // field retained for telemetry stability.
   string compile_backend = 7;
+  optional WireIpcBurstStats ipc_burst_stats = 8;
+}
+
+message WireIpcBurstStats {
+  uint64 accepted = 1;
+  uint64 queued = 2;
+  uint64 backpressured = 3;
+  uint64 busy_retries = 4;
+  uint64 queue_high_water = 5;
 }
 
 message WireCookStats {

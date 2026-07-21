@@ -38,6 +38,55 @@ const DEFAULT_REPLY_TIMEOUT_SECS: u64 = 30 * 60;
 /// unparseable value falls back to [`DEFAULT_REPLY_TIMEOUT_SECS`].
 const REPLY_TIMEOUT_ENV: &str = "SOLDR_COMPILE_REPLY_TIMEOUT_SECS";
 
+#[cfg(windows)]
+const ERROR_PIPE_BUSY: i32 = 231;
+#[cfg(windows)]
+const PIPE_BUSY_RETRY_LIMIT: u32 = 8;
+
+#[cfg(windows)]
+const BACKPRESSURE_RETRY_LIMIT: u32 = 8;
+
+#[cfg(windows)]
+struct WindowsPipeOpen {
+    stream: tokio::net::windows::named_pipe::NamedPipeClient,
+    busy_retries: u32,
+}
+
+#[cfg(windows)]
+fn busy_pipe_retry_delay(attempt: u32) -> Duration {
+    let base_ms = (2_u64.saturating_mul(1_u64 << attempt.min(5))).min(64);
+    // A tiny deterministic jitter avoids synchronized cargo workers while
+    // keeping this retry policy testable and dependency-free.
+    let jitter_ms = (u64::from(attempt) * 17 + u64::from(std::process::id())) % 4;
+    Duration::from_millis(base_ms + jitter_ms)
+}
+
+#[cfg(windows)]
+async fn open_windows_pipe_with_retry(path: &Path) -> std::io::Result<WindowsPipeOpen> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+    for attempt in 0..PIPE_BUSY_RETRY_LIMIT {
+        match ClientOptions::new().open(path) {
+            Ok(stream) => {
+                return Ok(WindowsPipeOpen {
+                    stream,
+                    busy_retries: attempt,
+                })
+            }
+            Err(error)
+                if error.raw_os_error() == Some(ERROR_PIPE_BUSY)
+                    && attempt + 1 < PIPE_BUSY_RETRY_LIMIT =>
+            {
+                // A busy pipe is listener-pool backpressure, not evidence that the
+                // daemon died. Keep retrying inside this client call so callers do
+                // not start recovery or bypass the cache.
+                tokio::time::sleep(busy_pipe_retry_delay(attempt)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("retry loop either returned a client or its last IO error")
+}
+
 /// Compile-dispatch timeout, resolved once from the environment.
 fn compile_reply_timeout() -> Duration {
     static CACHED: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
@@ -67,6 +116,15 @@ pub enum ClientError {
 
 impl From<std::io::Error> for ClientError {
     fn from(e: std::io::Error) -> Self {
+        #[cfg(windows)]
+        if e.raw_os_error() == Some(ERROR_PIPE_BUSY) {
+            // The retry cap only bounds a single client call; it does not
+            // change daemon liveness. Keep this out of the caller's generic
+            // I/O-recovery branch, which is allowed to spawn a missing daemon.
+            return ClientError::Protocol(
+                "Windows named pipe remained busy after retry budget".into(),
+            );
+        }
         match e.kind() {
             std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused => {
                 ClientError::NotRunning
@@ -609,6 +667,38 @@ fn windows_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 }
 
 #[cfg(windows)]
+async fn open_compile_pipe_with_backpressure(
+    sock_path: &Path,
+    req: &CompileRequest,
+) -> std::io::Result<(tokio::net::windows::named_pipe::NamedPipeClient, Response)> {
+    for attempt in 0..BACKPRESSURE_RETRY_LIMIT {
+        let opened = open_windows_pipe_with_retry(sock_path).await?;
+        let mut stream = opened.stream;
+        let mut compile_req = req.clone();
+        compile_req.ipc_busy_retries = compile_req
+            .ipc_busy_retries
+            .saturating_add(opened.busy_retries);
+        let first = tokio::time::timeout(compile_reply_timeout(), async {
+            write_frame_async(&mut stream, &Request::Compile(compile_req)).await?;
+            read_frame_async(&mut stream).await
+        })
+        .await
+        .map_err(|_| {
+            windows_timeout_error("daemon IPC compile admission", compile_reply_timeout())
+        })??;
+        match first {
+            Response::Backpressure { retry_after_ms } if attempt + 1 < BACKPRESSURE_RETRY_LIMIT => {
+                let jitter_ms = (u64::from(attempt) * 11 + u64::from(std::process::id())) % 4;
+                tokio::time::sleep(Duration::from_millis(u64::from(retry_after_ms) + jitter_ms))
+                    .await;
+            }
+            response => return Ok((stream, response)),
+        }
+    }
+    unreachable!("backpressure loop returns on the final response")
+}
+
+#[cfg(windows)]
 fn run_windows_ipc<T, F>(operation: &'static str, timeout: Duration, f: F) -> Result<T, ClientError>
 where
     T: Send + 'static,
@@ -635,7 +725,6 @@ where
 
 #[cfg(windows)]
 fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(), ClientError> {
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
@@ -643,7 +732,7 @@ fn submit_fire_and_forget_windows(sock_path: &Path, req: &Request) -> Result<(),
     run_windows_ipc("daemon IPC hot-path write", HOT_PATH_TIMEOUT, move || {
         let runtime = windows_runtime()?;
         runtime.block_on(async move {
-            let mut stream = ClientOptions::new().open(sock_path)?;
+            let mut stream = open_windows_pipe_with_retry(&sock_path).await?.stream;
             timeout(HOT_PATH_TIMEOUT, write_frame_async(&mut stream, &req))
                 .await
                 .map_err(|_| {
@@ -665,7 +754,6 @@ fn submit_request_windows_with_timeout(
     req: &Request,
     deadline: Duration,
 ) -> Result<Response, ClientError> {
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
@@ -673,7 +761,7 @@ fn submit_request_windows_with_timeout(
     run_windows_ipc("daemon IPC request", deadline, move || {
         let runtime = windows_runtime()?;
         runtime.block_on(async move {
-            let mut stream = ClientOptions::new().open(sock_path)?;
+            let mut stream = open_windows_pipe_with_retry(&sock_path).await?.stream;
             timeout(deadline, async {
                 write_frame_async(&mut stream, &req).await?;
                 read_frame_async(&mut stream).await
@@ -703,7 +791,6 @@ where
     O: Write,
     E: Write,
 {
-    use tokio::net::windows::named_pipe::ClientOptions;
     use tokio::time::timeout;
 
     /// Frames forwarded from the IPC worker thread to the calling
@@ -730,47 +817,42 @@ where
                 }
             };
             runtime.block_on(async move {
-                let mut stream = match ClientOptions::new().open(&sock_path) {
-                    Ok(s) => s,
+                let (mut stream, first_frame) = match open_compile_pipe_with_backpressure(
+                    &sock_path, &req,
+                )
+                .await
+                {
+                    Ok(connection) => connection,
                     Err(e) => {
                         let _ = tx.send(StreamMsg::Err(ClientError::from(e)));
                         return;
                     }
                 };
-                let request = Request::Compile(req);
-                if let Err(e) = timeout(
-                    compile_reply_timeout(),
-                    write_frame_async(&mut stream, &request),
-                )
-                .await
-                .map_err(|_| {
-                    windows_timeout_error("daemon IPC compile write", compile_reply_timeout())
-                })
-                .and_then(|res| res)
-                {
-                    let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
-                    return;
-                }
+                let mut first_frame = Some(first_frame);
                 loop {
-                    let frame = match timeout(
-                        compile_reply_timeout(),
-                        read_frame_async::<_, Response>(&mut stream),
-                    )
-                    .await
-                    {
-                        Ok(Ok(f)) => f,
-                        Ok(Err(e)) => {
-                            let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
-                            return;
-                        }
-                        Err(_) => {
-                            let _ =
-                                tx.send(StreamMsg::Err(ClientError::Io(windows_timeout_error(
-                                    "daemon IPC compile read",
-                                    compile_reply_timeout(),
-                                ))));
-                            return;
-                        }
+                    let frame = match first_frame.take() {
+                        Some(frame) => frame,
+                        None => match timeout(
+                            compile_reply_timeout(),
+                            read_frame_async::<_, Response>(&mut stream),
+                        )
+                        .await
+                        {
+                            Ok(Ok(f)) => f,
+                            Ok(Err(e)) => {
+                                let _ = tx.send(StreamMsg::Err(ClientError::Io(e)));
+                                return;
+                            }
+                            Err(_) => {
+                                let _ = tx.send(StreamMsg::Err(ClientError::Io(
+                                    windows_timeout_error(
+                                        "daemon IPC compile read",
+                                        compile_reply_timeout(),
+                                    ),
+                                )));
+                                return;
+                            }
+                        },
                     };
                     match frame {
                         Response::CompileStdoutChunk(bytes) => {
@@ -816,6 +898,12 @@ where
                         }
                         Response::Error(msg) => {
                             let _ = tx.send(StreamMsg::Err(ClientError::Protocol(msg)));
+                            return;
+                        }
+                        Response::Backpressure { retry_after_ms } => {
+                            let _ = tx.send(StreamMsg::Err(ClientError::Protocol(format!(
+                                "daemon IPC admission remained backpressured after retry ({retry_after_ms}ms)"
+                            ))));
                             return;
                         }
                         other => {

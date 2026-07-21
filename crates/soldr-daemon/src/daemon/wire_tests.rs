@@ -140,6 +140,13 @@ crate::timed_test!(status_response_round_trips_with_cook_stats, {
             hits_this_session: 1,
         }),
         compile_backend: "embedded".to_string(),
+        ipc_burst_stats: crate::daemon::protocol::IpcBurstStats {
+            accepted: 16,
+            queued: 7,
+            backpressured: 3,
+            busy_retries: 2,
+            queue_high_water: 16,
+        },
     };
     let resp = Response::Status(info.clone());
     let bytes = encode_response(&resp);
@@ -202,6 +209,14 @@ crate::timed_test!(cook_miss_response_round_trips_with_multiple_hashes, {
         }
         other => panic!("unexpected variant: {other:?}"),
     }
+});
+
+crate::timed_test!(backpressure_response_round_trips_with_retry_delay, {
+    let bytes = encode_response(&Response::Backpressure { retry_after_ms: 25 });
+    assert!(matches!(
+        decode_response(&bytes).expect("decode"),
+        Response::Backpressure { retry_after_ms: 25 }
+    ));
 });
 
 crate::timed_test!(builds_response_round_trips_with_all_optional_fields, {
@@ -316,6 +331,7 @@ crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
             target_dir: "/home/runner/work/soldr/target".into(),
             started_at_ms: 1_700_000_000_123,
         }),
+        ipc_busy_retries: 3,
     });
     let bytes = encode_request(&req);
     match decode_request(&bytes).expect("decode") {
@@ -325,6 +341,7 @@ crate::timed_test!(compile_request_round_trips_with_env_and_cwd, {
             assert_eq!(decoded.env.len(), 2);
             assert_eq!(decoded.env[0], ("CARGO_PKG_NAME".into(), "soldr".into()));
             assert_eq!(decoded.stdin, vec![1, 2, 3, 4]);
+            assert_eq!(decoded.ipc_busy_retries, 3);
             let lifecycle = decoded.lifecycle.expect("compile lifecycle metadata");
             assert_eq!(lifecycle.session_id, 42);
             assert_eq!(lifecycle.crate_name, "foo");

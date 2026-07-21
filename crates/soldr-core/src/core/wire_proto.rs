@@ -169,6 +169,8 @@ pub struct WireCompileRequest {
     pub stdin: Vec<u8>,
     #[prost(message, optional, tag = "5")]
     pub lifecycle: Option<WireCompileLifecycle>,
+    #[prost(uint32, tag = "6")]
+    pub ipc_busy_retries: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -187,7 +189,7 @@ pub struct WireCompileLifecycle {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WireResponse {
-    #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12")]
+    #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13")]
     pub kind: Option<WireResponseKind>,
 }
 
@@ -225,6 +227,14 @@ pub enum WireResponseKind {
     /// soldr#1368 — reply to CompileStats.
     #[prost(message, tag = "12")]
     CompileStats(WireCompileStats),
+    #[prost(message, tag = "13")]
+    Backpressure(WireBackpressure),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireBackpressure {
+    #[prost(uint32, tag = "1")]
+    pub retry_after_ms: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -346,6 +356,22 @@ pub struct WireStatusInfo {
     /// consumers reading v6 status snapshots stay stable.
     #[prost(string, tag = "7")]
     pub compile_backend: String,
+    #[prost(message, optional, tag = "8")]
+    pub ipc_burst_stats: Option<WireIpcBurstStats>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireIpcBurstStats {
+    #[prost(uint64, tag = "1")]
+    pub accepted: u64,
+    #[prost(uint64, tag = "2")]
+    pub queued: u64,
+    #[prost(uint64, tag = "3")]
+    pub backpressured: u64,
+    #[prost(uint64, tag = "4")]
+    pub busy_retries: u64,
+    #[prost(uint64, tag = "5")]
+    pub queue_high_water: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
