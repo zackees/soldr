@@ -64,9 +64,19 @@ def setup_soldr_refs(workflow_text: str) -> list[str]:
     ]
 
 
+def workflow_paths(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Return every GitHub Actions workflow, regardless of YAML extension."""
+    workflows_dir = repo_root / ".github" / "workflows"
+    return sorted(
+        [*workflows_dir.glob("*.yml"), *workflows_dir.glob("*.yaml")],
+        key=lambda path: path.name,
+    )
+
+
 def workflow_text(repo_root: Path = REPO_ROOT) -> str:
-    workflow_paths = sorted((repo_root / ".github" / "workflows").glob("*.yml"))
-    return "\n".join(path.read_text(encoding="utf-8") for path in workflow_paths)
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in workflow_paths(repo_root)
+    )
 
 
 def verify_setup_soldr_pins(repo_root: Path = REPO_ROOT) -> None:
@@ -152,7 +162,7 @@ def create_or_update_pin_pr(
 
 
 def update_workflow_pins(repo_root: Path, current_v0_sha: str) -> None:
-    for path in sorted((repo_root / ".github" / "workflows").glob("*.yml")):
+    for path in workflow_paths(repo_root):
         lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
         updated_lines = []
         for line in lines:
