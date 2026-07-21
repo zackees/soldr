@@ -1872,6 +1872,10 @@ pub(crate) async fn run_cargo_front_door(
             session_started_at_ms,
         );
     }
+    let build_activity_lease =
+        crate::cache_lib::build_active::BuildActivityLease::acquire(&paths, session_id).map_err(
+            |error| SoldrError::Other(format!("failed to acquire build activity lease: {error}")),
+        )?;
     // Issue #980 L7: gate long-running workers only for the interval where
     // child Cargo may actually be active.
     crate::cache_lib::build_active::set(true);
@@ -1909,6 +1913,7 @@ pub(crate) async fn run_cargo_front_door(
                 persist_build_session_end_fallback(&paths, session_id, -1, ended_at_ms);
             }
             crate::cache_lib::build_active::set(false);
+            drop(build_activity_lease);
             let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
             let finish_result =
                 cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
@@ -2000,6 +2005,7 @@ pub(crate) async fn run_cargo_front_door(
     // (before `post_cargo_result`) lets the post-build target-GC pass
     // run normally without thinking it's still inside the build.
     crate::cache_lib::build_active::set(false);
+    drop(build_activity_lease);
     // Issue #1286 (F5): the build just ended — this is the idle
     // transition, so fire the auto-GC sweep now, as a detached process
     // that survives this wrapper's imminent exit. Throttled to once

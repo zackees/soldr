@@ -1,38 +1,92 @@
-//! Process-wide "build active" flag (issue #980, L7).
+//! Build activity tracking for cleanup coordination.
 //!
-//! The flag lets long-running background workers — auto-GC's
-//! orchestrator and (eventually) the inotify cache watcher — skip a
-//! tick when a `cargo build` is currently running in the same process.
-//! It is set on `BuildSessionStart` and cleared on `BuildSessionEnd`
-//! by both the cargo-front-door dispatch path and the daemon's IPC
-//! handler, so every soldr process that participates in a build sees
-//! the same state without holding a lock.
-//!
-//! The flag is a `static AtomicBool` so all threads in the process
-//! observe the same value. It is NOT shared across processes — the
-//! cargo-wrapper process and the daemon process each maintain their
-//! own copy, kept in sync via the existing `BuildSessionStart` /
-//! `BuildSessionEnd` IPC. That suffices because the workers we are
-//! gating run inside whichever process owns them.
-//!
-//! Default: `false` (idle = no build active = workers run normally).
+//! The atomic flag is retained for cheap same-process checks, but the
+//! cross-process authority is an OS-held lease file. A detached GC process can
+//! therefore see a build owned by a different soldr process, and overlapping
+//! sessions cannot clear one another's activity.
 
+use crate::core::SoldrPaths;
+use fs2::FileExt;
+use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static IS_BUILD_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// Mark the process as inside an active build session. Call from
-/// `BuildSessionStart` handlers (both the cargo front door's local
-/// stamp and the daemon-side IPC dispatcher).
 pub fn set(active: bool) {
     IS_BUILD_ACTIVE.store(active, Ordering::Release);
 }
 
-/// True iff a build session is currently active in this process.
-/// Auto-GC and the inotify watcher consult this at the top of each
-/// tick and bail out if the build hasn't ended yet.
 pub fn is_active() -> bool {
     IS_BUILD_ACTIVE.load(Ordering::Acquire)
+}
+
+fn lease_dir(paths: &SoldrPaths) -> PathBuf {
+    paths.root.join("build-leases")
+}
+
+/// An OS-held lease that marks one build session active across processes.
+pub struct BuildActivityLease {
+    file: File,
+    path: PathBuf,
+}
+
+impl BuildActivityLease {
+    pub fn acquire(paths: &SoldrPaths, session_id: u64) -> io::Result<Self> {
+        let dir = lease_dir(paths);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{session_id:016x}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        file.try_lock_exclusive()?;
+        Ok(Self { file, path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for BuildActivityLease {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Return whether any other process currently holds a build lease.
+///
+/// Unreadable state fails closed as active. Stale, unlocked lease files are
+/// removed after successfully acquiring their lock.
+pub fn any_active(paths: &SoldrPaths) -> io::Result<bool> {
+    let dir = lease_dir(paths);
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = file.unlock();
+                let _ = fs::remove_file(path);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
@@ -40,12 +94,21 @@ mod tests {
     use super::*;
 
     crate::timed_test!(set_clear_round_trip, {
-        // The static is process-wide so we can't strictly observe the
-        // boot value if a prior test mutated it. Cycle through the
-        // two states and verify each store is observable.
         set(true);
         assert!(is_active());
         set(false);
         assert!(!is_active());
+    });
+
+    crate::timed_test!(leases_coordinate_and_cleanup_stale_files, {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        let first = BuildActivityLease::acquire(&paths, 1).unwrap();
+        let second = BuildActivityLease::acquire(&paths, 2).unwrap();
+        assert!(any_active(&paths).unwrap());
+        drop(first);
+        assert!(any_active(&paths).unwrap());
+        drop(second);
+        assert!(!any_active(&paths).unwrap());
     });
 }
