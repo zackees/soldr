@@ -1,0 +1,89 @@
+//! Real Cargo lock probing for target cleanup.
+
+use fs2::FileExt;
+use std::fs::{self, File, OpenOptions};
+use std::io;
+use std::path::{Path, PathBuf};
+
+pub enum CargoLockProbe {
+    Idle(CargoLockGuard),
+    Active(PathBuf),
+}
+
+/// File handles whose exclusive locks remain held until the protected
+/// operation completes.
+pub struct CargoLockGuard {
+    files: Vec<File>,
+}
+
+impl Drop for CargoLockGuard {
+    fn drop(&mut self) {
+        for file in &self.files {
+            let _ = file.unlock();
+        }
+    }
+}
+
+/// Recursively discover Cargo's .cargo-lock sentinels and try to acquire all
+/// of them. Existence alone is not activity: Cargo leaves these files behind
+/// after builds. An unreadable directory or lock probe error is returned so
+/// callers can fail closed.
+pub fn probe(target_dir: &Path) -> io::Result<CargoLockProbe> {
+    let mut lock_paths = Vec::new();
+    let mut pending = vec![target_dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        let entries = fs::read_dir(&dir)?;
+        for entry in entries {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let path = entry.path();
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                pending.push(path);
+            } else if file_type.is_file()
+                && path.file_name().and_then(|name| name.to_str()) == Some(".cargo-lock")
+            {
+                lock_paths.push(path);
+            }
+        }
+    }
+    lock_paths.sort();
+    let mut files = Vec::with_capacity(lock_paths.len());
+    for path in lock_paths {
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        match file.try_lock_exclusive() {
+            Ok(()) => files.push(file),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                for held in &files {
+                    let _ = held.unlock();
+                }
+                return Ok(CargoLockProbe::Active(path));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(CargoLockProbe::Idle(CargoLockGuard { files }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    crate::timed_test!(persistent_unlocked_lock_is_idle, {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = temp.path().join(".cargo-lock");
+        File::create(&lock).unwrap();
+        assert!(matches!(probe(temp.path()).unwrap(), CargoLockProbe::Idle(_)));
+    });
+
+    crate::timed_test!(held_lock_is_active, {
+        let temp = tempfile::tempdir().unwrap();
+        let lock = temp.path().join(".cargo-lock");
+        let holder = File::create(&lock).unwrap();
+        holder.try_lock_exclusive().unwrap();
+        assert!(matches!(probe(temp.path()).unwrap(), CargoLockProbe::Active(_)));
+        holder.unlock().unwrap();
+    });
+}

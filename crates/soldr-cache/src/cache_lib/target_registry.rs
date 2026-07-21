@@ -465,9 +465,19 @@ pub fn evaluate_safety_guards(
         }
     }
 
-    let cargo_build_lock = target_dir.join(".cargo-lock");
-    if cargo_build_lock.exists() {
-        return GuardOutcome::Skipped("active cargo build lock present".to_string());
+    match super::cargo_lock::probe(target_dir) {
+        Ok(super::cargo_lock::CargoLockProbe::Idle(_guard)) => {}
+        Ok(super::cargo_lock::CargoLockProbe::Active(lock)) => {
+            return GuardOutcome::Skipped(format!(
+                "active cargo build lock present at {}",
+                lock.display()
+            ));
+        }
+        Err(error) => {
+            return GuardOutcome::Skipped(format!(
+                "cargo build lock probe failed closed: {error}"
+            ));
+        }
     }
 
     GuardOutcome::Eligible
