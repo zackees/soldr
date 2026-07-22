@@ -102,7 +102,7 @@ jobs:
       # lane's target-specific zig/xwin/SDK setup and passes the real
       # target/profile shape.
       - name: Setup soldr build cache (Rust toolchain only)
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
         with:
           toolchain: 1.94.1
           cross-targets: ${{ inputs.target }}
@@ -290,7 +290,7 @@ jobs:
       # archive coverage, but skip cook for these targets until
       # setup-soldr/cook grows a cheap restore-only miss path.
       - name: Restore cooked dependency cache
-        uses: zackees/setup-soldr/cook@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr/cook@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
         with:
           cache: ${{ (contains(inputs.target, 'pc-windows-msvc') || inputs.target == 'x86_64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-musl' || inputs.target == 'aarch64-unknown-linux-gnu' || contains(inputs.target, 'apple-darwin')) && 'false' || 'true' }}
           target-dir: target
