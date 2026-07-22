@@ -108,7 +108,7 @@ timed_test!(
                 .into_iter()
                 .filter(|args| {
                     args.first()
-                        .map_or(true, |subcommand| subcommand != "metadata")
+                        .is_none_or(|subcommand| subcommand != "metadata")
                 })
                 .collect::<Vec<_>>(),
             vec![
