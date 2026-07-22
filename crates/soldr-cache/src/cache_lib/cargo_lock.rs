@@ -69,7 +69,7 @@ pub fn probe(target_dir: &Path) -> io::Result<CargoLockProbe> {
         }
     }
     lock_paths.sort();
-    let mut files = Vec::with_capacity(lock_paths.len());
+    let mut files: Vec<File> = Vec::with_capacity(lock_paths.len());
     for path in lock_paths {
         let file = match OpenOptions::new().read(true).write(true).open(&path) {
             Ok(file) => file,
