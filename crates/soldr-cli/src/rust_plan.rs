@@ -57,7 +57,7 @@ pub(crate) struct CargoMetadataPackage {
 /// We keep the value in-memory so internal consumers can still branch on it,
 /// but we hide it on the wire for everything except the `thin-v2` opt-in.
 fn skip_legacy_cache_profile(value: &Option<&'static str>) -> bool {
-    !matches!(value, Some("thin-v2"))
+    !matches!(value, Some("thin-v2" | "thin-v3"))
 }
 
 #[derive(Debug, Serialize)]
@@ -120,6 +120,20 @@ pub(crate) struct RustPlanPackages {
     pub(crate) selected_package_ids: Vec<String>,
     pub(crate) workspace_package_ids: Vec<String>,
     pub(crate) excluded_path_package_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ownership_policy: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) ownership_mode: Option<&'static str>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) artifact_owners: Vec<RustPlanArtifactOwner>,
+    pub(crate) ownership_complete: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct RustPlanArtifactOwner {
+    pub(crate) relative_path: String,
+    pub(crate) package_id: String,
+    pub(crate) owner: &'static str,
 }
 
 pub(crate) struct RustArtifactPlanContext {
@@ -769,6 +783,7 @@ pub(crate) fn build_rust_artifact_plan(
     let allowed = allowed_artifact_classes(mode, cache_profile);
     let dropped = dropped_artifact_classes(mode, cache_profile);
     let cache_schema_version = match cache_profile {
+        Some("thin-v3") => 3,
         Some("thin-v2") => 2,
         _ => 1,
     };
@@ -799,6 +814,14 @@ pub(crate) fn build_rust_artifact_plan(
             selected_package_ids,
             workspace_package_ids,
             excluded_path_package_ids,
+            // Cargo's JSON stream does not yet attach package ownership to
+            // every fingerprint/build-script path. Select the explicit
+            // zccache-all fallback until a complete cook closure is proven.
+            ownership_policy: (cache_profile == Some("thin-v3"))
+                .then_some("thin-v3-lifetime-partition-v1"),
+            ownership_mode: (cache_profile == Some("thin-v3")).then_some("zccache-all-v1"),
+            artifact_owners: Vec::new(),
+            ownership_complete: false,
         },
         allowed_artifact_classes: allowed,
         dropped_artifact_classes: dropped,
