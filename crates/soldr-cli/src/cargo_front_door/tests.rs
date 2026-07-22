@@ -744,6 +744,7 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
         "zigbuild",      // the #824 repro — wraps `cargo build` with zig linker
         "xwin",          // wraps `cargo build` with the msvc-on-linux toolchain
         "binstall",      // Compile-strategy fallback shells `cargo install`
+        "dylint",        // runs configured compiler plugins through cargo
     ] {
         assert!(
             cargo_args_are_cacheable(&argv(&[sub])),

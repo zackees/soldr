@@ -54,7 +54,7 @@ const SOURCE_BUILD_INSTALL_ATTEMPTS: u32 = 3;
 /// (see module doc): generic crate source-build belongs in
 /// `soldr cargo install`. New entries must be soldr-bundled tools where
 /// upstream's release coverage misses a target soldr depends on.
-pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef"];
+pub const SUPPORTED_TOOLS: &[&str] = &["crgx", "cargo-chef", "cargo-dylint"];
 
 /// Initial back-off between failed `cargo install` retries. Mirrors
 /// the previous managed-install 10s baseline so callers
@@ -541,6 +541,15 @@ mod tests {
             chef.version, CARGO_CHEF_PINNED_VERSION,
             "cargo-chef default version must match the registry pin",
         );
+        let dylint = resolve_plan(
+            "cargo-dylint",
+            Some("x86_64-pc-windows-msvc".to_string()),
+            None,
+            &paths,
+        )
+        .expect("cargo-dylint resolve");
+        assert_eq!(dylint.version, "6.0.1");
+
         // Explicit --version still wins.
         let explicit = resolve_plan(
             "cargo-chef",

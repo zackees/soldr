@@ -430,6 +430,7 @@ fn bare_shorthand_recognizes_every_known_cargo_subcommand() {
         "xwin",
         "binstall",
         "machete",
+        "dylint",
     ];
     for verb in expected {
         let (crate_name, version) = parse_tool_spec(verb);

@@ -25,6 +25,7 @@ const ROOT_BEFORE_HELP: &str = "\
 Common commands:\n  \
 cargo                  Run cargo through soldr (cached, pinned toolchain)\n  \
 rustc                  Compile Rust source via the pinned toolchain\n  \
+lint                   Run Soldr's unified Rust and dependency lint suites\n  \
 rustfmt                Format Rust source via the pinned toolchain\n  \
 clippy-driver          Run the clippy linter via the pinned toolchain\n  \
 rustup                 Drop-in passthrough to the system rustup binary\n\n\
@@ -192,6 +193,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     "build",
     "cargo",
     "cook",
+    "lint",
     // soldr#1059 — PATH-prepending escape hatch for cargo extensions.
     "exec",
     "rustc",
@@ -259,6 +261,18 @@ pub(crate) enum Commands {
     },
     /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Run Soldr's cache-aware validation suites
+    ///
+    /// `soldr lint` runs formatting validation, Clippy, and configured
+    /// Dylint libraries with one canonical workspace scope. `lint deps`
+    /// runs dependency/policy checks concurrently without starting the
+    /// compiler cache. `lint all` extends both suites with udeps and
+    /// semver-checks.
+    Lint {
+        /// Suite selector (`rust`, `deps`, or `all`) followed by cargo scope flags.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
