@@ -49,12 +49,18 @@ timed_test!(
                 .any(|path| cargo_line.contains(&format!("cargo_home={path}"))),
             "explicit host CARGO_HOME should reach cargo unchanged: {cargo_line}"
         );
-        #[cfg(windows)]
-        let rustup_home_is_unset = cargo_line.contains("rustup_home=%RUSTUP_HOME% args=--version");
-        #[cfg(not(windows))]
-        let rustup_home_is_unset = cargo_line.contains("rustup_home= args=--version");
+        // With no explicit RUSTUP_HOME, the child may either inherit Rustup's
+        // default behavior or receive an implicit repository/host home. In
+        // particular, Windows temp directories live below the user profile,
+        // so ancestor discovery can legitimately find the host's ~/.rustup.
+        // The boundary contract is that a host binary never receives Soldr's
+        // managed, potentially default-less Rustup home.
+        let managed_rustup_home = cache_root.join("rustup");
+        let inherited_managed_rustup_home = path_display_variants(&managed_rustup_home)
+            .iter()
+            .any(|path| cargo_line.contains(&format!("rustup_home={path}")));
         assert!(
-            rustup_home_is_unset,
+            !inherited_managed_rustup_home,
             "a no-manifest host toolchain must not inherit Soldr's managed RUSTUP_HOME: {cargo_line}"
         );
     }
@@ -155,12 +161,12 @@ timed_test!(
             .lines()
             .find(|line| line.starts_with("rustfmt "))
             .unwrap_or_else(|| panic!("cargo fmt did not invoke rustfmt: {log}"));
-        #[cfg(windows)]
-        let rustup_home_is_unset = rustfmt_line.contains("rustup_home=%RUSTUP_HOME% args=");
-        #[cfg(not(windows))]
-        let rustup_home_is_unset = rustfmt_line.contains("rustup_home= args=");
+        let managed_rustup_home = cache_root.join("rustup");
+        let inherited_managed_rustup_home = path_display_variants(&managed_rustup_home)
+            .iter()
+            .any(|path| rustfmt_line.contains(&format!("rustup_home={path}")));
         assert!(
-            rustup_home_is_unset,
+            !inherited_managed_rustup_home,
             "host rustfmt must not inherit Soldr's managed RUSTUP_HOME: {rustfmt_line}"
         );
     }
