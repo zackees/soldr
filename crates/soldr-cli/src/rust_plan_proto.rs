@@ -131,12 +131,20 @@ pub(super) fn plan_to_proto_bytes(plan: &RustArtifactPlan) -> Result<Vec<u8>, So
             selected_package_ids: plan.packages.selected_package_ids.clone(),
             workspace_package_ids: plan.packages.workspace_package_ids.clone(),
             excluded_path_package_ids: plan.packages.excluded_path_package_ids.clone(),
-            ownership_policy: plan.packages.ownership_policy.unwrap_or_default().to_string(),
+            ownership_policy: plan
+                .packages
+                .ownership_policy
+                .unwrap_or_default()
+                .to_string(),
             ownership_mode: match plan.packages.ownership_mode {
                 None => 0,
                 Some("cook-partitioned-v1") => 1,
                 Some("zccache-all-v1") => 2,
-                Some(other) => return Err(SoldrError::Other(format!("unknown thin-v3 ownership mode {other}"))),
+                Some(other) => {
+                    return Err(SoldrError::Other(format!(
+                        "unknown thin-v3 ownership mode {other}"
+                    )))
+                }
             },
             artifact_owners: plan
                 .packages
