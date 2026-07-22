@@ -944,18 +944,45 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
 
 #[cfg(unix)]
 pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
+    process_image_stem_matches(pid_process_image_path(pid).as_deref(), expected_stem)
+}
+
+/// Compare an inspected process image to the expected executable stem.
+///
+/// Absence is deliberately a mismatch: callers use this check immediately
+/// before signalling a PID, so an unavailable image probe must never turn a
+/// stale PID file into authority to terminate an unrelated process.
+#[cfg(unix)]
+fn process_image_stem_matches(image: Option<&Path>, expected_stem: &str) -> bool {
+    image
+        .and_then(Path::file_stem)
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem == expected_stem)
+}
+
+/// Read a running process's executable path.
+///
+/// Linux exposes this directly through procfs. macOS and the BSDs do not, so
+/// use their portable `ps` process-image query instead. Every probe failure
+/// returns `None`, which the identity gate treats as unverified.
+#[cfg(target_os = "linux")]
+fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
     let link = PathBuf::from(format!("/proc/{pid}/exe"));
-    match fs::read_link(&link) {
-        Ok(p) => p
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .map(|s| s == expected_stem)
-            .unwrap_or(false),
-        // macOS / BSDs don't have /proc/<pid>/exe. The liveness probe
-        // alone is already a strong signal; degrade gracefully by
-        // trusting the PID file rather than rejecting it.
-        Err(_) => true,
+    fs::read_link(link).ok()
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn pid_process_image_path(pid: u32) -> Option<PathBuf> {
+    let output = std::process::Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
     }
+    let image = String::from_utf8(output.stdout).ok()?;
+    let image = image.trim();
+    (!image.is_empty()).then(|| PathBuf::from(image))
 }
 
 #[cfg(windows)]
@@ -1224,6 +1251,31 @@ mod spawn_lock_tests {
             Some(std::process::id())
         );
     }
+
+    #[cfg(unix)]
+    crate::timed_test!(uninspectable_process_image_fails_closed, {
+        assert!(
+            !process_image_stem_matches(None, "soldr-daemon"),
+            "an uninspectable process image must never be trusted"
+        );
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(unrelated_live_pid_is_not_displaced, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        let current_exe = std::env::current_exe().expect("current exe");
+        std::fs::write(
+            daemon_pid_path(&paths),
+            format!("{}\n{}\n", std::process::id(), current_exe.display()),
+        )
+        .expect("pid file");
+
+        assert!(stale_daemon_occupies_endpoint(&paths).is_none());
+        assert!(displace_stale_daemon(&paths));
+        assert!(pid_is_alive(std::process::id()));
+    });
 
     #[test]
     fn spawn_lock_serializes_concurrent_threads() {
