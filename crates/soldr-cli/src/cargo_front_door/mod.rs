@@ -26,9 +26,7 @@ use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{
-    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg,
-};
+use crate::{gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -1614,7 +1612,7 @@ pub(crate) async fn run_cargo_front_door(
 
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     suppress_windows_console_window(&mut command);
     // These soldr control variables are consumed by this front-door
     // process. Letting cargo inherit them leaks daemon lifecycle policy

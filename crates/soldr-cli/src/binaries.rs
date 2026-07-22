@@ -224,6 +224,35 @@ pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command
     apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
 }
 
+/// Apply homes that match a toolchain binary Soldr already resolved.
+///
+/// Rustup discovery and bootstrap intentionally use Soldr's managed homes,
+/// but a concrete host binary must keep the caller's host Rustup context.
+/// Mixing a host Cargo/rustfmt proxy with Soldr's default-less managed
+/// `RUSTUP_HOME` makes Rustup report that no default toolchain is configured.
+pub(crate) fn apply_resolved_toolchain_homes(
+    command: &mut std::process::Command,
+    binary: &std::path::Path,
+) {
+    let start_dir = std::env::current_dir().ok();
+    crate::core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    let managed_cargo_home = crate::fetch::managed_cargo_home(&paths);
+    let managed_rustup_home = crate::fetch::managed_rustup_home(&paths);
+    if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
+        apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
+    }
+}
+
+fn path_is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
+}
+
 fn apply_managed_toolchain_homes_if_available(
     command: &mut std::process::Command,
     start_dir: Option<&std::path::Path>,

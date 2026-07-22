@@ -65,6 +65,7 @@ Current cache-control behavior:
   `<soldr-root>/cache/zccache/daemon-state/embedded-v1/v<VERSION>/`; soldr does
   not use or sweep the standalone `~/.zccache` root
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins
+- once a concrete Cargo or Rust tool has been resolved, Soldr propagates its managed `CARGO_HOME` / `RUSTUP_HOME` only when that binary came from the Soldr-managed toolchain. Host-owned binaries keep the caller's host toolchain context instead of being paired with Soldr's default-less managed Rustup home
 
 This is the normal build entry point.
 

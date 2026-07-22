@@ -14,7 +14,7 @@ use crate::core::{
     command_output_with_timeout, suppress_windows_console_window, SoldrError, SoldrPaths,
 };
 use crate::{
-    apply_implicit_toolchain_homes, resolve_toolchain_binary,
+    resolve_toolchain_binary,
     toolchain::{run_prepare_inner, PrepareSummary},
 };
 
@@ -177,7 +177,7 @@ fn probe_version(tool: &str) -> Option<String> {
     let binary = resolve_toolchain_binary(tool).ok()?;
     let mut command = std::process::Command::new(&binary);
     command.arg("--version");
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &binary);
     suppress_windows_console_window(&mut command);
     let output = command_output_with_timeout(&mut command, &format!("{tool} --version")).ok()?;
     if !output.status.success() {

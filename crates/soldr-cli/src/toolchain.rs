@@ -14,9 +14,9 @@ const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 /// Run a rustup-managed toolchain binary with pass-through args.
 pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
     let binary = resolve_toolchain_binary(tool)?;
-    let mut command = std::process::Command::new(binary);
+    let mut command = std::process::Command::new(&binary);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &binary);
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, &format!("{tool} passthrough"))?;
     Ok(status.code().unwrap_or(1))
@@ -57,9 +57,9 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
     let rustfmt = resolve_toolchain_binary("rustfmt")?;
     if let Some(zccache) = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR) {
         let mut command = std::process::Command::new(zccache);
-        command.arg(rustfmt);
+        command.arg(&rustfmt);
         command.args(args);
-        apply_implicit_toolchain_homes(&mut command);
+        crate::binaries::apply_resolved_toolchain_homes(&mut command, &rustfmt);
         apply_zccache_child_env(&mut command)?;
         suppress_windows_console_window(&mut command);
         let status = run_toolchain_command(&mut command, "rustfmt zccache formatter")?;
@@ -82,7 +82,7 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
         &cwd,
         &cache_root,
         |command| {
-            apply_implicit_toolchain_homes(command);
+            crate::binaries::apply_resolved_toolchain_homes(command, &rustfmt);
             apply_zccache_child_env(command)
                 .map_err(|err| std::io::Error::other(err.to_string()))?;
             suppress_windows_console_window(command);
@@ -109,9 +109,9 @@ pub(crate) fn run_rustdoc(args: &[String]) -> Result<i32, SoldrError> {
 /// spawns can re-enter Soldr and use the normal zccache cargo front door.
 pub(crate) fn run_rust_analyzer(args: &[String], cache_enabled: bool) -> Result<i32, SoldrError> {
     let binary = resolve_toolchain_binary("rust-analyzer")?;
-    let mut command = std::process::Command::new(binary);
+    let mut command = std::process::Command::new(&binary);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &binary);
     command.env(
         crate::cache_lib::CACHE_ENABLED_ENV_VAR,
         crate::cache_lib::cache_enabled_env_value(cache_enabled),
@@ -509,7 +509,7 @@ fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i3
         }
     }
 
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     command
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER");

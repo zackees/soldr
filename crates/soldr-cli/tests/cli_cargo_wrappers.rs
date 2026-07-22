@@ -13,44 +13,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
-    #[cfg(windows)]
-    {
-        format!(
-            "@echo off\n\
-             set \"fmt=%RUSTFMT%\"\n\
-             if not defined RUSTFMT set \"fmt={2}\"\n\
-             echo cargo fmt rustfmt=%fmt% env_rustfmt=%RUSTFMT% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
-             if \"%~1\"==\"fmt\" (\n\
-               call \"%fmt%\" \"{1}\"\n\
-               exit /b %ERRORLEVEL%\n\
-             )\n\
-             echo unsupported fake cargo fmt invocation %* 1>&2\n\
-             exit /b 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        format!(
-            "#!/bin/sh\n\
-             fmt=\"${{RUSTFMT:-{2}}}\"\n\
-             echo \"cargo fmt rustfmt=$fmt env_rustfmt=${{RUSTFMT:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
-             if [ \"$1\" = \"fmt\" ]; then\n\
-               \"$fmt\" \"{1}\"\n\
-               exit $?\n\
-             fi\n\
-             echo \"unsupported fake cargo fmt invocation: $*\" >&2\n\
-             exit 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-}
-
 fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
     #[cfg(windows)]
     {
@@ -159,24 +121,6 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
     }
 }
 
-fn install_fake_cargo_fmt_toolchain(
-    log_path: &Path,
-    source_path: &Path,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let (rustup, cargo, rustc, rustfmt) = install_fake_rustup_toolchain(log_path);
-    let tool_dir = cargo
-        .parent()
-        .expect("fake cargo should live in a tool dir")
-        .to_path_buf();
-    let zccache = fake_script_path(&tool_dir, "zccache");
-    write_fake_script(
-        &cargo,
-        &fake_cargo_fmt_script(log_path, source_path, &rustfmt),
-    );
-    write_fake_script(&zccache, &fake_zccache_script(log_path));
-    (rustup, cargo, rustc, rustfmt, zccache)
-}
-
 fn install_fake_cargo_doc_toolchain(
     log_path: &Path,
     source_path: &Path,
@@ -218,14 +162,6 @@ fn install_fake_direct_rustc_like_toolchain(
     );
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, rustc, clippy_driver, zccache, tool_dir)
-}
-
-fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
-    let src_dir = cache_root.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
-    let source_path = src_dir.join("lib.rs");
-    fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
-    source_path
 }
 
 fn write_rustc_like_source(cache_root: &Path) -> PathBuf {

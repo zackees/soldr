@@ -5,8 +5,8 @@
 //! wrapper path was removed in #980 L1 second pass — embedded is mandatory.
 
 use crate::core::{suppress_windows_console_window, SoldrError};
+use crate::resolve_toolchain_binary;
 use crate::startup_profile::WrapperProfile;
-use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary};
 
 /// Known toolchain binaries that cargo may invoke through RUSTC_WRAPPER
 /// or RUSTC_WORKSPACE_WRAPPER. When soldr is set as a wrapper, cargo
@@ -256,7 +256,10 @@ pub(crate) fn run_rustc_wrapper(
             profile.finish("before_test_override_spawn");
             let mut command = std::process::Command::new(&zccache_bin);
             command.args(&compile_args[1..]);
-            apply_implicit_toolchain_homes(&mut command);
+            crate::binaries::apply_resolved_toolchain_homes(
+                &mut command,
+                std::path::Path::new(&compile_args[1]),
+            );
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
             return Ok(status.code().unwrap_or(1));
@@ -322,9 +325,9 @@ fn direct_exec_tool(
         resolve_toolchain_binary(tool_stem)?
     };
 
-    let mut command = std::process::Command::new(tool_path);
+    let mut command = std::process::Command::new(&tool_path);
     command.args(&effective_args[2..]);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
     suppress_windows_console_window(&mut command);
     if let Some(profile) = profile {
         profile.finish("before_tool_spawn");
