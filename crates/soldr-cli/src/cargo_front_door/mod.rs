@@ -53,8 +53,7 @@ pub(crate) use cache_plan::CargoCachePlan;
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
 /// Internal one-hop marker for commands that must share their Soldr parent's
 /// process group. The nested process consumes it before spawning Cargo.
-pub(crate) const INHERIT_PARENT_PROCESS_GROUP_ENV: &str =
-    "SOLDR_INTERNAL_INHERIT_PROCESS_GROUP";
+pub(crate) const INHERIT_PARENT_PROCESS_GROUP_ENV: &str = "SOLDR_INTERNAL_INHERIT_PROCESS_GROUP";
 const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
