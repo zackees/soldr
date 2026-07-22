@@ -11,8 +11,8 @@ use crate::{
     archive_cmd, binaries, blessed_build, bootstrap, build_from_source_cmd, cache, cache_lib,
     cargo_diagnostics, cargo_front_door, cargo_metadata_soldr, cargo_path_check, cli_args,
     cli_dispatch, compile_dispatch, cook, core, daemon, defender, defender_probe, doctor, env_cmd,
-    exec_cmd, fetch, fuzzy_match, gc, install_shims, linker, logs_cmd, msvc_host, multicall,
-    native_cc, optimize, optimize_detect, optimize_windows, prepare_cmd, pyo3_detect,
+    exec_cmd, fetch, fuzzy_match, gc, install_shims, linker, lint_cmd, logs_cmd, msvc_host,
+    multicall, native_cc, optimize, optimize_detect, optimize_windows, prepare_cmd, pyo3_detect,
     release_sidecar, rust_plan, save_load, self_relocate, shim_dir, shim_materialize,
     startup_profile, target_alias, test_util, toolchain, toolchain_doctor, toolchain_ensure,
     toolchain_link, trampoline, wrapper, wrapper_target, zccache, zccache_embedded,
@@ -349,6 +349,17 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             ensure_msvc_host_env_for_native(&args);
             std::process::exit(
                 cargo_front_door::run_cargo_front_door(
+                    &args,
+                    cache_enabled,
+                    zccache_source,
+                    trust_inherited_soldr_env,
+                )
+                .await?,
+            );
+        }
+        Commands::Lint { args } => {
+            std::process::exit(
+                lint_cmd::run_lint(
                     &args,
                     cache_enabled,
                     zccache_source,

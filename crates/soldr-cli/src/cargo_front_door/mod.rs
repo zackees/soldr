@@ -871,7 +871,9 @@ fn cargo_timeout_error(
 }
 
 #[cfg(windows)]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     let pid = child.id().to_string();
     let taskkill = std::process::Command::new("taskkill")
         .args(["/PID", &pid, "/T", "/F"])
@@ -888,7 +890,9 @@ fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&
 }
 
 #[cfg(unix)]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     let pgid = child.id() as libc::pid_t;
     let term_result = signal_process_group(pgid, libc::SIGTERM);
     std::thread::sleep(Duration::from_millis(100));
@@ -916,12 +920,14 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> std::io::Resu
 }
 
 #[cfg(all(not(windows), not(unix)))]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     child.kill()?;
     Ok("killed child process")
 }
 
-fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
+pub(crate) fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -2482,6 +2488,47 @@ async fn ensure_known_subcommand_tool(
         }
     }
 
+    // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
+    // Windows or macOS ones. Keep its normal managed-fetch path on the
+    // supported host and use Soldr's pinned, wrapper-free source-build
+    // path elsewhere. The result is cached below ~/.soldr/bin, just like
+    // the explicitly requested soldr build-from-source flow.
+    if sub == "dylint" && dylint_requires_source_build() {
+        let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
+        let binary = if plan.final_binary.is_file() {
+            eprintln!(
+                "soldr: using cached source-built cargo-dylint at {}",
+                plan.final_binary.display()
+            );
+            plan.final_binary.clone()
+        } else {
+            eprintln!(
+                "soldr: cargo-dylint has no prebuilt asset for this host; building pinned source fallback..."
+            );
+            crate::build_from_source_cmd::execute_plan(&plan)?.binary
+        };
+        let dir = binary.parent().ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for source-built cargo-dylint: {}",
+                binary.display()
+            ))
+        })?;
+        extra_bin_dirs.push(dir.to_path_buf());
+        append_subcommand_transitive_bin_dirs(
+            sub,
+            args,
+            paths,
+            &mut extra_bin_dirs,
+            &mut extra_env,
+            &mut extra_cargo_args,
+        )
+        .await?;
+        return Ok(SubcommandToolBootstrap {
+            bin_dirs: extra_bin_dirs,
+            env: extra_env,
+            cargo_args: extra_cargo_args,
+        });
+    }
     let version = spec
         .pinned_version
         .map(|v| VersionSpec::Exact(v.to_string()))
@@ -2525,6 +2572,10 @@ async fn ensure_known_subcommand_tool(
         env: extra_env,
         cargo_args: extra_cargo_args,
     })
+}
+
+fn dylint_requires_source_build() -> bool {
+    !cfg!(all(target_os = "linux", target_env = "gnu"))
 }
 
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {

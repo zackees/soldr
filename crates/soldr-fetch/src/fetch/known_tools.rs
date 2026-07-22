@@ -244,6 +244,18 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         wraps_inner_cargo_build: false, // filesystem + regex scan, no compilation
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
+    // `cargo-dylint` is the compiler-plugin runner used by `soldr lint`.
+    // Upstream publishes Linux GNU archives; other hosts use Soldr's
+    // source-build fallback in the cargo front door (soldr#1721).
+    ToolSpec {
+        crate_name: "cargo-dylint",
+        cargo_subcommand: Some("dylint"),
+        binary_name: "cargo-dylint",
+        repo: Some(("trailofbits", "dylint")),
+        tag_prefix: None,
+        pinned_version: Some("6.0.1"),
+        wraps_inner_cargo_build: true, // Dylint runs cargo check-like builds.
+    },
     ToolSpec {
         crate_name: "wasm-pack",
         cargo_subcommand: None,

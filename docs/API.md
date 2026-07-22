@@ -332,6 +332,25 @@ soldr --no-cache cargo test
 
 For cross-target builds (`soldr cargo --target ...`), the target's Rust standard library must be provisioned separately — see the [native vs cross targets](../README.md#native-vs-cross-targets) section of the README.
 
+### `soldr lint`
+
+Run the repository validation suites through Soldr. The default and `rust`
+suites run formatting, Clippy, and Dylint with one canonical workspace scope:
+
+```bash
+soldr lint
+soldr lint rust --package soldr-cli
+soldr lint deps
+soldr lint all
+```
+
+`deps` runs `deny check`, `audit`, and `machete` concurrently as cache-disabled
+children because they do not compile Rust. `all` adds `--all-features`, `udeps`,
+and `semver-checks` after the standard Rust and dependency suites. Compiler-bearing
+steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from its
+Linux GNU release asset or source-built from the pinned registry version on Windows
+and macOS.
+
 ### `soldr cook`
 
 Content-addressable dependency pre-build (issue #359). `cook` is a shim
