@@ -165,3 +165,61 @@ timed_test!(
         );
     }
 );
+
+timed_test!(relative_managed_rustc_wrapper_uses_soldr_toolchain_homes, {
+    let cache_root = unique_temp_dir("relative-managed-rustc-wrapper");
+    let log_path = cache_root.join("tool.log");
+    let managed_cargo_home = cache_root.join("cargo");
+    let managed_cargo_bin = managed_cargo_home.join("bin");
+    let managed_rustup_home = cache_root.join("rustup");
+    fs::create_dir_all(&managed_cargo_bin).expect("failed to create managed cargo bin");
+    fs::create_dir_all(&managed_rustup_home).expect("failed to create managed rustup home");
+    let (_, rustc, _) = install_fake_version_toolchain(&managed_cargo_bin, &log_path);
+
+    let zccache_dir = unique_temp_dir("relative-managed-rustc-zccache");
+    let zccache = fake_script_path(&zccache_dir, "zccache");
+    write_fake_script(&zccache, &fake_zccache_script(&log_path));
+
+    let rustc_name = rustc
+        .file_name()
+        .expect("fake rustc should have a file name");
+    let output = isolated_soldr_command()
+        .arg(rustc_name)
+        .args(["--crate-name", "managed_boundary", "--emit", "metadata"])
+        .current_dir(&cache_root)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_REAL_RUSTC", &rustc)
+        .env_remove("SOLDR_TEST_RUSTC_BIN")
+        .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
+        .env("PATH", prepend_to_path(&managed_cargo_bin))
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .output()
+        .expect("failed to run relative managed rustc through the wrapper");
+
+    assert!(
+        output.status.success(),
+        "relative managed rustc wrapper failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&log_path).expect("failed to read fake rustc log");
+    let rustc_line = log
+        .lines()
+        .find(|line| line.starts_with("rustc "))
+        .unwrap_or_else(|| panic!("managed rustc was not invoked through zccache: {log}"));
+    assert!(
+        path_display_variants(&managed_cargo_home)
+            .iter()
+            .any(|path| rustc_line.contains(&format!("cargo_home={path}"))),
+        "relative managed rustc must receive Soldr's managed CARGO_HOME: {rustc_line}"
+    );
+    assert!(
+        path_display_variants(&managed_rustup_home)
+            .iter()
+            .any(|path| rustc_line.contains(&format!("rustup_home={path}"))),
+        "relative managed rustc must receive Soldr's managed RUSTUP_HOME: {rustc_line}"
+    );
+});

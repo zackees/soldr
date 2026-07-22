@@ -256,10 +256,8 @@ pub(crate) fn run_rustc_wrapper(
             profile.finish("before_test_override_spawn");
             let mut command = std::process::Command::new(&zccache_bin);
             command.args(&compile_args[1..]);
-            crate::binaries::apply_resolved_toolchain_homes(
-                &mut command,
-                std::path::Path::new(&compile_args[1]),
-            );
+            let tool_path = resolve_wrapper_tool_path(&compile_args[1], tool_stem)?;
+            crate::binaries::apply_resolved_toolchain_homes(&mut command, &tool_path);
             suppress_windows_console_window(&mut command);
             let status = command.status()?;
             return Ok(status.code().unwrap_or(1));
@@ -317,13 +315,7 @@ fn direct_exec_tool(
     effective_args: &[String],
     profile: Option<WrapperProfile>,
 ) -> Result<i32, SoldrError> {
-    // Resolve the tool binary. If it's already a full path, use it
-    // directly. Otherwise resolve via rustup.
-    let tool_path: std::path::PathBuf = if std::path::Path::new(tool_arg).is_absolute() {
-        tool_arg.into()
-    } else {
-        resolve_toolchain_binary(tool_stem)?
-    };
+    let tool_path = resolve_wrapper_tool_path(tool_arg, tool_stem)?;
 
     let mut command = std::process::Command::new(&tool_path);
     command.args(&effective_args[2..]);
@@ -335,6 +327,20 @@ fn direct_exec_tool(
     let status = command.status()?;
 
     Ok(status.code().unwrap_or(1))
+}
+
+/// Resolve a wrapper compiler identity before deriving its toolchain homes.
+/// Cargo may pass either an absolute path or a bare tool name, and every
+/// wrapper execution path must classify that tool against the same path.
+fn resolve_wrapper_tool_path(
+    tool_arg: &str,
+    tool_stem: &str,
+) -> Result<std::path::PathBuf, SoldrError> {
+    if std::path::Path::new(tool_arg).is_absolute() {
+        Ok(tool_arg.into())
+    } else {
+        resolve_toolchain_binary(tool_stem)
+    }
 }
 
 struct StdinSourceFile {
