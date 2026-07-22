@@ -120,10 +120,22 @@ soldr_cli::timed_test!(
             warm_hits > 0,
             "fresh worktree and target must reuse the cold build: {warm:#?}",
         );
+        let warm_published = staged_counter(&warm, "publication_success");
+        let warm_conflicts = staged_counter(&warm, "publication_conflict");
+        // A few compiler outputs legitimately encode their target directory.
+        // Those cannot be reused across fresh targets, but the staged store
+        // must safely quarantine the candidate rather than replacing the
+        // durable generation from the first worktree. Every other miss must
+        // still publish successfully.
         assert_eq!(
-            staged_counter(&warm, "publication_success"),
+            warm_published + warm_conflicts,
             warm_misses,
-            "any fresh-target cache misses must also be durably published: {warm:#?}",
+            "every fresh-target miss must publish or be safely quarantined as a conflict: {warm:#?}",
+        );
+        assert_eq!(
+            staged_failure(&warm, "publication_conflict"),
+            warm_conflicts,
+            "each quarantined fresh-target miss must report its conflict: {warm:#?}",
         );
         assert_eq!(
             staged_failure(&warm, "durable_digest"),

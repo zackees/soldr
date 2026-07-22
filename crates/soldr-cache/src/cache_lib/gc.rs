@@ -209,6 +209,17 @@ pub fn delete_candidate_dir(candidate: GcCandidate) -> GcDeleteOutcome {
         };
     }
 
+    if !candidate.path.is_dir() {
+        return GcDeleteOutcome {
+            error: Some(format!(
+                "registered target path is not a directory: {}",
+                candidate.path.display()
+            )),
+            candidate,
+            removed: false,
+        };
+    }
+
     let _cargo_locks = match super::cargo_lock::probe(&candidate.path) {
         Ok(super::cargo_lock::CargoLockProbe::Idle(guard)) => guard,
         Ok(super::cargo_lock::CargoLockProbe::Active(lock)) => {

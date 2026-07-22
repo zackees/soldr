@@ -227,6 +227,7 @@ fn run_dependency_steps(
         }
         command.arg("cargo").args(args);
         cargo_front_door::configure_cargo_child_for_timeout(&mut command);
+        command.env(cargo_front_door::INHERIT_PARENT_PROCESS_GROUP_ENV, "1");
         children.push(command.spawn().map_err(|error| {
             SoldrError::Other(format!(
                 "lint deps: failed to start child Soldr process: {error}"

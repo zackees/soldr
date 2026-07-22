@@ -16,6 +16,25 @@ pub struct CargoLockGuard {
     files: Vec<File>,
 }
 
+/// Whether an error means another process already holds the file lock.
+///
+/// Windows can reject the second open itself with ERROR_SHARING_VIOLATION
+/// (32) or ERROR_LOCK_VIOLATION (33), rather than letting fs2 return
+/// WouldBlock from try_lock_exclusive as Unix does.
+pub(crate) fn lock_is_held(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(32 | 33))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 impl Drop for CargoLockGuard {
     fn drop(&mut self) {
         for file in &self.files {
@@ -50,12 +69,21 @@ pub fn probe(target_dir: &Path) -> io::Result<CargoLockProbe> {
         }
     }
     lock_paths.sort();
-    let mut files = Vec::with_capacity(lock_paths.len());
+    let mut files: Vec<File> = Vec::with_capacity(lock_paths.len());
     for path in lock_paths {
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if lock_is_held(&error) => {
+                for held in &files {
+                    let _ = held.unlock();
+                }
+                return Ok(CargoLockProbe::Active(path));
+            }
+            Err(error) => return Err(error),
+        };
         match file.try_lock_exclusive() {
             Ok(()) => files.push(file),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(error) if lock_is_held(&error) => {
                 for held in &files {
                     let _ = held.unlock();
                 }
