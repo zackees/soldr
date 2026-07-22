@@ -18,7 +18,7 @@ Third-party comparison (soldr vs Swatinem/rust-cache vs ...): published from `za
 
 *[performance details](https://zackees.github.io/soldr/)*
 
-Cold builds are a wash; warm and cross-worktree share are where soldr's wrapper architecture pays off. Full historical trend + interactive view: [zackees.github.io/soldr](https://zackees.github.io/soldr/). For the swatinem/rust-cache comparison (GHA target-dir caching, a different layer) see [PERF.md](PERF.md#readme-comparison-bars-issue-785).
+Cold builds are a wash; clean-target reconstruction from a warm compiler cache and cross-worktree sharing are where soldr's wrapper architecture pays off. The README chart's clean-target row intentionally deletes `target/`; it does not claim Cargo's intact-target freshness fast path. Full historical trend + interactive view: [zackees.github.io/soldr](https://zackees.github.io/soldr/). For the swatinem/rust-cache comparison (GHA target-dir caching, a different layer) see [PERF.md](PERF.md#readme-comparison-bars-issue-785).
 
 **Instant tools. Instant builds. One command.**
 

@@ -41,7 +41,7 @@ BENCHMARKS = {
 OVERLAY_SECTIONS = [
     {
         "key": "warm",
-        "label": "Warm rebuild (same workspace)",
+        "label": "Clean-target rebuild (same workspace; warm compiler cache)",
         "cold_key": "cold",
         "warm_key": "warm",
     },
@@ -140,8 +140,8 @@ def overlay_speedup_label(
         return ""
     ratio = sccache / soldr
     if ratio >= 1:
-        return f"soldr warm {ratio:.1f}x faster than sccache"
-    return f"soldr warm {(1 / ratio):.1f}x slower than sccache"
+        return f"soldr clean-target {ratio:.1f}x faster than sccache"
+    return f"soldr clean-target {(1 / ratio):.1f}x slower than sccache"
 
 
 def cold_max_for_section(
@@ -226,7 +226,7 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
         xy(margin, 92),
         truncate(
             draw,
-            f"{versions} | cold bars in back; warm overlays in front",
+            f"{versions} | cold bars in back; clean-target/warm-cache overlays in front",
             subtitle_font,
             (width - margin * 2) * scale,
         ),
@@ -240,7 +240,7 @@ def render_benchmark(doc: dict[str, Any], benchmark: str) -> Path:
     rect((legend_x, legend_y + 7, legend_x + 26, legend_y + 17), TOOL_COLOR_PAIRS["soldr"]["warm"])
     draw.text(
         xy(legend_x + 70, legend_y + 1),
-        "cold (back) + warm (front, overlays cold)",
+        "cold (back) + clean-target/warm-cache (front)",
         font=small_font,
         fill=hex_rgb("#c9d1d9"),
     )
