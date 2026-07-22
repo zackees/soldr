@@ -28,11 +28,11 @@ fn strings(values: &[&str]) -> Vec<String> {
 fn dependency_failure_script() -> &'static str {
     #[cfg(windows)]
     {
-        "@echo off\nif \"%~1\"==\"audit\" exit /b 9\nping -n 11 127.0.0.1 > nul\nexit /b 0\n"
+        "@echo off\nif \"%~1\"==\"metadata\" exit /b 0\nif \"%~1\"==\"audit\" exit /b 9\nping -n 11 127.0.0.1 > nul\nexit /b 0\n"
     }
     #[cfg(not(windows))]
     {
-        "#!/bin/sh\nif [ \"$1\" = audit ]; then exit 9; fi\nsleep 10\n"
+        "#!/bin/sh\nif [ \"$1\" = metadata ]; then exit 0; fi\nif [ \"$1\" = audit ]; then exit 9; fi\nsleep 10\n"
     }
 }
 
@@ -104,7 +104,13 @@ timed_test!(
             String::from_utf8_lossy(&output.stderr),
         );
         assert_eq!(
-            read_logged_cargo_invocations(&log),
+            read_logged_cargo_invocations(&log)
+                .into_iter()
+                .filter(|args| {
+                    args.first()
+                        .map_or(true, |subcommand| subcommand != "metadata")
+                })
+                .collect::<Vec<_>>(),
             vec![
                 strings(&["fmt", "--all", "--package", "soldr-cli", "--", "--check",]),
                 strings(&[
