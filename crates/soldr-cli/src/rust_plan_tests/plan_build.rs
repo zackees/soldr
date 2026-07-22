@@ -293,6 +293,77 @@ fn rust_artifact_plan_bumps_cache_schema_version_for_thin_v2() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// `thin-v3` is an explicit compatibility boundary: until Cargo supplies a
+/// complete package-to-artifact closure, Soldr asks zccache to retain all
+/// durable compiler output rather than risk a partial cook partition.
+#[test]
+fn rust_artifact_plan_marks_thin_v3_zccache_all_fallback() {
+    let root = std::env::temp_dir().join(format!(
+        "soldr-rust-plan-thinv3-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos(),
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("app/src")).unwrap();
+    std::fs::create_dir_all(root.join("target")).unwrap();
+    std::fs::write(root.join("Cargo.lock"), "# lock\n").unwrap();
+    std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+    std::fs::write(root.join("app/Cargo.toml"), "[package]\nname='app'\n").unwrap();
+
+    let metadata = CargoMetadata {
+        workspace_root: root.clone(),
+        target_directory: root.join("target"),
+        workspace_members: vec!["path+file:///repo/app#app@0.1.0".to_string()],
+        packages: vec![CargoMetadataPackage {
+            id: "path+file:///repo/app#app@0.1.0".to_string(),
+            source: None,
+            manifest_path: None,
+        }],
+    };
+    let toolchain = RustToolchainIdentity {
+        rustc: "rustc 1.0.0-test".to_string(),
+        cargo: "cargo 1.0.0-test".to_string(),
+        channel: "test".to_string(),
+        host: "x86_64-unknown-test".to_string(),
+    };
+    let session = ZccacheBuildSession {
+        cache_dir: root.join("cache"),
+        cache_dir_env: true,
+        session_id: "session-thinv3".to_string(),
+        session_log_path: root.join("cache/logs/last-session.log"),
+        journal_path: root.join("cache/logs/last-session.jsonl"),
+        session_stats_path: root.join("cache/logs/last-session-stats.json"),
+    };
+    let file_hashes =
+        WorkspaceFileHashes::collect(&metadata.workspace_root).expect("collect file hashes");
+    let plan = build_rust_artifact_plan(
+        &metadata,
+        &toolchain,
+        &["build".to_string()],
+        "thin",
+        Some("thin-v3"),
+        &session,
+        None,
+        &file_hashes,
+    )
+    .expect("build rust artifact plan");
+
+    assert_eq!(plan.cache_schema_version, 3);
+    assert_eq!(plan.cache_profile, Some("thin-v3"));
+    assert_eq!(
+        plan.packages.ownership_policy,
+        Some("thin-v3-lifetime-partition-v1")
+    );
+    assert_eq!(plan.packages.ownership_mode, Some("zccache-all-v1"));
+    assert!(!plan.packages.ownership_complete);
+    assert!(plan.packages.artifact_owners.is_empty());
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// Default flip for issue #461: when `SOLDR_TARGET_CACHE_PROFILE` is
 /// unset, soldr must pick `thin-v2` so warm CI restores no longer ship
 /// the heavy `.rlib`/`.rmeta`/proc-macro bytes through the GHA cache.

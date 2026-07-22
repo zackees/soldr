@@ -35,9 +35,10 @@ pub(crate) fn rust_artifact_cache_profile_from_env() -> Result<&'static str, Sol
         // split. `thin-v1` is preserved as an explicit opt-out for users
         // pinned to older zccache.
         "" | "thin-v2" => Ok("thin-v2"),
+        "thin-v3" => Ok("thin-v3"),
         "thin-v1" => Ok("thin-v1"),
         _ => Err(SoldrError::Other(format!(
-            "invalid {TARGET_CACHE_PROFILE_ENV_VAR} value {raw:?}; expected thin-v1 or thin-v2"
+            "invalid {TARGET_CACHE_PROFILE_ENV_VAR} value {raw:?}; expected thin-v1, thin-v2, or thin-v3"
         ))),
     }
 }
