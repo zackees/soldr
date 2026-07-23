@@ -225,10 +225,16 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         let managed_llvm_available = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
         // Rust's packed Darwin debuginfo invokes `dsymutil` after linking.
-        // The managed clang bundle is intentionally a small linker/tool
-        // bundle and does not currently ship that executable, so provision
-        // the rustup LLVM-tools component into the same child PATH. This is
-        // host-independent and works for Linux and Windows Darwin builds.
+        // Fetch the selective managed LLVM-tools bundle, which includes
+        // llvm-dsymutil for Linux-hosted Darwin cross-builds.
+        if let Ok(bundle) = crate::fetch::llvm_tools_bundle::ensure_llvm_tools_bundle(
+            paths,
+            crate::fetch::cmake_tools::current_host_triple(),
+        )
+        .await
+        {
+            prep.path_dirs.push(bundle.join("bin"));
+        }
         ensure_dsymutil_on_path(&mut prep)?;
 
         // Apple SDK fetch is the same code path `soldr prepare` uses,
@@ -372,10 +378,38 @@ fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
 const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
 
 fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
     if let Some(path) = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
         .map(PathBuf::from)
         .filter(|path| path.is_file())
     {
+        if let Some(parent) = path.parent() {
+            prep.path_dirs.push(parent.to_path_buf());
+            return Ok(());
+        }
+    }
+
+    for dir in &prep.path_dirs {
+        for name in names {
+            let path = dir.join(name);
+            if path.is_file() {
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value).find_map(|dir| {
+            names
+                .iter()
+                .map(|name| dir.join(name))
+                .find(|path| path.is_file())
+        })
+    }) {
         if let Some(parent) = path.parent() {
             prep.path_dirs.push(parent.to_path_buf());
             return Ok(());
@@ -424,18 +458,21 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
 }
 
 fn find_dsymutil_in_rustup() -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
     let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
     let toolchain_root = rustc.parent()?.parent()?;
     let host_bin = toolchain_root.join("lib").join("rustlib");
     let entries = std::fs::read_dir(host_bin).ok()?;
     for entry in entries.flatten() {
-        let candidate = entry.path().join("bin").join(if cfg!(windows) {
-            "dsymutil.exe"
-        } else {
-            "dsymutil"
-        });
-        if candidate.is_file() {
-            return Some(candidate);
+        for name in names {
+            let candidate = entry.path().join("bin").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     None

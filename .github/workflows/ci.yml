@@ -29,6 +29,7 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
+  workflow_dispatch:
 
 permissions:
   contents: read
