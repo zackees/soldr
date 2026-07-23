@@ -29,6 +29,7 @@ on:
     paths-ignore:
       - '*.md'
       - '**/*.md'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -78,7 +79,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
         with:
           toolchain: 1.94.1
           cache: false
@@ -168,7 +169,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
         with:
           toolchain: 1.94.1
           cache: false

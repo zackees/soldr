@@ -83,7 +83,7 @@ jobs:
         run: rustup toolchain install 1.94.1 --profile minimal --no-self-update
 
       - name: Setup soldr build cache
-        uses: zackees/setup-soldr@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
         with:
           toolchain: 1.94.1
           cache: false
@@ -137,7 +137,7 @@ jobs:
           exit $exitCode
 
       - name: Stop setup-soldr builder cache before tests
-        uses: zackees/setup-soldr/cleanup@01aea6d47db8fedcafd350e2d42e19290c68824e
+        uses: zackees/setup-soldr/cleanup@c4e66a9114a45193605ff4a27404ef74b9b9a6dc
 
       # soldr#1324/#1703 — run every workspace library and integration binary
       # in one invocation. This includes the internal crates extracted after

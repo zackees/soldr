@@ -465,6 +465,14 @@ pub fn evaluate_safety_guards(
         }
     }
 
+    // A registry row can outlive a target directory and be replaced by a
+    // non-directory entry. Let the purge phase report that malformed row as a
+    // deletion failure instead of silently hiding it behind a lock-probe I/O
+    // error.
+    if !target_dir.is_dir() {
+        return GuardOutcome::Eligible;
+    }
+
     match super::cargo_lock::probe(target_dir) {
         Ok(super::cargo_lock::CargoLockProbe::Idle(_guard)) => {}
         Ok(super::cargo_lock::CargoLockProbe::Active(lock)) => {

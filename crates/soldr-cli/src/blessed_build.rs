@@ -30,7 +30,8 @@
 //! `SOLDR_USE_LEGACY_*` env-var contract documented in soldr#1010
 //! Phase 8.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use crate::core::{SoldrError, SoldrPaths};
 
@@ -223,6 +224,19 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
         // cargo, so without this it never gets llvm-ar — soldr#1309.)
         let managed_llvm_available = ensure_llvm_on_path(paths, &mut prep, target_triple).await;
 
+        // Rust's packed Darwin debuginfo invokes `dsymutil` after linking.
+        // Fetch the selective managed LLVM-tools bundle, which includes
+        // llvm-dsymutil for Linux-hosted Darwin cross-builds.
+        if let Ok(bundle) = crate::fetch::llvm_tools_bundle::ensure_llvm_tools_bundle(
+            paths,
+            crate::fetch::cmake_tools::current_host_triple(),
+        )
+        .await
+        {
+            prep.path_dirs.push(bundle.join("bin"));
+        }
+        ensure_dsymutil_on_path(&mut prep)?;
+
         // Apple SDK fetch is the same code path `soldr prepare` uses,
         // so this is reuse rather than new logic.
         match crate::fetch::apple_sdk::ensure_apple_sdk(paths, Some(target_triple)).await {
@@ -359,6 +373,109 @@ fn add_msvc_tool_env(prep: &mut BlessedPrep, target_u: &str, target_u_upper: &st
 
 fn darwin_should_use_lld(managed_llvm_available: bool) -> bool {
     managed_llvm_available || cfg!(target_os = "linux")
+}
+
+const SOLDR_DSYMUTIL_ENV_VAR: &str = "SOLDR_DSYMUTIL";
+
+fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
+    if let Some(path) = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR)
+        .map(PathBuf::from)
+        .filter(|path| path.is_file())
+    {
+        if let Some(parent) = path.parent() {
+            prep.path_dirs.push(parent.to_path_buf());
+            return Ok(());
+        }
+    }
+
+    for dir in &prep.path_dirs {
+        for name in names {
+            let path = dir.join(name);
+            if path.is_file() {
+                return Ok(());
+            }
+        }
+    }
+
+    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value).find_map(|dir| {
+            names
+                .iter()
+                .map(|name| dir.join(name))
+                .find(|path| path.is_file())
+        })
+    }) {
+        if let Some(parent) = path.parent() {
+            prep.path_dirs.push(parent.to_path_buf());
+            return Ok(());
+        }
+    }
+
+    if let Some(path) = find_dsymutil_in_rustup() {
+        if let Some(parent) = path.parent() {
+            prep.path_dirs.push(parent.to_path_buf());
+            return Ok(());
+        }
+    }
+
+    let channel = crate::core::read_rust_toolchain_manifest(
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    )
+    .ok()
+    .and_then(|manifest| manifest.channel);
+    let mut command = Command::new(crate::binaries::rustup_binary());
+    command.args(["component", "add", "llvm-tools-preview"]);
+    if let Some(channel) = channel.as_deref() {
+        command.args(["--toolchain", channel]);
+    }
+    crate::core::apply_implicit_toolchain_homes(&mut command, None);
+    command.stdout(Stdio::null());
+    let status = command.status().map_err(|error| {
+        SoldrError::Other(format!(
+            "unable to provision dsymutil: failed to invoke rustup: {error}"
+        ))
+    })?;
+    if status.success() {
+        if let Some(path) = find_dsymutil_in_rustup() {
+            if let Some(parent) = path.parent() {
+                prep.path_dirs.push(parent.to_path_buf());
+                return Ok(());
+            }
+        }
+    }
+
+    Err(SoldrError::Other(
+        "Darwin packed debuginfo requires dsymutil, but it is unavailable. \
+         Install the rustup llvm-tools-preview component or set SOLDR_DSYMUTIL \
+         to a compatible dsymutil executable."
+            .into(),
+    ))
+}
+
+fn find_dsymutil_in_rustup() -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
+    let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
+    let toolchain_root = rustc.parent()?.parent()?;
+    let host_bin = toolchain_root.join("lib").join("rustlib");
+    let entries = std::fs::read_dir(host_bin).ok()?;
+    for entry in entries.flatten() {
+        for name in names {
+            let candidate = entry.path().join("bin").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 fn add_mingw_w64_gcc_env(
@@ -1093,6 +1210,22 @@ mod tests {
         };
 
         assert_eq!(prep.path_prefix(), vec![shim, llvm, cmake]);
+    });
+
+    crate::timed_test!(dsymutil_override_is_added_to_child_path, {
+        let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let bin = tmp.path().join("dsymutil");
+        std::fs::write(&bin, b"stub").expect("stub");
+        let prior = std::env::var_os(SOLDR_DSYMUTIL_ENV_VAR);
+        std::env::set_var(SOLDR_DSYMUTIL_ENV_VAR, &bin);
+        let mut prep = BlessedPrep::default();
+        ensure_dsymutil_on_path(&mut prep).expect("override should satisfy preflight");
+        match prior {
+            Some(value) => std::env::set_var(SOLDR_DSYMUTIL_ENV_VAR, value),
+            None => std::env::remove_var(SOLDR_DSYMUTIL_ENV_VAR),
+        }
+        assert_eq!(prep.path_dirs, vec![tmp.path()]);
     });
 
     crate::timed_test!(darwin_lld_policy_uses_host_lld_on_linux_fallback, {

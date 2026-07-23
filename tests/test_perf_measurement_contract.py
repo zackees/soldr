@@ -76,3 +76,20 @@ def test_thin_verifier_deletes_target_and_disables_warm_skip() -> None:
     second_build = workflow.index("Second (fresh-target restore)")
     assert delete_target < second_build
     assert 'SOLDR_RUST_PLAN_SKIP_WARM_RESTORE: "0"' in workflow[second_build:]
+
+
+def test_readme_comparison_labels_clean_target_reconstruction() -> None:
+    """The README comparison's old 'warm' cell deletes ``target/`` first.
+
+    It measures reconstruction from a warm compiler cache, not Cargo's
+    intact-target freshness fast path. Keep its machine-readable data, chart,
+    and README wording explicit so readers do not compare it to the latter.
+    """
+    comparison = read("bench/run_comparison.sh")
+    renderer = read("bench/render_comparison_bars.py")
+    readme = read("README.md")
+
+    assert 'clean_project "${project}" "${target}"' in comparison
+    assert '"Clean-target rebuild (same workspace; warm compiler cache)"' in comparison
+    assert '"label": "Clean-target rebuild (same workspace; warm compiler cache)"' in renderer
+    assert "clean-target reconstruction" in readme

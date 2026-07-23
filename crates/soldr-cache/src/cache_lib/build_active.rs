@@ -5,6 +5,7 @@
 //! therefore see a build owned by a different soldr process, and overlapping
 //! sessions cannot clear one another's activity.
 
+use crate::cache_lib::cargo_lock::lock_is_held;
 use crate::core::SoldrPaths;
 use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
@@ -77,13 +78,17 @@ pub fn any_active(paths: &SoldrPaths) -> io::Result<bool> {
             continue;
         }
         let path = entry.path();
-        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        let file = match OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(file) => file,
+            Err(error) if lock_is_held(&error) => return Ok(true),
+            Err(error) => return Err(error),
+        };
         match file.try_lock_exclusive() {
             Ok(()) => {
                 let _ = file.unlock();
                 let _ = fs::remove_file(path);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(true),
+            Err(error) if lock_is_held(&error) => return Ok(true),
             Err(error) => return Err(error),
         }
     }

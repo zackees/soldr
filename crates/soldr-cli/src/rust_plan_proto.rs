@@ -84,6 +84,24 @@ pub mod wire {
         pub workspace_package_ids: Vec<String>,
         #[prost(string, repeated, tag = "3")]
         pub excluded_path_package_ids: Vec<String>,
+        #[prost(string, tag = "4")]
+        pub ownership_policy: String,
+        #[prost(uint32, tag = "5")]
+        pub ownership_mode: u32,
+        #[prost(message, repeated, tag = "6")]
+        pub artifact_owners: Vec<RustPlanArtifactOwner>,
+        #[prost(bool, tag = "7")]
+        pub ownership_complete: bool,
+    }
+
+    #[derive(Clone, PartialEq, Message)]
+    pub struct RustPlanArtifactOwner {
+        #[prost(string, tag = "1")]
+        pub relative_path: String,
+        #[prost(string, tag = "2")]
+        pub package_id: String,
+        #[prost(uint32, tag = "3")]
+        pub owner: u32,
     }
 }
 
@@ -113,6 +131,38 @@ pub(super) fn plan_to_proto_bytes(plan: &RustArtifactPlan) -> Result<Vec<u8>, So
             selected_package_ids: plan.packages.selected_package_ids.clone(),
             workspace_package_ids: plan.packages.workspace_package_ids.clone(),
             excluded_path_package_ids: plan.packages.excluded_path_package_ids.clone(),
+            ownership_policy: plan
+                .packages
+                .ownership_policy
+                .unwrap_or_default()
+                .to_string(),
+            ownership_mode: match plan.packages.ownership_mode {
+                None => 0,
+                Some("cook-partitioned-v1") => 1,
+                Some("zccache-all-v1") => 2,
+                Some(other) => {
+                    return Err(SoldrError::Other(format!(
+                        "unknown thin-v3 ownership mode {other}"
+                    )))
+                }
+            },
+            artifact_owners: plan
+                .packages
+                .artifact_owners
+                .iter()
+                .map(|record| wire::RustPlanArtifactOwner {
+                    relative_path: record.relative_path.clone(),
+                    package_id: record.package_id.clone(),
+                    owner: match record.owner {
+                        "cook" => 1,
+                        "zccache" => 2,
+                        "thin_v3" => 3,
+                        "none" => 4,
+                        _ => 0,
+                    },
+                })
+                .collect(),
+            ownership_complete: plan.packages.ownership_complete,
         }),
         allowed_artifact_classes: plan
             .allowed_artifact_classes

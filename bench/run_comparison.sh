@@ -272,7 +272,7 @@ for benchmark in rust-only rust-c; do
         append_result "${benchmark}" "${fixture}" "cold" "Cold build" "cold" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
 
         read -r ms cache_bytes < <(measure_warm "${benchmark}" "${fixture}" "${tool}")
-        append_result "${benchmark}" "${fixture}" "warm" "Warm rebuild (same workspace)" "warm" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
+        append_result "${benchmark}" "${fixture}" "warm" "Clean-target rebuild (same workspace; warm compiler cache)" "warm" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
 
         read -r ms cache_bytes < <(measure_worktree_share "${benchmark}" "${fixture}" "${tool}")
         append_result "${benchmark}" "${fixture}" "worktree-share" "Agent worktree / parent-child share" "worktree-share" "${tool}" "${label}" "${command}" "${ms}" "${cache_bytes}" "single-sample"
@@ -297,7 +297,7 @@ jq -s \
         schema_version: 2,
         scenarios: [
             {key: "cold", label: "Cold build", samples: 1},
-            {key: "warm", label: "Warm rebuild (same workspace)", samples: 1},
+            {key: "warm", label: "Clean-target rebuild (same workspace; warm compiler cache)", samples: 1},
             {key: "worktree-share", label: "Agent worktree / parent-child share", samples: 1}
         ],
         tools: [

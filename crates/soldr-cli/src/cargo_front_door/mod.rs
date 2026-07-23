@@ -40,6 +40,7 @@ mod cache_plan;
 mod clang_cl_shim;
 mod component_install;
 pub(crate) mod cook_hydrate;
+mod darwin_embed;
 mod disk;
 mod inputs;
 mod no_cache_detach;
@@ -47,10 +48,14 @@ mod profile_debug;
 mod subcommand;
 mod target;
 mod zig_shim;
+mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
 
 const CARGO_WAIT_TIMEOUT_ENV_VAR: &str = "SOLDR_CARGO_WAIT_TIMEOUT_SECS";
+/// Internal one-hop marker for commands that must share their Soldr parent's
+/// process group. The nested process consumes it before spawning Cargo.
+pub(crate) const INHERIT_PARENT_PROCESS_GROUP_ENV: &str = "SOLDR_INTERNAL_INHERIT_PROCESS_GROUP";
 const CARGO_TIMEOUT_RETRY_DISABLE_ENV_VAR: &str = "SOLDR_NO_CARGO_TIMEOUT_RETRY";
 const CARGO_WAIT_HEARTBEAT_SECS: u64 = 60;
 const KILLED_CARGO_REAP_TIMEOUT_SECS: u64 = 5;
@@ -871,7 +876,9 @@ fn cargo_timeout_error(
 }
 
 #[cfg(windows)]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     let pid = child.id().to_string();
     let taskkill = std::process::Command::new("taskkill")
         .args(["/PID", &pid, "/T", "/F"])
@@ -888,7 +895,9 @@ fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&
 }
 
 #[cfg(unix)]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     let pgid = child.id() as libc::pid_t;
     let term_result = signal_process_group(pgid, libc::SIGTERM);
     std::thread::sleep(Duration::from_millis(100));
@@ -916,16 +925,22 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) -> std::io::Resu
 }
 
 #[cfg(all(not(windows), not(unix)))]
-fn kill_cargo_process_tree(child: &mut std::process::Child) -> std::io::Result<&'static str> {
+pub(crate) fn kill_cargo_process_tree(
+    child: &mut std::process::Child,
+) -> std::io::Result<&'static str> {
     child.kill()?;
     Ok("killed child process")
 }
 
-fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
+pub(crate) fn configure_cargo_child_for_timeout(command: &mut std::process::Command) {
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        if std::env::var_os(INHERIT_PARENT_PROCESS_GROUP_ENV).is_none() {
+            command.process_group(0);
+        } else {
+            command.env_remove(INHERIT_PARENT_PROCESS_GROUP_ENV);
+        }
     }
     #[cfg(not(unix))]
     {
@@ -1843,7 +1858,11 @@ pub(crate) async fn run_cargo_front_door(
     // since changing stderr to a pipe would force cargo into its
     // non-TTY rendering mode.
     use std::io::IsTerminal;
-    let capture_for_diagnostics = !std::io::stderr().is_terminal();
+    // Capture stderr for the narrow stable `-Zthreads` fallback even on a
+    // local terminal. The capture helper tees bytes unchanged, so the user
+    // still sees Cargo's live output while we retain the exact rustc error.
+    let capture_for_diagnostics =
+        !std::io::stderr().is_terminal() || zthreads_fallback::environment_mentions_zthreads();
 
     // Phase 2: start session correlation only after every fallible pre-cargo
     // preparation step (especially no-cache ownership detachment) succeeds.
@@ -2018,6 +2037,10 @@ pub(crate) async fn run_cargo_front_door(
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
             if let Some(paths) = cargo_artifact_paths.as_deref() {
+                darwin_embed::embed_packed_dwarf_for_artifacts(
+                    cache_plan.target_dir_for_hooks(args).as_deref(),
+                    paths,
+                )?;
                 cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
             }
             cache_plan.save_rust_artifacts(restore_outcome)?;
@@ -2082,8 +2105,85 @@ pub(crate) async fn run_cargo_front_door(
     }
     finish_result?;
     post_cargo_result?;
+    if !status.success() {
+        if let Some(plan) = zthreads_fallback::plan_from_environment() {
+            if zthreads_fallback::diagnostic_matches(
+                captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
+            ) && !resolved_toolchain_is_nightly(explicit_toolchain)
+            {
+                emit_zthreads_fallback_warning(&plan.value);
+                return retry_zthreads_without_flag(args, explicit_toolchain, &plan);
+            }
+        } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
+            && zthreads_fallback::diagnostic_matches(
+                captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
+            )
+        {
+            eprintln!("{}", zthreads_fallback::render_config_hint());
+        }
+    }
     drop(trampoline_plan);
     Ok(status.code().unwrap_or(1))
+}
+
+fn resolved_toolchain_is_nightly(explicit_toolchain: Option<&str>) -> bool {
+    let candidate = explicit_toolchain
+        .map(str::to_owned)
+        .or_else(|| std::env::var("RUSTUP_TOOLCHAIN").ok());
+    candidate.is_some_and(|toolchain| {
+        let channel = toolchain
+            .split('-')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        channel == "nightly"
+    })
+}
+
+fn emit_zthreads_fallback_warning(value: &str) {
+    use std::io::IsTerminal;
+
+    let github_actions = env_flag_truthy("GITHUB_ACTIONS");
+    let use_color = !github_actions
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::io::stderr().is_terminal();
+    eprintln!(
+        "{}",
+        zthreads_fallback::render_warning(value, github_actions, use_color)
+    );
+}
+
+fn retry_zthreads_without_flag(
+    args: &[String],
+    explicit_toolchain: Option<&str>,
+    plan: &zthreads_fallback::FallbackPlan,
+) -> Result<i32, SoldrError> {
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("cargo").args(args);
+    command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
+    if let Some(toolchain) = explicit_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    for (key, value) in &plan.env {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    suppress_windows_console_window(&mut command);
+    configure_cargo_child_for_timeout(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn -Zthreads fallback failed: {err}")))?;
+    let status = wait_for_cargo_child(&mut child, "soldr -Zthreads fallback", None)?;
+    Ok(status
+        .code()
+        .unwrap_or(if status.success() { 0 } else { 1 }))
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
@@ -2482,6 +2582,47 @@ async fn ensure_known_subcommand_tool(
         }
     }
 
+    // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
+    // Windows or macOS ones. Keep its normal managed-fetch path on the
+    // supported host and use Soldr's pinned, wrapper-free source-build
+    // path elsewhere. The result is cached below ~/.soldr/bin, just like
+    // the explicitly requested soldr build-from-source flow.
+    if sub == "dylint" && dylint_requires_source_build() {
+        let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
+        let binary = if plan.final_binary.is_file() {
+            eprintln!(
+                "soldr: using cached source-built cargo-dylint at {}",
+                plan.final_binary.display()
+            );
+            plan.final_binary.clone()
+        } else {
+            eprintln!(
+                "soldr: cargo-dylint has no prebuilt asset for this host; building pinned source fallback..."
+            );
+            crate::build_from_source_cmd::execute_plan(&plan)?.binary
+        };
+        let dir = binary.parent().ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for source-built cargo-dylint: {}",
+                binary.display()
+            ))
+        })?;
+        extra_bin_dirs.push(dir.to_path_buf());
+        append_subcommand_transitive_bin_dirs(
+            sub,
+            args,
+            paths,
+            &mut extra_bin_dirs,
+            &mut extra_env,
+            &mut extra_cargo_args,
+        )
+        .await?;
+        return Ok(SubcommandToolBootstrap {
+            bin_dirs: extra_bin_dirs,
+            env: extra_env,
+            cargo_args: extra_cargo_args,
+        });
+    }
     let version = spec
         .pinned_version
         .map(|v| VersionSpec::Exact(v.to_string()))
@@ -2525,6 +2666,10 @@ async fn ensure_known_subcommand_tool(
         env: extra_env,
         cargo_args: extra_cargo_args,
     })
+}
+
+fn dylint_requires_source_build() -> bool {
+    !cfg!(all(target_os = "linux", target_env = "gnu"))
 }
 
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {

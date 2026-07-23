@@ -660,7 +660,10 @@ fn delete_path(path: &std::path::Path) -> Result<(), std::io::Error> {
             Ok(crate::cache_lib::cargo_lock::CargoLockProbe::Active(lock)) => {
                 Err(std::io::Error::new(
                     std::io::ErrorKind::WouldBlock,
-                    format!("active cargo lock at {}; refusing to delete", lock.display()),
+                    format!(
+                        "active cargo lock at {}; refusing to delete",
+                        lock.display()
+                    ),
                 ))
             }
             Err(error) => Err(std::io::Error::other(format!(

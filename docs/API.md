@@ -323,6 +323,25 @@ When soldr starts, it decides its mode in this order:
 
 Run Cargo through soldr's front door.
 
+### Stable `-Zthreads` fallback
+
+When a stable compiler rejects exactly `-Zthreads=<N>` with rustc's nightly-only
+diagnostic, the Cargo front door retries once without that flag. The retry is a
+fresh `soldr cargo` invocation, so its effective flags and cache/session plan
+are rebuilt; artifacts from the failed flag set are never treated as
+equivalent. Soldr emits a warning containing the removed value and notes that
+the build may be slower. GitHub Actions receives the warning in
+`::warning::` form, while supported local terminals render it in yellow.
+
+This fallback is intentionally limited to one removable flag. It applies only
+when `-Zthreads=<N>` comes from `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`, or a
+supported `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` environment variable, with no other
+`-Z` flags present. It never sets or changes `RUSTC_BOOTSTRAP`, never retries a
+normal compilation failure, and never retries a nightly invocation. If the
+flag comes only from Cargo configuration, Soldr leaves the original failure in
+place and asks the caller to remove it or provide it through one of the
+supported environment variables.
+
 ```bash
 soldr cargo build --release
 soldr cargo test --workspace
@@ -331,6 +350,25 @@ soldr --no-cache cargo test
 ```
 
 For cross-target builds (`soldr cargo --target ...`), the target's Rust standard library must be provisioned separately — see the [native vs cross targets](../README.md#native-vs-cross-targets) section of the README.
+
+### `soldr lint`
+
+Run the repository validation suites through Soldr. The default and `rust`
+suites run formatting, Clippy, and Dylint with one canonical workspace scope:
+
+```bash
+soldr lint
+soldr lint rust --package soldr-cli
+soldr lint deps
+soldr lint all
+```
+
+`deps` runs `deny check`, `audit`, and `machete` concurrently as cache-disabled
+children because they do not compile Rust. `all` adds `--all-features`, `udeps`,
+and `semver-checks` after the standard Rust and dependency suites. Compiler-bearing
+steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from its
+Linux GNU release asset or source-built from the pinned registry version on Windows
+and macOS.
 
 ### `soldr cook`
 
