@@ -11,6 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::core::{SoldrError, SoldrPaths};
 
@@ -342,17 +343,59 @@ async fn fetch_managed_sdk(
         selection.shape.catalogue_slug()
     );
 
-    if install_dir.exists() {
-        std::fs::remove_dir_all(&install_dir)?;
+    // Extract into a unique sibling first.  In particular, never delete a
+    // previously-good SDK before the new archive has been completely
+    // validated: a failed download/extraction must not leave a partial
+    // canonical directory behind (Windows retries otherwise become fragile).
+    let parent = install_dir
+        .parent()
+        .ok_or_else(|| SoldrError::Archive("Apple SDK install path has no parent".into()))?;
+    std::fs::create_dir_all(parent)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let staging = parent.join(format!(".staging-{}-{}", std::process::id(), nonce));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
     }
-    std::fs::create_dir_all(&install_dir)?;
-    extract_tar_zst_tree(&bytes, &install_dir)?;
+    std::fs::create_dir_all(&staging)?;
+    let result = (|| -> Result<PathBuf, SoldrError> {
+        extract_tar_zst_tree(&bytes, &staging)?;
+        let sdk_dir = find_extracted_sdk_dir(
+            &staging,
+            &staging.join(expected_sdk_dir.file_name().unwrap_or_default()),
+        )?;
+        let sdk_relative = sdk_dir
+            .strip_prefix(&staging)
+            .map_err(|_| SoldrError::Archive("Apple SDK path escaped staging directory".into()))?
+            .to_path_buf();
+        std::fs::write(
+            staging.join(".complete"),
+            format!("{} {}", selection.version, selection.shape.catalogue_slug()),
+        )?;
 
-    let sdk_dir = find_extracted_sdk_dir(&install_dir, &expected_sdk_dir)?;
-    std::fs::write(
-        &stamp,
-        format!("{} {}", selection.version, selection.shape.catalogue_slug()),
-    )?;
+        // Promote only after extraction and validation have succeeded.  A
+        // pre-existing install is moved aside rather than synchronously
+        // deleted, which keeps retries safe on Windows where files may still
+        // be held open by a compiler process.
+        if install_dir.exists() {
+            let backup = parent.join(format!(".previous-{}-{}", std::process::id(), nonce));
+            std::fs::rename(&install_dir, &backup)?;
+            if let Err(err) = std::fs::rename(&staging, &install_dir) {
+                let _ = std::fs::rename(&backup, &install_dir);
+                return Err(err.into());
+            }
+            let _ = std::fs::remove_dir_all(backup);
+        } else {
+            std::fs::rename(&staging, &install_dir)?;
+        }
+        Ok(install_dir.join(sdk_relative))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    let sdk_dir = result?;
     eprintln!("soldr: extracted Apple SDK to {}", sdk_dir.display());
     Ok(sdk_dir)
 }
@@ -437,9 +480,53 @@ fn extract_tar_zst_tree(data: &[u8], dest: &Path) -> Result<(), SoldrError> {
     let zst = zstd::stream::read::Decoder::new(reader)
         .map_err(|e| SoldrError::Archive(format!("zstd decoder init: {e}")))?;
     let mut archive = tar::Archive::new(zst);
-    archive
-        .unpack(dest)
-        .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
+    for item in archive
+        .entries()
+        .map_err(|e| SoldrError::Archive(format!("tar.zst entries: {e}")))?
+    {
+        let mut entry = item.map_err(|e| SoldrError::Archive(format!("tar.zst entry: {e}")))?;
+        let path = entry
+            .path()
+            .map_err(|e| SoldrError::Archive(format!("tar.zst path: {e}")))?
+            .into_owned();
+        if is_optional_man_entry(&path) {
+            // Drain skipped entries so the tar reader remains aligned for
+            // the following (essential) SDK files.
+            std::io::copy(&mut entry, &mut std::io::sink())
+                .map_err(|e| SoldrError::Archive(format!("tar.zst skip: {e}")))?;
+            continue;
+        }
+        validate_archive_path(&path)?;
+        if let Some(parent) = dest.join(&path).parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        entry
+            .unpack_in(dest)
+            .map_err(|e| SoldrError::Archive(format!("tar.zst unpack: {e}")))?;
+    }
+    Ok(())
+}
+
+fn is_optional_man_entry(path: &Path) -> bool {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    normalized == "package/sdk/usr/share/man"
+        || normalized.starts_with("package/sdk/usr/share/man/")
+}
+
+fn validate_archive_path(path: &Path) -> Result<(), SoldrError> {
+    use std::path::Component;
+    if path.is_absolute()
+        || path.components().any(|component| match component {
+            Component::Prefix(_) | Component::RootDir | Component::ParentDir => true,
+            Component::Normal(value) => value.to_string_lossy().contains(':') || value == ".",
+            Component::CurDir => false,
+        })
+    {
+        return Err(SoldrError::Archive(format!(
+            "Apple SDK archive contains unsafe path {}",
+            path.display()
+        )));
+    }
     Ok(())
 }
 
@@ -723,5 +810,82 @@ mod tests {
             find_extracted_sdk_dir(tmp.path(), &expected).expect("expected name wins"),
             wanted
         );
+    });
+
+    crate::timed_test!(extract_skips_windows_invalid_manpage_names, {
+        let mut raw = Vec::new();
+        {
+            let encoder = zstd::stream::write::Encoder::new(&mut raw, 1).expect("zstd");
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "package/sdk/usr/share/man/foo:bar",
+                    &b"man"[..],
+                )
+                .expect("manpage");
+            for dir in [
+                "package/",
+                "package/sdk/",
+                "package/sdk/usr/",
+                "package/sdk/usr/lib/",
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_entry_type(tar::EntryType::Directory);
+                header.set_size(0);
+                header.set_mode(0o755);
+                header.set_cksum();
+                builder
+                    .append_data(&mut header, dir, std::io::empty())
+                    .expect("directory");
+            }
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(
+                    &mut header,
+                    "package/sdk/usr/lib/libSystem.tbd",
+                    &b"lib"[..],
+                )
+                .expect("library");
+            let encoder = builder.into_inner().expect("finish tar");
+            encoder.finish().expect("finish zstd");
+        }
+        let dest = tempfile::tempdir().expect("dest");
+        extract_tar_zst_tree(&raw, dest.path()).expect("extract");
+        assert!(!dest
+            .path()
+            .join("package/sdk/usr/share/man/foo:bar")
+            .exists());
+        assert!(dest
+            .path()
+            .join("package/sdk/usr/lib/libSystem.tbd")
+            .is_file());
+    });
+
+    crate::timed_test!(extract_rejects_invalid_paths_outside_optional_man_tree, {
+        let mut raw = Vec::new();
+        {
+            let encoder = zstd::stream::write::Encoder::new(&mut raw, 1).expect("zstd");
+            let mut builder = tar::Builder::new(encoder);
+            let mut header = tar::Header::new_gnu();
+            header.set_size(3);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "package/sdk/usr/lib/bad:name", &b"bad"[..])
+                .expect("entry");
+            let encoder = builder.into_inner().expect("finish tar");
+            encoder.finish().expect("finish zstd");
+        }
+        let dest = tempfile::tempdir().expect("dest");
+        let err = extract_tar_zst_tree(&raw, dest.path()).expect_err("must reject");
+        assert!(err.to_string().contains("unsafe path"));
     });
 }
