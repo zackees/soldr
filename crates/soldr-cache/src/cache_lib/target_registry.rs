@@ -482,9 +482,7 @@ pub fn evaluate_safety_guards(
             ));
         }
         Err(error) => {
-            return GuardOutcome::Skipped(format!(
-                "cargo build lock probe failed closed: {error}"
-            ));
+            return GuardOutcome::Skipped(format!("cargo build lock probe failed closed: {error}"));
         }
     }
 

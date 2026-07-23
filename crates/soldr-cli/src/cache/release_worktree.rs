@@ -32,6 +32,8 @@ use crate::core::{SoldrError, SoldrPaths};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+pub use crate::cache_lib::trash_gc::{sweep_trash, SweepReport};
+
 /// Outcome of one `release-worktree` invocation, both for direct human
 /// output and the `--json` form consumed by the `clud-pr` skill.
 #[derive(Debug, Clone, Serialize)]
@@ -177,47 +179,6 @@ fn unique_trash_subdir_name() -> String {
         .unwrap_or(0);
     let pid = std::process::id();
     format!("{nanos}-{pid}")
-}
-
-/// Tier 1 sweep of `~/.soldr/trash-*/` — recursive-delete every entry
-/// that still exists. Tolerates per-entry failures (some entries may
-/// still be daemon-held; we'll re-try next pass).
-///
-/// Returns `(removed, retained)` counts so the CLI can report progress.
-pub fn sweep_trash(paths: &SoldrPaths) -> Result<SweepReport, SoldrError> {
-    let root = &paths.root;
-    let mut report = SweepReport::default();
-    let entries = match std::fs::read_dir(root) {
-        Ok(e) => e,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(report),
-        Err(err) => return Err(SoldrError::Other(format!("sweep-trash: {err}"))),
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if !name_str.starts_with("trash-") {
-            continue;
-        }
-        let trash_root = entry.path();
-        let bucket_entries = match std::fs::read_dir(&trash_root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for sub in bucket_entries.flatten() {
-            let sub_path = sub.path();
-            match std::fs::remove_dir_all(&sub_path) {
-                Ok(()) => report.removed += 1,
-                Err(_) => report.retained += 1,
-            }
-        }
-    }
-    Ok(report)
-}
-
-#[derive(Debug, Default, Clone, Serialize)]
-pub struct SweepReport {
-    pub removed: u64,
-    pub retained: u64,
 }
 
 pub fn run_cache_release_worktree_command(target: PathBuf, json: bool) -> Result<(), SoldrError> {

@@ -828,8 +828,32 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     gc::run_gc_target_command(*args)?;
                     return Ok(());
                 }
+                Some(GcSubcommand::Maintain { root, json }) => {
+                    let status = crate::daemon::maintenance::run_manual_root(root)
+                        .await
+                        .map_err(SoldrError::Other)?;
+                    if json {
+                        cache::print_json(&status)?;
+                    } else {
+                        cache::print_maintenance_status(Some(&status));
+                    }
+                    if status.successful_at_ms.is_none() {
+                        return Err(SoldrError::Other(format!(
+                            "cache maintenance did not complete: {}",
+                            status
+                                .deferred_reason
+                                .as_deref()
+                                .unwrap_or("component failure")
+                        )));
+                    }
+                    return Ok(());
+                }
                 Some(GcSubcommand::AutoSweep) => {
                     gc::run_gc_auto_sweep_command()?;
+                    return Ok(());
+                }
+                Some(GcSubcommand::HoldBuildLease) => {
+                    run_build_lease_helper()?;
                     return Ok(());
                 }
                 None => gc::GcInvocation {
@@ -981,6 +1005,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             command.args(tool_args);
             let mut pep517_linker_state = None;
             let mut pep517_paths = None;
+            // Held across the complete direct/PEP517 maturin child. This is
+            // separate from the short-lived stats session request: the
+            // OS-held lease is what prevents daemon GC from deleting a reused
+            // PEP517 target or wheel namespace while maturin is using it.
+            let mut _maturin_build_lease = None;
 
             // soldr#1264: `soldr maturin ...` is the engine behind the
             // PEP 517 build backend (src/soldr/__init__.py). maturin
@@ -1056,9 +1085,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 // cargo and maturin honor CARGO_BUILD_TARGET, so even
                 // a wrong-host cargo emits the right-target wheel.
                 let paths = SoldrPaths::new()?;
+                // The Python PEP 517 backend must select the same effective
+                // product root as this binary.  In particular, a development
+                // soldr defaults to `.soldr-dev`; allowing the child to fall
+                // back to its package-level `.soldr` default would mix
+                // PEP517 target ownership across prod/dev daemons (#1763).
+                command.env(crate::core::SOLDR_CACHE_DIR_ENV_VAR, &paths.root);
                 let workspace_root =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let maturin_build = crate::pyo3_detect::maturin_args_are_build(tool_args);
+                _maturin_build_lease = acquire_maturin_build_lease(&paths, tool_args)?;
                 let maturin_target =
                     crate::pyo3_detect::resolve_build_target(tool_args, &workspace_root);
                 if maturin_build
@@ -1208,6 +1244,38 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
     }
 
+    Ok(())
+}
+
+fn acquire_maturin_build_lease(
+    paths: &SoldrPaths,
+    args: &[String],
+) -> Result<Option<crate::cache_lib::build_active::BuildActivityLease>, SoldrError> {
+    if !crate::pyo3_detect::maturin_args_are_build(args) {
+        return Ok(None);
+    }
+    crate::cache_lib::build_active::BuildActivityLease::acquire(
+        paths,
+        crate::cargo_front_door::generate_build_session_id(),
+    )
+    .map(Some)
+    .map_err(|error| {
+        SoldrError::Other(format!(
+            "failed to acquire maturin build activity lease: {error}"
+        ))
+    })
+}
+
+fn run_build_lease_helper() -> Result<(), SoldrError> {
+    let paths = SoldrPaths::new()?;
+    let _lease = crate::cache_lib::build_active::BuildActivityLease::acquire(
+        &paths,
+        crate::cargo_front_door::generate_build_session_id(),
+    )
+    .map_err(|error| SoldrError::Other(format!("failed to hold build lease: {error}")))?;
+    println!("ready");
+    std::io::stdout().flush()?;
+    std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink())?;
     Ok(())
 }
 
@@ -1379,7 +1447,7 @@ fn render_builds(
 
 async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError> {
     use crate::daemon::client;
-    use crate::daemon::lifecycle::{is_live, try_spawn_detached};
+    use crate::daemon::lifecycle::{is_live, try_spawn_detached_with_idle_timeout};
     use crate::daemon::server::{run_async, server_sock_path, ServerOptions};
     use core::SoldrPaths;
     use std::time::Duration;
@@ -1395,7 +1463,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             if foreground {
                 let opts = ServerOptions {
                     idle_timeout: if idle_timeout == 0 {
-                        Duration::from_secs(u64::MAX / 2)
+                        ServerOptions::default().idle_timeout
                     } else {
                         Duration::from_secs(idle_timeout)
                     },
@@ -1418,7 +1486,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     return Ok(());
                 }
                 let _ = crate::binaries::soldr_daemon_binary();
-                try_spawn_detached().map_err(|e| {
+                try_spawn_detached_with_idle_timeout(idle_timeout).map_err(|e| {
                     SoldrError::Other(format!("failed to spawn soldr-daemon: {e:?}"))
                 })?;
                 println!("soldr-daemon: spawn requested");

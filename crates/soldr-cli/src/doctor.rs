@@ -118,6 +118,8 @@ struct DoctorZccache {
     /// Running processes whose image name starts with `zccache-daemon`
     /// (soldr#1467). Best-effort advisory scan; empty on failure.
     standalone_daemon_processes: Vec<String>,
+    /// Most recent root-local daemon maintenance outcome.
+    maintenance: Option<crate::daemon::maintenance::MaintenanceStatus>,
 }
 
 #[derive(Serialize, Clone)]
@@ -533,11 +535,13 @@ fn format_age(probed_at_unix: u64) -> String {
 /// this reports the compiled-in backend + version plus an advisory scan
 /// for standalone-zccache leftovers that should not exist on a soldr box.
 fn collect_zccache_bundle() -> Result<DoctorZccache, SoldrError> {
+    let paths = SoldrPaths::new()?;
     Ok(DoctorZccache {
         backend: "embedded",
         version: zccache::core::VERSION,
         stale_runtime_binaries: scan_stale_runtime_binaries(),
         standalone_daemon_processes: scan_standalone_daemon_processes(),
+        maintenance: crate::daemon::maintenance::read_status(&paths),
     })
 }
 
@@ -679,6 +683,7 @@ fn print_zccache_sections(bundle: &DoctorZccache) {
     println!();
     println!("zccache: {} (version {})", bundle.backend, bundle.version);
     print_standalone_zccache_human(bundle);
+    crate::cache::print_maintenance_status(bundle.maintenance.as_ref());
 }
 
 /// Warn about standalone-zccache leftovers (soldr#1467); one quiet line

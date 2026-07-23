@@ -15,6 +15,62 @@ use std::sync::Mutex;
 /// other's mid-test state without this lock.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[test]
+#[ignore = "subprocess helper"]
+fn subprocess_maturin_build_lease_then_exit() {
+    let root = std::env::var_os("SOLDR_TEST_MATURIN_LEASE_ROOT").expect("root");
+    let ready = std::env::var_os("SOLDR_TEST_MATURIN_LEASE_READY").expect("ready");
+    let paths = SoldrPaths::with_root(std::path::PathBuf::from(root));
+    let args = vec!["pep517".to_string(), "build-wheel".to_string()];
+    let _lease = acquire_maturin_build_lease(&paths, &args)
+        .unwrap()
+        .expect("PEP517 maturin must acquire a build lease");
+    std::fs::write(ready, b"acquired").unwrap();
+    std::process::exit(0);
+}
+
+crate::timed_test!(maturin_build_lease_defers_gc_and_survives_abrupt_exit, {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("owned"));
+    let direct_args = vec!["build".to_string()];
+    let lease = acquire_maturin_build_lease(&paths, &direct_args)
+        .unwrap()
+        .expect("direct maturin build lease");
+    assert!(
+        crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
+            .unwrap()
+            .is_none()
+    );
+    drop(lease);
+    crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
+        .unwrap()
+        .expect("maintenance resumes after direct maturin");
+
+    let ready = temp.path().join("ready");
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "soldr_main::tests::subprocess_maturin_build_lease_then_exit",
+            "--nocapture",
+        ])
+        .env("SOLDR_TEST_MATURIN_LEASE_ROOT", &paths.root)
+        .env("SOLDR_TEST_MATURIN_LEASE_READY", &ready)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(std::fs::read(&ready).unwrap(), b"acquired");
+    crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
+        .unwrap()
+        .expect("abrupt PEP517 process exit releases its OS lease");
+
+    assert!(
+        acquire_maturin_build_lease(&paths, &["--version".to_string()])
+            .unwrap()
+            .is_none()
+    );
+});
+
 /// RAII guard that sets or removes an environment variable for the
 /// duration of a test and restores the previous value on drop.
 struct EnvVarGuard {
@@ -223,8 +279,8 @@ fn long_root_help_expands_intro_and_zccache_details() {
     let help = Cli::command().render_long_help().to_string();
 
     assert!(help.contains("soldr wraps cargo and the rustup toolchain"));
-    assert!(help.contains("Pick the zccache binary backing the compilation cache."));
-    assert!(help.contains("`managed` (default) fetches the pinned release"));
+    assert!(help.contains("Pick the zccache runtime backing the compilation cache."));
+    assert!(help.contains("`managed` (default) uses the zccache service compiled into soldr"));
     assert!(help.contains("`system` uses the `zccache` on PATH"));
 }
 

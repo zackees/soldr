@@ -19,12 +19,15 @@ pub mod cook_archive;
 pub mod cook_gc;
 pub mod cook_index;
 pub mod gc;
+pub mod path_safety;
+pub mod pep517_gc;
 pub mod prune_target;
 pub mod redb_lock;
 pub mod save;
 pub mod state_db;
 pub mod strip_target;
 pub mod target_registry;
+pub mod trash_gc;
 
 /// Directory for the auto-GC structured log (`~/.soldr/logs/auto-gc.log`).
 pub fn auto_gc_log_path(paths: &SoldrPaths) -> PathBuf {

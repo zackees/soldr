@@ -93,8 +93,8 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
         value_name = "SOURCE",
         hide_possible_values = true,
         help = "Backing zccache binary",
-        long_help = "Pick the zccache binary backing the compilation cache.\n\n\
-`managed` (default) fetches the pinned release into `~/.soldr/`.\n\
+        long_help = "Pick the zccache runtime backing the compilation cache.\n\n\
+`managed` (default) uses the zccache service compiled into soldr.\n\
 `system` uses the `zccache` on PATH (with `zccache-daemon` and\n\
 `zccache-fp` as siblings)."
     )]
@@ -105,7 +105,7 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum ZccacheSourceArg {
-    /// Use the soldr-managed zccache release (default).
+    /// Use the zccache service compiled into soldr (default).
     #[default]
     Managed,
     /// Use the `zccache` binary already installed on PATH.
@@ -650,7 +650,7 @@ pub(crate) enum DaemonSubcommand {
         #[arg(long)]
         foreground: bool,
         /// Seconds of inactivity after which the daemon auto-exits.
-        #[arg(long, value_name = "SECS", default_value_t = 1800)]
+        #[arg(long, value_name = "SECS", default_value_t = 0)]
         idle_timeout: u64,
     },
     /// Ask the running daemon to shut down gracefully.
@@ -960,12 +960,26 @@ pub(crate) enum GcSubcommand {
     /// (issue #574). Designed for cross-repo `target/` reclamation —
     /// independent of the per-repo `target/` taxonomy walks above.
     Target(Box<GcTargetArgs>),
+    /// Run one full maintenance pass against an explicitly supplied orphaned
+    /// soldr root. Refuses live daemons, relative paths, and directory links;
+    /// never discovers sibling product roots.
+    Maintain {
+        #[arg(long, value_name = "ABSOLUTE_PATH")]
+        root: std::path::PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
     /// Issue #1286 (F5): run the auto-GC sweep synchronously in this
     /// process. Internal — the cargo front door spawns this detached at
     /// build end so the sweep survives the wrapper process exiting; the
     /// spawner owns the throttle, so this verb runs unconditionally.
     #[command(name = "auto-sweep", hide = true)]
     AutoSweep,
+    /// Internal PEP517 delegate helper. Holds the root build lease until its
+    /// stdin pipe closes; an abruptly terminated Python parent therefore
+    /// releases the OS lock automatically.
+    #[command(name = "hold-build-lease", hide = true)]
+    HoldBuildLease,
 }
 
 #[derive(clap::Args)]
@@ -1124,32 +1138,26 @@ pub(crate) enum CacheSubcommand {
         #[arg(long)]
         json: bool,
     },
-    /// Gracefully end the active session and stop the zccache daemon.
+    /// Finalize session files and flush embedded zccache state.
     ///
-    /// Synchronous: does not return until the daemon process has
-    /// exited, so the caller can safely snapshot the cache directory
-    /// after this completes. Triggers the depgraph flush that landed in
-    /// zccache 1.8.0.
+    /// The root-owning Soldr daemon remains running. Historical stop/wait
+    /// flags are accepted for CLI compatibility but no external managed
+    /// zccache process exists after soldr#1368.
     Shutdown {
         /// If set, copy the session log/journal/stats files into
-        /// `<dir>/<session-id>/` before stopping the daemon. The
+        /// `<dir>/<session-id>/` after flushing embedded state. The
         /// directory (and any missing parents) is created on demand.
         #[arg(long, value_name = "DIR")]
         archive_logs: Option<std::path::PathBuf>,
-        /// Skip the depgraph flush prior to stopping the daemon
-        /// (debugging only; surface to skip the new 1.8.x persistence).
+        /// Legacy compatibility flag; embedded mode always requests the
+        /// Soldr daemon's durability flush.
         #[arg(long)]
         no_depgraph_save: bool,
-        /// Maximum seconds to wait for the daemon process to exit
-        /// before returning a non-zero status.
+        /// Legacy compatibility timeout; there is no separate daemon exit.
         #[arg(long, value_name = "SECONDS", default_value_t = 30)]
         shutdown_timeout_seconds: u64,
-        /// Skip the post-signal poll that confirms the daemon process
-        /// has actually exited. By default `shutdown` blocks until
-        /// `zccache status` reports the daemon is gone (or the
-        /// `--shutdown-timeout-seconds` deadline elapses); pass
-        /// `--no-wait` only when you genuinely do not care
-        /// (interactive shells). See soldr#383.
+        /// Legacy compatibility flag; embedded mode performs no post-signal
+        /// process poll. See soldr#383.
         #[arg(long)]
         no_wait: bool,
         /// Emit the stable machine-facing JSON form for this command.

@@ -31,8 +31,10 @@ pub mod db;
 /// L4 (issue soldr#980) — background batcher that coalesces
 /// per-compile redb event writes into one fsync per 64 rows / 100 ms.
 pub mod event_batcher;
+pub mod history_gc;
 pub mod ipc;
 pub mod lifecycle;
+pub mod maintenance;
 pub mod protocol;
 pub mod server;
 pub mod service_definition;

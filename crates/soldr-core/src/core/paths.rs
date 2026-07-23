@@ -385,8 +385,15 @@ impl SoldrConfig {
     pub fn load(path: &Path) -> Result<Self, SoldrConfigLoadError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
-            Err(source) => return Err(SoldrConfigLoadError::Read { path: path.to_path_buf(), source }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(source) => {
+                return Err(SoldrConfigLoadError::Read {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            }
         };
         toml::from_str(&text).map_err(|source| SoldrConfigLoadError::Parse {
             path: path.to_path_buf(),
@@ -398,9 +405,17 @@ impl SoldrConfig {
 #[derive(Debug, Error)]
 pub enum SoldrConfigLoadError {
     #[error("failed to read soldr config {path}: {source}")]
-    Read { path: PathBuf, #[source] source: std::io::Error },
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("failed to parse soldr config {path}: {source}")]
-    Parse { path: PathBuf, #[source] source: toml::de::Error },
+    Parse {
+        path: PathBuf,
+        #[source]
+        source: toml::de::Error,
+    },
 }
 
 /// Resolve `$CARGO_HOME` if set and non-empty, otherwise `~/.cargo`.
@@ -671,30 +686,50 @@ zccache = ""
         );
     });
 
-    crate::timed_test!(config_load_distinguishes_missing_and_invalid, Duration::from_secs(5), {
-        let temp = tempfile::tempdir().unwrap();
-        let missing = temp.path().join("missing.toml");
-        assert!(SoldrConfig::load(&missing).unwrap().auto_gc.enabled);
+    crate::timed_test!(
+        config_load_distinguishes_missing_and_invalid,
+        Duration::from_secs(5),
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let missing = temp.path().join("missing.toml");
+            assert!(SoldrConfig::load(&missing).unwrap().auto_gc.enabled);
 
-        let malformed = temp.path().join("malformed.toml");
-        std::fs::write(&malformed, "[auto_gc\nenabled = true").unwrap();
-        assert!(matches!(SoldrConfig::load(&malformed), Err(SoldrConfigLoadError::Parse { .. })));
+            let malformed = temp.path().join("malformed.toml");
+            std::fs::write(&malformed, "[auto_gc\nenabled = true").unwrap();
+            assert!(matches!(
+                SoldrConfig::load(&malformed),
+                Err(SoldrConfigLoadError::Parse { .. })
+            ));
 
-        let unreadable = temp.path().join("directory");
-        std::fs::create_dir(&unreadable).unwrap();
-        assert!(matches!(SoldrConfig::load(&unreadable), Err(SoldrConfigLoadError::Read { .. })));
-    });
-
-    crate::timed_test!(config_load_rejects_unknown_destructive_fields, Duration::from_secs(5), {
-        let temp = tempfile::tempdir().unwrap();
-        for (name, text) in [
-            ("gc.toml", "[gc]\nallowlist_roots = [\"/tmp\"]\nunknown = true\n"),
-            ("auto.toml", "[auto_gc]\nenabled = true\nunknown = true\n"),
-            ("cook.toml", "[cook]\nauto_hydrate = true\nunknown = true\n"),
-        ] {
-            let path = temp.path().join(name);
-            std::fs::write(&path, text).unwrap();
-            assert!(SoldrConfig::load(&path).is_err(), "{name} should reject unknown fields");
+            let unreadable = temp.path().join("directory");
+            std::fs::create_dir(&unreadable).unwrap();
+            assert!(matches!(
+                SoldrConfig::load(&unreadable),
+                Err(SoldrConfigLoadError::Read { .. })
+            ));
         }
-    });
+    );
+
+    crate::timed_test!(
+        config_load_rejects_unknown_destructive_fields,
+        Duration::from_secs(5),
+        {
+            let temp = tempfile::tempdir().unwrap();
+            for (name, text) in [
+                (
+                    "gc.toml",
+                    "[gc]\nallowlist_roots = [\"/tmp\"]\nunknown = true\n",
+                ),
+                ("auto.toml", "[auto_gc]\nenabled = true\nunknown = true\n"),
+                ("cook.toml", "[cook]\nauto_hydrate = true\nunknown = true\n"),
+            ] {
+                let path = temp.path().join(name);
+                std::fs::write(&path, text).unwrap();
+                assert!(
+                    SoldrConfig::load(&path).is_err(),
+                    "{name} should reject unknown fields"
+                );
+            }
+        }
+    );
 }

@@ -30,8 +30,11 @@ fn version_command_prints_workspace_version() {
 
 #[test]
 fn version_command_emits_versioned_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("selected-root");
     let output = Command::new(common::soldr_bin())
         .args(["version", "--json"])
+        .env("SOLDR_CACHE_DIR", &root)
         .output()
         .expect("failed to run soldr version --json");
 
@@ -42,6 +45,7 @@ fn version_command_emits_versioned_json() {
     assert_eq!(json["schema_version"], 1);
     assert_eq!(json["command"], "version");
     assert_eq!(json["soldr_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(PathBuf::from(json["root_dir"].as_str().unwrap()), root);
 }
 
 #[test]

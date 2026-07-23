@@ -299,7 +299,9 @@ impl EventBatcher {
         }
         ack_rx
             .await
-            .map_err(|_| EventBatcherError("event batcher dropped shutdown acknowledgement".into()))?
+            .map_err(|_| {
+                EventBatcherError("event batcher dropped shutdown acknowledgement".into())
+            })?
             .map_err(EventBatcherError)
     }
 }

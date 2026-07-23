@@ -23,17 +23,10 @@
 //!
 //! ## Tokio runtime sharing (the tokio-console story)
 //!
-//! `ZccacheConfig` does not yet accept a `tokio::runtime::Handle`
-//! (`RuntimeHooks` is still `{ service_name: Option<String> }` as of
-//! 1.12.11; the upstream architecture doc calls this out as a known
-//! gap). The stop-gap is: [`SoldrZccacheService::start`] is
-//! `async`, so it must be `.await`ed from inside the daemon's existing
-//! tokio runtime — and `ZccacheService::start` internally spawns its
-//! own background tasks via `tokio::spawn` from the ambient runtime,
-//! which means those tasks land on the *same* runtime the daemon owns.
-//! `console-subscriber` therefore sees the union of soldr + zccache
-//! tasks. When upstream adds an explicit `RuntimeHooks::handle` field
-//! we will bump the git pin and switch to the explicit form.
+//! `RuntimeHooks` accepts an explicit Tokio handle. Soldr starts the service
+//! from inside its daemon runtime, so the ambient handle owns zccache's index
+//! writer and five-minute/24-hour maintenance worker. `console-subscriber`
+//! sees the union of soldr and zccache tasks.
 //!
 //! ## Identity defaults
 //!
@@ -58,14 +51,15 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use running_process::broker::backend_handle::DaemonProcess;
 use zccache::audit::AuditMode;
 use zccache::core::NormalizedPath;
 use zccache::embedded::{
-    AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest, HostIdentity,
-    RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
+    AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest,
+    DiskCacheLimits, DiskMaintenanceKind, DiskMaintenancePressure, HostIdentity, RuntimeHooks,
+    ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
 use zccache::hash::StreamHasher;
 
@@ -81,6 +75,34 @@ pub struct SoldrZccacheService {
     inner: Arc<ZccacheService>,
     identity: HostIdentity,
     cache_root: PathBuf,
+    disk_policy: EmbeddedDiskPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddedDiskPolicy {
+    pub source: String,
+    pub max_cache_bytes: Option<u64>,
+    pub max_cache_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EmbeddedDiskMaintenanceReport {
+    pub kind: String,
+    pub pressure: String,
+    pub budget_bytes: u64,
+    pub usage_before_bytes: u64,
+    pub usage_after_bytes: u64,
+    pub bytes_reclaimed: u64,
+    pub artifacts_removed: usize,
+    pub expired_artifacts_removed: usize,
+    pub pending_write_bytes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyCacheSweepReport {
+    pub removed: usize,
+    pub failed: usize,
+    pub bytes_reclaimed: u64,
 }
 
 /// Errors raised while starting or stopping the embedded service. Wrap
@@ -96,6 +118,8 @@ pub enum EmbeddedServiceError {
     Flush(String),
     #[error("zccache embedded stats failed: {0}")]
     Stats(String),
+    #[error("zccache embedded maintenance failed: {0}")]
+    Maintenance(String),
     /// Issue #977 Phase 5 / #980 L1 — surfaced by [`SoldrZccacheService::compile`].
     /// Maps to a soldr-side `Response::Error` so the wrapper falls back
     /// to the legacy `zccache.exe` fork path.
@@ -131,8 +155,8 @@ impl SoldrZccacheService {
         // isolation. A fixed relative identity keeps the backend stable across
         // save/load relocation and soldr upgrades.
         let cache_root = private_zccache_cache_root(paths, &identity);
-        migrate_legacy_cache_root(paths, daemon_identity, &cache_root)?;
-        std::fs::create_dir_all(&cache_root)?;
+        prepare_embedded_cache_root(paths, daemon_identity, &cache_root)?;
+        scrub_existing_compile_journals(paths)?;
 
         // zccache#926 strict-validation: `AuditConfig::default()` ships
         // `mode = AuditMode::Normal` + `output_root = None`, which the
@@ -152,12 +176,9 @@ impl SoldrZccacheService {
             limits: ServiceLimits::default(),
             runtime: RuntimeHooks {
                 service_name: Some("soldr-daemon".into()),
-                // zccache#922 — leave None to keep today's
-                // implicit-ambient-runtime behavior. We can plumb the
-                // soldr-daemon's tokio handle through here in a
-                // follow-up once we have a reason (tokio-console
-                // attach unity, explicit handle-based shutdown).
-                handle: None,
+                // zccache#922: explicitly keep background maintenance and
+                // index tasks on the soldr-daemon runtime.
+                handle: Some(tokio::runtime::Handle::current()),
             },
             // zccache#923 — None preserves the prior behavior where
             // only `shutdown(ShutdownMode::Force)` aborts in-flight
@@ -166,13 +187,15 @@ impl SoldrZccacheService {
             cancellation: None,
         };
 
-        let svc = ZccacheService::start(cfg)
+        let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
+        let svc = ZccacheService::start_with_disk_limits(cfg, disk_limits)
             .await
             .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
             identity,
             cache_root,
+            disk_policy,
         })
     }
 
@@ -185,6 +208,10 @@ impl SoldrZccacheService {
     /// namespace cache entries.
     pub fn identity(&self) -> &HostIdentity {
         &self.identity
+    }
+
+    pub fn disk_policy(&self) -> &EmbeddedDiskPolicy {
+        &self.disk_policy
     }
 
     /// Dispatch a soldr [`CompileRequest`] through the embedded zccache
@@ -268,6 +295,44 @@ impl SoldrZccacheService {
         })
     }
 
+    /// Coordinate a host-requested pass with zccache's own startup/periodic
+    /// worker.  Upstream serializes the pass against publication and confines
+    /// it to this service's exact configured artifact root (#1148).
+    pub async fn maintain_disk(
+        &self,
+        full: bool,
+    ) -> Result<EmbeddedDiskMaintenanceReport, EmbeddedServiceError> {
+        let report = self
+            .inner
+            .maintain_disk(if full {
+                DiskMaintenanceKind::Full
+            } else {
+                DiskMaintenanceKind::Pressure
+            })
+            .await
+            .map_err(|error| EmbeddedServiceError::Maintenance(error.to_string()))?;
+        Ok(EmbeddedDiskMaintenanceReport {
+            kind: match report.kind {
+                DiskMaintenanceKind::Pressure => "pressure",
+                DiskMaintenanceKind::Full => "full",
+            }
+            .to_string(),
+            pressure: match report.pressure {
+                DiskMaintenancePressure::None => "none",
+                DiskMaintenancePressure::Soft => "soft",
+                DiskMaintenancePressure::Hard => "hard",
+            }
+            .to_string(),
+            budget_bytes: report.budget_bytes,
+            usage_before_bytes: report.usage_before_bytes,
+            usage_after_bytes: report.usage_after_bytes,
+            bytes_reclaimed: report.bytes_reclaimed,
+            artifacts_removed: report.artifacts_removed,
+            expired_artifacts_removed: report.expired_artifacts_removed,
+            pending_write_bytes: report.pending_write_bytes,
+        })
+    }
+
     /// Graceful shutdown — called from the daemon's normal exit path
     /// after the accept loop has been aborted.
     pub async fn shutdown(self, mode: ShutdownMode) -> Result<(), EmbeddedServiceError> {
@@ -292,6 +357,142 @@ impl SoldrZccacheService {
             }
         }
     }
+}
+
+fn prepare_embedded_cache_root(
+    paths: &SoldrPaths,
+    daemon_identity: &DaemonProcess,
+    cache_root: &std::path::Path,
+) -> Result<(), EmbeddedServiceError> {
+    migrate_legacy_cache_root(paths, daemon_identity, cache_root)?;
+    std::fs::create_dir_all(cache_root)?;
+    crate::cache_lib::path_safety::validate_owned_directory(&paths.root, cache_root)?;
+    let version_root = cache_root.join(zccache::core::config::versioned_subdir());
+    std::fs::create_dir_all(&version_root)?;
+    crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &version_root)?;
+    Ok(())
+}
+
+fn disk_cache_limits_from_env(
+) -> Result<(DiskCacheLimits, EmbeddedDiskPolicy), EmbeddedServiceError> {
+    const BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
+    const PERCENT_ENV: &str = "ZCCACHE_CACHE_SIZE_PERCENT";
+    let bytes_raw = std::env::var(BYTES_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let percent_raw = std::env::var(PERCENT_ENV)
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    disk_cache_limits_from_values(bytes_raw.as_deref(), percent_raw.as_deref())
+}
+
+fn disk_cache_limits_from_values(
+    bytes_raw: Option<&str>,
+    percent_raw: Option<&str>,
+) -> Result<(DiskCacheLimits, EmbeddedDiskPolicy), EmbeddedServiceError> {
+    const BYTES_ENV: &str = "ZCCACHE_CACHE_SIZE_BYTES";
+    const PERCENT_ENV: &str = "ZCCACHE_CACHE_SIZE_PERCENT";
+    if bytes_raw.is_some() && percent_raw.is_some() {
+        return Err(EmbeddedServiceError::Start(format!(
+            "{BYTES_ENV} and {PERCENT_ENV} are mutually exclusive"
+        )));
+    }
+    let max_cache_bytes = bytes_raw
+        .map(|value| {
+            value.parse::<u64>().map_err(|_| {
+                EmbeddedServiceError::Start(format!(
+                    "{BYTES_ENV} must be a positive integer byte count"
+                ))
+            })
+        })
+        .transpose()?;
+    if max_cache_bytes == Some(0) {
+        return Err(EmbeddedServiceError::Start(format!(
+            "{BYTES_ENV} must be greater than zero"
+        )));
+    }
+    let max_cache_percent = percent_raw
+        .map(|value| {
+            value.parse::<u8>().map_err(|_| {
+                EmbeddedServiceError::Start(format!(
+                    "{PERCENT_ENV} must be an integer from 1 through 100"
+                ))
+            })
+        })
+        .transpose()?;
+    if max_cache_percent.is_some_and(|percent| !(1..=100).contains(&percent)) {
+        return Err(EmbeddedServiceError::Start(format!(
+            "{PERCENT_ENV} must be an integer from 1 through 100"
+        )));
+    }
+    let source = if max_cache_bytes.is_some() {
+        "explicit_bytes"
+    } else if max_cache_percent.is_some() {
+        "explicit_percent"
+    } else {
+        "dynamic_5_percent_clamped_40_200_gib"
+    };
+    Ok((
+        DiskCacheLimits {
+            max_cache_bytes,
+            max_cache_percent,
+        },
+        EmbeddedDiskPolicy {
+            source: source.to_string(),
+            max_cache_bytes,
+            max_cache_percent,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod disk_limit_tests {
+    use super::*;
+
+    crate::timed_test!(disk_limit_overrides_are_validated_and_mutually_exclusive, {
+        let (_, dynamic) = disk_cache_limits_from_values(None, None).unwrap();
+        assert_eq!(dynamic.source, "dynamic_5_percent_clamped_40_200_gib");
+        let (_, bytes) = disk_cache_limits_from_values(Some("42949672960"), None).unwrap();
+        assert_eq!(bytes.max_cache_bytes, Some(40 * 1024 * 1024 * 1024));
+        let (_, percent) = disk_cache_limits_from_values(None, Some("7")).unwrap();
+        assert_eq!(percent.max_cache_percent, Some(7));
+        assert!(disk_cache_limits_from_values(Some("1"), Some("5")).is_err());
+        assert!(disk_cache_limits_from_values(Some("0"), None).is_err());
+        assert!(disk_cache_limits_from_values(None, Some("101")).is_err());
+    });
+}
+
+#[cfg(test)]
+mod journal_migration_tests {
+    use super::*;
+
+    crate::timed_test!(startup_scrubs_live_and_rotated_pre_redaction_journals, {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+        ))
+        .unwrap();
+        let legacy = serde_json::to_string(&fixture["legacy_record"]).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let current = embedded_compile_journal_path(&paths);
+        let rotated = current.with_file_name("compile_journal.jsonl.123");
+        std::fs::create_dir_all(current.parent().unwrap()).unwrap();
+        for path in [&current, &rotated] {
+            std::fs::write(path, format!("{legacy}\nnot-json-with-secret\n")).unwrap();
+        }
+
+        scrub_existing_compile_journals(&paths).unwrap();
+
+        for path in [&current, &rotated] {
+            let body = std::fs::read_to_string(path).unwrap();
+            assert!(!body.contains("legacy-full-env-token"));
+            assert!(!body.contains("UNRESTRICTED_LEGACY_VARIABLE"));
+            assert!(!body.contains("not-json-with-secret"));
+            let row: serde_json::Value = serde_json::from_str(body.trim()).unwrap();
+            assert!(row.get("env").is_none());
+        }
+        assert!(current.starts_with(paths.cache.join("zccache/daemon-state/embedded-v1")));
+    });
 }
 
 /// Build the default per-call `AuditContext` for soldr-issued compiles
@@ -358,6 +559,87 @@ fn derive_identity() -> HostIdentity {
     }
 }
 
+/// Effective version directory used by the embedded backend. Keeping this in
+/// the sole zccache adapter prevents CLI history from guessing the layout.
+pub fn embedded_version_root(paths: &SoldrPaths) -> PathBuf {
+    private_zccache_cache_root(paths, &derive_identity())
+        .join(zccache::core::config::versioned_subdir())
+}
+
+pub fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
+    embedded_version_root(paths)
+        .join("logs")
+        .join("compile_journal.jsonl")
+}
+
+/// Remove pre-#1149 raw environment values from live and rotated journals
+/// before zccache opens the current writer. Invalid legacy lines are dropped
+/// closed because retaining an unparseable line could retain a credential.
+fn scrub_existing_compile_journals(paths: &SoldrPaths) -> std::io::Result<()> {
+    let logs = embedded_version_root(paths).join("logs");
+    match std::fs::symlink_metadata(&logs) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+        Ok(_) => crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &logs)?,
+    }
+    for entry in std::fs::read_dir(&logs)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name != "compile_journal.jsonl" && !name.starts_with("compile_journal.jsonl.") {
+            continue;
+        }
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if !metadata.is_file() || crate::cache_lib::path_safety::is_link_or_reparse(&metadata) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe compile journal path: {}", entry.path().display()),
+            ));
+        }
+        scrub_compile_journal_file(&entry.path())?;
+    }
+    Ok(())
+}
+
+fn scrub_compile_journal_file(path: &std::path::Path) -> std::io::Result<()> {
+    let body = std::fs::read_to_string(path)?;
+    let mut sanitized = String::new();
+    for line in body.lines() {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(object) = value.as_object_mut() else {
+            continue;
+        };
+        if let Some(raw_env) = object.remove("env") {
+            if let Ok(env) = serde_json::from_value::<Vec<(String, String)>>(raw_env) {
+                if let Some(env) = zccache::daemon::compile_journal::sanitize_journal_env(Some(env))
+                {
+                    object.insert(
+                        "env".to_string(),
+                        serde_json::to_value(env).map_err(std::io::Error::other)?,
+                    );
+                }
+            }
+        }
+        sanitized.push_str(&serde_json::to_string(&value).map_err(std::io::Error::other)?);
+        sanitized.push('\n');
+    }
+    let temp = path.with_extension(format!("scrub-{}.tmp", std::process::id()));
+    std::fs::write(&temp, sanitized)?;
+    if let Err(error) = std::fs::rename(&temp, path) {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+            std::fs::rename(&temp, path)?;
+        } else {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// Re-home the pre-#1651 backend directory into the stable namespace.
 ///
 /// The legacy identity hashed `(SoldrPaths::root, current_exe path)`. For a
@@ -383,12 +665,15 @@ fn migrate_legacy_cache_root(
     if !parent.exists() {
         return Ok(());
     }
+    crate::cache_lib::path_safety::validate_owned_directory(&paths.root, parent)?;
 
     let exact_legacy = private_zccache_cache_root(
         paths,
         &derive_legacy_identity(paths, &daemon_identity.exe_path),
     );
-    if exact_legacy.is_dir() {
+    if std::fs::symlink_metadata(&exact_legacy).is_ok_and(|metadata| {
+        metadata.is_dir() && !crate::cache_lib::path_safety::is_link_or_reparse(&metadata)
+    }) {
         std::fs::rename(&exact_legacy, stable_root)?;
         tracing::info!(
             from = %exact_legacy.display(),
@@ -401,7 +686,11 @@ fn migrate_legacy_cache_root(
     let mut candidates = Vec::new();
     for entry in std::fs::read_dir(parent)? {
         let entry = entry?;
-        if entry.file_type()?.is_dir() && is_legacy_identity_name(&entry.file_name()) {
+        let metadata = std::fs::symlink_metadata(entry.path())?;
+        if metadata.is_dir()
+            && !crate::cache_lib::path_safety::is_link_or_reparse(&metadata)
+            && is_legacy_identity_name(&entry.file_name())
+        {
             candidates.push((latest_tree_mtime(&entry.path())?, entry.path()));
         }
     }
@@ -461,20 +750,190 @@ fn is_legacy_identity_name(name: &std::ffi::OsStr) -> bool {
 }
 
 fn latest_tree_mtime(root: &std::path::Path) -> Result<SystemTime, std::io::Error> {
-    let mut newest = std::fs::metadata(root)?.modified().unwrap_or(UNIX_EPOCH);
+    let root_metadata = std::fs::symlink_metadata(root)?;
+    if crate::cache_lib::path_safety::is_link_or_reparse(&root_metadata) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("linked cache tree retained: {}", root.display()),
+        ));
+    }
+    let mut newest = root_metadata.modified()?;
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
-            let modified = entry.metadata()?.modified().unwrap_or(UNIX_EPOCH);
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if crate::cache_lib::path_safety::is_link_or_reparse(&metadata) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("linked cache entry retained: {}", entry.path().display()),
+                ));
+            }
+            let modified = metadata.modified()?;
             newest = newest.max(modified);
-            if file_type.is_dir() {
+            if metadata.is_dir() {
                 pending.push(entry.path());
             }
         }
     }
     Ok(newest)
+}
+
+/// Reclaim stale soldr-owned embedded generations beneath exactly one selected
+/// product root.  The active stable identity and current version are always
+/// protected; links and every sibling product root are ignored.
+pub fn sweep_legacy_cache_roots(
+    paths: &SoldrPaths,
+    now: SystemTime,
+    max_age: std::time::Duration,
+) -> LegacyCacheSweepReport {
+    let zccache_root = paths.cache.join("zccache");
+    let daemon_state = zccache_root.join("daemon-state");
+    let embedded_root = daemon_state.join("embedded-v1");
+    let current_version = zccache::core::config::versioned_subdir();
+    let mut report = LegacyCacheSweepReport::default();
+    if !zccache_root.exists() {
+        return report;
+    }
+    for root in [&zccache_root, &daemon_state, &embedded_root] {
+        if root.exists()
+            && crate::cache_lib::path_safety::validate_owned_directory(&paths.root, root).is_err()
+        {
+            report.failed += 1;
+            return report;
+        }
+    }
+    let mut candidates = Vec::new();
+    if daemon_state.exists() {
+        match std::fs::read_dir(&daemon_state) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) if is_legacy_identity_name(&entry.file_name()) => {
+                            candidates.push(entry.path());
+                        }
+                        Ok(_) => {}
+                        Err(_) => report.failed += 1,
+                    }
+                }
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+    for (root, protect_current) in [(&zccache_root, false), (&embedded_root, true)] {
+        if !root.exists() {
+            continue;
+        }
+        match std::fs::read_dir(root) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let name = entry.file_name();
+                            if name.to_str().is_some_and(|name| {
+                                zccache::core::config::is_version_dir_name(name)
+                                    && (!protect_current || name != current_version)
+                            }) {
+                                candidates.push(entry.path());
+                            }
+                        }
+                        Err(_) => report.failed += 1,
+                    }
+                }
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+
+    for path in candidates {
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            report.failed += 1;
+            continue;
+        };
+        if !metadata.is_dir() || crate::cache_lib::path_safety::is_link_or_reparse(&metadata) {
+            report.failed += 1;
+            continue;
+        }
+        let Ok(modified) = latest_tree_mtime(&path) else {
+            report.failed += 1;
+            continue;
+        };
+        if now.duration_since(modified).unwrap_or_default() < max_age {
+            continue;
+        }
+        let bytes = crate::cache_lib::target_registry::directory_size(&path);
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => {
+                report.removed += 1;
+                report.bytes_reclaimed = report.bytes_reclaimed.saturating_add(bytes);
+            }
+            Err(_) => report.failed += 1,
+        }
+    }
+    report
+}
+
+#[cfg(test)]
+mod legacy_gc_tests {
+    use super::*;
+
+    crate::timed_test!(legacy_sweep_protects_current_and_sibling_roots, {
+        let temp = tempfile::tempdir().unwrap();
+        let owned = SoldrPaths::with_root(temp.path().join(".soldr"));
+        let sibling = SoldrPaths::with_root(temp.path().join(".soldr-dev"));
+        let legacy = owned
+            .cache
+            .join("zccache/daemon-state/0123456789abcdef0123456789abcdef");
+        let embedded = owned.cache.join("zccache/daemon-state/embedded-v1");
+        let current = embedded.join(zccache::core::config::versioned_subdir());
+        let nested_old_version = embedded.join("v0.0.1");
+        let top_old_version = owned.cache.join("zccache/v0.0.2");
+        // Top-level versions belong to the removed standalone/legacy layout,
+        // even when their version text happens to equal the embedded build.
+        let top_current_version = owned
+            .cache
+            .join("zccache")
+            .join(zccache::core::config::versioned_subdir());
+        let malformed = owned.cache.join("zccache/vprivate");
+        let sibling_sentinel = sibling
+            .cache
+            .join("zccache/daemon-state/0123456789abcdef0123456789abcdef/sentinel");
+        for path in [
+            legacy.join("artifact"),
+            current.join("artifact"),
+            nested_old_version.join("artifact"),
+            top_old_version.join("artifact"),
+            top_current_version.join("artifact"),
+            malformed.join("artifact"),
+            sibling_sentinel.clone(),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"payload").unwrap();
+        }
+
+        let report = sweep_legacy_cache_roots(&owned, SystemTime::now(), std::time::Duration::ZERO);
+        assert_eq!(report.removed, 4);
+        assert!(!legacy.exists());
+        assert!(!nested_old_version.exists());
+        assert!(!top_old_version.exists());
+        assert!(!top_current_version.exists());
+        assert!(current.join("artifact").is_file());
+        assert!(malformed.join("artifact").is_file());
+        assert!(sibling_sentinel.is_file());
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(legacy_sweep_retains_version_with_unreadable_linked_tree, {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let candidate = paths.cache.join("zccache/v0.0.1");
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::os::unix::fs::symlink(candidate.join("missing"), candidate.join("broken")).unwrap();
+        let report = sweep_legacy_cache_roots(&paths, SystemTime::now(), std::time::Duration::ZERO);
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.failed, 1);
+        assert!(candidate.is_dir());
+    });
 }
 
 fn private_zccache_cache_root(paths: &SoldrPaths, identity: &HostIdentity) -> std::path::PathBuf {
@@ -587,6 +1046,58 @@ mod private_root_tests {
         assert_eq!(derive_identity().instance_id, "embedded-v1");
     });
 
+    crate::timed_test!(embedded_root_rejects_a_cross_product_link, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("selected-product"));
+        let daemon = test_daemon_identity();
+        let stable = private_zccache_cache_root(&paths, &derive_identity());
+        std::fs::create_dir_all(stable.parent().unwrap()).unwrap();
+        let external = temp.path().join("other-product");
+        std::fs::create_dir_all(&external).unwrap();
+        let sentinel = external.join("sentinel");
+        std::fs::write(&sentinel, b"keep").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&external, &stable).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&stable)
+                .arg(&external)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+        assert!(!external.join("logs").exists());
+    });
+
+    crate::timed_test!(embedded_version_root_rejects_a_cross_product_link, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().join("selected-product"));
+        let daemon = test_daemon_identity();
+        let stable = private_zccache_cache_root(&paths, &derive_identity());
+        std::fs::create_dir_all(&stable).unwrap();
+        let version_root = stable.join(zccache::core::config::versioned_subdir());
+        let external = temp.path().join("other-product-version");
+        std::fs::create_dir_all(&external).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&external, &version_root).unwrap();
+        #[cfg(windows)]
+        {
+            let status = std::process::Command::new("cmd")
+                .args(["/c", "mklink", "/J"])
+                .arg(&version_root)
+                .arg(&external)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        assert!(prepare_embedded_cache_root(&paths, &daemon, &stable).is_err());
+        assert!(!external.join("logs").exists());
+    });
+
     crate::timed_test!(exact_same_root_legacy_identity_wins_over_newer_siblings, {
         let temp = tempfile::tempdir().expect("tempdir");
         let paths = SoldrPaths::with_root(temp.path().join("root"));
@@ -640,7 +1151,7 @@ mod private_root_tests {
 
     crate::timed_test!(tied_legacy_candidates_are_rejected_loudly, {
         let parent = std::path::PathBuf::from("cache/zccache/daemon-state");
-        let tied = UNIX_EPOCH + std::time::Duration::from_secs(7);
+        let tied = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(7);
         let result = select_legacy_candidate(
             &parent,
             vec![

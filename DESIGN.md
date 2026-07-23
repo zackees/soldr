@@ -120,6 +120,21 @@ zackees/zccache#982) so even an allowlisted subcommand can never spawn.
 Embedded parity for the refused subcommands is tracked in
 zackees/zccache#905.
 
+The daemon is also the primary cache-retention owner. One daemon maps to one
+exact `SoldrPaths` root and persists its five-minute pressure / 24-hour age
+schedule beneath that root. Embedded zccache runs the same bounded retention
+engine as standalone zccache but receives the soldr-owned child root and never
+the standalone `~/.zccache` default. The host coordinates history, PEP517,
+cook, trash, target, and stale-generation cleanup around active build leases.
+Builds hold a shared root-maintenance lock through sanitized history
+publication; a pass holds the exclusive side from its first decision through
+its last deletion. Daemon startup and explicit orphan-root maintenance also
+share a version-blind root-owner lock. Shutdown waits for a pass that already
+started before publishing the root as unowned.
+Default daemon lifetime is unbounded so age retention continues without new
+CLI invocations; a nonzero explicit idle timeout opts back into auto-exit. No
+operating-system scheduler is installed.
+
 `soldr doctor` reports leftovers from pre-embedded installs or direct
 zccache CLI use: running `zccache-daemon*` processes and stale per-launch
 copies under `<zccache-root>/*/runtime-binaries/`, with a cleanup hint.
