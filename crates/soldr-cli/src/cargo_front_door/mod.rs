@@ -40,6 +40,7 @@ mod cache_plan;
 mod clang_cl_shim;
 mod component_install;
 pub(crate) mod cook_hydrate;
+mod darwin_embed;
 mod disk;
 mod inputs;
 mod no_cache_detach;
@@ -2036,6 +2037,10 @@ pub(crate) async fn run_cargo_front_door(
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
             if let Some(paths) = cargo_artifact_paths.as_deref() {
+                darwin_embed::embed_packed_dwarf_for_artifacts(
+                    cache_plan.target_dir_for_hooks(args).as_deref(),
+                    paths,
+                )?;
                 cache_plan.record_cargo_artifact_closure(paths, !paths.is_empty())?;
             }
             cache_plan.save_rust_artifacts(restore_outcome)?;
