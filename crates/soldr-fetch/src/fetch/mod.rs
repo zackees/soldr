@@ -483,6 +483,11 @@ async fn fetch_repo_binary_once(
         other => other,
     })?;
 
+    // soldr#1790: time the actual network download (not the local-cache
+    // hits above) for the always-on per-build XML log's download
+    // section.
+    let download_started_at_ms = current_unix_ms();
+    let download_started = std::time::Instant::now();
     let binary_path = archive::download_and_extract(
         paths,
         cache_name,
@@ -492,6 +497,12 @@ async fn fetch_repo_binary_once(
         binary_names,
     )
     .await?;
+    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
+        name: cache_name.to_string(),
+        source: "github-release".to_string(),
+        started_at_ms: download_started_at_ms,
+        duration_ms: download_started.elapsed().as_millis() as u64,
+    });
 
     // soldr#936: post-extract smoke test. Confirms the binary is
     // actually executable + not a corrupted-shell-script masquerade
@@ -689,6 +700,9 @@ async fn try_embedded_manifest_v6(
 
     let _ = tag_prefix; // accepted for signature symmetry; unused by the v6 lookup.
 
+    // soldr#1790: time the embedded-manifest asset download.
+    let download_started_at_ms = current_unix_ms();
+    let download_started = std::time::Instant::now();
     let binary_path = archive::download_and_extract_with_pin(
         paths,
         cache_name,
@@ -699,6 +713,12 @@ async fn try_embedded_manifest_v6(
         Some((asset_name, hit.asset.sha256.as_str())),
     )
     .await?;
+    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
+        name: cache_name.to_string(),
+        source: "manifest-embed".to_string(),
+        started_at_ms: download_started_at_ms,
+        duration_ms: download_started.elapsed().as_millis() as u64,
+    });
 
     Ok(Some(FetchResult {
         binary_path,
@@ -797,6 +817,10 @@ async fn try_manifest_first(
         repo.owner, repo.repo, matched_entry.tag, matched_entry.asset
     );
 
+    // soldr#1790: time the manifest-first (published catalogue) asset
+    // download.
+    let download_started_at_ms = current_unix_ms();
+    let download_started = std::time::Instant::now();
     let binary_path = archive::download_and_extract_with_pin(
         paths,
         cache_name,
@@ -807,12 +831,29 @@ async fn try_manifest_first(
         Some((&matched_entry.asset, &matched_entry.sha256)),
     )
     .await?;
+    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
+        name: cache_name.to_string(),
+        source: "catalogue".to_string(),
+        started_at_ms: download_started_at_ms,
+        duration_ms: download_started.elapsed().as_millis() as u64,
+    });
 
     Ok(Some(FetchResult {
         binary_path,
         version,
         cached: false,
     }))
+}
+
+/// soldr#1790: current time as unix milliseconds, for timing recorded
+/// fetches. soldr-core has no general-purpose "now in unix ms" helper
+/// (only the build-log timestamp *formatter*), so this is computed
+/// inline; clock-before-epoch is clamped to 0 rather than panicking.
+fn current_unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 fn annotate_release_fetch_error(
