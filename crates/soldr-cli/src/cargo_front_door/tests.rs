@@ -1579,12 +1579,18 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
     let llvm_bin = tmp.path().join("llvm-bin");
+    let fake_dsymutil = llvm_bin.join(if cfg!(windows) {
+        "dsymutil.exe"
+    } else {
+        "dsymutil"
+    });
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&llvm_bin).unwrap();
-    std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").unwrap();
+    std::fs::write(&fake_dsymutil, b"fake dsymutil").unwrap();
 
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+    let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
     let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
@@ -1946,6 +1952,23 @@ crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
     assert_eq!(reasons[1].count, 1);
     assert_eq!(reasons[2].reason, "unknown");
     assert_eq!(reasons[2].count, 1);
+});
+
+crate::timed_test!(embedded_compile_journal_path_matches_service_layout, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+
+    assert_eq!(
+        embedded_compile_journal_path(&paths),
+        paths
+            .cache
+            .join("zccache")
+            .join("daemon-state")
+            .join("embedded-v1")
+            .join(zccache::core::config::versioned_subdir())
+            .join("logs")
+            .join("compile_journal.jsonl")
+    );
 });
 
 crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {

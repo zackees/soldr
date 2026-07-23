@@ -11,7 +11,8 @@ soldr is a single front door for Rust tool execution and Rust builds.
 It has three invocation modes:
 
 1. `soldr cargo ...`
-   Delegates to the real Cargo binary while wiring soldr-managed zccache into the build path.
+   Delegates to the real Cargo binary while routing cacheable compiler work to
+   the zccache service embedded in `soldr-daemon`.
 2. `soldr <tool> [args...]`
    Fetches and runs a Rust CLI tool binary.
 3. `soldr rustc ...`
@@ -44,26 +45,39 @@ soldr --no-cache cargo build
 
 Behavior:
 
-- Prefer direct `cargo` and `rustc` binaries from repo-local or explicit `CARGO_HOME/bin`
-- Fall back to `rustup which <tool>` when no matching binary is present in that repo-contained toolchain location
-- Use the zccache library compiled into soldr when caching is enabled
-- Set `RUSTC_WRAPPER` to the current soldr binary
-- Route wrapper compiles to the embedded service in the selected soldr daemon
-- Start a per-build zccache session inside the exact selected soldr root
-- Delegate to Cargo with the exact flags the user passed
+- Resolve Cargo and Rust tools through Soldr's front door. Host-owned binaries
+  retain the caller's `CARGO_HOME` / `RUSTUP_HOME`; binaries from Soldr's
+  managed toolchain receive the matching managed context.
+- Fall back to `rustup which <tool>` when no matching binary is present in the
+  selected toolchain location.
+- Set `RUSTC_WRAPPER` to a compiler-named Soldr shim when caching is enabled.
+- Give that shim a canonically named `soldr-daemon` recovery image. Direct
+  wrapper invocations lazily materialize the same alias; lifecycle refuses to
+  spawn a daemon from a `rustc`, `clippy-driver`, or `zccache-soldr` image.
+- Route cacheable rustc work over Soldr IPC to the zccache service compiled
+  into `soldr-daemon`; no separate zccache binary or daemon is fetched.
+- Start a per-build correlation session while keeping cache artifacts under
+  the exact selected Soldr root.
+- Delegate to Cargo with the exact flags the user passed.
 
 Current cache-control behavior:
 
 - caching is enabled by default for `soldr cargo ...`
 - `soldr --no-cache cargo ...` disables soldr's compilation-cache path for that invocation
 - `soldr cargo --no-cache ...` is rejected; `--no-cache` is a top-level soldr flag only
-- `soldr --zccache=system cargo ...` uses the `zccache` already on PATH for
-  explicit external-zccache experiments. The default `--zccache=managed` path
-  uses soldr's embedded zccache runtime.
+- `--zccache=managed` and the legacy `--zccache=system` spelling are retained
+  for CLI compatibility; both use the embedded runtime. To deliberately put an
+  external compiler cache in Cargo's wrapper slot, use
+  `SOLDR_RUSTC_WRAPPER=/path/to/zccache soldr cargo ...`.
 - zccache integration currently targets Rust builds through the cargo front door
-- embedded zccache artifacts, indexes, and journals live under
-  `<soldr-root>/cache/zccache/daemon-state/embedded-v1/v<VERSION>/`; soldr does
-  not use or sweep the standalone `~/.zccache` root
+- session logs and archived reports live under
+  `<soldr-root>/cache/zccache/history/`; the embedded service's versioned
+  state and compile journal live under
+  `<soldr-root>/cache/zccache/daemon-state/embedded-v1/v<VERSION>/`.
+  `SOLDR_CACHE_DIR` moves this compiler-store boundary; `ZCCACHE_CACHE_DIR`
+  affects auxiliary front-door/session, rust-plan, and rustfmt state, not the
+  service hosted by `soldr-daemon`. Soldr neither uses nor sweeps the
+  standalone `~/.zccache` root
 - toolchain binaries (`rustc`, `rustfmt`, `clippy-driver`, etc.) are resolved directly from `RUSTUP_HOME` / `CARGO_HOME` / `PATH` before any `rustup` call; `rustup which` is only used as a fallback when the direct probe fails. The sole exception is when `RUSTUP_TOOLCHAIN` is explicitly set to a non-empty value — in that case soldr skips the direct probe and asks `rustup` for the matching toolchain binary so the pinned channel always wins
 - once a concrete Cargo or Rust tool has been resolved, Soldr propagates its managed `CARGO_HOME` / `RUSTUP_HOME` only when that binary came from the Soldr-managed toolchain. Host-owned binaries keep the caller's host toolchain context instead of being paired with Soldr's default-less managed Rustup home
 
@@ -100,6 +114,12 @@ soldr rustfmt src/main.rs
 soldr maturin@1.7.0 build
 ```
 
+Rustfmt remains routed through Soldr. Because rustfmt recursively discovers
+child modules that are absent from Cargo's explicit rustfmt argv, normal
+recursive invocations always execute the real formatter. The embedded marker
+shortcut is used only when the invocation explicitly sets
+`skip_children=true`, making the source-file set complete and safe to cache.
+
 Resolution order:
 
 1. **Cargo verb shorthand** — if `<tool>` (with no `@<version>` suffix) is either a cargo subcommand soldr already prebuilds (`nextest`, `deny`, `audit`, ...) OR one of cargo's own first-party verbs (`build`, `test`, `clippy`, ...), the invocation is rewritten as `soldr cargo <tool> [args...]` and dispatched through the cargo front door. See [Cargo Verb Shorthand](#cargo-verb-shorthand) below for the full list.
@@ -127,11 +147,13 @@ When `soldr <verb> [args...]` is invoked and `<verb>` is not a frozen soldr buil
 
 | Verb       | soldr-native meaning                              | Cargo equivalent (use long form) |
 |------------|---------------------------------------------------|-----------------------------------|
-| `clean`    | Clear the managed zccache build cache             | `soldr cargo clean`               |
+| `clean`    | Clear the embedded zccache build cache            | `soldr cargo clean`               |
 | `config`   | Show or set soldr configuration                   | `soldr cargo config` (unstable)   |
 | `version`  | Print soldr's version                             | `soldr cargo --version`           |
 
-The borderline case `install`: bare `soldr install <crate>` routes to `cargo install <crate>` (the far more common interpretation). The zccache install keeps its existing explicit name `soldr install-zccache`.
+The borderline case `install`: bare `soldr install <crate>` routes to
+`cargo install <crate>`. The former standalone `soldr install-zccache`
+surface was removed when zccache became a compiled-in service.
 
 **Version pinning skips the shorthand.** Cargo built-in verbs and registered cargo subcommands cannot be version-pinned via the bare `@<version>` form — the cargo front door has no per-invocation version knob. `soldr build@1.0` keeps the existing External fetch path (and errors with "no crate named build"), and so do the registered subcommands (`soldr nextest@0.9.x` falls through to External). For pinned cargo-subcommand versions, use the soldr registry (`KNOWN_TOOLS::pinned_version` in source); for pinned tool fetches, use the External path for crates that actually exist.
 
@@ -543,7 +565,8 @@ soldr status --json
 
 ### `soldr clean`
 
-Clear the managed local zccache artifact cache and remove soldr's zccache session state directory.
+Clear the local embedded-zccache artifact cache and remove Soldr's zccache
+session state directory.
 
 ### `soldr config`
 
@@ -551,7 +574,7 @@ Show or set configuration.
 
 ### `soldr cache`
 
-Inspect managed zccache status.
+Inspect the embedded zccache service and its cache status.
 
 Stable machine-facing mode:
 
@@ -665,38 +688,6 @@ Opt-out surface (all default-off; multiple may combine):
 The hooks reuse the same `find_active_cargo_lock` guard as the
 manual subcommand, so a parallel cargo build in the same `target/`
 will never be raced.
-
-### `soldr install-zccache`
-
-Legacy override surface for experiments with an external zccache install.
-Normal `soldr cargo ...` uses the zccache runtime embedded into soldr and
-does not fetch or stage standalone zccache binaries. This command pins a
-user-supplied external zccache install into `<SoldrPaths::bin>/zccache-pinned/`
-for compatibility checks that explicitly opt into external zccache mode.
-
-```bash
-soldr install-zccache <SOURCE>   # system | <path> | <url>
-soldr install-zccache --remove   # un-pin, idempotent
-soldr install-zccache --status   # report sidecar + drift
-soldr install-zccache --json     # structured output
-```
-
-`<SOURCE>` accepts:
-
-- `system` — copy the `zccache` binary already on `PATH`.
-- A directory path containing the external zccache binary.
-- An archive file (`.zip` / `.tar.gz` / `.tgz` / `.tar.zst`) — recursive
-  search for binaries handles nested release layouts like
-  `zccache-vX.Y.Z/`.
-- An `http(s)://` URL pointing at such an archive.
-
-External-zccache resolution chain becomes:
-
-1. `SOLDR_ZCCACHE_LOCAL_DIR` env var (unchanged, highest priority).
-2. Pinned install at `<SoldrPaths::bin>/zccache-pinned/` (this command).
-3. System/path fallback for explicit external-zccache mode.
-
-Exactly one of `<SOURCE>`, `--remove`, or `--status` must be provided.
 
 ### `soldr version`
 
@@ -1091,7 +1082,8 @@ The global scope covers:
 - `~/.soldr/bench`
 - `~/.soldr/runtime`
 - `~/.soldr/state.redb`
-- Soldr's managed zccache session/report directory (`~/.soldr/cache/zccache`).
+- Soldr's embedded-zccache state and session/report owner directory
+  (`~/.soldr/cache/zccache`).
   When `ZCCACHE_CACHE_DIR` is set, that caller-selected zccache cache root is
   excluded explicitly.
 
@@ -1562,10 +1554,10 @@ Commands:
 |---|---|---|
 | `RUSTC_WRAPPER` | Internal build hook used by `soldr cargo ...` | unset |
 | `SOLDR_CACHE_ENABLED` | Internal toggle propagated from `soldr cargo ...` into wrapper mode | `1` |
-| `SOLDR_RUSTC_WRAPPER` | Override soldr's managed zccache wrapper with another wrapper binary, or disable rustc wrapper injection with `none` / empty while leaving other soldr front-door behavior intact | unset |
+| `SOLDR_RUSTC_WRAPPER` | Replace Soldr's normal embedded-zccache route with another wrapper binary, or disable rustc wrapper injection with `none` / empty while leaving other Soldr front-door behavior intact | unset |
 | `SOLDR_REAL_CARGO`, `SOLDR_REAL_RUSTC`, ... | Internal real-tool path overrides used by setup-soldr PATH shims to avoid recursive tool lookup | unset |
-| `SOLDR_ZCCACHE_BIN` | External zccache binary path used only when an explicit external-zccache override is active. Normal `soldr cargo ...` uses embedded zccache. | unset |
-| `SOLDR_ZCCACHE_LOCAL_DIR` | Directory for an explicit external-zccache override. Normal release archives do not set this because zccache is embedded into soldr/soldr-daemon. | unset |
+| `SOLDR_ZCCACHE_BIN` | Legacy compatibility variable; it does not replace the embedded service on the normal `soldr cargo ...` path. Use `SOLDR_RUSTC_WRAPPER=/path/to/zccache` for an intentional external-wrapper experiment. | unset |
+| `SOLDR_ZCCACHE_LOCAL_DIR` | Legacy compatibility variable from the removed downloaded-zccache flow; ignored by the normal embedded path. Develop against `_vender/zccache` and rebuild Soldr instead. | unset |
 | `SOLDR_DAEMON_REQUIRED` | Wrapper-mode escape hatch (issue #1300). When truthy (`1`/`true`/`yes`/`on`), a compile-daemon that is unreachable after the spawn-retry budget hard-fails the build (the pre-#1300 behavior) instead of degrading to a direct uncached rustc exec. Intended for CI lanes that want to catch daemon regressions. Only daemon *unavailability* (not-running / spawn failure / transport error) triggers the degradation — a compile failure or error reply from a healthy daemon always propagates regardless of this variable. | unset (fallback enabled) |
 | `SOLDR_CACHE_DIR` | Override the exact product root owned by this soldr daemon. | official builds: `~/.soldr`; development builds: `~/.soldr-dev` |
 | `ZCCACHE_CACHE_SIZE_BYTES` | Exact embedded artifact budget in bytes. Mutually exclusive with `ZCCACHE_CACHE_SIZE_PERCENT`. | dynamic 5%, clamped 40–200 GiB |
@@ -1576,9 +1568,9 @@ Commands:
 | `SOLDR_RELOCATED_EXE` | Internal recursion guard set after Windows self-relocation | unset |
 | `SOLDR_ORIGINAL_EXE` | Internal path to the original executable when Windows self-relocation is active | unset |
 | `SOLDR_ZCCACHE_SESSION_DIR` | Internal session/report directory passed from `soldr cargo ...` into wrapper mode | unset |
-| `SOLDR_ZCCACHE_PRIVATE` | Legacy opt-in for placing per-build session/report and rust-plan transport files under `<cwd>/.zccache`; `soldr save`/`soldr load` also use that path by default when `--cache-dir` is omitted. It never moves the embedded object store, which remains below the exact selected Soldr root. | unset |
+| `SOLDR_ZCCACHE_PRIVATE` | Opt-in private auxiliary session/rust-plan root. When truthy (`1`/`true`/`yes`/`on`), `soldr cargo ...` routes that state to `<cwd>/.zccache` and `soldr save`/`soldr load` default `--cache-dir` to the same path when omitted. It does **not** relocate the compiler-artifact service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for a fully isolated embedded compiler store. Explicit `ZCCACHE_CACHE_DIR` (front door) or `--cache-dir` (save/load) always wins. | unset |
 | `SOLDR_SAVE_PROFILE` | Default payload profile for `soldr save` when `--ci` / `--minimal` is not passed. Values: `full`/`default`/`complete` for historical all-files archives, or `ci`/`minimal` for the CI/minimal profile that excludes runtime-only files, zccache runtime binaries, and reports `excluded_files` / `excluded_bytes`. CLI flags win over the env var. | `full` |
-| `ZCCACHE_CACHE_DIR` | Legacy per-build session/report and rust-plan transport override. `soldr cargo ...` ignores inherited values by default; an explicitly trusted value does not relocate the embedded object store or grant the Soldr daemon ownership of that directory. | unset |
+| `ZCCACHE_CACHE_DIR` | Auxiliary zccache front-door/session, rust-plan, and direct-rustfmt cache-root override. It does not relocate the compiler service embedded in `soldr-daemon`; use `SOLDR_CACHE_DIR` for that. `soldr cargo ...` ignores inherited values by default so stale workspace state from setup/action wrappers cannot bleed across projects; pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only when intentionally injecting this state. | unset |
 | `ZCCACHE_SESSION_ID` | Per-build zccache session identifier set by soldr | unset |
 | `ZCCACHE_DISABLE` | The standard zccache kill-switch. Truthy values (`1`/`true`/`yes`/`on`) are treated as `--no-cache` for `soldr cargo ...`: the wrapper + daemon are bypassed and rustc runs directly (uncached). Use this — or `soldr --no-cache cargo ...` — to recover if a build hangs on a wedged cache. | unset |
 | `SOLDR_NATIVE_CACHE` | Native C/C++ compiler cache toggle. Falsy values (`0`/`false`/`no`/`off`) disable only cc-rs `CC`/`CXX` wrapper injection, leaving rustc-side zccache enabled. Useful when a target cross compiler, such as the managed MinGW `gcc.exe` / `g++.exe` path, must run directly while Rust compilation still uses the cache. | unset (on) |
@@ -1620,9 +1612,35 @@ That tracker records the `soldr 0.8.0+` status, a datalake-core-like manual
 Docker repro, and the diagnostic contract for embedded zccache daemon
 death/no-response failures.
 
-When soldr manages zccache itself, `soldr cargo ...` resolves a fresh soldr workspace context by default. It preserves normal process environment used by Cargo, Rust, proxies, certificates, CI, and platform SDKs, but ignores inherited soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`, `SOLDR_TARGET_CACHE_*`, `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`. Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only for advanced workflows that intentionally inject those values. Custom wrapper modes leave caller-provided wrapper environment alone; when `SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves, soldr forwards their value rather than overriding it.
+On the normal embedded path, `soldr cargo ...` resolves a fresh Soldr
+workspace context by default. It preserves normal process environment used by
+Cargo, Rust, proxies, certificates, CI, and platform SDKs, but ignores
+inherited Soldr/zccache workspace-pinned state such as `ZCCACHE_CACHE_DIR`,
+`SOLDR_TARGET_CACHE_*`, `SOLDR_TARGET_REGISTRY_RECORDED`, and `SETUP_SOLDR_*`.
+Pass `--trust-inherited-soldr-env` or set `SOLDR_TRUST_INHERITED_ENV=1` only
+for advanced workflows that intentionally inject those values. Custom wrapper
+modes leave caller-provided wrapper environment alone; when
+`SOLDR_RUSTC_WRAPPER=sccache` and the caller has set `SCCACHE_DIR` themselves,
+Soldr forwards their value rather than overriding it.
 
-`soldr cargo ...` only starts the managed build cache for compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`, `clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and `cargo --version` pass through without starting zccache.
+`soldr cargo ...` only starts `soldr-daemon` and its embedded build cache for
+compile-like Cargo subcommands such as `build`, `check`, `test`, `run`, `doc`,
+`clippy`, and `nextest`. Non-build Cargo commands such as `cargo metadata` and
+`cargo --version` pass through without starting the service.
+
+Daemon recovery uses a private `SOLDR_INTERNAL_DAEMON_EXE` parent-to-child
+handoff. It is implementation plumbing, not an operator override; the path must
+exist and have the `soldr-daemon` executable stem. The front door supplies it
+for Rust and native compiler shims, and standalone wrapper dispatch repairs a
+missing/invalid handoff before attempting startup.
+
+Startup and cleanup are ownership-fenced. The wrapper-side `.spawn.lock`
+suppresses a Cargo fan-out spawn herd; the child holds `.instance.lock` for its
+entire lifetime. On Unix the socket is bound before the PID/version claim is
+published. Shutdown removes a PID file only if it still names the retiring
+process, and removes a Unix socket only if its device/inode still matches the
+listener that process bound. This prevents an older idle-timeout shutdown from
+unlinking a live successor's endpoint.
 
 Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-source ...` and `[soldr.plugins]` installs from `soldr toolchain prepare` / `ensure` invoke the directly resolved cargo binary and scrub inherited `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER`. Those commands install dev tools and cross-target helper binaries; routing them through Soldr's wrapper slot would make setup recursively depend on the cache layer it is preparing.
 
@@ -1632,9 +1650,13 @@ Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-sour
 
 Set `SOLDR_CACHE_LIFECYCLE=command` for self-build jobs that need embedded
 cache state flushed before a following archive or test step. Command mode
-finalizes session statistics and asks the root-owning Soldr daemon to flush its
-embedded zccache state. It does not run `zccache stop`, does not terminate the
-Soldr daemon, and never changes ownership based on `ZCCACHE_CACHE_DIR`.
+requests a structured checkpoint of the
+embedded zccache artifact index, depgraph, metadata cache, compiler hash cache,
+system-includes cache, and artifact store, then finalizes session statistics.
+An incomplete or timed-out checkpoint is reported as a failure. Command mode
+does not run `zccache stop`, does not terminate the root-owning Soldr daemon,
+and never changes ownership based on `ZCCACHE_CACHE_DIR`. Use
+`soldr cache shutdown` when the whole Soldr daemon must exit.
 
 On Windows, soldr may copy the running `soldr.exe` into `SOLDR_CACHE_DIR/runtime/soldr-self/<version-and-hash>/soldr.exe` and re-run the command from that relocated copy before build orchestration starts. This keeps disposable worktree builds from repeatedly using the worktree-local `soldr.exe` as `RUSTC_WRAPPER`. The trampoline sets `SOLDR_RELOCATED_EXE=1` and `SOLDR_ORIGINAL_EXE=<original path>` as a recursion guard and preserves argv, inherited environment, stdio, and exit status. Stale relocated copies are purged by a best-effort runtime GC step that runs periodically and skips copies that cannot be removed because they are still locked.
 
@@ -1692,7 +1714,10 @@ that's intentional ("reproduce CI exactly"). To suppress it manually, unset
 |   `-- <tool>-<version>/
 |-- cache/
 |   |-- zccache/
-|   |   `-- daemon-state/embedded-v1/v<VERSION>/ # embedded artifacts, index, logs
+|   |   |-- daemon-state/
+|   |   |   `-- embedded-v1/
+|   |   |       `-- v<VERSION>/ # embedded artifacts, indexes, logs, journal
+|   |   `-- history/<build-id>/ # per-build session reports and journal tails
 |   `-- sccache/   # injected when SOLDR_RUSTC_WRAPPER=sccache and SCCACHE_DIR is unset
 |-- cargo-target/pep517/ # stable per-project PEP 517 Cargo targets
 |-- pep517/wheels/ # last successful wheels, bounded by daemon maintenance
@@ -1730,5 +1755,6 @@ The key design rule is simple:
 
 - users build through `soldr cargo ...`
 - soldr owns the wrapper slot on the common path
-- soldr delegates cache-enabled wrapper invocations into managed zccache
+- soldr delegates cache-enabled wrapper invocations over Soldr IPC into the
+  zccache service embedded in `soldr-daemon`
 - users do not need to manually wire `RUSTC_WRAPPER` for the common path

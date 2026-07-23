@@ -3,7 +3,8 @@
 
 use super::*;
 use crate::daemon::protocol::{
-    BuildCacheSummary, BuildLogPaths, BuildMissReason, Response, StatusInfo,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, CacheFlushInfo, CacheFlushStepInfo,
+    Response, StatusInfo,
 };
 
 crate::timed_test!(record_target_touch_round_trips, {
@@ -34,6 +35,34 @@ crate::timed_test!(flush_caches_request_round_trips, {
         decode_request(&bytes).expect("decode"),
         Request::FlushCaches
     ));
+});
+
+crate::timed_test!(cache_flush_response_preserves_incomplete_step_details, {
+    let info = CacheFlushInfo {
+        complete: false,
+        pending_writes_drained: true,
+        index_writer_drained: true,
+        steps: vec![
+            CacheFlushStepInfo {
+                step: "artifact_store".into(),
+                status: "completed".into(),
+                error: None,
+            },
+            CacheFlushStepInfo {
+                step: "depgraph".into(),
+                status: "failed".into(),
+                error: Some("disk full".into()),
+            },
+        ],
+        artifact_entries: 41,
+        metadata_entries: 73,
+    };
+    let decoded =
+        decode_response(&encode_response(&Response::CacheFlushed(info.clone()))).expect("decode");
+    match decoded {
+        Response::CacheFlushed(decoded) => assert_eq!(decoded, info),
+        other => panic!("expected CacheFlushed, got {other:?}"),
+    }
 });
 
 crate::timed_test!(compile_stats_verb_round_trips, {

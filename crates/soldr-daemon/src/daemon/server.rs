@@ -16,7 +16,10 @@ use crate::daemon::backend_handle_adoption::{
 use crate::daemon::db;
 use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
-use crate::daemon::lifecycle::{append_lifecycle_event, is_live, remove_pid_file, write_pid_file};
+use crate::daemon::lifecycle::{
+    append_lifecycle_event, is_live, pid_file_is_owned_by, remove_pid_file_if_owned,
+    stale_daemon_occupies_endpoint, write_pid_file,
+};
 use crate::daemon::protocol::{
     BuildRecord, CookStats, IpcBurstStats, Request, Response, StatusInfo, CHUNK_BYTES,
     COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
@@ -809,15 +812,19 @@ async fn start_compile_service(
     }
 }
 
-/// Drain the embedded service before the daemon exits. Best-effort:
-/// errors are logged but never block daemon exit. The actual shutdown
-/// is delegated to `Drop` because `State` still holds an `Arc` clone
-/// at this point in `run_async`.
+/// Drain and stop the embedded service before the daemon exits. Best-effort:
+/// errors are logged but never block daemon exit.
 async fn shutdown_compile_service(state: &Arc<State>) {
-    if let Err(err) = state.compile_service.flush().await {
-        tracing::warn!("soldr-daemon: embedded zccache flush failed: {err}");
+    match state
+        .compile_service
+        .as_ref()
+        .clone()
+        .shutdown(zccache::embedded::ShutdownMode::Graceful)
+        .await
+    {
+        Ok(()) => tracing::debug!("soldr-daemon: embedded zccache shutdown complete"),
+        Err(err) => tracing::warn!("soldr-daemon: embedded zccache shutdown failed: {err}"),
     }
-    tracing::debug!("soldr-daemon: embedded zccache flushed (service Drop will finalize shutdown)");
 }
 
 /// Synchronous entry point used by both the `soldr-daemon` bin target
@@ -941,7 +948,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // initialization window in which an older daemon could bind and then have
     // its live socket unlinked by this process.
     #[cfg(unix)]
-    let unix_listener = claim_unix_endpoint(&paths)?;
+    let (unix_listener, unix_socket_identity) = claim_unix_endpoint(&paths)?;
 
     let db_path = data_db_path(&paths);
     // Touch the file at startup so a path error (no parent dir, no
@@ -990,14 +997,19 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         ),
     });
 
-    write_pid_file(&paths).map_err(|e| match e {
-        crate::daemon::lifecycle::LifecycleError::Io(e) => ServerError::Io(e),
-        crate::daemon::lifecycle::LifecycleError::NoExe => ServerError::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "current_exe unavailable",
-        )),
-        crate::daemon::lifecycle::LifecycleError::Spawn(e) => ServerError::Io(e),
-    })?;
+    if let Err(error) = write_pid_file(&paths) {
+        #[cfg(unix)]
+        {
+            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
+        }
+        return Err(match error {
+            crate::daemon::lifecycle::LifecycleError::Io(error) => ServerError::Io(error),
+            crate::daemon::lifecycle::LifecycleError::NoExe => ServerError::Io(
+                std::io::Error::new(std::io::ErrorKind::NotFound, "current_exe unavailable"),
+            ),
+            crate::daemon::lifecycle::LifecycleError::Spawn(error) => ServerError::Io(error),
+        });
+    }
     append_lifecycle_event(&paths, "spawn");
 
     // soldr#1495: publish this daemon's version claim so a newer client
@@ -1087,18 +1099,27 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // any other shutdown work so pending writes flush through.
     shutdown_compile_service(&state).await;
 
-    // Best-effort: remove the endpoint file so a stale socket doesn't
-    // confuse the next start. On Windows the named pipe is destroyed
-    // when the last handle is closed by the runtime drop below — no
-    // cleanup needed there.
-    #[cfg(unix)]
-    {
-        let _ = std::fs::remove_file(daemon_sock_path(&paths));
+    let own_pid = std::process::id();
+    if pid_file_is_owned_by(&paths, own_pid) {
+        // Remove shared state while the PID file still fences out a successor.
+        // The socket has a second inode/device fence so even an unexpected
+        // path replacement cannot be unlinked by this retiring process.
+        #[cfg(unix)]
+        {
+            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
+        }
+        // soldr#1495: drop the version claim so a stale manifest can't
+        // outlive its writer and make the next client think a daemon is live.
+        crate::daemon::broker_discovery::remove_root_version_claim(&paths);
+        // PID is removed last: once it disappears another process may claim
+        // the root, so no shared cleanup may follow this operation.
+        let _ = remove_pid_file_if_owned(&paths, own_pid);
+    } else {
+        tracing::warn!(
+            pid = own_pid,
+            "soldr-daemon: skipping shared endpoint cleanup because PID ownership changed"
+        );
     }
-    remove_pid_file(&paths);
-    // soldr#1495: drop the version claim so a stale manifest can't outlive
-    // its writer and make the next client think a daemon is still live.
-    crate::daemon::broker_discovery::remove_root_version_claim(&paths);
     let event = if state.exit_via_idle.load(Ordering::Relaxed) {
         "died-idle"
     } else {
@@ -1142,7 +1163,7 @@ mod endpoint_occupancy_tests {
                 let temp = tempfile::tempdir().unwrap();
                 let paths = crate::core::SoldrPaths::with_root(temp.path().join("owned"));
                 std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).unwrap();
-                let listener = super::claim_unix_endpoint(&paths).unwrap();
+                let (listener, _) = super::claim_unix_endpoint(&paths).unwrap();
                 let second =
                     tokio::net::UnixListener::bind(crate::cache_lib::daemon_sock_path(&paths));
                 assert!(second.is_err(), "the endpoint claim must be exclusive");
@@ -1178,14 +1199,59 @@ fn embedded_service_log_dir(paths: &SoldrPaths) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn claim_unix_endpoint(paths: &SoldrPaths) -> std::io::Result<tokio::net::UnixListener> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnixSocketIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+fn unix_socket_identity(path: &Path) -> std::io::Result<UnixSocketIdentity> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = std::fs::symlink_metadata(path)?;
+    Ok(UnixSocketIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    })
+}
+
+#[cfg(unix)]
+fn remove_unix_socket_if_matches(
+    path: &Path,
+    expected: UnixSocketIdentity,
+) -> std::io::Result<bool> {
+    let actual = match unix_socket_identity(path) {
+        Ok(actual) => actual,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if actual != expected {
+        return Ok(false);
+    }
+    std::fs::remove_file(path)?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn claim_unix_endpoint(
+    paths: &SoldrPaths,
+) -> std::io::Result<(tokio::net::UnixListener, UnixSocketIdentity)> {
     let sock = daemon_sock_path(paths);
     match std::fs::remove_file(&sock) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    tokio::net::UnixListener::bind(&sock)
+    let listener = tokio::net::UnixListener::bind(&sock)?;
+    let identity = match unix_socket_identity(&sock) {
+        Ok(identity) => identity,
+        Err(error) => {
+            drop(listener);
+            let _ = std::fs::remove_file(&sock);
+            return Err(error);
+        }
+    };
+    Ok((listener, identity))
 }
 
 #[cfg(unix)]
@@ -1203,6 +1269,40 @@ async fn run_accept_loop(
             let _ = handle_connection(stream, state).await;
         });
     }
+}
+
+#[cfg(all(test, unix))]
+mod unix_endpoint_ownership_tests {
+    use super::*;
+
+    crate::timed_test!(retiring_daemon_does_not_unlink_replacement_socket, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let socket_path = temp.path().join("soldr.sock");
+
+        let old_listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind old socket");
+        let old_identity = unix_socket_identity(&socket_path).expect("old identity");
+
+        std::fs::remove_file(&socket_path).expect("unlink old socket name");
+        let replacement_listener =
+            std::os::unix::net::UnixListener::bind(&socket_path).expect("bind replacement");
+        let replacement_identity =
+            unix_socket_identity(&socket_path).expect("replacement identity");
+        assert_ne!(old_identity, replacement_identity);
+
+        assert!(
+            !remove_unix_socket_if_matches(&socket_path, old_identity).expect("fenced old cleanup"),
+            "old daemon must not remove the replacement socket"
+        );
+        assert!(socket_path.exists());
+        assert!(
+            remove_unix_socket_if_matches(&socket_path, replacement_identity)
+                .expect("replacement cleanup")
+        );
+
+        drop(replacement_listener);
+        drop(old_listener);
+    });
 }
 
 #[cfg(windows)]
@@ -1330,7 +1430,7 @@ where
             let response = match state.event_batcher.flush().await {
                 Err(err) => Response::Error(format!("event persistence flush failed: {err}")),
                 Ok(()) => match state.compile_service.flush().await {
-                    Ok(_) => Response::Ack,
+                    Ok(report) => Response::CacheFlushed(report),
                     Err(err) => Response::Error(format!("embedded zccache flush failed: {err}")),
                 },
             };

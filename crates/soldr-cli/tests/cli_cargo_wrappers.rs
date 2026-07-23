@@ -886,16 +886,20 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
 }
 
 #[test]
-fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
+fn rustfmt_recursive_runs_while_explicit_skip_children_uses_embedded_cache() {
     let cache_root = unique_temp_dir("rustfmt-embedded-formatter");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
     let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
     let format_cache_root = cache_root.join("explicit-zccache");
 
-    let run = || {
-        isolated_soldr_command()
-            .arg("rustfmt")
+    let run = |skip_children: bool| {
+        let mut command = isolated_soldr_command();
+        command.arg("rustfmt");
+        if skip_children {
+            command.args(["--config", "skip_children=true"]);
+        }
+        command
             .arg(&source_path)
             .current_dir(&cache_root)
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -911,7 +915,7 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .output()
             .expect("failed to run soldr rustfmt through the embedded format cache")
     };
-    let output = run();
+    let output = run(false);
 
     assert!(
         output.status.success(),
@@ -932,12 +936,36 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
         "embedded format cache should pass the source file to rustfmt: {log}"
     );
 
-    let cached_output = run();
+    let recursive_output = run(false);
     assert!(
-        cached_output.status.success(),
-        "cached rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cached_output.stdout),
-        String::from_utf8_lossy(&cached_output.stderr)
+        recursive_output.status.success(),
+        "second recursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&recursive_output.stdout),
+        String::from_utf8_lossy(&recursive_output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path)
+            .expect("failed to reread fake rustfmt log")
+            .lines()
+            .filter(|line| line.starts_with("rustfmt "))
+            .count(),
+        2,
+        "recursive rustfmt must run again so changed child modules cannot be missed"
+    );
+
+    let nonrecursive_first = run(true);
+    assert!(
+        nonrecursive_first.status.success(),
+        "first nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_first.stdout),
+        String::from_utf8_lossy(&nonrecursive_first.stderr)
+    );
+    let nonrecursive_cached = run(true);
+    assert!(
+        nonrecursive_cached.status.success(),
+        "cached nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_cached.stdout),
+        String::from_utf8_lossy(&nonrecursive_cached.stderr)
     );
     let cached_log = fs::read_to_string(&log_path).expect("failed to reread fake rustfmt log");
     assert_eq!(
@@ -945,8 +973,8 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .lines()
             .filter(|line| line.starts_with("rustfmt "))
             .count(),
-        1,
-        "second identical invocation should hit the embedded format cache: {cached_log}"
+        3,
+        "only explicit skip_children=true may hit the embedded marker cache: {cached_log}"
     );
     assert!(
         format_cache_root.join("fmt").is_dir(),

@@ -164,7 +164,24 @@ message WireResponse {
     WireCompileStats compile_stats = 12;
     // soldr#1735 — bounded admission is full; retry without restart.
     WireBackpressure backpressure = 13;
+    // v17 — structured result for flush_caches.
+    WireCacheFlush cache_flushed = 14;
   }
+}
+
+message WireCacheFlush {
+  bool complete = 1;
+  bool pending_writes_drained = 2;
+  bool index_writer_drained = 3;
+  repeated WireCacheFlushStep steps = 4;
+  uint64 artifact_entries = 5;
+  uint64 metadata_entries = 6;
+}
+
+message WireCacheFlushStep {
+  string step = 1;
+  string status = 2;
+  optional string error = 3;
 }
 
 message WireCompileStats {

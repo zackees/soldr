@@ -1568,16 +1568,13 @@ pub(crate) async fn run_cargo_front_door(
     let paths = SoldrPaths::new()?;
     paths.ensure_dirs()?;
 
-    // L3 (soldr#980): kick off the managed zccache binary fetch +
-    // extract + redb init on a background tokio task NOW. The rest of
-    // this front-door pipeline — known-subcommand fetch, env scrub,
-    // session-id stamp, target-registry memoization, pre-GC, low-disk
-    // probe, profile_debug detection, linker injection — does not
-    // depend on the resolved zccache path. Overlapping its wall-clock
-    // cost with that synchronous setup is worth ~1-2 s on cold builds
-    // where the binary is not already on disk. On warm builds the
-    // background future resolves effectively immediately so the join
-    // at `CargoCachePlan::finalize` is free.
+    // Build the embedded-cache session plan on a background Tokio task while
+    // the rest of the front-door pipeline performs known-subcommand fetch,
+    // environment scrubbing, session-id stamping, target-registry
+    // memoization, pre-GC, low-disk probing, profile detection, and linker
+    // injection. Since soldr#1368 this no longer downloads or extracts a
+    // zccache binary; it prepares cache-root, rust-plan, and session state for
+    // the service embedded in soldr-daemon.
     //
     // We intentionally spawn after the run-trampoline branch above because
     // that path exits without spawning cargo, and we don't
@@ -1858,7 +1855,7 @@ pub(crate) async fn run_cargo_front_door(
 
     // A preceding cached build may have materialized immutable outputs as
     // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
-    // has no managed zccache session, detach shared target files locally
+    // has no embedded-cache session, detach shared target files locally
     // before the unmediated compiler can overwrite them. This must not depend
     // on the daemon being responsive. Conservatively include `install`:
     // configuration can select a persistent target root without a visible

@@ -130,15 +130,23 @@ pub struct LoadArgs {
 /// `soldr save` taken while the daemon is alive archives a tree whose
 /// rustc-side index is memory-only — the restored cache then serves
 /// zero rustc hits (the cold-tar-untar-warm 1.00x-speedup bug).
-/// Best-effort: an unreachable daemon means disk state is already the
-/// best available.
-fn flush_embedded_state_before_save() {
-    let Ok(paths) = crate::core::SoldrPaths::new() else {
-        return;
-    };
+/// An absent daemon has no in-memory state to checkpoint. A reachable daemon
+/// must return a complete persistence report; otherwise archiving would
+/// silently capture stale state.
+fn flush_embedded_state_before_save() -> Result<(), String> {
+    let paths = crate::core::SoldrPaths::new().map_err(|error| error.to_string())?;
     let sock = crate::daemon::server::server_sock_path(&paths);
-    if crate::daemon::client::flush_caches(&sock).is_ok() {
-        eprintln!("soldr save: embedded zccache state flushed via soldr-daemon");
+    match crate::daemon::client::flush_caches(&sock) {
+        Ok(report) if report.is_complete() => {
+            eprintln!("soldr save: embedded zccache state flushed via soldr-daemon");
+            Ok(())
+        }
+        Ok(report) => Err(format!(
+            "embedded zccache checkpoint incomplete: {}",
+            report.incomplete_reason()
+        )),
+        Err(crate::daemon::client::ClientError::NotRunning) => Ok(()),
+        Err(error) => Err(format!("embedded zccache checkpoint failed: {error:?}")),
     }
 }
 
@@ -162,7 +170,10 @@ pub fn run_save(args: SaveArgs) -> i32 {
         }
     };
     if args.cache_dir.is_some() {
-        flush_embedded_state_before_save();
+        if let Err(error) = flush_embedded_state_before_save() {
+            eprintln!("soldr save: refusing to archive an uncheckpointed cache: {error}");
+            return 1;
+        }
     }
     if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
         let Some(cache_dir) = args.cache_dir.as_deref() else {

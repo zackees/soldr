@@ -39,9 +39,9 @@
 
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
-    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileLifecycle,
-    CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, IpcBurstStats, Request,
-    Response, StagedProfileInfo, StatusInfo, WireDecodeError,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CacheFlushInfo,
+    CacheFlushStepInfo, CompileLifecycle, CompileRequest, CompileResponseBody, CompileStatsInfo,
+    CookStats, IpcBurstStats, Request, Response, StagedProfileInfo, StatusInfo, WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -297,6 +297,44 @@ fn compile_stats_from_wire(wire: proto::WireCompileStats) -> CompileStatsInfo {
             bytes: profile.bytes,
             failures: profile.failures,
         }),
+    }
+}
+
+fn cache_flush_to_wire(info: &CacheFlushInfo) -> proto::WireCacheFlush {
+    proto::WireCacheFlush {
+        complete: info.complete,
+        pending_writes_drained: info.pending_writes_drained,
+        index_writer_drained: info.index_writer_drained,
+        steps: info
+            .steps
+            .iter()
+            .map(|step| proto::WireCacheFlushStep {
+                step: step.step.clone(),
+                status: step.status.clone(),
+                error: step.error.clone(),
+            })
+            .collect(),
+        artifact_entries: info.artifact_entries,
+        metadata_entries: info.metadata_entries,
+    }
+}
+
+fn cache_flush_from_wire(wire: proto::WireCacheFlush) -> CacheFlushInfo {
+    CacheFlushInfo {
+        complete: wire.complete,
+        pending_writes_drained: wire.pending_writes_drained,
+        index_writer_drained: wire.index_writer_drained,
+        steps: wire
+            .steps
+            .into_iter()
+            .map(|step| CacheFlushStepInfo {
+                step: step.step,
+                status: step.status,
+                error: step.error,
+            })
+            .collect(),
+        artifact_entries: wire.artifact_entries,
+        metadata_entries: wire.metadata_entries,
     }
 }
 
@@ -645,6 +683,9 @@ impl From<&Response> for proto::WireResponse {
             Response::CompileStats(info) => {
                 proto::WireResponseKind::CompileStats(compile_stats_to_wire(info))
             }
+            Response::CacheFlushed(info) => {
+                proto::WireResponseKind::CacheFlushed(cache_flush_to_wire(info))
+            }
         };
         Self { kind: Some(kind) }
     }
@@ -701,6 +742,9 @@ impl TryFrom<proto::WireResponse> for Response {
             },
             proto::WireResponseKind::CompileStats(m) => {
                 Response::CompileStats(compile_stats_from_wire(m))
+            }
+            proto::WireResponseKind::CacheFlushed(m) => {
+                Response::CacheFlushed(cache_flush_from_wire(m))
             }
         })
     }

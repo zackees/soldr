@@ -417,6 +417,41 @@ pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")
 }
 
+/// Ensure compiler-side daemon recovery has a canonically named executable.
+///
+/// The managed Cargo front door normally injects this handoff once for every
+/// compiler child. Direct `RUSTC_WRAPPER` / `zccache-soldr` invocations do not
+/// have that parent, so recover it lazily after the first failed daemon probe.
+/// Reuse an existing sibling without hashing; only first use materializes the
+/// multicall alias.
+pub(crate) fn ensure_daemon_executable_handoff() -> Result<std::path::PathBuf, SoldrError> {
+    let env_var = crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR;
+    if let Some(configured) = non_empty_env_path(env_var).filter(|path| {
+        path.is_file()
+            && path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("soldr-daemon"))
+    }) {
+        return Ok(configured);
+    }
+
+    let current = std::env::current_exe().map_err(SoldrError::from)?;
+    let sibling = current.parent().map(|parent| {
+        parent.join(if cfg!(windows) {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        })
+    });
+    let daemon = sibling
+        .filter(|path| path.is_file())
+        .map(Ok)
+        .unwrap_or_else(soldr_daemon_binary)?;
+    std::env::set_var(env_var, &daemon);
+    Ok(daemon)
+}
+
 fn materialize_runtime_alias(stem: &str) -> Result<std::path::PathBuf, SoldrError> {
     let source = crate::shim_materialize::soldr_binary_source()?;
     let current = std::env::current_exe().map_err(SoldrError::from)?;

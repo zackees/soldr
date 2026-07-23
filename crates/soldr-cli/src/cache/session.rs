@@ -1,8 +1,9 @@
 //! `soldr session start/end`, `soldr cache shutdown`, and `soldr cache flush` —
-//! lifecycle commands for embedded zccache state and its per-session journal.
+//! lifecycle commands for soldr-daemon's embedded zccache service and its
+//! per-session journal.
 
 use crate::core::{SoldrError, SoldrPaths};
-use crate::daemon::protocol::CompileStatsInfo;
+use crate::daemon::protocol::{CacheFlushInfo, CompileStatsInfo};
 use crate::zccache::managed_zccache_cache_dir;
 use crate::JSON_SCHEMA_VERSION;
 use serde::Serialize;
@@ -27,9 +28,9 @@ struct SessionEndOutput {
     schema_version: u32,
     command: &'static str,
     session_id: String,
-    /// Parsed contents of `zccache session-end --json`. `null` when the
-    /// session was already gone (a second session-end is a no-op per
-    /// the soldr#379 idempotency contract).
+    /// Embedded compile-counter delta since session start. `null` when the
+    /// session was already gone (a second session-end is a no-op per the
+    /// soldr#379 idempotency contract).
     stats: Option<serde_json::Value>,
     /// True when this call was a no-op because the named session had
     /// already been finalized.
@@ -47,13 +48,19 @@ struct CacheShutdownOutput {
     /// The session that was finalized (if any) before stopping the
     /// daemon.
     session_id: Option<String>,
-    /// Whether a graceful `zccache stop` ran. False when the daemon was
-    /// already stopped or no zccache binary has ever been fetched.
+    /// Whether a verified soldr daemon occupied the singleton endpoint when
+    /// this command started.
+    daemon_was_running: bool,
+    /// Structured result of the explicit pre-shutdown cache checkpoint.
+    flush: Option<CacheFlushInfo>,
+    /// Whether the daemon acknowledged the wire Shutdown request.
+    shutdown_requested: bool,
+    /// Whether Soldr acknowledged graceful shutdown or a verified-PID
+    /// fallback stopped the daemon. False when it was already absent.
     daemon_stopped: bool,
     /// Whether the daemon process was observed to have actually exited
-    /// after `zccache stop` (per soldr#383, `zccache stop` returns
-    /// before the daemon process has exited, so soldr polls
-    /// `zccache status` until the daemon stops responding).
+    /// after the Soldr wire shutdown request (the acknowledgement can
+    /// precede process exit, so Soldr observes the verified PID).
     /// `false` when the daemon was never running, when polling was
     /// disabled with `--no-wait`, or when polling timed out.
     daemon_exited: bool,
@@ -69,14 +76,10 @@ struct CacheFlushOutput {
     schema_version: u32,
     command: &'static str,
     cache_dir: String,
-    /// True after `zccache flush` returned 0. False when zccache does
-    /// not yet support the `flush` subcommand or when the daemon was
-    /// never running.
+    /// True only when every embedded checkpoint phase completed.
     flushed: bool,
-    /// Parsed contents of `zccache flush --json` stdout when zccache
-    /// emits it. `null` when zccache only prints a text summary or
-    /// when flush was not run.
-    stats: Option<serde_json::Value>,
+    /// Structured embedded-cache persistence report.
+    stats: Option<CacheFlushInfo>,
     /// Diagnostic notes for the human-facing print path.
     notes: Vec<String>,
 }
@@ -458,30 +461,30 @@ fn clear_session_artifacts(zccache_dir: &std::path::Path) -> Result<bool, SoldrE
 
 pub(crate) async fn run_cache_shutdown_command(
     archive_logs: Option<std::path::PathBuf>,
-    _no_depgraph_save: bool,
-    _shutdown_timeout_seconds: u64,
-    _wait: bool,
+    no_depgraph_save: bool,
+    shutdown_timeout_seconds: u64,
+    wait: bool,
     json: bool,
 ) -> Result<(), SoldrError> {
-    // soldr#1368: there is no separate managed zccache daemon to stop or
-    // poll. Durability of the soldr-daemon embedded zccache state is the
-    // real soldr#383 guarantee, delivered by FlushCaches. The legacy
-    // managed-daemon knobs (`--no-depgraph-save` / `--wait` / timeout) are
-    // accepted for CLI compatibility but no longer drive an external stop.
     let paths = SoldrPaths::new()?;
     let zccache_dir = managed_zccache_cache_dir(&paths)?;
     let mut notes: Vec<String> = Vec::new();
+    let daemon_pid = crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths);
 
     let mut output = CacheShutdownOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "cache shutdown",
         cache_dir: zccache_dir.display().to_string(),
         session_id: None,
+        daemon_was_running: daemon_pid.is_some(),
+        flush: None,
+        shutdown_requested: false,
         daemon_stopped: false,
         daemon_exited: false,
         archive_dir: None,
         notes: Vec::new(),
     };
+    let mut failure = None;
 
     let env_session_id = std::env::var(crate::cache_lib::ZCCACHE_SESSION_ID_ENV_VAR)
         .ok()
@@ -525,18 +528,70 @@ pub(crate) async fn run_cache_shutdown_command(
         ));
     }
 
-    // Make the embedded zccache state durable on disk (soldr#383 / #1286).
     let sock = crate::daemon::server::server_sock_path(&paths);
-    match crate::daemon::client::flush_caches(&sock) {
-        Ok(()) => {
-            output.daemon_stopped = true;
-            output.daemon_exited = true;
-            notes.push("embedded zccache state flushed via soldr-daemon".into());
+    if let Some(pid) = daemon_pid {
+        if no_depgraph_save {
+            notes.push(
+                "explicit pre-shutdown cache checkpoint skipped by --no-depgraph-save; \
+                 graceful daemon shutdown still runs its internal flush"
+                    .into(),
+            );
+        } else {
+            match crate::daemon::client::flush_caches(&sock) {
+                Ok(report) => {
+                    if report.is_complete() {
+                        notes.push("embedded zccache checkpoint completed".into());
+                    } else {
+                        failure = Some(incomplete_flush_message(&report));
+                        notes.push("embedded zccache checkpoint was incomplete".into());
+                    }
+                    output.flush = Some(report);
+                }
+                Err(err) => {
+                    let message = format!("embedded zccache checkpoint failed: {err:?}");
+                    notes.push(message.clone());
+                    failure = Some(message);
+                }
+            }
         }
-        Err(err) => notes.push(format!(
-            "soldr-daemon embedded flush unavailable ({err:?}); on-disk state is \
-             whatever the daemon last persisted"
-        )),
+
+        match crate::daemon::client::shutdown(&sock) {
+            Ok(()) => {
+                output.shutdown_requested = true;
+                output.daemon_stopped = true;
+            }
+            Err(crate::daemon::client::ClientError::NotRunning) => {
+                notes.push("soldr-daemon exited before the shutdown request".into());
+            }
+            Err(err) => {
+                notes.push(format!(
+                    "wire shutdown failed ({err:?}); attempting verified-PID displacement"
+                ));
+                if crate::daemon::lifecycle::displace_stale_daemon(&paths) {
+                    output.daemon_stopped = true;
+                    notes.push("soldr-daemon stopped through verified-PID fallback".into());
+                } else {
+                    failure.get_or_insert_with(|| format!("daemon shutdown failed: {err:?}"));
+                }
+            }
+        }
+
+        output.daemon_exited = if wait {
+            crate::daemon::lifecycle::wait_for_daemon_exit(
+                pid,
+                std::time::Duration::from_secs(shutdown_timeout_seconds),
+            )
+        } else {
+            crate::daemon::lifecycle::wait_for_daemon_exit(pid, std::time::Duration::ZERO)
+        };
+        if wait && !output.daemon_exited {
+            failure.get_or_insert_with(|| {
+                format!("soldr-daemon pid {pid} did not exit within {shutdown_timeout_seconds}s")
+            });
+        }
+    } else {
+        output.daemon_exited = true;
+        notes.push("soldr-daemon was already stopped".into());
     }
 
     output.notes = notes;
@@ -554,16 +609,21 @@ pub(crate) async fn run_cache_shutdown_command(
             println!("  archive: {archive}");
         }
         println!(
-            "  embedded zccache: {}",
-            if output.daemon_stopped {
-                "flushed"
+            "  soldr-daemon: {}",
+            if output.daemon_exited {
+                "stopped"
+            } else if output.shutdown_requested {
+                "shutdown requested"
             } else {
-                "flush unavailable"
+                "already absent"
             }
         );
         for note in &output.notes {
             println!("  note: {note}");
         }
+    }
+    if let Some(message) = failure {
+        return Err(SoldrError::Other(message));
     }
     Ok(())
 }
@@ -585,18 +645,29 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
     // afterwards restore with warm rustc hits. There is no separate managed
     // zccache daemon to flush any more.
     let sock = crate::daemon::server::server_sock_path(&paths);
-    match crate::daemon::client::flush_caches(&sock) {
-        Ok(()) => {
-            output.flushed = true;
-            output
-                .notes
-                .push("embedded zccache state flushed via soldr-daemon".into());
+    let failure = match crate::daemon::client::flush_caches(&sock) {
+        Ok(report) => {
+            output.flushed = report.is_complete();
+            let failure = if report.is_complete() {
+                output
+                    .notes
+                    .push("embedded zccache checkpoint completed".into());
+                None
+            } else {
+                output
+                    .notes
+                    .push("embedded zccache checkpoint was incomplete".into());
+                Some(incomplete_flush_message(&report))
+            };
+            output.stats = Some(report);
+            failure
         }
-        Err(err) => output.notes.push(format!(
-            "soldr-daemon embedded flush unavailable ({err:?}); on-disk state is \
-             whatever the daemon last persisted"
-        )),
-    }
+        Err(err) => {
+            let message = format!("soldr-daemon embedded flush unavailable: {err:?}");
+            output.notes.push(message.clone());
+            Some(message)
+        }
+    };
 
     if json {
         let line = serde_json::to_string(&output)
@@ -612,7 +683,17 @@ pub(crate) async fn run_cache_flush_command(json: bool) -> Result<(), SoldrError
             println!("  note: {note}");
         }
     }
+    if let Some(message) = failure {
+        return Err(SoldrError::Other(message));
+    }
     Ok(())
+}
+
+fn incomplete_flush_message(report: &CacheFlushInfo) -> String {
+    format!(
+        "embedded zccache checkpoint incomplete: {}",
+        report.incomplete_reason()
+    )
 }
 
 #[cfg(test)]

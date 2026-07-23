@@ -964,8 +964,8 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
             }
 
             // Issue #412: when the user typed a verb that LOOKS like
-            // a typo or a renamed built-in (e.g. `update-zccacheee`,
-            // `installzccache`), emit a "did you mean?" hint before
+            // a typo or a renamed built-in (for example,
+            // `build-from-sorce`), emit a "did you mean?" hint before
             // we fire the network fetch. The fetch still runs — the
             // suggestion is advisory.
             if let Some(suggestion) =
@@ -1493,33 +1493,51 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                 Ok(())
             }
         }
-        DaemonSubcommand::Stop => match client::shutdown(&sock) {
-            Ok(()) => {
-                println!("soldr-daemon: shutdown requested");
-                Ok(())
-            }
-            Err(client::ClientError::NotRunning) => {
-                println!("soldr-daemon: not running");
-                Ok(())
-            }
-            Err(e) => {
-                // soldr#1495: the wire `Shutdown` verb failed — most
-                // commonly because the running daemon speaks a different
-                // `PROTOCOL_VERSION` and rejected our frame. Fall back to
-                // a verified-PID signal so a newer CLI can always evict an
-                // older-protocol daemon instead of dead-ending here.
-                use crate::daemon::lifecycle::{
-                    displace_stale_daemon, stale_daemon_occupies_endpoint,
-                };
-                if stale_daemon_occupies_endpoint(&paths).is_some() && displace_stale_daemon(&paths)
-                {
-                    println!("soldr-daemon: stopped (wire shutdown unavailable; signalled by PID)");
+        DaemonSubcommand::Stop => {
+            let daemon_pid = crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths);
+            match client::shutdown(&sock) {
+                Ok(()) => {
+                    let exited = daemon_pid.is_none_or(|pid| {
+                        crate::daemon::lifecycle::wait_for_daemon_exit(pid, Duration::from_secs(30))
+                    });
+                    if exited {
+                        println!("soldr-daemon: stopped");
+                        Ok(())
+                    } else if crate::daemon::lifecycle::displace_stale_daemon(&paths) {
+                        println!("soldr-daemon: stopped (forced after graceful timeout)");
+                        Ok(())
+                    } else {
+                        Err(SoldrError::Other(
+                            "daemon acknowledged shutdown but did not exit within 30s".into(),
+                        ))
+                    }
+                }
+                Err(client::ClientError::NotRunning) => {
+                    println!("soldr-daemon: not running");
                     Ok(())
-                } else {
-                    Err(SoldrError::Other(format!("daemon stop failed: {e:?}")))
+                }
+                Err(e) => {
+                    // soldr#1495: the wire `Shutdown` verb failed — most
+                    // commonly because the running daemon speaks a different
+                    // `PROTOCOL_VERSION` and rejected our frame. Fall back to
+                    // a verified-PID signal so a newer CLI can always evict an
+                    // older-protocol daemon instead of dead-ending here.
+                    use crate::daemon::lifecycle::{
+                        displace_stale_daemon, stale_daemon_occupies_endpoint,
+                    };
+                    if stale_daemon_occupies_endpoint(&paths).is_some()
+                        && displace_stale_daemon(&paths)
+                    {
+                        println!(
+                            "soldr-daemon: stopped (wire shutdown unavailable; signalled by PID)"
+                        );
+                        Ok(())
+                    } else {
+                        Err(SoldrError::Other(format!("daemon stop failed: {e:?}")))
+                    }
                 }
             }
-        },
+        }
         DaemonSubcommand::Status { json } => match client::status(&sock) {
             Ok(info) => {
                 // Cook-index aggregate stats (issue #576). Older

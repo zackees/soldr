@@ -189,7 +189,7 @@ pub struct WireCompileLifecycle {
 
 #[derive(Clone, PartialEq, Message)]
 pub struct WireResponse {
-    #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13")]
+    #[prost(oneof = "WireResponseKind", tags = "1,2,3,4,5,6,7,8,9,10,11,12,13,14")]
     pub kind: Option<WireResponseKind>,
 }
 
@@ -229,6 +229,35 @@ pub enum WireResponseKind {
     CompileStats(WireCompileStats),
     #[prost(message, tag = "13")]
     Backpressure(WireBackpressure),
+    /// v17 — structured reply to FlushCaches.
+    #[prost(message, tag = "14")]
+    CacheFlushed(WireCacheFlush),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireCacheFlush {
+    #[prost(bool, tag = "1")]
+    pub complete: bool,
+    #[prost(bool, tag = "2")]
+    pub pending_writes_drained: bool,
+    #[prost(bool, tag = "3")]
+    pub index_writer_drained: bool,
+    #[prost(message, repeated, tag = "4")]
+    pub steps: Vec<WireCacheFlushStep>,
+    #[prost(uint64, tag = "5")]
+    pub artifact_entries: u64,
+    #[prost(uint64, tag = "6")]
+    pub metadata_entries: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireCacheFlushStep {
+    #[prost(string, tag = "1")]
+    pub step: String,
+    #[prost(string, tag = "2")]
+    pub status: String,
+    #[prost(string, optional, tag = "3")]
+    pub error: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Message)]

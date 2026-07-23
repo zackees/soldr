@@ -120,9 +120,7 @@ timed_test!(
         fs::create_dir_all(&shim_dir).expect("create shim dir");
         let cargo_shim = shim_dir.join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
         let soldr = common::soldr_bin();
-        if fs::hard_link(&soldr, &cargo_shim).is_err() {
-            fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
-        }
+        fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
         let cargo = install_logging_fake_cargo(&log_path);
 
         let mut command = Command::new(&cargo_shim);

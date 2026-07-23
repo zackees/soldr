@@ -1,4 +1,4 @@
-//! Zccache build-session orchestration and zccache subprocess helpers.
+//! Zccache build-session orchestration and compatibility subprocess helpers.
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{SoldrError, SoldrPaths};
@@ -17,8 +17,8 @@ pub(crate) const SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR: &str =
 pub(crate) const SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR: &str = "SOLDR_ZCCACHE_SESSION_DIR";
 
 /// Opt-in: when set to a truthy value (`1`, `true`, `yes`, `on`), route
-/// the managed zccache cache directory to `<cwd>/.zccache` instead of
-/// the shared soldr-managed cache root, and default `soldr save`/`soldr
+/// embedded-zccache data to `<cwd>/.zccache` instead of the shared
+/// Soldr-owned cache root, and default `soldr save`/`soldr
 /// load` `--cache-dir` to the same path. Lets a build's artifacts be
 /// captured and shipped without polluting the shared cache. Issue #802.
 pub(crate) const SOLDR_ZCCACHE_PRIVATE_ENV_VAR: &str = "SOLDR_ZCCACHE_PRIVATE";
@@ -279,6 +279,10 @@ pub(crate) struct ManagedZccacheWrapperPlan {
     pub(crate) session: ZccacheBuildSession,
     pub(crate) child_env: ZccacheChildEnv,
     pub(crate) wrapper_path: std::path::PathBuf,
+    /// Canonically named daemon image inherited by compiler shims. A wrapper's
+    /// own executable is named `rustc`/`clang`; launching that image directly
+    /// would make the PID safety gate correctly reject the daemon.
+    pub(crate) daemon_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -312,6 +316,10 @@ impl RustcWrapperPlan {
                 // the legacy session env and only seed the parent-cache
                 // path-remap vars.
                 cargo.env("RUSTC_WRAPPER", &plan.wrapper_path);
+                cargo.env(
+                    crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR,
+                    &plan.daemon_path,
+                );
                 remove_managed_zccache_env(cargo);
                 cargo.env_remove(SOLDR_ZCCACHE_SESSION_DIR_ENV_VAR);
                 cargo.env_remove(ZCCACHE_DAEMON_NAMESPACE_ENV_VAR);
@@ -391,7 +399,7 @@ async fn prepare_zccache_build(
 
     // Cache-dir resolution mirrors the pre-#1368 logic: an explicit
     // ZCCACHE_CACHE_DIR wins; otherwise `SOLDR_ZCCACHE_PRIVATE` routes to
-    // `<cwd>/.zccache`; otherwise the shared soldr-managed zccache dir.
+    // `<cwd>/.zccache`; otherwise the shared Soldr-owned zccache dir.
     let inherited_soldr_managed_dir =
         non_empty_env_path(crate::cache_lib::MANAGED_ZCCACHE_CACHE_DIR_ENV_VAR)
             .map(|path| normalize_path_for_compare(&path))
@@ -424,10 +432,12 @@ async fn prepare_zccache_build(
     };
 
     let wrapper_path = crate::binaries::rustc_wrapper_shim_binary(paths)?;
+    let daemon_path = crate::binaries::soldr_daemon_binary()?;
     Ok(ManagedZccacheWrapperPlan {
         session,
         child_env,
         wrapper_path,
+        daemon_path,
     })
 }
 

@@ -16,6 +16,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Private parent-to-wrapper handoff for the canonical daemon executable.
+///
+/// Cargo invokes Soldr through compiler-named hardlinks such as `rustc`.
+/// Spawning a long-lived daemon from that `current_exe()` gives the process a
+/// `rustc` executable identity, which the PID-recycling safety gate must reject.
+/// The Cargo front door therefore materializes a `soldr-daemon` alias and
+/// passes its absolute path through this variable.
+pub const SOLDR_DAEMON_EXE_ENV_VAR: &str = "SOLDR_INTERNAL_DAEMON_EXE";
+
 #[derive(Debug)]
 pub enum LifecycleError {
     Io(std::io::Error),
@@ -280,6 +289,14 @@ fn wait_for_pid_exit(pid: u32, timeout: Duration) -> bool {
     !pid_is_alive(pid)
 }
 
+/// Wait until a daemon PID is no longer alive. A zero timeout is an
+/// instantaneous observation. Callers capture the PID before sending the
+/// shutdown request so removal of the PID file cannot be mistaken for process
+/// exit.
+pub fn wait_for_daemon_exit(pid: u32, timeout: Duration) -> bool {
+    wait_for_pid_exit(pid, timeout)
+}
+
 #[cfg(unix)]
 fn terminate_pid(pid: u32, deadline: Option<Instant>) {
     // SAFETY: kill(2) with SIGTERM then (if needed) SIGKILL. The PID was
@@ -345,6 +362,22 @@ pub fn write_pid_file(paths: &SoldrPaths) -> Result<(), LifecycleError> {
 
 pub fn remove_pid_file(paths: &SoldrPaths) {
     let _ = fs::remove_file(daemon_pid_path(paths));
+}
+
+/// Return whether the shared daemon PID file still names `expected_pid`.
+///
+/// Shutdown cleanup uses this as an ownership fence: a retiring daemon must
+/// never delete state that a successor has already published.
+pub fn pid_file_is_owned_by(paths: &SoldrPaths, expected_pid: u32) -> bool {
+    read_pid_file(paths).is_some_and(|(pid, _)| pid == expected_pid)
+}
+
+/// Remove the PID file only while it still belongs to `expected_pid`.
+pub fn remove_pid_file_if_owned(paths: &SoldrPaths, expected_pid: u32) -> bool {
+    if !pid_file_is_owned_by(paths, expected_pid) {
+        return false;
+    }
+    fs::remove_file(daemon_pid_path(paths)).is_ok()
 }
 
 #[derive(Serialize)]
@@ -442,11 +475,23 @@ fn try_spawn_detached_until_with_idle_timeout(
     // backend mandatory. The daemon subcommand is already a clap-
     // matched verb in `cli_args.rs`; the `soldr-daemon` argv[0] alias
     // routes through the main binary.
+    let configured = configured_daemon_executable(std::env::var_os(SOLDR_DAEMON_EXE_ENV_VAR));
     let sibling = crate::daemon::service_definition::sibling_daemon_binary(&current);
-    let (daemon_src, daemon_via_self) = if sibling.exists() {
+    let (daemon_src, daemon_via_self) = if let Some(configured) = configured {
+        (configured, false)
+    } else if sibling.exists() {
         (sibling, false)
-    } else {
+    } else if executable_has_stem(&current, "soldr") {
         (current.clone(), true)
+    } else {
+        return Err(LifecycleError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!(
+                "refusing to spawn soldr-daemon from compiler-named executable {}; \
+                 the caller must provide a canonical image through {SOLDR_DAEMON_EXE_ENV_VAR}",
+                current.display()
+            ),
+        )));
     };
 
     let paths = SoldrPaths::new().ok();
@@ -499,6 +544,22 @@ fn try_spawn_detached_until_with_idle_timeout(
 
     spawn_prepared_daemon(&prepared, paths.as_ref(), deadline)?;
     Ok(Some(prepared))
+}
+
+fn configured_daemon_executable(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value?);
+    (path.is_file()
+        && executable_has_stem(
+            &path,
+            crate::daemon::backend_handle_adoption::SOLDR_DAEMON_SERVICE_NAME,
+        ))
+    .then_some(path)
+}
+
+fn executable_has_stem(path: &Path, expected: &str) -> bool {
+    path.file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|stem| stem.eq_ignore_ascii_case(expected))
 }
 
 /// Retry a daemon spawn from an image prepared by
@@ -703,6 +764,30 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
     let dir = crate::cache_lib::soldr_daemon_dir(paths);
     std::fs::create_dir_all(&dir).ok()?;
     let lock_path = dir.join(".spawn.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .ok()?;
+    match file.try_lock_exclusive() {
+        Ok(()) => Some(file),
+        Err(_) => None,
+    }
+}
+
+/// Acquire the daemon-lifetime singleton lock.
+///
+/// Unlike `.spawn.lock`, which belongs to the short-lived parent that
+/// suppresses wrapper spawn herds, this lock is acquired by the daemon child
+/// itself and held until the process has completed shutdown cleanup. It closes
+/// the check-then-bind race between independently launched foreground daemons.
+pub(crate) fn acquire_daemon_instance_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
+    use fs2::FileExt;
+    let dir = crate::cache_lib::soldr_daemon_dir(paths);
+    std::fs::create_dir_all(&dir).ok()?;
+    let lock_path = dir.join(".instance.lock");
     let file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -977,7 +1062,23 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     // SAFETY: kill(pid, 0) is a well-defined liveness probe — no
     // signal is delivered, the syscall just returns 0 if the pid
     // exists and the caller has permission to signal it.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+        return false;
+    }
+    // Linux retains an exited child in the process table as a zombie until its
+    // parent reaps it. `kill(pid, 0)` still succeeds for that entry, but the
+    // daemon has definitively exited and cannot serve IPC. Treat zombie/dead
+    // task states as stopped so synchronous shutdown does not deadlock with a
+    // parent waiting to reap after this probe returns.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
+        if let Some((_, tail)) = stat.rsplit_once(") ") {
+            if matches!(tail.as_bytes().first(), Some(b'Z' | b'X')) {
+                return false;
+            }
+        }
+    }
+    true
 }
 
 #[cfg(windows)]
@@ -1095,6 +1196,18 @@ mod daemon_spawn_image_tests {
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
 
+    crate::timed_test!(detached_spawn_args_preserve_requested_idle_timeout, {
+        assert_eq!(
+            detached_spawn_args(false, Some(7)),
+            ["--foreground", "--idle-timeout-secs", "7"]
+        );
+        assert_eq!(
+            detached_spawn_args(true, Some(0)),
+            ["daemon", "start", "--foreground", "--idle-timeout", "0"]
+        );
+        assert_eq!(detached_spawn_args(false, None), ["--foreground"]);
+    });
+
     #[cfg(unix)]
     crate::timed_test!(via_self_daemon_forces_main_cli_argv0, {
         let mut command = std::process::Command::new("/bin/sh");
@@ -1192,6 +1305,45 @@ mod daemon_spawn_image_tests {
         std::fs::write(&src, b"soldr").expect("write soldr");
         assert_eq!(resolve_daemon_spawn_image(None, &src), src);
     });
+
+    crate::timed_test!(configured_daemon_image_requires_canonical_identity, {
+        let temp = TempDir::new().expect("tempdir");
+        let canonical = temp
+            .path()
+            .join(format!("soldr-daemon{}", std::env::consts::EXE_SUFFIX));
+        let compiler_shim = temp
+            .path()
+            .join(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&canonical, b"soldr").expect("write canonical daemon");
+        std::fs::write(&compiler_shim, b"soldr").expect("write compiler shim");
+
+        assert_eq!(
+            configured_daemon_executable(Some(canonical.clone().into_os_string())),
+            Some(canonical)
+        );
+        assert!(
+            configured_daemon_executable(Some(compiler_shim.into_os_string())).is_none(),
+            "a compiler-named image must never be accepted as the daemon handoff"
+        );
+        assert!(configured_daemon_executable(None).is_none());
+    });
+
+    crate::timed_test!(only_the_main_soldr_image_is_safe_for_via_self_spawn, {
+        assert!(executable_has_stem(
+            Path::new(if cfg!(windows) {
+                "C:\\tools\\soldr.exe"
+            } else {
+                "/opt/tools/soldr"
+            }),
+            "soldr"
+        ));
+        for unsafe_name in ["rustc", "clippy-driver", "zccache-soldr", "cargo"] {
+            assert!(
+                !executable_has_stem(Path::new(unsafe_name), "soldr"),
+                "{unsafe_name} must not become a long-lived daemon image"
+            );
+        }
+    });
 }
 
 #[cfg(test)]
@@ -1242,6 +1394,36 @@ mod spawn_lock_tests {
         let third = acquire_spawn_lock(&paths).expect("third acquire after release");
         drop(third);
     }
+
+    crate::timed_test!(daemon_instance_lock_is_held_for_the_process_lifetime, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+
+        let first = acquire_daemon_instance_lock(&paths).expect("first acquire");
+        assert!(
+            acquire_daemon_instance_lock(&paths).is_none(),
+            "a second daemon must not claim the same root"
+        );
+        drop(first);
+        let reacquired = acquire_daemon_instance_lock(&paths).expect("acquire after daemon exit");
+        drop(reacquired);
+    });
+
+    crate::timed_test!(retiring_daemon_cannot_remove_successor_pid_file, {
+        let temp = TempDir::new().expect("tempdir");
+        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
+        let pid_path = daemon_pid_path(&paths);
+        std::fs::write(&pid_path, "222\n/soldr-daemon\n").expect("successor pid");
+
+        assert!(!pid_file_is_owned_by(&paths, 111));
+        assert!(!remove_pid_file_if_owned(&paths, 111));
+        assert!(pid_path.exists(), "successor PID file must survive");
+
+        assert!(pid_file_is_owned_by(&paths, 222));
+        assert!(remove_pid_file_if_owned(&paths, 222));
+        assert!(!pid_path.exists());
+    });
 
     #[test]
     fn displacement_enabled_by_default_and_off_via_env() {

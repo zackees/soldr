@@ -251,11 +251,19 @@ impl CargoCachePlan {
         if command_lifetime_shutdown_timeout.is_some() {
             let paths = SoldrPaths::new()?;
             let sock = crate::daemon::server::server_sock_path(&paths);
-            if let Err(err) = crate::daemon::client::flush_caches(&sock) {
-                eprintln!(
-                    "soldr: embedded zccache flush unavailable ({err:?}); on-disk state is \
-                     whatever the daemon last persisted"
-                );
+            match crate::daemon::client::flush_caches(&sock) {
+                Ok(report) if report.is_complete() => {}
+                Ok(report) => {
+                    return Err(SoldrError::Other(format!(
+                        "embedded zccache checkpoint incomplete: {}",
+                        report.incomplete_reason()
+                    )));
+                }
+                Err(err) => {
+                    return Err(SoldrError::Other(format!(
+                        "embedded zccache checkpoint unavailable: {err:?}"
+                    )));
+                }
             }
         }
         // soldr#1368 observability restore: diff the embedded zccache
@@ -345,6 +353,7 @@ mod tests {
                 worktree_root: Some(std::path::PathBuf::from("/tmp/worktree")),
             },
             wrapper_path: std::path::PathBuf::from("/tmp/soldr-shims/rustc"),
+            daemon_path: std::path::PathBuf::from("/tmp/soldr-daemon"),
         }))
     }
 
@@ -370,6 +379,10 @@ mod tests {
         assert_eq!(
             command_env_override(&command, "RUSTC_WRAPPER"),
             Some(Some(OsString::from("/tmp/soldr-shims/rustc")))
+        );
+        assert_eq!(
+            command_env_override(&command, crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR),
+            Some(Some(OsString::from("/tmp/soldr-daemon")))
         );
         // soldr#1368: the front door no longer plumbs an external zccache
         // binary or managed session — those env vars are cleared, not set.

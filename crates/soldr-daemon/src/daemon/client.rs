@@ -11,7 +11,7 @@ use crate::daemon::ipc::{read_frame_async, write_frame_async};
 #[cfg(unix)]
 use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
 use crate::daemon::protocol::{
-    BuildRecord, CompileRequest, CompileStatsInfo, Request, Response, StatusInfo,
+    BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, StatusInfo,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,10 @@ const HOT_PATH_TIMEOUT: Duration = Duration::from_millis(50);
 /// to read a body back (status, shutdown). Still small enough that the
 /// CLI returns quickly even if the daemon is unresponsive.
 const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
+/// The embedded flush has seven individually bounded phases (pending writes,
+/// index writer, and up to five persistence saves), so its IPC budget must be
+/// longer than the generic status/shutdown request timeout.
+const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -203,9 +207,10 @@ pub fn shutdown(sock_path: &Path) -> Result<(), ClientError> {
 /// state (artifact index, depgraph snapshot, metadata cache) to disk
 /// without shutting down. Used by `soldr save` / `soldr cache flush`
 /// before archiving the cache tree.
-pub fn flush_caches(sock_path: &Path) -> Result<(), ClientError> {
-    match submit_request(sock_path, &Request::FlushCaches)? {
-        Response::Ack => Ok(()),
+pub fn flush_caches(sock_path: &Path) -> Result<CacheFlushInfo, ClientError> {
+    match submit_request_with_timeout(sock_path, &Request::FlushCaches, CACHE_FLUSH_REPLY_TIMEOUT)?
+    {
+        Response::CacheFlushed(info) => Ok(info),
         Response::Error(msg) => Err(ClientError::Protocol(msg)),
         other => Err(ClientError::Protocol(format!(
             "unexpected response: {other:?}"
