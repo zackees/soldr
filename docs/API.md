@@ -520,6 +520,16 @@ Recognised `soldr save` flags:
   `profile`, `source_files`, `cache_files`, `excluded_files`,
   `excluded_bytes`, `archive_bytes`, and `elapsed_ms`.
 
+When `--cache-dir` contains the active embedded zccache root, `soldr save`
+first completes a cache checkpoint, gracefully shuts down the daemon, and
+waits for the exact daemon generation that acknowledged shutdown before the
+archive walk begins. A checkpoint alone is not a snapshot barrier because a
+new publication could otherwise land between the checkpoint and tar traversal.
+If quiescence cannot be proven, save fails instead of producing a racing
+snapshot. This intentionally stops the daemon; the next compile-like command
+starts a fresh generation. An unrelated `--cache-dir` does not flush, stop, or
+otherwise depend on the ambient Soldr daemon.
+
 Recognised `soldr load` flags (issue #575):
 
 - `--archive <FILE>` — input archive produced by `soldr save`.
@@ -580,6 +590,38 @@ Stable machine-facing mode:
 
 ```bash
 soldr cache --json
+```
+
+#### `soldr cache flush`
+
+Synchronously checkpoint pending embedded zccache publications and persistent
+index state without stopping `soldr-daemon`. The command succeeds only when
+all reported steps complete; `--json` exposes the detailed flush report.
+
+```bash
+soldr cache flush
+soldr cache flush --json
+```
+
+#### `soldr cache shutdown`
+
+Checkpoint the embedded cache, request graceful daemon shutdown, and by default
+wait for the exact PID and generation returned in the shutdown
+acknowledgement. The default wait is 300 seconds and can be changed with
+`--shutdown-timeout-seconds <SECONDS>`. Once a daemon acknowledges shutdown,
+Soldr never force-kills it: a timeout reports failure while the daemon
+continues its durability work.
+
+`--archive-logs <DIR>` copies the finalized session log, journal, and stats
+only after the acknowledged generation is proven quiescent. It therefore
+cannot be combined with `--no-wait`. `--no-depgraph-save` skips the explicit
+pre-shutdown checkpoint for debugging, but graceful shutdown still completes
+its own cache flush. `--json` emits the stable machine-facing result.
+
+```bash
+soldr cache shutdown
+soldr cache shutdown --shutdown-timeout-seconds 600 --archive-logs ./soldr-logs
+soldr cache shutdown --no-wait
 ```
 
 #### `soldr cache prune-target <path>`
@@ -1431,7 +1473,9 @@ so every abandoned cook origin eventually expires.
 Builds hold a shared root-maintenance lease from before `BuildSessionStart`
 through sanitized archive publication. Maintenance holds the exclusive side
 for the complete pass, so a build cannot begin in the probe/delete gap. Daemon
-shutdown lets an already-started pass finish before removing its PID/endpoint.
+shutdown lets an already-started pass finish. Soldr embeds zccache with
+host-owned maintenance, so zccache does not also start its standalone periodic
+maintenance scheduler inside the same process.
 
 `soldr status`, `soldr cache`, and `soldr doctor` expose the owning root,
 identity, embedded root, effective budget policy, measured usage/fill/free
@@ -1638,10 +1682,11 @@ Startup and cleanup are ownership-fenced. The wrapper-side `.spawn.lock`
 suppresses a Cargo fan-out spawn herd; the child holds `root-owner.lock` for its
 entire lifetime, and explicit orphan-root maintenance uses that same ownership
 fence. On Unix the socket is bound before the PID/version claim is published.
-Shutdown removes a PID file only if it still names the retiring process, and
-removes a Unix socket only if its device/inode still matches the listener that
-process bound. This prevents an older idle-timeout shutdown from unlinking a
-live successor's endpoint.
+Retiring daemons deliberately leave the PID, version, and socket claims in
+place. The next startup validates process liveness, reclaims any stale socket
+while it owns the root, binds the replacement endpoint, and then publishes its
+new claims. Deferring cleanup to the successor avoids a check-then-unlink race
+where an older idle-timeout shutdown could remove a live successor's endpoint.
 
 Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-source ...` and `[soldr.plugins]` installs from `soldr toolchain prepare` / `ensure` invoke the directly resolved cargo binary and scrub inherited `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER`. Those commands install dev tools and cross-target helper binaries; routing them through Soldr's wrapper slot would make setup recursively depend on the cache layer it is preparing.
 

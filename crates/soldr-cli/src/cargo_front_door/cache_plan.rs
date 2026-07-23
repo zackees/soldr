@@ -3,7 +3,6 @@ use crate::core::{SoldrError, SoldrPaths};
 use crate::native_cc;
 use crate::rust_plan::{self, RustArtifactPlanContext, RustPlanRestoreOutcome};
 use crate::zccache::{prepare_rustc_wrapper_plan, RustcWrapperPlan, ZccacheBuildSession};
-use crate::ZccacheSourceArg;
 
 pub(crate) struct CargoCachePlan {
     cache_enabled_for_cargo: bool,
@@ -39,17 +38,12 @@ impl CargoCachePlanPrefetch {
     /// know a child cargo will be spawned. The returned handle is
     /// awaited by [`CargoCachePlan::finalize`] just before the wrapper
     /// env is injected onto the cargo command.
-    pub(crate) fn start(
-        cache_enabled_for_cargo: bool,
-        paths: &SoldrPaths,
-        zccache_source: ZccacheSourceArg,
-    ) -> Self {
+    pub(crate) fn start(cache_enabled_for_cargo: bool, paths: &SoldrPaths) -> Self {
         if !cache_enabled_for_cargo {
             return Self::Disabled;
         }
         let paths = paths.clone();
-        let handle =
-            tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths, zccache_source).await });
+        let handle = tokio::spawn(async move { prepare_rustc_wrapper_plan(&paths).await });
         Self::Pending(handle)
     }
 }
@@ -94,10 +88,9 @@ impl CargoCachePlan {
     pub(crate) async fn prepare(
         cache_enabled_for_cargo: bool,
         paths: &SoldrPaths,
-        zccache_source: ZccacheSourceArg,
     ) -> Result<Self, SoldrError> {
         let rustc_wrapper = if cache_enabled_for_cargo {
-            Some(prepare_rustc_wrapper_plan(paths, zccache_source).await?)
+            Some(prepare_rustc_wrapper_plan(paths).await?)
         } else {
             None
         };

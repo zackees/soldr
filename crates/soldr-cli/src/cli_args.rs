@@ -1143,25 +1143,26 @@ pub(crate) enum CacheSubcommand {
     ///
     /// Synchronous by default: checkpoints the embedded zccache service,
     /// requests Soldr-daemon shutdown, and does not return until the
-    /// verified daemon process exits. The caller can safely snapshot the
-    /// cache directory after this succeeds.
+    /// exact daemon generation that acknowledged the request exits. The
+    /// caller can safely snapshot the cache directory after this succeeds.
     Shutdown {
         /// If set, copy the session log/journal/stats files into
-        /// `<dir>/<session-id>/` before stopping Soldr-daemon. The
+        /// `<dir>/<session-id>/` after Soldr-daemon is quiescent. The
         /// directory (and any missing parents) is created on demand.
         #[arg(long, value_name = "DIR")]
         archive_logs: Option<std::path::PathBuf>,
         /// Skip the explicit pre-shutdown embedded-cache checkpoint
         /// (legacy flag name; debugging only). Graceful daemon shutdown
-        /// still performs its own bounded flush.
+        /// still waits for its own cache flush to complete.
         #[arg(long)]
         no_depgraph_save: bool,
-        /// Legacy compatibility timeout; there is no separate daemon exit.
-        #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+        /// Maximum time to wait for the acknowledged daemon generation to
+        /// finish its graceful cache flush. Timing out never force-kills it.
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
         shutdown_timeout_seconds: u64,
-        /// Skip the post-signal poll that confirms the daemon process
-        /// has actually exited. By default `shutdown` blocks until
-        /// the verified Soldr-daemon PID exits (or the
+        /// Skip the post-request poll that confirms the acknowledged daemon
+        /// generation has actually exited. By default `shutdown` blocks
+        /// until that generation exits (or the
         /// `--shutdown-timeout-seconds` deadline elapses); pass
         /// `--no-wait` only when you genuinely do not care
         /// (interactive shells). See soldr#383.
@@ -1175,7 +1176,7 @@ pub(crate) enum CacheSubcommand {
     /// stopping Soldr-daemon.
     ///
     /// Returns 0 only when pending writes and the index writer drain and
-    /// every bounded persistence step reports completion. Pair with
+    /// every persistence step reports completion. Pair with
     /// `cache shutdown` before archiving a live cache. See soldr#383.
     Flush {
         /// Emit the stable machine-facing JSON form for this command.

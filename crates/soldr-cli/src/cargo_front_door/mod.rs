@@ -26,7 +26,7 @@ use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg};
+use crate::{gc, resolve_toolchain_binary_for_channel};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -1470,7 +1470,6 @@ fn maybe_apply_rustfmt_zccache_shim(
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     if cargo_args_use_reserved_no_cache(args) {
@@ -1581,8 +1580,7 @@ pub(crate) async fn run_cargo_front_door(
     // want to start a fetch we'll just drop. `cache_enabled` here is
     // the same flag the original synchronous `CargoCachePlan::prepare`
     // gated on; passing `false` produces a no-op `Disabled` prefetch.
-    let cache_plan_prefetch =
-        cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths, zccache_source);
+    let cache_plan_prefetch = cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths);
 
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to

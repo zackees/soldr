@@ -25,8 +25,9 @@
 //!
 //! `RuntimeHooks` accepts an explicit Tokio handle. Soldr starts the service
 //! from inside its daemon runtime, so the ambient handle owns zccache's index
-//! writer and five-minute/24-hour maintenance worker. `console-subscriber`
-//! sees the union of soldr and zccache tasks.
+//! writer. Soldr explicitly owns the five-minute/24-hour maintenance schedule
+//! so only one build-aware scanner runs. `console-subscriber` sees the union
+//! of soldr and zccache tasks.
 //!
 //! ## Identity defaults
 //!
@@ -59,7 +60,7 @@ use zccache::core::NormalizedPath;
 use zccache::embedded::{
     AuditConfig, AuditContext, CacheOutcome, CompileRequest as ZccacheCompileRequest,
     DiskCacheLimits, DiskMaintenanceKind, DiskMaintenancePressure, FlushStepOutcome, HostIdentity,
-    RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
+    MaintenanceOwnership, RuntimeHooks, ServiceLimits, ShutdownMode, ZccacheConfig, ZccacheService,
 };
 use zccache::hash::StreamHasher;
 
@@ -190,9 +191,13 @@ impl SoldrZccacheService {
         };
 
         let (disk_limits, disk_policy) = disk_cache_limits_from_env()?;
-        let svc = ZccacheService::start_with_disk_limits(cfg, disk_limits)
-            .await
-            .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
+        let svc = ZccacheService::start_with_disk_limits_and_maintenance(
+            cfg,
+            disk_limits,
+            MaintenanceOwnership::Host,
+        )
+        .await
+        .map_err(|e| EmbeddedServiceError::Start(e.to_string()))?;
         Ok(Self {
             inner: Arc::new(svc),
             identity,
@@ -267,7 +272,7 @@ impl SoldrZccacheService {
     pub async fn flush(&self) -> Result<CacheFlushInfo, EmbeddedServiceError> {
         let report = self
             .inner
-            .flush()
+            .flush_detailed()
             .await
             .map_err(|e| EmbeddedServiceError::Flush(e.to_string()))?;
         let complete = report.is_complete();
@@ -371,7 +376,7 @@ impl SoldrZccacheService {
         self.inner
             .as_ref()
             .clone()
-            .shutdown(mode)
+            .shutdown_detailed(mode)
             .await
             .map_err(|e| EmbeddedServiceError::Shutdown(e.to_string()))
             .and_then(|report| ensure_complete_shutdown(&report))
@@ -515,7 +520,7 @@ mod journal_migration_tests {
 }
 
 fn ensure_complete_shutdown(
-    report: &zccache::embedded::ShutdownReport,
+    report: &zccache::embedded::DetailedShutdownReport,
 ) -> Result<(), EmbeddedServiceError> {
     if report.flushed.is_complete() {
         return Ok(());
@@ -994,10 +999,10 @@ mod private_root_tests {
         pending_writes_drained: bool,
         index_writer_drained: bool,
         outcome: FlushStepOutcome,
-    ) -> zccache::embedded::ShutdownReport {
-        zccache::embedded::ShutdownReport {
+    ) -> zccache::embedded::DetailedShutdownReport {
+        zccache::embedded::DetailedShutdownReport {
             mode: ShutdownMode::Graceful,
-            flushed: zccache::embedded::FlushReport {
+            flushed: zccache::embedded::DetailedFlushReport {
                 pending_writes_drained,
                 index_writer_drained,
                 steps: vec![zccache::embedded::FlushStepReport {

@@ -7,11 +7,17 @@ use crate::cache_lib::target_registry::{current_unix_seconds, TargetRegistry};
 use crate::cache_lib::{daemon_sock_path, data_db_path};
 use crate::core::SoldrPaths;
 #[cfg(windows)]
-use crate::daemon::ipc::{read_frame_async, write_frame_async};
+use crate::daemon::ipc::{
+    read_frame_async, read_frame_async_for_version, write_frame_async,
+    write_frame_async_for_version,
+};
 #[cfg(unix)]
-use crate::daemon::ipc::{read_frame_sync, write_frame_sync};
+use crate::daemon::ipc::{
+    read_frame_sync, read_frame_sync_for_version, write_frame_sync, write_frame_sync_for_version,
+};
 use crate::daemon::protocol::{
-    BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, StatusInfo,
+    BuildRecord, CacheFlushInfo, CompileRequest, CompileStatsInfo, Request, Response, ShutdownAck,
+    StatusInfo,
 };
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -29,6 +35,9 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(2_000);
 /// index writer, and up to five persistence saves), so its IPC budget must be
 /// longer than the generic status/shutdown request timeout.
 const CACHE_FLUSH_REPLY_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+/// Last protocol spoken by pre-generation shutdown acknowledgements. This
+/// fallback exists only to retire an older local daemon safely during rollout.
+const LEGACY_SHUTDOWN_PROTOCOL_VERSION: u32 = 17;
 
 /// Default compile-dispatch timeout — rustc may take minutes for a release
 /// build of a large crate, so the default stays generous (30 minutes): a
@@ -169,6 +178,29 @@ pub fn submit_request(sock_path: &Path, req: &Request) -> Result<Response, Clien
     }
 }
 
+fn submit_request_for_version(
+    sock_path: &Path,
+    req: &Request,
+    protocol_version: u32,
+) -> Result<Response, ClientError> {
+    #[cfg(windows)]
+    {
+        submit_request_windows_with_timeout_and_version(
+            sock_path,
+            req,
+            REPLY_TIMEOUT,
+            protocol_version,
+        )
+    }
+    #[cfg(unix)]
+    {
+        let mut stream = connect(sock_path, REPLY_TIMEOUT)?;
+        write_frame_sync_for_version(&mut stream, req, protocol_version)?;
+        let resp: Response = read_frame_sync_for_version(&mut stream, protocol_version)?;
+        Ok(resp)
+    }
+}
+
 pub fn status(sock_path: &Path) -> Result<StatusInfo, ClientError> {
     match submit_request(sock_path, &Request::Status)? {
         Response::Status(info) => Ok(info),
@@ -193,13 +225,47 @@ pub fn compile_stats(sock_path: &Path) -> Result<CompileStatsInfo, ClientError> 
     }
 }
 
-pub fn shutdown(sock_path: &Path) -> Result<(), ClientError> {
-    match submit_request(sock_path, &Request::Shutdown)? {
-        Response::ShuttingDown => Ok(()),
-        Response::Error(msg) => Err(ClientError::Protocol(msg)),
-        other => Err(ClientError::Protocol(format!(
-            "unexpected response: {other:?}"
-        ))),
+pub fn shutdown(sock_path: &Path) -> Result<ShutdownAck, ClientError> {
+    let current_error = match submit_request(sock_path, &Request::Shutdown) {
+        Ok(Response::ShuttingDown(ack)) => return Ok(ack),
+        Ok(Response::Error(msg)) => return Err(ClientError::Protocol(msg)),
+        Ok(other) => {
+            return Err(ClientError::Protocol(format!(
+                "unexpected response: {other:?}"
+            )))
+        }
+        Err(ClientError::NotRunning) => return Err(ClientError::NotRunning),
+        Err(error) => error,
+    };
+
+    // v18 rollout bridge: v17's empty shutdown Ack cannot identify its
+    // responder. Read v17 status immediately before requesting shutdown, then
+    // use that PID only for waiting. Callers never signal this legacy identity.
+    let legacy_status = match submit_request_for_version(
+        sock_path,
+        &Request::Status,
+        LEGACY_SHUTDOWN_PROTOCOL_VERSION,
+    ) {
+        Ok(Response::Status(status)) => Some(status),
+        _ => None,
+    };
+    match submit_request_for_version(
+        sock_path,
+        &Request::Shutdown,
+        LEGACY_SHUTDOWN_PROTOCOL_VERSION,
+    ) {
+        Ok(Response::ShuttingDown(ack)) if ack.pid != 0 => Ok(ack),
+        Ok(Response::ShuttingDown(_)) => legacy_status
+            .map(|status| ShutdownAck {
+                pid: status.pid,
+                generation: status.generation,
+            })
+            .ok_or_else(|| {
+                ClientError::Protocol(
+                    "legacy daemon acknowledged shutdown without a responder identity".into(),
+                )
+            }),
+        _ => Err(current_error),
     }
 }
 
@@ -759,6 +825,21 @@ fn submit_request_windows_with_timeout(
     req: &Request,
     deadline: Duration,
 ) -> Result<Response, ClientError> {
+    submit_request_windows_with_timeout_and_version(
+        sock_path,
+        req,
+        deadline,
+        crate::daemon::protocol::PROTOCOL_VERSION,
+    )
+}
+
+#[cfg(windows)]
+fn submit_request_windows_with_timeout_and_version(
+    sock_path: &Path,
+    req: &Request,
+    deadline: Duration,
+    protocol_version: u32,
+) -> Result<Response, ClientError> {
     use tokio::time::timeout;
 
     let sock_path = sock_path.to_path_buf();
@@ -768,8 +849,8 @@ fn submit_request_windows_with_timeout(
         runtime.block_on(async move {
             let mut stream = open_windows_pipe_with_retry(&sock_path).await?.stream;
             timeout(deadline, async {
-                write_frame_async(&mut stream, &req).await?;
-                read_frame_async(&mut stream).await
+                write_frame_async_for_version(&mut stream, &req, protocol_version).await?;
+                read_frame_async_for_version(&mut stream, protocol_version).await
             })
             .await
             .map_err(|_| windows_timeout_error("daemon IPC request", deadline))?

@@ -7,11 +7,10 @@ use super::*;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
 /// they don't race under parallel `cargo test`.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 struct EnvVarGuard {
     key: &'static str,

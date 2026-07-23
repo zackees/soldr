@@ -198,7 +198,7 @@ pub enum WireResponseKind {
     #[prost(message, tag = "1")]
     Status(WireStatusInfo),
     #[prost(message, tag = "2")]
-    ShuttingDown(WireUnit),
+    ShuttingDown(WireShuttingDown),
     #[prost(message, tag = "3")]
     Builds(WireBuilds),
     #[prost(string, tag = "4")]
@@ -232,6 +232,14 @@ pub enum WireResponseKind {
     /// v17 — structured reply to FlushCaches.
     #[prost(message, tag = "14")]
     CacheFlushed(WireCacheFlush),
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct WireShuttingDown {
+    #[prost(uint32, tag = "1")]
+    pub pid: u32,
+    #[prost(uint64, tag = "2")]
+    pub generation: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -387,6 +395,9 @@ pub struct WireStatusInfo {
     pub compile_backend: String,
     #[prost(message, optional, tag = "8")]
     pub ipc_burst_stats: Option<WireIpcBurstStats>,
+    /// v18 — process-start generation shared with `WireShuttingDown`.
+    #[prost(uint64, tag = "9")]
+    pub generation: u64,
 }
 
 #[derive(Clone, PartialEq, Message)]

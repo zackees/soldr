@@ -41,7 +41,8 @@ use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
     BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CacheFlushInfo,
     CacheFlushStepInfo, CompileLifecycle, CompileRequest, CompileResponseBody, CompileStatsInfo,
-    CookStats, IpcBurstStats, Request, Response, StagedProfileInfo, StatusInfo, WireDecodeError,
+    CookStats, IpcBurstStats, Request, Response, ShutdownAck, StagedProfileInfo, StatusInfo,
+    WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -378,6 +379,7 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
     proto::WireStatusInfo {
         version: info.version,
         pid: info.pid,
+        generation: info.generation,
         uptime_secs: info.uptime_secs,
         request_count: info.request_count,
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
@@ -390,6 +392,7 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
     StatusInfo {
         version: wire.version,
         pid: wire.pid,
+        generation: wire.generation,
         uptime_secs: wire.uptime_secs,
         request_count: wire.request_count,
         cook_stats: wire.cook_stats.map(cook_stats_from_wire),
@@ -611,7 +614,12 @@ impl From<&Response> for proto::WireResponse {
     fn from(resp: &Response) -> Self {
         let kind = match resp {
             Response::Status(info) => proto::WireResponseKind::Status(status_info_to_wire(info)),
-            Response::ShuttingDown => proto::WireResponseKind::ShuttingDown(proto::WireUnit {}),
+            Response::ShuttingDown(ack) => {
+                proto::WireResponseKind::ShuttingDown(proto::WireShuttingDown {
+                    pid: ack.pid,
+                    generation: ack.generation,
+                })
+            }
             Response::Builds(rows) => proto::WireResponseKind::Builds(proto::WireBuilds {
                 items: rows.iter().map(build_record_to_wire).collect(),
             }),
@@ -698,7 +706,10 @@ impl TryFrom<proto::WireResponse> for Response {
         let kind = wire.kind.ok_or(WireDecodeError::EmptyOneof("Response"))?;
         Ok(match kind {
             proto::WireResponseKind::Status(m) => Response::Status(status_info_from_wire(m)),
-            proto::WireResponseKind::ShuttingDown(_) => Response::ShuttingDown,
+            proto::WireResponseKind::ShuttingDown(reply) => Response::ShuttingDown(ShutdownAck {
+                pid: reply.pid,
+                generation: reply.generation,
+            }),
             proto::WireResponseKind::Builds(m) => {
                 Response::Builds(m.items.into_iter().map(build_record_from_wire).collect())
             }

@@ -139,6 +139,13 @@ fn direct_pid_file_live_for_stem(paths: &SoldrPaths, expected_stem: &str) -> Opt
 /// and revert to the pre-#1495 "first daemon wins" behavior.
 pub(crate) const SOLDR_DAEMON_DISPLACE_ENV: &str = "SOLDR_DAEMON_DISPLACE";
 
+/// Normal upper bound for an acknowledged graceful shutdown.
+///
+/// Embedded cache persistence may legitimately take minutes on a large or
+/// slow cache. Once a daemon acknowledges shutdown callers wait for that exact
+/// generation and never convert this deadline into permission to signal it.
+pub const GRACEFUL_SHUTDOWN_WAIT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
 pub(crate) fn displacement_enabled() -> bool {
     match std::env::var(SOLDR_DAEMON_DISPLACE_ENV) {
         Ok(v) => {
@@ -202,45 +209,105 @@ fn pid_is_soldr_daemon(pid: u32) -> bool {
         ) || pid_exe_stem_matches(pid, "soldr"))
 }
 
-/// Displace the stale daemon currently holding the endpoint so a
-/// current-version daemon can take over (soldr#1495). Graceful first:
-/// ask it to shut down over the wire (works for a same-`PROTOCOL_VERSION`
-/// stale release). If that does not evict it within the budget, fall back
-/// to a verified-PID signal (SIGTERM→SIGKILL / TerminateProcess) — always
-/// re-verifying the PID is alive and still a soldr daemon before
-/// signalling. On success the stale PID file, socket, and version claim
-/// are removed so the successor can bind cleanly. Returns whether the
-/// endpoint was freed.
-pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
-    let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
-        // Nothing live is holding the endpoint; clear any stale files.
-        cleanup_after_displacement(paths);
-        return true;
-    };
+/// Result of waiting for one acknowledged daemon generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShutdownWaitOutcome {
+    /// The acknowledged PID is no longer alive.
+    Exited,
+    /// The endpoint now reports a different daemon generation.
+    Replaced,
+    /// The acknowledged generation could not be proven gone in time.
+    TimedOut,
+}
 
+impl ShutdownWaitOutcome {
+    pub fn is_complete(self) -> bool {
+        matches!(self, Self::Exited | Self::Replaced)
+    }
+}
+
+fn classify_shutdown_observation(
+    responder: crate::daemon::protocol::ShutdownAck,
+    responder_pid_alive: bool,
+    endpoint_identity: Option<(u32, u64)>,
+) -> Option<ShutdownWaitOutcome> {
+    if !responder_pid_alive {
+        return Some(ShutdownWaitOutcome::Exited);
+    }
+    endpoint_identity
+        .filter(|identity| *identity != (responder.pid, responder.generation))
+        .map(|_| ShutdownWaitOutcome::Replaced)
+}
+
+/// Wait for the exact daemon that acknowledged shutdown.
+///
+/// Endpoint unavailability alone is not success: the accept loop stops before
+/// the cache flush does. Conversely, a different status generation proves the
+/// acknowledged responder was replaced even if its PID was reused.
+pub fn wait_for_shutdown_responder(
+    sock_path: &Path,
+    responder: crate::daemon::protocol::ShutdownAck,
+    timeout: Duration,
+) -> ShutdownWaitOutcome {
+    let started = Instant::now();
+    loop {
+        let responder_pid_alive = pid_is_alive(responder.pid);
+        if timeout.is_zero() || started.elapsed() >= timeout {
+            return classify_shutdown_observation(responder, responder_pid_alive, None)
+                .unwrap_or(ShutdownWaitOutcome::TimedOut);
+        }
+        let endpoint_identity = crate::daemon::client::status(sock_path)
+            .ok()
+            .map(|status| (status.pid, status.generation));
+        if let Some(outcome) =
+            classify_shutdown_observation(responder, responder_pid_alive, endpoint_identity)
+        {
+            return outcome;
+        }
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return ShutdownWaitOutcome::TimedOut;
+        }
+        std::thread::sleep(Duration::from_millis(50).min(remaining));
+    }
+}
+
+/// Displace the stale daemon currently holding the endpoint so a
+/// current-version daemon can take over (soldr#1495). Graceful IPC is always
+/// attempted first, including for historical daemons whose executable was
+/// accidentally named `rustc`. A verified-PID signal is permitted only when
+/// no shutdown acknowledgement was received. Once acknowledged, the daemon
+/// owns its graceful flush to completion and is never force-killed.
+pub fn displace_stale_daemon(paths: &SoldrPaths) -> bool {
+    let verified_pid = stale_daemon_occupies_endpoint(paths);
+    let recorded_live_pid = read_pid_file(paths)
+        .map(|(pid, _)| pid)
+        .filter(|pid| pid_is_alive(*pid));
     append_lifecycle_event(paths, "displace-stale-requested");
 
-    // 1) Graceful wire shutdown.
     let sock = crate::daemon::client::default_sock_path(paths);
-    let _ = crate::daemon::client::shutdown(&sock);
-    if wait_for_pid_exit(pid, Duration::from_secs(5)) {
-        cleanup_after_displacement(paths);
-        return true;
+    match crate::daemon::client::shutdown(&sock) {
+        Ok(responder) => {
+            return wait_for_shutdown_responder(&sock, responder, Duration::from_secs(5))
+                .is_complete();
+        }
+        Err(crate::daemon::client::ClientError::NotRunning) if recorded_live_pid.is_none() => {
+            return true;
+        }
+        Err(_) => {}
     }
 
-    // 2) Verified-PID kill fallback (protocol-mismatched daemon can't
-    //    answer the wire Shutdown verb).
+    // No acknowledgement: a protocol-mismatched daemon can only be stopped
+    // through a currently verified Soldr process identity.
+    let Some(pid) = verified_pid else {
+        return false;
+    };
     if pid_is_soldr_daemon(pid) {
         append_lifecycle_event(paths, "displace-kill-fallback");
         terminate_pid(pid, None);
         wait_for_pid_exit(pid, Duration::from_secs(5));
     }
-
-    let freed = !pid_is_alive(pid);
-    if freed {
-        cleanup_after_displacement(paths);
-    }
-    freed
+    !pid_is_alive(pid)
 }
 
 /// One-shot preflight for the managed-build front door (soldr#1495).
@@ -257,20 +324,16 @@ pub fn preflight_displace_stale_daemon(paths: &SoldrPaths) {
     if is_live_current_version(paths).is_some() {
         return;
     }
-    if stale_daemon_occupies_endpoint(paths).is_some() {
-        displace_stale_daemon(paths);
-    }
-}
-
-fn cleanup_after_displacement(paths: &SoldrPaths) {
-    remove_pid_file(paths);
-    crate::daemon::broker_discovery::remove_root_version_claim(paths);
-    // Unix domain socket file must be unlinked before a new daemon can
-    // bind the same path. On Windows the named pipe has no filesystem
-    // artifact, so this is a no-op there.
+    let recorded_process_is_alive = read_pid_file(paths).is_some_and(|(pid, _)| pid_is_alive(pid));
     #[cfg(unix)]
+    let endpoint_artifact_exists = crate::cache_lib::daemon_sock_path(paths).exists();
+    #[cfg(windows)]
+    let endpoint_artifact_exists = false;
+    if stale_daemon_occupies_endpoint(paths).is_some()
+        || recorded_process_is_alive
+        || endpoint_artifact_exists
     {
-        let _ = fs::remove_file(crate::cache_lib::daemon_sock_path(paths));
+        displace_stale_daemon(paths);
     }
 }
 
@@ -336,8 +399,9 @@ fn terminate_pid(pid: u32, _deadline: Option<Instant>) {
     }
     // SAFETY: OpenProcess for a verified soldr-daemon PID; TerminateProcess
     // is the Windows equivalent of SIGKILL (the daemon holds no
-    // filesystem lock we need graceful about — cleanup_after_displacement
-    // removes the pid file + version claim).
+    // filesystem lock we need graceful about. Stale shared claims are
+    // intentionally reclaimed only by the next startup, never by a retiring
+    // daemon after a check-then-unlink race).
     let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
     if h.is_null() {
         return;
@@ -358,26 +422,6 @@ pub fn write_pid_file(paths: &SoldrPaths) -> Result<(), LifecycleError> {
     let contents = format!("{pid}\n{}\n", exe.display());
     fs::write(daemon_pid_path(paths), contents)?;
     Ok(())
-}
-
-pub fn remove_pid_file(paths: &SoldrPaths) {
-    let _ = fs::remove_file(daemon_pid_path(paths));
-}
-
-/// Return whether the shared daemon PID file still names `expected_pid`.
-///
-/// Shutdown cleanup uses this as an ownership fence: a retiring daemon must
-/// never delete state that a successor has already published.
-pub fn pid_file_is_owned_by(paths: &SoldrPaths, expected_pid: u32) -> bool {
-    read_pid_file(paths).is_some_and(|(pid, _)| pid == expected_pid)
-}
-
-/// Remove the PID file only while it still belongs to `expected_pid`.
-pub fn remove_pid_file_if_owned(paths: &SoldrPaths, expected_pid: u32) -> bool {
-    if !pid_file_is_owned_by(paths, expected_pid) {
-        return false;
-    }
-    fs::remove_file(daemon_pid_path(paths)).is_ok()
 }
 
 #[derive(Serialize)]
@@ -658,7 +702,6 @@ fn ensure_startup_deadline_remaining(deadline: Option<Instant>) -> Result<(), Li
 
 fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
     let Some(pid) = stale_daemon_occupies_endpoint(paths) else {
-        cleanup_after_displacement(paths);
         return true;
     };
     if Instant::now() >= deadline {
@@ -679,11 +722,7 @@ fn displace_stale_daemon_before(paths: &SoldrPaths, deadline: Instant) -> bool {
         }
     }
 
-    let freed = !pid_is_alive(pid);
-    if freed {
-        cleanup_after_displacement(paths);
-    }
-    freed
+    !pid_is_alive(pid)
 }
 
 /// Resolve the on-disk image the daemon child will exec from.
@@ -1371,22 +1410,6 @@ mod spawn_lock_tests {
         drop(third);
     }
 
-    crate::timed_test!(retiring_daemon_cannot_remove_successor_pid_file, {
-        let temp = TempDir::new().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-        std::fs::create_dir_all(soldr_daemon_dir(&paths)).expect("daemon dir");
-        let pid_path = daemon_pid_path(&paths);
-        std::fs::write(&pid_path, "222\n/soldr-daemon\n").expect("successor pid");
-
-        assert!(!pid_file_is_owned_by(&paths, 111));
-        assert!(!remove_pid_file_if_owned(&paths, 111));
-        assert!(pid_path.exists(), "successor PID file must survive");
-
-        assert!(pid_file_is_owned_by(&paths, 222));
-        assert!(remove_pid_file_if_owned(&paths, 222));
-        assert!(!pid_path.exists());
-    });
-
     #[test]
     fn displacement_enabled_by_default_and_off_via_env() {
         // Default (unset) → enabled. The explicit off-values disable it.
@@ -1445,8 +1468,8 @@ mod spawn_lock_tests {
         )
         .expect("pid file");
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
-        // Displacing a non-occupied endpoint is a successful no-op that
-        // clears any stale files.
+        // Displacing a non-occupied endpoint is a successful no-op. Stale
+        // shared artifacts are reclaimed by startup, not retirement.
         assert!(displace_stale_daemon(&paths));
     }
 
@@ -1494,8 +1517,38 @@ mod spawn_lock_tests {
         .expect("pid file");
 
         assert!(stale_daemon_occupies_endpoint(&paths).is_none());
-        assert!(displace_stale_daemon(&paths));
+        assert!(
+            !displace_stale_daemon(&paths),
+            "an unverified live PID without an IPC acknowledgement must fail closed"
+        );
         assert!(pid_is_alive(std::process::id()));
+    });
+
+    crate::timed_test!(shutdown_wait_tracks_the_acknowledged_generation, {
+        use crate::daemon::protocol::ShutdownAck;
+
+        let responder = ShutdownAck {
+            pid: 42,
+            generation: 100,
+        };
+        assert_eq!(
+            classify_shutdown_observation(responder, false, None),
+            Some(ShutdownWaitOutcome::Exited)
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((42, 100))),
+            None,
+            "the acknowledged generation is still flushing"
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((42, 101))),
+            Some(ShutdownWaitOutcome::Replaced),
+            "PID reuse by a new daemon must not be mistaken for the old responder"
+        );
+        assert_eq!(
+            classify_shutdown_observation(responder, true, Some((43, 100))),
+            Some(ShutdownWaitOutcome::Replaced)
+        );
     });
 
     #[test]

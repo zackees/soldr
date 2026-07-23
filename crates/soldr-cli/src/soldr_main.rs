@@ -228,7 +228,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
     // #1364: a truthy `ZCCACHE_DISABLE` acts like `--no-cache` so the
     // standard zccache kill-switch actually bypasses the wrapper/daemon.
     let cache_enabled = !cli.no_cache && !cargo_front_door::zccache_disable_requested();
-    let zccache_source = cli.zccache;
     let trust_inherited_soldr_env = cli.trust_inherited_soldr_env;
 
     match cli.command {
@@ -335,7 +334,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 cargo_front_door::run_cargo_front_door(
                     &full_args,
                     cache_enabled,
-                    zccache_source,
                     trust_inherited_soldr_env,
                 )
                 .await?,
@@ -351,7 +349,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 cargo_front_door::run_cargo_front_door(
                     &args,
                     cache_enabled,
-                    zccache_source,
                     trust_inherited_soldr_env,
                 )
                 .await?,
@@ -359,17 +356,11 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
         }
         Commands::Lint { args } => {
             std::process::exit(
-                lint_cmd::run_lint(
-                    &args,
-                    cache_enabled,
-                    zccache_source,
-                    trust_inherited_soldr_env,
-                )
-                .await?,
+                lint_cmd::run_lint(&args, cache_enabled, trust_inherited_soldr_env).await?,
             );
         }
         Commands::Cook { args } => {
-            std::process::exit(cook::run_cook(&args, cache_enabled, zccache_source).await?);
+            std::process::exit(cook::run_cook(&args, cache_enabled).await?);
         }
         Commands::Exec { args } => {
             std::process::exit(exec_cmd::run_exec(&args)?);
@@ -909,7 +900,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
                         cache_enabled,
-                        zccache_source,
                         trust_inherited_soldr_env,
                     )
                     .await?,
@@ -941,7 +931,6 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     cargo_front_door::run_cargo_front_door(
                         &cargo_args,
                         cache_enabled,
-                        zccache_source,
                         trust_inherited_soldr_env,
                     )
                     .await?,
@@ -1126,8 +1115,7 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                 if std::env::var_os("RUSTC_WRAPPER").is_none() {
                     if cache_enabled {
                         let wrapper_plan =
-                            crate::zccache::prepare_rustc_wrapper_plan(&paths, zccache_source)
-                                .await?;
+                            crate::zccache::prepare_rustc_wrapper_plan(&paths).await?;
                         wrapper_plan.apply_to_command(&mut command)?;
                     } else {
                         command.env_remove("RUSTC_WRAPPER");
@@ -1494,22 +1482,24 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
             }
         }
         DaemonSubcommand::Stop => {
-            let daemon_pid = crate::daemon::lifecycle::stale_daemon_occupies_endpoint(&paths);
             match client::shutdown(&sock) {
-                Ok(()) => {
-                    let exited = daemon_pid.is_none_or(|pid| {
-                        crate::daemon::lifecycle::wait_for_daemon_exit(pid, Duration::from_secs(30))
-                    });
-                    if exited {
+                Ok(responder) => {
+                    let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
+                        &sock,
+                        responder,
+                        crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
+                    );
+                    if outcome.is_complete() {
                         println!("soldr-daemon: stopped");
                         Ok(())
-                    } else if crate::daemon::lifecycle::displace_stale_daemon(&paths) {
-                        println!("soldr-daemon: stopped (forced after graceful timeout)");
-                        Ok(())
                     } else {
-                        Err(SoldrError::Other(
-                            "daemon acknowledged shutdown but did not exit within 30s".into(),
-                        ))
+                        Err(SoldrError::Other(format!(
+                            "daemon generation {} (pid {}) acknowledged shutdown but is still \
+                             completing its graceful flush after {}s; it was not force-killed",
+                            responder.generation,
+                            responder.pid,
+                            crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT.as_secs(),
+                        )))
                     }
                 }
                 Err(client::ClientError::NotRunning) => {
@@ -1517,20 +1507,16 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     Ok(())
                 }
                 Err(e) => {
-                    // soldr#1495: the wire `Shutdown` verb failed — most
-                    // commonly because the running daemon speaks a different
-                    // `PROTOCOL_VERSION` and rejected our frame. Fall back to
-                    // a verified-PID signal so a newer CLI can always evict an
-                    // older-protocol daemon instead of dead-ending here.
+                    // soldr#1495: current and compatibility wire shutdown both
+                    // failed. Let the lifecycle layer retry compatibility IPC
+                    // before considering a signal-safe, verified-PID fallback.
                     use crate::daemon::lifecycle::{
                         displace_stale_daemon, stale_daemon_occupies_endpoint,
                     };
                     if stale_daemon_occupies_endpoint(&paths).is_some()
                         && displace_stale_daemon(&paths)
                     {
-                        println!(
-                            "soldr-daemon: stopped (wire shutdown unavailable; signalled by PID)"
-                        );
+                        println!("soldr-daemon: stopped through compatibility displacement");
                         Ok(())
                     } else {
                         Err(SoldrError::Other(format!("daemon stop failed: {e:?}")))
@@ -1558,6 +1544,7 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                         "pkg_version_matches_cli": pkg_matches,
                         "cli_pkg_version": env!("CARGO_PKG_VERSION"),
                         "pid": info.pid,
+                        "generation": info.generation,
                         "uptime_secs": info.uptime_secs,
                         "request_count": info.request_count,
                         "cook": {
@@ -1576,8 +1563,12 @@ async fn run_daemon_command(command: DaemonSubcommand) -> Result<(), SoldrError>
                     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
                 } else {
                     println!(
-                        "soldr-daemon: pid={} uptime={}s requests={} protocol={}",
-                        info.pid, info.uptime_secs, info.request_count, info.version
+                        "soldr-daemon: pid={} generation={} uptime={}s requests={} protocol={}",
+                        info.pid,
+                        info.generation,
+                        info.uptime_secs,
+                        info.request_count,
+                        info.version
                     );
                     println!(
                         "  pkg version: {} (this cli: {}){}",

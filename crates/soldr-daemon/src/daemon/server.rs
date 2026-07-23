@@ -17,11 +17,10 @@ use crate::daemon::db;
 use crate::daemon::event_batcher::EventBatcher;
 use crate::daemon::ipc::{read_frame_async_with_prefix, write_frame_async};
 use crate::daemon::lifecycle::{
-    append_lifecycle_event, is_live, pid_file_is_owned_by, remove_pid_file_if_owned,
-    stale_daemon_occupies_endpoint, write_pid_file,
+    append_lifecycle_event, is_live, stale_daemon_occupies_endpoint, write_pid_file,
 };
 use crate::daemon::protocol::{
-    BuildRecord, CookStats, IpcBurstStats, Request, Response, StatusInfo, CHUNK_BYTES,
+    BuildRecord, CookStats, IpcBurstStats, Request, Response, ShutdownAck, StatusInfo, CHUNK_BYTES,
     COMPILE_BACKEND_EMBEDDED, PROTOCOL_VERSION,
 };
 use crate::zccache_embedded::SoldrZccacheService;
@@ -383,6 +382,7 @@ impl State {
         StatusInfo {
             version: PROTOCOL_VERSION,
             pid: std::process::id(),
+            generation: self.daemon_identity.started_at_unix_ms,
             uptime_secs: self.start_instant.elapsed().as_secs(),
             request_count: self.request_count.load(Ordering::Relaxed),
             cook_stats: Some(CookStats {
@@ -1086,7 +1086,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     }
     // A destructive pass that already acquired the root maintenance lease is
     // allowed to finish. In particular, await its spawn_blocking deletion
-    // worker before removing the PID/endpoint and releasing root ownership.
+    // worker before releasing root ownership.
     let _ = maintenance_handle.await;
 
     // L4 (issue soldr#980): drain whatever the background event flusher
@@ -1099,27 +1099,13 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     // any other shutdown work so pending writes flush through.
     shutdown_compile_service(&state).await;
 
-    let own_pid = std::process::id();
-    if pid_file_is_owned_by(&paths, own_pid) {
-        // Remove shared state while the PID file still fences out a successor.
-        // The socket has a second inode/device fence so even an unexpected
-        // path replacement cannot be unlinked by this retiring process.
-        #[cfg(unix)]
-        {
-            let _ = remove_unix_socket_if_matches(&daemon_sock_path(&paths), unix_socket_identity);
-        }
-        // soldr#1495: drop the version claim so a stale manifest can't
-        // outlive its writer and make the next client think a daemon is live.
-        crate::daemon::broker_discovery::remove_root_version_claim(&paths);
-        // PID is removed last: once it disappears another process may claim
-        // the root, so no shared cleanup may follow this operation.
-        let _ = remove_pid_file_if_owned(&paths, own_pid);
-    } else {
-        tracing::warn!(
-            pid = own_pid,
-            "soldr-daemon: skipping shared endpoint cleanup because PID ownership changed"
-        );
-    }
+    // Deliberately retain the PID file, version claim, and Unix socket node.
+    // A check-then-unlink fence is not atomic: an older Soldr release that
+    // does not honor `root-owner.lock` can publish a successor between the
+    // check and unlink, and the retiring daemon would delete the successor's
+    // state. Startup already probes liveness, overwrites stale claims, and
+    // reclaims a stale socket before binding, so retaining these artifacts is
+    // safe and closes that cross-version race.
     let event = if state.exit_via_idle.load(Ordering::Relaxed) {
         "died-idle"
     } else {
@@ -1417,7 +1403,14 @@ where
             let _ = write_frame_async(&mut stream, &Response::Status(info)).await;
         }
         Request::Shutdown => {
-            let _ = write_frame_async(&mut stream, &Response::ShuttingDown).await;
+            let _ = write_frame_async(
+                &mut stream,
+                &Response::ShuttingDown(ShutdownAck {
+                    pid: std::process::id(),
+                    generation: state.daemon_identity.started_at_unix_ms,
+                }),
+            )
+            .await;
             state.shutdown.request();
         }
         Request::FlushCaches => {

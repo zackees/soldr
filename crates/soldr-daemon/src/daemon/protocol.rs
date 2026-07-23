@@ -82,7 +82,11 @@ use serde::{Deserialize, Serialize};
 /// * v17: `FlushCaches` returns a structured persistence report instead
 ///   of an empty Ack, preserving pending/index drain failures and each
 ///   embedded zccache save step's completed/failed/timed-out outcome.
-pub const PROTOCOL_VERSION: u32 = 17;
+/// * v18: shutdown acknowledgements and status both carry the daemon
+///   generation that accepted the request. Callers can now wait for that
+///   exact responder without trusting a PID sampled before the request or
+///   signalling a successor after PID reuse.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -260,7 +264,10 @@ pub struct CompileResponseBody {
 #[derive(Debug, Clone)]
 pub enum Response {
     Status(StatusInfo),
-    ShuttingDown,
+    /// Acknowledges graceful shutdown and identifies the daemon that accepted
+    /// the request. Callers must wait on this responder, not a PID sampled
+    /// before the request.
+    ShuttingDown(ShutdownAck),
     Builds(Vec<BuildRecord>),
     Error(String),
     /// The daemon is alive but its bounded compile-admission queue is full.
@@ -327,6 +334,13 @@ pub enum Response {
     /// pending write, index update, or named persistence step failed to
     /// finish successfully before its bound.
     CacheFlushed(CacheFlushInfo),
+}
+
+/// Identity of the daemon generation that accepted a shutdown request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownAck {
+    pub pid: u32,
+    pub generation: u64,
 }
 
 /// Structured checkpoint result from the embedded zccache service.
@@ -413,6 +427,8 @@ pub struct StagedProfileInfo {
 pub struct StatusInfo {
     pub version: u32,
     pub pid: u32,
+    /// Process-start generation shared with [`ShutdownAck`].
+    pub generation: u64,
     pub uptime_secs: u64,
     pub request_count: u64,
     /// Cook-index aggregate stats (issue #576).
@@ -516,8 +532,8 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v17_after_structured_cache_flush, {
-        assert_eq!(PROTOCOL_VERSION, 17);
+    crate::timed_test!(protocol_version_is_v18_after_generation_aware_shutdown, {
+        assert_eq!(PROTOCOL_VERSION, 18);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
@@ -548,6 +564,7 @@ mod tests {
         let info = StatusInfo {
             version: PROTOCOL_VERSION,
             pid: 1,
+            generation: 2,
             uptime_secs: 0,
             request_count: 0,
             cook_stats: None,

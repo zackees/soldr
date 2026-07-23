@@ -125,10 +125,11 @@ than publishing a PID that its own recycled-PID safety check cannot trust.
 Daemon startup has two distinct locks: the short-lived `.spawn.lock` suppresses
 wrapper herds, while `root-owner.lock` is held by the daemon for its full
 lifetime and shared with explicit orphan-root maintenance. On Unix, the child
-binds the socket before publishing its PID/version. Shutdown removes the PID
-and socket only while they are still owned by that process (the socket is
-fenced by device/inode identity). A retiring or idle-timed-out daemon therefore
-cannot unlink a successor's endpoint.
+binds the socket before publishing its PID/version. Retirement deliberately
+leaves the PID, version, and socket claims in place; the next root owner
+validates liveness, reclaims the stale socket, and overwrites the claims during
+startup. Successor-owned cleanup avoids a check-then-unlink race in which an
+older or idle-timed-out daemon could remove a live successor's endpoint.
 
 The in-process `soldr zccache <args>` entrypoint
 (`crates/soldr-cli/src/zccache_entry.rs`) passes through only the daemon-free
