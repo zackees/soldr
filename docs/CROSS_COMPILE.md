@@ -173,6 +173,23 @@ under the URL pattern `/apple-sdk/<version>/<shape-slug>/`. The historical
 11.3 row keeps its legacy `/apple-sdk/MacOSX11.3/darwin-universal2/` layout;
 modern rows use the bare version plus shape slug.
 
+### Local executable-only symbol check
+
+After installing `soldr` and an LLVM containing `llvm-dwarfdump`, run the
+self-cleaning probe from the repository root:
+
+```sh
+uv run --no-project python bench/test_darwin_symbols.py
+DARWIN_TARGETS=x86_64-apple-darwin,aarch64-apple-darwin \
+  uv run --no-project python bench/test_darwin_symbols.py
+```
+
+The probe builds a temporary crate with `line-tables-only` plus packed
+debuginfo through `soldr build`, removes every generated dSYM/object sidecar,
+and verifies that `llvm-dwarfdump` still finds `symbol_probe` and `main.rs` in
+the Mach-O executable. Set `LLVM_DWARFDUMP` or `SOLDR_LLVM_DIR` when the LLVM
+binary is not already on `PATH`.
+
 ### CI
 
 The Linux cross-build workflow `.github/workflows/_ci-cross-build-linux.yml`
