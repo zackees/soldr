@@ -76,7 +76,14 @@ pub(crate) fn plan_from_environment() -> Option<FallbackPlan> {
             } else {
                 kept.join(" ")
             };
-            env.insert(key, if replacement.is_empty() { None } else { Some(replacement) });
+            env.insert(
+                key,
+                if replacement.is_empty() {
+                    None
+                } else {
+                    Some(replacement)
+                },
+            );
         }
     }
 

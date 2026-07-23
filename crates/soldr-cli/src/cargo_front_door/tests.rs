@@ -124,7 +124,10 @@ crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
         zthreads_fallback::ATTEMPTED_ENV,
         "RUSTC_BOOTSTRAP",
     ]);
-    std::env::set_var("CARGO_ENCODED_RUSTFLAGS", "-C\x1fopt-level=2\x1f-Zthreads=4");
+    std::env::set_var(
+        "CARGO_ENCODED_RUSTFLAGS",
+        "-C\x1fopt-level=2\x1f-Zthreads=4",
+    );
     std::env::set_var(
         "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
         "-C target-cpu=native -Zthreads=4",
@@ -137,7 +140,8 @@ crate::timed_test!(zthreads_fallback_removes_encoded_and_target_tokens, {
         Some(&Some(String::from("-C\x1fopt-level=2")))
     );
     assert_eq!(
-        plan.env.get("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"),
+        plan.env
+            .get("CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS"),
         Some(&Some(String::from("-C target-cpu=native")))
     );
 });
@@ -164,16 +168,16 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
         zthreads_fallback::render_warning("8", true, false),
         "::warning::soldr: stable Rust rejected -Zthreads=8; retrying once without it. Build output is unchanged, but compilation may be slower."
     );
-    assert!(
-        zthreads_fallback::render_warning("8", false, true).starts_with("\x1b[33m")
-    );
+    assert!(zthreads_fallback::render_warning("8", false, true).starts_with("\x1b[33m"));
     assert!(
         zthreads_fallback::render_warning("8", false, false).contains("compilation may be slower")
     );
     assert!(zthreads_fallback::diagnostic_matches(
         "error: the option `Z` is only accepted on the nightly compiler"
     ));
-    assert!(!zthreads_fallback::diagnostic_matches("error: could not compile"));
+    assert!(!zthreads_fallback::diagnostic_matches(
+        "error: could not compile"
+    ));
     assert!(zthreads_fallback::render_config_hint().contains("Cargo config"));
     assert!(resolved_toolchain_is_nightly(Some("nightly-2026-07-22")));
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));

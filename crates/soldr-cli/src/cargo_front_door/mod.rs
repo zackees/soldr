@@ -1860,8 +1860,8 @@ pub(crate) async fn run_cargo_front_door(
     // Capture stderr for the narrow stable `-Zthreads` fallback even on a
     // local terminal. The capture helper tees bytes unchanged, so the user
     // still sees Cargo's live output while we retain the exact rustc error.
-    let capture_for_diagnostics = !std::io::stderr().is_terminal()
-        || zthreads_fallback::environment_mentions_zthreads();
+    let capture_for_diagnostics =
+        !std::io::stderr().is_terminal() || zthreads_fallback::environment_mentions_zthreads();
 
     // Phase 2: start session correlation only after every fallible pre-cargo
     // preparation step (especially no-cache ownership detachment) succeeds.
@@ -2111,8 +2111,9 @@ pub(crate) async fn run_cargo_front_door(
             }
         } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
             && zthreads_fallback::diagnostic_matches(
-            captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
-        ) {
+                captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
+            )
+        {
             eprintln!("{}", zthreads_fallback::render_config_hint());
         }
     }
@@ -2175,7 +2176,9 @@ fn retry_zthreads_without_flag(
         .spawn()
         .map_err(|err| SoldrError::Other(format!("spawn -Zthreads fallback failed: {err}")))?;
     let status = wait_for_cargo_child(&mut child, "soldr -Zthreads fallback", None)?;
-    Ok(status.code().unwrap_or(if status.success() { 0 } else { 1 }))
+    Ok(status
+        .code()
+        .unwrap_or(if status.success() { 0 } else { 1 }))
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
