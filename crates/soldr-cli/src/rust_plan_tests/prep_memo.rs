@@ -504,10 +504,11 @@ mod end_to_end {
                 };
                 let args = vec!["build".to_string()];
 
-                let plan_one =
-                    maybe_prepare_rust_artifact_plan(&cargo_bin, &rustc_bin, &args, &session, None)
-                        .expect("first prepare")
-                        .expect("plan context");
+                let plan_one = maybe_prepare_rust_artifact_plan(
+                    &cargo_bin, &rustc_bin, &args, &session, None, None,
+                )
+                .expect("first prepare")
+                .expect("plan context");
                 assert_eq!(
                     call_count(&cargo_calls),
                     2,
@@ -515,10 +516,11 @@ mod end_to_end {
                 );
                 assert_eq!(call_count(&rustc_calls), 1, "-Vv on first run");
 
-                let plan_two =
-                    maybe_prepare_rust_artifact_plan(&cargo_bin, &rustc_bin, &args, &session, None)
-                        .expect("second prepare")
-                        .expect("plan context");
+                let plan_two = maybe_prepare_rust_artifact_plan(
+                    &cargo_bin, &rustc_bin, &args, &session, None, None,
+                )
+                .expect("second prepare")
+                .expect("plan context");
                 assert_eq!(
                     call_count(&cargo_calls),
                     2,
@@ -546,10 +548,11 @@ mod end_to_end {
                 )
                 .unwrap();
 
-                let _plan_three =
-                    maybe_prepare_rust_artifact_plan(&cargo_bin, &rustc_bin, &args, &session, None)
-                        .expect("third prepare")
-                        .expect("plan context");
+                let _plan_three = maybe_prepare_rust_artifact_plan(
+                    &cargo_bin, &rustc_bin, &args, &session, None, None,
+                )
+                .expect("third prepare")
+                .expect("plan context");
                 assert_eq!(
                     call_count(&cargo_calls),
                     4,

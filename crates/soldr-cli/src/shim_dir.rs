@@ -33,6 +33,14 @@ pub(crate) const SOLDR_DISABLE_CHILD_SHIMS_ENV_VAR: &str = "SOLDR_DISABLE_CHILD_
 /// a long-lived external process (for example rust-analyzer) spawns
 /// hardcoded `cargo` / `rustc` style commands.
 const SHIMMED_TOOLS: &[&str] = &["cargo", "rustc", "rustdoc", "rustfmt", "clippy-driver"];
+const DYLINT_SHIMMED_TOOLS: &[&str] = &[
+    "cargo",
+    "rustc",
+    "rustdoc",
+    "rustfmt",
+    "clippy-driver",
+    "rustup",
+];
 
 /// Drop-on-exit guard that removes the shim directory best-effort.
 /// Holding the guard alive across the child's run is the caller's
@@ -66,6 +74,17 @@ pub(crate) fn should_install_shims() -> bool {
 /// Build a fresh shim dir under the system tempdir and populate it
 /// with one multicall executable per `SHIMMED_TOOLS` entry.
 pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
+    build_shim_dir_for(SHIMMED_TOOLS)
+}
+
+/// Dylint sanitizes standard Rust environment variables before invoking its
+/// nested tools. Its scoped shim set also includes rustup so Soldr can restore
+/// the selected nightly from the retained SOLDR_DYLINT_* identity.
+pub(crate) fn build_dylint_shim_dir() -> Result<ShimDirGuard, SoldrError> {
+    build_shim_dir_for(DYLINT_SHIMMED_TOOLS)
+}
+
+fn build_shim_dir_for(tools: &[&str]) -> Result<ShimDirGuard, SoldrError> {
     let soldr_bin = crate::shim_materialize::soldr_binary_source()?;
     let dir = tempfile::Builder::new()
         .prefix("soldr-shims-")
@@ -76,7 +95,7 @@ pub(crate) fn build_shim_dir() -> Result<ShimDirGuard, SoldrError> {
     // the lifetime matches the child process duration regardless of
     // panic / early return paths.
     let _ = dir.keep();
-    for tool in SHIMMED_TOOLS {
+    for tool in tools {
         write_shim(&dir_path, tool, &soldr_bin)?;
     }
     Ok(ShimDirGuard { path: dir_path })

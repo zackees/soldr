@@ -102,6 +102,92 @@ pub const MANIFEST_DISABLE_ENV_VAR: &str = "SOLDR_MANIFEST_DISABLE";
 /// wedge a build.
 pub const MANIFEST_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Download one non-archive catalogue asset and enforce the catalogue's
+/// SHA-256 pin. This is used for small metadata objects (for example the
+/// Rust nightly-version map) that are published beside the catalogue.
+pub async fn fetch_verified_catalogue_asset(
+    owner: &str,
+    repo: &str,
+    tag: &str,
+    asset: &str,
+) -> Result<Vec<u8>, SoldrError> {
+    let entry = get_or_fetch()
+        .await
+        .lookup(owner, repo, tag, asset)
+        .cloned()
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
+            ))
+        })?;
+    let bytes = download_catalogue_asset(&entry.url).await?;
+    if verify_catalogue_asset_bytes(&entry, &bytes).is_ok() {
+        return Ok(bytes);
+    }
+
+    // The Pages asset and catalogue are updated in one assets-branch commit,
+    // but CDN edges can briefly serve generations from opposite sides of that
+    // commit. Refetch both objects once with cache-busters and require the new
+    // catalogue digest; unverified bytes are never returned.
+    let refreshed_url = cache_busted_url(&resolve_catalogue_url());
+    let refreshed = fetch_index_from(&refreshed_url).await?;
+    let refreshed_entry = refreshed.lookup(owner, repo, tag, asset).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "refreshed catalogue has no asset row for {owner}/{repo} {tag}/{asset}"
+        ))
+    })?;
+    let refreshed_bytes = download_catalogue_asset(&cache_busted_url(&refreshed_entry.url)).await?;
+    verify_catalogue_asset_bytes(refreshed_entry, &refreshed_bytes)?;
+    Ok(refreshed_bytes)
+}
+
+async fn download_catalogue_asset(url: &str) -> Result<Vec<u8>, SoldrError> {
+    let client = super::github::http_client()?;
+    let response = tokio::time::timeout(
+        MANIFEST_FETCH_TIMEOUT,
+        client
+            .get(url)
+            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .send(),
+    )
+    .await
+    .map_err(|_| SoldrError::Network(format!("asset fetch timed out: {url}")))?
+    .map_err(|error| SoldrError::Network(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(SoldrError::Network(format!(
+            "asset fetch {} returned HTTP {}",
+            url,
+            response.status()
+        )));
+    }
+    let bytes = tokio::time::timeout(MANIFEST_FETCH_TIMEOUT, response.bytes())
+        .await
+        .map_err(|_| SoldrError::Network(format!("asset body read timed out: {url}")))?
+        .map_err(|error| SoldrError::Network(error.to_string()))?
+        .to_vec();
+    Ok(bytes)
+}
+
+fn cache_busted_url(url: &str) -> String {
+    let separator = if url.contains('?') { '&' } else { '?' };
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{url}{separator}soldr_refresh={nonce}")
+}
+
+fn verify_catalogue_asset_bytes(entry: &ManifestEntry, bytes: &[u8]) -> Result<(), SoldrError> {
+    let actual = super::trust::sha256_of(bytes);
+    if actual != entry.sha256 {
+        return Err(SoldrError::Other(format!(
+            "catalogue asset sha256 mismatch for {}/{} {}/{}: expected {}, got {}",
+            entry.owner, entry.repo, entry.tag, entry.asset, entry.sha256, actual
+        )));
+    }
+    Ok(())
+}
+
 /// One row in the published asset index.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct ManifestEntry {
@@ -478,6 +564,27 @@ mod tests {
         let hits = idx.lookup_release("zackees", "zccache", "1.12.9");
         assert_eq!(hits.len(), 1);
         assert!(hits[0].asset.contains("zccache"));
+    });
+
+    crate::timed_test!(catalogue_asset_digest_is_mandatory, {
+        let bytes = br#"{"schema_version":1}"#;
+        let entry = ManifestEntry {
+            owner: "zackees".into(),
+            repo: "soldr-toolchain".into(),
+            tag: "assets".into(),
+            asset: "rust-nightly-versions.v1.json".into(),
+            url: "https://example.invalid/map.json".into(),
+            sha256: super::super::trust::sha256_of(bytes),
+        };
+        assert!(verify_catalogue_asset_bytes(&entry, bytes).is_ok());
+        assert!(verify_catalogue_asset_bytes(&entry, b"changed").is_err());
+    });
+
+    crate::timed_test!(cache_buster_preserves_existing_query_parameters, {
+        let plain = cache_busted_url("https://example.invalid/map.json");
+        assert!(plain.starts_with("https://example.invalid/map.json?soldr_refresh="));
+        let queried = cache_busted_url("https://example.invalid/map.json?mirror=1");
+        assert!(queried.starts_with("https://example.invalid/map.json?mirror=1&soldr_refresh="));
     });
 
     // soldr#988 Phase 2: catalogue origin resolution.
