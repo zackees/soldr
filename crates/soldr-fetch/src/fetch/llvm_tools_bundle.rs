@@ -38,13 +38,13 @@ use crate::core::{SoldrError, SoldrPaths};
 
 /// LLVM version the soldr-toolchain `recipes/llvm-tools-linux-x64/`
 /// recipe pins. Must match `LLVM_VERSION_DEFAULT` in the recipe file.
-pub const MANAGED_LLVM_TOOLS_VERSION: &str = "18.1.8";
+pub const MANAGED_LLVM_TOOLS_VERSION: &str = "20.1.7";
 
 /// Catalogue layout: cross-compile-driver host → recipe slug. Today
 /// only linux x86_64 is wired. Linux arm64 + macOS arm64 hosts can
 /// be added when soldr's bootstrap matrix supports them as drivers
 /// (today the docker image is linux x86_64 only — see soldr#997).
-pub const LLVM_TOOLS_HOSTS: &[(&str, &str)] = &[("x86_64-unknown-linux-gnu", "linux-x64")];
+pub const LLVM_TOOLS_HOSTS: &[(&str, &str)] = &[("x86_64-unknown-linux-gnu", "linux-x64-gnu")];
 
 /// Catalogue slug for a host triple.
 pub fn host_slug_for(host_triple: &str) -> Option<&'static str> {
@@ -94,7 +94,7 @@ mod tests {
     crate::timed_test!(asset_url_layout_matches_catalogue, {
         let u = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, "linux-x64");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
-        assert!(u.contains("/llvm-tools/18.1.8/linux-x64/"));
+        assert!(u.contains("/llvm-tools/20.1.7/linux-x64-gnu/"));
         assert!(u.ends_with("/bundle.tar.zst"));
     });
 

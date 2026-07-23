@@ -109,19 +109,6 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
-      # Darwin release builds embed DWARF into a dSYM bundle. Point soldr at
-      # the dsymutil shipped in its managed LLVM archive; the archive is
-      # fetched and unpacked during soldr build before this path is invoked.
-      - name: Configure dsymutil for Apple builds
-        if: contains(inputs.target, 'apple-darwin')
-        shell: bash
-        run: |
-          set -euo pipefail
-          soldr rustup component add --toolchain 1.94.1 llvm-tools-preview
-          dsymutil="$(find "$RUSTUP_HOME/toolchains/1.94.1-"*/lib/rustlib -type f \( -name dsymutil -o -name llvm-dsymutil \) -print -quit)"
-          test -n "$dsymutil"
-          echo "SOLDR_DSYMUTIL=$dsymutil" >> "$GITHUB_ENV"
-
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
       # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
       # soldr-toolchain catalogue. Musl/aarch64 GNU dispatch through
