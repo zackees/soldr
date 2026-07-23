@@ -182,16 +182,28 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));
 });
 
-crate::timed_test!(zthreads_retry_preserves_top_level_no_cache, {
-    let args = vec![String::from("build"), String::from("--release")];
+crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
+    let args = argv(&["run", "--no-gc-target", "--no-trampoline", "--", "payload"]);
+    let uncached = ZthreadsRetryContext::new(&args, false, true);
 
     assert_eq!(
-        zthreads_retry_args(&args, false),
-        vec!["--no-cache", "cargo", "build", "--release"],
-        "a retry from soldr --no-cache cargo must remain outside Soldr's cache",
+        uncached.cli_args(),
+        vec![
+            "--no-cache",
+            "--trust-inherited-soldr-env",
+            "cargo",
+            "run",
+            "--no-gc-target",
+            "--no-trampoline",
+            "--",
+            "payload",
+        ],
+        "the retry must replay top-level state and the original pre-normalization Cargo argv",
     );
+
+    let cached = ZthreadsRetryContext::new(&argv(&["build", "--release"]), true, false);
     assert_eq!(
-        zthreads_retry_args(&args, true),
+        cached.cli_args(),
         vec!["cargo", "build", "--release"],
         "a managed retry should continue through the normal cached front door",
     );

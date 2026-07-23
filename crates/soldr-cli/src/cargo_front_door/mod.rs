@@ -1467,6 +1467,40 @@ fn maybe_apply_rustfmt_zccache_shim(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZthreadsRetryContext {
+    original_cargo_args: Vec<String>,
+    cache_enabled: bool,
+    trust_inherited_soldr_env: bool,
+}
+
+impl ZthreadsRetryContext {
+    fn new(
+        original_cargo_args: &[String],
+        cache_enabled: bool,
+        trust_inherited_soldr_env: bool,
+    ) -> Self {
+        Self {
+            original_cargo_args: original_cargo_args.to_vec(),
+            cache_enabled,
+            trust_inherited_soldr_env,
+        }
+    }
+
+    fn cli_args(&self) -> Vec<String> {
+        let mut retry_args = Vec::with_capacity(self.original_cargo_args.len() + 3);
+        if !self.cache_enabled {
+            retry_args.push(String::from("--no-cache"));
+        }
+        if self.trust_inherited_soldr_env {
+            retry_args.push(String::from("--trust-inherited-soldr-env"));
+        }
+        retry_args.push(String::from("cargo"));
+        retry_args.extend_from_slice(&self.original_cargo_args);
+        retry_args
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
@@ -1485,6 +1519,12 @@ pub(crate) async fn run_cargo_front_door(
 
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
+    // The stable-rustc fallback re-enters this front door. Snapshot the
+    // caller-facing contract before toolchain directives and Soldr-private
+    // Cargo flags are normalized so the retry performs the same processing
+    // exactly once.
+    let zthreads_retry_context =
+        ZthreadsRetryContext::new(args, cache_enabled, trust_inherited_soldr_env);
     let _fresh_workspace_env =
         FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(trust_inherited_soldr_env);
 
@@ -1609,10 +1649,11 @@ pub(crate) async fn run_cargo_front_door(
     command.args(args);
     crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     suppress_windows_console_window(&mut command);
-    // These soldr control variables are consumed by this front-door
-    // process. Letting cargo inherit them leaks daemon lifecycle policy
-    // into build scripts and test binaries that may spawn nested soldr.
+    // These Soldr control variables are consumed by this front-door
+    // process. Letting Cargo inherit them leaks daemon lifecycle or retry
+    // policy into build scripts and test binaries that may spawn nested Soldr.
     scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
+    command.env_remove(zthreads_fallback::ATTEMPTED_ENV);
     if !trust_inherited_soldr_env {
         scrub_inherited_soldr_workspace_env_for_child_cargo(&mut command);
     }
@@ -2157,7 +2198,11 @@ pub(crate) async fn run_cargo_front_door(
             ) && !resolved_toolchain_is_nightly(explicit_toolchain)
             {
                 emit_zthreads_fallback_warning(&plan.value);
-                return retry_zthreads_without_flag(args, explicit_toolchain, &plan, cache_enabled);
+                return retry_zthreads_without_flag(
+                    &zthreads_retry_context,
+                    explicit_toolchain,
+                    &plan,
+                );
             }
         } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
             && zthreads_fallback::diagnostic_matches(
@@ -2199,14 +2244,13 @@ fn emit_zthreads_fallback_warning(value: &str) {
 }
 
 fn retry_zthreads_without_flag(
-    args: &[String],
+    context: &ZthreadsRetryContext,
     explicit_toolchain: Option<&str>,
     plan: &zthreads_fallback::FallbackPlan,
-    cache_enabled: bool,
 ) -> Result<i32, SoldrError> {
     let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
-    command.args(zthreads_retry_args(args, cache_enabled));
+    command.args(context.cli_args());
     command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
@@ -2230,16 +2274,6 @@ fn retry_zthreads_without_flag(
     Ok(status
         .code()
         .unwrap_or(if status.success() { 0 } else { 1 }))
-}
-
-fn zthreads_retry_args(args: &[String], cache_enabled: bool) -> Vec<String> {
-    let mut retry_args = Vec::with_capacity(args.len() + 2);
-    if !cache_enabled {
-        retry_args.push(String::from("--no-cache"));
-    }
-    retry_args.push(String::from("cargo"));
-    retry_args.extend_from_slice(args);
-    retry_args
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
