@@ -34,6 +34,16 @@ def tool(name: str) -> str:
     llvm_dir = os.environ.get("SOLDR_LLVM_DIR")
     if llvm_dir:
         candidates.append(str(Path(llvm_dir) / (name + (".exe" if os.name == "nt" else ""))))
+    managed_bin = Path.home() / ".soldr" / "bin"
+    executable = name + (".exe" if os.name == "nt" else "")
+    candidates.extend(
+        str(path)
+        for pattern in (
+            f"llvm-*/bin/{executable}",
+            f"syslib/llvm-tools/*/*/package/bin/{executable}",
+        )
+        for path in managed_bin.glob(pattern)
+    )
     found = shutil.which(name)
     if found:
         candidates.append(found)
