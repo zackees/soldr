@@ -117,8 +117,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          soldr rustup component add llvm-tools-preview --toolchain 1.94.1
-          echo "SOLDR_DSYMUTIL=$RUSTUP_HOME/toolchains/1.94.1-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/llvm-dsymutil" >> "$GITHUB_ENV"
+          soldr rustup component add --toolchain 1.94.1 llvm-tools-preview
+          dsymutil="$(find "$RUSTUP_HOME/toolchains/1.94.1-"*/lib/rustlib -type f \( -name dsymutil -o -name llvm-dsymutil \) -print -quit)"
+          test -n "$dsymutil"
+          echo "SOLDR_DSYMUTIL=$dsymutil" >> "$GITHUB_ENV"
 
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
       # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
