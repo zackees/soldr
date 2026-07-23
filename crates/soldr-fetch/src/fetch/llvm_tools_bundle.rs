@@ -6,7 +6,7 @@
 //! bootstrap for blessed `soldr build` and explicit cargo-xwin
 //! fallback). This module
 //! consumes the **new** `recipes/llvm-tools-linux-x64/` catalogue row
-//! that bundles the same upstream LLVM 18.1.8 release archive
+//! that bundles the same upstream LLVM 20.1.7 release archive
 //! whitelist-extracted to just the binutils we actually need:
 //!
 //! ```
@@ -87,12 +87,15 @@ mod tests {
     use super::*;
 
     crate::timed_test!(host_slug_for_known_triple, {
-        assert_eq!(host_slug_for("x86_64-unknown-linux-gnu"), Some("linux-x64"));
+        assert_eq!(
+            host_slug_for("x86_64-unknown-linux-gnu"),
+            Some("linux-x64-gnu")
+        );
         assert_eq!(host_slug_for("wasm32-unknown-unknown"), None);
     });
 
     crate::timed_test!(asset_url_layout_matches_catalogue, {
-        let u = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, "linux-x64");
+        let u = asset_url_for(MANAGED_LLVM_TOOLS_VERSION, "linux-x64-gnu");
         assert!(u.starts_with("https://media.githubusercontent.com/media/"));
         assert!(u.contains("/llvm-tools/20.1.7/linux-x64-gnu/"));
         assert!(u.ends_with("/bundle.tar.zst"));
