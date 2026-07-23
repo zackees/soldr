@@ -184,9 +184,10 @@ soldr_cli::timed_test!(
             String::from_utf8_lossy(&output.stderr)
         );
         let manual: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let reported_root = PathBuf::from(manual["owning_root"].as_str().unwrap());
         assert_eq!(
-            PathBuf::from(manual["owning_root"].as_str().unwrap()),
-            custom
+            std::fs::canonicalize(&reported_root).unwrap(),
+            std::fs::canonicalize(&custom).unwrap(),
         );
         assert!(!trash.exists());
         assert!(prod.join("sentinel").is_file());
