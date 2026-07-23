@@ -73,7 +73,7 @@ def check_target(target: str) -> None:
         src = project / "src"
         src.mkdir()
         (src / "main.rs").write_text(
-            """#[inline(never)]\n+fn symbol_probe(value: u64) -> u64 {\n    value.wrapping_mul(37).wrapping_add(11)\n}\n\nfn main() {\n    println!(\"{}\", symbol_probe(7));\n}\n""",
+            """#[no_mangle]\n#[inline(never)]\npub extern \"C\" fn symbol_probe(value: u64) -> u64 {\n    value.wrapping_mul(37).wrapping_add(11)\n}\n\nfn main() {\n    println!(\"{}\", symbol_probe(7));\n}\n""",
             encoding="utf-8",
         )
 
