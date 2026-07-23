@@ -109,6 +109,20 @@ jobs:
           cache: false
           zccache-seed-strict: true
 
+      # Darwin release builds embed DWARF into a dSYM bundle. The minimal
+      # Rust profile does not include dsymutil, so install the optional LLVM
+      # tools only for Apple lanes and expose the tool to soldr explicitly.
+      - name: Install dsymutil for Apple builds
+        if: contains(inputs.target, 'apple-darwin')
+        shell: bash
+        run: |
+          set -euo pipefail
+          soldr rustup component add llvm-tools-preview --toolchain 1.94.1
+          sysroot="$(soldr rustc --print sysroot)"
+          dsymutil="$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/dsymutil"
+          test -x "$dsymutil"
+          echo "SOLDR_DSYMUTIL=$dsymutil" >> "$GITHUB_ENV"
+
       # Every cross tool is resolved by soldr. The blessed MSVC/Darwin
       # paths fetch LLVM, SDKs, CMake, Ninja, and syslibs from the
       # soldr-toolchain catalogue. Musl/aarch64 GNU dispatch through
