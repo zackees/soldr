@@ -3,7 +3,10 @@
 //! Extracted from `main.rs` as part of issue #339.
 
 use crate::core::{suppress_windows_console_window, SoldrError, SoldrPaths};
-use crate::{apply_implicit_toolchain_homes, resolve_toolchain_binary, rustup_binary};
+use crate::{
+    apply_implicit_toolchain_homes, resolve_toolchain_binary, resolve_toolchain_binary_for_channel,
+    rustup_binary,
+};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
@@ -13,7 +16,7 @@ const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 
 /// Run a rustup-managed toolchain binary with pass-through args.
 pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
-    let binary = resolve_toolchain_binary(tool)?;
+    let binary = resolve_dylint_scoped_binary(tool)?;
     let mut command = std::process::Command::new(binary);
     command.args(args);
     apply_implicit_toolchain_homes(&mut command);
@@ -35,7 +38,7 @@ pub(crate) fn run_rustc_like(
         return run_toolchain_passthrough(tool, args);
     }
 
-    let binary = resolve_toolchain_binary(tool)?;
+    let binary = resolve_dylint_scoped_binary(tool)?;
     let mut raw_args = Vec::with_capacity(args.len() + 2);
     raw_args.push(
         crate::current_soldr_binary()?
@@ -54,7 +57,7 @@ pub(crate) fn run_rustfmt(args: &[String], cache_enabled: bool) -> Result<i32, S
         return run_toolchain_passthrough("rustfmt", args);
     }
 
-    let rustfmt = resolve_toolchain_binary("rustfmt")?;
+    let rustfmt = resolve_dylint_scoped_binary("rustfmt")?;
     if let Some(zccache) = crate::binaries::non_empty_env_path(crate::TEST_ZCCACHE_BIN_ENV_VAR) {
         let mut command = std::process::Command::new(zccache);
         command.arg(rustfmt);
@@ -223,13 +226,60 @@ fn rustfmt_invocation_has_source_file(args: &[String]) -> bool {
 /// rustup default. If the user already supplied `--toolchain` anywhere,
 /// the injection is skipped.
 pub(crate) fn run_rustup_passthrough(args: &[String]) -> Result<i32, SoldrError> {
-    let final_args = scope_rustup_args_to_pin(args)?;
+    let dylint_channel = dylint_scoped_channel();
+    let final_args = if let Some(channel) = dylint_channel.as_deref() {
+        scope_rustup_args_to_dylint(args, channel)
+    } else {
+        scope_rustup_args_to_pin(args)?
+    };
     let mut command = std::process::Command::new(rustup_binary());
+    if let Some(channel) = dylint_channel {
+        command.env("RUSTUP_TOOLCHAIN", channel);
+    }
     command.args(&final_args);
     apply_implicit_toolchain_homes(&mut command);
     suppress_windows_console_window(&mut command);
     let status = run_toolchain_command(&mut command, "rustup passthrough")?;
     Ok(status.code().unwrap_or(1))
+}
+
+fn scope_rustup_args_to_dylint(args: &[String], channel: &str) -> Vec<String> {
+    let mut scoped = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for arg in args {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if arg == "--toolchain" {
+            skip_next = true;
+            continue;
+        }
+        if arg.starts_with("--toolchain=") || arg.starts_with('+') {
+            continue;
+        }
+        scoped.push(arg.clone());
+    }
+    if let Some(run_index) = scoped.iter().position(|arg| arg == "run") {
+        if run_index + 1 < scoped.len() {
+            scoped[run_index + 1] = channel.to_string();
+        } else {
+            scoped.push(channel.to_string());
+        }
+    }
+    scoped
+}
+
+fn resolve_dylint_scoped_binary(tool: &str) -> Result<std::path::PathBuf, SoldrError> {
+    let channel = dylint_scoped_channel();
+    resolve_toolchain_binary_for_channel(tool, channel.as_deref())
+}
+
+fn dylint_scoped_channel() -> Option<String> {
+    std::env::var(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn scope_rustup_args_to_pin(args: &[String]) -> Result<Vec<String>, SoldrError> {
@@ -522,7 +572,7 @@ fn rustup_toolchain_install(channel: &str) -> Result<i32, SoldrError> {
     rustup_toolchain_install_with_profile(channel, None)
 }
 
-fn rustup_toolchain_install_with_profile(
+pub(crate) fn rustup_toolchain_install_with_profile(
     channel: &str,
     profile: Option<&str>,
 ) -> Result<i32, SoldrError> {
@@ -542,7 +592,7 @@ fn rustup_toolchain_install_with_profile(
     Ok(status.code().unwrap_or(1))
 }
 
-fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrError> {
+pub(crate) fn rustup_component_add(channel: &str, component: &str) -> Result<i32, SoldrError> {
     let mut command = std::process::Command::new(rustup_binary());
     command.args(["component", "add", "--toolchain", channel, component]);
     apply_implicit_toolchain_homes(&mut command);
@@ -674,6 +724,31 @@ mod tests {
         assert_eq!(
             toolchain_command_timeout(),
             Duration::from_secs(DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS)
+        );
+    });
+
+    crate::timed_test!(dylint_rustup_scope_replaces_every_toolchain_selector, {
+        let args = vec![
+            "+stable".to_string(),
+            "run".to_string(),
+            "nightly-old".to_string(),
+            "cargo".to_string(),
+            "--toolchain=stable".to_string(),
+        ];
+        assert_eq!(
+            scope_rustup_args_to_dylint(&args, "nightly-2026-01-18"),
+            vec!["run", "nightly-2026-01-18", "cargo"]
+        );
+        let component = vec![
+            "component".to_string(),
+            "add".to_string(),
+            "rustc-dev".to_string(),
+            "--toolchain".to_string(),
+            "stable".to_string(),
+        ];
+        assert_eq!(
+            scope_rustup_args_to_dylint(&component, "nightly-2026-01-18"),
+            vec!["component", "add", "rustc-dev"]
         );
     });
 }

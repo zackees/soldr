@@ -11,7 +11,14 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-const TOOLCHAIN_TOOLS: &[&str] = &["cargo", "rustc", "rustfmt", "clippy-driver", "rustdoc"];
+const TOOLCHAIN_TOOLS: &[&str] = &[
+    "cargo",
+    "rustc",
+    "rustfmt",
+    "clippy-driver",
+    "rustdoc",
+    "rustup",
+];
 const ZCCACHE_SOLDR: &str = "zccache-soldr";
 const SOLDR_DAEMON: &str = "soldr-daemon";
 

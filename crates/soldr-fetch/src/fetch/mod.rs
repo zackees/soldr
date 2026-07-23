@@ -88,9 +88,9 @@ pub mod zstd_sysroot;
 pub use apple_sdk::{ensure_apple_sdk, MANAGED_APPLE_SDK_VERSION};
 pub use llvm::{ensure_llvm_toolchain, MANAGED_LLVM_VERSION};
 pub use manifest_lookup::{
-    ManifestEntry, ManifestIndex, CATALOGUE_DOC_NAME, DEFAULT_TOOLCHAIN_ORIGIN,
-    MANIFEST_DISABLE_ENV_VAR, MANIFEST_FETCH_TIMEOUT, TOOLCHAIN_CATALOGUE_URL_ENV_VAR,
-    TOOLCHAIN_ORIGIN_ENV_VAR,
+    fetch_verified_catalogue_asset, ManifestEntry, ManifestIndex, CATALOGUE_DOC_NAME,
+    DEFAULT_TOOLCHAIN_ORIGIN, MANIFEST_DISABLE_ENV_VAR, MANIFEST_FETCH_TIMEOUT,
+    TOOLCHAIN_CATALOGUE_URL_ENV_VAR, TOOLCHAIN_ORIGIN_ENV_VAR,
 };
 pub use manifest_v6::{
     embedded_manifest, embedded_manifest_bytes, is_stable_version_tag, ManifestV6, V6Asset, V6Hit,

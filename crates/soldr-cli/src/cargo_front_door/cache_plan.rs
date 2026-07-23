@@ -147,6 +147,7 @@ impl CargoCachePlan {
         rustc: &std::path::Path,
         args: &[String],
         cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
+        toolchain_channel_override: Option<&str>,
     ) -> Result<(), SoldrError> {
         let Some(session) = self.zccache_session() else {
             return Ok(());
@@ -157,6 +158,7 @@ impl CargoCachePlan {
             args,
             session,
             cargo_profile_debug_default,
+            toolchain_channel_override,
         )?;
         Ok(())
     }

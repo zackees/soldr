@@ -4,8 +4,9 @@
 use crate::cargo_front_door::{cargo_profile, cargo_target_triple, selected_cargo_args};
 use crate::rust_plan::{
     allowed_artifact_classes, build_rust_artifact_plan, cargo_metadata_passthrough_args,
-    dropped_artifact_classes, rust_artifact_cache_profile_from_env, CargoMetadata,
-    CargoMetadataPackage, RustToolchainIdentity, WorkspaceFileHashes,
+    derive_toolchain_identity, dropped_artifact_classes, rust_artifact_cache_profile_from_env,
+    CargoMetadata, CargoMetadataPackage, RustToolchainIdentity, ToolchainProbe,
+    WorkspaceFileHashes,
 };
 use crate::zccache::ZccacheBuildSession;
 use crate::TARGET_CACHE_PROFILE_ENV_VAR;
@@ -15,6 +16,25 @@ use std::sync::Mutex;
 /// don't race under parallel `cargo test`. Matches the pattern used in
 /// `warm_restore` for `SKIP_WARM_RESTORE_ENV_VAR`.
 static PROFILE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn explicit_dylint_channel_overrides_parent_toolchain_in_plan_identity() {
+    let probe = ToolchainProbe {
+        rustc_verbose: concat!(
+            "rustc 1.94.0-nightly (111111111 2026-01-17)\n",
+            "commit-hash: 1111111111111111111111111111111111111111\n",
+            "host: x86_64-unknown-linux-gnu\n",
+            "release: 1.94.0-nightly\n",
+        )
+        .to_string(),
+        cargo_version: "cargo 1.94.0-nightly\n".to_string(),
+    };
+    let identity = derive_toolchain_identity(&probe, Some("nightly-2026-01-18"));
+    assert_eq!(identity.channel, "nightly-2026-01-18");
+    assert!(identity
+        .rustc
+        .contains("1111111111111111111111111111111111111111"));
+}
 
 #[test]
 fn rust_artifact_plan_selects_external_packages_and_path_exclusions() {

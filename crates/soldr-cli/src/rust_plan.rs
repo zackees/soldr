@@ -184,6 +184,7 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
     args: &[String],
     session: &ZccacheBuildSession,
     cargo_profile_debug_default: Option<&CargoProfileDebugDefault>,
+    toolchain_channel_override: Option<&str>,
 ) -> Result<Option<RustArtifactPlanContext>, SoldrError> {
     let Some(mode) = rust_artifact_cache_mode_from_env()? else {
         return Ok(None);
@@ -242,7 +243,7 @@ pub(crate) fn maybe_prepare_rust_artifact_plan(
             (metadata, probe, file_hashes)
         }
     };
-    let toolchain = derive_toolchain_identity(&probe);
+    let toolchain = derive_toolchain_identity(&probe, toolchain_channel_override);
     let plan = build_rust_artifact_plan(
         &metadata,
         &toolchain,
@@ -703,16 +704,25 @@ fn toolchain_probe(
 /// Derive the plan toolchain identity from raw probe outputs. The channel
 /// prefers the live `RUSTUP_TOOLCHAIN` env var, so it is evaluated at plan
 /// build time rather than persisted in the prep memo.
-pub(crate) fn derive_toolchain_identity(probe: &ToolchainProbe) -> RustToolchainIdentity {
+pub(crate) fn derive_toolchain_identity(
+    probe: &ToolchainProbe,
+    channel_override: Option<&str>,
+) -> RustToolchainIdentity {
     let host = probe
         .rustc_verbose
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
         .unwrap_or("unknown")
         .to_string();
-    let channel = std::env::var("RUSTUP_TOOLCHAIN")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
+    let channel = channel_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            std::env::var("RUSTUP_TOOLCHAIN")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
         .or_else(|| {
             probe
                 .rustc_verbose

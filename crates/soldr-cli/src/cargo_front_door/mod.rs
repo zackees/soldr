@@ -1560,16 +1560,36 @@ pub(crate) async fn run_cargo_front_door(
     };
 
     crate::toolchain::ensure_cargo_toolchain(explicit_toolchain)?;
-    let cargo = resolve_toolchain_binary_for_channel("cargo", explicit_toolchain)?;
-    let rustc = resolve_toolchain_binary_for_channel("rustc", explicit_toolchain)?;
+    let paths = SoldrPaths::new()?;
+    paths.ensure_dirs()?;
+    let dylint_requested = first_cargo_subcommand(args) == Some("dylint");
+    let dylint_scope_already_active =
+        std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some();
+    // Only the process that introduces the Dylint scope owns the setup-soldr
+    // success signal. Recursive cargo-dylint invocations inherit the scope but
+    // must never publish completion for their parent.
+    let dylint_entrypoint = dylint_requested && !dylint_scope_already_active;
+    let dylint_scoped = dylint_requested || dylint_scope_already_active;
+    if dylint_entrypoint {
+        crate::dylint_toolchain::clear_success_marker()?;
+    }
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let dylint_plan = if dylint_scoped {
+        Some(crate::dylint_toolchain::prepare(explicit_toolchain, &workspace_root).await?)
+    } else {
+        None
+    };
+    let effective_toolchain = dylint_plan
+        .as_ref()
+        .map(|plan| plan.channel.as_str())
+        .or(explicit_toolchain);
+    let cargo = resolve_toolchain_binary_for_channel("cargo", effective_toolchain)?;
+    let rustc = resolve_toolchain_binary_for_channel("rustc", effective_toolchain)?;
     let cargo_bin_dir = cargo
         .parent()
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
         .to_path_buf();
     let existing_path = std::env::var_os("PATH");
-    let paths = SoldrPaths::new()?;
-    paths.ensure_dirs()?;
-
     // L3 (soldr#980): kick off the managed zccache binary fetch +
     // extract + redb init on a background tokio task NOW. The rest of
     // this front-door pipeline — known-subcommand fetch, env scrub,
@@ -1670,6 +1690,9 @@ pub(crate) async fn run_cargo_front_door(
             }
         }
     }
+    if let Some(plan) = &dylint_plan {
+        plan.apply_to_command(&mut command);
+    }
 
     // Apply subcommand-derived env overrides (e.g. CC_<triple>=clang-cl
     // for `cargo xwin build --target *-pc-windows-msvc`). Honor a
@@ -1757,7 +1780,16 @@ pub(crate) async fn run_cargo_front_door(
         // commands and out of the rustc-wrapper hot path.
         gc::emit_startup_target_warning_if_due();
     }
-    let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(1 + extra_bin_dirs.len());
+    let dylint_shim_guard = if dylint_plan.is_some() && crate::shim_dir::should_install_shims() {
+        Some(crate::shim_dir::build_dylint_shim_dir()?)
+    } else {
+        None
+    };
+    let mut path_dirs: Vec<std::path::PathBuf> = Vec::with_capacity(2 + extra_bin_dirs.len());
+    if let Some(guard) = &dylint_shim_guard {
+        path_dirs.push(guard.path.clone());
+        command.env(crate::shim_dir::SOLDR_CHILD_SHIMS_ACTIVE_ENV_VAR, "1");
+    }
     path_dirs.push(cargo_bin_dir);
     path_dirs.extend(extra_bin_dirs);
     command.env(
@@ -1813,6 +1845,7 @@ pub(crate) async fn run_cargo_front_door(
         &rustc,
         args,
         cargo_profile_debug_default.as_ref(),
+        dylint_plan.as_ref().map(|plan| plan.channel.as_str()),
     )?;
     let capture_cargo_artifacts = build_like_cargo
         && cache_plan.has_rust_artifact_plan()
@@ -2157,6 +2190,11 @@ pub(crate) async fn run_cargo_front_door(
     }
     finish_result?;
     post_cargo_result?;
+    if status.success() && dylint_entrypoint {
+        if let Some(plan) = dylint_plan.as_ref() {
+            crate::dylint_toolchain::write_success_marker(plan)?;
+        }
+    }
     if !status.success() {
         if let Some(plan) = zthreads_fallback::plan_from_environment() {
             if zthreads_fallback::diagnostic_matches(
