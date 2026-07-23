@@ -1,5 +1,5 @@
 //! `soldr session start/end`, `soldr cache shutdown`, and `soldr cache flush` —
-//! lifecycle commands for the zccache daemon and its per-session journal.
+//! lifecycle commands for embedded zccache state and its per-session journal.
 
 use crate::core::{SoldrError, SoldrPaths};
 use crate::daemon::protocol::CompileStatsInfo;

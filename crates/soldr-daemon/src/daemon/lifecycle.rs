@@ -9,8 +9,9 @@
 
 use crate::cache_lib::{daemon_lifecycle_log_path, daemon_pid_path, soldr_daemon_dir};
 use crate::core::SoldrPaths;
+use fs2::FileExt;
 use serde::Serialize;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,6 +21,39 @@ pub enum LifecycleError {
     Io(std::io::Error),
     NoExe,
     Spawn(std::io::Error),
+}
+
+const ROOT_OWNER_LOCK_NAME: &str = "root-owner.lock";
+
+/// Version-independent ownership for one product root. The daemon holds this
+/// for its whole lifetime; explicit orphan-root maintenance uses the same lock
+/// so startup and manual deletion cannot race even across protocol versions.
+pub struct RootOwnershipGuard {
+    file: File,
+}
+
+impl RootOwnershipGuard {
+    pub fn try_acquire(paths: &SoldrPaths) -> std::io::Result<Option<Self>> {
+        let dir = soldr_daemon_dir(paths);
+        fs::create_dir_all(&dir)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(dir.join(ROOT_OWNER_LOCK_NAME))?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(Self { file })),
+            Err(error) if crate::cache_lib::cargo_lock::lock_is_held(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+impl Drop for RootOwnershipGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 impl From<std::io::Error> for LifecycleError {
@@ -367,10 +401,19 @@ pub fn append_lifecycle_event(paths: &SoldrPaths, event: &str) {
 pub struct PreparedDaemonSpawn {
     executable: PathBuf,
     via_self: bool,
+    idle_timeout_secs: Option<u64>,
 }
 
 pub fn try_spawn_detached() -> Result<(), LifecycleError> {
-    try_spawn_detached_until(None).map(|_| ())
+    try_spawn_detached_until_with_idle_timeout(None, None).map(|_| ())
+}
+
+/// Spawn the managed daemon with an explicit inactivity timeout.
+///
+/// A value of zero preserves the normal long-lived daemon behavior.
+pub fn try_spawn_detached_with_idle_timeout(idle_timeout_secs: u64) -> Result<(), LifecycleError> {
+    let idle_timeout_secs = (idle_timeout_secs != 0).then_some(idle_timeout_secs);
+    try_spawn_detached_until_with_idle_timeout(None, idle_timeout_secs).map(|_| ())
 }
 
 /// Spawn a daemon while honoring an optional absolute startup deadline.
@@ -380,6 +423,13 @@ pub fn try_spawn_detached() -> Result<(), LifecycleError> {
 /// the executable again.
 pub fn try_spawn_detached_until(
     deadline: Option<Instant>,
+) -> Result<Option<PreparedDaemonSpawn>, LifecycleError> {
+    try_spawn_detached_until_with_idle_timeout(deadline, None)
+}
+
+fn try_spawn_detached_until_with_idle_timeout(
+    deadline: Option<Instant>,
+    idle_timeout_secs: Option<u64>,
 ) -> Result<Option<PreparedDaemonSpawn>, LifecycleError> {
     ensure_startup_deadline_remaining(deadline)?;
     let current = std::env::current_exe().map_err(|_| LifecycleError::NoExe)?;
@@ -444,6 +494,7 @@ pub fn try_spawn_detached_until(
     let prepared = PreparedDaemonSpawn {
         executable,
         via_self: daemon_via_self,
+        idle_timeout_secs,
     };
 
     spawn_prepared_daemon(&prepared, paths.as_ref(), deadline)?;
@@ -487,10 +538,11 @@ fn spawn_prepared_daemon(
     {
         let _ = crate::daemon::service_definition::install_service_definition(&prepared.executable);
     }
+    let args = detached_spawn_args(prepared.via_self, prepared.idle_timeout_secs);
     let spawn_result = if prepared.via_self {
-        spawn_detached_self_inner(&prepared.executable).map_err(LifecycleError::Spawn)
+        spawn_detached_self_inner(&prepared.executable, &args).map_err(LifecycleError::Spawn)
     } else {
-        spawn_detached_inner(&prepared.executable).map_err(LifecycleError::Spawn)
+        spawn_detached_inner(&prepared.executable, &args).map_err(LifecycleError::Spawn)
     };
     spawn_result?;
 
@@ -514,6 +566,23 @@ fn spawn_prepared_daemon(
     }
 
     Ok(())
+}
+
+fn detached_spawn_args(via_self: bool, idle_timeout_secs: Option<u64>) -> Vec<String> {
+    let mut args = if via_self {
+        vec!["daemon".into(), "start".into(), "--foreground".into()]
+    } else {
+        vec!["--foreground".into()]
+    };
+    if let Some(seconds) = idle_timeout_secs {
+        args.push(if via_self {
+            "--idle-timeout".into()
+        } else {
+            "--idle-timeout-secs".into()
+        });
+        args.push(seconds.to_string());
+    }
+    args
 }
 
 fn ensure_startup_deadline_remaining(deadline: Option<Instant>) -> Result<(), LifecycleError> {
@@ -648,12 +717,12 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
 }
 
 #[cfg(unix)]
-fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
+fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::Error> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(daemon);
-    cmd.arg("--foreground").stdin(Stdio::null());
+    cmd.args(args).stdin(Stdio::null());
     // Diagnostic redirect: spawn the daemon's stderr/stdout to a
     // log file under the soldr cache root so a startup crash leaves
     // an artifact the wrapper can surface later. Falls back to
@@ -697,8 +766,8 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 }
 
 #[cfg(windows)]
-fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
-    spawn_detached_windows_no_inherit(daemon, daemon, &["--foreground"])
+fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::Error> {
+    spawn_detached_windows_no_inherit(daemon, daemon, args)
 }
 
 /// Spawn the daemon via `<current-soldr-exe> daemon start --foreground`
@@ -708,7 +777,7 @@ fn spawn_detached_inner(daemon: &Path) -> Result<(), std::io::Error> {
 /// the soldr binary. Same detach semantics as
 /// [`spawn_detached_inner`].
 #[cfg(unix)]
-fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
+fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), std::io::Error> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
@@ -718,8 +787,7 @@ fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
     // otherwise multicall dispatch treats `daemon` as a compiler path and
     // recursively enters the wrapper fallback instead of starting a daemon.
     force_daemon_via_self_cli_identity(&mut cmd);
-    cmd.args(["daemon", "start", "--foreground"])
-        .stdin(Stdio::null());
+    cmd.args(args).stdin(Stdio::null());
     let log_path = SoldrPaths::new()
         .ok()
         .map(|p| p.root.join("daemon-spawn.log"));
@@ -762,12 +830,8 @@ fn force_daemon_via_self_cli_identity(cmd: &mut std::process::Command) {
 }
 
 #[cfg(windows)]
-fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
-    spawn_detached_windows_no_inherit(
-        soldr_self,
-        Path::new("soldr"),
-        &["daemon", "start", "--foreground"],
-    )
+fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), std::io::Error> {
+    spawn_detached_windows_no_inherit(soldr_self, Path::new("soldr"), args)
 }
 
 #[cfg(windows)]
@@ -775,7 +839,7 @@ fn spawn_detached_self_inner(soldr_self: &Path) -> Result<(), std::io::Error> {
 fn spawn_detached_windows_no_inherit(
     program: &Path,
     argv0: &Path,
-    args: &[&str],
+    args: &[String],
 ) -> Result<(), std::io::Error> {
     use std::ffi::c_void;
     use std::mem::{size_of, zeroed};
@@ -892,7 +956,7 @@ fn spawn_detached_windows_no_inherit(
 }
 
 #[cfg(windows)]
-fn build_windows_command_line(program: &Path, args: &[&str]) -> Vec<u16> {
+fn build_windows_command_line(program: &Path, args: &[String]) -> Vec<u16> {
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
 
@@ -1045,10 +1109,22 @@ mod daemon_spawn_image_tests {
 
     #[cfg(windows)]
     crate::timed_test!(via_self_daemon_windows_command_line_uses_main_cli_argv0, {
-        let command_line =
-            build_windows_command_line(Path::new("soldr"), &["daemon", "start", "--foreground"]);
+        let args = detached_spawn_args(true, None);
+        let command_line = build_windows_command_line(Path::new("soldr"), &args);
         let rendered = String::from_utf16_lossy(&command_line[..command_line.len() - 1]);
         assert_eq!(rendered, "\"soldr\" daemon start --foreground");
+    });
+
+    crate::timed_test!(detached_spawn_args_preserve_explicit_idle_timeout, {
+        assert_eq!(
+            detached_spawn_args(false, Some(60)),
+            ["--foreground", "--idle-timeout-secs", "60"]
+        );
+        assert_eq!(
+            detached_spawn_args(true, Some(60)),
+            ["daemon", "start", "--foreground", "--idle-timeout", "60"]
+        );
+        assert_eq!(detached_spawn_args(false, None), ["--foreground"]);
     });
 
     // #1516 regression: a via-self daemon (no sibling `soldr-daemon`
@@ -1130,6 +1206,7 @@ mod spawn_lock_tests {
         let prepared = PreparedDaemonSpawn {
             executable: PathBuf::from("definitely-missing-soldr-daemon"),
             via_self: false,
+            idle_timeout_secs: None,
         };
         let started = Instant::now();
         let error = spawn_prepared_daemon(
@@ -1319,4 +1396,46 @@ mod spawn_lock_tests {
             "lock must serialize — fewer than {THREADS} acquires expected (the spawn-herd cap from #474); got {count}",
         );
     }
+
+    #[test]
+    #[ignore = "subprocess helper"]
+    fn subprocess_probe_root_owner() {
+        let root = std::env::var_os("SOLDR_TEST_ROOT_OWNER_ROOT").expect("test root");
+        let expected = std::env::var("SOLDR_TEST_ROOT_OWNER_EXPECT").expect("expectation");
+        let paths = SoldrPaths::with_root(PathBuf::from(root));
+        let acquired = RootOwnershipGuard::try_acquire(&paths)
+            .expect("root ownership probe")
+            .is_some();
+        assert_eq!(acquired, expected == "acquired");
+    }
+
+    crate::timed_test!(root_ownership_is_version_blind_across_processes, {
+        let temp = TempDir::new().unwrap();
+        let paths = SoldrPaths::with_root(temp.path().join("owned"));
+        let run_probe = |expected: &str| {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "daemon::lifecycle::spawn_lock_tests::subprocess_probe_root_owner",
+                    "--nocapture",
+                ])
+                .env("SOLDR_TEST_ROOT_OWNER_ROOT", &paths.root)
+                .env("SOLDR_TEST_ROOT_OWNER_EXPECT", expected)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "subprocess root-owner probe failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+
+        let owner = RootOwnershipGuard::try_acquire(&paths)
+            .unwrap()
+            .expect("parent owns exact root");
+        run_probe("blocked");
+        drop(owner);
+        run_probe("acquired");
+    });
 }

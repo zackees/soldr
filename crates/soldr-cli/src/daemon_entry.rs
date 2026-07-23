@@ -12,7 +12,7 @@ struct Cli {
     foreground: bool,
 
     /// Seconds of inactivity before the daemon exits. 0 disables.
-    #[arg(long, value_name = "SECS", default_value_t = 1800)]
+    #[arg(long, value_name = "SECS", default_value_t = 0)]
     idle_timeout_secs: u64,
 }
 
@@ -22,7 +22,7 @@ pub fn run() -> i32 {
     let _ = cli.foreground;
     let opts = ServerOptions {
         idle_timeout: if cli.idle_timeout_secs == 0 {
-            Duration::from_secs(u64::MAX / 2)
+            ServerOptions::default().idle_timeout
         } else {
             Duration::from_secs(cli.idle_timeout_secs)
         },

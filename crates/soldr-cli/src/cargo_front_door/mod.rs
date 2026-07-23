@@ -90,7 +90,7 @@ pub(crate) use subcommand::{
 /// 64-bit build session id: high 32 bits = unix-ms truncated, low 32
 /// bits = pid-XOR-nanos so two concurrent builds in the same ms never
 /// collide. Cheap and good enough for in-process correlation.
-fn generate_build_session_id() -> u64 {
+pub(crate) fn generate_build_session_id() -> u64 {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
@@ -402,6 +402,9 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
         ended_at_ms,
         daemon_finalized,
     } = *request;
+    let archive_dir = build_log_history_dir(paths, build_session_id);
+    crate::daemon::history_gc::mark_history_publishing(&archive_dir)
+        .map_err(|e| SoldrError::Other(format!("mark build history publishing: {e}")))?;
     let db_path = crate::cache_lib::data_db_path(paths);
     let mut record = crate::daemon::db::get_build(&db_path, build_session_id)
         .map_err(|e| SoldrError::Other(format!("read build history: {e}")))?
@@ -413,7 +416,6 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
             )
         });
 
-    let archive_dir = build_log_history_dir(paths, build_session_id);
     let archived_session_log_path =
         copy_session_artifact(&session.session_log_path, &archive_dir, "last-session.log");
     let archived_journal_path =
@@ -490,6 +492,22 @@ fn persist_build_log_history_inner(request: &BuildLogHistoryRequest<'_>) -> Resu
 
     crate::daemon::db::upsert_build(&db_path, &record)
         .map_err(|e| SoldrError::Other(format!("write build history: {e}")))?;
+    // Publish completion only after the database row points at every copied
+    // payload.  The daemon retention pass treats marker-less unknown sessions
+    // as active, so a concurrent pass can never remove a half-published
+    // archive.  New compile journals are sanitized by zccache#1149.
+    crate::daemon::history_gc::mark_history_complete(&archive_dir)
+        .map_err(|e| SoldrError::Other(format!("mark build history complete: {e}")))?;
+    // Enforce the hard 1 GiB cap immediately after publication.  The daemon's
+    // daily pass remains the owner of age retention and the one-time removal
+    // of pre-redaction archives.
+    let retention = crate::daemon::history_gc::HistoryGcOptions {
+        now: std::time::SystemTime::now(),
+        max_age: std::time::Duration::MAX,
+        max_bytes: crate::daemon::history_gc::DEFAULT_MAX_BYTES,
+        migrate_pre_redaction: false,
+    };
+    let _ = crate::daemon::history_gc::sweep(paths, &db_path, &retention);
     Ok(())
 }
 
@@ -502,12 +520,7 @@ fn build_log_history_dir(paths: &SoldrPaths, build_session_id: u64) -> PathBuf {
 }
 
 fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
-    paths
-        .cache
-        .join("zccache")
-        .join(format!("v{}", zccache::core::VERSION))
-        .join("logs")
-        .join("compile_journal.jsonl")
+    crate::zccache_embedded::embedded_compile_journal_path(paths)
 }
 
 fn file_len(path: &Path) -> u64 {
@@ -618,10 +631,43 @@ fn copy_session_artifact_tail(
         Some(last_newline) => &tail[..=last_newline],
         None => tail.as_str(),
     };
+    let complete = sanitize_compile_journal_jsonl(complete);
+    if complete.is_empty() {
+        return None;
+    }
     std::fs::create_dir_all(archive_dir).ok()?;
     let dest = archive_dir.join(file_name);
     std::fs::write(&dest, complete).ok()?;
     Some(dest.display().to_string())
+}
+
+/// Defense-in-depth at the Soldr archive boundary. zccache#1149 sanitizes the
+/// live journal before persistence; applying the same shared sanitizer while
+/// copying means an unexpected legacy/raw line can never be promoted into a
+/// new build-history archive. Invalid JSON is dropped closed.
+fn sanitize_compile_journal_jsonl(body: &str) -> String {
+    let mut output = String::new();
+    for line in body.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(mut value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if let Some(object) = value.as_object_mut() {
+            if let Some(raw_env) = object.remove("env") {
+                let env = serde_json::from_value::<Vec<(String, String)>>(raw_env).ok();
+                if let Some(sanitized) = zccache::daemon::compile_journal::sanitize_journal_env(env)
+                {
+                    if let Ok(safe) = serde_json::to_value(sanitized) {
+                        object.insert("env".to_string(), safe);
+                    }
+                }
+            }
+        }
+        if let Ok(line) = serde_json::to_string(&value) {
+            output.push_str(&line);
+            output.push('\n');
+        }
+    }
+    output
 }
 
 fn read_build_cache_summary(
@@ -953,6 +999,23 @@ fn current_unix_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+fn begin_build_session_with<F>(
+    paths: &SoldrPaths,
+    session_id: u64,
+    publish: F,
+) -> Result<crate::cache_lib::build_active::BuildActivityLease, SoldrError>
+where
+    F: FnOnce(),
+{
+    let lease = crate::cache_lib::build_active::BuildActivityLease::acquire(paths, session_id)
+        .map_err(|error| {
+            SoldrError::Other(format!("failed to acquire build activity lease: {error}"))
+        })?;
+    crate::cache_lib::build_active::set(true);
+    publish();
+    Ok(lease)
 }
 
 /// Soldr-private opt-out flags for the auto target-GC hooks (#485).
@@ -1877,29 +1940,23 @@ pub(crate) async fn run_cargo_front_door(
     let session_started_at_ms = current_unix_ms();
     let session_repo_root =
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    if crate::daemon::client::build_session_start(
-        &paths,
-        session_id,
-        &session_repo_root,
-        session_started_at_ms,
-    )
-    .is_err()
-    {
-        persist_build_session_start_fallback(
+    let build_activity_lease = begin_build_session_with(&paths, session_id, || {
+        if crate::daemon::client::build_session_start(
             &paths,
             session_id,
             &session_repo_root,
             session_started_at_ms,
-        );
-    }
-    let build_activity_lease =
-        crate::cache_lib::build_active::BuildActivityLease::acquire(&paths, session_id).map_err(
-            |error| SoldrError::Other(format!("failed to acquire build activity lease: {error}")),
-        )?;
-    // Issue #980 L7: gate long-running workers only for the interval where
-    // child Cargo may actually be active.
-    crate::cache_lib::build_active::set(true);
-
+        )
+        .is_err()
+        {
+            persist_build_session_start_fallback(
+                &paths,
+                session_id,
+                &session_repo_root,
+                session_started_at_ms,
+            );
+        }
+    })?;
     // soldr#1368 observability restore: snapshot the embedded zccache
     // compile counters just before cargo runs so `finish_zccache_session`
     // can diff start-vs-end into the per-build hit/miss summary written to
@@ -1932,8 +1989,6 @@ pub(crate) async fn run_cargo_front_door(
             if !daemon_finalized {
                 persist_build_session_end_fallback(&paths, session_id, -1, ended_at_ms);
             }
-            crate::cache_lib::build_active::set(false);
-            drop(build_activity_lease);
             let cleanup = cleanup_after_aborted_cargo_run(&cache_plan, args, timeout);
             let finish_result =
                 cache_plan.finish_zccache_session(command_lifetime_shutdown_timeout);
@@ -1950,6 +2005,8 @@ pub(crate) async fn run_cargo_front_door(
                     daemon_finalized,
                 });
             }
+            crate::cache_lib::build_active::set(false);
+            drop(build_activity_lease);
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -2021,19 +2078,6 @@ pub(crate) async fn run_cargo_front_door(
             ended_at_ms,
         );
     }
-    // Issue #980 L7: paired with the `set(true)` above. Clearing here
-    // (before `post_cargo_result`) lets the post-build target-GC pass
-    // run normally without thinking it's still inside the build.
-    crate::cache_lib::build_active::set(false);
-    drop(build_activity_lease);
-    // Issue #1286 (F5): the build just ended — this is the idle
-    // transition, so fire the auto-GC sweep now, as a detached process
-    // that survives this wrapper's imminent exit. Throttled to once
-    // per 5-minute window by the marker inside.
-    if build_like_cargo {
-        gc::maybe_spawn_auto_gc_sweeper(&paths);
-    }
-
     let post_cargo_result: Result<(), SoldrError> = (|| {
         if status.success() {
             if let Some(paths) = cargo_artifact_paths.as_deref() {
@@ -2102,6 +2146,14 @@ pub(crate) async fn run_cargo_front_door(
             ended_at_ms,
             daemon_finalized,
         });
+    }
+    // History is now copied, sanitized, indexed, and marked complete. Keep the
+    // lease through that publication boundary so migration GC cannot remove a
+    // half-written archive.
+    crate::cache_lib::build_active::set(false);
+    drop(build_activity_lease);
+    if build_like_cargo {
+        gc::maybe_spawn_auto_gc_sweeper(&paths);
     }
     finish_result?;
     post_cargo_result?;

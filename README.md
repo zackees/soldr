@@ -169,13 +169,13 @@ When you run `soldr`, the tool should do the obvious thing:
 - pick MSVC on Windows by default
 - fetch the tool you asked for
 - cache it locally
-- fetch and manage zccache so Rust builds get transparent caching without manual wrapper setup
+- run the built-in zccache service so Rust builds get transparent caching without manual wrapper setup
 
 If soldr solves that one problem well, it becomes a super tool: the command you reach for first, because it makes the rest of the stack behave.
 
 - **Tool acquisition** (the crgx half): Need `maturin`, `cargo-dylint`, or any crate binary? soldr fetches a pre-built binary from GitHub Releases in seconds. No `cargo install` from source. Cached locally for instant reuse. On `0.5.x`, this is still an upstream trust decision rather than a repo-side trust guarantee; see [docs/TRUST_BOUNDARIES.md](./docs/TRUST_BOUNDARIES.md).
 
-- **Compilation caching** (the zccache half): `soldr cargo ...` now fetches and manages a pinned `zccache` release for Rust builds. soldr owns the zccache daemon/session wiring and keeps managed zccache artifacts under Soldr's cache root.
+- **Compilation caching** (the zccache half): `soldr cargo ...` uses the zccache service compiled into Soldr. soldr owns the daemon/session wiring and keeps its object store under the active Soldr root at `cache/zccache/daemon-state/embedded-v1/<zccache-version>/objects`, so production and development roots remain isolated.
 
 ```bash
 # Build through soldr's front door:
@@ -252,7 +252,10 @@ to stderr. Set `SOLDR_PEP517_STATS=off` to silence it; `SOLDR_PEP517_STATS=full`
 statistics payload.
 
 Soldr also caches the last successful wheel for each project/build mode under
-`~/.soldr/pep517/wheels/`. Before packaging it scans source and staged-artifact
+`<effective-soldr-root>/pep517/wheels/`. The backend asks the selected soldr
+binary for this root, so official (`.soldr`), development (`.soldr-dev`), and
+custom roots remain separate even when `SOLDR_CACHE_DIR` was initially unset.
+Before packaging it scans source and staged-artifact
 metadata (relative path, size, and modification time); an unchanged tree
 hardlinks the cached wheel into pip's requested output directory and skips
 wheel rebuilding/compression. Set `SOLDR_PEP517_WHEEL_CACHE=off` to opt out.
@@ -379,7 +382,13 @@ If you also have many separate test binaries, consider consolidating them under 
 - **Front-door builds**: `soldr cargo ...` is the primary build UX.
 - **Invisible caching**: `soldr cargo ...` uses a soldr-managed zccache by default, with `soldr --no-cache cargo ...` as the opt-out.
 - **Real cache controls**: `soldr status`, `soldr cache`, and `soldr clean` report and manage the soldr-managed zccache state, while `soldr purge` removes all Soldr-managed cache artifacts for bug clearing and benchmarking.
-- **One cache boundary**: soldr keeps its own tools, zccache session state, and managed zccache artifacts under `~/.soldr/` by default. Use `SOLDR_CACHE_DIR` to move that root.
+- **One cache boundary**: official soldr keeps its tools and cache state under `~/.soldr/`; development builds use `~/.soldr-dev/`. Use `SOLDR_CACHE_DIR` to select an explicit root.
+- **Bounded while idle**: the long-lived daemon owns only its selected root,
+  checks pressure every five minutes, expires old state daily, and installs no
+  OS scheduler. Embedded zccache defaults to 5% of the filesystem clamped to
+  40–200 GiB, becomes aggressive for entries older than four days near full,
+  and expires artifacts after 30 days. Production, development (`.soldr-dev`),
+  custom, and standalone `.zccache` roots never sweep one another.
 - **Disposable-worktree friendly on Windows**: for build orchestration, soldr can relocate itself under `~/.soldr/runtime/soldr-self/` so `RUSTC_WRAPPER` does not keep using a worktree-local `soldr.exe`; stale runtime copies are cleaned up periodically.
 - **Pre-built first**: Download a pre-built binary before compiling from source. Fall back gracefully.
 - **Cargo-compatible**: soldr preserves normal cargo arguments instead of forcing a separate workflow.

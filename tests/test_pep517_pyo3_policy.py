@@ -27,6 +27,25 @@ def _load_backend():
 class Pep517Pyo3PolicyTest(unittest.TestCase):
     def setUp(self) -> None:
         self.backend = _load_backend()
+        self.original_query_soldr_root = self.backend._query_soldr_root
+        patcher = mock.patch.object(
+            self.backend,
+            "_query_soldr_root",
+            return_value=Path.home() / ".soldr",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.original_hold_build_lease = self.backend._hold_build_lease
+
+        @contextlib.contextmanager
+        def no_op_build_lease(_environment):
+            yield
+
+        lease_patcher = mock.patch.object(
+            self.backend, "_hold_build_lease", no_op_build_lease
+        )
+        lease_patcher.start()
+        self.addCleanup(lease_patcher.stop)
 
     def test_native_env_never_forces_no_python(self) -> None:
         previous = os.environ.pop("PYO3_NO_PYTHON", None)
@@ -252,6 +271,79 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["SOLDR_PEP517_PROJECT_ID"], expected_id)
         self.assertEqual(env["CARGO_TARGET_DIR"], str(expected_target))
         self.assertEqual(Path(env["CARGO_TARGET_DIR"]).parent.name, "pep517")
+
+    def test_stable_target_honors_effective_soldr_root(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            prod = root / ".soldr"
+            dev = root / ".soldr-dev"
+            custom = root / "custom"
+            for selected in (prod, dev, custom):
+                with self.subTest(selected=selected):
+                    with mock.patch.dict(
+                        os.environ,
+                        {
+                            "SOLDR_CACHE_DIR": str(selected),
+                            "SOLDR_PEP517_STABLE_TARGET_DIR": "1",
+                        },
+                        clear=True,
+                    ):
+                        env = self.backend._prep_env()
+                    target = Path(env["CARGO_TARGET_DIR"])
+                    self.assertTrue(target.is_relative_to(selected))
+                    self.assertEqual(target.parent.name, "pep517")
+                    self.assertNotIn(".soldr", target.relative_to(selected).parts)
+
+    def test_unset_root_follows_selected_official_or_dev_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            base = Path(raw)
+            for name in (".soldr", ".soldr-dev"):
+                selected = base / name
+                completed = subprocess.CompletedProcess(
+                    ["soldr", "version", "--json"],
+                    0,
+                    json.dumps({"root_dir": str(selected)}),
+                    "",
+                )
+                with self.subTest(name=name):
+                    with mock.patch("subprocess.run", return_value=completed):
+                        resolved = self.original_query_soldr_root({})
+                    self.assertEqual(resolved, selected)
+                    with mock.patch.object(
+                        self.backend, "_query_soldr_root", return_value=resolved
+                    ):
+                        with mock.patch.dict(
+                            os.environ,
+                            {"SOLDR_PEP517_STABLE_TARGET_DIR": "1"},
+                            clear=True,
+                        ):
+                            env = self.backend._prep_env()
+                    self.assertEqual(Path(env["SOLDR_CACHE_DIR"]), selected)
+                    self.assertTrue(
+                        Path(env["CARGO_TARGET_DIR"]).is_relative_to(selected)
+                    )
+
+    def test_older_dev_binary_root_uses_status_compatibility_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            selected = Path(raw) / ".soldr-dev"
+            responses = [
+                subprocess.CompletedProcess(
+                    ["soldr", "version", "--json"],
+                    0,
+                    json.dumps({"soldr_version": "old"}),
+                    "",
+                ),
+                subprocess.CompletedProcess(
+                    ["soldr", "status", "--json"],
+                    0,
+                    json.dumps({"root_dir": str(selected)}),
+                    "",
+                ),
+            ]
+            with mock.patch("subprocess.run", side_effect=responses) as run:
+                resolved = self.original_query_soldr_root({})
+        self.assertEqual(resolved, selected)
+        self.assertEqual(run.call_count, 2)
 
     def test_project_maturin_profile_is_not_overridden(self) -> None:
         with mock.patch.object(
@@ -581,6 +673,67 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(observed["wheel_profile"], "dev")
         self.assertEqual(observed["requires"], {"profile": "dev"})
         self.assertEqual(observed["editable"], {"editable": "1"})
+
+    def test_delegate_hook_holds_build_lease_for_full_call(self) -> None:
+        events = []
+        delegate = types.ModuleType("pep517_leased_delegate")
+
+        def build_wheel(*_args, **_kwargs):
+            events.append("hook")
+            return "demo.whl"
+
+        @contextlib.contextmanager
+        def recording_lease(environment):
+            events.append(("lease-enter", environment["SOLDR_CACHE_DIR"]))
+            yield
+            events.append("lease-exit")
+
+        delegate.build_wheel = build_wheel
+        with mock.patch.dict(sys.modules, {"pep517_leased_delegate": delegate}):
+            with mock.patch.object(
+                self.backend,
+                "_project_soldr_options",
+                return_value={"delegate-backend": "pep517_leased_delegate"},
+            ):
+                with mock.patch.object(
+                    self.backend, "_hold_build_lease", recording_lease
+                ):
+                    result = self.backend._delegate_hook(
+                        "build_wheel", "wheel", None, None
+                    )
+        self.assertEqual(result, "demo.whl")
+        self.assertEqual(events[0][0], "lease-enter")
+        self.assertEqual(events[1:], ["hook", "lease-exit"])
+
+    def test_build_lease_helper_uses_pipe_lifetime(self) -> None:
+        class FakeProcess:
+            def __init__(self):
+                self.stdin = io.BytesIO()
+                self.stdout = io.BytesIO(b"ready\n")
+                self.stderr = io.BytesIO()
+                self.wait_timeouts = []
+                self.killed = False
+
+            def wait(self, timeout=None):
+                self.wait_timeouts.append(timeout)
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        process = FakeProcess()
+        environment = {"SOLDR_CACHE_DIR": "/selected/root"}
+        with mock.patch.object(
+            self.backend.subprocess, "Popen", return_value=process
+        ) as popen:
+            with self.original_hold_build_lease(environment):
+                self.assertFalse(process.stdin.closed)
+        self.assertTrue(process.stdin.closed)
+        self.assertEqual(process.wait_timeouts, [10])
+        self.assertFalse(process.killed)
+        args, kwargs = popen.call_args
+        self.assertEqual(args[0], ["soldr", "gc", "hold-build-lease"])
+        self.assertEqual(kwargs["env"], environment)
 
     def test_delegate_profile_setting_overrides_environment_temporarily(self) -> None:
         observed = {}

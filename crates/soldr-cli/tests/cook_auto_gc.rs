@@ -8,7 +8,7 @@
 //! platform — no Docker harness required because no daemon spawns.
 
 use soldr_cli::cache_lib::cook_archive::{artifact_path_for_sha, cook_cache_dir};
-use soldr_cli::cache_lib::cook_gc::cook_evict_pass;
+use soldr_cli::cache_lib::cook_gc::{cook_evict_pass, cook_evict_pass_with_absolute_age};
 use soldr_cli::cache_lib::cook_index::{self, CookEntry, CookKey};
 use soldr_cli::cache_lib::state_db_path;
 use soldr_cli::core::{CookConfig, SoldrPaths};
@@ -112,6 +112,35 @@ timed_test!(per_origin_top_n_preserved_under_size_pressure, {
     assert!(artifact_path_for_sha(&cook_dir, &[0x13; 32]).exists());
     assert!(artifact_path_for_sha(&cook_dir, &[0x14; 32]).exists());
 });
+
+timed_test!(
+    full_maintenance_absolute_age_overrides_per_origin_protection,
+    {
+        let (_guard, paths) = fresh_paths("absolute-age");
+        let old = make_entry(
+            0x91,
+            100,
+            now_ms() - 31 * MS_PER_DAY,
+            Some("https://github.com/zackees/abandoned"),
+        );
+        let artifacts = seed_entries(&paths, &[(1, old)]);
+        let cfg = CookConfig {
+            max_total_gb: 200,
+            max_age_days: 365,
+            keep_per_origin: 3,
+            ..CookConfig::default()
+        };
+
+        let report = cook_evict_pass_with_absolute_age(
+            &paths,
+            &cfg,
+            Some(Duration::from_secs(30 * SECS_PER_DAY)),
+        );
+        assert_eq!(report.protected, 0);
+        assert_eq!(report.time_evicted, 1);
+        assert!(!artifacts[0].exists());
+    }
+);
 
 timed_test!(time_bound_evicts_entries_older_than_max_age, {
     let (_guard, paths) = fresh_paths("time-bound");
@@ -228,4 +257,57 @@ timed_test!(mixed_origin_workload, {
         .map(|(_, e)| e.origin_url_normalized.clone())
         .collect();
     assert_eq!(groups.len(), 3);
+});
+
+timed_test!(cook_gc_rejects_a_linked_cross_product_root, {
+    let (guard, paths) = fresh_paths("linked-root");
+    let external = guard.path().join("other-product");
+    std::fs::create_dir_all(&external).unwrap();
+    let sentinel = external.join("sentinel");
+    std::fs::write(&sentinel, b"keep").unwrap();
+    let cook_dir = cook_cache_dir(&paths);
+    if cook_dir.exists() {
+        std::fs::remove_dir_all(&cook_dir).unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&external, &cook_dir).unwrap();
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&cook_dir)
+            .arg(&external)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+    let report = cook_evict_pass(&paths, &CookConfig::default());
+    assert_eq!(report.errors, 1);
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"keep");
+});
+
+timed_test!(cook_unlink_failure_retains_the_index_for_retry, {
+    let (_guard, paths) = fresh_paths("unlink-failure");
+    let entry = make_entry(0x77, 1, 0, None);
+    let artifact = seed_entries(&paths, &[(1, entry)])[0].clone();
+    std::fs::remove_file(&artifact).unwrap();
+    std::fs::create_dir(&artifact).unwrap();
+    let report = cook_evict_pass(
+        &paths,
+        &CookConfig {
+            max_age_days: 1,
+            keep_per_origin: 0,
+            ..CookConfig::default()
+        },
+    );
+    assert_eq!(report.errors, 1);
+    assert_eq!(report.time_evicted, 0);
+    assert_eq!(
+        cook_index::iter_entries(&state_db_path(&paths))
+            .unwrap()
+            .len(),
+        1,
+        "failed unlink must remain indexed for a future retry"
+    );
+    assert!(artifact.is_dir());
 });

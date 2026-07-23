@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Upper bound on the drift diagnostic returned in [`Response::CookMiss`].
 /// Keeps the body well under [`crate::daemon::protocol::MAX_BODY_BYTES`]
@@ -34,7 +34,10 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 /// hashes for this origin+target".
 const COOK_DRIFT_LIMIT: usize = 8;
 
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(1800);
+// The daemon is the primary owner of five-minute pressure checks and daily age
+// retention.  It therefore stays resident by default; callers can still opt
+// into an explicit nonzero inactivity timeout.
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::MAX;
 const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 const IPC_BACKPRESSURE_RETRY_AFTER_MS: u32 = 25;
@@ -341,7 +344,7 @@ struct State {
     /// daemon restarts by design — long-lived totals belong in the
     /// redb `cook_index_v1` table, not in process-local state.
     cook_hits_this_session: AtomicU64,
-    shutdown: Notify,
+    shutdown: Arc<crate::daemon::maintenance::ShutdownSignal>,
     /// L4 (issue soldr#980) — background drain task that coalesces
     /// per-compile redb event writes. The `Request::Compile` handler
     /// pushes into a tokio mpsc instead of opening redb directly. See
@@ -922,9 +925,23 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     std::fs::create_dir_all(soldr_daemon_dir(&paths))?;
     init_embedded_service_file_tracing(&paths);
 
-    if let Some(existing) = is_live(&paths) {
+    let _root_ownership = crate::daemon::lifecycle::RootOwnershipGuard::try_acquire(&paths)?
+        .ok_or_else(|| {
+            ServerError::Io(std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!("soldr root ownership is busy: {}", paths.root.display()),
+            ))
+        })?;
+
+    if let Some(existing) = existing_daemon_pid(&paths) {
         return Err(ServerError::AlreadyRunning(existing));
     }
+    // Claim the Unix endpoint immediately after the version-blind occupancy
+    // check. Delaying bind until a detached accept task used to leave a large
+    // initialization window in which an older daemon could bind and then have
+    // its live socket unlinked by this process.
+    #[cfg(unix)]
+    let unix_listener = claim_unix_endpoint(&paths)?;
 
     let db_path = data_db_path(&paths);
     // Touch the file at startup so a path error (no parent dir, no
@@ -964,7 +981,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
         last_activity_ms: AtomicU64::new(0),
         exit_via_idle: AtomicBool::new(false),
         cook_hits_this_session: AtomicU64::new(0),
-        shutdown: Notify::new(),
+        shutdown: Arc::new(crate::daemon::maintenance::ShutdownSignal::default()),
         event_batcher,
         compile_service,
         compile_admission: CompileAdmission::new(
@@ -994,21 +1011,40 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     let _ = crate::daemon::broker_discovery::publish_cache_manifest(&paths);
 
     let accept_state = state.clone();
-    let paths_for_accept = paths.clone();
+    #[cfg(unix)]
     let accept_handle = tokio::spawn(async move {
-        let _ = run_accept_loop(paths_for_accept, accept_state).await;
+        let _ = run_accept_loop(unix_listener, accept_state).await;
+    });
+    #[cfg(windows)]
+    let accept_handle = {
+        let paths_for_accept = paths.clone();
+        tokio::spawn(async move {
+            let _ = run_accept_loop(paths_for_accept, accept_state).await;
+        })
+    };
+
+    let idle_handle = (opts.idle_timeout != Duration::MAX).then(|| {
+        let idle_state = state.clone();
+        let idle_timeout = opts.idle_timeout;
+        tokio::spawn(async move {
+            run_idle_watchdog(idle_state, idle_timeout).await;
+        })
     });
 
-    let idle_state = state.clone();
-    let idle_timeout = opts.idle_timeout;
-    let idle_handle = tokio::spawn(async move {
-        run_idle_watchdog(idle_state, idle_timeout).await;
+    let maintenance_context = crate::daemon::maintenance::MaintenanceContext {
+        paths: paths.clone(),
+        db_path: state.db_path.clone(),
+        compile_service: Arc::clone(&state.compile_service),
+        shutdown: Arc::clone(&state.shutdown),
+    };
+    let maintenance_handle = tokio::spawn(async move {
+        crate::daemon::maintenance::run_loop(maintenance_context).await;
     });
 
     let signal_state = state.clone();
     tokio::spawn(async move {
         if (tokio::signal::ctrl_c().await).is_ok() {
-            signal_state.shutdown.notify_waiters();
+            signal_state.shutdown.request();
         }
     });
     // Issue #1286 (F1): SIGTERM previously killed the daemon without
@@ -1026,14 +1062,20 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
                 return;
             };
             if term.recv().await.is_some() {
-                term_state.shutdown.notify_waiters();
+                term_state.shutdown.request();
             }
         });
     }
 
-    state.shutdown.notified().await;
+    state.shutdown.wait().await;
     accept_handle.abort();
-    idle_handle.abort();
+    if let Some(handle) = idle_handle {
+        handle.abort();
+    }
+    // A destructive pass that already acquired the root maintenance lease is
+    // allowed to finish. In particular, await its spawn_blocking deletion
+    // worker before removing the PID/endpoint and releasing root ownership.
+    let _ = maintenance_handle.await;
 
     // L4 (issue soldr#980): drain whatever the background event flusher
     // has staged in memory before the daemon process exits. Must run
@@ -1066,6 +1108,49 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     Ok(())
 }
 
+fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
+    select_existing_daemon_pid(
+        crate::daemon::lifecycle::stale_daemon_occupies_endpoint(paths),
+        is_live(paths),
+    )
+}
+
+fn select_existing_daemon_pid(
+    version_blind: Option<u32>,
+    protocol_aware: Option<u32>,
+) -> Option<u32> {
+    version_blind.or(protocol_aware)
+}
+
+#[cfg(test)]
+mod endpoint_occupancy_tests {
+    use super::select_existing_daemon_pid;
+
+    crate::timed_test!(protocol_mismatched_daemon_still_blocks_direct_startup, {
+        assert_eq!(select_existing_daemon_pid(Some(41), None), Some(41));
+        assert_eq!(select_existing_daemon_pid(None, Some(42)), Some(42));
+        assert_eq!(select_existing_daemon_pid(None, None), None);
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(claimed_unix_endpoint_cannot_be_bound_by_a_second_daemon, {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let temp = tempfile::tempdir().unwrap();
+                let paths = crate::core::SoldrPaths::with_root(temp.path().join("owned"));
+                std::fs::create_dir_all(crate::cache_lib::soldr_daemon_dir(&paths)).unwrap();
+                let listener = super::claim_unix_endpoint(&paths).unwrap();
+                let second =
+                    tokio::net::UnixListener::bind(crate::cache_lib::daemon_sock_path(&paths));
+                assert!(second.is_err(), "the endpoint claim must be exclusive");
+                drop(listener);
+            });
+    });
+}
+
 /// The embedded zccache service runs in-process, so its `tracing::warn!`
 /// events otherwise have no durable destination in the normal daemon mode.
 /// Keep a daily rolling file under soldr's daemon state for post-build
@@ -1093,13 +1178,21 @@ fn embedded_service_log_dir(paths: &SoldrPaths) -> PathBuf {
 }
 
 #[cfg(unix)]
-async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Result<()> {
-    use tokio::net::UnixListener;
-    let sock = daemon_sock_path(&paths);
-    // Stale socket left over from a previous run blocks bind. The PID
-    // file check at startup already proved no live daemon owns it.
-    let _ = std::fs::remove_file(&sock);
-    let listener = UnixListener::bind(&sock)?;
+fn claim_unix_endpoint(paths: &SoldrPaths) -> std::io::Result<tokio::net::UnixListener> {
+    let sock = daemon_sock_path(paths);
+    match std::fs::remove_file(&sock) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    tokio::net::UnixListener::bind(&sock)
+}
+
+#[cfg(unix)]
+async fn run_accept_loop(
+    listener: tokio::net::UnixListener,
+    state: Arc<State>,
+) -> std::io::Result<()> {
     loop {
         let (stream, _addr) = match listener.accept().await {
             Ok(s) => s,
@@ -1136,7 +1229,8 @@ fn spawn_windows_pipe_instance(pipe_name: String, state: Arc<State>, first_pipe_
     // future recursively depend on itself, which Windows rejects because its
     // `Send` bound cannot be inferred.
     tokio::spawn(async move {
-        if let Err(error) = accept_windows_pipe_instance(pipe_name, state, first_pipe_instance).await
+        if let Err(error) =
+            accept_windows_pipe_instance(pipe_name, state, first_pipe_instance).await
         {
             tracing::debug!(%error, "Windows named-pipe listener exited");
         }
@@ -1224,7 +1318,7 @@ where
         }
         Request::Shutdown => {
             let _ = write_frame_async(&mut stream, &Response::ShuttingDown).await;
-            state.shutdown.notify_waiters();
+            state.shutdown.request();
         }
         Request::FlushCaches => {
             // Issue #1286 (F1): checkpoint the embedded zccache state
@@ -1257,43 +1351,45 @@ where
             repo_root,
             started_at_ms,
         } => {
-            // Issue #980 L7: mark the daemon as "build in progress" so
-            // any periodic worker living inside the daemon process
-            // (today: none; tomorrow: an inotify cache watcher and a
-            // daemon-resident auto-GC tick) skips its tick. Cleared on
-            // `BuildSessionEnd` below.
-            crate::cache_lib::build_active::set(true);
+            // The cargo front door owns an OS-held BuildActivityLease before
+            // sending this request and retains it through history
+            // publication. Do not mirror that lease in the daemon: this
+            // request has no durable connection, so a crashed client could
+            // otherwise block maintenance for the daemon's whole lifetime.
             let response = async {
                 let existing = db::get_build(&state.db_path, session_id)
                     .map_err(|err| format!("read build session: {err}"))?;
-                let record = merge_build_session_start(existing, session_id, repo_root, started_at_ms);
+                let record =
+                    merge_build_session_start(existing, session_id, repo_root, started_at_ms);
                 db::upsert_build(&state.db_path, &record)
                     .map_err(|err| format!("persist build session start: {err}"))?;
-            // L4 (issue soldr#980): route the SessionStart event through
-            // the batcher so we don't compete with the build's first
-            // compile-event burst for the redb writer.
+                // L4 (issue soldr#980): route the SessionStart event through
+                // the batcher so we don't compete with the build's first
+                // compile-event burst for the redb writer.
                 state
-                .event_batcher
-                .record(db::Event {
-                    ts_ms: started_at_ms,
-                    session_id: Some(session_id),
-                    kind: db::EventKind::SessionStart,
-                    crate_name: None,
-                    duration_us: None,
-                    target_dir: None,
-                    exit_code: None,
-                })
+                    .event_batcher
+                    .record(db::Event {
+                        ts_ms: started_at_ms,
+                        session_id: Some(session_id),
+                        kind: db::EventKind::SessionStart,
+                        crate_name: None,
+                        duration_us: None,
+                        target_dir: None,
+                        exit_code: None,
+                    })
                     .await
                     .map_err(|err| format!("queue session start event: {err}"))?;
-                state.event_batcher.flush().await.map_err(|err| format!("flush session start event: {err}"))?;
+                state
+                    .event_batcher
+                    .flush()
+                    .await
+                    .map_err(|err| format!("flush session start event: {err}"))?;
                 Ok::<(), String>(())
-            }.await;
+            }
+            .await;
             let response = match response {
                 Ok(()) => Response::Ack,
-                Err(err) => {
-                    crate::cache_lib::build_active::set(false);
-                    Response::Error(err)
-                }
+                Err(err) => Response::Error(err),
             };
             let _ = write_frame_async(&mut stream, &response).await;
         }
@@ -1302,9 +1398,6 @@ where
             exit_code,
             ended_at_ms,
         } => {
-            // Issue #980 L7: paired with the `set(true)` in
-            // BuildSessionStart above. Re-enables periodic workers.
-            crate::cache_lib::build_active::set(false);
             let response = match finalize_build_session(
                 &state.db_path,
                 &state.event_batcher,
@@ -1312,7 +1405,8 @@ where
                 exit_code,
                 ended_at_ms,
             )
-            .await {
+            .await
+            {
                 Ok(()) => Response::Ack,
                 Err(err) => Response::Error(err),
             };
@@ -1832,17 +1926,10 @@ async fn run_idle_watchdog(state: Arc<State>, idle_timeout: Duration) {
     loop {
         tokio::time::sleep(IDLE_POLL_INTERVAL).await;
         if state.idle_for() >= idle_timeout {
-            // Issue #980 L7: a daemon hitting the idle timeout has not
-            // seen any IPC traffic for `idle_timeout`, which means any
-            // BuildSessionStart that never received a matching
-            // BuildSessionEnd should be treated as stale. Clear the
-            // flag so a future daemon-resident worker doesn't sleep
-            // forever on a leftover `true` value.
-            crate::cache_lib::build_active::set(false);
             // Tag the exit reason BEFORE notifying so the main task's
             // post-shutdown lifecycle JSONL emit picks `died-idle`.
             state.exit_via_idle.store(true, Ordering::Relaxed);
-            state.shutdown.notify_waiters();
+            state.shutdown.request();
             return;
         }
     }

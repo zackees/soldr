@@ -180,6 +180,22 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
         rearm_auto_gc_marker(&paths);
         return;
     }
+    let _maintenance_lease =
+        match crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths) {
+            Ok(Some(lease)) => lease,
+            Ok(None) => {
+                defer_for_active_build(&paths, &log_path, "root_lease");
+                return;
+            }
+            Err(error) => {
+                let _ = append_auto_gc_log_line(
+                    &log_path,
+                    &format!("auto-gc status=deferred reason=root_lease_failed error={error}"),
+                );
+                rearm_auto_gc_marker(&paths);
+                return;
+            }
+        };
 
     // Issue #1286 (F5): record that a sweep actually STARTED. Before
     // this line the log could only ever contain deferrals and tier
@@ -193,10 +209,6 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // the volume isn't below trigger so the event log can't grow
     // unbounded between auto-GC firings.
     let db_path = crate::cache_lib::data_db_path(&paths);
-    if build_activity_active(&paths) {
-        defer_for_active_build(&paths, &log_path, "tier0");
-        return;
-    }
     if db_path.exists() {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -236,10 +248,6 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // is well above `trigger_free_gb`, so the eviction pass runs every
     // throttle window when the cook knobs are non-zero.
     if cook_config.max_total_gb > 0 || cook_config.max_age_days > 0 {
-        if build_activity_active(&paths) {
-            defer_for_active_build(&paths, &log_path, "cook");
-            return;
-        }
         let report = crate::cache_lib::cook_gc::cook_evict_pass(&paths, &cook_config);
         if report.time_evicted > 0
             || report.size_evicted > 0
@@ -267,10 +275,6 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     // get reclaimed without requiring the user to call
     // `soldr cache sweep-trash` manually. Tolerates per-entry failures
     // (Windows daemon may still hold handles); retries next pass.
-    if build_activity_active(&paths) {
-        defer_for_active_build(&paths, &log_path, "trash");
-        return;
-    }
     if let Ok(report) = crate::cache::sweep_trash(&paths) {
         if report.removed > 0 || report.retained > 0 {
             let _ = append_auto_gc_log_line(
@@ -297,29 +301,6 @@ fn run_auto_gc_background(paths_root: std::path::PathBuf, log_path: std::path::P
     }
 
     for plan in &plans {
-        // Issue #980 L7: re-check between volumes so a long-running
-        // sweep yields to a cargo build that started after this
-        // thread was spawned. Re-arm the throttle marker once so the
-        // post-build wrapper invocation can re-fire the deferred
-        // sweep instead of waiting a full throttle window.
-        if crate::cache_lib::build_active::is_active() {
-            tracing::debug!(
-                "auto-GC volume loop yielding: build active (volume={})",
-                plan.volume_key
-            );
-            let _ = append_auto_gc_log_line(
-                &log_path,
-                &format!(
-                    "auto-gc volume={} status=deferred reason=build_active",
-                    plan.volume_key
-                ),
-            );
-            rearm_auto_gc_marker(&paths);
-            // Break (not continue) — once a build is active, defer
-            // ALL remaining volumes too. They share the same disk
-            // contention concern.
-            break;
-        }
         let line = format!(
             "auto-gc volume={} free_gib={:.2} trigger_gib={} target_gib={} paths={} status=detected",
             plan.volume_key,

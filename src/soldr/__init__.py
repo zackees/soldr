@@ -52,6 +52,7 @@ _PEP517_ENV_KEYS = {
     "CARGO_BUILD_TARGET",
     "CARGO_ENCODED_RUSTFLAGS",
     "RUSTFLAGS",
+    "SOLDR_CACHE_DIR",
     "SOLDR_PEP517_PROFILE",
     "SOLDR_LINKER",
 }
@@ -216,6 +217,40 @@ def _managed_pep517_environment(
                 os.environ[key] = str(value)
 
 
+@contextmanager
+def _hold_build_lease(environment: dict[str, str]) -> Iterator[None]:
+    """Hold Soldr's OS-backed root lease for an in-process delegate hook.
+
+    The helper owns the actual file lock and reads a private stdin pipe. If
+    this Python backend is killed, the pipe closes and the helper exits, so a
+    long-lived daemon can never inherit an immortal lease.
+    """
+    process = subprocess.Popen(
+        ["soldr", "gc", "hold-build-lease"],
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None
+    assert process.stdout is not None
+    assert process.stderr is not None
+    ready = process.stdout.readline()
+    if ready != b"ready\n":
+        error = process.stderr.read().decode("utf-8", errors="replace").strip()
+        process.wait()
+        raise RuntimeError(f"soldr build lease helper failed to start: {error}")
+    try:
+        yield
+    finally:
+        process.stdin.close()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
 def _delegate_hook(
     name: str,
     *args: object,
@@ -233,7 +268,8 @@ def _delegate_hook(
         _config_settings,
         editable=name.endswith("_editable"),
     ):
-        return getattr(backend, hook_name)(*args, **kwargs)
+        with _hold_build_lease(dict(os.environ)):
+            return getattr(backend, hook_name)(*args, **kwargs)
 
 
 def _hash_identity_field(hasher: "hashlib._Hash", name: str, value: bytes) -> None:
@@ -292,10 +328,14 @@ def _project_build_identity(environment: Optional[dict[str, str]] = None) -> str
     return hasher.hexdigest()[:24]
 
 
-def _pep517_target_dir(project_id: Optional[str] = None) -> Path:
+def _pep517_target_dir(
+    project_id: Optional[str] = None,
+    environment: Optional[dict[str, str]] = None,
+) -> Path:
     if project_id is None:
         project_id = _project_build_identity()
-    return Path.home() / ".soldr" / "cargo-target" / "pep517" / project_id
+    values = os.environ if environment is None else environment
+    return _wheel_cache_root(values) / "cargo-target" / "pep517" / project_id
 
 
 def _setting_value(config_settings: Optional[dict], *keys: str) -> Optional[str]:
@@ -355,6 +395,8 @@ def _prep_env(
     editable: bool = False,
 ) -> "dict[str, str]":
     env = os.environ.copy()
+    if not env.get("SOLDR_CACHE_DIR", "").strip():
+        env["SOLDR_CACHE_DIR"] = str(_selected_soldr_root(env))
     explicit_profile = _explicit_profile(config_settings, editable=editable)
     if explicit_profile:
         # Match _profile_args precedence for delegated backends: an explicit
@@ -401,7 +443,7 @@ def _prep_env(
     if knob not in ("0", "false", "no", "off"):
         env.setdefault(
             "CARGO_TARGET_DIR",
-            str(_pep517_target_dir(project_id)),
+            str(_pep517_target_dir(project_id, env)),
         )
     return env
 
@@ -543,9 +585,53 @@ def _maturin_pep517(
         )
 
 
+def _selected_soldr_root(environment: "dict[str, str]") -> Path:
+    """Ask the selected soldr binary for its provenance-aware root.
+
+    Official wheels default to ``~/.soldr`` while locally-built binaries use
+    ``~/.soldr-dev``. Querying the executable on PATH keeps the Python backend
+    aligned with the exact binary it will invoke without duplicating Rust's
+    build-provenance policy.
+    """
+    explicit = environment.get("SOLDR_CACHE_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    queried = _query_soldr_root(environment)
+    if queried is not None:
+        return queried
+    # Compatibility fallback for an older soldr binary whose version payload
+    # predates `root_dir`. Such released binaries use the production root.
+    return Path.home() / ".soldr"
+
+
+def _query_soldr_root(environment: "dict[str, str]") -> "Path | None":
+    # `status --json` has carried root_dir longer than `version --json`, so it
+    # is a compatibility fallback for older development binaries. Neither
+    # command starts a daemon.
+    for subcommand in ("version", "status"):
+        try:
+            result = subprocess.run(
+                ["soldr", subcommand, "--json"],
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=5,
+            )
+            payload = json.loads(result.stdout) if result.returncode == 0 else None
+            root = payload.get("root_dir") if isinstance(payload, dict) else None
+            if isinstance(root, str) and root.strip():
+                selected = Path(root).expanduser()
+                if selected.is_absolute():
+                    return selected
+        except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+            continue
+    return None
+
+
 def _wheel_cache_root(environment: "dict[str, str]") -> Path:
-    root = environment.get("SOLDR_CACHE_DIR")
-    return Path(root).expanduser() if root else Path.home() / ".soldr"
+    return _selected_soldr_root(environment)
 
 
 def _hash_metadata_tree(

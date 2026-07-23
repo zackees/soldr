@@ -1989,9 +1989,13 @@ crate::timed_test!(
 crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
     let root = tempfile::tempdir().expect("temp root");
     let source = root.path().join("compile_journal.jsonl");
-    std::fs::write(&source, "old-build\n").expect("write old journal");
+    std::fs::write(&source, "{\"record\":\"old-build\"}\n").expect("write old journal");
     let start_offset = std::fs::metadata(&source).expect("metadata").len();
-    std::fs::write(&source, "old-build\nnew-build-1\nnew-build-2\n").expect("append journal");
+    std::fs::write(
+        &source,
+        "{\"record\":\"old-build\"}\n{\"record\":\"new-build-1\"}\n{\"record\":\"new-build-2\"}\n",
+    )
+    .expect("append journal");
 
     let archived = copy_session_artifact_tail(
         &source,
@@ -2002,7 +2006,10 @@ crate::timed_test!(compile_journal_tail_archive_keeps_current_build_only, {
     .expect("archive path");
 
     let body = std::fs::read_to_string(archived).expect("archived body");
-    assert_eq!(body, "new-build-1\nnew-build-2\n");
+    assert_eq!(
+        body,
+        "{\"record\":\"new-build-1\"}\n{\"record\":\"new-build-2\"}\n"
+    );
 });
 
 crate::timed_test!(
@@ -2103,9 +2110,13 @@ crate::timed_test!(
 crate::timed_test!(compile_journal_tail_archive_drops_partial_trailing_line, {
     let root = tempfile::tempdir().expect("temp root");
     let source = root.path().join("compile_journal.jsonl");
-    std::fs::write(&source, "old-build\n").expect("write old journal");
+    std::fs::write(&source, "{\"record\":\"old-build\"}\n").expect("write old journal");
     let start_offset = std::fs::metadata(&source).expect("metadata").len();
-    std::fs::write(&source, "old-build\ncomplete-1\ncomplete-2\npart").expect("append tail");
+    std::fs::write(
+        &source,
+        "{\"record\":\"old-build\"}\n{\"record\":\"complete-1\"}\n{\"record\":\"complete-2\"}\n{\"record\":\"part",
+    )
+    .expect("append tail");
 
     let archived = copy_session_artifact_tail(
         &source,
@@ -2117,9 +2128,52 @@ crate::timed_test!(compile_journal_tail_archive_drops_partial_trailing_line, {
 
     let body = std::fs::read_to_string(archived).expect("archived body");
     assert_eq!(
-        body, "complete-1\ncomplete-2\n",
+        body, "{\"record\":\"complete-1\"}\n{\"record\":\"complete-2\"}\n",
         "an in-flight partial trailing line must not land in the archive"
     );
+});
+
+crate::timed_test!(compile_journal_history_reuses_upstream_secret_fixture, {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../_vender/zccache/crates/zccache-daemon-core/src/daemon/compile_journal/tests/compile_journal_env_security_v1.json"
+    ))
+    .unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let source = temp.path().join("compile_journal.jsonl");
+    let mut record = serde_json::json!({
+        "outcome": "miss",
+        "compiler": "/usr/bin/rustc",
+        "args": ["--crate-name", "fixture"],
+        "cwd": "/repo",
+        "exit_code": 0,
+    });
+    record["env"] = fixture["input_env"].clone();
+    std::fs::write(
+        &source,
+        format!("{}\n", serde_json::to_string(&record).unwrap()),
+    )
+    .unwrap();
+    let archived = copy_session_artifact_tail(
+        &source,
+        &temp.path().join("history/1"),
+        "compile_journal.jsonl",
+        0,
+    )
+    .expect("sanitized archive");
+    let archived = std::fs::read_to_string(archived).unwrap();
+    for fragment in fixture["forbidden_fragments"].as_array().unwrap() {
+        let fragment = fragment.as_str().unwrap();
+        assert!(
+            !archived.contains(fragment),
+            "secret fragment persisted: {fragment}"
+        );
+    }
+    for name in fixture["forbidden_names"].as_array().unwrap() {
+        let name = name.as_str().unwrap();
+        assert!(!archived.contains(name), "secret name persisted: {name}");
+    }
+    assert!(archived.contains("CARGO_CRATE_NAME"));
+    assert!(archived.contains("safe_crate"));
 });
 
 crate::timed_test!(
@@ -2206,3 +2260,54 @@ crate::timed_test!(build_session_fallback_persists_start_end_without_daemon, {
     assert_eq!(events[0].kind, crate::daemon::db::EventKind::SessionStart);
     assert_eq!(events[1].kind, crate::daemon::db::EventKind::SessionEnd);
 });
+
+crate::timed_test!(build_session_waits_for_root_lease_before_publish, {
+    let root = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+    let maintenance = crate::cache_lib::build_active::MaintenanceLease::try_acquire(&paths)
+        .unwrap()
+        .unwrap();
+    let published = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let published_in_thread = std::sync::Arc::clone(&published);
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+
+    let worker = std::thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        let result = begin_build_session_with(&paths, 7, || {
+            published_in_thread.store(true, std::sync::atomic::Ordering::Release);
+        });
+        done_tx.send(result.is_ok()).unwrap();
+    });
+
+    started_rx.recv().unwrap();
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_millis(100))
+        .is_err());
+    assert!(!published.load(std::sync::atomic::Ordering::Acquire));
+
+    drop(maintenance);
+
+    assert!(done_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap());
+    worker.join().unwrap();
+    assert!(published.load(std::sync::atomic::Ordering::Acquire));
+});
+
+crate::timed_test!(
+    compile_journal_history_uses_effective_embedded_version_root,
+    {
+        let root = tempfile::tempdir().unwrap();
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let journal = embedded_compile_journal_path(&paths);
+        assert_eq!(
+            journal,
+            paths
+                .cache
+                .join("zccache/daemon-state/embedded-v1")
+                .join(zccache::core::config::versioned_subdir())
+                .join("logs/compile_journal.jsonl")
+        );
+    }
+);

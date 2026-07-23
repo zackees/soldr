@@ -226,7 +226,10 @@ pub fn delete_candidate_dir(candidate: GcCandidate) -> GcDeleteOutcome {
             return GcDeleteOutcome {
                 candidate,
                 removed: false,
-                error: Some(format!("active cargo lock at {}; refusing to delete", lock.display())),
+                error: Some(format!(
+                    "active cargo lock at {}; refusing to delete",
+                    lock.display()
+                )),
             };
         }
         Err(error) => {

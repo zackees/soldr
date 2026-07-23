@@ -86,6 +86,7 @@ pub(crate) struct VersionOutput {
     schema_version: u32,
     command: &'static str,
     pub(crate) soldr_version: String,
+    root_dir: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -100,6 +101,7 @@ pub(crate) struct StatusOutput {
     cache_enabled_for_invocation: bool,
     managed_zccache_version: &'static str,
     zccache: ZccacheStatusSnapshot,
+    maintenance: Option<crate::daemon::maintenance::MaintenanceStatus>,
 }
 
 #[derive(Serialize)]
@@ -109,6 +111,7 @@ pub(crate) struct CacheOutput {
     soldr_version: String,
     managed_zccache_version: &'static str,
     zccache: ZccacheStatusSnapshot,
+    maintenance: Option<crate::daemon::maintenance::MaintenanceStatus>,
 }
 
 #[derive(Serialize)]
@@ -137,6 +140,9 @@ pub(crate) fn version_output() -> VersionOutput {
         schema_version: JSON_SCHEMA_VERSION,
         command: "version",
         soldr_version: crate::core::version().to_string(),
+        root_dir: SoldrPaths::new()
+            .ok()
+            .map(|paths| paths.root.display().to_string()),
     }
 }
 
@@ -154,6 +160,7 @@ pub(crate) fn collect_status_output(cache_enabled: bool) -> Result<StatusOutput,
         cache_enabled_for_invocation: cache_enabled,
         managed_zccache_version: EMBEDDED_ZCCACHE_VERSION,
         zccache: collect_zccache_status(&paths)?,
+        maintenance: crate::daemon::maintenance::read_status(&paths),
     })
 }
 
@@ -165,6 +172,7 @@ pub(crate) fn collect_cache_output() -> Result<CacheOutput, SoldrError> {
         soldr_version: crate::core::version().to_string(),
         managed_zccache_version: EMBEDDED_ZCCACHE_VERSION,
         zccache: collect_zccache_status(&paths)?,
+        maintenance: crate::daemon::maintenance::read_status(&paths),
     })
 }
 
@@ -215,10 +223,77 @@ pub(crate) fn print_status_output(output: &StatusOutput) {
     );
     println!("zccache version: {}", output.managed_zccache_version);
     print_zccache_status_snapshot(&output.zccache);
+    print_maintenance_status(output.maintenance.as_ref());
 }
 
 pub(crate) fn print_cache_output(output: &CacheOutput) {
     print_zccache_status_snapshot(&output.zccache);
+    print_maintenance_status(output.maintenance.as_ref());
+}
+
+pub(crate) fn print_maintenance_status(
+    status: Option<&crate::daemon::maintenance::MaintenanceStatus>,
+) {
+    println!();
+    println!("cache maintenance:");
+    let Some(status) = status else {
+        println!("  no daemon maintenance pass recorded yet");
+        return;
+    };
+    println!("  owning root:    {}", status.owning_root);
+    println!("  daemon identity: {}", status.daemon_identity);
+    println!("  embedded root:  {}", status.embedded_cache_root);
+    println!("  budget policy:  {}", status.disk_policy.source);
+    if let Some(report) = status.zccache.as_ref() {
+        let fill = if report.budget_bytes == 0 {
+            0.0
+        } else {
+            report.usage_after_bytes as f64 * 100.0 / report.budget_bytes as f64
+        };
+        println!(
+            "  zccache:        pressure={} budget={} bytes usage={} bytes ({fill:.1}%) reclaimed={} bytes / {} items",
+            report.pressure,
+            report.budget_bytes,
+            report.usage_after_bytes,
+            report.bytes_reclaimed,
+            report.artifacts_removed,
+        );
+    } else if let Some(error) = status.zccache_error.as_ref() {
+        println!("  zccache:        failed ({error})");
+    }
+    if let (Some(free), Some(percent)) =
+        (status.filesystem_free_bytes, status.filesystem_free_percent)
+    {
+        println!("  filesystem:     free={free} bytes ({percent:.1}%)");
+    }
+    println!(
+        "  schedule:       pressure every 5m; full age pass every 24h; 4d pressure / 30d absolute expiry"
+    );
+    println!(
+        "  last attempted: {} ms since epoch",
+        status.attempted_at_ms
+    );
+    match status.successful_at_ms {
+        Some(value) => println!("  last successful: {value} ms since epoch"),
+        None => println!(
+            "  deferred:       {}",
+            status.deferred_reason.as_deref().unwrap_or("pass failed")
+        ),
+    }
+    for (name, component) in [
+        ("cook", &status.cook),
+        ("history", &status.history),
+        ("pep517 targets", &status.pep517_targets),
+        ("pep517 wheels", &status.pep517_wheels),
+        ("trash", &status.trash),
+        ("workspace targets", &status.workspace_targets),
+        ("daemon events", &status.daemon_events),
+        ("legacy zccache", &status.legacy_zccache),
+    ] {
+        if let Some(error) = component.error.as_deref() {
+            println!("  {name} error: {error}");
+        }
+    }
 }
 
 fn print_zccache_status_snapshot(snapshot: &ZccacheStatusSnapshot) {

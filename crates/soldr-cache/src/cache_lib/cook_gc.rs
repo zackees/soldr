@@ -30,6 +30,7 @@ use crate::cache_lib::cook_archive::{artifact_path_for_sha, cook_cache_dir};
 use crate::cache_lib::{cook_index, state_db_path};
 use crate::core::{CookConfig, SoldrPaths};
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// One GiB in bytes.
 const GIB: u64 = 1024 * 1024 * 1024;
@@ -66,10 +67,38 @@ pub struct CookEvictReport {
 /// errors are absorbed (`tracing::warn!`) — the pass never panics or
 /// bubbles a failure.
 pub fn cook_evict_pass(paths: &SoldrPaths, cfg: &CookConfig) -> CookEvictReport {
+    cook_evict_pass_with_absolute_age(paths, cfg, None)
+}
+
+/// Run cook GC while enforcing an optional absolute age that overrides
+/// `keep_per_origin`. Daemon full maintenance supplies this bound so even the
+/// newest entries in an otherwise abandoned origin eventually expire.
+pub fn cook_evict_pass_with_absolute_age(
+    paths: &SoldrPaths,
+    cfg: &CookConfig,
+    absolute_max_age: Option<Duration>,
+) -> CookEvictReport {
     let mut report = CookEvictReport::default();
     let now_unix_ms = current_unix_ms();
     let db_path = state_db_path(paths);
     let cook_dir = cook_cache_dir(paths);
+    match std::fs::symlink_metadata(&cook_dir) {
+        Ok(_) => {
+            if let Err(error) =
+                crate::cache_lib::path_safety::validate_owned_directory(&paths.root, &cook_dir)
+            {
+                tracing::warn!(error = %error, dir = %cook_dir.display(), "cook_evict_pass: unsafe cook root");
+                report.errors = report.errors.saturating_add(1);
+                return report;
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            tracing::warn!(error = %error, dir = %cook_dir.display(), "cook_evict_pass: cook root probe failed");
+            report.errors = report.errors.saturating_add(1);
+            return report;
+        }
+    }
 
     let entries = match cook_index::iter_entries(&db_path) {
         Ok(v) => v,
@@ -99,21 +128,29 @@ pub fn cook_evict_pass(paths: &SoldrPaths, cfg: &CookConfig) -> CookEvictReport 
         });
         let keep = cfg.keep_per_origin as usize;
         for &idx in indices.iter().take(keep) {
+            let absolute_expired = absolute_max_age.is_some_and(|max_age| {
+                now_unix_ms.saturating_sub(entries[idx].1.last_used_unix_ms)
+                    > max_age.as_millis() as u64
+            });
+            if absolute_expired {
+                continue;
+            }
             protected[idx] = true;
             report.protected = report.protected.saturating_add(1);
         }
     }
 
     // Time-bound eviction.
-    let max_age_ms = cfg.max_age_days.saturating_mul(MS_PER_DAY);
+    let configured_max_age_ms = cfg.max_age_days.saturating_mul(MS_PER_DAY);
+    let absolute_max_age_ms = absolute_max_age.map(|age| age.as_millis() as u64);
     let mut evicted_indices: Vec<usize> = Vec::new();
-    if max_age_ms > 0 {
+    if configured_max_age_ms > 0 || absolute_max_age_ms.is_some() {
         for (idx, (_, entry)) in entries.iter().enumerate() {
-            if protected[idx] {
-                continue;
-            }
             let age_ms = now_unix_ms.saturating_sub(entry.last_used_unix_ms);
-            if age_ms > max_age_ms && apply_eviction(&db_path, &cook_dir, entry.sha256, &mut report)
+            let configured_expired = configured_max_age_ms > 0 && age_ms > configured_max_age_ms;
+            let absolute_expired = absolute_max_age_ms.is_some_and(|max| age_ms > max);
+            if (!protected[idx] && configured_expired || absolute_expired)
+                && apply_eviction(&db_path, &cook_dir, entry.sha256, &mut report)
             {
                 report.time_evicted = report.time_evicted.saturating_add(1);
                 report.bytes_freed = report.bytes_freed.saturating_add(entry.size_bytes);
@@ -123,7 +160,15 @@ pub fn cook_evict_pass(paths: &SoldrPaths, cfg: &CookConfig) -> CookEvictReport 
     }
 
     // Quarantine sweep — same time bound, no protection.
-    let max_age_secs = cfg.max_age_days.saturating_mul(SECS_PER_DAY);
+    let configured_max_age_secs = cfg.max_age_days.saturating_mul(SECS_PER_DAY);
+    let max_age_secs = absolute_max_age
+        .map(|age| age.as_secs())
+        .filter(|_| configured_max_age_secs == 0)
+        .unwrap_or_else(|| {
+            absolute_max_age
+                .map(|age| age.as_secs().min(configured_max_age_secs))
+                .unwrap_or(configured_max_age_secs)
+        });
     if max_age_secs > 0 {
         report.quarantine_evicted = report.quarantine_evicted.saturating_add(sweep_quarantine(
             &cook_dir,
@@ -176,23 +221,15 @@ pub fn cook_evict_pass(paths: &SoldrPaths, cfg: &CookConfig) -> CookEvictReport 
     report
 }
 
-/// Drop the row from `cook_index_v2` and unlink the on-disk
-/// `<sha256>.tar.zst` file. Returns true on success. Best-effort —
-/// any failure increments `report.errors`.
+/// Unlink `<sha256>.tar.zst`, then drop its `cook_index_v2` row.
+/// Keeping the row when unlink fails lets a later pass retry instead of
+/// permanently orphaning an unindexed artifact.
 fn apply_eviction(
     db_path: &std::path::Path,
     cook_dir: &std::path::Path,
     sha256: [u8; 32],
     report: &mut CookEvictReport,
 ) -> bool {
-    let removed_row = match cook_index::evict(db_path, &sha256) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(error = %e, "cook_evict_pass: redb evict failed");
-            report.errors = report.errors.saturating_add(1);
-            false
-        }
-    };
     let path = artifact_path_for_sha(cook_dir, &sha256);
     match std::fs::remove_file(&path) {
         Ok(()) => {}
@@ -200,9 +237,17 @@ fn apply_eviction(
         Err(e) => {
             tracing::warn!(error = %e, path = %path.display(), "cook_evict_pass: unlink failed");
             report.errors = report.errors.saturating_add(1);
+            return false;
         }
     }
-    removed_row
+    match cook_index::evict(db_path, &sha256) {
+        Ok(removed) => removed,
+        Err(e) => {
+            tracing::warn!(error = %e, "cook_evict_pass: redb evict failed");
+            report.errors = report.errors.saturating_add(1);
+            false
+        }
+    }
 }
 
 /// Delete any `*.tar.zst.quarantine` file in `cook_dir` whose mtime

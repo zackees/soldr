@@ -21,7 +21,7 @@ pub struct CargoLockGuard {
 /// Windows can reject the second open itself with ERROR_SHARING_VIOLATION
 /// (32) or ERROR_LOCK_VIOLATION (33), rather than letting fs2 return
 /// WouldBlock from try_lock_exclusive as Unix does.
-pub(crate) fn lock_is_held(error: &io::Error) -> bool {
+pub fn lock_is_held(error: &io::Error) -> bool {
     if error.kind() == io::ErrorKind::WouldBlock {
         return true;
     }
@@ -103,7 +103,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let lock = temp.path().join(".cargo-lock");
         File::create(&lock).unwrap();
-        assert!(matches!(probe(temp.path()).unwrap(), CargoLockProbe::Idle(_)));
+        assert!(matches!(
+            probe(temp.path()).unwrap(),
+            CargoLockProbe::Idle(_)
+        ));
     });
 
     crate::timed_test!(held_lock_is_active, {
@@ -111,7 +114,10 @@ mod tests {
         let lock = temp.path().join(".cargo-lock");
         let holder = File::create(&lock).unwrap();
         holder.try_lock_exclusive().unwrap();
-        assert!(matches!(probe(temp.path()).unwrap(), CargoLockProbe::Active(_)));
+        assert!(matches!(
+            probe(temp.path()).unwrap(),
+            CargoLockProbe::Active(_)
+        ));
         holder.unlock().unwrap();
     });
 }

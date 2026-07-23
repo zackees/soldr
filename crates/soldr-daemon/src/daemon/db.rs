@@ -205,6 +205,48 @@ pub fn get_build(db_path: &Path, session_id: u64) -> Result<Option<BuildRecord>,
     decode_build_row(row.value()).map(Some)
 }
 
+/// Clear archive payload paths after history retention removes the matching
+/// session directory.  Build timing/cache metadata remains queryable; readers
+/// see `None` instead of a dangling path (#1763).
+pub fn mark_archives_unavailable(
+    db_path: &Path,
+    session_ids: &[u64],
+) -> Result<u64, RegistryError> {
+    if session_ids.is_empty() {
+        return Ok(0);
+    }
+    let ids = session_ids
+        .iter()
+        .copied()
+        .collect::<std::collections::HashSet<_>>();
+    let db = open_db(db_path)?;
+    init_tables(&db)?;
+    let txn = db.begin_write()?;
+    let mut updated = 0_u64;
+    {
+        let mut builds = txn.open_table(BUILDS)?;
+        for id in ids {
+            let Some(row) = builds.get(id)? else {
+                continue;
+            };
+            let mut record = decode_build_row(row.value())?;
+            drop(row);
+            let Some(paths) = record.log_paths.as_mut() else {
+                continue;
+            };
+            paths.archived_session_log_path = None;
+            paths.archived_journal_path = None;
+            paths.archived_session_stats_path = None;
+            paths.archived_compile_journal_path = None;
+            let bytes = prost_tagged_bytes(&wire::build_record_to_wire(&record));
+            builds.insert(id, bytes.as_slice())?;
+            updated += 1;
+        }
+    }
+    txn.commit()?;
+    Ok(updated)
+}
+
 /// Read-modify-write finalization of a BuildRecord in ONE redb open +
 /// write txn (soldr#1536). The per-call [`open_db`] cost grows with the
 /// db file size, so the session-end path avoids paying it twice for a
