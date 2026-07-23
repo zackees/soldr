@@ -330,14 +330,18 @@ fn direct_exec_tool(
 }
 
 /// Resolve a wrapper compiler identity before deriving its toolchain homes.
-/// Cargo may pass either an absolute path or a bare tool name, and every
-/// wrapper execution path must classify that tool against the same path.
+/// Cargo may pass an absolute path, a relative path with components, or a bare
+/// tool name. Every wrapper execution path must classify and execute the same
+/// compiler Cargo supplied.
 fn resolve_wrapper_tool_path(
     tool_arg: &str,
     tool_stem: &str,
 ) -> Result<std::path::PathBuf, SoldrError> {
-    if std::path::Path::new(tool_arg).is_absolute() {
-        Ok(tool_arg.into())
+    let tool_path = std::path::Path::new(tool_arg);
+    if tool_path.is_absolute() {
+        Ok(tool_path.to_path_buf())
+    } else if tool_path.components().count() > 1 {
+        Ok(std::env::current_dir()?.join(tool_path))
     } else {
         resolve_toolchain_binary(tool_stem)
     }

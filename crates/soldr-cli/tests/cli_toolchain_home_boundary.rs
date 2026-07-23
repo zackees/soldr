@@ -186,18 +186,17 @@ timed_test!(relative_managed_rustc_wrapper_uses_soldr_toolchain_homes, {
     let zccache = fake_script_path(&zccache_dir, "zccache");
     write_fake_script(&zccache, &fake_zccache_script(&log_path));
 
-    let rustc_name = rustc
-        .file_name()
-        .expect("fake rustc should have a file name");
+    let relative_rustc = rustc
+        .strip_prefix(&cache_root)
+        .expect("managed rustc should be relative to the test root");
     let output = isolated_soldr_command()
-        .arg(rustc_name)
+        .arg(relative_rustc)
         .args(["--crate-name", "managed_boundary", "--emit", "metadata"])
         .current_dir(&cache_root)
         .env("SOLDR_CACHE_DIR", &cache_root)
-        .env("SOLDR_REAL_RUSTC", &rustc)
         .env_remove("SOLDR_TEST_RUSTC_BIN")
         .env("SOLDR_TEST_ZCCACHE_BIN", &zccache)
-        .env("PATH", prepend_to_path(&managed_cargo_bin))
+        .env("PATH", isolated_test_path())
         .env_remove("CARGO_HOME")
         .env_remove("RUSTUP_HOME")
         .env_remove("RUSTUP_TOOLCHAIN")
