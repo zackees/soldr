@@ -428,14 +428,17 @@ fn find_dsymutil_in_rustup() -> Option<PathBuf> {
     let toolchain_root = rustc.parent()?.parent()?;
     let host_bin = toolchain_root.join("lib").join("rustlib");
     let entries = std::fs::read_dir(host_bin).ok()?;
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
     for entry in entries.flatten() {
-        let candidate = entry.path().join("bin").join(if cfg!(windows) {
-            "dsymutil.exe"
-        } else {
-            "dsymutil"
-        });
-        if candidate.is_file() {
-            return Some(candidate);
+        for name in names {
+            let candidate = entry.path().join("bin").join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
         }
     }
     None
