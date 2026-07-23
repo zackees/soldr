@@ -777,30 +777,6 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
     }
 }
 
-/// Acquire the daemon-lifetime singleton lock.
-///
-/// Unlike `.spawn.lock`, which belongs to the short-lived parent that
-/// suppresses wrapper spawn herds, this lock is acquired by the daemon child
-/// itself and held until the process has completed shutdown cleanup. It closes
-/// the check-then-bind race between independently launched foreground daemons.
-pub(crate) fn acquire_daemon_instance_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
-    use fs2::FileExt;
-    let dir = crate::cache_lib::soldr_daemon_dir(paths);
-    std::fs::create_dir_all(&dir).ok()?;
-    let lock_path = dir.join(".instance.lock");
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .ok()?;
-    match file.try_lock_exclusive() {
-        Ok(()) => Some(file),
-        Err(_) => None,
-    }
-}
-
 #[cfg(unix)]
 fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::Error> {
     use std::os::unix::process::CommandExt;
@@ -1394,20 +1370,6 @@ mod spawn_lock_tests {
         let third = acquire_spawn_lock(&paths).expect("third acquire after release");
         drop(third);
     }
-
-    crate::timed_test!(daemon_instance_lock_is_held_for_the_process_lifetime, {
-        let temp = TempDir::new().expect("tempdir");
-        let paths = SoldrPaths::with_root(temp.path().to_path_buf());
-
-        let first = acquire_daemon_instance_lock(&paths).expect("first acquire");
-        assert!(
-            acquire_daemon_instance_lock(&paths).is_none(),
-            "a second daemon must not claim the same root"
-        );
-        drop(first);
-        let reacquired = acquire_daemon_instance_lock(&paths).expect("acquire after daemon exit");
-        drop(reacquired);
-    });
 
     crate::timed_test!(retiring_daemon_cannot_remove_successor_pid_file, {
         let temp = TempDir::new().expect("tempdir");

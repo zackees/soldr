@@ -123,11 +123,12 @@ same alias before recovery. Lifecycle refuses a compiler-named fallback rather
 than publishing a PID that its own recycled-PID safety check cannot trust.
 
 Daemon startup has two distinct locks: the short-lived `.spawn.lock` suppresses
-wrapper herds, while `.instance.lock` is held by the daemon for its full
-lifetime. On Unix, the child binds the socket before publishing its PID/version.
-Shutdown removes the PID and socket only while they are still owned by that
-process (the socket is fenced by device/inode identity). A retiring or
-idle-timed-out daemon therefore cannot unlink a successor's endpoint.
+wrapper herds, while `root-owner.lock` is held by the daemon for its full
+lifetime and shared with explicit orphan-root maintenance. On Unix, the child
+binds the socket before publishing its PID/version. Shutdown removes the PID
+and socket only while they are still owned by that process (the socket is
+fenced by device/inode identity). A retiring or idle-timed-out daemon therefore
+cannot unlink a successor's endpoint.
 
 The in-process `soldr zccache <args>` entrypoint
 (`crates/soldr-cli/src/zccache_entry.rs`) passes through only the daemon-free

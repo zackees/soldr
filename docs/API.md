@@ -1635,12 +1635,13 @@ for Rust and native compiler shims, and standalone wrapper dispatch repairs a
 missing/invalid handoff before attempting startup.
 
 Startup and cleanup are ownership-fenced. The wrapper-side `.spawn.lock`
-suppresses a Cargo fan-out spawn herd; the child holds `.instance.lock` for its
-entire lifetime. On Unix the socket is bound before the PID/version claim is
-published. Shutdown removes a PID file only if it still names the retiring
-process, and removes a Unix socket only if its device/inode still matches the
-listener that process bound. This prevents an older idle-timeout shutdown from
-unlinking a live successor's endpoint.
+suppresses a Cargo fan-out spawn herd; the child holds `root-owner.lock` for its
+entire lifetime, and explicit orphan-root maintenance uses that same ownership
+fence. On Unix the socket is bound before the PID/version claim is published.
+Shutdown removes a PID file only if it still names the retiring process, and
+removes a Unix socket only if its device/inode still matches the listener that
+process bound. This prevents an older idle-timeout shutdown from unlinking a
+live successor's endpoint.
 
 Bootstrap cargo-install paths are intentionally uncached. `soldr build-from-source ...` and `[soldr.plugins]` installs from `soldr toolchain prepare` / `ensure` invoke the directly resolved cargo binary and scrub inherited `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER`. Those commands install dev tools and cross-target helper binaries; routing them through Soldr's wrapper slot would make setup recursively depend on the cache layer it is preparing.
 
