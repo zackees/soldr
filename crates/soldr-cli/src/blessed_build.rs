@@ -402,6 +402,17 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
         }
     }
 
+    if let Some(path) = std::env::var_os("PATH").and_then(|value| {
+        std::env::split_paths(&value).find_map(|dir| {
+            names.iter().map(|name| dir.join(name)).find(|path| path.is_file())
+        })
+    }) {
+        if let Some(parent) = path.parent() {
+            prep.path_dirs.push(parent.to_path_buf());
+            return Ok(());
+        }
+    }
+
     if let Some(path) = find_dsymutil_in_rustup() {
         if let Some(parent) = path.parent() {
             prep.path_dirs.push(parent.to_path_buf());
