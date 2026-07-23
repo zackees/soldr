@@ -47,6 +47,7 @@ mod profile_debug;
 mod subcommand;
 mod target;
 mod zig_shim;
+mod zthreads_fallback;
 
 pub(crate) use cache_plan::CargoCachePlan;
 
@@ -1856,7 +1857,11 @@ pub(crate) async fn run_cargo_front_door(
     // since changing stderr to a pipe would force cargo into its
     // non-TTY rendering mode.
     use std::io::IsTerminal;
-    let capture_for_diagnostics = !std::io::stderr().is_terminal();
+    // Capture stderr for the narrow stable `-Zthreads` fallback even on a
+    // local terminal. The capture helper tees bytes unchanged, so the user
+    // still sees Cargo's live output while we retain the exact rustc error.
+    let capture_for_diagnostics = !std::io::stderr().is_terminal()
+        || zthreads_fallback::environment_mentions_zthreads();
 
     // Phase 2: start session correlation only after every fallible pre-cargo
     // preparation step (especially no-cache ownership detachment) succeeds.
@@ -2095,8 +2100,82 @@ pub(crate) async fn run_cargo_front_door(
     }
     finish_result?;
     post_cargo_result?;
+    if !status.success() {
+        if let Some(plan) = zthreads_fallback::plan_from_environment() {
+            if zthreads_fallback::diagnostic_matches(
+                captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
+            ) && !resolved_toolchain_is_nightly(explicit_toolchain)
+            {
+                emit_zthreads_fallback_warning(&plan.value);
+                return retry_zthreads_without_flag(args, explicit_toolchain, &plan);
+            }
+        } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
+            && zthreads_fallback::diagnostic_matches(
+            captured_stderr_for_diagnosis.as_deref().unwrap_or_default(),
+        ) {
+            eprintln!("{}", zthreads_fallback::render_config_hint());
+        }
+    }
     drop(trampoline_plan);
     Ok(status.code().unwrap_or(1))
+}
+
+fn resolved_toolchain_is_nightly(explicit_toolchain: Option<&str>) -> bool {
+    let candidate = explicit_toolchain
+        .map(str::to_owned)
+        .or_else(|| std::env::var("RUSTUP_TOOLCHAIN").ok());
+    candidate.is_some_and(|toolchain| {
+        let channel = toolchain
+            .split('-')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        channel == "nightly"
+    })
+}
+
+fn emit_zthreads_fallback_warning(value: &str) {
+    use std::io::IsTerminal;
+
+    let github_actions = env_flag_truthy("GITHUB_ACTIONS");
+    let use_color = !github_actions
+        && std::env::var_os("NO_COLOR").is_none()
+        && std::io::stderr().is_terminal();
+    eprintln!(
+        "{}",
+        zthreads_fallback::render_warning(value, github_actions, use_color)
+    );
+}
+
+fn retry_zthreads_without_flag(
+    args: &[String],
+    explicit_toolchain: Option<&str>,
+    plan: &zthreads_fallback::FallbackPlan,
+) -> Result<i32, SoldrError> {
+    let exe = std::env::current_exe()?;
+    let mut command = std::process::Command::new(exe);
+    command.arg("cargo").args(args);
+    command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
+    if let Some(toolchain) = explicit_toolchain {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    for (key, value) in &plan.env {
+        match value {
+            Some(value) => {
+                command.env(key, value);
+            }
+            None => {
+                command.env_remove(key);
+            }
+        }
+    }
+    suppress_windows_console_window(&mut command);
+    configure_cargo_child_for_timeout(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|err| SoldrError::Other(format!("spawn -Zthreads fallback failed: {err}")))?;
+    let status = wait_for_cargo_child(&mut child, "soldr -Zthreads fallback", None)?;
+    Ok(status.code().unwrap_or(if status.success() { 0 } else { 1 }))
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
