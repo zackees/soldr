@@ -158,6 +158,8 @@ impl SoldrPaths {
     /// A missing file intentionally keeps the historical default behavior,
     /// but an unreadable or malformed file is an error. Cleanup callers must
     /// never mistake a broken config for an absent one.
+    // Cold path (config load happens once); boxing the error is not worth it.
+    #[allow(clippy::result_large_err)]
     pub fn load_config(&self) -> Result<SoldrConfig, SoldrConfigLoadError> {
         SoldrConfig::load(&self.config_file)
     }
@@ -382,6 +384,8 @@ impl Default for AutoGcConfig {
 }
 
 impl SoldrConfig {
+    // Cold path (config load happens once); boxing the error is not worth it.
+    #[allow(clippy::result_large_err)]
     pub fn load(path: &Path) -> Result<Self, SoldrConfigLoadError> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,

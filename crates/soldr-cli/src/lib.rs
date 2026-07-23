@@ -22,6 +22,10 @@ pub mod binaries;
 pub mod blessed_build;
 pub mod bootstrap;
 pub mod build_from_source_cmd;
+/// soldr#1790 — always-on hierarchical per-build XML log
+/// (`<soldr root>/logs/builds/<timestamp>-<cwd-slug>.xml`). See the
+/// module doc for the schema and the derived-link / cpu_ms caveats.
+pub mod build_log;
 pub mod cache;
 pub mod cargo_diagnostics;
 pub mod cargo_front_door;
@@ -96,8 +100,8 @@ pub mod zccache_lifecycle;
 // crate. `timed_test` is the `#[macro_export]` watchdog macro.
 pub use soldr_cache::cache_lib;
 pub use soldr_core::{
-    cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate, startup_profile,
-    test_util, timed_test,
+    build_log_meta, cargo_path_check, core, defender, defender_probe, fuzzy_match, self_relocate,
+    startup_profile, test_util, timed_test,
 };
 pub use soldr_daemon::{daemon, zccache_embedded};
 pub use soldr_fetch::fetch;

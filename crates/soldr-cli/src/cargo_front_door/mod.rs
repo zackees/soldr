@@ -523,6 +523,39 @@ fn embedded_compile_journal_path(paths: &SoldrPaths) -> PathBuf {
     crate::zccache_embedded::embedded_compile_journal_path(paths)
 }
 
+/// soldr#1790: write the always-on per-build XML log. Unlike
+/// `persist_build_log_history` above, this is called UNCONDITIONALLY at
+/// both cargo-run call sites — it is not gated on
+/// `cache_plan.zccache_session()` being `Some`, so every managed build
+/// (cache enabled or disabled, success or failure) gets a log entry.
+/// Best-effort: a write failure is a warning, never a build failure.
+#[allow(clippy::too_many_arguments)]
+fn write_always_on_build_log(
+    paths: &SoldrPaths,
+    session_id: u64,
+    repo_root: &Path,
+    argv: &[String],
+    started_at_ms: i64,
+    ended_at_ms: i64,
+    exit_code: i32,
+    compile_journal_start_len: u64,
+) {
+    let request = crate::build_log::BuildLogRequest {
+        paths,
+        session_id,
+        cwd: repo_root,
+        args: argv,
+        started_at_ms,
+        ended_at_ms,
+        exit_code,
+        compile_journal_path: Some(embedded_compile_journal_path(paths)),
+        compile_journal_start_len,
+    };
+    if let Err(err) = crate::build_log::write_build_log(&request) {
+        eprintln!("soldr warning: failed to write build log: {err}");
+    }
+}
+
 fn file_len(path: &Path) -> u64 {
     std::fs::metadata(path)
         .map(|metadata| metadata.len())
@@ -1973,6 +2006,10 @@ pub(crate) async fn run_cargo_front_door(
     let session_started_at_ms = current_unix_ms();
     let session_repo_root =
         std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // soldr#1790: full invoked argv (the soldr binary + every arg),
+    // captured once and reused by `write_always_on_build_log` at both the
+    // cargo-run-error and normal-completion call sites below.
+    let invoked_argv: Vec<String> = std::env::args().collect();
     let build_activity_lease = begin_build_session_with(&paths, session_id, || {
         if crate::daemon::client::build_session_start(
             &paths,
@@ -2038,6 +2075,16 @@ pub(crate) async fn run_cargo_front_door(
                     daemon_finalized,
                 });
             }
+            write_always_on_build_log(
+                &paths,
+                session_id,
+                &session_repo_root,
+                &invoked_argv,
+                session_started_at_ms,
+                ended_at_ms,
+                -1,
+                compile_journal_start_len,
+            );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
             if let Err(finish_err) = finish_result {
@@ -2180,6 +2227,16 @@ pub(crate) async fn run_cargo_front_door(
             daemon_finalized,
         });
     }
+    write_always_on_build_log(
+        &paths,
+        session_id,
+        &session_repo_root,
+        &invoked_argv,
+        session_started_at_ms,
+        ended_at_ms,
+        status.code().unwrap_or(-1),
+        compile_journal_start_len,
+    );
     // History is now copied, sanitized, indexed, and marked complete. Keep the
     // lease through that publication boundary so migration GC cannot remove a
     // half-written archive.

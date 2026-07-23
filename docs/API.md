@@ -1499,6 +1499,113 @@ Fallback behavior:
 
 ---
 
+## Per-Build XML Log (issue #1790)
+
+Every managed `soldr cargo ...` build — success or failure, cache enabled or
+disabled — writes one self-contained XML file:
+
+```text
+~/.soldr/logs/builds/<timestamp>-<sanitized-cwd>.xml
+```
+
+The directory is flat and the filename's compact UTC timestamp prefix
+(`YYYYMMDDTHHMMSSZ`) sorts lexically = chronologically, so `ls` /
+`Get-ChildItem` in that directory is already newest-last. The cwd suffix is a
+lowercased, filename-safe slug (non `[a-z0-9]` bytes collapsed to `-`, capped
+at 80 chars) so logs from different checkouts of the same repo (or different
+repos entirely) don't collide.
+
+The write is always-on and best-effort: a failure to write the log never
+fails the build — soldr prints `soldr warning: failed to write build log:
+<err>` to stderr and continues.
+
+The format was originally JSON and was converted to XML by owner decision:
+the log is dominated by repeated attribute-blocks inside group nodes (one
+record per compiled crate, with the same handful of build-settings fields
+stamped on every group), which XML's attribute-on-element shape expresses
+more naturally than JSON's per-item object repetition. The emitter is
+hand-rolled (no new dependency).
+
+### Schema (`schema_version: 1`)
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<build schema_version="1" soldr_version="0.8.21" cwd="C:\Users\niteris\dev\soldr2" started_at_ms="0" ended_at_ms="0" duration_ms="0" exit_code="0">
+  <args>
+    <arg>cargo</arg>
+    <arg>build</arg>
+    <arg>--release</arg>
+  </args>
+  <steps>
+    <download wall_ms="0" cpu_ms="0">
+      <item name="cargo-nextest" source="github-release" started_at_ms="0" duration_ms="0"/>
+    </download>
+    <compile wall_ms="0" cpu_ms="0" target="x86_64-pc-windows-msvc" profile="release" debug="false" opt_level="3" lto="off">
+      <item crate="foo" duration_ms="0" cache="hit"/>
+    </compile>
+    <link wall_ms="0" cpu_ms="0" derived="true" target="x86_64-pc-windows-msvc" profile="release" debug="false" opt_level="3" lto="off">
+      <item crate="foo" duration_ms="0"/>
+    </link>
+  </steps>
+  <totals wall_ms="0" cpu_ms="0" crate_count="0" cache_hits="0" cache_misses="0"/>
+</build>
+```
+
+- **`<build>` header attributes** — `cwd`, `started_at_ms` / `ended_at_ms` /
+  `duration_ms`, `exit_code`. The full invoked argv is the child `<args>`
+  element (one `<arg>` per token) rather than an attribute, since argv is
+  variable-length.
+- **build settings on `<compile>` and `<link>`** — there is no separate
+  `<settings>` element. Instead, the derived `[profile.*]` metadata
+  (`target`, `profile`, `debug`, `opt_level`, `lto`) — read from the invoked
+  flags plus the target `Cargo.toml`'s `[profile.<name>]` table — is stamped
+  as attributes on BOTH the `<compile>` and `<link>` group nodes, so each
+  group is self-describing on its own. `RUSTFLAGS` / `CARGO_PROFILE_*`
+  environment overrides are not accounted for in v1.
+- **`<steps><download>`** — any tool/artifact fetches (e.g. `cargo-nextest`,
+  `zccache`) that happened during the build, one self-closing `<item>` per
+  fetch with `name`, `source` (`"github-release"`, `"crates-io"`,
+  `"catalogue"`, etc.), `started_at_ms`, and `duration_ms`.
+- **`<steps><compile>`** — one `<item>` per crate compiled during the
+  session (`crate`, `duration_ms`, `cache`: `"hit"` / `"miss"` /
+  `"unknown"`), sourced from the daemon's build-history DB and
+  cross-referenced against the zccache compile journal for cache outcome.
+- **`<steps><link>`** — v1 has no independently-measured link phase, so this
+  section is *derived*: the compile event with the latest end timestamp is
+  treated as the linking crate and echoed here with `derived="true"`. That
+  crate's entry therefore also appears in `<compile>` — this is
+  intentional, not a double-count bug.
+- **`wall_ms` vs `cpu_ms`** — `wall_ms` is calendar time spanning the
+  earliest start to the latest end within a group. `cpu_ms` is
+  *aggregate busy time summed across (possibly parallel) units* — e.g. the
+  sum of every compile's duration — **not** OS-reported CPU time. On a
+  build with N-way parallelism, a group's `cpu_ms` can comfortably exceed
+  its `wall_ms`. Note: `<totals>` `cpu_ms` excludes the derived `<link>`
+  group's `cpu_ms` (it re-labels a slice already counted in `<compile>`, so
+  adding it again would double-count).
+- **`<totals>`** — build-wide `wall_ms` / `cpu_ms` rollup, `crate_count`,
+  and `cache_hits` / `cache_misses` (falls back to the zccache session-stats
+  summary when no per-crate cache outcome could be resolved from the
+  compile journal).
+- Empty groups (e.g. no fetches happened) render as a self-closing element
+  with only the group's own attributes, e.g. `<download wall_ms="0"
+  cpu_ms="0"/>`.
+- All attribute values and `<arg>` text content are XML-escaped (`&`, `<`,
+  `>`, `"`, `'`, and stray control characters below `0x20`).
+
+### Retention
+
+The same detached `soldr gc auto-sweep` process that runs the Cargo-volume
+GC pass above (throttled to ~once per 5 minutes) also prunes
+`~/.soldr/logs/builds/` down to the newest 100 files, sorted by filename
+(so oldest-timestamp files are removed first). This matches both `*.xml`
+files and any legacy `*.json` files left over from interim builds before the
+JSON->XML conversion, so old logs in either format still get GC'd. No
+separate throttle or opt-out exists for this prune — it rides the existing
+auto-GC sweep unconditionally.
+
+---
+
 ## Structured JSON Output
 
 The supported JSON protocol currently exists on:

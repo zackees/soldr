@@ -95,6 +95,16 @@ pub(crate) fn maybe_spawn_auto_gc_sweeper(paths: &SoldrPaths) {
 pub(crate) fn run_gc_auto_sweep_command() -> Result<(), crate::core::SoldrError> {
     let paths = SoldrPaths::new()?;
     let log_path = crate::cache_lib::auto_gc_log_path(&paths);
+    // soldr#1790: best-effort prune of the always-on per-build XML logs
+    // (plus any legacy `.json` files from interim builds before the
+    // JSON->XML conversion) to the newest `BUILD_LOG_KEEP` entries.
+    // Rides the same 5-minute throttle + detached-sweeper design as the
+    // rest of this pass — no new throttle is introduced.
+    let deleted = crate::build_log::prune_build_logs(
+        &crate::build_log::build_logs_dir(&paths),
+        crate::build_log::BUILD_LOG_KEEP,
+    );
+    tracing::debug!(deleted, "pruned per-build XML logs");
     run_auto_gc_background(paths.root.clone(), log_path);
     Ok(())
 }
