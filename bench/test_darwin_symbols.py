@@ -12,8 +12,8 @@ Examples::
     DARWIN_TARGETS=x86_64-apple-darwin,aarch64-apple-darwin \
         uv run --no-project python bench/test_darwin_symbols.py
 
-Set ``LLVM_DWARFDUMP`` (or ``SOLDR_LLVM_DIR``) when llvm-dwarfdump is not on
-PATH.  The temporary project and all build output are deleted automatically.
+Set ``LLVM_NM``/``LLVM_SYMBOLIZER`` (or ``SOLDR_LLVM_DIR``) when LLVM is not
+on PATH.  The temporary project and all build output are deleted automatically.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ DEFAULT_TARGET = "x86_64-apple-darwin"
 
 
 def tool(name: str) -> str:
-    override = os.environ.get("LLVM_DWARFDUMP") if name == "llvm-dwarfdump" else None
+    override = os.environ.get(f"LLVM_{name.removeprefix('llvm-').upper()}")
     candidates = [override] if override else []
     llvm_dir = os.environ.get("SOLDR_LLVM_DIR")
     if llvm_dir:
@@ -50,9 +50,7 @@ def tool(name: str) -> str:
     for candidate in candidates:
         if candidate and Path(candidate).is_file():
             return candidate
-    raise RuntimeError(
-        f"{name} is required; install LLVM or set LLVM_DWARFDUMP/SOLDR_LLVM_DIR"
-    )
+    raise RuntimeError(f"{name} is required; install LLVM or set LLVM_* / SOLDR_LLVM_DIR")
 
 
 def run(command: list[str], *, cwd: Path) -> str:
@@ -92,13 +90,23 @@ def check_target(target: str) -> None:
             elif path.is_file() and path.suffix in {".o", ".dwo"}:
                 path.unlink()
 
-        dump = run(
-            [tool("llvm-dwarfdump"), "--debug-info", "--debug-line", str(binary)],
+        nm = run(
+            [tool("llvm-nm"), "--defined-only", "--demangle", "--numeric-sort", str(binary)],
             cwd=project,
         )
-        if "symbol_probe" not in dump or "main.rs" not in dump:
+        address = next(
+            (line.split()[0] for line in nm.splitlines() if "symbol_probe" in line and line[:1].isalnum()),
+            None,
+        )
+        if not address:
+            raise RuntimeError(f"{target}: llvm-nm could not find symbol_probe")
+        symbolized = run(
+            [tool("llvm-symbolizer"), "--inlining=false", f"--obj={binary}", address],
+            cwd=project,
+        )
+        if "main.rs" not in symbolized:
             raise RuntimeError(
-                f"{target}: embedded DWARF did not identify symbol_probe/main.rs"
+                f"{target}: embedded DWARF did not resolve symbol_probe to main.rs"
             )
         print(f"PASS {target}: embedded DWARF resolves symbol_probe in {binary}")
 

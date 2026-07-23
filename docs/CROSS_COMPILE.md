@@ -175,7 +175,8 @@ modern rows use the bare version plus shape slug.
 
 ### Local executable-only symbol check
 
-After installing `soldr` and an LLVM containing `llvm-dwarfdump`, run the
+After installing `soldr` and an LLVM containing `llvm-nm` and
+`llvm-symbolizer`, run the
 self-cleaning probe from the repository root:
 
 ```sh
@@ -186,9 +187,9 @@ DARWIN_TARGETS=x86_64-apple-darwin,aarch64-apple-darwin \
 
 The probe builds a temporary crate with `line-tables-only` plus packed
 debuginfo through `soldr build`, removes every generated dSYM/object sidecar,
-and verifies that `llvm-dwarfdump` still finds `symbol_probe` and `main.rs` in
-the Mach-O executable. Set `LLVM_DWARFDUMP` or `SOLDR_LLVM_DIR` when the LLVM
-binary is not already on `PATH`.
+and verifies that `llvm-symbolizer` still maps `symbol_probe` to `main.rs` in
+the Mach-O executable. Set `LLVM_NM`, `LLVM_SYMBOLIZER`, or `SOLDR_LLVM_DIR`
+when LLVM is not already on `PATH`.
 
 ### CI
 
