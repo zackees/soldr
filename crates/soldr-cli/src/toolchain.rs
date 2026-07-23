@@ -510,6 +510,7 @@ fn cargo_install_plugin(name: &str, spec: &crate::core::PluginSpec) -> Result<i3
     }
 
     crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
+    crate::binaries::apply_managed_cargo_home_if_available(&mut command);
     command
         .env_remove("RUSTC_WRAPPER")
         .env_remove("RUSTC_WORKSPACE_WRAPPER");

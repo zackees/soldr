@@ -208,10 +208,16 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         .env_remove("SOLDR_ORIGINAL_EXE")
         .env_remove("SOLDR_RELOCATED_EXE");
     for (name, _) in std::env::vars_os() {
-        if name
-            .to_str()
-            .is_some_and(|name| name.starts_with("CARGO_TARGET_"))
-        {
+        let should_scrub = name.to_str().is_some_and(|name| {
+            name.starts_with("CARGO_TARGET_")
+                // The machine-wide Cargo front door exports resolved host
+                // tools before invoking Soldr. Those are outer-process
+                // implementation details, not fixture overrides for the
+                // nested Soldr process under test. Individual tests can set
+                // their intended SOLDR_REAL_* value after this helper.
+                || name.starts_with("SOLDR_REAL_")
+        });
+        if should_scrub {
             command.env_remove(name);
         }
     }

@@ -260,18 +260,47 @@ fn apply_managed_toolchain_homes_if_available(
     let Ok(paths) = SoldrPaths::new() else {
         return;
     };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir, &paths);
+    apply_managed_rustup_home_if_available_for_paths(command, start_dir, &paths);
+}
+
+/// Apply only Soldr's managed Cargo home when it is implicit and available.
+///
+/// Tool-acquisition paths use this after [`apply_resolved_toolchain_homes`]:
+/// plugins still install into Soldr's managed Cargo root, while a host-owned
+/// Cargo binary keeps its host Rustup context.
+pub(crate) fn apply_managed_cargo_home_if_available(command: &mut std::process::Command) {
+    let start_dir = std::env::current_dir().ok();
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir.as_deref(), &paths);
+}
+
+fn apply_managed_cargo_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::CARGO_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".cargo").is_none()
     {
-        let managed = crate::fetch::managed_cargo_home(&paths);
+        let managed = crate::fetch::managed_cargo_home(paths);
         if managed.is_dir() {
             command.env(crate::core::CARGO_HOME_ENV_VAR, managed);
         }
     }
+}
+
+fn apply_managed_rustup_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".rustup").is_none()
     {
-        let managed = crate::fetch::managed_rustup_home(&paths);
+        let managed = crate::fetch::managed_rustup_home(paths);
         if managed.is_dir() {
             command.env(crate::core::RUSTUP_HOME_ENV_VAR, managed);
         }
