@@ -444,6 +444,11 @@ fn ensure_dsymutil_on_path(prep: &mut BlessedPrep) -> Result<(), SoldrError> {
 }
 
 fn find_dsymutil_in_rustup() -> Option<PathBuf> {
+    let names: &[&str] = if cfg!(windows) {
+        &["dsymutil.exe", "llvm-dsymutil.exe"]
+    } else {
+        &["dsymutil", "llvm-dsymutil"]
+    };
     let rustc = crate::binaries::resolve_toolchain_binary("rustc").ok()?;
     let toolchain_root = rustc.parent()?.parent()?;
     let host_bin = toolchain_root.join("lib").join("rustlib");
