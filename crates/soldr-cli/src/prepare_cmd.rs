@@ -1120,6 +1120,7 @@ mod tests {
 
         std::fs::create_dir_all(&sdk).expect("mkdir sdk");
         std::fs::create_dir_all(&llvm_bin).expect("mkdir llvm");
+        std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").expect("write dsymutil");
         std::fs::create_dir_all(&fake_zig_dir).expect("mkdir zig");
         std::fs::write(&fake_zig, b"fake zig").expect("write fake zig");
 

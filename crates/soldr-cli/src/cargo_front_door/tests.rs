@@ -1581,6 +1581,7 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let llvm_bin = tmp.path().join("llvm-bin");
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&llvm_bin).unwrap();
+    std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").unwrap();
 
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
