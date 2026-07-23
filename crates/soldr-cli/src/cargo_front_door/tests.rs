@@ -182,6 +182,21 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));
 });
 
+crate::timed_test!(zthreads_retry_preserves_top_level_no_cache, {
+    let args = vec![String::from("build"), String::from("--release")];
+
+    assert_eq!(
+        zthreads_retry_args(&args, false),
+        vec!["--no-cache", "cargo", "build", "--release"],
+        "a retry from soldr --no-cache cargo must remain outside Soldr's cache",
+    );
+    assert_eq!(
+        zthreads_retry_args(&args, true),
+        vec!["cargo", "build", "--release"],
+        "a managed retry should continue through the normal cached front door",
+    );
+});
+
 crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
     let root = tempfile::tempdir().expect("temp root");
     let paths = SoldrPaths::with_root(root.path().join("soldr"));

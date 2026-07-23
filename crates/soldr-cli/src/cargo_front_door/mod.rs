@@ -2157,7 +2157,7 @@ pub(crate) async fn run_cargo_front_door(
             ) && !resolved_toolchain_is_nightly(explicit_toolchain)
             {
                 emit_zthreads_fallback_warning(&plan.value);
-                return retry_zthreads_without_flag(args, explicit_toolchain, &plan);
+                return retry_zthreads_without_flag(args, explicit_toolchain, &plan, cache_enabled);
             }
         } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
             && zthreads_fallback::diagnostic_matches(
@@ -2202,10 +2202,11 @@ fn retry_zthreads_without_flag(
     args: &[String],
     explicit_toolchain: Option<&str>,
     plan: &zthreads_fallback::FallbackPlan,
+    cache_enabled: bool,
 ) -> Result<i32, SoldrError> {
     let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
-    command.arg("cargo").args(args);
+    command.args(zthreads_retry_args(args, cache_enabled));
     command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);
@@ -2229,6 +2230,16 @@ fn retry_zthreads_without_flag(
     Ok(status
         .code()
         .unwrap_or(if status.success() { 0 } else { 1 }))
+}
+
+fn zthreads_retry_args(args: &[String], cache_enabled: bool) -> Vec<String> {
+    let mut retry_args = Vec::with_capacity(args.len() + 2);
+    if !cache_enabled {
+        retry_args.push(String::from("--no-cache"));
+    }
+    retry_args.push(String::from("cargo"));
+    retry_args.extend_from_slice(args);
+    retry_args
 }
 
 fn cargo_args_have_message_format(args: &[String]) -> bool {
