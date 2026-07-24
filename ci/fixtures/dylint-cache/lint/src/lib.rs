@@ -1,6 +1,6 @@
 #![feature(rustc_private)]
 
-extern crate rustc_span;
+extern crate rustc_hir;
 
 use rustc_hir::Item;
 use rustc_lint::LateLintPass;
