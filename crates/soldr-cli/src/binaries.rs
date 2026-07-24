@@ -412,6 +412,19 @@ pub(crate) fn rustc_wrapper_shim_binary(
     Ok(target)
 }
 
+/// Materialize the dedicated Dylint wrapper identity used when cargo-dylint
+/// nests its workspace driver inside `RUSTC_WRAPPER`.
+pub(crate) fn dylint_wrapper_shim_binary(
+    paths: &SoldrPaths,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let target = paths
+        .versioned_shims_dir()
+        .join(format!("soldr-dylint{}", std::env::consts::EXE_SUFFIX));
+    let source = crate::shim_materialize::soldr_binary_source()?;
+    crate::shim_materialize::materialize_executable(&source, &target)?;
+    Ok(target)
+}
+
 /// Materialize the daemon's stable process/service identity next to soldr.
 pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")
@@ -545,6 +558,22 @@ mod tests {
         assert_eq!(
             wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
             Some("rustc")
+        );
+        assert_eq!(
+            wrapper.parent(),
+            Some(paths.versioned_shims_dir().as_path())
+        );
+    });
+
+    crate::timed_test!(dylint_wrapper_shim_has_dedicated_identity, {
+        let root = tempfile::tempdir().expect("tempdir");
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        let wrapper = dylint_wrapper_shim_binary(&paths).expect("materialize Dylint wrapper");
+
+        assert!(wrapper.is_file(), "missing {}", wrapper.display());
+        assert_eq!(
+            wrapper.file_stem().and_then(std::ffi::OsStr::to_str),
+            Some("soldr-dylint")
         );
         assert_eq!(
             wrapper.parent(),

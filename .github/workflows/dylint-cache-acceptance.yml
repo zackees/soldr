@@ -1,0 +1,30 @@
+name: Dylint Cache Acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/scripts/dylint_cache_acceptance.py"
+      - ".github/workflows/dylint-cache-acceptance.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "ci/fixtures/dylint-cache/**"
+      - "crates/**"
+      - "_vender/zccache"
+      - "_vender/zccache/**"
+
+permissions:
+  contents: read
+
+jobs:
+  dylint-cache:
+    name: real cargo-dylint 6.0.1 cache matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          submodules: recursive
+
+      - name: Run five-scenario Docker acceptance
+        run: python3 .github/scripts/dylint_cache_acceptance.py

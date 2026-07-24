@@ -49,6 +49,12 @@ impl CargoCachePlanPrefetch {
 }
 
 impl CargoCachePlan {
+    pub(crate) fn uses_managed_zccache(&self) -> bool {
+        self.rustc_wrapper
+            .as_ref()
+            .is_some_and(RustcWrapperPlan::is_managed_zccache)
+    }
+
     /// Finalize the cache plan by awaiting the background prefetch
     /// kicked off by [`CargoCachePlanPrefetch::start`]. Call this
     /// immediately before [`CargoCachePlan::apply_to_command`] — i.e.
@@ -478,6 +484,7 @@ mod tests {
                 }),
                 rust_artifact_plan: None,
             };
+            assert!(!plan.uses_managed_zccache());
 
             plan.apply_to_command(&mut command, None)
                 .expect("apply cache plan");
@@ -513,6 +520,7 @@ mod tests {
                 rustc_wrapper: Some(RustcWrapperPlan::Disabled),
                 rust_artifact_plan: None,
             };
+            assert!(!plan.uses_managed_zccache());
 
             plan.apply_to_command(&mut command, None)
                 .expect("apply cache plan");

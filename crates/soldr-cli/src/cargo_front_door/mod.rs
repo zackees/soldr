@@ -1813,6 +1813,12 @@ pub(crate) async fn run_cargo_front_door(
     let mut cache_plan =
         CargoCachePlan::finalize(cache_enabled_for_cargo, cache_plan_prefetch).await?;
     cache_plan.apply_to_command(&mut command, native_cache_target.as_deref())?;
+    if dylint_plan.is_some() && cache_plan.uses_managed_zccache() {
+        command.env(
+            "RUSTC_WRAPPER",
+            crate::binaries::dylint_wrapper_shim_binary(&paths)?,
+        );
+    }
 
     cache_plan.prepare_rust_artifact_plan(
         &cargo,

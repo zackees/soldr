@@ -19,7 +19,7 @@ pub(crate) fn is_wrapper_invocation(arg: &str) -> bool {
         .and_then(std::ffi::OsStr::to_str)
         .unwrap_or(arg);
 
-    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem)
+    WRAPPER_PASSTHROUGH_TOOLS.contains(&stem) || stem == "dylint-driver"
 }
 
 /// Detect rustc-style compiler invocations cargo issues through
@@ -94,7 +94,7 @@ pub(crate) fn is_non_cacheable_rustc(args: &[String]) -> bool {
 }
 
 fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
-    matches!(tool_stem, "rustc" | "clippy-driver")
+    tool_stem == "dylint-driver" || WRAPPER_PASSTHROUGH_TOOLS.contains(&tool_stem)
 }
 
 /// Cargo nests the workspace compiler inside the outer wrapper as

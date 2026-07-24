@@ -21,6 +21,7 @@ const TOOLCHAIN_TOOLS: &[&str] = &[
 ];
 const ZCCACHE_SOLDR: &str = "zccache-soldr";
 const SOLDR_DAEMON: &str = "soldr-daemon";
+const SOLDR_DYLINT: &str = "soldr-dylint";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum MulticallDispatch {
@@ -35,6 +36,7 @@ enum ShimIdentity {
     Clang(ClangTool),
     ZccacheSoldr,
     SoldrDaemon,
+    SoldrDylint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +71,7 @@ pub(crate) fn maybe_dispatch(raw_args: &[String]) -> Option<MulticallDispatch> {
         ShimIdentity::Clang(tool) => Some(MulticallDispatch::Exit(run_clang_shim(tool))),
         ShimIdentity::ZccacheSoldr => Some(MulticallDispatch::Exit(run_zccache_soldr())),
         ShimIdentity::SoldrDaemon => Some(MulticallDispatch::Exit(crate::daemon_entry::run())),
+        ShimIdentity::SoldrDylint => Some(MulticallDispatch::Exit(run_soldr_dylint(raw_args))),
     }
 }
 
@@ -106,7 +109,19 @@ fn classify_argv0(argv0: &str) -> Option<ShimIdentity> {
         "clang++" => Some(ShimIdentity::Clang(ClangTool::ClangPP)),
         ZCCACHE_SOLDR => Some(ShimIdentity::ZccacheSoldr),
         SOLDR_DAEMON => Some(ShimIdentity::SoldrDaemon),
+        SOLDR_DYLINT => Some(ShimIdentity::SoldrDylint),
         _ => None,
+    }
+}
+
+fn run_soldr_dylint(raw_args: &[String]) -> i32 {
+    match crate::wrapper::run_rustc_wrapper(raw_args, crate::startup_profile::WrapperProfile::new())
+    {
+        Ok(code) => normalize_exit_code(code),
+        Err(err) => {
+            eprintln!("soldr-dylint: wrapper dispatch failed: {err}");
+            101
+        }
     }
 }
 
@@ -376,6 +391,14 @@ mod tests {
         assert_eq!(
             classify_argv0("soldr-daemon.exe"),
             Some(ShimIdentity::SoldrDaemon)
+        );
+        assert_eq!(
+            classify_argv0("/opt/soldr/shims/soldr-dylint"),
+            Some(ShimIdentity::SoldrDylint)
+        );
+        assert_eq!(
+            classify_argv0("soldr-dylint.exe"),
+            Some(ShimIdentity::SoldrDylint)
         );
         assert_eq!(classify_argv0("zccache"), None);
         assert_eq!(classify_argv0("zccache.exe"), None);

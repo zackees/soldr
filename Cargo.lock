@@ -4173,6 +4173,7 @@ name = "zccache-compiler"
 version = "1.12.17"
 dependencies = [
  "clang",
+ "serde_json",
  "thiserror",
  "zccache-core",
  "zccache-hash",
@@ -4257,6 +4258,7 @@ dependencies = [
  "thiserror",
  "tracing",
  "uuid",
+ "zccache-compiler",
  "zccache-core",
  "zccache-hash",
 ]
