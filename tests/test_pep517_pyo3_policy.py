@@ -284,7 +284,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 )
                 with self.subTest(name=name):
                     with mock.patch("subprocess.run", return_value=completed):
-                        resolved = self.original_query_soldr_root({})
+                        resolved = self.original_query_soldr_root({"PATH": name})
                     self.assertEqual(resolved, selected)
                     with mock.patch.object(
                         self.backend, "_query_soldr_root", return_value=resolved
@@ -297,6 +297,28 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                             env = self.backend._prep_env()
                     self.assertEqual(Path(env["SOLDR_CACHE_DIR"]), selected)
                     self.assertTrue(Path(env["CARGO_TARGET_DIR"]).is_relative_to(selected))
+
+    def test_selected_soldr_root_is_probed_once_per_backend_process(self) -> None:
+        selected = Path.cwd() / "selected-soldr"
+        completed = subprocess.CompletedProcess(
+            ["soldr", "version", "--json"],
+            0,
+            json.dumps({"root_dir": str(selected)}),
+            "",
+        )
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "PATHEXT": os.environ.get("PATHEXT", ""),
+            "HOME": "/same/home",
+            "USERPROFILE": "C:/same/home",
+        }
+        with mock.patch("subprocess.run", return_value=completed) as run:
+            first = self.original_query_soldr_root(environment)
+            second = self.original_query_soldr_root(dict(environment))
+
+        self.assertEqual(first, selected)
+        self.assertEqual(second, selected)
+        self.assertEqual(run.call_count, 1)
 
     def test_older_dev_binary_root_uses_status_compatibility_payload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -444,6 +466,55 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
             self.assertEqual((second / "demo-0.1.0-py3-none-any.whl").read_bytes(), b"wheel")
             self.assertIn("wheel cache hit", stream.getvalue())
             self.assertEqual(len(list(cache.rglob("*.whl"))), 1)
+
+    def test_wheel_cache_ignores_agent_worktrees_but_hashes_external_repos(
+        self,
+    ) -> None:
+        calls = []
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "project"
+            root.mkdir()
+            (root / "pyproject.toml").write_text("[build-system]\nrequires=[]\n")
+            (root / "Cargo.toml").write_text(
+                "[package]\nname='demo'\n"
+                "[dependencies]\nexternal={path='.extern-repos/member'}\n"
+            )
+            runtime_source = root / ".claude" / "worktrees" / "stale" / "src.rs"
+            runtime_source.parent.mkdir(parents=True)
+            runtime_source.write_bytes(b"first")
+            external_source = root / ".extern-repos" / "member" / "src" / "lib.rs"
+            external_source.parent.mkdir(parents=True)
+            external_source.write_bytes(b"first")
+            first = Path(raw) / "first"
+            second = Path(raw) / "second"
+            third = Path(raw) / "third"
+            cache = Path(raw) / "cache"
+            first.mkdir()
+            second.mkdir()
+            third.mkdir()
+
+            def fake_pep517(subcommand, *args, **kwargs):
+                calls.append((subcommand, args))
+                out = Path(args[args.index("--out") + 1])
+                (out / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
+
+            with mock.patch.object(self.backend, "_project_root", return_value=root):
+                with mock.patch.dict(
+                    os.environ,
+                    {
+                        "SOLDR_CACHE_DIR": str(cache),
+                        "SOLDR_PEP517_STABLE_TARGET_DIR": "0",
+                    },
+                    clear=False,
+                ):
+                    with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
+                        self.backend.build_wheel(str(first))
+                        runtime_source.write_bytes(b"second")
+                        self.backend.build_wheel(str(second))
+                        external_source.write_bytes(b"second")
+                        self.backend.build_wheel(str(third))
+
+        self.assertEqual(len(calls), 2)
 
     def test_wheel_cache_can_be_disabled(self) -> None:
         calls = []
