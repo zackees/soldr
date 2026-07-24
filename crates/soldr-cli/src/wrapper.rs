@@ -103,18 +103,29 @@ fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
 /// Compiling in zccache's staging directory would strand that linker side
 /// effect there, so keep only this bootstrap phase direct. The subsequent
 /// driver compilation has `DYLINT_LIBS` and remains cacheable.
-fn dylint_library_bootstrap_requires_direct_output() -> bool {
-    dylint_library_bootstrap_requires_direct_output_for(
-        std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some(),
-        std::env::var_os("DYLINT_LIBS").is_some(),
-    )
-}
-
-fn dylint_library_bootstrap_requires_direct_output_for(
-    dylint_scope_active: bool,
-    dylint_libs_configured: bool,
-) -> bool {
-    dylint_scope_active && !dylint_libs_configured
+fn dylint_library_bootstrap_requires_direct_output(args: &[String]) -> bool {
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        let out_dir = if arg == "--out-dir" {
+            iter.next().map(String::as_str)
+        } else {
+            arg.strip_prefix("--out-dir=")
+        };
+        let Some(out_dir) = out_dir else {
+            continue;
+        };
+        let components: Vec<_> = std::path::Path::new(out_dir)
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+                _ => None,
+            })
+            .collect();
+        return components
+            .windows(2)
+            .any(|pair| pair[0] == "dylint" && pair[1] == "libraries");
+    }
+    false
 }
 
 /// Cargo nests the workspace compiler inside the outer wrapper as
@@ -234,7 +245,7 @@ pub(crate) fn run_rustc_wrapper(
     // and let the existing direct-exec tool-spawn path below handle
     // them instead of the zccache routing block.
     let zccache_routed_tool = routes_through_embedded_zccache(tool_stem);
-    let dylint_library_bootstrap = dylint_library_bootstrap_requires_direct_output();
+    let dylint_library_bootstrap = dylint_library_bootstrap_requires_direct_output(&compile_args);
     let non_cacheable =
         zccache_routed_tool && (is_non_cacheable_rustc(&compile_args) || dylint_library_bootstrap);
     if non_cacheable {
@@ -610,16 +621,14 @@ mod tests {
         assert!(!is_non_cacheable_rustc(&argv));
     });
 
-    crate::timed_test!(dylint_library_bootstrap_preserves_linker_side_effects, {
-        assert!(dylint_library_bootstrap_requires_direct_output_for(
-            true, false
-        ));
-        assert!(!dylint_library_bootstrap_requires_direct_output_for(
-            true, true
-        ));
-        assert!(!dylint_library_bootstrap_requires_direct_output_for(
-            false, false
-        ));
+    crate::timed_test!(dylint_library_out_dir_preserves_linker_side_effects, {
+        let dylint = wrapper_argv(&[
+            "--out-dir",
+            "/tmp/target/dylint/libraries/nightly-x86_64/release/deps",
+        ]);
+        let ordinary = wrapper_argv(&["--out-dir=/tmp/target/release/deps"]);
+        assert!(dylint_library_bootstrap_requires_direct_output(&dylint));
+        assert!(!dylint_library_bootstrap_requires_direct_output(&ordinary));
     });
 
     crate::timed_test!(clippy_driver_routes_through_embedded_zccache, {
