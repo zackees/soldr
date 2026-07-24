@@ -97,6 +97,26 @@ fn routes_through_embedded_zccache(tool_stem: &str) -> bool {
     tool_stem == "dylint-driver" || WRAPPER_PASSTHROUGH_TOOLS.contains(&tool_stem)
 }
 
+/// Dylint builds lint libraries before setting `DYLINT_LIBS` for the linted
+/// crate. That bootstrap uses `dylint-link` as the linker, which creates an
+/// additional toolchain-suffixed library beside rustc's declared output.
+/// Compiling in zccache's staging directory would strand that linker side
+/// effect there, so keep only this bootstrap phase direct. The subsequent
+/// driver compilation has `DYLINT_LIBS` and remains cacheable.
+fn dylint_library_bootstrap_requires_direct_output() -> bool {
+    dylint_library_bootstrap_requires_direct_output_for(
+        std::env::var_os(crate::dylint_toolchain::TOOLCHAIN_ENV_VAR).is_some(),
+        std::env::var_os("DYLINT_LIBS").is_some(),
+    )
+}
+
+fn dylint_library_bootstrap_requires_direct_output_for(
+    dylint_scope_active: bool,
+    dylint_libs_configured: bool,
+) -> bool {
+    dylint_scope_active && !dylint_libs_configured
+}
+
 /// Cargo nests the workspace compiler inside the outer wrapper as
 /// `<outer> <workspace-compiler> <real-compiler> <compile-args...>`.
 /// Once soldr has selected the workspace compiler, that wrapper-only
@@ -214,9 +234,14 @@ pub(crate) fn run_rustc_wrapper(
     // and let the existing direct-exec tool-spawn path below handle
     // them instead of the zccache routing block.
     let zccache_routed_tool = routes_through_embedded_zccache(tool_stem);
-    let non_cacheable = zccache_routed_tool && is_non_cacheable_rustc(&compile_args);
+    let dylint_library_bootstrap = dylint_library_bootstrap_requires_direct_output();
+    let non_cacheable =
+        zccache_routed_tool && (is_non_cacheable_rustc(&compile_args) || dylint_library_bootstrap);
     if non_cacheable {
-        tracing::debug!("soldr: {tool_stem} invocation is non-cacheable; bypassing zccache");
+        tracing::debug!(
+            "soldr: {tool_stem} invocation is non-cacheable; bypassing zccache \
+             (dylint_library_bootstrap={dylint_library_bootstrap})"
+        );
         profile.mark("non_cacheable_bypass");
     }
 
@@ -583,6 +608,18 @@ mod tests {
         // cacheable.
         let argv = wrapper_argv(&["src/lib.rs"]);
         assert!(!is_non_cacheable_rustc(&argv));
+    });
+
+    crate::timed_test!(dylint_library_bootstrap_preserves_linker_side_effects, {
+        assert!(dylint_library_bootstrap_requires_direct_output_for(
+            true, false
+        ));
+        assert!(!dylint_library_bootstrap_requires_direct_output_for(
+            true, true
+        ));
+        assert!(!dylint_library_bootstrap_requires_direct_output_for(
+            false, false
+        ));
     });
 
     crate::timed_test!(clippy_driver_routes_through_embedded_zccache, {
