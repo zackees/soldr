@@ -816,6 +816,42 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
     }
 }
 
+/// Env-var name prefix forwarded from the spawning process into the
+/// detached daemon on top of running-process's user-baseline environment.
+///
+/// running-process 4.6.1 rebuilds a scrubbed login environment on Unix
+/// (Windows has always done so via `CreateEnvironmentBlock`), which
+/// silently dropped `SOLDR_CACHE_DIR`: the daemon bound its socket under
+/// the default `~/.soldr` root while wrappers polled
+/// `$SOLDR_CACHE_DIR/cache/soldr-daemon/sock`, hit `NotRunning` for the
+/// full spawn-retry budget, and every compile fell back to direct
+/// uncached rustc (the soldr#1657 degradation path firing on all of CI).
+/// All soldr-owned configuration must survive the spawn boundary, so the
+/// whole `SOLDR_*` namespace is overlaid onto the baseline.
+const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
+
+fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    filter_forwarded_env(std::env::vars_os())
+}
+
+/// Pure filter behind [`forwarded_soldr_env`], split out so tests can
+/// exercise it without mutating the process environment (parallel test
+/// cases in this binary read the real env).
+fn filter_forwarded_env(
+    vars: impl IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vars.into_iter()
+        .filter(|(name, _)| {
+            // Env names compare case-insensitively on Windows; match the
+            // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
+            // casing of the prefix on every platform.
+            name.to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with(FORWARDED_ENV_PREFIX)
+        })
+        .collect()
+}
+
 #[cfg(unix)]
 fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::Error> {
     use std::os::unix::process::CommandExt;
@@ -823,7 +859,7 @@ fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::E
 
     let mut cmd = Command::new(daemon);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline);
+    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
     cmd.args(args).stdin(Stdio::null());
     // Diagnostic redirect: spawn the daemon's stderr/stdout to a
     // log file under the soldr cache root so a startup crash leaves
@@ -885,7 +921,7 @@ fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), s
 
     let mut cmd = Command::new(soldr_self);
     let baseline = running_process::environment::user_baseline_environment()?;
-    cmd.env_clear().envs(baseline);
+    cmd.env_clear().envs(baseline).envs(forwarded_soldr_env());
     // The process that discovers a missing daemon may itself be the
     // `zccache-soldr` hardlink. Force argv[0] back to the main CLI identity;
     // otherwise multicall dispatch treats `daemon` as a compiler path and
@@ -1023,7 +1059,7 @@ fn spawn_detached_windows_no_inherit(
 
     let application: Vec<u16> = program.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut command_line = build_windows_command_line(argv0, args);
-    let environment = running_process::environment::user_baseline_environment_block()?;
+    let environment = merged_windows_environment_block()?;
     // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are plain Win32 POD
     // structs. Zero initialization is the documented baseline before setting
     // STARTUPINFOW.cb and passing both structs to CreateProcessW.
@@ -1059,6 +1095,63 @@ fn spawn_detached_windows_no_inherit(
         CloseHandle(process_info.hProcess);
     }
     Ok(())
+}
+
+/// Windows counterpart of the Unix `envs(forwarded_soldr_env())` overlay:
+/// take running-process's user-baseline pairs, overlay the current
+/// process's `SOLDR_*` variables (env names compare case-insensitively on
+/// Windows), and serialize to the sorted, double-NUL-terminated UTF-16
+/// block `CreateProcessW` expects with `CREATE_UNICODE_ENVIRONMENT`.
+#[cfg(windows)]
+fn merged_windows_environment_block() -> Result<Vec<u16>, std::io::Error> {
+    let pairs = running_process::environment::user_baseline_environment()?;
+    Ok(build_windows_environment_block(merge_env_overlay(
+        pairs,
+        forwarded_soldr_env(),
+    )))
+}
+
+#[cfg(windows)]
+fn merge_env_overlay(
+    mut base: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    overlay: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    fn key_upper(name: &std::ffi::OsStr) -> String {
+        name.to_string_lossy().to_uppercase()
+    }
+    for (name, value) in overlay {
+        match base
+            .iter_mut()
+            .find(|(existing, _)| key_upper(existing) == key_upper(&name))
+        {
+            Some(slot) => slot.1 = value,
+            None => base.push((name, value)),
+        }
+    }
+    base.sort_by_key(|(name, _)| key_upper(name));
+    base
+}
+
+#[cfg(windows)]
+fn build_windows_environment_block(
+    pairs: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut block = Vec::new();
+    for (name, value) in pairs {
+        block.extend(name.encode_wide());
+        block.push('=' as u16);
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    // An empty environment block is still two NULs: one for the (absent)
+    // final entry, one terminating the block.
+    if block.is_empty() {
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 #[cfg(windows)]
@@ -1216,6 +1309,63 @@ mod daemon_spawn_image_tests {
     use super::*;
     use crate::core::SoldrPaths;
     use tempfile::TempDir;
+
+    crate::timed_test!(forwarded_env_keeps_soldr_namespace_only, {
+        use std::ffi::OsString;
+        let vars = vec![
+            (
+                OsString::from("SOLDR_CACHE_DIR"),
+                OsString::from("/tmp/ci-root"),
+            ),
+            (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            (OsString::from("HOME"), OsString::from("/home/runner")),
+            (OsString::from("ZCCACHE_DISABLE"), OsString::from("1")),
+            (OsString::from("soldr_lowercase"), OsString::from("kept")),
+        ];
+        let forwarded = filter_forwarded_env(vars);
+        assert_eq!(
+            forwarded,
+            vec![
+                (
+                    OsString::from("SOLDR_CACHE_DIR"),
+                    OsString::from("/tmp/ci-root"),
+                ),
+                (OsString::from("SOLDR_TRUST_MODE"), OsString::from("strict")),
+                (OsString::from("soldr_lowercase"), OsString::from("kept")),
+            ]
+        );
+    });
+
+    #[cfg(windows)]
+    crate::timed_test!(windows_env_overlay_replaces_case_insensitively_and_sorts, {
+        use std::ffi::OsString;
+        let base = vec![
+            (OsString::from("Path"), OsString::from("C:\\Windows")),
+            (OsString::from("soldr_cache_dir"), OsString::from("stale")),
+        ];
+        let overlay = vec![(
+            OsString::from("SOLDR_CACHE_DIR"),
+            OsString::from("D:\\temp\\setup-soldr-soldr"),
+        )];
+        let merged = merge_env_overlay(base, overlay);
+        assert_eq!(
+            merged,
+            vec![
+                (OsString::from("Path"), OsString::from("C:\\Windows")),
+                (
+                    OsString::from("soldr_cache_dir"),
+                    OsString::from("D:\\temp\\setup-soldr-soldr"),
+                ),
+            ]
+        );
+
+        let block = build_windows_environment_block(merged);
+        let rendered = String::from_utf16_lossy(&block);
+        assert!(rendered.contains("Path=C:\\Windows\0"));
+        assert!(rendered.contains("soldr_cache_dir=D:\\temp\\setup-soldr-soldr\0"));
+        assert!(block.ends_with(&[0, 0]), "block must be double-NUL terminated");
+    });
 
     crate::timed_test!(detached_spawn_args_preserve_requested_idle_timeout, {
         assert_eq!(
