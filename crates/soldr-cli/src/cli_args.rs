@@ -43,7 +43,7 @@ cook                   Prebuild dependencies via bundled cargo-chef\n  \
 status                 Show cache status and active toolchain\n  \
 cache                  Inspect compilation cache entries\n  \
 config                 Show or set soldr configuration\n  \
-clean                  Clear the managed zccache build cache\n  \
+clean                  Clear the embedded zccache build cache\n  \
 purge                  Purge all soldr-managed cache artifacts\n  \
 gc                     Review reclaimable cargo target/ directories\n  \
 save                   Bundle a build cache + source mtimes into a .tar.zst\n  \
@@ -92,11 +92,12 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
         default_value_t = ZccacheSourceArg::Managed,
         value_name = "SOURCE",
         hide_possible_values = true,
-        help = "Backing zccache binary",
-        long_help = "Pick the zccache runtime backing the compilation cache.\n\n\
-`managed` (default) uses the zccache service compiled into soldr.\n\
-`system` uses the `zccache` on PATH (with `zccache-daemon` and\n\
-`zccache-fp` as siblings)."
+        help = "Embedded zccache compatibility selector",
+        long_help = "Select the zccache integration backing the compilation cache.\n\n\
+`managed` (default) uses the zccache service compiled into soldr-daemon.\n\
+`system` is retained as a compatibility spelling and currently selects the\n\
+same embedded service. To use an external cache wrapper, set\n\
+`SOLDR_RUSTC_WRAPPER=/path/to/zccache`."
     )]
     pub(crate) zccache: ZccacheSourceArg,
     #[command(subcommand)]
@@ -105,16 +106,16 @@ By default, `soldr cargo ...` resolves a fresh soldr workspace context from the 
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum ZccacheSourceArg {
-    /// Use the zccache service compiled into soldr (default).
+    /// Use the zccache service embedded in soldr-daemon (default).
     #[default]
     Managed,
-    /// Use the `zccache` binary already installed on PATH.
+    /// Compatibility spelling; currently equivalent to `managed`.
     System,
 }
 
 /// Flat list of every built-in soldr verb that clap recognizes,
-/// PLUS aliases (e.g. `update-zccache` for `install-zccache`,
-/// `purge-targets` for `gc`). Used by the fuzzy-match suggestion
+/// PLUS aliases (for example, `purge-targets` for `gc`). Used by the
+/// fuzzy-match suggestion
 /// path in `Commands::External` (issue #412) to detect typos /
 /// pre-rename verbs that fell through to the external-tool fetch.
 ///
@@ -418,7 +419,7 @@ pub(crate) enum Commands {
     },
     /// Show or set soldr configuration
     Config,
-    /// Clear the managed zccache build cache
+    /// Clear the embedded zccache build cache
     Clean,
     /// Purge all soldr-managed cache artifacts
     Purge,
@@ -1130,48 +1131,53 @@ pub(crate) struct GcSweepArgs {
 pub(crate) enum CacheSubcommand {
     /// Roll up the most recent compile-cache session into an
     /// AI-readable diagnosis document. Reads
-    /// `<zccache_dir>/logs/last-session-stats.json` (written by soldr
-    /// at session-end) and, when available, calls `zccache analyze` for
-    /// per-tool/per-extension breakdown over the per-session journal.
+    /// the latest per-session stats/history written by Soldr and, when an
+    /// analyzer surface is available, produces per-tool/per-extension
+    /// breakdowns over the per-session journal.
     Report {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
     },
-    /// Finalize session files and flush embedded zccache state.
+    /// Gracefully end the active session and stop soldr-daemon.
     ///
-    /// The root-owning Soldr daemon remains running. Historical stop/wait
-    /// flags are accepted for CLI compatibility but no external managed
-    /// zccache process exists after soldr#1368.
+    /// Synchronous by default: checkpoints the embedded zccache service,
+    /// requests Soldr-daemon shutdown, and does not return until the
+    /// exact daemon generation that acknowledged the request exits. The
+    /// caller can safely snapshot the cache directory after this succeeds.
     Shutdown {
         /// If set, copy the session log/journal/stats files into
-        /// `<dir>/<session-id>/` after flushing embedded state. The
+        /// `<dir>/<session-id>/` after Soldr-daemon is quiescent. The
         /// directory (and any missing parents) is created on demand.
         #[arg(long, value_name = "DIR")]
         archive_logs: Option<std::path::PathBuf>,
-        /// Legacy compatibility flag; embedded mode always requests the
-        /// Soldr daemon's durability flush.
+        /// Skip the explicit pre-shutdown embedded-cache checkpoint
+        /// (legacy flag name; debugging only). Graceful daemon shutdown
+        /// still waits for its own cache flush to complete.
         #[arg(long)]
         no_depgraph_save: bool,
-        /// Legacy compatibility timeout; there is no separate daemon exit.
-        #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+        /// Maximum time to wait for the acknowledged daemon generation to
+        /// finish its graceful cache flush. Timing out never force-kills it.
+        #[arg(long, value_name = "SECONDS", default_value_t = 300)]
         shutdown_timeout_seconds: u64,
-        /// Legacy compatibility flag; embedded mode performs no post-signal
-        /// process poll. See soldr#383.
+        /// Skip the post-request poll that confirms the acknowledged daemon
+        /// generation has actually exited. By default `shutdown` blocks
+        /// until that generation exits (or the
+        /// `--shutdown-timeout-seconds` deadline elapses); pass
+        /// `--no-wait` only when you genuinely do not care
+        /// (interactive shells). See soldr#383.
         #[arg(long)]
         no_wait: bool,
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]
         json: bool,
     },
-    /// Synchronously serialize the in-memory depgraph (and any other
-    /// in-memory zccache state) to disk without stopping the daemon.
+    /// Synchronously checkpoint the embedded zccache state without
+    /// stopping Soldr-daemon.
     ///
-    /// Returns 0 only after the bytes are durable (zccache fsync'd the
-    /// snapshot). Pair with `cache shutdown` in CI post steps to
-    /// guarantee the tar snapshot captures the freshest depgraph even
-    /// when the daemon is later killed by an external signal. See
-    /// soldr#383.
+    /// Returns 0 only when pending writes and the index writer drain and
+    /// every persistence step reports completion. Pair with
+    /// `cache shutdown` before archiving a live cache. See soldr#383.
     Flush {
         /// Emit the stable machine-facing JSON form for this command.
         #[arg(long)]

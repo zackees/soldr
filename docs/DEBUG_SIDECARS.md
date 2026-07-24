@@ -59,7 +59,8 @@ for them; they are out of scope for `debug_info`.
 
 ## Local debugging without release sidecars
 
-For daemon debugging with locally built binaries, use
-`SOLDR_ZCCACHE_LOCAL_DIR` — sibling `.pdb` / `.dwp` / `.dSYM` files are
-copied alongside the binaries and `soldr doctor` prints a
-`symbol path` line suitable for `cdb -y` / `_NT_SYMBOL_PATH`.
+zccache is linked into the locally built `soldr-daemon`, so build Soldr from a
+checkout whose `_vender/zccache` submodule contains the code under test. Debug
+the resulting Soldr binary and its normal `.pdb` / `.dwp` / `.dSYM` output;
+there is no external zccache daemon or `SOLDR_ZCCACHE_LOCAL_DIR` symbol-copy
+path in the embedded architecture.

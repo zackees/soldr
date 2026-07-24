@@ -1053,14 +1053,12 @@ fn xwin_msvc_link_args(cache_dir: &std::path::Path, target_triple: &str) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_MUTEX;
 
-    /// Serialize tests that mutate process env vars. `std::env::set_var`
-    /// / `remove_var` mutate global state, and cargo runs tests in
-    /// parallel within a single process — without a barrier the tests
-    /// race and intermittently fail (soldr#1267).
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
-
+    // Serialize tests that mutate process env vars. `std::env::set_var`
+    // / `remove_var` mutate global state, and cargo runs tests in
+    // parallel within a single process — without a barrier the tests
+    // race and intermittently fail (soldr#1267).
     crate::timed_test!(opt_out_env_var_recognized, {
         let _guard = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var_os(USE_LEGACY_XWIN_ENV_VAR);

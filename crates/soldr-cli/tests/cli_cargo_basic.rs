@@ -64,6 +64,81 @@ fn cargo_front_door_consumes_no_cache_flag() {
     );
 }
 
+timed_test!(zthreads_retry_replays_private_front_door_contract, {
+    let root = unique_temp_dir("zthreads-retry-contract");
+    let tool_dir = root.join("tool");
+    let cache_root = root.join("soldr-cache");
+    let log_path = root.join("cargo.log");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    write_fake_script(&cargo, &fake_zthreads_retry_cargo_script(&log_path));
+
+    let output = zthreads_retry_command(&cargo, &cache_root)
+        .output()
+        .expect("run stable-rustc fallback contract probe");
+
+    assert!(
+        output.status.success(),
+        "fallback should succeed on the second Cargo attempt\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let log = fs::read_to_string(&log_path).expect("read fake Cargo log");
+    let build_attempts: Vec<&str> = log
+        .lines()
+        .filter(|line| line.ends_with("args=build"))
+        .collect();
+    assert_eq!(
+        build_attempts.len(),
+        2,
+        "the fallback must run exactly one initial and one retry attempt: {log}",
+    );
+    assert!(
+        build_attempts.iter().any(|line| line.contains(
+            "attempt=1 trust=inherited sentinel= wrapper= cache=0 args=build"
+        )),
+        "the retry must preserve trusted workspace state, remain uncached, and keep its internal sentinel out of Cargo: {log}",
+    );
+});
+
+timed_test!(zthreads_retry_failure_stops_after_one_retry, {
+    let root = unique_temp_dir("zthreads-retry-once");
+    let tool_dir = root.join("tool");
+    let cache_root = root.join("soldr-cache");
+    let log_path = root.join("cargo.log");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    write_fake_script(&cargo, &fake_zthreads_retry_cargo_script(&log_path));
+
+    let output = zthreads_retry_command(&cargo, &cache_root)
+        .env("SOLDR_TEST_ZTHREADS_RETRY_FAIL", "1")
+        .output()
+        .expect("run failing stable-rustc fallback probe");
+
+    assert!(
+        !output.status.success(),
+        "a failed retry must propagate its nonzero status"
+    );
+    let log = fs::read_to_string(&log_path).expect("read fake Cargo log");
+    let build_attempts: Vec<&str> = log
+        .lines()
+        .filter(|line| line.ends_with("args=build"))
+        .collect();
+    assert_eq!(
+        build_attempts.len(),
+        2,
+        "a matching diagnostic on the retry must not recurse into a third attempt: {log}",
+    );
+    assert!(
+        build_attempts[0].starts_with("attempt= "),
+        "the first Cargo attempt must not carry the recursion marker: {log}",
+    );
+    assert!(
+        build_attempts[1].starts_with("attempt=1 "),
+        "the sole retry must carry the recursion marker: {log}",
+    );
+});
+
 #[test]
 fn cargo_front_door_maps_plus_toolchain_to_rustup_toolchain_env() {
     let cache_root = unique_temp_dir("cargo-plus-toolchain");
@@ -120,9 +195,7 @@ timed_test!(
         fs::create_dir_all(&shim_dir).expect("create shim dir");
         let cargo_shim = shim_dir.join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
         let soldr = common::soldr_bin();
-        if fs::hard_link(&soldr, &cargo_shim).is_err() {
-            fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
-        }
+        fs::copy(&soldr, &cargo_shim).expect("copy soldr as cargo multicall shim");
         let cargo = install_logging_fake_cargo(&log_path);
 
         let mut command = Command::new(&cargo_shim);
@@ -207,6 +280,77 @@ fn fake_cargo_toolchain_recorder_script(log_path: &Path) -> String {
             log_path.display()
         )
     }
+}
+
+fn fake_zthreads_retry_cargo_script(log_path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"attempt=\"\n\
+             if exist \"%SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER%\" set \"attempt=1\"\n\
+             echo attempt=%attempt% trust=%SOLDR_TARGET_CACHE_MODE% sentinel=%SOLDR_INTERNAL_ZTHREADS_FALLBACK_ATTEMPTED% wrapper=%RUSTC_WRAPPER% cache=%SOLDR_CACHE_ENABLED% args=%*>>\"{}\"\n\
+             if /I not \"%~1\"==\"build\" exit /b 0\n\
+             if not exist \"%SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER%\" (\n\
+               type nul > \"%SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER%\"\n\
+               echo error: the option `Z` is only accepted on the nightly compiler 1>&2\n\
+               exit /b 1\n\
+             )\n\
+             if defined SOLDR_TEST_ZTHREADS_RETRY_FAIL (\n\
+               echo error: the option `Z` is only accepted on the nightly compiler 1>&2\n\
+               exit /b 1\n\
+             )\n\
+             exit /b 0\n",
+            log_path.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             attempt=''\n\
+             if [ -e \"$SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER\" ]; then attempt=1; fi\n\
+             printf 'attempt=%s trust=%s sentinel=%s wrapper=%s cache=%s args=%s\\n' \"$attempt\" \"${{SOLDR_TARGET_CACHE_MODE:-}}\" \"${{SOLDR_INTERNAL_ZTHREADS_FALLBACK_ATTEMPTED:-}}\" \"${{RUSTC_WRAPPER:-}}\" \"${{SOLDR_CACHE_ENABLED:-}}\" \"$*\" >> \"{}\"\n\
+             if [ \"$1\" != 'build' ]; then exit 0; fi\n\
+             if [ ! -e \"$SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER\" ]; then\n\
+               : > \"$SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER\"\n\
+               echo 'error: the option `Z` is only accepted on the nightly compiler' >&2\n\
+               exit 1\n\
+             fi\n\
+             if [ -n \"${{SOLDR_TEST_ZTHREADS_RETRY_FAIL:-}}\" ]; then\n\
+               echo 'error: the option `Z` is only accepted on the nightly compiler' >&2\n\
+               exit 1\n\
+             fi\n\
+             exit 0\n",
+            log_path.display()
+        )
+    }
+}
+
+fn zthreads_retry_command(cargo: &Path, cache_root: &Path) -> Command {
+    let mut command = common::isolated_soldr_command();
+    command
+        .args([
+            "--no-cache",
+            "--trust-inherited-soldr-env",
+            "cargo",
+            "build",
+            "--no-gc-target",
+            "--no-trampoline",
+        ])
+        .env("SOLDR_TEST_CARGO_BIN", cargo)
+        .env("SOLDR_CACHE_DIR", cache_root)
+        .env("SOLDR_TARGET_CACHE_MODE", "inherited")
+        .env(
+            "SOLDR_TEST_ZTHREADS_ATTEMPT_MARKER",
+            cache_root.join("fake-cargo-attempted"),
+        )
+        .env("RUSTFLAGS", "-Zthreads=8")
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("RUSTC_BOOTSTRAP")
+        .env_remove("SOLDR_INTERNAL_ZTHREADS_FALLBACK_ATTEMPTED")
+        .env_remove("SOLDR_TEST_ZTHREADS_RETRY_FAIL");
+    command
 }
 
 fn fake_timeout_then_success_cargo_script(marker: &Path, log_path: &Path) -> String {

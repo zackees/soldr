@@ -26,9 +26,7 @@ use crate::zccache::{
     cache_lifecycle_from_env, command_lifetime_shutdown_timeout, CacheLifecycle,
     SOLDR_CACHE_LIFECYCLE_ENV_VAR, SOLDR_CACHE_SHUTDOWN_TIMEOUT_SECS_ENV_VAR,
 };
-use crate::{
-    apply_implicit_toolchain_homes, gc, resolve_toolchain_binary_for_channel, ZccacheSourceArg,
-};
+use crate::{gc, resolve_toolchain_binary_for_channel};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -1502,10 +1500,43 @@ fn maybe_apply_rustfmt_zccache_shim(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZthreadsRetryContext {
+    original_cargo_args: Vec<String>,
+    cache_enabled: bool,
+    trust_inherited_soldr_env: bool,
+}
+
+impl ZthreadsRetryContext {
+    fn new(
+        original_cargo_args: &[String],
+        cache_enabled: bool,
+        trust_inherited_soldr_env: bool,
+    ) -> Self {
+        Self {
+            original_cargo_args: original_cargo_args.to_vec(),
+            cache_enabled,
+            trust_inherited_soldr_env,
+        }
+    }
+
+    fn cli_args(&self) -> Vec<String> {
+        let mut retry_args = Vec::with_capacity(self.original_cargo_args.len() + 3);
+        if !self.cache_enabled {
+            retry_args.push(String::from("--no-cache"));
+        }
+        if self.trust_inherited_soldr_env {
+            retry_args.push(String::from("--trust-inherited-soldr-env"));
+        }
+        retry_args.push(String::from("cargo"));
+        retry_args.extend_from_slice(&self.original_cargo_args);
+        retry_args
+    }
+}
+
 pub(crate) async fn run_cargo_front_door(
     args: &[String],
     cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     if cargo_args_use_reserved_no_cache(args) {
@@ -1521,6 +1552,12 @@ pub(crate) async fn run_cargo_front_door(
 
     let trust_inherited_soldr_env =
         trust_inherited_soldr_env || env_flag_truthy(crate::TRUST_INHERITED_SOLDR_ENV_VAR);
+    // The stable-rustc fallback re-enters this front door. Snapshot the
+    // caller-facing contract before toolchain directives and Soldr-private
+    // Cargo flags are normalized so the retry performs the same processing
+    // exactly once.
+    let zthreads_retry_context =
+        ZthreadsRetryContext::new(args, cache_enabled, trust_inherited_soldr_env);
     let _fresh_workspace_env =
         FreshSoldrWorkspaceEnvGuard::apply_unless_trusted(trust_inherited_soldr_env);
 
@@ -1623,24 +1660,22 @@ pub(crate) async fn run_cargo_front_door(
         .ok_or_else(|| SoldrError::Other("failed to resolve cargo bin directory".into()))?
         .to_path_buf();
     let existing_path = std::env::var_os("PATH");
-    // L3 (soldr#980): kick off the managed zccache binary fetch +
-    // extract + redb init on a background tokio task NOW. The rest of
-    // this front-door pipeline — known-subcommand fetch, env scrub,
-    // session-id stamp, target-registry memoization, pre-GC, low-disk
-    // probe, profile_debug detection, linker injection — does not
-    // depend on the resolved zccache path. Overlapping its wall-clock
-    // cost with that synchronous setup is worth ~1-2 s on cold builds
-    // where the binary is not already on disk. On warm builds the
-    // background future resolves effectively immediately so the join
-    // at `CargoCachePlan::finalize` is free.
+    // Build the embedded-cache session plan on a background Tokio task while
+    // the rest of the front-door pipeline performs known-subcommand fetch,
+    // environment scrubbing, session-id stamping, target-registry
+    // memoization, pre-GC, low-disk probing, profile_debug detection, and
+    // linker injection. Since soldr#1368 this no longer downloads or extracts
+    // a zccache binary; it prepares cache-root, rust-plan, and session state
+    // for the service embedded in soldr-daemon. On warm builds the background
+    // future resolves effectively immediately so the join at
+    // `CargoCachePlan::finalize` is free.
     //
     // We intentionally spawn after the run-trampoline branch above because
     // that path exits without spawning cargo, and we don't
     // want to start a fetch we'll just drop. `cache_enabled` here is
     // the same flag the original synchronous `CargoCachePlan::prepare`
     // gated on; passing `false` produces a no-op `Disabled` prefetch.
-    let cache_plan_prefetch =
-        cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths, zccache_source);
+    let cache_plan_prefetch = cache_plan::CargoCachePlanPrefetch::start(cache_enabled, &paths);
 
     // If the user invoked a known ecosystem subcommand (e.g. `cargo nextest`),
     // fetch the corresponding `cargo-<sub>` binary and prepend its directory to
@@ -1667,12 +1702,13 @@ pub(crate) async fn run_cargo_front_door(
 
     let mut command = std::process::Command::new(&cargo);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     suppress_windows_console_window(&mut command);
-    // These soldr control variables are consumed by this front-door
-    // process. Letting cargo inherit them leaks daemon lifecycle policy
-    // into build scripts and test binaries that may spawn nested soldr.
+    // These Soldr control variables are consumed by this front-door
+    // process. Letting Cargo inherit them leaks daemon lifecycle or retry
+    // policy into build scripts and test binaries that may spawn nested Soldr.
     scrub_soldr_cache_lifecycle_env_for_child_cargo(&mut command);
+    command.env_remove(zthreads_fallback::ATTEMPTED_ENV);
     if !trust_inherited_soldr_env {
         scrub_inherited_soldr_workspace_env_for_child_cargo(&mut command);
     }
@@ -1926,7 +1962,7 @@ pub(crate) async fn run_cargo_front_door(
 
     // A preceding cached build may have materialized immutable outputs as
     // protected hardlinks to cache blobs. Whenever the finalized wrapper plan
-    // has no managed zccache session, detach shared target files locally
+    // has no embedded-cache session, detach shared target files locally
     // before the unmediated compiler can overwrite them. This must not depend
     // on the daemon being responsive. Conservatively include `install`:
     // configuration can select a persistent target root without a visible
@@ -2259,7 +2295,11 @@ pub(crate) async fn run_cargo_front_door(
             ) && !resolved_toolchain_is_nightly(explicit_toolchain)
             {
                 emit_zthreads_fallback_warning(&plan.value);
-                return retry_zthreads_without_flag(args, explicit_toolchain, &plan);
+                return retry_zthreads_without_flag(
+                    &zthreads_retry_context,
+                    explicit_toolchain,
+                    &plan,
+                );
             }
         } else if !env_flag_truthy(zthreads_fallback::ATTEMPTED_ENV)
             && zthreads_fallback::diagnostic_matches(
@@ -2301,13 +2341,13 @@ fn emit_zthreads_fallback_warning(value: &str) {
 }
 
 fn retry_zthreads_without_flag(
-    args: &[String],
+    context: &ZthreadsRetryContext,
     explicit_toolchain: Option<&str>,
     plan: &zthreads_fallback::FallbackPlan,
 ) -> Result<i32, SoldrError> {
     let exe = std::env::current_exe()?;
     let mut command = std::process::Command::new(exe);
-    command.arg("cargo").args(args);
+    command.args(context.cli_args());
     command.env(zthreads_fallback::ATTEMPTED_ENV, "1");
     if let Some(toolchain) = explicit_toolchain {
         command.env("RUSTUP_TOOLCHAIN", toolchain);

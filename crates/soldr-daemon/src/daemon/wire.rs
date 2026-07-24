@@ -39,9 +39,10 @@
 
 use crate::daemon::db::{Event, EventKind};
 use crate::daemon::protocol::{
-    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CompileLifecycle,
-    CompileRequest, CompileResponseBody, CompileStatsInfo, CookStats, IpcBurstStats, Request,
-    Response, StagedProfileInfo, StatusInfo, WireDecodeError,
+    BuildCacheSummary, BuildLogPaths, BuildMissReason, BuildRecord, CacheFlushInfo,
+    CacheFlushStepInfo, CompileLifecycle, CompileRequest, CompileResponseBody, CompileStatsInfo,
+    CookStats, IpcBurstStats, Request, Response, ShutdownAck, StagedProfileInfo, StatusInfo,
+    WireDecodeError,
 };
 
 /// Back-compat re-exports: these moved to `core::wire` (#1490 Phase 0,
@@ -300,6 +301,44 @@ fn compile_stats_from_wire(wire: proto::WireCompileStats) -> CompileStatsInfo {
     }
 }
 
+fn cache_flush_to_wire(info: &CacheFlushInfo) -> proto::WireCacheFlush {
+    proto::WireCacheFlush {
+        complete: info.complete,
+        pending_writes_drained: info.pending_writes_drained,
+        index_writer_drained: info.index_writer_drained,
+        steps: info
+            .steps
+            .iter()
+            .map(|step| proto::WireCacheFlushStep {
+                step: step.step.clone(),
+                status: step.status.clone(),
+                error: step.error.clone(),
+            })
+            .collect(),
+        artifact_entries: info.artifact_entries,
+        metadata_entries: info.metadata_entries,
+    }
+}
+
+fn cache_flush_from_wire(wire: proto::WireCacheFlush) -> CacheFlushInfo {
+    CacheFlushInfo {
+        complete: wire.complete,
+        pending_writes_drained: wire.pending_writes_drained,
+        index_writer_drained: wire.index_writer_drained,
+        steps: wire
+            .steps
+            .into_iter()
+            .map(|step| CacheFlushStepInfo {
+                step: step.step,
+                status: step.status,
+                error: step.error,
+            })
+            .collect(),
+        artifact_entries: wire.artifact_entries,
+        metadata_entries: wire.metadata_entries,
+    }
+}
+
 fn cook_stats_to_wire(stats: &CookStats) -> proto::WireCookStats {
     proto::WireCookStats {
         entries: stats.entries,
@@ -340,6 +379,7 @@ pub fn status_info_to_wire(info: &StatusInfo) -> proto::WireStatusInfo {
     proto::WireStatusInfo {
         version: info.version,
         pid: info.pid,
+        generation: info.generation,
         uptime_secs: info.uptime_secs,
         request_count: info.request_count,
         cook_stats: info.cook_stats.as_ref().map(cook_stats_to_wire),
@@ -352,6 +392,7 @@ pub fn status_info_from_wire(wire: proto::WireStatusInfo) -> StatusInfo {
     StatusInfo {
         version: wire.version,
         pid: wire.pid,
+        generation: wire.generation,
         uptime_secs: wire.uptime_secs,
         request_count: wire.request_count,
         cook_stats: wire.cook_stats.map(cook_stats_from_wire),
@@ -573,7 +614,12 @@ impl From<&Response> for proto::WireResponse {
     fn from(resp: &Response) -> Self {
         let kind = match resp {
             Response::Status(info) => proto::WireResponseKind::Status(status_info_to_wire(info)),
-            Response::ShuttingDown => proto::WireResponseKind::ShuttingDown(proto::WireUnit {}),
+            Response::ShuttingDown(ack) => {
+                proto::WireResponseKind::ShuttingDown(proto::WireShuttingDown {
+                    pid: ack.pid,
+                    generation: ack.generation,
+                })
+            }
             Response::Builds(rows) => proto::WireResponseKind::Builds(proto::WireBuilds {
                 items: rows.iter().map(build_record_to_wire).collect(),
             }),
@@ -645,6 +691,9 @@ impl From<&Response> for proto::WireResponse {
             Response::CompileStats(info) => {
                 proto::WireResponseKind::CompileStats(compile_stats_to_wire(info))
             }
+            Response::CacheFlushed(info) => {
+                proto::WireResponseKind::CacheFlushed(cache_flush_to_wire(info))
+            }
         };
         Self { kind: Some(kind) }
     }
@@ -657,7 +706,10 @@ impl TryFrom<proto::WireResponse> for Response {
         let kind = wire.kind.ok_or(WireDecodeError::EmptyOneof("Response"))?;
         Ok(match kind {
             proto::WireResponseKind::Status(m) => Response::Status(status_info_from_wire(m)),
-            proto::WireResponseKind::ShuttingDown(_) => Response::ShuttingDown,
+            proto::WireResponseKind::ShuttingDown(reply) => Response::ShuttingDown(ShutdownAck {
+                pid: reply.pid,
+                generation: reply.generation,
+            }),
             proto::WireResponseKind::Builds(m) => {
                 Response::Builds(m.items.into_iter().map(build_record_from_wire).collect())
             }
@@ -701,6 +753,9 @@ impl TryFrom<proto::WireResponse> for Response {
             },
             proto::WireResponseKind::CompileStats(m) => {
                 Response::CompileStats(compile_stats_from_wire(m))
+            }
+            proto::WireResponseKind::CacheFlushed(m) => {
+                Response::CacheFlushed(cache_flush_from_wire(m))
             }
         })
     }

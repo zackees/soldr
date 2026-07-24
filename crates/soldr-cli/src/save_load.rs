@@ -8,7 +8,7 @@
 //! preserve the fingerprint stability Cargo expects without resorting
 //! to mtime-rewrite tricks that risk underbuilds.
 
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use crate::cache_lib::save::{
     load, read_manifest_file, read_manifest_from_archive, save, save_delta, write_manifest_file,
@@ -124,22 +124,101 @@ pub struct LoadArgs {
     pub auto_defender_exclude: bool,
 }
 
-/// Issue #1286 (F1): before archiving a cache tree, ask the ambient
-/// soldr-daemon to checkpoint its embedded zccache state (artifact
-/// index, depgraph snapshot, metadata cache) to disk. Without this,
-/// `soldr save` taken while the daemon is alive archives a tree whose
-/// rustc-side index is memory-only — the restored cache then serves
-/// zero rustc hits (the cold-tar-untar-warm 1.00x-speedup bug).
-/// Best-effort: an unreachable daemon means disk state is already the
-/// best available.
-fn flush_embedded_state_before_save() {
-    let Ok(paths) = crate::core::SoldrPaths::new() else {
-        return;
+fn absolute_lexical_path(path: &Path) -> Result<PathBuf, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("current_dir: {error}"))?
+            .join(path)
     };
-    let sock = crate::daemon::server::server_sock_path(&paths);
-    if crate::daemon::client::flush_caches(&sock).is_ok() {
-        eprintln!("soldr save: embedded zccache state flushed via soldr-daemon");
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(format!(
+                        "path escapes its filesystem root: {}",
+                        path.display()
+                    ));
+                }
+            }
+        }
     }
+    Ok(normalized)
+}
+
+fn path_for_containment(path: &Path) -> Result<PathBuf, String> {
+    match std::fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => absolute_lexical_path(path),
+        Err(error) => Err(format!("failed to resolve {}: {error}", path.display())),
+    }
+}
+
+fn archive_contains_embedded_cache(cache_dir: &Path, embedded_root: &Path) -> Result<bool, String> {
+    let archive_root = path_for_containment(cache_dir)?;
+    let embedded_root = path_for_containment(embedded_root)?;
+    Ok(embedded_root.starts_with(archive_root))
+}
+
+/// Quiesce the embedded cache only when the requested archive actually
+/// contains it.
+///
+/// A point-in-time flush is not a snapshot barrier: new compile publications
+/// can land between the reply and tar traversal. After a complete checkpoint,
+/// request graceful daemon shutdown and wait for the exact acknowledged
+/// generation. An unrelated `--cache-dir` never depends on the ambient daemon.
+fn quiesce_embedded_state_before_save(cache_dir: &Path) -> Result<(), String> {
+    let paths = crate::core::SoldrPaths::new().map_err(|error| error.to_string())?;
+    let embedded_root = crate::zccache_embedded::embedded_cache_root(&paths);
+    if !archive_contains_embedded_cache(cache_dir, &embedded_root)? {
+        return Ok(());
+    }
+
+    let sock = crate::daemon::server::server_sock_path(&paths);
+    match crate::daemon::client::flush_caches(&sock) {
+        Ok(report) if report.is_complete() => {}
+        Ok(report) => Err(format!(
+            "embedded zccache checkpoint incomplete: {}",
+            report.incomplete_reason()
+        ))?,
+        Err(crate::daemon::client::ClientError::NotRunning) => return Ok(()),
+        Err(error) => return Err(format!("embedded zccache checkpoint failed: {error:?}")),
+    }
+
+    let responder = match crate::daemon::client::shutdown(&sock) {
+        Ok(responder) => responder,
+        Err(crate::daemon::client::ClientError::NotRunning) => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "embedded zccache snapshot quiescence failed: {error:?}"
+            ))
+        }
+    };
+    let outcome = crate::daemon::lifecycle::wait_for_shutdown_responder(
+        &sock,
+        responder,
+        crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
+    );
+    if !outcome.is_complete() {
+        return Err(format!(
+            "daemon generation {} (pid {}) acknowledged shutdown but did not become quiescent \
+             within {}s; it was not force-killed",
+            responder.generation,
+            responder.pid,
+            crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT.as_secs(),
+        ));
+    }
+    eprintln!(
+        "soldr save: embedded zccache state checkpointed and daemon generation {} quiesced",
+        responder.generation
+    );
+    Ok(())
 }
 
 pub fn run_save(args: SaveArgs) -> i32 {
@@ -161,8 +240,11 @@ pub fn run_save(args: SaveArgs) -> i32 {
             return 1;
         }
     };
-    if args.cache_dir.is_some() {
-        flush_embedded_state_before_save();
+    if let Some(cache_dir) = args.cache_dir.as_deref() {
+        if let Err(error) = quiesce_embedded_state_before_save(cache_dir) {
+            eprintln!("soldr save: refusing to archive a non-quiescent cache: {error}");
+            return 1;
+        }
     }
     if let Some(base_manifest_path) = args.delta_from_manifest.as_deref() {
         let Some(cache_dir) = args.cache_dir.as_deref() else {
@@ -417,6 +499,22 @@ mod private_session_default_tests {
     fn fake_cwd() -> std::io::Result<PathBuf> {
         Ok(PathBuf::from("/fake/cwd"))
     }
+
+    crate::timed_test!(cache_snapshot_quiescence_is_scoped_to_archived_tree, {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let managed = temp.path().join("managed");
+        let embedded = managed.join("zccache/daemon-state/stable");
+        let unrelated = temp.path().join("unrelated");
+        std::fs::create_dir_all(&embedded).expect("embedded root");
+        std::fs::create_dir_all(&unrelated).expect("unrelated root");
+
+        assert!(archive_contains_embedded_cache(&managed, &embedded).expect("managed containment"));
+        assert!(archive_contains_embedded_cache(&embedded, &embedded).expect("exact containment"));
+        assert!(
+            !archive_contains_embedded_cache(&unrelated, &embedded).expect("unrelated containment"),
+            "an unrelated --cache-dir must not require an ambient daemon flush"
+        );
+    });
 
     fn base_save_args() -> SaveArgs {
         SaveArgs {

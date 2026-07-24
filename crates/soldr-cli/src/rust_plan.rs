@@ -13,10 +13,10 @@ use crate::zccache::{
     run_zccache_command_strings_in_cache_dir_with_daemon_name, ZccacheBuildSession,
 };
 use crate::{
-    apply_implicit_toolchain_homes, non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR,
-    TARGET_CACHE_BACKEND_ENV_VAR, TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR,
-    TARGET_CACHE_PROFILE_ENV_VAR, TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME,
-    WARM_RESTORE_MAX_AGE_SECONDS, WARM_RESTORE_SENTINEL_FILENAME,
+    non_empty_env_path, SKIP_WARM_RESTORE_ENV_VAR, TARGET_CACHE_BACKEND_ENV_VAR,
+    TARGET_CACHE_BUNDLE_DIR_ENV_VAR, TARGET_CACHE_MODE_ENV_VAR, TARGET_CACHE_PROFILE_ENV_VAR,
+    TARGET_CACHE_TAR_THREADS_ENV_VAR, THIN_MANIFEST_FILENAME, WARM_RESTORE_MAX_AGE_SECONDS,
+    WARM_RESTORE_SENTINEL_FILENAME,
 };
 use prost::Message;
 use serde::{Deserialize, Serialize};
@@ -633,7 +633,7 @@ fn cargo_metadata(cargo: &std::path::Path, args: &[String]) -> Result<CargoMetad
     let mut command = std::process::Command::new(cargo);
     command.args(["metadata", "--format-version", "1"]);
     command.args(cargo_metadata_passthrough_args(args));
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, cargo);
     suppress_windows_console_window(&mut command);
     command.env_remove("MAKEFLAGS");
     command.env_remove("CARGO_MAKEFLAGS");
@@ -743,7 +743,7 @@ pub(crate) fn derive_toolchain_identity(
 fn tool_output(tool: &std::path::Path, args: &[&str]) -> Result<String, SoldrError> {
     let mut command = std::process::Command::new(tool);
     command.args(args);
-    apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, tool);
     suppress_windows_console_window(&mut command);
     let output = command_output_with_timeout(
         &mut command,

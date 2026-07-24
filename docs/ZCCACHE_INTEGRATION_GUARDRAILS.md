@@ -70,7 +70,9 @@ gh workflow run perf-matrix.yml -f platforms=linux -f fixtures=medium -f scenari
   service where required.
 - `embedded-flush-shutdown`: locks command-lifetime durability through the
   embedded flush IPC, compile-stat finalization, soldr-daemon shutdown, and
-  bounded daemon-down diagnostics.
+  exact responder-generation tracking. A daemon that acknowledges shutdown is
+  allowed to finish durability work and is never force-killed; timeout
+  diagnostics remain bounded at the CLI boundary.
 - `setup-action-outputs`: locks setup-soldr cache outputs, target-cache mode,
   target-cache keys, and native-cache policy output.
 - `release-npm-staging`: locks release archive manifest validation, the

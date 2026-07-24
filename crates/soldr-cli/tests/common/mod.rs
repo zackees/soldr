@@ -208,10 +208,16 @@ pub(crate) fn scrub_outer_soldr_env(command: &mut Command) -> &mut Command {
         .env_remove("SOLDR_ORIGINAL_EXE")
         .env_remove("SOLDR_RELOCATED_EXE");
     for (name, _) in std::env::vars_os() {
-        if name
-            .to_str()
-            .is_some_and(|name| name.starts_with("CARGO_TARGET_"))
-        {
+        let should_scrub = name.to_str().is_some_and(|name| {
+            name.starts_with("CARGO_TARGET_")
+                // The machine-wide Cargo front door exports resolved host
+                // tools before invoking Soldr. Those are outer-process
+                // implementation details, not fixture overrides for the
+                // nested Soldr process under test. Individual tests can set
+                // their intended SOLDR_REAL_* value after this helper.
+                || name.starts_with("SOLDR_REAL_")
+        });
+        if should_scrub {
             command.env_remove(name);
         }
     }
@@ -651,6 +657,44 @@ pub(crate) fn fake_version_tool_script(log_path: &Path, tool_name: &str) -> Stri
     }
 }
 
+pub(crate) fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
+    #[cfg(windows)]
+    {
+        format!(
+            "@echo off\n\
+             set \"fmt=%RUSTFMT%\"\n\
+             if not defined RUSTFMT set \"fmt={2}\"\n\
+             echo cargo fmt rustfmt=%fmt% env_rustfmt=%RUSTFMT% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
+             if \"%~1\"==\"fmt\" (\n\
+               call \"%fmt%\" \"{1}\"\n\
+               exit /b %ERRORLEVEL%\n\
+             )\n\
+             echo unsupported fake cargo fmt invocation %* 1>&2\n\
+             exit /b 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustfmt.display()
+        )
+    }
+    #[cfg(not(windows))]
+    {
+        format!(
+            "#!/bin/sh\n\
+             fmt=\"${{RUSTFMT:-{2}}}\"\n\
+             echo \"cargo fmt rustfmt=$fmt env_rustfmt=${{RUSTFMT:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
+             if [ \"$1\" = \"fmt\" ]; then\n\
+               \"$fmt\" \"{1}\"\n\
+               exit $?\n\
+             fi\n\
+             echo \"unsupported fake cargo fmt invocation: $*\" >&2\n\
+             exit 1\n",
+            log_path.display(),
+            source_path.display(),
+            rustfmt.display()
+        )
+    }
+}
+
 pub(crate) fn fake_rustup_script(log_path: &Path, tool_dir: &Path) -> String {
     #[cfg(windows)]
     {
@@ -1075,6 +1119,32 @@ pub(crate) fn install_fake_version_toolchain(
     write_fake_script(&rustc, &fake_version_tool_script(log_path, "rustc"));
     write_fake_script(&rustfmt, &fake_version_tool_script(log_path, "rustfmt"));
     (cargo, rustc, rustfmt)
+}
+
+pub(crate) fn install_fake_cargo_fmt_toolchain(
+    log_path: &Path,
+    source_path: &Path,
+) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
+    let (rustup, cargo, rustc, rustfmt) = install_fake_rustup_toolchain(log_path);
+    let tool_dir = cargo
+        .parent()
+        .expect("fake cargo should live in a tool dir")
+        .to_path_buf();
+    let zccache = fake_script_path(&tool_dir, "zccache");
+    write_fake_script(
+        &cargo,
+        &fake_cargo_fmt_script(log_path, source_path, &rustfmt),
+    );
+    write_fake_script(&zccache, &fake_zccache_script(log_path));
+    (rustup, cargo, rustc, rustfmt, zccache)
+}
+
+pub(crate) fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
+    let src_dir = cache_root.join("src");
+    fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
+    let source_path = src_dir.join("lib.rs");
+    fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
+    source_path
 }
 
 pub(crate) fn install_fake_wrapper(log_path: &Path, wrapper_name: &str) -> PathBuf {

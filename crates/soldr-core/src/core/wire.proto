@@ -141,7 +141,7 @@ message WireCompileLifecycle {
 message WireResponse {
   oneof kind {
     WireStatusInfo status = 1;
-    WireUnit shutting_down = 2;
+    WireShuttingDown shutting_down = 2;
     WireBuilds builds = 3;
     string error = 4;
     WireCookHit cook_hit = 5;
@@ -164,7 +164,30 @@ message WireResponse {
     WireCompileStats compile_stats = 12;
     // soldr#1735 — bounded admission is full; retry without restart.
     WireBackpressure backpressure = 13;
+    // v17 — structured result for flush_caches.
+    WireCacheFlush cache_flushed = 14;
   }
+}
+
+message WireShuttingDown {
+  uint32 pid = 1;
+  // v18 — process-start generation echoed by WireStatusInfo.
+  uint64 generation = 2;
+}
+
+message WireCacheFlush {
+  bool complete = 1;
+  bool pending_writes_drained = 2;
+  bool index_writer_drained = 3;
+  repeated WireCacheFlushStep steps = 4;
+  uint64 artifact_entries = 5;
+  uint64 metadata_entries = 6;
+}
+
+message WireCacheFlushStep {
+  string step = 1;
+  string status = 2;
+  optional string error = 3;
 }
 
 message WireCompileStats {
@@ -255,6 +278,8 @@ message WireStatusInfo {
   // field retained for telemetry stability.
   string compile_backend = 7;
   optional WireIpcBurstStats ipc_burst_stats = 8;
+  // v18 — process-start generation shared with WireShuttingDown.
+  uint64 generation = 9;
 }
 
 message WireIpcBurstStats {

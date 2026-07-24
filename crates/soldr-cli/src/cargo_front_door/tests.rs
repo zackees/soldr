@@ -7,11 +7,10 @@ use super::*;
 use crate::LOW_DISK_WARNING_THRESHOLD_BYTES;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 
 /// Serialises tests that mutate process-wide environment variables so
 /// they don't race under parallel `cargo test`.
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
 
 struct EnvVarGuard {
     key: &'static str,
@@ -181,6 +180,33 @@ crate::timed_test!(zthreads_fallback_warning_has_ci_and_local_forms, {
     assert!(zthreads_fallback::render_config_hint().contains("Cargo config"));
     assert!(resolved_toolchain_is_nightly(Some("nightly-2026-07-22")));
     assert!(!resolved_toolchain_is_nightly(Some("1.94.1")));
+});
+
+crate::timed_test!(zthreads_retry_replays_original_front_door_contract, {
+    let args = argv(&["run", "--no-gc-target", "--no-trampoline", "--", "payload"]);
+    let uncached = ZthreadsRetryContext::new(&args, false, true);
+
+    assert_eq!(
+        uncached.cli_args(),
+        vec![
+            "--no-cache",
+            "--trust-inherited-soldr-env",
+            "cargo",
+            "run",
+            "--no-gc-target",
+            "--no-trampoline",
+            "--",
+            "payload",
+        ],
+        "the retry must replay top-level state and the original pre-normalization Cargo argv",
+    );
+
+    let cached = ZthreadsRetryContext::new(&argv(&["build", "--release"]), true, false);
+    assert_eq!(
+        cached.cli_args(),
+        vec!["cargo", "build", "--release"],
+        "a managed retry should continue through the normal cached front door",
+    );
 });
 
 crate::timed_test!(target_registry_memo_canonicalizes_existing_ancestor, {
@@ -1579,12 +1605,18 @@ crate::timed_test!(nextest_archive_darwin_bootstrap_reuses_blessed_env, {
     let tmp = tempfile::tempdir().unwrap();
     let sdk = tmp.path().join("MacOSX.fake.sdk");
     let llvm_bin = tmp.path().join("llvm-bin");
+    let fake_dsymutil = llvm_bin.join(if cfg!(windows) {
+        "dsymutil.exe"
+    } else {
+        "dsymutil"
+    });
     std::fs::create_dir_all(&sdk).unwrap();
     std::fs::create_dir_all(&llvm_bin).unwrap();
-    std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").unwrap();
+    std::fs::write(&fake_dsymutil, b"fake dsymutil").unwrap();
 
     let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
     let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+    let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
     let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
     let _legacy_sys = EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
     let _system_cmake = EnvVarGuard::set(crate::blessed_build::USE_SYSTEM_CMAKE_ENV_VAR, "1");
@@ -1946,6 +1978,23 @@ crate::timed_test!(journal_miss_reasons_parse_jsonl_before_log_fallback, {
     assert_eq!(reasons[1].count, 1);
     assert_eq!(reasons[2].reason, "unknown");
     assert_eq!(reasons[2].count, 1);
+});
+
+crate::timed_test!(embedded_compile_journal_path_matches_service_layout, {
+    let root = tempfile::tempdir().expect("temp root");
+    let paths = SoldrPaths::with_root(root.path().join("soldr"));
+
+    assert_eq!(
+        embedded_compile_journal_path(&paths),
+        paths
+            .cache
+            .join("zccache")
+            .join("daemon-state")
+            .join("embedded-v1")
+            .join(zccache::core::config::versioned_subdir())
+            .join("logs")
+            .join("compile_journal.jsonl")
+    );
 });
 
 crate::timed_test!(miss_reasons_do_not_fall_back_to_full_global_journal, {

@@ -628,12 +628,17 @@ where
     let deadline = start + budget;
     let mut prepared_spawn = None;
     let spawn_err = if spawn_on_first_failure {
-        match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
-            Ok(prepared) => {
-                prepared_spawn = prepared;
-                None
-            }
-            Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
+        match crate::binaries::ensure_daemon_executable_handoff() {
+            Ok(_) => match crate::daemon::lifecycle::try_spawn_detached_until(Some(deadline)) {
+                Ok(prepared) => {
+                    prepared_spawn = prepared;
+                    None
+                }
+                Err(error) => Some(format!("initial daemon spawn failed: {error:?}")),
+            },
+            Err(error) => Some(format!(
+                "canonical soldr-daemon handoff materialization failed: {error}"
+            )),
         }
     } else {
         None
