@@ -26,7 +26,7 @@ prost = { workspace = true }
 rayon = { workspace = true }
 redb = { workspace = true }
 reqwest = { workspace = true }
-running-process = { version = "4.5.12", default-features = false, features = ["client"] }
+running-process = { version = "4.6.0", default-features = false, features = ["client"] }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
