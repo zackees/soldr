@@ -858,10 +858,8 @@ fn pinned_toolchain_channel() -> Result<Option<String>, SoldrError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::TEST_PROCESS_ENV_LOCK as ENV_LOCK;
     use std::ffi::{OsStr, OsString};
-    use std::sync::Mutex;
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     struct EnvVarGuard {
         key: &'static str,
@@ -1110,6 +1108,11 @@ mod tests {
         let github_env = tmp.path().join("github-env");
         let sdk = tmp.path().join("MacOSX.fake.sdk");
         let llvm_bin = tmp.path().join("llvm").join("bin");
+        let fake_dsymutil = llvm_bin.join(if cfg!(windows) {
+            "dsymutil.exe"
+        } else {
+            "dsymutil"
+        });
         let fake_zig_dir = tmp.path().join("zig-bin");
         let fake_zig = fake_zig_dir.join(if cfg!(windows) { "zig.exe" } else { "zig" });
         let fake_rustup = tmp.path().join(if cfg!(windows) {
@@ -1120,8 +1123,8 @@ mod tests {
 
         std::fs::create_dir_all(&sdk).expect("mkdir sdk");
         std::fs::create_dir_all(&llvm_bin).expect("mkdir llvm");
-        std::fs::write(llvm_bin.join("dsymutil"), b"fake dsymutil").expect("write dsymutil");
         std::fs::create_dir_all(&fake_zig_dir).expect("mkdir zig");
+        std::fs::write(&fake_dsymutil, b"fake dsymutil").expect("write fake dsymutil");
         std::fs::write(&fake_zig, b"fake zig").expect("write fake zig");
 
         #[cfg(windows)]
@@ -1143,6 +1146,7 @@ mod tests {
         let _zig = EnvVarGuard::set("ZIG", &fake_zig);
         let _sdkroot = EnvVarGuard::set("SDKROOT", &sdk);
         let _llvm = EnvVarGuard::set("SOLDR_LLVM_DIR", &llvm_bin);
+        let _dsymutil = EnvVarGuard::set("SOLDR_DSYMUTIL", &fake_dsymutil);
         let _legacy_zig = EnvVarGuard::remove(crate::blessed_build::USE_LEGACY_ZIGBUILD_ENV_VAR);
         let _legacy_sys =
             EnvVarGuard::set(crate::blessed_build::USE_LEGACY_VENDORED_SYS_ENV_VAR, "1");
@@ -1244,7 +1248,7 @@ mod tests {
              echo args=%*\r\n\
              echo CARGO_HOME=%CARGO_HOME%\r\n\
              echo RUSTUP_HOME=%RUSTUP_HOME%\r\n\
-             ) > \"%SOLDR_RUSTUP_LOG%\"\r\n",
+             ) >> \"%SOLDR_RUSTUP_LOG%\"\r\n",
         )
         .expect("write fake rustup");
 
@@ -1257,7 +1261,7 @@ mod tests {
                    printf 'args=%s\\n' \"$*\"\n\
                    printf 'CARGO_HOME=%s\\n' \"$CARGO_HOME\"\n\
                    printf 'RUSTUP_HOME=%s\\n' \"$RUSTUP_HOME\"\n\
-                 } > \"$SOLDR_RUSTUP_LOG\"\n",
+                 } >> \"$SOLDR_RUSTUP_LOG\"\n",
             )
             .expect("write fake rustup");
             use std::os::unix::fs::PermissionsExt;
@@ -1320,7 +1324,7 @@ mod tests {
         std::fs::write(
             &fake_rustup,
             "@echo off\r\n\
-             echo args=%* > \"%SOLDR_RUSTUP_LOG%\"\r\n",
+             echo args=%* >> \"%SOLDR_RUSTUP_LOG%\"\r\n",
         )
         .expect("write fake rustup");
 
@@ -1329,7 +1333,7 @@ mod tests {
             std::fs::write(
                 &fake_rustup,
                 "#!/bin/sh\n\
-                 printf 'args=%s\\n' \"$*\" > \"$SOLDR_RUSTUP_LOG\"\n",
+                 printf 'args=%s\\n' \"$*\" >> \"$SOLDR_RUSTUP_LOG\"\n",
             )
             .expect("write fake rustup");
             use std::os::unix::fs::PermissionsExt;

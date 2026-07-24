@@ -79,7 +79,14 @@ use serde::{Deserialize, Serialize};
 ///   failures cannot be acknowledged as successful.
 /// * v16 (soldr#1735): a bounded Windows IPC queue reports backpressure
 ///   and exposes its burst counters through daemon status.
-pub const PROTOCOL_VERSION: u32 = 16;
+/// * v17: `FlushCaches` returns a structured persistence report instead
+///   of an empty Ack, preserving pending/index drain failures and each
+///   embedded zccache save step's completed/failed/timed-out outcome.
+/// * v18: shutdown acknowledgements and status both carry the daemon
+///   generation that accepted the request. Callers can now wait for that
+///   exact responder without trusting a PID sampled before the request or
+///   signalling a successor after PID reuse.
+pub const PROTOCOL_VERSION: u32 = 18;
 
 /// Wire-chunk granularity for the streaming Compile reply (#983 Phase
 /// 5b). 64 KiB is the same buffer size cargo's own pipe readers use
@@ -192,7 +199,7 @@ pub enum Request {
     /// cache, pending writes) to disk WITHOUT shutting down. Issued by
     /// `soldr save` and `soldr cache flush` before archiving so the
     /// on-disk cache tree is complete (#1286 F1). Replies with
-    /// [`Response::Ack`].
+    /// [`Response::CacheFlushed`].
     FlushCaches,
     /// Request-response: return the embedded zccache service's cumulative
     /// compile counters (hits/misses/time-saved/…). Used by `soldr
@@ -257,7 +264,10 @@ pub struct CompileResponseBody {
 #[derive(Debug, Clone)]
 pub enum Response {
     Status(StatusInfo),
-    ShuttingDown,
+    /// Acknowledges graceful shutdown and identifies the daemon that accepted
+    /// the request. Callers must wait on this responder, not a PID sampled
+    /// before the request.
+    ShuttingDown(ShutdownAck),
     Builds(Vec<BuildRecord>),
     Error(String),
     /// The daemon is alive but its bounded compile-admission queue is full.
@@ -320,6 +330,71 @@ pub enum Response {
     /// Reply to [`Request::CompileStats`] (soldr#1368): the embedded
     /// zccache service's cumulative compile counters.
     CompileStats(CompileStatsInfo),
+    /// Reply to [`Request::FlushCaches`]. `complete` is false if any
+    /// pending write, index update, or named persistence step failed to
+    /// finish successfully before its bound.
+    CacheFlushed(CacheFlushInfo),
+}
+
+/// Identity of the daemon generation that accepted a shutdown request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShutdownAck {
+    pub pid: u32,
+    pub generation: u64,
+}
+
+/// Structured checkpoint result from the embedded zccache service.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheFlushInfo {
+    pub complete: bool,
+    pub pending_writes_drained: bool,
+    pub index_writer_drained: bool,
+    pub steps: Vec<CacheFlushStepInfo>,
+    pub artifact_entries: u64,
+    pub metadata_entries: u64,
+}
+
+impl CacheFlushInfo {
+    /// Recompute completeness from every constituent field instead of trusting
+    /// only the peer-provided summary bit.
+    pub fn is_complete(&self) -> bool {
+        self.complete
+            && self.pending_writes_drained
+            && self.index_writer_drained
+            && self.steps.iter().all(|step| step.status == "completed")
+    }
+
+    pub fn incomplete_reason(&self) -> String {
+        let mut reasons = Vec::new();
+        if !self.pending_writes_drained {
+            reasons.push("pending_writes=timed_out".to_owned());
+        }
+        if !self.index_writer_drained {
+            reasons.push("index_writer=timed_out".to_owned());
+        }
+        reasons.extend(
+            self.steps
+                .iter()
+                .filter(|step| step.status != "completed")
+                .map(|step| match &step.error {
+                    Some(error) => format!("{}={} ({error})", step.step, step.status),
+                    None => format!("{}={}", step.step, step.status),
+                }),
+        );
+        if reasons.is_empty() && !self.complete {
+            reasons.push("daemon_reported_incomplete".to_owned());
+        }
+        reasons.join(", ")
+    }
+}
+
+/// Result of one named embedded-cache persistence step.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheFlushStepInfo {
+    pub step: String,
+    /// Stable lowercase identifier: `completed`, `failed`, or `timed_out`.
+    pub status: String,
+    pub error: Option<String>,
 }
 
 /// Cumulative compile counters from the embedded zccache service
@@ -352,6 +427,8 @@ pub struct StagedProfileInfo {
 pub struct StatusInfo {
     pub version: u32,
     pub pid: u32,
+    /// Process-start generation shared with [`ShutdownAck`].
+    pub generation: u64,
     pub uptime_secs: u64,
     pub request_count: u64,
     /// Cook-index aggregate stats (issue #576).
@@ -455,8 +532,8 @@ pub struct BuildRecord {
 mod tests {
     use super::*;
 
-    crate::timed_test!(protocol_version_is_v16_after_ipc_backpressure, {
-        assert_eq!(PROTOCOL_VERSION, 16);
+    crate::timed_test!(protocol_version_is_v18_after_generation_aware_shutdown, {
+        assert_eq!(PROTOCOL_VERSION, 18);
     });
 
     crate::timed_test!(chunk_bytes_is_64_kib, {
@@ -466,10 +543,28 @@ mod tests {
         assert_eq!(CHUNK_BYTES, 64 * 1024);
     });
 
+    crate::timed_test!(cache_flush_completeness_is_derived_not_blindly_trusted, {
+        let mut report = CacheFlushInfo {
+            complete: true,
+            pending_writes_drained: true,
+            index_writer_drained: true,
+            steps: vec![CacheFlushStepInfo {
+                step: "depgraph".into(),
+                status: "completed".into(),
+                error: None,
+            }],
+            ..Default::default()
+        };
+        assert!(report.is_complete());
+        report.steps[0].status = "failed".into();
+        assert!(!report.is_complete());
+    });
+
     crate::timed_test!(cook_stats_or_zero_defaults_to_zero, {
         let info = StatusInfo {
             version: PROTOCOL_VERSION,
             pid: 1,
+            generation: 2,
             uptime_secs: 0,
             request_count: 0,
             cook_stats: None,

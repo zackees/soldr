@@ -100,7 +100,7 @@ fn resolve_target_directory_with_env(
     let mut probe = std::process::Command::new(tool);
     probe.args(["metadata", "--format-version", "1", "--no-deps"]);
     probe.args(crate::rust_plan::cargo_metadata_passthrough_args(args));
-    crate::apply_implicit_toolchain_homes(&mut probe);
+    crate::binaries::apply_resolved_toolchain_homes(&mut probe, tool);
     suppress_windows_console_window(&mut probe);
     probe.env_remove("MAKEFLAGS");
     probe.env_remove("CARGO_MAKEFLAGS");

@@ -357,7 +357,7 @@ pub(crate) fn probe_rustlib_integrity() -> ProbeResult {
 fn query_rustc_sysroot(rustc: &Path) -> Result<PathBuf, String> {
     let mut command = std::process::Command::new(rustc);
     command.args(["--print", "sysroot"]);
-    crate::binaries::apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, rustc);
     suppress_windows_console_window(&mut command);
     let output =
         command_output_with_timeout(&mut command, "rustc --print sysroot").map_err(|err| {

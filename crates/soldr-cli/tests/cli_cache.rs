@@ -610,11 +610,11 @@ fn clean_rejects_json_flag() {
 }
 
 /// soldr#1368: `cache flush` checkpoints the soldr-daemon EMBEDDED zccache
-/// state. With no daemon reachable, soldr reports a graceful
-/// "unavailable" note (flushed=false) instead of erroring — the managed
-/// `zccache flush` subprocess is gone.
+/// state. With no daemon reachable there is no checkpoint to certify, so the
+/// command must report `flushed=false` and return non-zero instead of claiming
+/// a successful no-op.
 #[test]
-fn cache_flush_reports_embedded_unavailable_without_daemon() {
+fn cache_flush_fails_when_embedded_daemon_is_unavailable() {
     let cache_root = unique_temp_dir("cache-flush-embedded");
     let output = common::isolated_soldr_command()
         .args(["cache", "flush", "--json"])
@@ -622,8 +622,8 @@ fn cache_flush_reports_embedded_unavailable_without_daemon() {
         .output()
         .expect("failed to run soldr cache flush --json");
     assert!(
-        output.status.success(),
-        "cache flush --json must succeed even with no daemon
+        !output.status.success(),
+        "cache flush --json must fail when no daemon can acknowledge persistence
 stdout:
 {}
 stderr:
@@ -645,11 +645,11 @@ stderr:
     );
 }
 
-/// soldr#1368: `cache shutdown` no longer stops an external managed
-/// zccache daemon or polls it — it flushes the embedded state for
-/// durability and returns promptly. With no daemon it still succeeds.
+/// `cache shutdown` targets soldr-daemon itself. With no daemon it remains
+/// idempotent, but its JSON must distinguish "already absent" from a shutdown
+/// request that was actually accepted.
 #[test]
-fn cache_shutdown_flushes_embedded_and_returns_fast() {
+fn cache_shutdown_reports_already_absent_truthfully() {
     let cache_root = unique_temp_dir("cache-shutdown-embedded");
     let start = std::time::Instant::now();
     let output = common::isolated_soldr_command()
@@ -675,4 +675,7 @@ stderr:
     let json: Value = serde_json::from_slice(&output.stdout)
         .expect("cache shutdown --json must produce parseable JSON");
     assert_eq!(json["command"], "cache shutdown");
+    assert_eq!(json["daemon_was_running"], false);
+    assert_eq!(json["shutdown_requested"], false);
+    assert_eq!(json["daemon_exited"], true);
 }

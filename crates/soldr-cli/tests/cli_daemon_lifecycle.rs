@@ -1,7 +1,8 @@
 //! Integration coverage for `soldr daemon start --foreground` /
 //! `soldr daemon status` / `soldr daemon stop`. Verifies the daemon
-//! comes up, answers status, shuts down cleanly, and leaves no PID
-//! or socket file behind.
+//! comes up, answers status, and shuts down cleanly. Retired daemons
+//! deliberately leave stale endpoint claims for the next root owner
+//! to reclaim.
 
 #![allow(clippy::print_stdout)]
 
@@ -70,6 +71,16 @@ fn isolated_env(cache_root: &Path, home_root: &Path) -> Vec<(&'static str, OsStr
     ]
 }
 
+fn scrub_outer_soldr_runtime(cmd: &mut Command) {
+    cmd.env_remove("RUSTC_WRAPPER")
+        // A dogfooded outer `soldr cargo test` exports its installed daemon
+        // image for compiler-child recovery. Fixtures must exercise the
+        // binaries built for this test invocation instead.
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR)
+        .env_remove("SOLDR_ORIGINAL_EXE")
+        .env_remove("SOLDR_RELOCATED_EXE");
+}
+
 fn wait_for_ready(cache_root: &Path, home_root: &Path, deadline: Instant) -> bool {
     // PID file is written before the accept loop binds the endpoint, so
     // it only proves the process started. The CLI contract this test
@@ -104,7 +115,7 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path) -> std::process
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
     }
-    cmd.env_remove("RUSTC_WRAPPER");
+    scrub_outer_soldr_runtime(&mut cmd);
     cmd.output().expect("failed to run soldr")
 }
 
@@ -125,7 +136,7 @@ fn run_soldr_with_timeout(
     }
     cmd.env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "10000");
     cmd.env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60");
-    cmd.env_remove("RUSTC_WRAPPER");
+    scrub_outer_soldr_runtime(&mut cmd);
 
     let mut child = cmd.spawn().expect("failed to spawn soldr");
     if child
@@ -164,6 +175,7 @@ impl Daemon {
         for (k, v) in isolated_env(&cache_root, &home_root) {
             cmd.env(k, v);
         }
+        scrub_outer_soldr_runtime(&mut cmd);
         let child = cmd.spawn().expect("spawn soldr-daemon");
         // A cold embedded-zccache initialization can take ~25 seconds in
         // the shared Docker development runner. Keep the fixture bounded,
@@ -199,13 +211,11 @@ impl Drop for Daemon {
     }
 }
 
-#[cfg(windows)]
 struct DaemonCleanup {
     cache_root: PathBuf,
     home_root: PathBuf,
 }
 
-#[cfg(windows)]
 impl Drop for DaemonCleanup {
     fn drop(&mut self) {
         let _ = run_soldr(&["daemon", "stop"], &self.cache_root, &self.home_root);
@@ -246,17 +256,17 @@ fn start_status_stop_round_trip() {
 
     drop(daemon);
 
-    // The PID file is the canonical "did the daemon leave anything
-    // behind" signal; the socket path can relocate to $TMPDIR under
-    // SUN_LEN so checking its absence is brittle.
-    let pid_path = cache_root
-        .join("cache")
-        .join("soldr-daemon")
-        .join("daemon.pid");
-    assert!(
-        !pid_path.exists(),
-        "pid file left behind at {}",
-        pid_path.display()
+    // Shared claims remain as stale evidence. Startup reclaims them while it
+    // owns the root; retirement never performs a racy check-then-unlink.
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::read_pid_file(&paths).map(|(pid, _)| u64::from(pid)),
+        Some(pid),
+        "retirement should preserve the stopped generation's PID claim"
+    );
+    assert_eq!(
+        soldr_cli::daemon::lifecycle::is_live(&paths),
+        None,
+        "a retained PID claim must not count as a live daemon"
     );
 }
 
@@ -303,8 +313,8 @@ fn direct_recovery_accepts_slim_via_self_daemon() {
         for (key, value) in isolated_env(&cache_root, &home_root) {
             cmd.env(key, value);
         }
-        cmd.env("RUNNING_PROCESS_DISABLE", "1")
-            .env_remove("RUSTC_WRAPPER");
+        cmd.env("RUNNING_PROCESS_DISABLE", "1");
+        scrub_outer_soldr_runtime(&mut cmd);
         cmd.output().expect("run slim soldr")
     };
 
@@ -336,6 +346,98 @@ fn direct_recovery_accepts_slim_via_self_daemon() {
     let stop = run_slim(&["daemon", "stop"]);
     assert!(stop.status.success(), "slim daemon stop failed: {stop:?}");
 }
+
+soldr_cli::timed_test!(
+    standalone_compiler_shim_recovers_with_canonical_daemon_image,
+    Duration::from_secs(120),
+    {
+        let cache_root = unique_temp_dir("daemon-standalone-wrapper-cache");
+        let home_root = unique_temp_dir("daemon-standalone-wrapper-home");
+        let shim_dir = unique_temp_dir("daemon-standalone-wrapper-bin");
+        let workspace = unique_temp_dir("daemon-standalone-wrapper-workspace");
+        let _cleanup = DaemonCleanup {
+            cache_root: cache_root.clone(),
+            home_root: home_root.clone(),
+        };
+
+        let compiler_shim = shim_dir.join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+        fs::copy(common::soldr_bin(), &compiler_shim).expect("copy compiler-named soldr shim");
+        let source = workspace.join("probe.rs");
+        let out_dir = workspace.join("out");
+        fs::create_dir_all(&out_dir).expect("create rustc out dir");
+        fs::write(&source, "pub fn answer() -> u8 { 42 }\n").expect("write rust source");
+
+        let mut cmd = Command::new(&compiler_shim);
+        cmd.args([
+            common::rustup_which("rustc"),
+            "--crate-name".to_string(),
+            "standalone_wrapper_probe".to_string(),
+            "--crate-type".to_string(),
+            "lib".to_string(),
+            "--emit".to_string(),
+            "metadata".to_string(),
+            source.display().to_string(),
+            "--out-dir".to_string(),
+            out_dir.display().to_string(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        for (key, value) in isolated_env(&cache_root, &home_root) {
+            cmd.env(key, value);
+        }
+        cmd.env("RUNNING_PROCESS_DISABLE", "1")
+            .env("SOLDR_CACHE_ENABLED", "1")
+            .env("SOLDR_DAEMON_REQUIRED", "1")
+            .env("SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS", "40000")
+            .env("SOLDR_COMPILE_REPLY_TIMEOUT_SECS", "60")
+            .env_remove("RUSTC_WRAPPER")
+            .env_remove("SOLDR_INTERNAL_DAEMON_EXE")
+            .env_remove("SOLDR_ORIGINAL_EXE")
+            .env_remove("SOLDR_RELOCATED_EXE");
+
+        let mut child = cmd.spawn().expect("spawn standalone compiler shim");
+        if child
+            .wait_timeout(Duration::from_secs(90))
+            .expect("wait for standalone compiler shim")
+            .is_none()
+        {
+            let _ = child.kill();
+            let output = child.wait_with_output().expect("collect timed-out wrapper");
+            panic!(
+                "standalone compiler shim timed out\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let output = child.wait_with_output().expect("collect compiler shim");
+        assert!(
+            output.status.success(),
+            "standalone compiler shim failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let paths = SoldrPaths::with_root(cache_root.clone());
+        let (_pid, daemon_exe) =
+            soldr_cli::daemon::lifecycle::read_pid_file(&paths).expect("daemon PID publication");
+        assert_eq!(
+            daemon_exe.file_stem().and_then(std::ffi::OsStr::to_str),
+            Some("soldr-daemon"),
+            "compiler recovery must never leave a rustc-named daemon: {}",
+            daemon_exe.display()
+        );
+        assert!(
+            shim_dir
+                .join(if cfg!(windows) {
+                    "soldr-daemon.exe"
+                } else {
+                    "soldr-daemon"
+                })
+                .is_file(),
+            "standalone wrapper recovery must materialize the canonical daemon alias"
+        );
+    }
+);
 
 #[test]
 fn doctor_uses_same_endpoint_as_daemon_status_for_cook_counts() {

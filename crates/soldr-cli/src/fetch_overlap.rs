@@ -133,7 +133,7 @@ pub(crate) fn spawn_for_blessed_build(build_args: &[String], target: &str) -> Op
     // probes and the prefetch provably bypasses the cache layer.
     command.env_remove("RUSTC_WRAPPER");
     command.env_remove("RUSTC_WORKSPACE_WRAPPER");
-    crate::binaries::apply_implicit_toolchain_homes(&mut command);
+    crate::binaries::apply_resolved_toolchain_homes(&mut command, &cargo);
     crate::core::suppress_windows_console_window(&mut command);
     // Quiet child: progress output would interleave with blessed-prep
     // logging, and every error it could print is reproduced by the

@@ -170,9 +170,8 @@ pub struct BuildReport {
 /// `RUSTC_WORKSPACE_WRAPPER` injection by resolving cargo through
 /// [`resolve_toolchain_binary`] directly and scrubbing inherited wrappers.
 pub fn execute_plan(plan: &BuildPlan) -> Result<BuildReport, SoldrError> {
-    // Honour the same retry budget the managed zccache path uses so
-    // transient crates.io / registry hiccups don't spuriously fail the
-    // source-build verb.
+    // Honour the standard tool-fetch retry budget so transient crates.io /
+    // registry hiccups don't spuriously fail the source-build verb.
     let cargo = resolve_toolchain_binary("cargo")?;
     let parent = plan.install_dir.parent().ok_or_else(|| {
         SoldrError::Other(format!(

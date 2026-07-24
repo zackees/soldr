@@ -16,9 +16,9 @@
 //! single user-facing call:
 //!
 //! ```ignore
-//! let candidates = ["install-zccache", "update-zccache", "doctor"];
-//! suggest_close_match("update-zccacheee", &candidates);
-//! // => Some("update-zccache")
+//! let candidates = ["build-from-source", "doctor"];
+//! suggest_close_match("build-from-sorce", &candidates);
+//! // => Some("build-from-source")
 //! ```
 //!
 //! Threshold per issue #412 (acceptance criteria):

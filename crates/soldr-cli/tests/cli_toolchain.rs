@@ -301,6 +301,66 @@ fn toolchain_prepare_installs_plugins_with_version() {
     );
 }
 
+#[test]
+fn toolchain_prepare_host_cargo_keeps_managed_install_home_without_managed_rustup_home() {
+    let workspace = unique_temp_dir("toolchain-prepare-plugin-home-boundary");
+    seed_rust_toolchain_toml(
+        &workspace,
+        "[toolchain]\n\
+         channel = \"1.94.1\"\n\
+         \n\
+         [soldr.plugins]\n\
+         cargo-nextest = \"0.9\"\n",
+    );
+    let cache_root = unique_temp_dir("toolchain-prepare-plugin-managed-home");
+    let managed_cargo_home = cache_root.join("cargo");
+    let managed_rustup_home = cache_root.join("rustup");
+    fs::create_dir_all(&managed_cargo_home).expect("create managed Cargo home");
+    fs::create_dir_all(&managed_rustup_home).expect("create managed Rustup home");
+
+    let rustup_log = workspace.join("rustup.log");
+    let cargo_log = workspace.join("cargo.log");
+    let rustup = install_logging_fake_rustup(&rustup_log);
+    let host_tool_dir = unique_temp_dir("toolchain-prepare-plugin-host-tools");
+    let (cargo, _, _) = install_fake_version_toolchain(&host_tool_dir, &cargo_log);
+
+    let output = isolated_soldr_command()
+        .args(["toolchain", "prepare"])
+        .current_dir(&workspace)
+        .env("SOLDR_CACHE_DIR", &cache_root)
+        .env("SOLDR_TEST_RUSTUP_BIN", &rustup)
+        .env("SOLDR_TEST_CARGO_BIN", &cargo)
+        .env_remove("CARGO_HOME")
+        .env_remove("RUSTUP_HOME")
+        .output()
+        .expect("failed to run soldr toolchain prepare");
+
+    assert!(
+        output.status.success(),
+        "soldr toolchain prepare failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let log = fs::read_to_string(&cargo_log).expect("read fake cargo log");
+    let cargo_line = log
+        .lines()
+        .find(|line| line.starts_with("cargo "))
+        .unwrap_or_else(|| panic!("plugin install did not invoke host Cargo: {log}"));
+    assert!(
+        path_display_variants(&managed_cargo_home)
+            .iter()
+            .any(|path| cargo_line.contains(&format!("cargo_home={path}"))),
+        "plugin install must keep Soldr's managed CARGO_HOME: {cargo_line}"
+    );
+    assert!(
+        path_display_variants(&managed_rustup_home)
+            .iter()
+            .all(|path| !cargo_line.contains(&format!("rustup_home={path}"))),
+        "host Cargo must not receive Soldr's managed RUSTUP_HOME: {cargo_line}"
+    );
+}
+
 #[cfg(not(windows))]
 timed_test!(
     toolchain_prepare_plugin_install_clears_inherited_rustc_wrappers,

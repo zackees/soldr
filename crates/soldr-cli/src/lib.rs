@@ -14,6 +14,13 @@
 
 #![allow(dead_code, unused_imports)]
 
+/// Process-wide barrier for unit tests that mutate environment variables.
+///
+/// Rust runs a crate's unit tests in one process, so module-local mutexes do
+/// not prevent two different modules from racing on values such as `SDKROOT`.
+#[cfg(test)]
+pub(crate) static TEST_PROCESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod archive_cmd;
 pub mod binaries;
 /// soldr#1012 PR 5 — blessed cross-compile sysroot prep called from

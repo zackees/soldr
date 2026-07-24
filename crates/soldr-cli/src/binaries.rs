@@ -224,6 +224,35 @@ pub(crate) fn apply_implicit_toolchain_homes(command: &mut std::process::Command
     apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
 }
 
+/// Apply homes that match a toolchain binary Soldr already resolved.
+///
+/// Rustup discovery and bootstrap intentionally use Soldr's managed homes,
+/// but a concrete host binary must keep the caller's host Rustup context.
+/// Mixing a host Cargo/rustfmt proxy with Soldr's default-less managed
+/// `RUSTUP_HOME` makes Rustup report that no default toolchain is configured.
+pub(crate) fn apply_resolved_toolchain_homes(
+    command: &mut std::process::Command,
+    binary: &std::path::Path,
+) {
+    let start_dir = std::env::current_dir().ok();
+    crate::core::apply_implicit_toolchain_homes(command, start_dir.as_deref());
+
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    let managed_cargo_home = crate::fetch::managed_cargo_home(&paths);
+    let managed_rustup_home = crate::fetch::managed_rustup_home(&paths);
+    if path_is_within(binary, &managed_cargo_home) || path_is_within(binary, &managed_rustup_home) {
+        apply_managed_toolchain_homes_if_available(command, start_dir.as_deref());
+    }
+}
+
+fn path_is_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    path.starts_with(root)
+}
+
 fn apply_managed_toolchain_homes_if_available(
     command: &mut std::process::Command,
     start_dir: Option<&std::path::Path>,
@@ -231,18 +260,47 @@ fn apply_managed_toolchain_homes_if_available(
     let Ok(paths) = SoldrPaths::new() else {
         return;
     };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir, &paths);
+    apply_managed_rustup_home_if_available_for_paths(command, start_dir, &paths);
+}
+
+/// Apply only Soldr's managed Cargo home when it is implicit and available.
+///
+/// Tool-acquisition paths use this after [`apply_resolved_toolchain_homes`]:
+/// plugins still install into Soldr's managed Cargo root, while a host-owned
+/// Cargo binary keeps its host Rustup context.
+pub(crate) fn apply_managed_cargo_home_if_available(command: &mut std::process::Command) {
+    let start_dir = std::env::current_dir().ok();
+    let Ok(paths) = SoldrPaths::new() else {
+        return;
+    };
+    apply_managed_cargo_home_if_available_for_paths(command, start_dir.as_deref(), &paths);
+}
+
+fn apply_managed_cargo_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::CARGO_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".cargo").is_none()
     {
-        let managed = crate::fetch::managed_cargo_home(&paths);
+        let managed = crate::fetch::managed_cargo_home(paths);
         if managed.is_dir() {
             command.env(crate::core::CARGO_HOME_ENV_VAR, managed);
         }
     }
+}
+
+fn apply_managed_rustup_home_if_available_for_paths(
+    command: &mut std::process::Command,
+    start_dir: Option<&std::path::Path>,
+    paths: &SoldrPaths,
+) {
     if std::env::var_os(crate::core::RUSTUP_HOME_ENV_VAR).is_none()
         && find_ancestor_dir(start_dir, ".rustup").is_none()
     {
-        let managed = crate::fetch::managed_rustup_home(&paths);
+        let managed = crate::fetch::managed_rustup_home(paths);
         if managed.is_dir() {
             command.env(crate::core::RUSTUP_HOME_ENV_VAR, managed);
         }
@@ -357,6 +415,41 @@ pub(crate) fn rustc_wrapper_shim_binary(
 /// Materialize the daemon's stable process/service identity next to soldr.
 pub(crate) fn soldr_daemon_binary() -> Result<std::path::PathBuf, SoldrError> {
     materialize_runtime_alias("soldr-daemon")
+}
+
+/// Ensure compiler-side daemon recovery has a canonically named executable.
+///
+/// The managed Cargo front door normally injects this handoff once for every
+/// compiler child. Direct `RUSTC_WRAPPER` / `zccache-soldr` invocations do not
+/// have that parent, so recover it lazily after the first failed daemon probe.
+/// Reuse an existing sibling without hashing; only first use materializes the
+/// multicall alias.
+pub(crate) fn ensure_daemon_executable_handoff() -> Result<std::path::PathBuf, SoldrError> {
+    let env_var = crate::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR;
+    if let Some(configured) = non_empty_env_path(env_var).filter(|path| {
+        path.is_file()
+            && path
+                .file_stem()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|stem| stem.eq_ignore_ascii_case("soldr-daemon"))
+    }) {
+        return Ok(configured);
+    }
+
+    let current = std::env::current_exe().map_err(SoldrError::from)?;
+    let sibling = current.parent().map(|parent| {
+        parent.join(if cfg!(windows) {
+            "soldr-daemon.exe"
+        } else {
+            "soldr-daemon"
+        })
+    });
+    let daemon = sibling
+        .filter(|path| path.is_file())
+        .map(Ok)
+        .unwrap_or_else(soldr_daemon_binary)?;
+    std::env::set_var(env_var, &daemon);
+    Ok(daemon)
 }
 
 fn materialize_runtime_alias(stem: &str) -> Result<std::path::PathBuf, SoldrError> {
