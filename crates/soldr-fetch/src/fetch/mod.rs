@@ -517,7 +517,7 @@ async fn fetch_repo_binary_once(
     // motivated this issue). Failure deletes the extracted artifact
     // and bubbles up a clear error so the caller can retry or fail
     // loudly instead of silently caching a broken binary.
-    smoke_test_or_evict(&binary_path, cache_name)?;
+    smoke_test_or_evict(&binary_path, cache_name, target)?;
 
     Ok(FetchResult {
         binary_path,
@@ -530,9 +530,34 @@ async fn fetch_repo_binary_once(
 /// with `--version` (with a short timeout). On failure, evict the
 /// extracted file so the next fetch attempt does a clean re-download
 /// rather than reading the corrupt artifact from cache.
-fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Result<(), SoldrError> {
-    use std::process::Command;
+fn smoke_rustup_toolchain(cache_name: &str, target: &TargetTriple) -> Option<String> {
+    // `dylint-link` is a transparent linker wrapper. It requires this
+    // variable before it will forward even `--version` / `--help` to the
+    // underlying linker. The smoke probe does not compile anything, so a
+    // target-qualified synthetic nightly identity is sufficient and avoids
+    // rejecting the healthy official release binary.
+    (cache_name == "dylint-link").then(|| format!("nightly-{}", target.triple()))
+}
 
+fn smoke_command(
+    binary_path: &std::path::Path,
+    cache_name: &str,
+    target: &TargetTriple,
+    arg: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(binary_path);
+    command.arg(arg);
+    if let Some(toolchain) = smoke_rustup_toolchain(cache_name, target) {
+        command.env("RUSTUP_TOOLCHAIN", toolchain);
+    }
+    command
+}
+
+fn smoke_test_or_evict(
+    binary_path: &std::path::Path,
+    cache_name: &str,
+    target: &TargetTriple,
+) -> Result<(), SoldrError> {
     if !binary_path.is_file() {
         return Err(SoldrError::Other(format!(
             "smoke test: {cache_name} binary at {} is not a file after extract",
@@ -540,7 +565,7 @@ fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Resul
         )));
     }
 
-    let output = Command::new(binary_path).arg("--version").output();
+    let output = smoke_command(binary_path, cache_name, target, "--version").output();
 
     let evict = |reason: &str| {
         eprintln!(
@@ -556,8 +581,7 @@ fn smoke_test_or_evict(binary_path: &std::path::Path, cache_name: &str) -> Resul
             // Some tools (e.g. unusual subcommand stubs) don't support
             // --version cleanly. Fall through to --help as the
             // second-chance probe before evicting.
-            let help_ok = Command::new(binary_path)
-                .arg("--help")
+            let help_ok = smoke_command(binary_path, cache_name, target, "--help")
                 .output()
                 .map(|h| h.status.success())
                 .unwrap_or(false);
@@ -1199,8 +1223,8 @@ mod tests {
     crate::timed_test!(smoke_test_missing_file_errors, {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let bogus = tmp.path().join("not-a-binary");
-        let err =
-            smoke_test_or_evict(&bogus, "fake-tool").expect_err("missing file must fail smoke");
+        let err = smoke_test_or_evict(&bogus, "fake-tool", &TargetTriple::host().unwrap())
+            .expect_err("missing file must fail smoke");
         assert!(
             err.to_string().contains("not a file after extract"),
             "expected 'not a file after extract' in error, got: {err}"
@@ -1227,7 +1251,8 @@ mod tests {
             std::fs::set_permissions(&bogus_bin, p).unwrap();
         }
 
-        let result = smoke_test_or_evict(&bogus_bin, "cargo-zigbuild");
+        let result =
+            smoke_test_or_evict(&bogus_bin, "cargo-zigbuild", &TargetTriple::host().unwrap());
         // On Windows the shebang fails to execute at all → exec error
         // path. On Unix the script runs but exits 1 → exit-status
         // path. Both paths must evict + error.
@@ -1236,5 +1261,14 @@ mod tests {
             !bogus_bin.is_file(),
             "smoke failure must evict the corrupted binary at {bogus_bin:?}"
         );
+    });
+
+    crate::timed_test!(dylint_link_smoke_sets_target_qualified_toolchain, {
+        let target = TargetTriple::from_triple("x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(
+            smoke_rustup_toolchain("dylint-link", &target).as_deref(),
+            Some("nightly-x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(smoke_rustup_toolchain("cargo-dylint", &target), None);
     });
 }
