@@ -2618,6 +2618,26 @@ async fn ensure_known_subcommand_tool(
     let mut extra_env: Vec<(String, String)> = Vec::new();
     let mut extra_cargo_args: Vec<String> = Vec::new();
 
+    // Dylint v6.0.1's published cargo-dylint binary is not relocatable:
+    // its driver manifest embeds the release runner's absolute
+    // `/home/runner/work/dylint/dylint/driver` path. Source-build the
+    // pinned cargo-dylint crate on every host, even when an arbitrary
+    // cargo-dylint is already on PATH, so the installed driver source
+    // remains available and the result is portable across libc versions.
+    // `dylint-link` is resolved separately and may still use its healthy
+    // official prebuilt.
+    if requires_managed_dylint_source_build(sub) {
+        return dylint_source_build_bootstrap(
+            args,
+            paths,
+            extra_bin_dirs,
+            extra_env,
+            extra_cargo_args,
+            "cargo-dylint v6.0.1's official binary is not relocatable",
+        )
+        .await;
+    }
+
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
         if let Some(path) = find_on_path(&exe_name) {
@@ -2649,26 +2669,6 @@ async fn ensure_known_subcommand_tool(
         }
     }
 
-    // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
-    // Windows or macOS ones. Keep its normal managed-fetch path on the
-    // supported host and use Soldr's pinned, wrapper-free source-build
-    // path elsewhere. A published Linux binary can still require a newer
-    // GLIBC than the running distribution; the managed fetch below gets
-    // first refusal, then an executable-smoke failure takes this same
-    // source-build path. Trust and checksum failures never fall back.
-    // The result is cached below ~/.soldr/bin, just like the explicitly
-    // requested soldr build-from-source flow.
-    if sub == "dylint" && dylint_requires_source_build() {
-        return dylint_source_build_bootstrap(
-            args,
-            paths,
-            extra_bin_dirs,
-            extra_env,
-            extra_cargo_args,
-            "cargo-dylint has no prebuilt asset for this host",
-        )
-        .await;
-    }
     let version = spec
         .pinned_version
         .map(|v| VersionSpec::Exact(v.to_string()))
@@ -2683,17 +2683,6 @@ async fn ensure_known_subcommand_tool(
     .await
     {
         Ok(result) => result,
-        Err(error) if sub == "dylint" && dylint_prebuilt_smoke_failed(&error) => {
-            return dylint_source_build_bootstrap(
-                args,
-                paths,
-                extra_bin_dirs,
-                extra_env,
-                extra_cargo_args,
-                &format!("cargo-dylint prebuilt is not executable on this host ({error})"),
-            )
-            .await;
-        }
         Err(error) => return Err(error),
     };
 
@@ -2717,9 +2706,6 @@ async fn ensure_known_subcommand_tool(
         })?
         .to_path_buf();
     extra_bin_dirs.push(dir);
-    if sub == "dylint" {
-        extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
-    }
     append_subcommand_transitive_bin_dirs(
         sub,
         args,
@@ -2746,7 +2732,7 @@ async fn dylint_source_build_bootstrap(
 ) -> Result<SubcommandToolBootstrap, SoldrError> {
     eprintln!("soldr: {reason}; preparing pinned source fallback...");
     extra_bin_dirs.push(source_built_dylint_bin_dir("cargo-dylint", paths)?);
-    extra_bin_dirs.push(source_built_dylint_bin_dir("dylint-link", paths)?);
+    extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
     append_subcommand_transitive_bin_dirs(
         "dylint",
         args,
@@ -2787,7 +2773,7 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
                     ))
                 })
         }
-        Err(error) if dylint_prebuilt_smoke_failed(&error) => {
+        Err(error) if dylint_link_prebuilt_smoke_failed(&error) => {
             eprintln!(
                 "soldr: dylint-link prebuilt is not executable on this host ({error}); \
                  building pinned source fallback..."
@@ -2823,15 +2809,15 @@ fn source_built_dylint_bin_dir(
         })
 }
 
-fn dylint_prebuilt_smoke_failed(error: &SoldrError) -> bool {
+fn dylint_link_prebuilt_smoke_failed(error: &SoldrError) -> bool {
     matches!(
         error,
         SoldrError::Other(message) if message.starts_with("smoke test failed:")
     )
 }
 
-fn dylint_requires_source_build() -> bool {
-    !cfg!(all(target_os = "linux", target_env = "gnu"))
+fn requires_managed_dylint_source_build(sub: &str) -> bool {
+    sub == "dylint"
 }
 
 fn insert_cargo_global_args(args: &[String], cargo_args: &[String]) -> Vec<String> {

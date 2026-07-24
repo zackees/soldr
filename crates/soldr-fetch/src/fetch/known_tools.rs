@@ -245,8 +245,8 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
     },
     // Phase 5 — web/wasm + cache. Top-level tools invoked directly.
     // `cargo-dylint` is the compiler-plugin runner used by `soldr lint`.
-    // Upstream publishes Linux GNU archives; other hosts use Soldr's
-    // source-build fallback in the cargo front door (soldr#1721).
+    // Dylint 6.0.1's archive embeds its CI checkout path, so the cargo
+    // front door source-builds this exact registry pin on every host.
     ToolSpec {
         crate_name: "cargo-dylint",
         cargo_subcommand: Some("dylint"),
