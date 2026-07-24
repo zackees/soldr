@@ -2,8 +2,6 @@ name: Dylint Cache Acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches: [fix/1783-soldr-dylint]
   pull_request:
     paths:
       - ".github/scripts/dylint_cache_acceptance.py"
