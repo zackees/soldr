@@ -160,7 +160,7 @@ impl CargoCachePlan {
         self.rust_artifact_plan
             .as_ref()
             .map(|plan| std::path::PathBuf::from(&plan.target_dir))
-            .or_else(|| super::resolve_target_dir_for_gc(args))
+            .or_else(|| super::resolve_target_dir_for_hooks(args))
     }
 
     pub(crate) fn restore_rust_artifacts(&self) -> Result<RustPlanRestoreOutcome, SoldrError> {

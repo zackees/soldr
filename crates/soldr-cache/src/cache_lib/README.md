@@ -10,15 +10,14 @@ prune that ships to zccache via the thin Rust artifact plan.
 - `mod.rs` — public re-exports + the shared cache-root path helpers.
 - `state_db.rs` — `redb`-backed registry of tracked `target/` dirs and
   cargo registry-src caches.
-- `auto_gc.rs` / `auto_target_gc.rs` — background GC trigger and the
-  pre/post-build target prune hooks (issue #485).
+- `auto_gc.rs` — background cache-GC trigger.
 - `cargo_global_cache.rs` — `cargo`-native `clean gc` invocation
   helpers (`$CARGO_HOME` cleanup orchestration).
 - `gc.rs` — soldr-side GC pass orchestrator: locations, summary, purge.
 - `save.rs` — `soldr save` / `soldr load` archive plumbing (mtime-
   preserving tar.zst bundle of the build cache + protobuf
   source/cache-file manifest, including base+delta cache layers).
-- `prune_target.rs` — per-build `target/` prune (orphan hash-sibling
+- `prune_target.rs` — explicit `target/` maintenance (orphan hash-sibling
   removal + `--keep-latest` aggressive mode). Tests live in
   `prune_target_tests.rs`, included via `#[path]` so `prune_target.rs`
   stays under the loc_guard 1K LOC budget.

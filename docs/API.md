@@ -695,41 +695,17 @@ JSON schema (`--json`):
 }
 ```
 
-**Automatic pre/post-compile pruning (issue #485).** The cargo front
-door (`soldr cargo <build-like-subcommand>`) runs the
-`--keep-latest` strategy against the resolved `target/` directory
-both BEFORE spawning cargo and AFTER cargo succeeds. Hooks engage
-for the same set of build-like subcommands that participate in
-soldr's compilation cache (build, check, test, clippy, run, doc,
-…). Non-build commands (e.g. `cargo metadata`) skip the hooks.
+**Explicit target pruning (issues #485 and #1818).** Soldr no longer
+prunes hash families automatically around build-like invocations.
+Multiple families for one crate can all be live at once, so selecting
+only the newest family can turn an unchanged warm build into a rebuild
+loop.
 
-When a pass actually frees bytes a single stderr summary is
-emitted, e.g.:
-
-```
-soldr: target-gc (before): pruned 4 stale hash families, reclaimed 218 MB
-```
-
-Passes that delete nothing stay silent. Passes that refuse because
-an active `.cargo-lock` is present (parallel cargo invocations
-sharing the same `target/`) also stay silent — the same guard the
-manual subcommand uses.
-
-Opt-out surface (all default-off; multiple may combine):
-
-- `--no-gc-target` — skip both pre- and post-compile passes for this
-  invocation. Stripped from the arg list before forwarding to cargo.
-- `--no-gc-target-before` — skip only the pre-compile pass.
-- `--no-gc-target-after` — skip only the post-compile pass.
-- `SOLDR_NO_GC_TARGET=1` — env-var equivalent of `--no-gc-target`,
-  for invocations the cargo arg list can't reach (e.g. a parent
-  process that spawns cargo without going through `soldr cargo`).
-  Truthy values (`1`, `true`, `yes`, any non-empty non-zero string)
-  enable the opt-out; `0`, `false`, and unset disable it.
-
-The hooks reuse the same `find_active_cargo_lock` guard as the
-manual subcommand, so a parallel cargo build in the same `target/`
-will never be raced.
+Use `soldr cache prune-target <path>` when explicit target maintenance
+is desired. The historical `--no-gc-target`,
+`--no-gc-target-before`, and `--no-gc-target-after` flags remain
+accepted as compatibility no-ops. `SOLDR_NO_GC_TARGET` is likewise
+accepted but unnecessary now that no automatic pass runs.
 
 ### `soldr version`
 
@@ -1843,7 +1819,7 @@ in soldr#784):
 * `restore_rust_artifacts` is `let Some(plan) = … else { return Ok(()) }` — a
   pure stat-free no-op when the plan is absent.
 * `save_rust_artifacts` is `if let Some(plan) = …` — same no-op shape.
-* `target_dir_for_hooks` falls through to `super::resolve_target_dir_for_gc`,
+* `target_dir_for_hooks` falls through to `super::resolve_target_dir_for_hooks`,
   which only walks `--target-dir` / `CARGO_TARGET_DIR` / workspace lookup. The
   watchdog hook at `cargo_front_door/mod.rs` therefore sees the same target
   dir resolution regardless of target-cache state.

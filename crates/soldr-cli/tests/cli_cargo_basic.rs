@@ -64,6 +64,59 @@ fn cargo_front_door_consumes_no_cache_flag() {
     );
 }
 
+timed_test!(cargo_front_door_preserves_live_target_hash_families, {
+    let root = unique_temp_dir("cargo-preserves-target-families");
+    let workspace = root.join("workspace");
+    let tool_dir = root.join("tool");
+    let cache_root = root.join("soldr-cache");
+    let cargo_log = root.join("cargo.log");
+    let deps = workspace.join("target").join("debug").join("deps");
+    fs::create_dir_all(workspace.join("src")).expect("workspace src");
+    fs::create_dir_all(&tool_dir).expect("tool dir");
+    fs::create_dir_all(&deps).expect("target deps");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[package]\nname = \"preserve_families\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("manifest");
+    fs::write(workspace.join("src/lib.rs"), "pub fn ok() {}\n").expect("source");
+
+    let first_family = deps.join("libshared-aaaaaaaaaaaaa.rlib");
+    let second_family = deps.join("libshared-bbbbbbbbbbbbb.rlib");
+    fs::write(&first_family, b"first").expect("first hash family");
+    fs::write(&second_family, b"second").expect("second hash family");
+
+    let cargo = fake_script_path(&tool_dir, "cargo");
+    write_fake_script(&cargo, &fake_cargo_toolchain_recorder_script(&cargo_log));
+
+    for attempt in 1..=2 {
+        let output = common::isolated_soldr_command()
+            .args(["--no-cache", "cargo", "check"])
+            .current_dir(&workspace)
+            .env("SOLDR_CACHE_DIR", &cache_root)
+            .env("SOLDR_TEST_CARGO_BIN", &cargo)
+            .env("ZCCACHE_DISABLE", "1")
+            .output()
+            .expect("run soldr cargo check");
+
+        assert!(
+            output.status.success(),
+            "fake Cargo invocation {attempt} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            first_family.exists() && second_family.exists(),
+            "the Cargo front door must not delete coexisting target hash families \
+             during unchanged invocation {attempt}; first_exists={} second_exists={}\n\
+             stderr:\n{}",
+            first_family.exists(),
+            second_family.exists(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+});
+
 timed_test!(zthreads_retry_replays_private_front_door_contract, {
     let root = unique_temp_dir("zthreads-retry-contract");
     let tool_dir = root.join("tool");
