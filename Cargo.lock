@@ -2493,9 +2493,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.6.0"
+version = "4.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf0356f69757ad31567c9ba44cc6be901228c449122d20cd2567e49a99eec549"
+checksum = "3d5325b33edc17445ec07177a2fb78136045207d3d1864373e1404d055e4f9c2"
 dependencies = [
  "anyhow",
  "blake3",
