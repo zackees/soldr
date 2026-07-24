@@ -89,12 +89,10 @@ jobs:
           cache-key-suffix: dogfood-action-state
           build-cache: false
           target-cache: true
-          prebuild-deps: soldr-cook
-          prebuild-deps-flags: ""
-
-      - name: Restore checkout after soldr-cook
-        shell: pwsh
-        run: git restore --worktree -- .
+          # This workflow builds and tests soldr explicitly below. Running
+          # soldr-cook here compiles the same workspace first, and release-only
+          # Cargo.lock version bumps invalidate its whole-lockfile cache key.
+          prebuild-deps: none
 
       - name: Show action outputs
         shell: pwsh
