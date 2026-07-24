@@ -2618,26 +2618,6 @@ async fn ensure_known_subcommand_tool(
     let mut extra_env: Vec<(String, String)> = Vec::new();
     let mut extra_cargo_args: Vec<String> = Vec::new();
 
-    // Dylint v6.0.1's published cargo-dylint binary is not relocatable:
-    // its driver manifest embeds the release runner's absolute
-    // `/home/runner/work/dylint/dylint/driver` path. Source-build the
-    // pinned cargo-dylint crate on every host, even when an arbitrary
-    // cargo-dylint is already on PATH, so the installed driver source
-    // remains available and the result is portable across libc versions.
-    // `dylint-link` is resolved separately and may still use its healthy
-    // official prebuilt.
-    if requires_managed_dylint_source_build(sub) {
-        return dylint_source_build_bootstrap(
-            args,
-            paths,
-            extra_bin_dirs,
-            extra_env,
-            extra_cargo_args,
-            "cargo-dylint v6.0.1's official binary is not relocatable",
-        )
-        .await;
-    }
-
     if !force_managed_cargo_subcommands() {
         let exe_name = format!("cargo-{sub}");
         if let Some(path) = find_on_path(&exe_name) {
@@ -2667,6 +2647,27 @@ async fn ensure_known_subcommand_tool(
                 cargo_args: extra_cargo_args,
             });
         }
+    }
+
+    // Dylint v6.0.1's published cargo-dylint binary is not relocatable:
+    // its driver manifest embeds the release runner's absolute
+    // `/home/runner/work/dylint/dylint/driver` path. For managed
+    // resolution, source-build the pinned cargo-dylint crate on every host
+    // so the installed driver source remains available and the result is
+    // portable across libc versions. A user-provided cargo-dylint on PATH
+    // remains an intentional override under the generic PATH-first policy.
+    // `dylint-link` is resolved separately and may still use its healthy
+    // official prebuilt.
+    if requires_managed_dylint_source_build(sub) {
+        return dylint_source_build_bootstrap(
+            args,
+            paths,
+            extra_bin_dirs,
+            extra_env,
+            extra_cargo_args,
+            "cargo-dylint v6.0.1's official binary is not relocatable",
+        )
+        .await;
     }
 
     let version = spec
