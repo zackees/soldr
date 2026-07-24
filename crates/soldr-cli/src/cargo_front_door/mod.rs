@@ -2649,43 +2649,22 @@ async fn ensure_known_subcommand_tool(
     // cargo-dylint v6.0.1 publishes Linux GNU release assets, but not
     // Windows or macOS ones. Keep its normal managed-fetch path on the
     // supported host and use Soldr's pinned, wrapper-free source-build
-    // path elsewhere. The result is cached below ~/.soldr/bin, just like
-    // the explicitly requested soldr build-from-source flow.
+    // path elsewhere. A published Linux binary can still require a newer
+    // GLIBC than the running distribution; the managed fetch below gets
+    // first refusal, then an executable-smoke failure takes this same
+    // source-build path. Trust and checksum failures never fall back.
+    // The result is cached below ~/.soldr/bin, just like the explicitly
+    // requested soldr build-from-source flow.
     if sub == "dylint" && dylint_requires_source_build() {
-        let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
-        let binary = if plan.final_binary.is_file() {
-            eprintln!(
-                "soldr: using cached source-built cargo-dylint at {}",
-                plan.final_binary.display()
-            );
-            plan.final_binary.clone()
-        } else {
-            eprintln!(
-                "soldr: cargo-dylint has no prebuilt asset for this host; building pinned source fallback..."
-            );
-            crate::build_from_source_cmd::execute_plan(&plan)?.binary
-        };
-        let dir = binary.parent().ok_or_else(|| {
-            SoldrError::Other(format!(
-                "failed to resolve bin dir for source-built cargo-dylint: {}",
-                binary.display()
-            ))
-        })?;
-        extra_bin_dirs.push(dir.to_path_buf());
-        append_subcommand_transitive_bin_dirs(
-            sub,
+        return dylint_source_build_bootstrap(
             args,
             paths,
-            &mut extra_bin_dirs,
-            &mut extra_env,
-            &mut extra_cargo_args,
+            extra_bin_dirs,
+            extra_env,
+            extra_cargo_args,
+            "cargo-dylint has no prebuilt asset for this host",
         )
-        .await?;
-        return Ok(SubcommandToolBootstrap {
-            bin_dirs: extra_bin_dirs,
-            env: extra_env,
-            cargo_args: extra_cargo_args,
-        });
+        .await;
     }
     let version = spec
         .pinned_version
@@ -2694,7 +2673,21 @@ async fn ensure_known_subcommand_tool(
 
     eprintln!("soldr: fetching {}...", spec.crate_name);
     let result =
-        crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths).await?;
+        match crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths).await {
+            Ok(result) => result,
+            Err(error) if sub == "dylint" && dylint_prebuilt_smoke_failed(&error) => {
+                return dylint_source_build_bootstrap(
+                    args,
+                    paths,
+                    extra_bin_dirs,
+                    extra_env,
+                    extra_cargo_args,
+                    &format!("cargo-dylint prebuilt is not executable on this host ({error})"),
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        };
 
     if result.cached {
         eprintln!(
@@ -2730,6 +2723,55 @@ async fn ensure_known_subcommand_tool(
         env: extra_env,
         cargo_args: extra_cargo_args,
     })
+}
+
+async fn dylint_source_build_bootstrap(
+    args: &[String],
+    paths: &SoldrPaths,
+    mut extra_bin_dirs: Vec<std::path::PathBuf>,
+    mut extra_env: Vec<(String, String)>,
+    mut extra_cargo_args: Vec<String>,
+    reason: &str,
+) -> Result<SubcommandToolBootstrap, SoldrError> {
+    let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
+    let binary = if plan.final_binary.is_file() {
+        eprintln!(
+            "soldr: using cached source-built cargo-dylint at {}",
+            plan.final_binary.display()
+        );
+        plan.final_binary.clone()
+    } else {
+        eprintln!("soldr: {reason}; building pinned source fallback...");
+        crate::build_from_source_cmd::execute_plan(&plan)?.binary
+    };
+    let dir = binary.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "failed to resolve bin dir for source-built cargo-dylint: {}",
+            binary.display()
+        ))
+    })?;
+    extra_bin_dirs.push(dir.to_path_buf());
+    append_subcommand_transitive_bin_dirs(
+        "dylint",
+        args,
+        paths,
+        &mut extra_bin_dirs,
+        &mut extra_env,
+        &mut extra_cargo_args,
+    )
+    .await?;
+    Ok(SubcommandToolBootstrap {
+        bin_dirs: extra_bin_dirs,
+        env: extra_env,
+        cargo_args: extra_cargo_args,
+    })
+}
+
+fn dylint_prebuilt_smoke_failed(error: &SoldrError) -> bool {
+    matches!(
+        error,
+        SoldrError::Other(message) if message.starts_with("smoke test failed:")
+    )
 }
 
 fn dylint_requires_source_build() -> bool {

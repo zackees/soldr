@@ -868,6 +868,21 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
     }
 }
 
+crate::timed_test!(
+    dylint_source_fallback_is_limited_to_prebuilt_smoke_failures,
+    {
+        assert!(dylint_prebuilt_smoke_failed(&SoldrError::Other(
+            "smoke test failed: cargo-dylint needs a newer GLIBC".into()
+        )));
+        assert!(!dylint_prebuilt_smoke_failed(&SoldrError::Network(
+            "release download failed".into()
+        )));
+        assert!(!dylint_prebuilt_smoke_failed(&SoldrError::Other(
+            "checksum pin mismatch".into()
+        )));
+    }
+);
+
 #[test]
 fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
     // The three static-analysis tools in the registry don't spawn
