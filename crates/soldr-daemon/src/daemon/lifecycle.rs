@@ -722,6 +722,8 @@ fn spawn_detached_inner(daemon: &Path, args: &[String]) -> Result<(), std::io::E
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(daemon);
+    let baseline = running_process::environment::user_baseline_environment()?;
+    cmd.env_clear().envs(baseline);
     cmd.args(args).stdin(Stdio::null());
     // Diagnostic redirect: spawn the daemon's stderr/stdout to a
     // log file under the soldr cache root so a startup crash leaves
@@ -782,6 +784,8 @@ fn spawn_detached_self_inner(soldr_self: &Path, args: &[String]) -> Result<(), s
     use std::process::{Command, Stdio};
 
     let mut cmd = Command::new(soldr_self);
+    let baseline = running_process::environment::user_baseline_environment()?;
+    cmd.env_clear().envs(baseline);
     // The process that discovers a missing daemon may itself be the
     // `zccache-soldr` hardlink. Force argv[0] back to the main CLI identity;
     // otherwise multicall dispatch treats `daemon` as a compiler path and
@@ -913,11 +917,13 @@ fn spawn_detached_windows_no_inherit(
         fn CloseHandle(hObject: HANDLE) -> BOOL;
     }
 
-    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW.
-    const FLAGS: DWORD = 0x0000_0200 | 0x0000_0008 | 0x0800_0000;
+    // CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | CREATE_NO_WINDOW |
+    // CREATE_UNICODE_ENVIRONMENT.
+    const FLAGS: DWORD = 0x0000_0200 | 0x0000_0008 | 0x0800_0000 | 0x0000_0400;
 
     let application: Vec<u16> = program.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut command_line = build_windows_command_line(argv0, args);
+    let environment = running_process::environment::user_baseline_environment_block()?;
     // SAFETY: STARTUPINFOW and PROCESS_INFORMATION are plain Win32 POD
     // structs. Zero initialization is the documented baseline before setting
     // STARTUPINFOW.cb and passing both structs to CreateProcessW.
@@ -937,7 +943,7 @@ fn spawn_detached_windows_no_inherit(
             null_mut(),
             0,
             FLAGS,
-            null(),
+            environment.as_ptr().cast(),
             null(),
             &mut startup,
             &mut process_info,
