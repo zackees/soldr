@@ -34,12 +34,13 @@ run_case() {
   start="$(date +%s%3N)"
   (cd "$work" && CARGO_TARGET_DIR="$target" "$SOLDR" cargo dylint --all)
   end="$(date +%s%3N)"
-  "$SOLDR" cache flush --json >/dev/null || true
+  "$SOLDR" cache flush --json >/dev/null
   (cd "$work" && "$SOLDR" cache report --json) > "/tmp/dylint-acceptance/$name.json"
   jq -cn --arg name "$name" --argjson wall_ms "$((end-start))" \
     --slurpfile report "/tmp/dylint-acceptance/$name.json" \
     '{name:$name,wall_ms:$wall_ms,
-      stats_present:($report[0].last_session.stats != null),
+      stats_present:($report[0].session_stats_present == true and
+        ($report[0].last_session | type) == "object"),
       hits:($report[0].last_session.stats.hits // $report[0].last_session.hits // 0),
       misses:($report[0].last_session.stats.misses // $report[0].last_session.misses // 0)}'
 }
@@ -84,14 +85,30 @@ def main() -> int:
     )
     if bootstrap.returncode != 0:
         return bootstrap.returncode
+    common_dir = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    source_root = Path(common_dir.stdout.strip()).resolve().parent
+    relative = ROOT.resolve().relative_to(source_root)
+    workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     command = [
-        sys.executable,
-        str(ROOT / "ci" / "perf_local.py"),
+        "docker",
+        "exec",
+        "-i",
+        "-w",
+        workdir,
+        "soldr-perf-local",
         "bash",
         "-s",
     ]
     try:
-        result = subprocess.run(command, input=BASH, text=True, capture_output=True, check=False)
+        result = subprocess.run(
+            command, input=BASH, text=True, capture_output=True, check=False
+        )
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
         if result.returncode != 0:
@@ -139,7 +156,10 @@ def main() -> int:
             (by_name["warm_clean_target"]["hits"] > 0, "clean-target rebuild must hit"),
             (by_name["sibling_worktree"]["hits"] > 0, "sibling worktree must hit"),
             (by_name["changed_source"]["hits"] > 0, "changed source must retain hits"),
-            (by_name["changed_source"]["misses"] > 0, "changed source must miss changed units"),
+            (
+                by_name["changed_source"]["misses"] > 0,
+                "changed source must miss changed units",
+            ),
         ]
         for passed, message in checks:
             if not passed:
@@ -149,7 +169,9 @@ def main() -> int:
         if summary:
             with open(summary, "a", encoding="utf-8") as output:
                 output.write("## Dylint 6.0.1 cache acceptance\n\n")
-                output.write("| Scenario | Wall ms | Hits | Misses |\n|---|---:|---:|---:|\n")
+                output.write(
+                    "| Scenario | Wall ms | Hits | Misses |\n|---|---:|---:|---:|\n"
+                )
                 for row in rows:
                     output.write(
                         f"| {row['name']} | {row['wall_ms']} | {row['hits']} | {row['misses']} |\n"
