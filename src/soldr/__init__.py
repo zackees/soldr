@@ -78,6 +78,14 @@ _WHEEL_CACHE_IGNORED_DIRECTORIES = {
     "venv",
 }
 _WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES = (".dist-info", ".egg-info")
+_WHEEL_CACHE_IGNORED_RELATIVE_DIRECTORIES = {
+    ".claude/worktrees",
+    ".claude/workspaces",
+    ".codex/worktrees",
+    ".clud",
+}
+_SOLDR_ROOT_CACHE: "dict[tuple[str, ...], Path]" = {}
+_SOLDR_ROOT_CACHE_LOCK = threading.Lock()
 _FAST_DEV_PROFILE_DEFAULTS = {
     "CARGO_PROFILE_DEV_OPT_LEVEL": ("opt-level", "0"),
     "CARGO_PROFILE_DEV_CODEGEN_UNITS": ("codegen-units", "256"),
@@ -888,25 +896,42 @@ def _query_soldr_root(environment: "dict[str, str]") -> "Path | None":
     # `status --json` has carried root_dir longer than `version --json`, so it
     # is a compatibility fallback for older development binaries. Neither
     # command starts a daemon.
-    for subcommand in ("version", "status"):
-        try:
-            result = subprocess.run(
-                ["soldr", subcommand, "--json"],
-                env=environment,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=False,
-                timeout=5,
-            )
-            payload = json.loads(result.stdout) if result.returncode == 0 else None
-            root = payload.get("root_dir") if isinstance(payload, dict) else None
-            if isinstance(root, str) and root.strip():
-                selected = Path(root).expanduser()
-                if selected.is_absolute():
-                    return selected
-        except (OSError, subprocess.SubprocessError, TypeError, ValueError):
-            continue
+    # One build hook prepares the environment several times while checking,
+    # restoring, and storing the wheel cache. On Windows each CLI probe costs
+    # hundreds of milliseconds even when Cargo has no work, so cache successful
+    # answers for the lifetime of this short-lived backend process.
+    key = (
+        environment.get("PATH", ""),
+        environment.get("PATHEXT", ""),
+        environment.get("HOME", ""),
+        environment.get("USERPROFILE", ""),
+        environment.get("SOLDR_CACHE_DIR", ""),
+        os.getcwd(),
+    )
+    with _SOLDR_ROOT_CACHE_LOCK:
+        cached = _SOLDR_ROOT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        for subcommand in ("version", "status"):
+            try:
+                result = subprocess.run(
+                    ["soldr", subcommand, "--json"],
+                    env=environment,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=5,
+                )
+                payload = json.loads(result.stdout) if result.returncode == 0 else None
+                root = payload.get("root_dir") if isinstance(payload, dict) else None
+                if isinstance(root, str) and root.strip():
+                    selected = Path(root).expanduser()
+                    if selected.is_absolute():
+                        _SOLDR_ROOT_CACHE[key] = selected
+                        return selected
+            except (OSError, subprocess.SubprocessError, TypeError, ValueError):
+                continue
     return None
 
 
@@ -931,12 +956,19 @@ def _hash_metadata_tree(
     ignored = _WHEEL_CACHE_IGNORED_DIRECTORIES | (ignored_directories or set())
 
     for directory, directories, files in os.walk(root):
+        current = Path(directory)
+        try:
+            current_relative = current.relative_to(root)
+        except ValueError:
+            current_relative = Path()
         directories[:] = sorted(
             item
             for item in directories
-            if item not in ignored and not item.endswith(_WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES)
+            if item not in ignored
+            and not item.endswith(_WHEEL_CACHE_IGNORED_DIRECTORY_SUFFIXES)
+            and (current_relative / item).as_posix()
+            not in _WHEEL_CACHE_IGNORED_RELATIVE_DIRECTORIES
         )
-        current = Path(directory)
         for filename in sorted(files):
             path = current / filename
             try:
