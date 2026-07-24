@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from pathlib import Path
@@ -768,23 +769,160 @@ class Pep517IdleWatchdogTest(unittest.TestCase):
                 env=self._child_env("5"),
             )
 
-    def test_forces_cargo_progress_liveness(self) -> None:
-        # Long link phases are silent in piped cargo; the backend must force
-        # the progress stream so the watchdog sees liveness (soldr#1803).
+    def test_nonzero_exit_repeats_a_concise_diagnostic_summary(self) -> None:
+        stderr = io.StringIO()
+        rendered = (
+            "error[E0277]: `Handle` cannot be sent safely\n"
+            "  --> src/main.rs:12:5\n"
+            "note: required by `thread::spawn`\n"
+        )
+        cargo_message = json.dumps(
+            {
+                "reason": "compiler-message",
+                "message": {"rendered": rendered},
+            }
+        )
+        code = (
+            "import sys\n"
+            "for step in range(100):\n"
+            "    print(f'Building [====> ] {step}/100: dependency\u2026', file=sys.stderr)\n"
+            f"print({cargo_message!r})\n"
+            "raise SystemExit(101)\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            env = self._child_env("5")
+            env["SOLDR_CACHE_DIR"] = root
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.backend._run_pep517_streaming(
+                        [sys.executable, "-u", "-c", code], env=env
+                    )
+
+            summary = stderr.getvalue().split("soldr: PEP 517 build failed", 1)[1]
+            self.assertIn("exit code 101", summary)
+            self.assertIn("error[E0277]", summary)
+            self.assertIn("src/main.rs:12:5", summary)
+            self.assertNotIn("99/100", summary)
+
+            log_prefix = "soldr: full PEP 517 build log: "
+            log_line = next(
+                line for line in summary.splitlines() if line.startswith(log_prefix)
+            )
+            log_path = Path(log_line.removeprefix(log_prefix))
+            self.assertTrue(log_path.is_file())
+            full_log = log_path.read_text(encoding="utf-8")
+            self.assertIn("99/100", full_log)
+            self.assertIn(cargo_message, full_log)
+
+    def test_failure_log_drains_slow_text_sink_before_returning(self) -> None:
+        class SlowSink(io.StringIO):
+            def write(self, value: str) -> int:
+                time.sleep(0.3)
+                return super().write(value)
+
+        stderr = SlowSink()
+        code = (
+            "import sys, time\n"
+            "print('first diagnostic', file=sys.stderr, flush=True)\n"
+            "time.sleep(0.2)\n"
+            "print('error: final diagnostic', file=sys.stderr, flush=True)\n"
+            "raise SystemExit(2)\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            env = self._child_env("5")
+            env["SOLDR_CACHE_DIR"] = root
+            with contextlib.redirect_stderr(stderr):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    self.backend._run_pep517_streaming(
+                        [sys.executable, "-u", "-c", code], env=env
+                    )
+
+            summary = stderr.getvalue().split("soldr: PEP 517 build failed", 1)[1]
+            self.assertIn("full PEP 517 build log:", summary)
+            log_prefix = "soldr: full PEP 517 build log: "
+            log_line = next(
+                line for line in summary.splitlines() if line.startswith(log_prefix)
+            )
+            full_log = Path(log_line.removeprefix(log_prefix)).read_text(
+                encoding="utf-8"
+            )
+            self.assertIn("first diagnostic", full_log)
+            self.assertIn("error: final diagnostic", full_log)
+
+    def test_relay_failure_kills_child_and_retains_partial_log(self) -> None:
+        class BrokenSink(io.StringIO):
+            def write(self, _value: str) -> int:
+                raise BrokenPipeError("capture pipe closed")
+
+        code = (
+            "import sys, time\n"
+            "print('diagnostic before broken pipe', file=sys.stderr, flush=True)\n"
+            "time.sleep(30)\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            env = self._child_env("5")
+            env["SOLDR_CACHE_DIR"] = root
+            started = time.monotonic()
+            with contextlib.redirect_stderr(BrokenSink()):
+                with self.assertRaisesRegex(RuntimeError, "output relay failed") as raised:
+                    self.backend._run_pep517_streaming(
+                        [sys.executable, "-u", "-c", code], env=env
+                    )
+            self.assertLess(time.monotonic() - started, 3)
+
+            log_prefix = "possibly incomplete PEP 517 build log: "
+            message = str(raised.exception)
+            self.assertIn(log_prefix, message)
+            log_path = Path(message.split(log_prefix, 1)[1])
+            self.assertTrue(log_path.is_file())
+            self.assertIn(
+                "diagnostic before broken pipe",
+                log_path.read_text(encoding="utf-8"),
+            )
+
+    def test_utf8_child_output_is_decoded_before_text_relay(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        code = (
+            "import sys\n"
+            "sys.stdout.buffer.write('Building crate\u2026\\n'.encode())\n"
+            "sys.stdout.buffer.flush()\n"
+            "sys.stderr.buffer.write('\U0001f4a5 error[E0277]: not Send\\n'.encode())\n"
+            "sys.stderr.buffer.flush()\n"
+        )
+        with tempfile.TemporaryDirectory() as root:
+            env = self._child_env("5")
+            env["SOLDR_CACHE_DIR"] = root
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                self.backend._run_pep517_streaming(
+                    [sys.executable, "-u", "-c", code], env=env
+                )
+            self.assertEqual(list(Path(root).rglob("*.log")), [])
+
+        self.assertEqual(stdout.getvalue(), "Building crate\u2026\n")
+        self.assertEqual(stderr.getvalue(), "\U0001f4a5 error[E0277]: not Send\n")
+        self.assertNotIn("\u00e2\u20ac\u00a6", stdout.getvalue())
+        self.assertNotIn("\u00f0\u0178", stderr.getvalue())
+
+    def test_disables_cargo_progress_redraws_for_piped_build(self) -> None:
+        # Cargo's TTY-style progress stream becomes hundreds of near-identical
+        # lines after pip captures it. Normal "Compiling ..." events still
+        # provide liveness; the 30-minute idle watchdog covers a silent link.
         marker = Path(tempfile.mkdtemp()) / "progress-env.json"
         code = (
             "import json, os, pathlib, sys\n"
             f"pathlib.Path({str(marker)!r}).write_text(json.dumps(\n"
             "    {k: os.environ.get(k) for k in\n"
-            "     ('CARGO_TERM_PROGRESS_WHEN', 'CARGO_TERM_PROGRESS_WIDTH')}))\n"
+            "     ('CARGO_TERM_PROGRESS_WHEN', 'CARGO_TERM_COLOR', 'NO_COLOR')}))\n"
             "print('done', flush=True)\n"
         )
         self.backend._run_pep517_streaming(
             [sys.executable, "-u", "-c", code], env=self._child_env("5")
         )
         emitted = json.loads(marker.read_text())
-        self.assertEqual(emitted["CARGO_TERM_PROGRESS_WHEN"], "always")
-        self.assertEqual(emitted["CARGO_TERM_PROGRESS_WIDTH"], "80")
+        self.assertEqual(emitted["CARGO_TERM_PROGRESS_WHEN"], "never")
+        self.assertEqual(emitted["CARGO_TERM_COLOR"], "never")
+        self.assertEqual(emitted["NO_COLOR"], "1")
 
 
 if __name__ == "__main__":

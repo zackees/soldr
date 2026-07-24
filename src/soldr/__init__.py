@@ -19,6 +19,7 @@ git-worktree caches share via path normalization.
 acquisition itself.
 """
 
+import codecs
 import hashlib
 import importlib
 import json
@@ -32,7 +33,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import BinaryIO, Iterator, Optional, TextIO
 
 _FAST_PROFILE_ENV = "SOLDR_PEP517_PROFILE"
 _STATS_ENV = "SOLDR_PEP517_STATS"
@@ -545,9 +546,12 @@ _PEP517_IDLE_TIMEOUT_ENV = "SOLDR_PEP517_IDLE_TIMEOUT_SECS"
 # 30 min, not lower: a large LTO link is the longest legitimately-SILENT
 # phase a build has. Piped (non-TTY) cargo prints nothing between the last
 # "Compiling" line and "Finished", so the watchdog must outlast the worst
-# realistic link even with the forced progress stream below as first-line
-# liveness.
+# realistic link. Normal Cargo "Compiling ..." events provide first-line
+# liveness without forcing TTY progress redraws into pip's captured log.
 _PEP517_IDLE_TIMEOUT_DEFAULT = 1800.0
+_PEP517_FAILURE_TAIL_CHARS = 64 * 1024
+_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS = 5.0
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 def _pep517_idle_timeout(env: "dict[str, str]") -> "float | None":
@@ -560,6 +564,117 @@ def _pep517_idle_timeout(env: "dict[str, str]") -> "float | None":
     except ValueError:
         return _PEP517_IDLE_TIMEOUT_DEFAULT
     return None if value <= 0 else value
+
+
+def _write_pep517_text(sink: TextIO, text: str) -> None:
+    """Write decoded child text using the parent stream's encoding."""
+    if not text:
+        return
+    try:
+        sink.write(text)
+    except UnicodeEncodeError:
+        encoding = getattr(sink, "encoding", None) or "ascii"
+        safe = text.encode(encoding, errors="backslashreplace").decode(encoding)
+        sink.write(safe)
+    sink.flush()
+
+
+def _pep517_failure_excerpt(stdout_tail: str, stderr_tail: str) -> str:
+    """Return a bounded error-focused excerpt without Cargo progress redraws."""
+    raw = f"{stderr_tail}\n{stdout_tail}"
+    lines: list[str] = []
+    for line in raw.replace("\r", "\n").splitlines():
+        stripped = _ANSI_ESCAPE_RE.sub("", line).rstrip()
+        compact = stripped.lstrip()
+        if not compact:
+            continue
+        if compact.startswith("Building ["):
+            continue
+        if compact.startswith("{"):
+            try:
+                cargo_message = json.loads(compact)
+            except json.JSONDecodeError:
+                cargo_message = None
+            if isinstance(cargo_message, dict) and cargo_message.get("reason") == (
+                "compiler-message"
+            ):
+                message = cargo_message.get("message")
+                rendered = (
+                    message.get("rendered") if isinstance(message, dict) else None
+                )
+                if isinstance(rendered, str):
+                    lines.extend(
+                        _ANSI_ESCAPE_RE.sub("", item).rstrip()
+                        for item in rendered.replace("\r", "\n").splitlines()
+                        if item.strip()
+                    )
+            continue
+        lines.append(stripped)
+
+    if not lines:
+        return ""
+
+    markers = (
+        "error",
+        "fatal:",
+        "caused by:",
+        "failed",
+        "could not compile",
+        "linking with",
+    )
+    window = lines[-80:]
+    marker_indexes = [
+        index
+        for index, line in enumerate(window)
+        if line.lstrip().lower().startswith(markers)
+    ]
+    if marker_indexes:
+        window = window[marker_indexes[0] :]
+    else:
+        window = window[-20:]
+    return "\n".join(window)
+
+
+def _open_pep517_log(
+    cmd: "list[str]", env: "dict[str, str]"
+) -> "tuple[Path | None, BinaryIO | None]":
+    """Open a unique full-output log without making logging build-critical."""
+    root = env.get("SOLDR_CACHE_DIR", "").strip()
+    if not root:
+        return None, None
+    directory = Path(root).expanduser() / "logs" / "pep517"
+    filename = (
+        f"build-{time.strftime('%Y%m%d-%H%M%S', time.gmtime())}-"
+        f"{os.getpid()}-{time.time_ns()}.log"
+    )
+    path = directory / filename
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        log = path.open("xb")
+        log.write(
+            (f"command: {json.dumps(cmd, ensure_ascii=False)}\n\n").encode("utf-8")
+        )
+    except OSError:
+        return None, None
+    return path, log
+
+
+def _close_pep517_log(log: "BinaryIO | None") -> None:
+    if log is None:
+        return
+    try:
+        log.close()
+    except OSError:
+        pass
+
+
+def _discard_pep517_log(path: "Path | None") -> None:
+    if path is None:
+        return
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
@@ -575,12 +690,13 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     """
     idle_timeout = _pep517_idle_timeout(env)
     child_env = dict(env)
-    # Keep cargo emitting progress redraws even though it sees a pipe, so
-    # long link phases still produce liveness output for the idle watchdog
-    # (and for anyone watching the streamed log). Respect explicit caller
-    # overrides.
-    child_env.setdefault("CARGO_TERM_PROGRESS_WHEN", "always")
-    child_env.setdefault("CARGO_TERM_PROGRESS_WIDTH", "80")
+    # TTY progress redraws become hundreds of near-identical lines after pip
+    # captures them. Cargo's normal "Compiling ..." events still reset the
+    # watchdog, whose 30-minute default also covers a legitimately silent
+    # link. Respect explicit caller overrides.
+    child_env.setdefault("CARGO_TERM_PROGRESS_WHEN", "never")
+    child_env.setdefault("CARGO_TERM_COLOR", "never")
+    child_env.setdefault("NO_COLOR", "1")
     process = subprocess.Popen(
         cmd,
         env=child_env,
@@ -590,30 +706,73 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
     )
     last_output = time.monotonic()
     output_lock = threading.Lock()
+    tails = {"stdout": "", "stderr": ""}
+    relay_errors: list[Exception] = []
+    stdout_sink = sys.stdout
+    stderr_sink = sys.stderr
+    log_path, log = _open_pep517_log(cmd, child_env)
 
-    def relay(source: "object", sink: "object") -> None:
+    def relay(source: BinaryIO, sink: TextIO, tail_name: str) -> None:
         nonlocal last_output
-        while True:
-            chunk = source.read(8192)  # type: ignore[attr-defined]
-            if not chunk:
-                break
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+        def emit(text: str, raw: bytes = b"") -> None:
+            nonlocal last_output
             with output_lock:
                 last_output = time.monotonic()
-            sink.write(chunk)  # type: ignore[attr-defined]
-            sink.flush()  # type: ignore[attr-defined]
+                if log is not None and raw:
+                    try:
+                        log.write(raw)
+                    except OSError:
+                        pass
+                tails[tail_name] = (tails[tail_name] + text)[
+                    -_PEP517_FAILURE_TAIL_CHARS:
+                ]
+            _write_pep517_text(sink, text)
 
+        try:
+            while True:
+                chunk = source.read(8192)
+                if not chunk:
+                    break
+                emit(decoder.decode(chunk), chunk)
+            emit(decoder.decode(b"", final=True))
+        except Exception as error:
+            with output_lock:
+                relay_errors.append(error)
+
+    assert process.stdout is not None
+    assert process.stderr is not None
     relays = [
-        threading.Thread(target=relay, args=(process.stdout, sys.stdout.buffer), daemon=True),
-        threading.Thread(target=relay, args=(process.stderr, sys.stderr.buffer), daemon=True),
+        threading.Thread(
+            target=relay,
+            args=(process.stdout, stdout_sink, "stdout"),
+            daemon=True,
+        ),
+        threading.Thread(
+            target=relay,
+            args=(process.stderr, stderr_sink, "stderr"),
+            daemon=True,
+        ),
     ]
     for thread in relays:
         thread.start()
+    returncode = None
+    timed_out = False
+    relay_failed = False
+    relays_complete = False
     try:
         while True:
             try:
                 returncode = process.wait(timeout=1)
                 break
             except subprocess.TimeoutExpired:
+                with output_lock:
+                    relay_failed = bool(relay_errors)
+                if relay_failed:
+                    process.kill()
+                    process.wait(timeout=10)
+                    break
                 if idle_timeout is None:
                     continue
                 with output_lock:
@@ -621,12 +780,52 @@ def _run_pep517_streaming(cmd: "list[str]", env: "dict[str, str]") -> None:
                 if idle > idle_timeout:
                     process.kill()
                     process.wait(timeout=10)
-                    raise subprocess.TimeoutExpired(cmd, idle_timeout)
+                    timed_out = True
+                    break
     finally:
+        bounded_drain = timed_out or relay_failed
         for thread in relays:
-            thread.join(timeout=5)
+            thread.join(
+                timeout=_PEP517_TIMEOUT_RELAY_DRAIN_SECONDS if bounded_drain else None
+            )
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        if bounded_drain:
+            for thread in relays:
+                thread.join(timeout=1)
+        relays_complete = not relay_errors and all(
+            not thread.is_alive() for thread in relays
+        )
+        _close_pep517_log(log)
+    if timed_out:
+        assert idle_timeout is not None
+        qualifier = "full " if relays_complete else "possibly incomplete "
+        detail = (
+            f"\nsoldr: {qualifier}PEP 517 build log: {log_path}\n" if log_path else ""
+        )
+        _write_pep517_text(stderr_sink, detail)
+        raise subprocess.TimeoutExpired(cmd, idle_timeout)
+    if relay_errors:
+        detail = (
+            f"; possibly incomplete PEP 517 build log: {log_path}" if log_path else ""
+        )
+        raise RuntimeError(f"soldr PEP 517 output relay failed{detail}") from relay_errors[0]
+    assert returncode is not None
     if returncode != 0:
+        excerpt = _pep517_failure_excerpt(tails["stdout"], tails["stderr"])
+        summary = f"\nsoldr: PEP 517 build failed (exit code {returncode})"
+        if excerpt:
+            summary += f"; relevant diagnostics:\n{excerpt}\n"
+        else:
+            summary += "\n"
+        if log_path is not None:
+            qualifier = "full " if relays_complete else "possibly incomplete "
+            summary += f"soldr: {qualifier}PEP 517 build log: {log_path}\n"
+        _write_pep517_text(stderr_sink, summary)
         raise subprocess.CalledProcessError(returncode, cmd)
+    _discard_pep517_log(log_path)
 
 
 def _maturin_pep517(subcommand: str, *args: str, build_label: "str | None" = None) -> None:
