@@ -37,7 +37,11 @@ git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 run_case() {
   name="$1"; work="$2"; target="$3"
   start="$(date +%s%3N)"
-  (cd "$work" && CARGO_TARGET_DIR="$target" "$SOLDR" cargo dylint --all)
+  if ! (cd "$work" && CARGO_TARGET_DIR="$target" "$SOLDR" cargo dylint --all); then
+    echo "Dylint library target contents after failure:" >&2
+    find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
+    return 1
+  fi
   end="$(date +%s%3N)"
   "$SOLDR" cache flush --json >/dev/null
   (cd "$work" && "$SOLDR" cache report --json) > "/tmp/dylint-acceptance/$name.json"
