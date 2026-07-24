@@ -2672,22 +2672,27 @@ async fn ensure_known_subcommand_tool(
         .unwrap_or(VersionSpec::Latest);
 
     eprintln!("soldr: fetching {}...", spec.crate_name);
-    let result =
-        match crate::fetch::fetch_tool_for_host_with_paths(spec.crate_name, &version, paths).await {
-            Ok(result) => result,
-            Err(error) if sub == "dylint" && dylint_prebuilt_smoke_failed(&error) => {
-                return dylint_source_build_bootstrap(
-                    args,
-                    paths,
-                    extra_bin_dirs,
-                    extra_env,
-                    extra_cargo_args,
-                    &format!("cargo-dylint prebuilt is not executable on this host ({error})"),
-                )
-                .await;
-            }
-            Err(error) => return Err(error),
-        };
+    let result = match crate::fetch::fetch_tool_for_host_with_paths(
+        spec.crate_name,
+        &version,
+        paths,
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) if sub == "dylint" && dylint_prebuilt_smoke_failed(&error) => {
+            return dylint_source_build_bootstrap(
+                args,
+                paths,
+                extra_bin_dirs,
+                extra_env,
+                extra_cargo_args,
+                &format!("cargo-dylint prebuilt is not executable on this host ({error})"),
+            )
+            .await;
+        }
+        Err(error) => return Err(error),
+    };
 
     if result.cached {
         eprintln!(

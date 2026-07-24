@@ -89,6 +89,10 @@ exec "$compiler" "$@"
         format!(
             r#"#!/bin/sh
 echo "rustc argv=$*" >> "{log}"
+if [ "${{1:-}}" = "-vV" ]; then
+  printf 'rustc 1.89.0-nightly\nrelease: 1.89.0-nightly\ncommit-hash: 0123456789abcdef0123456789abcdef01234567\nhost: x86_64-unknown-linux-gnu\n'
+  exit 0
+fi
 if [ "${{DYLINT_TEST_FAIL:-0}}" = "1" ]; then
   echo "dylint nested diagnostic on stdout"
   echo "dylint nested diagnostic on stderr" >&2

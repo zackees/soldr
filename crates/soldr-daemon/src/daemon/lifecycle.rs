@@ -1364,7 +1364,10 @@ mod daemon_spawn_image_tests {
         let rendered = String::from_utf16_lossy(&block);
         assert!(rendered.contains("Path=C:\\Windows\0"));
         assert!(rendered.contains("soldr_cache_dir=D:\\temp\\setup-soldr-soldr\0"));
-        assert!(block.ends_with(&[0, 0]), "block must be double-NUL terminated");
+        assert!(
+            block.ends_with(&[0, 0]),
+            "block must be double-NUL terminated"
+        );
     });
 
     crate::timed_test!(detached_spawn_args_preserve_requested_idle_timeout, {

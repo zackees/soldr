@@ -497,12 +497,14 @@ async fn fetch_repo_binary_once(
         binary_names,
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "github-release".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "github-release".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     // soldr#936: post-extract smoke test. Confirms the binary is
     // actually executable + not a corrupted-shell-script masquerade
@@ -713,12 +715,14 @@ async fn try_embedded_manifest_v6(
         Some((asset_name, hit.asset.sha256.as_str())),
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "manifest-embed".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "manifest-embed".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     Ok(Some(FetchResult {
         binary_path,
@@ -831,12 +835,14 @@ async fn try_manifest_first(
         Some((&matched_entry.asset, &matched_entry.sha256)),
     )
     .await?;
-    soldr_core::build_log_meta::fetch_timing::record(soldr_core::build_log_meta::fetch_timing::FetchTiming {
-        name: cache_name.to_string(),
-        source: "catalogue".to_string(),
-        started_at_ms: download_started_at_ms,
-        duration_ms: download_started.elapsed().as_millis() as u64,
-    });
+    soldr_core::build_log_meta::fetch_timing::record(
+        soldr_core::build_log_meta::fetch_timing::FetchTiming {
+            name: cache_name.to_string(),
+            source: "catalogue".to_string(),
+            started_at_ms: download_started_at_ms,
+            duration_ms: download_started.elapsed().as_millis() as u64,
+        },
+    );
 
     Ok(Some(FetchResult {
         binary_path,

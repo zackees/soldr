@@ -98,7 +98,7 @@ pub(crate) async fn prepare(
     requested_channel: Option<&str>,
     workspace_root: &Path,
 ) -> Result<DylintToolchainPlan, SoldrError> {
-    let plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
+    let mut plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
         plan_from_retained_environment(&channel)?
     } else if let Some(plan) = plan_from_configured_environment()? {
         plan
@@ -118,7 +118,24 @@ pub(crate) async fn prepare(
         ensure_installed(&plan)?;
         verify_installed_identity(&plan)?;
     }
+    plan.channel = qualify_toolchain_name(&plan.channel)?;
     Ok(plan)
+}
+
+fn qualify_toolchain_name(channel: &str) -> Result<String, SoldrError> {
+    if is_fully_qualified_nightly(channel) {
+        return Ok(channel.to_string());
+    }
+    let binary = resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(channel))?;
+    let host = observe_compiler_host(&binary, channel)?;
+    Ok(format!("{channel}-{host}"))
+}
+
+fn is_fully_qualified_nightly(channel: &str) -> bool {
+    channel
+        .strip_prefix("nightly-")
+        .and_then(|value| value.get(10..))
+        .is_some_and(|suffix| suffix.starts_with('-') && suffix.len() > 1)
 }
 
 fn plan_from_configured_environment() -> Result<Option<DylintToolchainPlan>, SoldrError> {
@@ -339,6 +356,21 @@ fn observe_compiler_binary(
     parse_compiler_verbose(&String::from_utf8_lossy(&output.stdout))
 }
 
+fn observe_compiler_host(binary: &Path, description: &str) -> Result<String, SoldrError> {
+    let mut command = std::process::Command::new(binary);
+    command.arg("-vV");
+    apply_implicit_toolchain_homes(&mut command);
+    suppress_windows_console_window(&mut command);
+    let output = command_output_with_timeout(&mut command, "Dylint compiler host identity")?;
+    if !output.status.success() {
+        return Err(SoldrError::Other(format!(
+            "{description} host identity probe failed with {}",
+            output.status
+        )));
+    }
+    parse_compiler_host(&String::from_utf8_lossy(&output.stdout))
+}
+
 fn parse_compiler_verbose(output: &str) -> Result<(String, String), SoldrError> {
     let mut release = None;
     let mut commit = None;
@@ -355,6 +387,15 @@ fn parse_compiler_verbose(output: &str) -> Result<(String, String), SoldrError> 
             "compiler identity lacks a release or full commit hash".into(),
         )),
     }
+}
+
+fn parse_compiler_host(output: &str) -> Result<String, SoldrError> {
+    output
+        .lines()
+        .find_map(|line| line.strip_prefix("host:").map(str::trim))
+        .filter(|host| !host.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| SoldrError::Other("compiler identity lacks a host triple".into()))
 }
 
 fn major_minor(value: &str) -> Option<String> {
@@ -433,5 +474,17 @@ mod tests {
         assert_eq!(major_minor("1.94.1").as_deref(), Some("1.94"));
         assert_eq!(major_minor("1.94.0-nightly").as_deref(), Some("1.94"));
         assert_eq!(major_minor("stable"), None);
+    });
+
+    crate::timed_test!(qualifies_nightly_names_with_the_compiler_host, {
+        assert!(!is_fully_qualified_nightly("nightly-2026-01-18"));
+        assert!(is_fully_qualified_nightly(
+            "nightly-2026-01-18-x86_64-unknown-linux-gnu"
+        ));
+        let host = parse_compiler_host(
+            "rustc 1.94.0-nightly\nrelease: 1.94.0-nightly\nhost: x86_64-unknown-linux-gnu\n",
+        )
+        .expect("parse host");
+        assert_eq!(host, "x86_64-unknown-linux-gnu");
     });
 }
