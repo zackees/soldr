@@ -13,7 +13,11 @@ dylint_linting::declare_late_lint! {
 
 impl<'tcx> LateLintPass<'tcx> for SoldrDylintFixture {
     fn check_item(&mut self, cx: &rustc_lint::LateContext<'tcx>, item: &'tcx Item<'tcx>) {
-        if item.ident.name.as_str() == "dylint_fixture_violation" {
+        if cx
+            .tcx
+            .def_path_str(item.owner_id.to_def_id())
+            .ends_with("::dylint_fixture_violation")
+        {
             cx.tcx
                 .dcx()
                 .span_warn(item.span, "soldr Dylint fixture diagnostic");
