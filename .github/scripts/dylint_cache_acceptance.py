@@ -70,6 +70,17 @@ done
 
 
 def main() -> int:
+    common_dir = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    common = Path(common_dir.stdout.strip()).resolve()
+    source_root = common.parent if common_dir.returncode == 0 and common.name == ".git" else ROOT
+    relative = ROOT.resolve().relative_to(source_root.resolve())
+    workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     bootstrap = subprocess.run(
         [
             sys.executable,
@@ -87,16 +98,6 @@ def main() -> int:
     )
     if bootstrap.returncode != 0:
         return bootstrap.returncode
-    common_dir = subprocess.run(
-        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    source_root = Path(common_dir.stdout.strip()).resolve().parent
-    relative = ROOT.resolve().relative_to(source_root)
-    workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     command = [
         "docker",
         "exec",
