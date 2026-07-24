@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 BASH = r"""
 set -euo pipefail
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 export CARGO_HOME=/root/.cargo
 export SOLDR_CACHE_DIR=/tmp/dylint-acceptance/cache
 export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS=120000
@@ -23,7 +24,8 @@ SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
-git -C /tmp/dylint-acceptance/a init -q
+git init -q /tmp/dylint-acceptance/a
+git -C /tmp/dylint-acceptance/a rev-parse --git-dir >/dev/null
 git -C /tmp/dylint-acceptance/a config user.email fixture@soldr.invalid
 git -C /tmp/dylint-acceptance/a config user.name "Soldr Fixture"
 git -C /tmp/dylint-acceptance/a add .
