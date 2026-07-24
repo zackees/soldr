@@ -1,14 +1,14 @@
-# soldr itself builds with plain maturin, NOT build-backend = "soldr".
-# The soldr-as-backend dogfooding (soldr#1264/#1269) created a bootstrap
-# cycle: `pip install .` pulled the *published* soldr wheel into the
-# isolated build env and shelled out to the system `soldr` binary — so a
-# broken installed soldr made the fix in this repo uninstallable. The
-# soldr PEP 517 backend (src/soldr/__init__.py) remains a supported
-# feature for downstream projects; this repo just can't be its own
-# bootstrap. See README "Use soldr as your PEP 517 build backend".
+# soldr dogfoods itself as its own PEP 517 build backend, pinned to a
+# known-good published wheel. The pin is load-bearing: `pip install .`
+# pulls the *published* soldr wheel into the isolated build env, so a
+# broken latest release (0.8.21 at time of pinning) would make this
+# repo uninstallable if the requirement floated. When bumping the pin,
+# verify `uv pip install .` from a clean venv before merging. The
+# bootstrap-cycle history is in soldr#1264/#1269. See README "Use
+# soldr as your PEP 517 build backend".
 [build-system]
-requires = ["maturin>=1.7,<2"]
-build-backend = "maturin"
+requires = ["soldr==0.8.18"]
+build-backend = "soldr"
 
 [project]
 name = "soldr"
