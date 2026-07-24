@@ -21,12 +21,14 @@ mkdir -p /tmp/dylint-acceptance
 trap 'rm -rf /tmp/dylint-acceptance' EXIT
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
-"$SOLDR" cargo dylint --version
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
-(cd /tmp/dylint-acceptance/a && \
-  git init -q && git config user.email fixture@soldr.invalid && \
-  git config user.name "Soldr Fixture" && git add . && git commit -qm fixture)
+git -C /tmp/dylint-acceptance/a init -q
+git -C /tmp/dylint-acceptance/a config user.email fixture@soldr.invalid
+git -C /tmp/dylint-acceptance/a config user.name "Soldr Fixture"
+git -C /tmp/dylint-acceptance/a add .
+git -C /tmp/dylint-acceptance/a commit -qm fixture
+(cd /tmp/dylint-acceptance/a && "$SOLDR" cargo dylint --version)
 git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
 run_case() {
