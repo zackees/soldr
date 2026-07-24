@@ -256,6 +256,16 @@ pub const KNOWN_TOOLS: &[ToolSpec] = &[
         pinned_version: Some("6.0.1"),
         wraps_inner_cargo_build: true, // Dylint runs cargo check-like builds.
     },
+    // Companion linker required by every Dylint lint-library package.
+    ToolSpec {
+        crate_name: "dylint-link",
+        cargo_subcommand: None,
+        binary_name: "dylint-link",
+        repo: Some(("trailofbits", "dylint")),
+        tag_prefix: None,
+        pinned_version: Some("6.0.1"),
+        wraps_inner_cargo_build: false,
+    },
     ToolSpec {
         crate_name: "wasm-pack",
         cargo_subcommand: None,
@@ -541,6 +551,7 @@ mod tests {
             "trunk",
             "sccache",
             "maturin",
+            "dylint-link",
         ] {
             let spec = lookup_by_crate(crate_name)
                 .unwrap_or_else(|| panic!("missing registry entry for {crate_name}"));

@@ -2625,6 +2625,9 @@ async fn ensure_known_subcommand_tool(
                 "soldr: deferring to {exe_name} on PATH at {} (set SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1 to override)",
                 path.display()
             );
+            if sub == "dylint" && find_on_path("dylint-link").is_none() {
+                extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+            }
             // Even when cargo-zigbuild is provided by the host, it
             // still shells out to `zig`. Run the transitive bootstrap
             // before returning so the deferred-on-PATH branch doesn't
@@ -2714,6 +2717,9 @@ async fn ensure_known_subcommand_tool(
         })?
         .to_path_buf();
     extra_bin_dirs.push(dir);
+    if sub == "dylint" {
+        extra_bin_dirs.push(dylint_link_bin_dir(paths).await?);
+    }
     append_subcommand_transitive_bin_dirs(
         sub,
         args,
@@ -2738,24 +2744,9 @@ async fn dylint_source_build_bootstrap(
     mut extra_cargo_args: Vec<String>,
     reason: &str,
 ) -> Result<SubcommandToolBootstrap, SoldrError> {
-    let plan = crate::build_from_source_cmd::resolve_plan("cargo-dylint", None, None, paths)?;
-    let binary = if plan.final_binary.is_file() {
-        eprintln!(
-            "soldr: using cached source-built cargo-dylint at {}",
-            plan.final_binary.display()
-        );
-        plan.final_binary.clone()
-    } else {
-        eprintln!("soldr: {reason}; building pinned source fallback...");
-        crate::build_from_source_cmd::execute_plan(&plan)?.binary
-    };
-    let dir = binary.parent().ok_or_else(|| {
-        SoldrError::Other(format!(
-            "failed to resolve bin dir for source-built cargo-dylint: {}",
-            binary.display()
-        ))
-    })?;
-    extra_bin_dirs.push(dir.to_path_buf());
+    eprintln!("soldr: {reason}; preparing pinned source fallback...");
+    extra_bin_dirs.push(source_built_dylint_bin_dir("cargo-dylint", paths)?);
+    extra_bin_dirs.push(source_built_dylint_bin_dir("dylint-link", paths)?);
     append_subcommand_transitive_bin_dirs(
         "dylint",
         args,
@@ -2770,6 +2761,66 @@ async fn dylint_source_build_bootstrap(
         env: extra_env,
         cargo_args: extra_cargo_args,
     })
+}
+
+async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
+    let pinned_version = crate::fetch::known_tools::lookup_by_crate("dylint-link")
+        .and_then(|spec| spec.pinned_version)
+        .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
+    let version = VersionSpec::Exact(pinned_version.to_string());
+    eprintln!("soldr: fetching dylint-link...");
+    match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
+        Ok(result) => {
+            if result.cached {
+                eprintln!("soldr: using cached dylint-link v{}", result.version);
+            } else {
+                eprintln!("soldr: downloaded dylint-link v{}", result.version);
+            }
+            result
+                .binary_path
+                .parent()
+                .map(std::path::Path::to_path_buf)
+                .ok_or_else(|| {
+                    SoldrError::Other(format!(
+                        "failed to resolve bin dir for fetched dylint-link: {}",
+                        result.binary_path.display()
+                    ))
+                })
+        }
+        Err(error) if dylint_prebuilt_smoke_failed(&error) => {
+            eprintln!(
+                "soldr: dylint-link prebuilt is not executable on this host ({error}); \
+                 building pinned source fallback..."
+            );
+            source_built_dylint_bin_dir("dylint-link", paths)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn source_built_dylint_bin_dir(
+    tool: &str,
+    paths: &SoldrPaths,
+) -> Result<std::path::PathBuf, SoldrError> {
+    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
+    let binary = if plan.final_binary.is_file() {
+        eprintln!(
+            "soldr: using cached source-built {tool} at {}",
+            plan.final_binary.display()
+        );
+        plan.final_binary.clone()
+    } else {
+        crate::build_from_source_cmd::execute_plan(&plan)?.binary
+    };
+    binary
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for source-built {tool}: {}",
+                binary.display()
+            ))
+        })
 }
 
 fn dylint_prebuilt_smoke_failed(error: &SoldrError) -> bool {
