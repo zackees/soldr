@@ -301,7 +301,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                 // ld, which cannot link Mach-O at all.
                 let use_lld_linker = darwin_should_use_lld(managed_llvm_available);
                 let lld_flag = if use_lld_linker {
-                    " -fuse-ld=ld64.lld"
+                    " -fuse-ld=lld"
                 } else {
                     ""
                 };
@@ -320,7 +320,7 @@ pub async fn prepare(paths: &SoldrPaths, target_triple: &str) -> Result<BlessedP
                      -C link-arg=-mmacosx-version-min=11.0"
                 );
                 if use_lld_linker {
-                    rustflags.push_str(" -C link-arg=-fuse-ld=ld64.lld");
+                    rustflags.push_str(" -C link-arg=-fuse-ld=lld");
                 }
                 if !dsymutil_available {
                     rustflags.push_str(" -C split-debuginfo=off");

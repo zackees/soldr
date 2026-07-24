@@ -117,8 +117,15 @@ impl LinkerInjection {
         }
     }
 
-    fn clang_with_macho_lld() -> Self {
-        Self::clang_with_fuse("ld64.lld")
+    fn apple_fast_linker() -> Self {
+        // Native macOS uses the platform's Mach-O ld64. Linux-hosted Apple
+        // cross-builds use LLVM lld, which selects its Mach-O driver from the
+        // target triple.
+        if cfg!(target_os = "macos") {
+            Self::none()
+        } else {
+            Self::clang_with_fuse("lld")
+        }
     }
 }
 
@@ -199,7 +206,7 @@ pub fn resolve_for_target_with_probe(
             // Injecting `-fuse-ld=lld` breaks even `cc-rs` build-script
             // compilations (issue #509). Fall back to the platform default
             // linker silently on Apple targets.
-            TargetKind::Apple => Ok(LinkerInjection::clang_with_macho_lld()),
+            TargetKind::Apple => Ok(LinkerInjection::apple_fast_linker()),
             TargetKind::Linux | TargetKind::WindowsGnu | TargetKind::Other => {
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
@@ -216,7 +223,7 @@ pub fn resolve_for_target_with_probe(
             // See the `RustLld` arm above — `-fuse-ld=lld` is not valid on
             // Apple clang and silently dropping to the platform default
             // keeps `SOLDR_LINKER=fast` portable across hosts (issue #509).
-            TargetKind::Apple => Ok(LinkerInjection::clang_with_macho_lld()),
+            TargetKind::Apple => Ok(LinkerInjection::apple_fast_linker()),
             TargetKind::WindowsGnu | TargetKind::Other => {
                 Ok(LinkerInjection::clang_with_fuse("lld"))
             }
@@ -568,6 +575,20 @@ mod tests {
         false
     }
 
+    fn assert_apple_fast_linker(injection: &LinkerInjection, triple: &str) {
+        if cfg!(target_os = "macos") {
+            assert!(injection.linker.is_none(), "{triple}");
+            assert!(injection.rustflags.is_none(), "{triple}");
+        } else {
+            assert_eq!(injection.linker.as_deref(), Some("clang"), "{triple}");
+            assert_eq!(
+                injection.rustflags.as_deref(),
+                Some("-C link-arg=-fuse-ld=lld"),
+                "{triple}"
+            );
+        }
+    }
+
     fn always_true() -> bool {
         true
     }
@@ -711,16 +732,11 @@ mod tests {
     /// the platform default linker. This test is host-agnostic because
     /// `target_kind` is driven purely by the triple string.
     #[test]
-    fn rust_lld_on_macos_uses_macho_lld() {
+    fn rust_lld_on_apple_uses_a_macho_capable_linker() {
         for triple in [MAC_X64, MAC_ARM] {
             let i = resolve_for_target_with_probe(LinkerChoice::RustLld, triple, &always_false)
                 .unwrap();
-            assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
-            assert_eq!(
-                i.rustflags.as_deref(),
-                Some("-C link-arg=-fuse-ld=ld64.lld"),
-                "{triple}"
-            );
+            assert_apple_fast_linker(&i, triple);
         }
     }
 
@@ -746,25 +762,16 @@ mod tests {
     /// resolver — so this test covers the bug whether it executes on
     /// Linux, macOS, or Windows.
     #[test]
-    fn fast_on_macos_uses_macho_lld() {
+    fn fast_on_apple_uses_a_macho_capable_linker() {
         for triple in [MAC_X64, MAC_ARM] {
             let i =
                 resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_false).unwrap();
-            assert_eq!(i.linker.as_deref(), Some("clang"), "{triple}");
-            assert_eq!(
-                i.rustflags.as_deref(),
-                Some("-C link-arg=-fuse-ld=ld64.lld"),
-                "{triple}"
-            );
+            assert_apple_fast_linker(&i, triple);
             // Also exercise the mold-present branch — mold is irrelevant
             // on Apple targets and must not change the outcome.
             let i =
                 resolve_for_target_with_probe(LinkerChoice::Fast, triple, &always_true).unwrap();
-            assert_eq!(
-                i.rustflags.as_deref(),
-                Some("-C link-arg=-fuse-ld=ld64.lld"),
-                "{triple}"
-            );
+            assert_apple_fast_linker(&i, triple);
         }
     }
 
