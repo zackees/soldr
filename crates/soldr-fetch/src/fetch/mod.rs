@@ -472,16 +472,21 @@ async fn fetch_repo_binary_once(
         return Ok(r);
     }
 
-    let asset = github::match_asset(&release.assets, target).map_err(|err| match err {
-        SoldrError::UnsupportedPlatform(message) => SoldrError::UnsupportedPlatform(format!(
-            "asset matching failed for {}/{} version {} target {}: {message}",
-            repo.owner,
-            repo.repo,
-            release.version,
-            target.triple()
-        )),
-        other => other,
-    })?;
+    let asset =
+        github::match_asset_for_binaries(&release.assets, target, binary_names).map_err(|err| {
+            match err {
+                SoldrError::UnsupportedPlatform(message) => {
+                    SoldrError::UnsupportedPlatform(format!(
+                        "asset matching failed for {}/{} version {} target {}: {message}",
+                        repo.owner,
+                        repo.repo,
+                        release.version,
+                        target.triple()
+                    ))
+                }
+                other => other,
+            }
+        })?;
 
     // soldr#1790: time the actual network download (not the local-cache
     // hits above) for the always-on per-build XML log's download
@@ -694,6 +699,9 @@ async fn try_embedded_manifest_v6(
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or(hit.asset.href.as_str());
+    if !github::asset_name_matches_any_binary(asset_name, binary_names) {
+        return Ok(None);
+    }
 
     eprintln!(
         "soldr: embed-first hit for {}/{} v{} → {}",
@@ -776,7 +784,8 @@ async fn try_manifest_first(
 
     // The asset matcher reuses the existing platform-keyword scoring
     // logic. We synthesize a one-off `AssetInfo` list from the manifest
-    // entries and let `match_asset` pick the best fit for our target.
+    // entries and let the binary-aware matcher pick the best fit for our
+    // requested program and target.
     let asset_infos: Vec<github::AssetInfo> = candidates
         .iter()
         .map(|entry| github::AssetInfo {
@@ -784,10 +793,13 @@ async fn try_manifest_first(
             download_url: entry.url.clone(),
         })
         .collect();
-    let asset = match github::match_asset(&asset_infos, target) {
+    let asset = match github::match_asset_for_binaries(&asset_infos, target, binary_names) {
         Ok(asset) => asset,
         Err(_) => return Ok(None),
     };
+    if !github::asset_name_matches_any_binary(&asset.name, binary_names) {
+        return Ok(None);
+    }
     let matched_entry = candidates
         .iter()
         .find(|e| e.asset == asset.name && e.url == asset.download_url)
