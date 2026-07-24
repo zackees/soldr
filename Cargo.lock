@@ -4103,6 +4103,7 @@ version = "1.12.17"
 dependencies = [
  "serde",
  "serde_json",
+ "zccache-core",
 ]
 
 [[package]]
