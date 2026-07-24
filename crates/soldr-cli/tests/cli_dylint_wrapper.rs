@@ -192,13 +192,11 @@ timed_test!(
 
         assert_eq!(output.status.code(), Some(7));
         assert!(
-            String::from_utf8_lossy(&output.stdout)
-                .contains("dylint nested diagnostic on stdout"),
+            String::from_utf8_lossy(&output.stdout).contains("dylint nested diagnostic on stdout"),
             "failing stdout diagnostic was not replayed"
         );
         assert!(
-            String::from_utf8_lossy(&output.stderr)
-                .contains("dylint nested diagnostic on stderr"),
+            String::from_utf8_lossy(&output.stderr).contains("dylint nested diagnostic on stderr"),
             "failing stderr diagnostic was not replayed"
         );
         let log = fs::read_to_string(root.join("tool.log")).expect("read fake tool log");
