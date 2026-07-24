@@ -13,44 +13,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-fn fake_cargo_fmt_script(log_path: &Path, source_path: &Path, rustfmt: &Path) -> String {
-    #[cfg(windows)]
-    {
-        format!(
-            "@echo off\n\
-             set \"fmt=%RUSTFMT%\"\n\
-             if not defined RUSTFMT set \"fmt={2}\"\n\
-             echo cargo fmt rustfmt=%fmt% env_rustfmt=%RUSTFMT% cache=%SOLDR_CACHE_ENABLED%>>\"{0}\"\n\
-             if \"%~1\"==\"fmt\" (\n\
-               call \"%fmt%\" \"{1}\"\n\
-               exit /b %ERRORLEVEL%\n\
-             )\n\
-             echo unsupported fake cargo fmt invocation %* 1>&2\n\
-             exit /b 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-    #[cfg(not(windows))]
-    {
-        format!(
-            "#!/bin/sh\n\
-             fmt=\"${{RUSTFMT:-{2}}}\"\n\
-             echo \"cargo fmt rustfmt=$fmt env_rustfmt=${{RUSTFMT:-}} cache=${{SOLDR_CACHE_ENABLED:-}}\" >> \"{0}\"\n\
-             if [ \"$1\" = \"fmt\" ]; then\n\
-               \"$fmt\" \"{1}\"\n\
-               exit $?\n\
-             fi\n\
-             echo \"unsupported fake cargo fmt invocation: $*\" >&2\n\
-             exit 1\n",
-            log_path.display(),
-            source_path.display(),
-            rustfmt.display()
-        )
-    }
-}
-
 fn fake_cargo_doc_script(log_path: &Path, source_path: &Path, rustdoc: &Path) -> String {
     #[cfg(windows)]
     {
@@ -159,24 +121,6 @@ fn fake_cargo_miri_script(log_path: &Path) -> String {
     }
 }
 
-fn install_fake_cargo_fmt_toolchain(
-    log_path: &Path,
-    source_path: &Path,
-) -> (PathBuf, PathBuf, PathBuf, PathBuf, PathBuf) {
-    let (rustup, cargo, rustc, rustfmt) = install_fake_rustup_toolchain(log_path);
-    let tool_dir = cargo
-        .parent()
-        .expect("fake cargo should live in a tool dir")
-        .to_path_buf();
-    let zccache = fake_script_path(&tool_dir, "zccache");
-    write_fake_script(
-        &cargo,
-        &fake_cargo_fmt_script(log_path, source_path, &rustfmt),
-    );
-    write_fake_script(&zccache, &fake_zccache_script(log_path));
-    (rustup, cargo, rustc, rustfmt, zccache)
-}
-
 fn install_fake_cargo_doc_toolchain(
     log_path: &Path,
     source_path: &Path,
@@ -218,14 +162,6 @@ fn install_fake_direct_rustc_like_toolchain(
     );
     write_fake_script(&zccache, &fake_zccache_script(log_path));
     (rustup, rustc, clippy_driver, zccache, tool_dir)
-}
-
-fn write_rustfmt_source(cache_root: &Path) -> PathBuf {
-    let src_dir = cache_root.join("src");
-    fs::create_dir_all(&src_dir).expect("failed to create rustfmt source dir");
-    let source_path = src_dir.join("lib.rs");
-    fs::write(&source_path, "fn main( ) {}\n").expect("failed to write rustfmt source");
-    source_path
 }
 
 fn write_rustc_like_source(cache_root: &Path) -> PathBuf {
@@ -950,16 +886,20 @@ fn rustfmt_file_invocation_routes_through_zccache_formatter() {
 }
 
 #[test]
-fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
+fn rustfmt_recursive_runs_while_explicit_skip_children_uses_embedded_cache() {
     let cache_root = unique_temp_dir("rustfmt-embedded-formatter");
     let log_path = cache_root.join("tool.log");
     let source_path = write_rustfmt_source(&cache_root);
     let (rustup, _, _, _) = install_fake_rustup_toolchain(&log_path);
     let format_cache_root = cache_root.join("explicit-zccache");
 
-    let run = || {
-        isolated_soldr_command()
-            .arg("rustfmt")
+    let run = |skip_children: bool| {
+        let mut command = isolated_soldr_command();
+        command.arg("rustfmt");
+        if skip_children {
+            command.args(["--config", "skip_children=true"]);
+        }
+        command
             .arg(&source_path)
             .current_dir(&cache_root)
             .env("SOLDR_CACHE_DIR", &cache_root)
@@ -975,7 +915,7 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .output()
             .expect("failed to run soldr rustfmt through the embedded format cache")
     };
-    let output = run();
+    let output = run(false);
 
     assert!(
         output.status.success(),
@@ -996,12 +936,36 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
         "embedded format cache should pass the source file to rustfmt: {log}"
     );
 
-    let cached_output = run();
+    let recursive_output = run(false);
     assert!(
-        cached_output.status.success(),
-        "cached rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&cached_output.stdout),
-        String::from_utf8_lossy(&cached_output.stderr)
+        recursive_output.status.success(),
+        "second recursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&recursive_output.stdout),
+        String::from_utf8_lossy(&recursive_output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(&log_path)
+            .expect("failed to reread fake rustfmt log")
+            .lines()
+            .filter(|line| line.starts_with("rustfmt "))
+            .count(),
+        2,
+        "recursive rustfmt must run again so changed child modules cannot be missed"
+    );
+
+    let nonrecursive_first = run(true);
+    assert!(
+        nonrecursive_first.status.success(),
+        "first nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_first.stdout),
+        String::from_utf8_lossy(&nonrecursive_first.stderr)
+    );
+    let nonrecursive_cached = run(true);
+    assert!(
+        nonrecursive_cached.status.success(),
+        "cached nonrecursive rustfmt invocation failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&nonrecursive_cached.stdout),
+        String::from_utf8_lossy(&nonrecursive_cached.stderr)
     );
     let cached_log = fs::read_to_string(&log_path).expect("failed to reread fake rustfmt log");
     assert_eq!(
@@ -1009,8 +973,8 @@ fn rustfmt_file_invocation_uses_embedded_format_cache_without_external_cli() {
             .lines()
             .filter(|line| line.starts_with("rustfmt "))
             .count(),
-        1,
-        "second identical invocation should hit the embedded format cache: {cached_log}"
+        3,
+        "only explicit skip_children=true may hit the embedded marker cache: {cached_log}"
     );
     assert!(
         format_cache_root.join("fmt").is_dir(),

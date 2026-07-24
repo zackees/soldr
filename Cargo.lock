@@ -2493,9 +2493,9 @@ dependencies = [
 
 [[package]]
 name = "running-process"
-version = "4.5.12"
+version = "4.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6790febc85faa9f96c07fe3b4ab2569c28f5e6fd59ca138a6bb2c16525a31ce9"
+checksum = "bf0356f69757ad31567c9ba44cc6be901228c449122d20cd2567e49a99eec549"
 dependencies = [
  "anyhow",
  "blake3",
@@ -4103,6 +4103,7 @@ version = "1.12.17"
 dependencies = [
  "serde",
  "serde_json",
+ "zccache-core",
 ]
 
 [[package]]

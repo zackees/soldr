@@ -65,8 +65,8 @@ already have one of these toolchains for other workflows.
 
 soldr is the strict half of the soldr/setup-soldr pair and bootstraps
 **only the Rust toolchain story** — rustup, cargo, the per-project
-channel from `rust-toolchain.toml`, the managed zccache + crgx
-binaries, and the catalogue-served C library sysroots. It does NOT
+channel from `rust-toolchain.toml`, the embedded zccache service, the managed
+crgx binary, and the catalogue-served C library sysroots. It does NOT
 install:
 
 - A POSIX-compatible shell (`bash`, `sh`, `dash`).

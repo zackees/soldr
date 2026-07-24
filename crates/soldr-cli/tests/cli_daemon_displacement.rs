@@ -84,7 +84,11 @@ fn run_soldr(args: &[&str], cache_root: &Path, home_root: &Path, fake_version: O
     cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        // A dogfooded outer `soldr cargo test` exports its installed daemon
+        // image for compiler-child recovery. This isolated fixture must spawn
+        // the daemon built alongside CARGO_BIN_EXE_soldr instead.
+        .env_remove(soldr_cli::daemon::lifecycle::SOLDR_DAEMON_EXE_ENV_VAR);
     for (k, v) in isolated_env(cache_root, home_root) {
         cmd.env(k, v);
     }
@@ -215,14 +219,18 @@ timed_test!(
                 "displacement should free the endpoint",
             );
 
-            // The endpoint is now free and the stale claim is gone.
+            // The endpoint is now free. The retiring generation deliberately
+            // leaves its stale claim for startup to overwrite: deleting it
+            // here would race an older successor that does not honor the
+            // version-blind root lock.
             assert!(
                 is_live(&paths).is_none(),
                 "the displaced daemon must no longer be live",
             );
-            assert!(
-                read_claimed_service_version(&paths).is_none(),
-                "the stale version claim must be removed on displacement",
+            assert_eq!(
+                read_claimed_service_version(&paths).as_deref(),
+                Some("0.0.0-stale"),
+                "retirement must not unlink shared claims after an ownership check",
             );
         }
 

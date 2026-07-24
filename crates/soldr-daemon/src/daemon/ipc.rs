@@ -73,6 +73,13 @@ impl WireBody for Response {
 }
 
 pub fn encode_frame<T: WireBody>(msg: &T) -> io::Result<Vec<u8>> {
+    encode_frame_for_version(msg, PROTOCOL_VERSION)
+}
+
+pub(crate) fn encode_frame_for_version<T: WireBody>(
+    msg: &T,
+    protocol_version: u32,
+) -> io::Result<Vec<u8>> {
     let body = msg.encode_wire();
     if body.len() as u32 > MAX_BODY_BYTES {
         return Err(io::Error::new(
@@ -82,27 +89,42 @@ pub fn encode_frame<T: WireBody>(msg: &T) -> io::Result<Vec<u8>> {
     }
     let mut buf = Vec::with_capacity(HEADER_BYTES + body.len());
     buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    buf.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
+    buf.extend_from_slice(&protocol_version.to_le_bytes());
     buf.extend_from_slice(&body);
     Ok(buf)
 }
 
 pub fn write_frame_sync<W: Write, T: WireBody>(w: &mut W, msg: &T) -> io::Result<()> {
-    let frame = encode_frame(msg)?;
+    write_frame_sync_for_version(w, msg, PROTOCOL_VERSION)
+}
+
+pub(crate) fn write_frame_sync_for_version<W: Write, T: WireBody>(
+    w: &mut W,
+    msg: &T,
+    protocol_version: u32,
+) -> io::Result<()> {
+    let frame = encode_frame_for_version(msg, protocol_version)?;
     w.write_all(&frame)?;
     w.flush()?;
     Ok(())
 }
 
 pub fn read_frame_sync<R: Read, T: WireBody>(r: &mut R) -> io::Result<T> {
+    read_frame_sync_for_version(r, PROTOCOL_VERSION)
+}
+
+pub(crate) fn read_frame_sync_for_version<R: Read, T: WireBody>(
+    r: &mut R,
+    expected_version: u32,
+) -> io::Result<T> {
     let mut header = [0u8; HEADER_BYTES];
     r.read_exact(&mut header)?;
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
     let version = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
-    if version != PROTOCOL_VERSION {
+    if version != expected_version {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("protocol version mismatch: peer={version}, ours={PROTOCOL_VERSION}"),
+            format!("protocol version mismatch: peer={version}, expected={expected_version}"),
         ));
     }
     if body_len > MAX_BODY_BYTES {
@@ -121,9 +143,21 @@ where
     W: tokio::io::AsyncWrite + Unpin,
     T: WireBody,
 {
+    write_frame_async_for_version(w, msg, PROTOCOL_VERSION).await
+}
+
+pub(crate) async fn write_frame_async_for_version<W, T>(
+    w: &mut W,
+    msg: &T,
+    protocol_version: u32,
+) -> io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin,
+    T: WireBody,
+{
     use tokio::io::AsyncWriteExt;
     use tokio::time::timeout;
-    let frame = encode_frame(msg)?;
+    let frame = encode_frame_for_version(msg, protocol_version)?;
     timeout(ASYNC_FRAME_WRITE_TIMEOUT, w.write_all(&frame))
         .await
         .map_err(|_| timed_out("daemon IPC frame write", ASYNC_FRAME_WRITE_TIMEOUT))??;
@@ -138,10 +172,33 @@ where
     R: tokio::io::AsyncRead + Unpin,
     T: WireBody,
 {
-    read_frame_async_with_prefix(r, &[]).await
+    read_frame_async_for_version(r, PROTOCOL_VERSION).await
+}
+
+pub(crate) async fn read_frame_async_for_version<R, T>(
+    r: &mut R,
+    expected_version: u32,
+) -> io::Result<T>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    T: WireBody,
+{
+    read_frame_async_with_prefix_for_version(r, &[], expected_version).await
 }
 
 pub async fn read_frame_async_with_prefix<R, T>(r: &mut R, prefix: &[u8]) -> io::Result<T>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    T: WireBody,
+{
+    read_frame_async_with_prefix_for_version(r, prefix, PROTOCOL_VERSION).await
+}
+
+async fn read_frame_async_with_prefix_for_version<R, T>(
+    r: &mut R,
+    prefix: &[u8],
+    expected_version: u32,
+) -> io::Result<T>
 where
     R: tokio::io::AsyncRead + Unpin,
     T: WireBody,
@@ -166,10 +223,10 @@ where
     }
     let body_len = u32::from_le_bytes(header[..4].try_into().expect("4 bytes"));
     let version = u32::from_le_bytes(header[4..].try_into().expect("4 bytes"));
-    if version != PROTOCOL_VERSION {
+    if version != expected_version {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("protocol version mismatch: peer={version}, ours={PROTOCOL_VERSION}"),
+            format!("protocol version mismatch: peer={version}, expected={expected_version}"),
         ));
     }
     if body_len > MAX_BODY_BYTES {
@@ -215,6 +272,20 @@ mod tests {
         bytes.extend_from_slice(&[0, 0, 0, 0]);
         let mut cursor = Cursor::new(bytes);
         let err = read_frame_sync::<_, Request>(&mut cursor).expect_err("must error");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn explicit_protocol_version_round_trips_only_with_matching_reader() {
+        let msg = Request::Status;
+        let frame = encode_frame_for_version(&msg, 17).expect("encode legacy frame");
+
+        let decoded: Request = read_frame_sync_for_version(&mut Cursor::new(frame.clone()), 17)
+            .expect("matching legacy reader");
+        assert!(matches!(decoded, Request::Status));
+
+        let err = read_frame_sync::<_, Request>(&mut Cursor::new(frame))
+            .expect_err("current reader must reject a legacy frame");
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 

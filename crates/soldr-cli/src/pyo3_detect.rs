@@ -8,7 +8,6 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -551,28 +550,9 @@ fn detect_workspace_pyo3(
         command.args(["--manifest-path", &path]);
     }
     // Metadata is advisory for PyO3 planning and must never wedge a target
-    // build. In particular, a foreign musl runner may not have a usable
-    // rustup proxy even though the compiled test binary itself is healthy.
-    // Bound the probe and fall back to the conservative unresolved plan.
-    let mut child = command.spawn().map_err(|error| error.to_string())?;
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if child
-            .try_wait()
-            .map_err(|error| error.to_string())?
-            .is_some()
-        {
-            break;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err("cargo metadata probe timed out after 30s".to_string());
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let output = child
-        .wait_with_output()
+    // build. Capture both pipes while the child runs so a large workspace
+    // cannot fill an OS pipe and deadlock the bounded probe.
+    let output = crate::core::command_output_with_timeout(&mut command, "cargo metadata probe")
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
@@ -839,6 +819,39 @@ impl PolicyInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use std::sync::Mutex;
+
+    #[cfg(unix)]
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[cfg(unix)]
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    #[cfg(unix)]
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     crate::timed_test!(target_aware_policy_matrix, {
         let cases = [
@@ -1042,6 +1055,58 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(detected.shape, BuildShape::Extension);
+        assert_eq!(detected.versions, BTreeSet::from(["0.29.0".to_string()]));
+        assert!(detected.abi3());
+    });
+
+    #[cfg(unix)]
+    crate::timed_test!(cargo_metadata_probe_captures_child_stdout, {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let workspace = tempfile::tempdir().expect("workspace tempdir");
+        let cargo = workspace.path().join("fake-cargo");
+        let metadata = serde_json::json!({
+            "workspace_members": ["app"],
+            "workspace_default_members": ["app"],
+            "padding": "x".repeat(512 * 1024),
+            "packages": [
+                {
+                    "id": "app",
+                    "name": "app",
+                    "version": "0.1.0",
+                    "targets": [{"kind": ["cdylib"], "crate_types": ["cdylib"]}]
+                },
+                {
+                    "id": "pyo3",
+                    "name": "pyo3",
+                    "version": "0.29.0",
+                    "targets": [{"kind": ["lib"], "crate_types": ["lib"]}]
+                }
+            ],
+            "resolve": {"nodes": [
+                {"id": "app", "deps": [{"pkg": "pyo3"}], "features": []},
+                {"id": "pyo3", "deps": [], "features": ["abi3-py310"]}
+            ]}
+        });
+        assert!(
+            metadata.to_string().len() > 512 * 1024,
+            "fixture must exceed ordinary OS pipe capacity"
+        );
+        std::fs::write(
+            &cargo,
+            format!("#!/bin/sh\nprintf '%s\\n' '{}'\n", metadata),
+        )
+        .expect("write fake cargo");
+        let mut permissions = std::fs::metadata(&cargo)
+            .expect("stat fake cargo")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cargo, permissions).expect("chmod fake cargo");
+        let _cargo_guard = EnvVarGuard::set(crate::TEST_CARGO_BIN_ENV_VAR, &cargo);
+
+        let detected = detect_workspace_pyo3(workspace.path(), &[], host_triple())
+            .expect("metadata probe should capture and parse cargo stdout")
+            .expect("PyO3 should be detected");
+
         assert_eq!(detected.versions, BTreeSet::from(["0.29.0".to_string()]));
         assert!(detected.abi3());
     });

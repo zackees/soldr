@@ -7,7 +7,7 @@
 
 use crate::cargo_front_door;
 use crate::core::SoldrError;
-use crate::{current_soldr_binary, ZccacheSourceArg};
+use crate::current_soldr_binary;
 use std::process::{Child, Command};
 use std::time::Duration;
 
@@ -151,7 +151,6 @@ fn add_all_features(scope: &mut Vec<String>) -> Result<(), SoldrError> {
 pub(crate) async fn run_lint(
     args: &[String],
     cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     let plan = LintPlan::parse(args)?;
@@ -160,7 +159,6 @@ pub(crate) async fn run_lint(
             run_compile_steps(
                 plan.rust_steps(false)?,
                 cache_enabled,
-                zccache_source,
                 trust_inherited_soldr_env,
             )
             .await
@@ -170,7 +168,6 @@ pub(crate) async fn run_lint(
             let code = run_compile_steps(
                 plan.rust_steps(true)?,
                 cache_enabled,
-                zccache_source,
                 trust_inherited_soldr_env,
             )
             .await?;
@@ -184,7 +181,6 @@ pub(crate) async fn run_lint(
             run_compile_steps(
                 plan.exhaustive_steps()?,
                 cache_enabled,
-                zccache_source,
                 trust_inherited_soldr_env,
             )
             .await
@@ -195,17 +191,12 @@ pub(crate) async fn run_lint(
 async fn run_compile_steps(
     steps: Vec<Vec<String>>,
     cache_enabled: bool,
-    zccache_source: ZccacheSourceArg,
     trust_inherited_soldr_env: bool,
 ) -> Result<i32, SoldrError> {
     for args in steps {
-        let code = cargo_front_door::run_cargo_front_door(
-            &args,
-            cache_enabled,
-            zccache_source,
-            trust_inherited_soldr_env,
-        )
-        .await?;
+        let code =
+            cargo_front_door::run_cargo_front_door(&args, cache_enabled, trust_inherited_soldr_env)
+                .await?;
         if code != 0 {
             return Ok(code);
         }
