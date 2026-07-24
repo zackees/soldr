@@ -41,18 +41,14 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         def no_op_build_lease(_environment):
             yield
 
-        lease_patcher = mock.patch.object(
-            self.backend, "_hold_build_lease", no_op_build_lease
-        )
+        lease_patcher = mock.patch.object(self.backend, "_hold_build_lease", no_op_build_lease)
         lease_patcher.start()
         self.addCleanup(lease_patcher.stop)
 
     def test_native_env_never_forces_no_python(self) -> None:
         previous = os.environ.pop("PYO3_NO_PYTHON", None)
         try:
-            with mock.patch.dict(
-                os.environ, {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"}, clear=False
-            ):
+            with mock.patch.dict(os.environ, {"SOLDR_PEP517_STABLE_TARGET_DIR": "0"}, clear=False):
                 env = self.backend._prep_env()
         finally:
             if previous is not None:
@@ -90,9 +86,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(env["CARGO_PROFILE_DEV_OPT_LEVEL"], "1")
         self.assertEqual(env["CARGO_PROFILE_DEV_CODEGEN_UNITS"], "32")
         self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
-        self.assertEqual(
-            self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"]
-        )
+        self.assertEqual(self.backend._profile_args({"profile": "ci"}), ["--profile", "ci"])
 
     def test_wheel_build_prints_default_cache_summary(self) -> None:
         calls = []
@@ -116,28 +110,20 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         stream = io.StringIO()
         with mock.patch.object(self.backend, "_prep_env", return_value={}):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
+            with mock.patch.object(self.backend.subprocess, "run", side_effect=fake_run):
                 with mock.patch.object(
-                    self.backend.subprocess,
-                    "check_call",
-                    side_effect=lambda *args, **kwargs: build_calls.append(
-                        (args, kwargs)
-                    ),
+                    self.backend,
+                    "_run_pep517_streaming",
+                    side_effect=lambda *args, **kwargs: build_calls.append((args, kwargs)),
                 ):
                     with mock.patch.object(
                         self.backend.time, "perf_counter", side_effect=[10.0, 12.25]
                     ):
                         with contextlib.redirect_stderr(stream):
-                            self.backend._maturin_pep517(
-                                "build-wheel", build_label="wheel"
-                            )
+                            self.backend._maturin_pep517("build-wheel", build_label="wheel")
 
         self.assertEqual(calls[0][0], ["soldr", "session-start", "--json"])
-        self.assertEqual(
-            calls[1][0], ["soldr", "session-end", "--id", "pep517-1", "--json"]
-        )
+        self.assertEqual(calls[1][0], ["soldr", "session-end", "--id", "pep517-1", "--json"])
         self.assertEqual(build_calls[0][1]["env"]["ZCCACHE_SESSION_ID"], "pep517-1")
         self.assertIn("built wheel in 2.2s", stream.getvalue())
         self.assertIn(
@@ -149,9 +135,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         self.assertEqual(self.backend._stats_mode({"PIP_VERBOSE": "1"}), "full")
         self.assertEqual(self.backend._stats_mode({"SOLDR_PEP517_STATS": "off"}), "off")
         self.assertEqual(
-            self.backend._stats_mode(
-                {"PIP_VERBOSE": "1", "SOLDR_PEP517_STATS": "short"}
-            ),
+            self.backend._stats_mode({"PIP_VERBOSE": "1", "SOLDR_PEP517_STATS": "short"}),
             "short",
         )
 
@@ -174,17 +158,13 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         with mock.patch.object(
             self.backend, "_prep_env", return_value={"SOLDR_PEP517_STATS": "full"}
         ):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
-                with mock.patch.object(self.backend.subprocess, "check_call"):
+            with mock.patch.object(self.backend.subprocess, "run", side_effect=fake_run):
+                with mock.patch.object(self.backend, "_run_pep517_streaming"):
                     with mock.patch.object(
                         self.backend.time, "perf_counter", side_effect=[1.0, 2.0]
                     ):
                         with contextlib.redirect_stderr(stream):
-                            self.backend._maturin_pep517(
-                                "build-wheel", build_label="wheel"
-                            )
+                            self.backend._maturin_pep517("build-wheel", build_label="wheel")
 
         self.assertIn("soldr PEP 517 details:", stream.getvalue())
         self.assertIn('"phase_profile": {"staged": {}}', stream.getvalue())
@@ -206,19 +186,15 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         stream = io.StringIO()
         with mock.patch.object(self.backend, "_prep_env", return_value={}):
-            with mock.patch.object(
-                self.backend.subprocess, "run", side_effect=fake_run
-            ):
+            with mock.patch.object(self.backend.subprocess, "run", side_effect=fake_run):
                 with mock.patch.object(
-                    self.backend.subprocess,
-                    "check_call",
+                    self.backend,
+                    "_run_pep517_streaming",
                     side_effect=subprocess.CalledProcessError(1, "soldr"),
                 ):
                     with contextlib.redirect_stderr(stream):
                         with self.assertRaises(subprocess.CalledProcessError):
-                            self.backend._maturin_pep517(
-                                "build-wheel", build_label="wheel"
-                            )
+                            self.backend._maturin_pep517("build-wheel", build_label="wheel")
 
         self.assertEqual(calls[-1][1], "session-end")
         self.assertEqual(stream.getvalue(), "")
@@ -319,9 +295,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                         ):
                             env = self.backend._prep_env()
                     self.assertEqual(Path(env["SOLDR_CACHE_DIR"]), selected)
-                    self.assertTrue(
-                        Path(env["CARGO_TARGET_DIR"]).is_relative_to(selected)
-                    )
+                    self.assertTrue(Path(env["CARGO_TARGET_DIR"]).is_relative_to(selected))
 
     def test_older_dev_binary_root_uses_status_compatibility_payload(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -365,9 +339,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
     def test_explicit_target_config_has_stable_precedence(self) -> None:
         self.assertEqual(
-            self.backend._target_args(
-                {"target": "mac-arm64", "build-target": "win-x64"}
-            ),
+            self.backend._target_args({"target": "mac-arm64", "build-target": "win-x64"}),
             ["--target", "mac-arm64"],
         )
         self.assertEqual(
@@ -398,13 +370,9 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 calls.append((subcommand, args, kwargs))
                 (wheel_dir / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
 
-            with mock.patch.dict(
-                os.environ, {"SOLDR_PEP517_WHEEL_CACHE": "off"}, clear=False
-            ):
+            with mock.patch.dict(os.environ, {"SOLDR_PEP517_WHEEL_CACHE": "off"}, clear=False):
                 with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
-                    produced = self.backend.build_wheel(
-                        raw, {"target": "x86_64-pc-windows-msvc"}
-                    )
+                    produced = self.backend.build_wheel(raw, {"target": "x86_64-pc-windows-msvc"})
 
         self.assertEqual(produced, "demo-0.1.0-py3-none-any.whl")
         subcommand, args, kwargs = calls[0]
@@ -447,9 +415,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     },
                     clear=False,
                 ):
-                    with mock.patch.object(
-                        self.backend, "_maturin_pep517", fake_pep517
-                    ):
+                    with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
                         self.assertEqual(
                             self.backend.build_wheel(str(first)),
                             "demo-0.1.0-py3-none-any.whl",
@@ -474,9 +440,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                         )
 
             self.assertEqual(len(calls), 2)
-            self.assertEqual(
-                (second / "demo-0.1.0-py3-none-any.whl").read_bytes(), b"wheel"
-            )
+            self.assertEqual((second / "demo-0.1.0-py3-none-any.whl").read_bytes(), b"wheel")
             self.assertIn("wheel cache hit", stream.getvalue())
             self.assertEqual(len(list(cache.rglob("*.whl"))), 1)
 
@@ -503,9 +467,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     {"SOLDR_PEP517_WHEEL_CACHE": "off"},
                     clear=False,
                 ):
-                    with mock.patch.object(
-                        self.backend, "_maturin_pep517", fake_pep517
-                    ):
+                    with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
                         self.backend.build_wheel(str(first))
                         self.backend.build_wheel(str(second))
 
@@ -545,16 +507,10 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     },
                     clear=False,
                 ):
-                    with mock.patch.object(
-                        self.backend, "_maturin_pep517", fake_pep517
-                    ):
-                        self.backend.build_wheel(
-                            str(first), metadata_directory=str(metadata)
-                        )
+                    with mock.patch.object(self.backend, "_maturin_pep517", fake_pep517):
+                        self.backend.build_wheel(str(first), metadata_directory=str(metadata))
                         sources.write_text("pyproject.toml\npython/demo.egg-info\n")
-                        self.backend.build_wheel(
-                            str(second), metadata_directory=str(metadata)
-                        )
+                        self.backend.build_wheel(str(second), metadata_directory=str(metadata))
 
         self.assertEqual(len(calls), 1)
 
@@ -582,16 +538,12 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 egg_info = root / "demo.egg-info"
                 egg_info.mkdir()
                 (egg_info / "PKG-INFO").write_text("Metadata-Version: 2.1\n")
-                (Path(wheel_directory) / "demo-0.1.0-py3-none-any.whl").write_bytes(
-                    b"wheel"
-                )
+                (Path(wheel_directory) / "demo-0.1.0-py3-none-any.whl").write_bytes(b"wheel")
                 return "demo-0.1.0-py3-none-any.whl"
 
             setattr(delegate, "build_wheel", build_wheel)
             with mock.patch.dict(sys.modules, {"pep517_cache_delegate": delegate}):
-                with mock.patch.object(
-                    self.backend, "_project_root", return_value=root
-                ):
+                with mock.patch.object(self.backend, "_project_root", return_value=root):
                     with mock.patch.object(
                         self.backend,
                         "_project_soldr_options",
@@ -646,9 +598,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 "_project_soldr_options",
                 return_value={"delegate-backend": "pep517_delegate_test"},
             ):
-                with mock.patch.dict(
-                    os.environ, {"RUSTC_WRAPPER": "caller"}, clear=False
-                ):
+                with mock.patch.dict(os.environ, {"RUSTC_WRAPPER": "caller"}, clear=False):
                     self.assertEqual(
                         self.backend.get_requires_for_build_wheel({"profile": "dev"}),
                         ["setuptools"],
@@ -695,12 +645,8 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                 "_project_soldr_options",
                 return_value={"delegate-backend": "pep517_leased_delegate"},
             ):
-                with mock.patch.object(
-                    self.backend, "_hold_build_lease", recording_lease
-                ):
-                    result = self.backend._delegate_hook(
-                        "build_wheel", "wheel", None, None
-                    )
+                with mock.patch.object(self.backend, "_hold_build_lease", recording_lease):
+                    result = self.backend._delegate_hook("build_wheel", "wheel", None, None)
         self.assertEqual(result, "demo.whl")
         self.assertEqual(events[0][0], "lease-enter")
         self.assertEqual(events[1:], ["hook", "lease-exit"])
@@ -723,9 +669,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
 
         process = FakeProcess()
         environment = {"SOLDR_CACHE_DIR": "/selected/root"}
-        with mock.patch.object(
-            self.backend.subprocess, "Popen", return_value=process
-        ) as popen:
+        with mock.patch.object(self.backend.subprocess, "Popen", return_value=process) as popen:
             with self.original_hold_build_lease(environment):
                 self.assertFalse(process.stdin.closed)
         self.assertTrue(process.stdin.closed)
@@ -761,9 +705,7 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
                     clear=False,
                 ):
                     self.backend.build_wheel("wheel", {"profile": "release"}, None)
-                    self.backend.build_editable(
-                        "wheel", {"editable-profile": "dev"}, None
-                    )
+                    self.backend.build_editable("wheel", {"editable-profile": "dev"}, None)
                     self.assertEqual(os.environ["SOLDR_PEP517_PROFILE"], "caller")
 
         self.assertEqual(observed["wheel_profile"], "release")
@@ -777,6 +719,72 @@ class Pep517Pyo3PolicyTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "cannot delegate back to soldr"):
                 self.backend.get_requires_for_build_wheel()
+
+
+class Pep517IdleWatchdogTest(unittest.TestCase):
+    """soldr#1803 — the maturin child is killed only on sustained silence,
+    never while it is still producing output."""
+
+    def setUp(self) -> None:
+        self.backend = _load_backend()
+
+    def test_idle_timeout_parsing(self) -> None:
+        resolve = self.backend._pep517_idle_timeout
+        default = self.backend._PEP517_IDLE_TIMEOUT_DEFAULT
+        env_var = self.backend._PEP517_IDLE_TIMEOUT_ENV
+        self.assertEqual(resolve({}), default)
+        self.assertEqual(resolve({env_var: "90"}), 90.0)
+        self.assertIsNone(resolve({env_var: "0"}))
+        self.assertIsNone(resolve({env_var: "-5"}))
+        self.assertEqual(resolve({env_var: "not-a-number"}), default)
+
+    def _child_env(self, idle_secs: str) -> "dict[str, str]":
+        env = dict(os.environ)
+        env[self.backend._PEP517_IDLE_TIMEOUT_ENV] = idle_secs
+        return env
+
+    def test_chatty_child_outlives_idle_window(self) -> None:
+        # Prints every 0.2s for ~1.6s against a 0.75s idle limit: total
+        # runtime far exceeds the limit but every chunk resets the deadline,
+        # so the child must complete successfully.
+        code = (
+            "import time\nfor _ in range(8):\n    print('tick', flush=True)\n    time.sleep(0.2)\n"
+        )
+        self.backend._run_pep517_streaming(
+            [sys.executable, "-u", "-c", code], env=self._child_env("0.75")
+        )
+
+    def test_silent_child_is_killed(self) -> None:
+        code = "import time\ntime.sleep(30)\n"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            self.backend._run_pep517_streaming(
+                [sys.executable, "-u", "-c", code], env=self._child_env("0.75")
+            )
+
+    def test_nonzero_exit_raises_called_process_error(self) -> None:
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.backend._run_pep517_streaming(
+                [sys.executable, "-u", "-c", "raise SystemExit(3)"],
+                env=self._child_env("5"),
+            )
+
+    def test_forces_cargo_progress_liveness(self) -> None:
+        # Long link phases are silent in piped cargo; the backend must force
+        # the progress stream so the watchdog sees liveness (soldr#1803).
+        marker = Path(tempfile.mkdtemp()) / "progress-env.json"
+        code = (
+            "import json, os, pathlib, sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text(json.dumps(\n"
+            "    {k: os.environ.get(k) for k in\n"
+            "     ('CARGO_TERM_PROGRESS_WHEN', 'CARGO_TERM_PROGRESS_WIDTH')}))\n"
+            "print('done', flush=True)\n"
+        )
+        self.backend._run_pep517_streaming(
+            [sys.executable, "-u", "-c", code], env=self._child_env("5")
+        )
+        emitted = json.loads(marker.read_text())
+        self.assertEqual(emitted["CARGO_TERM_PROGRESS_WHEN"], "always")
+        self.assertEqual(emitted["CARGO_TERM_PROGRESS_WIDTH"], "80")
 
 
 if __name__ == "__main__":
