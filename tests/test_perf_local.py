@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -9,6 +10,9 @@ def load_module():
     spec = importlib.util.spec_from_file_location("perf_local", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    # Register before exec: @dataclass resolves annotations through
+    # sys.modules[cls.__module__], which is None for an unregistered module.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -40,16 +44,66 @@ def test_container_workdir_supports_shared_root_and_nested_worktree(tmp_path: Pa
 
 
 def test_create_command_uses_one_named_runner_and_persistent_volumes(tmp_path: Path) -> None:
-    command = perf_local.create_command(tmp_path, "sha256:image")
+    runner = perf_local.runner_for(tmp_path)
+    command = perf_local.create_command(runner, "sha256:image")
 
-    assert command[:4] == ["docker", "create", "--name", "soldr-perf-local"]
+    assert command[:4] == ["docker", "create", "--name", runner.container]
     assert "--init" in command
     assert f"{tmp_path.resolve()}:/repo" in command
-    assert "soldr-perf-target:/target" in command
-    assert "soldr-perf-cargo-home:/root/.cargo" in command
-    assert "soldr-perf-soldr-home:/root/.soldr" in command
+    assert f"{runner.target}:/target" in command
+    assert f"{runner.cargo_home}:/root/.cargo" in command
+    assert f"{runner.soldr_home}:/root/.soldr" in command
     assert "CARGO_TARGET_DIR=/target" in command
     assert command[-3:] == ["tail", "-f", "/dev/null"]
+
+
+def test_sibling_checkouts_never_share_a_runner_or_volume(tmp_path: Path) -> None:
+    """soldr / soldr2 / soldr3 must be fully isolated.
+
+    They used to share one global `soldr-perf-local` container and one set of
+    volumes while locking per-root, so a run in one checkout would `docker rm
+    -f` another's running container mid-build.
+    """
+    roots = []
+    for name in ("soldr", "soldr2", "soldr3"):
+        root = tmp_path / name
+        root.mkdir()
+        roots.append(perf_local.runner_for(root))
+
+    names = [r.container for r in roots]
+    assert len(set(names)) == len(names), names
+    for index, runner in enumerate(roots):
+        others = {v for other in roots[index + 1 :] for v in other.volumes}
+        assert not others.intersection(runner.volumes)
+
+
+def test_runner_names_are_stable_and_docker_safe(tmp_path: Path) -> None:
+    root = tmp_path / "soldr2"
+    root.mkdir()
+
+    first = perf_local.runner_for(root)
+    assert first == perf_local.runner_for(root), "names must be deterministic"
+
+    assert first.container.startswith("soldr-perf-local-")
+    assert "soldr2" in first.container, "leaf name aids `docker ps`"
+    for name in (first.container, *first.volumes):
+        assert name[0].isalnum()
+        assert all(char.isalnum() or char in "_.-" for char in name), name
+
+
+def test_root_tag_is_case_insensitive_because_windows_paths_are(tmp_path: Path) -> None:
+    root = tmp_path / "Soldr2"
+    root.mkdir()
+    lowered = Path(str(root).lower())
+    assert perf_local.root_tag(root) == perf_local.root_tag(lowered)
+
+
+def test_root_slug_survives_names_docker_would_reject(tmp_path: Path) -> None:
+    root = tmp_path / "soldr wt #1735"
+    root.mkdir()
+    slug = perf_local.root_slug(root)
+    assert all(char.isalnum() or char == "-" for char in slug), slug
+    assert not slug.startswith("-") and not slug.endswith("-")
 
 
 def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> None:
@@ -62,20 +116,21 @@ def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> N
     assert not perf_local.runner_matches({"Config": {"Labels": None}}, labels)
 
 
-def test_exec_command_reuses_runner_and_changes_only_workdir() -> None:
+def test_exec_command_reuses_runner_and_changes_only_workdir(tmp_path: Path) -> None:
+    runner = perf_local.runner_for(tmp_path)
     assert perf_local.exec_command(
-        ["cargo", "test", "--workspace"], "/repo/.claude/issue-1", tty=False
+        runner, ["cargo", "test", "--workspace"], "/repo/.claude/issue-1", tty=False
     ) == [
         "docker",
         "exec",
         "-w",
         "/repo/.claude/issue-1",
-        "soldr-perf-local",
+        runner.container,
         "cargo",
         "test",
         "--workspace",
     ]
-    assert perf_local.exec_command(["cargo", "check"], "/repo", tty=True)[:3] == [
+    assert perf_local.exec_command(runner, ["cargo", "check"], "/repo", tty=True)[:3] == [
         "docker",
         "exec",
         "-it",
