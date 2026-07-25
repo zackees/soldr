@@ -43,6 +43,8 @@ def test_initial_dylint_bootstrap_is_inside_monitored_cold_case() -> None:
     script = dylint_acceptance.BASH
     assert "cargo dylint --version" not in script
     assert script.count('"$SOLDR" cargo dylint --all') == 1
+    assert "> >(" not in script
+    assert '2>&1 | tee -a "$live_log"' in script
     assert 'run_case "$name" /tmp/dylint-acceptance/a' in script
     assert (
         "The cold case intentionally owns first-time cargo-dylint and driver" in script
