@@ -29,8 +29,10 @@ WATCHDOG_POLL_SECS=10
 WATCHDOG_INACTIVE_GRACE_SECS=60
 WATCHDOG_POST_CAPTURE_SECS=300
 # The external watchdog below is progress-aware. Keep soldr's wall-clock
-# timeout only as a last-resort backstop for a continuously noisy failure.
-export SOLDR_CARGO_WAIT_TIMEOUT_SECS=900
+# timeout disabled: a legitimate first source build of cargo-dylint plus its
+# per-nightly driver can exceed 15 minutes. The watchdog still captures and
+# terminates a semantic stall, including a continuously busy-spin process.
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS=0
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
 MODE="${SOLDR_DYLINT_ACCEPTANCE_MODE:-full}"
 
@@ -341,7 +343,9 @@ def main() -> int:
         check=False,
     )
     common = Path(common_dir.stdout.strip()).resolve()
-    source_root = common.parent if common_dir.returncode == 0 and common.name == ".git" else ROOT
+    source_root = (
+        common.parent if common_dir.returncode == 0 and common.name == ".git" else ROOT
+    )
     relative = ROOT.resolve().relative_to(source_root.resolve())
     workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     bootstrap = subprocess.run(
@@ -384,15 +388,27 @@ def main() -> int:
     shutil.rmtree(diagnostics, ignore_errors=True)
     diagnostics.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(
-            command, input=BASH, text=True, capture_output=True, check=False
-        )
-        print(result.stdout, end="")
-        print(result.stderr, end="", file=sys.stderr)
-        if result.returncode != 0:
-            return result.returncode
+        output_lines: list[str] = []
+        with subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        ) as process:
+            assert process.stdin is not None
+            assert process.stdout is not None
+            process.stdin.write(BASH)
+            process.stdin.close()
+            for line in process.stdout:
+                output_lines.append(line)
+                print(line, end="", flush=True)
+            returncode = process.wait()
+        if returncode != 0:
+            return returncode
         rows = []
-        for line in result.stdout.splitlines():
+        for line in output_lines:
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
