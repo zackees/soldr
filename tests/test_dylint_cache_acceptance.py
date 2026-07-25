@@ -43,6 +43,5 @@ def test_initial_dylint_bootstrap_is_inside_monitored_cold_case() -> None:
     script = dylint_acceptance.BASH
     assert "cargo dylint --version" not in script
     assert (
-        "The cold case intentionally owns first-time cargo-dylint and driver"
-        in script
+        "The cold case intentionally owns first-time cargo-dylint and driver" in script
     )
