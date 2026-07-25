@@ -15,6 +15,7 @@ def test_acceptance_covers_restore_and_object_cache_scenarios() -> None:
         "object_cache_only",
     ):
         assert scenario in source
+    assert "unset CARGO_TARGET_DIR" in source
     assert "test ! -e target/debug" in source
     assert "test ! -e target/release" in source
 

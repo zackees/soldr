@@ -23,6 +23,7 @@ export SOLDR_DAEMON_TOKIO_CONSOLE=1
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WORK=/tmp/dylint-cook/work
+unset CARGO_TARGET_DIR
 rm -rf /tmp/dylint-cook
 DIAGNOSTICS=/tmp/dylint-cook/diagnostics
 mkdir -p "$WORK" "$DIAGNOSTICS"
