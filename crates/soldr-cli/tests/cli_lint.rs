@@ -88,11 +88,28 @@ timed_test!(
         fs::create_dir_all(&tools).expect("create fake tool dir");
         let dylint = fake_script_path(&tools, "cargo-dylint");
         write_fake_script(&dylint, successful_tool_script());
+        let dylint_link = fake_script_path(&tools, "dylint-link");
+        write_fake_script(&dylint_link, successful_tool_script());
+        let dylint_channel = format!(
+            "nightly-2026-05-26-{}",
+            soldr_cli::pyo3_detect::host_triple()
+        );
+        let dylint_release = "1.89.0-nightly";
+        let dylint_commit = "0123456789abcdef0123456789abcdef01234567";
+        let dylint_identity = format!("{dylint_channel}|{dylint_release}|{dylint_commit}");
+        let rustc = install_versioned_fake_rustc(
+            "rustc 1.89.0-nightly (0123456789abcdef0123456789abcdef01234567 2026-05-26)",
+        );
 
         let output = isolated_soldr_command()
             .args(["--no-cache", "lint", "rust", "--package", "soldr-cli"])
             .env("SOLDR_CACHE_DIR", root.join("cache"))
             .env("SOLDR_TEST_CARGO_BIN", cargo)
+            .env("SOLDR_TEST_RUSTC_BIN", rustc)
+            .env("SOLDR_DYLINT_CONFIGURED_TOOLCHAIN", dylint_channel)
+            .env("SOLDR_DYLINT_CONFIGURED_RUSTC_RELEASE", dylint_release)
+            .env("SOLDR_DYLINT_CONFIGURED_RUSTC_COMMIT_HASH", dylint_commit)
+            .env("SOLDR_DYLINT_PREPARED_IDENTITY", dylint_identity)
             .env("PATH", prepend_to_path(&tools))
             .output()
             .expect("run soldr lint rust");

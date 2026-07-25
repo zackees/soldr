@@ -910,6 +910,31 @@ crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
     );
 });
 
+crate::timed_test!(cached_source_built_dylint_link_is_reused_before_network, {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = SoldrPaths::with_root(temp.path().join("soldr"));
+    let plan = crate::build_from_source_cmd::resolve_plan("dylint-link", None, None, &paths)
+        .expect("resolve source-built dylint-link");
+    std::fs::create_dir_all(&plan.install_dir).unwrap();
+    std::fs::write(&plan.final_binary, b"complete source-built dylint-link").unwrap();
+    let digest = crate::build_from_source_cmd::sha256_of_file(&plan.final_binary).unwrap();
+    std::fs::write(
+        plan.final_binary.with_extension("sha256"),
+        format!(
+            "{digest}  {}\n",
+            plan.final_binary.file_name().unwrap().to_string_lossy()
+        ),
+    )
+    .unwrap();
+
+    let selected = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(dylint_link_bin_dir(&paths))
+        .expect("valid source-built cache must short-circuit remote resolution");
+
+    assert_eq!(selected, plan.install_dir);
+});
+
 crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
     assert!(requires_managed_dylint_source_build("dylint"));
     for subcommand in ["nextest", "zigbuild", "xwin", "audit"] {

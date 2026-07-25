@@ -2907,6 +2907,13 @@ async fn dylint_source_build_bootstrap(
 }
 
 async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, SoldrError> {
+    if let Some(directory) = cached_source_built_dylint_bin_dir("dylint-link", paths)? {
+        eprintln!(
+            "soldr: using cached source-built dylint-link at {}",
+            directory.display()
+        );
+        return Ok(directory);
+    }
     let pinned_version = crate::fetch::known_tools::lookup_by_crate("dylint-link")
         .and_then(|spec| spec.pinned_version)
         .ok_or_else(|| SoldrError::Other("dylint-link must have a registry pin".into()))?;
@@ -2960,16 +2967,15 @@ fn source_built_dylint_bin_dir(
     tool: &str,
     paths: &SoldrPaths,
 ) -> Result<std::path::PathBuf, SoldrError> {
-    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
-    let binary = if plan.final_binary.is_file() {
+    if let Some(directory) = cached_source_built_dylint_bin_dir(tool, paths)? {
         eprintln!(
             "soldr: using cached source-built {tool} at {}",
-            plan.final_binary.display()
+            directory.display()
         );
-        plan.final_binary.clone()
-    } else {
-        crate::build_from_source_cmd::execute_plan(&plan)?.binary
-    };
+        return Ok(directory);
+    }
+    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
+    let binary = crate::build_from_source_cmd::execute_plan(&plan)?.binary;
     binary
         .parent()
         .map(std::path::Path::to_path_buf)
@@ -2977,6 +2983,32 @@ fn source_built_dylint_bin_dir(
             SoldrError::Other(format!(
                 "failed to resolve bin dir for source-built {tool}: {}",
                 binary.display()
+            ))
+        })
+}
+
+fn cached_source_built_dylint_bin_dir(
+    tool: &str,
+    paths: &SoldrPaths,
+) -> Result<Option<std::path::PathBuf>, SoldrError> {
+    let plan = crate::build_from_source_cmd::resolve_plan(tool, None, None, paths)?;
+    if !crate::build_from_source_cmd::cached_build_is_valid(&plan)? {
+        if plan.final_binary.exists() || plan.final_binary.with_extension("sha256").exists() {
+            eprintln!(
+                "soldr: rejecting incomplete or mismatched source-built {tool} cache at {}",
+                plan.final_binary.display()
+            );
+        }
+        return Ok(None);
+    }
+    plan.final_binary
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .map(Some)
+        .ok_or_else(|| {
+            SoldrError::Other(format!(
+                "failed to resolve bin dir for cached source-built {tool}: {}",
+                plan.final_binary.display()
             ))
         })
 }

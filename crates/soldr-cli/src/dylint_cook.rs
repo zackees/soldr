@@ -193,6 +193,10 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
             "soldr dylint cook: a lockfile is required for a restorable dependency layer".into(),
         ));
     }
+    // Acquire before reading any manifest/toolchain/hash inputs: another cook
+    // may be inside cargo-chef's in-place skeleton reconstruction even before
+    // this invocation reaches its own snapshot.
+    let source_lock = lock_workspace_source(&root)?;
     let configured = configured_library_toolchain(&root)?;
     let requested = reconcile_toolchain(parsed.toolchain.as_deref(), configured.as_deref())?;
 
@@ -218,6 +222,7 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
         output.outcome = "skip";
         emit_output(&output, parsed.json)?;
         FileExt::unlock(&lock)?;
+        FileExt::unlock(&source_lock)?;
         return Ok(0);
     }
 
@@ -240,6 +245,7 @@ pub(crate) async fn run(args: &[String], cache_enabled: bool) -> Result<i32, Sol
     output.outcome = "miss";
     emit_output(&output, parsed.json)?;
     FileExt::unlock(&lock)?;
+    FileExt::unlock(&source_lock)?;
     Ok(0)
 }
 
@@ -702,6 +708,50 @@ fn lock_target(target: &Path) -> Result<File, SoldrError> {
     Ok(file)
 }
 
+fn lock_workspace_source(root: &Path) -> Result<File, SoldrError> {
+    let path = workspace_source_lock_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&path)?;
+    file.lock_exclusive().map_err(|error| {
+        SoldrError::Other(format!(
+            "failed to lock workspace sources via {}: {error}",
+            path.display()
+        ))
+    })?;
+    Ok(file)
+}
+
+fn workspace_source_lock_path(root: &Path) -> PathBuf {
+    let dot_git = root.join(".git");
+    if dot_git.is_dir() {
+        return dot_git.join("soldr-dylint-cook.lock");
+    }
+    if dot_git.is_file() {
+        if let Ok(contents) = std::fs::read_to_string(&dot_git) {
+            if let Some(git_dir) = contents.trim().strip_prefix("gitdir:") {
+                let git_dir = PathBuf::from(git_dir.trim());
+                let git_dir = if git_dir.is_absolute() {
+                    git_dir
+                } else {
+                    root.join(git_dir)
+                };
+                return git_dir.join("soldr-dylint-cook.lock");
+            }
+        }
+    }
+    // Archive/non-git workspaces still need cross-nightly serialization.
+    // Keep a stable advisory lock at the workspace boundary; it contains no
+    // state and may be safely ignored by source archives.
+    root.join(".soldr-dylint-cook.lock")
+}
+
 fn read_marker(path: &Path) -> Option<DylintCookMarker> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
@@ -711,7 +761,26 @@ fn write_marker(path: &Path, marker: &DylintCookMarker) -> Result<(), SoldrError
         .map_err(|error| SoldrError::Other(format!("marker encoding failed: {error}")))?;
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     std::fs::write(&temporary, bytes)?;
-    std::fs::rename(temporary, path)?;
+    replace_marker_file(&temporary, path, |from, to| std::fs::rename(from, to))?;
+    Ok(())
+}
+
+fn replace_marker_file(
+    temporary: &Path,
+    path: &Path,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    if let Err(error) = rename(temporary, path) {
+        // Windows rename does not replace an existing destination. The
+        // workspace + target locks make this remove-then-rename fallback
+        // safe; interruption can only omit the marker and force a recook.
+        if path.exists() {
+            std::fs::remove_file(path)?;
+            rename(temporary, path)?;
+        } else {
+            return Err(error);
+        }
+    }
     Ok(())
 }
 
@@ -825,6 +894,59 @@ mod tests {
         std::fs::write(temp.path().join("debug/deps/libserde-deadbeef.rmeta"), "x").unwrap();
         assert!(target_has_dependency_payload(temp.path()));
     });
+
+    crate::timed_test!(marker_replacement_handles_windows_existing_destination, {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(MARKER_NAME);
+        let temporary = temp.path().join("replacement.tmp");
+        std::fs::write(&path, b"old").unwrap();
+        std::fs::write(&temporary, b"new").unwrap();
+        let mut attempts = 0;
+
+        replace_marker_file(&temporary, &path, |from, to| {
+            attempts += 1;
+            if attempts == 1 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "simulated Windows destination-exists failure",
+                ))
+            } else {
+                std::fs::rename(from, to)
+            }
+        })
+        .unwrap();
+
+        assert_eq!(attempts, 2);
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+        assert!(!temporary.exists());
+    });
+
+    crate::timed_test!(
+        workspace_source_lock_is_shared_across_target_and_nightly_shapes,
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path();
+            std::fs::write(root.join(concat!("Car", "go.lock")), "version = 3\n").unwrap();
+            let _nightly_a_target = root.join("target/dylint/target/nightly-2026-01-17");
+            let _nightly_b_target = root.join("other-target/dylint/target/nightly-2026-01-18");
+            let first = lock_workspace_source(root).unwrap();
+            let contender = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(workspace_source_lock_path(root))
+                .unwrap();
+
+            assert!(
+                contender.try_lock_exclusive().is_err(),
+                "different nightly/target shapes must contend on one workspace source lock"
+            );
+            FileExt::unlock(&first).unwrap();
+            contender
+                .try_lock_exclusive()
+                .expect("workspace lock must become available after release");
+            FileExt::unlock(&contender).unwrap();
+        }
+    );
 
     crate::timed_test!(check_shape_preserves_scope_and_private_marker, {
         let parsed = parse_args(&argv(&[
