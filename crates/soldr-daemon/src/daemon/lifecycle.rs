@@ -1179,20 +1179,75 @@ pub(crate) fn pid_is_alive(pid: u32) -> bool {
     if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
         return false;
     }
-    // Linux retains an exited child in the process table as a zombie until its
+    // Unix retains an exited child in the process table as a zombie until its
     // parent reaps it. `kill(pid, 0)` still succeeds for that entry, but the
     // daemon has definitively exited and cannot serve IPC. Treat zombie/dead
     // task states as stopped so synchronous shutdown does not deadlock with a
     // parent waiting to reap after this probe returns.
+    !pid_is_zombie(pid)
+}
+
+/// True when `pid` names a process that has exited but is still awaiting
+/// collection by its parent.
+///
+/// Every platform without a probe answers `false`, which degrades to the
+/// pre-existing `kill(pid, 0)`-only behavior rather than reporting a live
+/// daemon as stopped.
+#[cfg(unix)]
+fn pid_is_zombie(pid: u32) -> bool {
     #[cfg(any(target_os = "linux", target_os = "android"))]
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) {
-        if let Some((_, tail)) = stat.rsplit_once(") ") {
-            if matches!(tail.as_bytes().first(), Some(b'Z' | b'X')) {
-                return false;
-            }
-        }
+    {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        // The comm field is parenthesized and may itself contain spaces, so the
+        // state character is the first byte after the LAST ") ".
+        let Some((_, tail)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        matches!(tail.as_bytes().first(), Some(b'Z' | b'X'))
     }
-    true
+
+    // macOS/iOS have no /proc. `proc_pidinfo(PROC_PIDTBSDINFO)` is the
+    // supported libproc query for a process's BSD state; `pbi_status` reports
+    // `SZOMB` for an unreaped child. Without this branch a daemon spawned as a
+    // direct child stays "alive" to `kill(pid, 0)` forever, so every
+    // synchronous shutdown wait burns its full timeout — the darwin-only CI
+    // break where `daemon stop` sat out all 300s of
+    // `GRACEFUL_SHUTDOWN_WAIT_TIMEOUT` on an already-exited daemon.
+    #[cfg(target_vendor = "apple")]
+    {
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // `arg` MUST be non-zero: for PROC_PIDTBSDINFO the kernel only falls
+        // back to `proc_find_zombref` when `arg != 0` (xnu bsd/kern/proc_info.c).
+        // With `arg == 0` a zombie fails the `proc_find` lookup and the call
+        // returns ESRCH, which would defeat the entire purpose of this probe.
+        const FIND_ZOMBIE: u64 = 1;
+        // SAFETY: `proc_pidinfo` writes at most `size` bytes into the buffer and
+        // reports how many it wrote. The struct is plain-old-data and is only
+        // read after a full-size write is confirmed.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTBSDINFO,
+                FIND_ZOMBIE,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if written != size {
+            return false;
+        }
+        // SAFETY: the call above filled the whole struct.
+        unsafe { info.assume_init() }.pbi_status == libc::SZOMB
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 #[cfg(windows)]
@@ -1302,6 +1357,47 @@ pub(crate) fn pid_exe_stem_matches(pid: u32, expected_stem: &str) -> bool {
         .and_then(|s| s.to_str())
         .map(|s| s.eq_ignore_ascii_case(expected_stem))
         .unwrap_or(false)
+}
+
+#[cfg(all(test, unix))]
+mod pid_liveness_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // An exited-but-unreaped child must read as stopped.
+    //
+    // `kill(pid, 0)` succeeds for a zombie on every unix, so without a
+    // per-platform state probe `wait_for_shutdown_responder` never observes
+    // `Exited` and burns its whole timeout. This regression is silent on Linux
+    // (which has `/proc/<pid>/stat`) and fatal on macOS, which is exactly how
+    // it reached CI.
+    crate::timed_test!(exited_unreaped_child_is_not_alive, {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("spawn probe child");
+        let pid = child.id();
+
+        // Deliberately do NOT reap before probing — a reaped pid disappears
+        // from the process table and would pass for the wrong reason.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut observed_stopped = false;
+        while Instant::now() < deadline {
+            if !pid_is_alive(pid) {
+                observed_stopped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        // Reap only after the assertion input is captured.
+        let _ = child.wait();
+        assert!(
+            observed_stopped,
+            "an exited, unreaped child must not report as alive; \
+             pid {pid} still looked live after 10s"
+        );
+    });
 }
 
 #[cfg(test)]
