@@ -24,7 +24,8 @@ SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WORK=/tmp/dylint-cook/work
 rm -rf /tmp/dylint-cook
-mkdir -p "$WORK"
+DIAGNOSTICS=/tmp/dylint-cook/diagnostics
+mkdir -p "$WORK" "$DIAGNOSTICS"
 cp -a "$REPO/ci/fixtures/dylint-cache/." "$WORK/"
 cd "$WORK"
 "$SOLDR" "car""go" +1.94.1 generate-lockfile
@@ -63,8 +64,8 @@ dump_stacks() {
 
 run_with_watchdog() {
   local name="$1"; shift
-  local log="/tmp/dylint-cook/${name}.log"
-  SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-cook/${name}.tokio" \
+  local log="$DIAGNOSTICS/${name}.log"
+  SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="$DIAGNOSTICS/${name}.tokio" \
     "$@" >"$log" 2>&1 &
   local pid="$!" elapsed=0
   while kill -0 "$pid" 2>/dev/null; do
@@ -77,15 +78,23 @@ run_with_watchdog() {
         echo "=== process tree ==="
         ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
         echo "=== native stacks and symbol inventory ==="
-      } >"/tmp/dylint-cook/${name}-stacks.txt"
-      dump_stacks "$pid" "/tmp/dylint-cook/${name}-stacks.txt"
+      } >"$DIAGNOSTICS/${name}-stacks.txt"
+      dump_stacks "$pid" "$DIAGNOSTICS/${name}-stacks.txt"
       kill -TERM "$pid" $(descendants "$pid") 2>/dev/null || true
       wait "$pid" || true
+      cat "$log" >&2
       echo "watchdog timeout: $name" >&2
       return 124
     fi
   done
+  set +e
   wait "$pid"
+  local status="$?"
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    cat "$log" >&2
+  fi
+  return "$status"
 }
 
 run_case() {
@@ -95,14 +104,14 @@ run_case() {
   run_with_watchdog "$name" \
     "$SOLDR" dylint cook --workspace --all-targets --json
   ended="$(date +%s%3N)"
-  output="$(tail -n 1 "/tmp/dylint-cook/${name}.log")"
+  output="$(tail -n 1 "$DIAGNOSTICS/${name}.log")"
   outcome="$(jq -r .outcome <<<"$output")"
   if [[ "$outcome" != skip ]]; then
-    "$SOLDR" cache report --json >"/tmp/dylint-cook/${name}-report.json"
+    "$SOLDR" cache report --json >"$DIAGNOSTICS/${name}-report.json"
     hits="$(jq -r '.last_session.stats.hits // .last_session.hits // 0' \
-      "/tmp/dylint-cook/${name}-report.json")"
+      "$DIAGNOSTICS/${name}-report.json")"
     misses="$(jq -r '.last_session.stats.misses // .last_session.misses // 0' \
-      "/tmp/dylint-cook/${name}-report.json")"
+      "$DIAGNOSTICS/${name}-report.json")"
   fi
   jq -cn --arg name "$name" --arg outcome "$outcome" \
     --argjson wall_ms "$((ended-started))" \
@@ -132,7 +141,7 @@ test ! -e target/release
 
 printf '\npub fn dylint_fixture_violation() {}\n' >>src/lib.rs
 run_with_watchdog real_dylint "$SOLDR" "car""go" dylint --all
-grep -F "soldr Dylint fixture diagnostic" /tmp/dylint-cook/real_dylint.log
+grep -F "soldr Dylint fixture diagnostic" "$DIAGNOSTICS/real_dylint.log"
 """
 
 
@@ -202,7 +211,7 @@ def main() -> int:
             [
                 "docker",
                 "cp",
-                "soldr-perf-local:/tmp/dylint-cook/.",
+                "soldr-perf-local:/tmp/dylint-cook/diagnostics/.",
                 os.environ.get("RUNNER_TEMP", str(ROOT / "target"))
                 + "/dylint-cook-diagnostics",
             ],
