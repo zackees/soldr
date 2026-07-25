@@ -57,3 +57,25 @@ def test_cross_worktree_registration_trace_is_collected() -> None:
         "ZCCACHE_INNER_TRACE=/tmp/dylint-acceptance/diagnostics/"
         "context-registration-trace.jsonl"
     ) in script
+
+
+def test_watchdog_symbol_smoke_uses_full_debug_info_and_real_gdb_attach() -> None:
+    script = dylint_acceptance.BASH
+    assert "run_symbolized_watchdog_smoke" in script
+    assert 'dump_one_pid "$command_pid"' in script
+    assert "watchdog-symbol-smoke-stacks.txt" in script
+    assert "watchdog-symbol-smoke-passed" in script
+    assert "grep -Fq 'exe=/target/debug/soldr'" in script
+    assert "grep -Eq 'soldr_(cli|daemon|core)::'" in script
+    assert (
+        "grep -Eq 'crates/soldr-(cli|daemon|core)/src/"
+        "[^ ]*\\.rs:[0-9]+'" in script
+    )
+
+    source = (
+        Path(__file__).parents[1]
+        / ".github"
+        / "scripts"
+        / "dylint_cache_acceptance.py"
+    ).read_text(encoding="utf-8")
+    assert '"profile.dev.debug=2"' in source

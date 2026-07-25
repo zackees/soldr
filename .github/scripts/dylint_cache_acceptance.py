@@ -321,6 +321,48 @@ dump_one_pid() {
     -p "$pid" 2>&1 || true
 }
 
+run_symbolized_watchdog_smoke() {
+  fake_cargo="/tmp/dylint-acceptance/hanging-cargo"
+  dump="/tmp/dylint-acceptance/diagnostics/watchdog-symbol-smoke-stacks.txt"
+  cat >"$fake_cargo" <<'EOF'
+#!/bin/sh
+echo "watchdog symbol smoke: deliberately waiting" >&2
+exec sleep 120
+EOF
+  chmod +x "$fake_cargo"
+
+  (
+    cd /tmp/dylint-acceptance/a
+    exec env \
+      SOLDR_TEST_CARGO_BIN="$fake_cargo" \
+      SOLDR_CARGO_WAIT_TIMEOUT_SECS=0 \
+      "$SOLDR" cargo metadata >/dev/null 2>&1
+  ) &
+  command_pid="$!"
+  (
+    # This is a deliberately short watchdog deadline for the symbol smoke.
+    # The real acceptance cases retain the three-minute semantic-idle bound.
+    sleep 5
+    {
+      echo "WATCHDOG SYMBOL SMOKE: pid=$command_pid"
+      dump_one_pid "$command_pid"
+    } >"$dump" 2>&1
+    terminate_scope "$command_pid"
+  ) &
+  smoke_watchdog_pid="$!"
+  set +e
+  wait "$command_pid"
+  set -e
+  wait "$smoke_watchdog_pid"
+
+  # Prove that ptrace worked and the deliberately unstripped Soldr binary
+  # resolved both Rust function names and source line information.
+  grep -Fq 'exe=/target/debug/soldr' "$dump"
+  grep -Eq 'soldr_(cli|daemon|core)::' "$dump"
+  grep -Eq 'crates/soldr-(cli|daemon|core)/src/[^ ]*\.rs:[0-9]+' "$dump"
+  touch /tmp/dylint-acceptance/diagnostics/watchdog-symbol-smoke-passed
+}
+
 hash_libraries() {
   name="$1"
   target="$2"
@@ -339,6 +381,7 @@ hash_libraries() {
 # Keep target directories beneath their worktree roots. zccache deliberately
 # normalizes paths inside each root; arbitrary external target directories
 # are distinct user-selected paths and therefore are not cross-worktree keys.
+run_symbolized_watchdog_smoke
 run_case cold /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
 hash_libraries cold /tmp/dylint-acceptance/a/target
 if [[ "$MODE" == "sibling-diagnostic" ]]; then
@@ -394,6 +437,8 @@ def main() -> int:
             "cargo",
             "--config",
             'build.rustflags=["--cfg","tokio_unstable"]',
+            "--config",
+            "profile.dev.debug=2",
             "build",
             "-p",
             "soldr-cli",
