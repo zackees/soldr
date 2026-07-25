@@ -22,6 +22,7 @@ on:
       - "crates/**"
       - "docker/cook-shared-cache/Dockerfile"
       - "tests/test_perf_local.py"
+      - "tests/test_dylint_cache_acceptance.py"
       - "_vender/zccache"
       - "_vender/zccache/**"
 
@@ -32,7 +33,7 @@ jobs:
   dylint-cache:
     name: real cargo-dylint 6.0.1 cache matrix
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
