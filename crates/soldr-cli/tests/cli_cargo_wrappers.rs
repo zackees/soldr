@@ -2045,12 +2045,36 @@ timed_test!(
             run(base, &first_rustup_home, &first_rustup, None),
             &rustup_log,
         );
+        let memo_dir = soldr_root.join("cache").join("toolchain-prepare-v1");
+        let memo_entries = || {
+            let mut entries = fs::read_dir(&memo_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
+        };
+        let initial_memos = memo_entries();
         fs::write(&rustup_log, b"").expect("clear rustup log");
         let warm = run(base, &first_rustup_home, &first_rustup, None);
-        assert!(warm.status.success(), "warm invocation failed");
+        let warm_invocations = read_logged_rustup_invocations(&rustup_log);
         assert!(
-            read_logged_rustup_invocations(&rustup_log).is_empty(),
-            "unchanged warm invocation must use the memo"
+            warm.status.success(),
+            "warm invocation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&warm.stdout),
+            String::from_utf8_lossy(&warm.stderr)
+        );
+        assert!(
+            warm_invocations.is_empty(),
+            "unchanged warm invocation must use the memo\n\
+             initial memos: {initial_memos:#?}\n\
+             warm memos: {:#?}\n\
+             warm rustup invocations: {warm_invocations:#?}\n\
+             warm stderr:\n{}",
+            memo_entries(),
+            String::from_utf8_lossy(&warm.stderr)
         );
 
         let variants = [
