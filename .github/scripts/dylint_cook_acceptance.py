@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -156,6 +157,9 @@ def main() -> int:
     )
     common = Path(common_result.stdout.strip()).resolve()
     source_root = common.parent if common.name == ".git" else ROOT
+    perf_local = runpy.run_path(str(ROOT / "ci" / "perf_local.py"))
+    runner = perf_local["runner_for"](source_root)
+    runner_container = runner.container
     relative = ROOT.resolve().relative_to(source_root.resolve())
     workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     build = subprocess.run(
@@ -185,7 +189,7 @@ def main() -> int:
         "-i",
         "-w",
         workdir,
-        "soldr-perf-local",
+        runner_container,
         "bash",
         "-s",
     ]
@@ -211,7 +215,7 @@ def main() -> int:
         [
             "docker",
             "cp",
-            "soldr-perf-local:/tmp/dylint-cook/diagnostics/.",
+            f"{runner_container}:/tmp/dylint-cook/diagnostics/.",
             os.environ.get("RUNNER_TEMP", str(ROOT / "target"))
             + "/dylint-cook-diagnostics",
         ],

@@ -30,3 +30,10 @@ def test_watchdog_collects_native_and_async_diagnostics() -> None:
     assert "dylint-cook-diagnostics" in source
     assert "dylint-cook-diagnostics" in workflow
     assert source.index('"docker",\n            "cp"') < source.index("if returncode:")
+
+
+def test_acceptance_uses_the_per_checkout_perf_runner_identity() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    assert 'runpy.run_path(str(ROOT / "ci" / "perf_local.py"))' in source
+    assert "runner_container = runner.container" in source
+    assert '"soldr-perf-local"' not in source
