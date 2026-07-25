@@ -739,6 +739,15 @@ soldr toolchain doctor [--json]   # run env-detection probes (musl-cc, shared ta
 3. `rustup target add --toolchain <channel> <target>` for every entry in `[toolchain].targets`
 4. `cargo install <name> [--version V] [--locked] [--features ...] [--no-default-features]` for every entry in `[soldr.plugins]`
 
+The Cargo front door performs the toolchain/component/target portion
+automatically before launching the child build. A successful preparation is
+memoized under the Soldr cache, so an unchanged warm invocation launches no
+Rustup subprocesses. The memo is invalidated when the channel, profile,
+component or target requirements, explicit `+toolchain`, effective Rustup
+home/binary, or installed toolchain identity changes. Failed preparation is
+never memoized. `soldr toolchain prepare` and `ensure` remain explicit,
+unconditional orchestrators and also handle `[soldr.plugins]`.
+
 Plugin installs are bootstrap/dev-tool acquisition, not project compilation.
 They invoke the directly resolved cargo binary and clear inherited
 `RUSTC_WRAPPER` / `RUSTC_WORKSPACE_WRAPPER` so a setup step cannot

@@ -7,12 +7,51 @@ use crate::{
     apply_implicit_toolchain_homes, resolve_toolchain_binary, resolve_toolchain_binary_for_channel,
     rustup_binary,
 };
-use std::time::Duration;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, UNIX_EPOCH};
 use wait_timeout::ChildExt;
 
 const TOOLCHAIN_COMMAND_TIMEOUT_ENV_VAR: &str = "SOLDR_TOOLCHAIN_COMMAND_TIMEOUT_SECS";
 const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
+const CARGO_PREPARE_MEMO_SCHEMA_VERSION: u32 = 1;
+const CARGO_PREPARE_MEMO_DIR: &str = "toolchain-prepare-v1";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct CargoPrepareMemoKey {
+    schema_version: u32,
+    channel: String,
+    explicit_channel: Option<String>,
+    profile: Option<String>,
+    components: Vec<String>,
+    targets: Vec<String>,
+    rustup_home: PathBuf,
+    rustup_binary: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FileIdentity {
+    path: PathBuf,
+    len: u64,
+    modified_ns: u128,
+    sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolchainIdentity {
+    toolchain_dir: PathBuf,
+    rustup_binary: FileIdentity,
+    rustc_binary: FileIdentity,
+    components_manifest: FileIdentity,
+}
+
+#[derive(Debug, Serialize)]
+struct CargoPrepareFingerprint<'a> {
+    key: &'a CargoPrepareMemoKey,
+    identity: ToolchainIdentity,
+}
 
 /// Run a rustup-managed toolchain binary with pass-through args.
 pub(crate) fn run_toolchain_passthrough(tool: &str, args: &[String]) -> Result<i32, SoldrError> {
@@ -368,6 +407,203 @@ pub(crate) fn run_toolchain_prepare() -> Result<i32, SoldrError> {
     Ok(code)
 }
 
+fn canonical_requirement_list(values: Option<&[String]>) -> Vec<String> {
+    let mut values = values
+        .unwrap_or_default()
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn effective_rustup_home() -> Option<PathBuf> {
+    let mut command = std::process::Command::new(rustup_binary());
+    apply_implicit_toolchain_homes(&mut command);
+    command
+        .get_envs()
+        .find_map(|(name, value)| {
+            name.eq_ignore_ascii_case("RUSTUP_HOME")
+                .then(|| value.map(PathBuf::from))
+                .flatten()
+        })
+        .or_else(crate::core::resolve_rustup_home)
+}
+
+fn normalize_existing_path(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn cargo_prepare_memo_key(
+    channel: &str,
+    explicit_channel: Option<&str>,
+    manifest: &crate::core::RustToolchainManifest,
+) -> Option<CargoPrepareMemoKey> {
+    let rustup_home = effective_rustup_home()?;
+    let rustup_binary = rustup_binary();
+    Some(CargoPrepareMemoKey {
+        schema_version: CARGO_PREPARE_MEMO_SCHEMA_VERSION,
+        channel: channel.to_owned(),
+        explicit_channel: explicit_channel
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        profile: manifest
+            .profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        components: canonical_requirement_list(manifest.components.as_deref()),
+        targets: canonical_requirement_list(manifest.targets.as_deref()),
+        rustup_home: normalize_existing_path(&rustup_home),
+        rustup_binary: normalize_existing_path(&rustup_binary),
+    })
+}
+
+fn cargo_prepare_memo_path(
+    paths: &SoldrPaths,
+    key: &CargoPrepareMemoKey,
+    identity: ToolchainIdentity,
+) -> Option<PathBuf> {
+    let encoded = serde_json::to_vec(&CargoPrepareFingerprint { key, identity }).ok()?;
+    let digest = Sha256::digest(encoded);
+    Some(
+        paths
+            .cache
+            .join(CARGO_PREPARE_MEMO_DIR)
+            .join(format!("{digest:x}.ok")),
+    )
+}
+
+fn file_identity(path: &Path, hash_contents: bool) -> Option<FileIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    let sha256 = if hash_contents {
+        let digest = Sha256::digest(std::fs::read(path).ok()?);
+        Some(format!("{digest:x}"))
+    } else {
+        None
+    };
+    Some(FileIdentity {
+        path: normalize_existing_path(path),
+        len: metadata.len(),
+        modified_ns,
+        sha256,
+    })
+}
+
+fn rustc_binary_path(toolchain_dir: &Path) -> Option<PathBuf> {
+    let plain = toolchain_dir.join("bin").join("rustc");
+    if plain.is_file() {
+        return Some(plain);
+    }
+    let windows = toolchain_dir.join("bin").join("rustc.exe");
+    windows.is_file().then_some(windows)
+}
+
+fn toolchain_identity(
+    key: &CargoPrepareMemoKey,
+    toolchain_dir: &Path,
+) -> Option<ToolchainIdentity> {
+    let rustc = rustc_binary_path(toolchain_dir)?;
+    let components = toolchain_dir.join("lib").join("rustlib").join("components");
+    Some(ToolchainIdentity {
+        toolchain_dir: normalize_existing_path(toolchain_dir),
+        rustup_binary: file_identity(&key.rustup_binary, false)?,
+        rustc_binary: file_identity(&rustc, false)?,
+        components_manifest: file_identity(&components, true)?,
+    })
+}
+
+fn memoized_toolchain_dir(paths: &SoldrPaths, key: &CargoPrepareMemoKey) -> Option<PathBuf> {
+    let toolchain_dirs = discover_toolchain_dirs(key, None);
+    if toolchain_dirs.len() != 1 {
+        return None;
+    }
+    let toolchain_dir = toolchain_dirs.into_iter().next()?;
+    let identity = toolchain_identity(key, &toolchain_dir)?;
+    cargo_prepare_memo_path(paths, key, identity)
+        .is_some_and(|path| path.is_file())
+        .then_some(toolchain_dir)
+}
+
+fn installed_toolchain_name(output: &[u8], channel: &str) -> Option<String> {
+    String::from_utf8_lossy(output).lines().find_map(|line| {
+        let name = line.split_whitespace().next()?;
+        (name == channel
+            || name
+                .strip_prefix(channel)
+                .is_some_and(|suffix| suffix.starts_with('-')))
+        .then(|| name.to_owned())
+    })
+}
+
+fn discover_toolchain_dirs(
+    key: &CargoPrepareMemoKey,
+    installed_name: Option<&str>,
+) -> Vec<PathBuf> {
+    let toolchains = key.rustup_home.join("toolchains");
+    if let Some(name) = installed_name {
+        let exact = toolchains.join(name);
+        if exact.is_dir() {
+            return vec![exact];
+        }
+    }
+    let Ok(entries) = std::fs::read_dir(toolchains) else {
+        return Vec::new();
+    };
+    let mut matches = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name == key.channel
+                || name
+                    .strip_prefix(&key.channel)
+                    .is_some_and(|suffix| suffix.starts_with('-'))
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches
+}
+
+fn write_cargo_prepare_memo(paths: &SoldrPaths, key: CargoPrepareMemoKey, toolchain_dir: &Path) {
+    let Some(identity) = toolchain_identity(&key, toolchain_dir) else {
+        return;
+    };
+    let Some(path) = cargo_prepare_memo_path(paths, &key, identity) else {
+        return;
+    };
+    let Some(parent) = path.parent() else {
+        return;
+    };
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
+    if std::fs::write(&temp, []).is_err() {
+        return;
+    }
+    if path.is_file() {
+        let _ = std::fs::remove_file(&temp);
+        return;
+    }
+    if std::fs::rename(&temp, &path).is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
 /// Prepare the channel needed by the cargo front door using the long
 /// toolchain-command timeout. Plugins remain exclusive to prepare/ensure.
 pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(), SoldrError> {
@@ -386,23 +622,23 @@ pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(
     let Some(channel) = channel else {
         return Ok(());
     };
+    let paths = SoldrPaths::new()?;
+    let memo_key = cargo_prepare_memo_key(channel, explicit_channel, &manifest);
+    if memo_key
+        .as_ref()
+        .and_then(|key| memoized_toolchain_dir(&paths, key))
+        .is_some()
+    {
+        return Ok(());
+    }
 
     let mut list = std::process::Command::new(rustup_binary());
     list.args(["toolchain", "list"]);
     apply_implicit_toolchain_homes(&mut list);
-    let installed = crate::core::command_output_with_timeout(&mut list, "toolchain list")
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout).lines().any(|line| {
-                line.split_whitespace().next().is_some_and(|name| {
-                    name == channel
-                        || name
-                            .strip_prefix(channel)
-                            .is_some_and(|suffix| suffix.starts_with('-'))
-                })
-            })
-        })
-        .unwrap_or(false);
-    if !installed {
+    let installed_name = crate::core::command_output_with_timeout(&mut list, "toolchain list")
+        .ok()
+        .and_then(|output| installed_toolchain_name(&output.stdout, channel));
+    if installed_name.is_none() {
         let code = rustup_toolchain_install_with_profile(channel, manifest.profile.as_deref())?;
         if code != 0 {
             return Err(SoldrError::Other(format!(
@@ -428,6 +664,12 @@ pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(
                     "target add {target} exited with code {code}"
                 )));
             }
+        }
+    }
+    if let Some(key) = memo_key {
+        let toolchain_dirs = discover_toolchain_dirs(&key, None);
+        if toolchain_dirs.len() == 1 {
+            write_cargo_prepare_memo(&paths, key, &toolchain_dirs[0]);
         }
     }
     Ok(())
@@ -750,6 +992,117 @@ mod tests {
         assert_eq!(
             scope_rustup_args_to_dylint(&component, "nightly-2026-01-18"),
             vec!["component", "add", "rustc-dev"]
+        );
+    });
+
+    fn test_memo_key(root: &Path) -> CargoPrepareMemoKey {
+        CargoPrepareMemoKey {
+            schema_version: CARGO_PREPARE_MEMO_SCHEMA_VERSION,
+            channel: "1.94.1".to_string(),
+            explicit_channel: None,
+            profile: Some("minimal".to_string()),
+            components: vec!["clippy".to_string(), "rustfmt".to_string()],
+            targets: vec!["wasm32-unknown-unknown".to_string()],
+            rustup_home: root.join("rustup"),
+            rustup_binary: root.join("rustup-bin"),
+        }
+    }
+
+    crate::timed_test!(cargo_prepare_memo_key_covers_every_requirement, {
+        let root = tempfile::tempdir().expect("temp dir");
+        let base = test_memo_key(root.path());
+        let variants = [
+            {
+                let mut key = base.clone();
+                key.channel = "1.95.0".to_string();
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.explicit_channel = Some("1.94.1".to_string());
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.profile = Some("default".to_string());
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.components.push("miri".to_string());
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.targets.push("x86_64-unknown-linux-musl".to_string());
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.rustup_home = root.path().join("other-rustup");
+                key
+            },
+            {
+                let mut key = base.clone();
+                key.rustup_binary = root.path().join("other-rustup-bin");
+                key
+            },
+        ];
+        for variant in variants {
+            assert_ne!(base, variant);
+        }
+    });
+
+    crate::timed_test!(cargo_prepare_memo_rejects_changed_or_missing_toolchain, {
+        let root = tempfile::tempdir().expect("temp dir");
+        let key = test_memo_key(root.path());
+        let toolchain = key.rustup_home.join("toolchains").join("1.94.1-test");
+        std::fs::create_dir_all(toolchain.join("bin")).expect("create bin");
+        std::fs::create_dir_all(toolchain.join("lib").join("rustlib")).expect("create rustlib");
+        std::fs::write(&key.rustup_binary, b"rustup").expect("write rustup");
+        std::fs::write(toolchain.join("bin").join("rustc"), b"rustc").expect("write rustc");
+        let components = toolchain.join("lib").join("rustlib").join("components");
+        std::fs::write(&components, b"rustc-test\n").expect("write components");
+
+        let original = toolchain_identity(&key, &toolchain).expect("initial identity");
+        std::fs::write(&components, b"rustc-test\nrustfmt-preview-test\n")
+            .expect("change components");
+        let changed = toolchain_identity(&key, &toolchain).expect("changed identity");
+        assert_ne!(original, changed);
+
+        std::fs::remove_dir_all(&toolchain).expect("remove fake toolchain");
+        assert!(toolchain_identity(&key, &toolchain).is_none());
+    });
+
+    crate::timed_test!(cargo_prepare_memo_rejects_ambiguous_alias_toolchains, {
+        let root = tempfile::tempdir().expect("temp dir");
+        let key = test_memo_key(root.path());
+        let paths = SoldrPaths::with_root(root.path().join("soldr"));
+        std::fs::write(&key.rustup_binary, b"rustup").expect("write rustup");
+
+        for host in ["x86_64-pc-windows-msvc", "x86_64-pc-windows-gnu"] {
+            let toolchain = key
+                .rustup_home
+                .join("toolchains")
+                .join(format!("1.94.1-{host}"));
+            std::fs::create_dir_all(toolchain.join("bin")).expect("create bin");
+            std::fs::create_dir_all(toolchain.join("lib").join("rustlib")).expect("create rustlib");
+            std::fs::write(toolchain.join("bin").join("rustc"), host).expect("write rustc");
+            std::fs::write(
+                toolchain.join("lib").join("rustlib").join("components"),
+                format!("rustc-{host}\n"),
+            )
+            .expect("write components");
+        }
+
+        let first = key
+            .rustup_home
+            .join("toolchains")
+            .join("1.94.1-x86_64-pc-windows-msvc");
+        write_cargo_prepare_memo(&paths, key.clone(), &first);
+        assert!(
+            memoized_toolchain_dir(&paths, &key).is_none(),
+            "an alias with multiple installed hosts must prepare conservatively"
         );
     });
 }
