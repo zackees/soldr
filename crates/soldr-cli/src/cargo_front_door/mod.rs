@@ -2915,9 +2915,9 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
     match crate::fetch::fetch_tool_for_host_with_paths("dylint-link", &version, paths).await {
         Ok(result) => {
             if let Err(error) = validated_dylint_link_prebuilt(&result) {
-                if dylint_link_prebuilt_smoke_failed(&error) {
+                if dylint_link_prebuilt_requires_source_fallback(&error) {
                     eprintln!(
-                        "soldr: dylint-link prebuilt is not executable on this host ({error}); \
+                        "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
                          building pinned source fallback..."
                     );
                     return source_built_dylint_bin_dir("dylint-link", paths);
@@ -2940,9 +2940,9 @@ async fn dylint_link_bin_dir(paths: &SoldrPaths) -> Result<std::path::PathBuf, S
                     ))
                 })
         }
-        Err(error) if dylint_link_prebuilt_smoke_failed(&error) => {
+        Err(error) if dylint_link_prebuilt_requires_source_fallback(&error) => {
             eprintln!(
-                "soldr: dylint-link prebuilt is not executable on this host ({error}); \
+                "soldr: dylint-link prebuilt is unavailable or not executable on this host ({error}); \
                  building pinned source fallback..."
             );
             source_built_dylint_bin_dir("dylint-link", paths)
@@ -2981,11 +2981,16 @@ fn source_built_dylint_bin_dir(
         })
 }
 
-fn dylint_link_prebuilt_smoke_failed(error: &SoldrError) -> bool {
-    matches!(
-        error,
-        SoldrError::Other(message) if message.starts_with("smoke test failed:")
-    )
+fn dylint_link_prebuilt_requires_source_fallback(error: &SoldrError) -> bool {
+    // The fetcher uses this typed variant when the release has no asset for
+    // the current host (Dylint 6.0.1 publishes Linux assets only). Network,
+    // checksum, and trust failures use other variants and must remain hard
+    // errors rather than being masked by a source build.
+    matches!(error, SoldrError::UnsupportedPlatform(_))
+        || matches!(
+            error,
+            SoldrError::Other(message) if message.starts_with("smoke test failed:")
+        )
 }
 
 fn requires_managed_dylint_source_build(sub: &str) -> bool {

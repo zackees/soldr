@@ -869,17 +869,22 @@ fn cargo_args_are_cacheable_for_every_registry_inner_build_subcommand() {
 }
 
 crate::timed_test!(
-    dylint_link_source_fallback_is_limited_to_prebuilt_smoke_failures,
+    dylint_link_source_fallback_is_limited_to_missing_or_unrunnable_prebuilts,
     {
-        assert!(dylint_link_prebuilt_smoke_failed(&SoldrError::Other(
-            "smoke test failed: dylint-link needs a newer GLIBC".into()
-        )));
-        assert!(!dylint_link_prebuilt_smoke_failed(&SoldrError::Network(
-            "release download failed".into()
-        )));
-        assert!(!dylint_link_prebuilt_smoke_failed(&SoldrError::Other(
-            "checksum pin mismatch".into()
-        )));
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::UnsupportedPlatform(
+                "asset matching failed: no asset matches target aarch64-apple-darwin".into()
+            )
+        ));
+        assert!(dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("smoke test failed: dylint-link needs a newer GLIBC".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Network("release download failed".into())
+        ));
+        assert!(!dylint_link_prebuilt_requires_source_fallback(
+            &SoldrError::Other("checksum pin mismatch".into())
+        ));
     }
 );
 
@@ -898,7 +903,7 @@ crate::timed_test!(cached_dylint_link_is_revalidated_and_evicted, {
     };
 
     let error = validated_dylint_link_prebuilt(&result).unwrap_err();
-    assert!(dylint_link_prebuilt_smoke_failed(&error));
+    assert!(dylint_link_prebuilt_requires_source_fallback(&error));
     assert!(
         !binary.exists(),
         "incompatible cached prebuilt must be evicted before source fallback"

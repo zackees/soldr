@@ -24,6 +24,7 @@ fn install_dylint_toolchain(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let rustc = fake_script_path(&tools, "rustc");
     let zccache = fake_script_path(&tools, "zccache");
     let cargo_dylint = fake_script_path(&tools, "cargo-dylint");
+    let dylint_link = fake_script_path(&tools, "dylint-link");
     let dylint_driver = fake_script_path(&tools, "dylint-driver");
 
     write_script(
@@ -72,6 +73,7 @@ exec "$compiler" "$@"
             log = log.display(),
         ),
     );
+    write_script(&dylint_link, "#!/bin/sh\nexit 0\n".to_string());
     write_script(
         &dylint_driver,
         format!(
