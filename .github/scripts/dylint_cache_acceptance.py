@@ -53,25 +53,34 @@ run_case() {
     sleep "$WATCHDOG_SECS"
     if kill -0 "$command_pid" 2>/dev/null; then
       dump="/tmp/dylint-acceptance/diagnostics/$name-stacks.txt"
+      fired="/tmp/dylint-acceptance/diagnostics/$name-watchdog-fired"
+      : >"$fired"
       {
         echo "WATCHDOG: $name still running after ${WATCHDOG_SECS}s"
         date -u
         echo "=== process tree ==="
         ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
         echo "=== native stacks ==="
-        ps -eo pid=,args= |
-          awk '/\/target\/debug\/soldr|cargo-dylint|dylint-driver|rustc|zccache/ {print $1}' |
-          sort -un |
-          while read -r pid; do
-            test -n "$pid" || continue
-            echo "--- pid=$pid exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true) ---"
-            timeout 30s gdb -q -n -batch \
-              -ex "set pagination off" \
-              -ex "set print thread-events off" \
-              -ex "info threads" \
-              -ex "thread apply all bt full 64" \
-              -p "$pid" 2>&1 || true
+        pids=()
+        for proc in /proc/[0-9]*; do
+          pid="${proc##*/}"
+          test -r "$proc/environ" -a -r "$proc/cmdline" || continue
+          tr '\0' '\n' <"$proc/environ" 2>/dev/null |
+            grep -Fxq "SOLDR_CACHE_DIR=$SOLDR_CACHE_DIR" || continue
+          command_line="$(tr '\0' ' ' <"$proc/cmdline" 2>/dev/null || true)"
+          case "$command_line" in
+            *"/target/debug/soldr"*|*"cargo-dylint"*|*"dylint-driver"*|*"rustc"*|*"zccache"*)
+              pids+=("$pid")
+              ;;
+          esac
+        done
+        printf 'scoped pids: %s\n' "${pids[*]:-(none)}"
+        export -f dump_one_pid
+        timeout 120s bash -c '
+          for pid in "$@"; do
+            dump_one_pid "$pid"
           done
+        ' bash "${pids[@]}" || echo "WATCHDOG: native stack collection hit its 120s global budget"
       } >"$dump" 2>&1
       cat "$dump" >&2
     fi
@@ -81,8 +90,13 @@ run_case() {
   wait "$command_pid"
   status="$?"
   set -e
-  kill "$watchdog_pid" 2>/dev/null || true
-  wait "$watchdog_pid" 2>/dev/null || true
+  fired="/tmp/dylint-acceptance/diagnostics/$name-watchdog-fired"
+  if [[ -e "$fired" ]]; then
+    wait "$watchdog_pid" 2>/dev/null || true
+  else
+    kill "$watchdog_pid" 2>/dev/null || true
+    wait "$watchdog_pid" 2>/dev/null || true
+  fi
   if [[ "$status" -ne 0 ]]; then
     echo "Dylint library target contents after failure:" >&2
     find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
@@ -100,6 +114,18 @@ run_case() {
         ($report[0].last_session | type) == "object"),
       hits:($report[0].last_session.stats.hits // $report[0].last_session.hits // 0),
       misses:($report[0].last_session.stats.misses // $report[0].last_session.misses // 0)}'
+}
+
+dump_one_pid() {
+  pid="$1"
+  test -r "/proc/$pid/status" || return 0
+  echo "--- pid=$pid exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true) ---"
+  timeout 12s gdb -q -n -batch \
+    -ex "set pagination off" \
+    -ex "set print thread-events off" \
+    -ex "info threads" \
+    -ex "thread apply all bt full 64" \
+    -p "$pid" 2>&1 || true
 }
 
 # Keep target directories beneath their worktree roots. zccache deliberately

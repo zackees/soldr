@@ -8,8 +8,11 @@ on:
       - ".github/workflows/dylint-cache-acceptance.yml"
       - "Cargo.lock"
       - "Cargo.toml"
+      - "ci/perf_local.py"
       - "ci/fixtures/dylint-cache/**"
       - "crates/**"
+      - "docker/cook-shared-cache/Dockerfile"
+      - "tests/test_perf_local.py"
       - "_vender/zccache"
       - "_vender/zccache/**"
 
