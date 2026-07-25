@@ -98,13 +98,21 @@ pub(crate) async fn prepare(
     requested_channel: Option<&str>,
     workspace_root: &Path,
 ) -> Result<DylintToolchainPlan, SoldrError> {
-    let plan = resolve_plan(requested_channel, workspace_root).await?;
+    let plan = resolve_plan_inner(requested_channel, workspace_root, true).await?;
     prepare_resolved(plan)
 }
 
 pub(crate) async fn resolve_plan(
     requested_channel: Option<&str>,
     workspace_root: &Path,
+) -> Result<DylintToolchainPlan, SoldrError> {
+    resolve_plan_inner(requested_channel, workspace_root, false).await
+}
+
+async fn resolve_plan_inner(
+    requested_channel: Option<&str>,
+    workspace_root: &Path,
+    install_explicit_if_unmapped: bool,
 ) -> Result<DylintToolchainPlan, SoldrError> {
     let plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
         plan_from_retained_environment(&channel)?
@@ -120,13 +128,58 @@ pub(crate) async fn resolve_plan(
         )
         .await?;
         if let Some(channel) = requested.as_deref().filter(|value| is_dated_nightly(value)) {
-            select_explicit_from_map(&bytes, channel)?
+            match select_explicit_from_map(&bytes, channel) {
+                Ok(plan) => plan,
+                Err(map_error) => {
+                    if let Some(plan) = plan_from_installed_explicit_nightly(channel)? {
+                        plan
+                    } else if install_explicit_if_unmapped {
+                        install_and_observe_explicit_nightly(channel)?
+                    } else {
+                        return Err(map_error);
+                    }
+                }
+            }
         } else {
             let version = requested_rust_version(requested.as_deref())?;
             select_from_map(&bytes, &version)?
         }
     };
     Ok(plan)
+}
+
+fn plan_from_installed_explicit_nightly(
+    channel: &str,
+) -> Result<Option<DylintToolchainPlan>, SoldrError> {
+    if resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(channel)).is_err() {
+        return Ok(None);
+    }
+    let (compiler_release, compiler_commit) = observe_compiler(channel)?;
+    let identity = NightlyIdentity {
+        rust_version: major_minor(&compiler_release).unwrap_or_default(),
+        rustc_release: compiler_release.clone(),
+        rustc_commit_hash: compiler_commit.clone(),
+    };
+    validate_identity(channel, &identity)?;
+    Ok(Some(DylintToolchainPlan {
+        channel: channel.to_string(),
+        compiler_release,
+        compiler_commit,
+    }))
+}
+
+fn install_and_observe_explicit_nightly(channel: &str) -> Result<DylintToolchainPlan, SoldrError> {
+    let provisional = DylintToolchainPlan {
+        channel: channel.to_string(),
+        compiler_release: String::new(),
+        compiler_commit: String::new(),
+    };
+    ensure_installed(&provisional)?;
+    plan_from_installed_explicit_nightly(channel)?.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "installed explicit Dylint toolchain `{channel}` could not be resolved"
+        ))
+    })
 }
 
 fn prepare_resolved(mut plan: DylintToolchainPlan) -> Result<DylintToolchainPlan, SoldrError> {
