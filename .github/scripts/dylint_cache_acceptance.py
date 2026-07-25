@@ -47,6 +47,17 @@ git -C /tmp/dylint-acceptance/a add .
 git -C /tmp/dylint-acceptance/a commit -qm fixture
 git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
+snapshot_zccache_logs() {
+  name="$1"
+  log_dir="$SOLDR_CACHE_DIR/cache/zccache/logs"
+  snapshot_dir="/tmp/dylint-acceptance/diagnostics/$name-zccache"
+  mkdir -p "$snapshot_dir"
+  test -d "$log_dir" || return 0
+  find "$log_dir" -maxdepth 1 -type f \
+    \( -name 'compile_journal.jsonl*' -o -name 'last-session*.json*' \) \
+    -exec cp -p '{}' "$snapshot_dir/" ';'
+}
+
 run_case() {
   name="$1"; work="$2"; target="$3"
   emit_stats="${4:-1}"
@@ -181,6 +192,7 @@ run_case() {
     kill "$watchdog_pid" 2>/dev/null || true
     wait "$watchdog_pid" 2>/dev/null || true
   fi
+  snapshot_zccache_logs "$name"
   if [[ "$status" -ne 0 ]]; then
     echo "Dylint library target contents after failure:" >&2
     find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
