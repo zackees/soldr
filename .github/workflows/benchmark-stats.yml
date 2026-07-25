@@ -98,6 +98,20 @@ jobs:
     if: needs.gate.outputs.should_run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # Single definition of "this run may publish". It was previously
+      # spelled out on each of the three publish steps below while the
+      # deploy-pages job used a DIFFERENT spelling that also allowed
+      # `schedule` (added by soldr#1213/#1214). The steps were never
+      # updated, so every nightly run did ~13 min of benchmark work, then
+      # skipped all three publish steps, and deploy-pages still demanded
+      # the `github-pages` artifact that was therefore never uploaded —
+      # failing with "No artifacts named github-pages were found".
+      #
+      # Keep this in sync with deploy-pages.if; the duplication is what
+      # caused the drift. On `schedule` the ref check is skipped because
+      # scheduled workflows always run against the default branch.
+      PUBLISH_PAGES: ${{ github.event_name == 'schedule' || (github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')) }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -211,7 +225,7 @@ jobs:
         run: python3 bench/render_comparison_bars.py
 
       - name: Publish to benchmark-stats branch
-        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ success() && env.PUBLISH_PAGES == 'true' }}
         working-directory: soldr
         env:
           GH_TOKEN: ${{ github.token }}
@@ -220,11 +234,11 @@ jobs:
         run: bash bench/publish_benchmark_stats.sh
 
       - name: Configure Pages
-        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ success() && env.PUBLISH_PAGES == 'true' }}
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
 
       - name: Upload Pages artifact
-        if: ${{ success() && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        if: ${{ success() && env.PUBLISH_PAGES == 'true' }}
         uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: soldr/benchmark-stats
