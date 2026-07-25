@@ -49,6 +49,7 @@ git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
 run_case() {
   name="$1"; work="$2"; target="$3"
+  emit_stats="${4:-1}"
   live_log="/tmp/dylint-acceptance/diagnostics/$name-live.log"
   : >"$live_log"
   start="$(date +%s%3N)"
@@ -186,6 +187,9 @@ run_case() {
     echo "Dylint library target contents after failure:" >&2
     find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
     return "$status"
+  fi
+  if [[ "$emit_stats" != 1 ]]; then
+    return 0
   fi
   end="$(date +%s%3N)"
   # The Cargo front door finalizes session stats before returning. Its
@@ -335,10 +339,10 @@ else
   printf '\npub fn dylint_fixture_violation() {}\n' \
     >> /tmp/dylint-acceptance/a/src/lib.rs
   for pass in cold replay; do
-    output="/tmp/dylint-acceptance/diagnostic-$pass.log"
-    (cd /tmp/dylint-acceptance/a && \
-      CARGO_TARGET_DIR=/tmp/dylint-acceptance/target-diagnostic \
-      "$SOLDR" cargo dylint --all 2>&1) | tee "$output"
+    name="diagnostic-$pass"
+    output="/tmp/dylint-acceptance/diagnostics/$name-live.log"
+    run_case "$name" /tmp/dylint-acceptance/a \
+      /tmp/dylint-acceptance/target-diagnostic 0
     grep -F "soldr Dylint fixture diagnostic" "$output" >/dev/null
     rm -rf /tmp/dylint-acceptance/target-diagnostic
   done

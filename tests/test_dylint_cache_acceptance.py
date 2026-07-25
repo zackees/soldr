@@ -42,6 +42,8 @@ def test_absolute_watchdog_survives_noisy_semantic_progress() -> None:
 def test_initial_dylint_bootstrap_is_inside_monitored_cold_case() -> None:
     script = dylint_acceptance.BASH
     assert "cargo dylint --version" not in script
+    assert script.count('"$SOLDR" cargo dylint --all') == 1
+    assert 'run_case "$name" /tmp/dylint-acceptance/a' in script
     assert (
         "The cold case intentionally owns first-time cargo-dylint and driver" in script
     )
