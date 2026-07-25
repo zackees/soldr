@@ -17,6 +17,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 export CARGO_HOME=/root/.cargo
 export SOLDR_CACHE_DIR=/tmp/dylint-acceptance/cache
 export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS=120000
+export SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1
 rm -rf /tmp/dylint-acceptance
 mkdir -p /tmp/dylint-acceptance
 trap 'rm -rf /tmp/dylint-acceptance' EXIT

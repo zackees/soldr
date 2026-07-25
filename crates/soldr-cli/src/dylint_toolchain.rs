@@ -103,15 +103,20 @@ pub(crate) async fn prepare(
     } else if let Some(plan) = plan_from_configured_environment()? {
         plan
     } else {
-        let version = requested_rust_version(requested_channel, workspace_root)?;
-        let bytes = crate::fetch::fetch_verified_catalogue_asset(
-            "zackees",
-            "soldr-toolchain",
-            "assets",
-            MAP_ASSET,
-        )
-        .await?;
-        select_from_map(&bytes, &version)?
+        let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
+        if let Some(channel) = requested.as_deref().filter(|value| is_dated_nightly(value)) {
+            plan_from_explicit_nightly(channel)?
+        } else {
+            let version = requested_rust_version(requested.as_deref())?;
+            let bytes = crate::fetch::fetch_verified_catalogue_asset(
+                "zackees",
+                "soldr-toolchain",
+                "assets",
+                MAP_ASSET,
+            )
+            .await?;
+            select_from_map(&bytes, &version)?
+        }
     };
     let prepared_identity = plan.cache_identity();
     if non_empty_env(PREPARED_IDENTITY_ENV_VAR).as_deref() != Some(prepared_identity.as_str()) {
@@ -186,22 +191,12 @@ fn plan_from_retained_environment(channel: &str) -> Result<DylintToolchainPlan, 
     }
 }
 
-fn requested_rust_version(
-    requested_channel: Option<&str>,
-    workspace_root: &Path,
-) -> Result<String, SoldrError> {
-    let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
-    let channel = requested_channel
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| non_empty_env("RUSTUP_TOOLCHAIN"))
-        .or(manifest.channel);
-    if let Some(channel) = channel {
-        if let Some(version) = major_minor(&channel) {
+fn requested_rust_version(requested_channel: Option<&str>) -> Result<String, SoldrError> {
+    if let Some(channel) = requested_channel {
+        if let Some(version) = major_minor(channel) {
             return Ok(version);
         }
-        let (release, _) = observe_compiler(&channel)?;
+        let (release, _) = observe_compiler(channel)?;
         return major_minor(&release).ok_or_else(|| {
             SoldrError::Other(format!(
                 "could not derive a major.minor Rust version from `{release}`"
@@ -215,6 +210,57 @@ fn requested_rust_version(
             "could not derive a major.minor Rust version from `{release}`"
         ))
     })
+}
+
+fn requested_toolchain_channel(
+    requested_channel: Option<&str>,
+    workspace_root: &Path,
+) -> Result<Option<String>, SoldrError> {
+    let manifest = crate::core::read_rust_toolchain_manifest(workspace_root)?;
+    Ok(requested_channel
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| non_empty_env("RUSTUP_TOOLCHAIN"))
+        .or(manifest.channel))
+}
+
+fn is_dated_nightly(channel: &str) -> bool {
+    let Some(value) = channel.strip_prefix("nightly-") else {
+        return false;
+    };
+    let Some(date) = value.get(..10) else {
+        return false;
+    };
+    let valid_date_shape = date.as_bytes().iter().enumerate().all(|(index, byte)| {
+        matches!(index, 4 | 7) && *byte == b'-' || !matches!(index, 4 | 7) && byte.is_ascii_digit()
+    });
+    let suffix = &value[10..];
+    valid_date_shape && (suffix.is_empty() || suffix.starts_with('-') && suffix.len() > 1)
+}
+
+fn plan_from_explicit_nightly(channel: &str) -> Result<DylintToolchainPlan, SoldrError> {
+    let provisional = DylintToolchainPlan {
+        channel: channel.to_string(),
+        compiler_release: String::new(),
+        compiler_commit: String::new(),
+    };
+    ensure_installed(&provisional)?;
+    let (compiler_release, compiler_commit) = observe_compiler(channel)?;
+    let plan = DylintToolchainPlan {
+        channel: channel.to_string(),
+        compiler_release,
+        compiler_commit,
+    };
+    validate_identity(
+        channel,
+        &NightlyIdentity {
+            rust_version: major_minor(&plan.compiler_release).unwrap_or_default(),
+            rustc_release: plan.compiler_release.clone(),
+            rustc_commit_hash: plan.compiler_commit.clone(),
+        },
+    )?;
+    Ok(plan)
 }
 
 fn select_from_map(bytes: &[u8], version: &str) -> Result<DylintToolchainPlan, SoldrError> {
@@ -474,6 +520,19 @@ mod tests {
         assert_eq!(major_minor("1.94.1").as_deref(), Some("1.94"));
         assert_eq!(major_minor("1.94.0-nightly").as_deref(), Some("1.94"));
         assert_eq!(major_minor("stable"), None);
+    });
+
+    crate::timed_test!(recognizes_only_explicit_dated_nightlies, {
+        assert!(is_dated_nightly("nightly-2026-04-16"));
+        assert!(is_dated_nightly(
+            "nightly-2026-04-16-x86_64-unknown-linux-gnu"
+        ));
+        assert!(!is_dated_nightly("nightly"));
+        assert!(!is_dated_nightly("nightly-latest"));
+        assert!(!is_dated_nightly("nightly-2026-04-16junk"));
+        assert!(!is_dated_nightly("nightly-2026-04-16-"));
+        assert!(!is_dated_nightly("nightly-2026-04"));
+        assert!(!is_dated_nightly("1.97.0"));
     });
 
     crate::timed_test!(qualifies_nightly_names_with_the_compiler_host, {
