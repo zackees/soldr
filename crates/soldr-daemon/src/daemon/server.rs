@@ -181,6 +181,89 @@ fn expected_compile_slots() -> usize {
 }
 
 #[cfg(test)]
+mod shutdown_backstop_tests {
+    use super::*;
+
+    crate::timed_test!(watchdog_grace_defaults_and_is_only_disabled_explicitly, {
+        assert_eq!(parse_watchdog_grace(None), Some(SHUTDOWN_WATCHDOG_GRACE));
+        assert_eq!(
+            parse_watchdog_grace(Some("90")),
+            Some(Duration::from_secs(90))
+        );
+        assert_eq!(
+            parse_watchdog_grace(Some(" 90 ")),
+            Some(Duration::from_secs(90))
+        );
+
+        // Only a literal 0 removes the backstop.
+        assert_eq!(parse_watchdog_grace(Some("0")), None);
+
+        // A typo must NOT silently disable the only thing guaranteeing the
+        // process exits — fall back to the default instead.
+        for bogus in ["", "abc", "-1", "30s", "1.5"] {
+            assert_eq!(
+                parse_watchdog_grace(Some(bogus)),
+                Some(SHUTDOWN_WATCHDOG_GRACE),
+                "malformed override {bogus:?} must fall back to the default"
+            );
+        }
+    });
+
+    crate::timed_test!(watchdog_fires_before_the_client_stops_waiting, {
+        // If the backstop outlived the client's patience it would be
+        // pointless: `daemon stop` would report failure and leave the
+        // process running anyway.
+        assert!(
+            SHUTDOWN_WATCHDOG_GRACE < crate::daemon::lifecycle::GRACEFUL_SHUTDOWN_WAIT_TIMEOUT,
+            "watchdog grace must be under the client's graceful-shutdown timeout"
+        );
+    });
+
+    // `wait()` must observe a `request()` that races it.
+    //
+    // `notify_waiters()` stores no permit, so the previous
+    // `while !is_requested() { notified().await }` could park forever when
+    // the request landed between the flag check and the registration. This
+    // races the two sides repeatedly; the timeout turns the old hang into a
+    // clean failure instead of wedging the suite.
+    //
+    // Probabilistic by nature — the window is a few instructions wide — so
+    // it is a regression net, not a proof. The ordering guarantee itself is
+    // established by `enable()`-before-check in `ShutdownSignal::wait`.
+    crate::timed_test!(shutdown_wait_observes_a_racing_request, {
+        use crate::daemon::maintenance::ShutdownSignal;
+        use std::sync::Arc;
+
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("tokio rt");
+
+        rt.block_on(async {
+            for iteration in 0..500 {
+                let signal = Arc::new(ShutdownSignal::default());
+                let waiter = tokio::spawn({
+                    let signal = signal.clone();
+                    async move { signal.wait().await }
+                });
+                // Let the waiter get as close to its flag check as possible
+                // before the request lands.
+                tokio::task::yield_now().await;
+                signal.request();
+
+                tokio::time::timeout(Duration::from_secs(10), waiter)
+                    .await
+                    .unwrap_or_else(|_| {
+                        panic!("wait() missed the request on iteration {iteration}")
+                    })
+                    .expect("waiter task panicked");
+            }
+        });
+    });
+}
+
+#[cfg(test)]
 mod ipc_burst_tests {
     use super::*;
     use tokio::sync::{mpsc, Mutex};
@@ -1080,6 +1163,7 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     }
 
     state.shutdown.wait().await;
+    arm_shutdown_watchdog();
     accept_handle.abort();
     if let Some(handle) = idle_handle {
         handle.abort();
@@ -1113,6 +1197,66 @@ pub async fn run_async(opts: ServerOptions) -> Result<(), ServerError> {
     };
     append_lifecycle_event(&paths, event);
     Ok(())
+}
+
+/// Env override for [`SHUTDOWN_WATCHDOG_GRACE`], in seconds. `0` disables.
+pub const SHUTDOWN_WATCHDOG_ENV_VAR: &str = "SOLDR_SHUTDOWN_WATCHDOG_SECS";
+
+/// How long teardown may run before the process exits regardless.
+///
+/// Deliberately under `GRACEFUL_SHUTDOWN_WAIT_TIMEOUT` (300s) so the process
+/// is gone before the client gives up and reports failure.
+pub const SHUTDOWN_WATCHDOG_GRACE: Duration = Duration::from_secs(240);
+
+pub(crate) fn shutdown_watchdog_grace() -> Option<Duration> {
+    parse_watchdog_grace(std::env::var(SHUTDOWN_WATCHDOG_ENV_VAR).ok().as_deref())
+}
+
+/// `None` means "no backstop". Only an explicit `0` may produce it — a
+/// malformed override falls back to the default rather than silently
+/// disabling the one thing guaranteeing the process exits.
+pub(crate) fn parse_watchdog_grace(raw: Option<&str>) -> Option<Duration> {
+    let Some(raw) = raw else {
+        return Some(SHUTDOWN_WATCHDOG_GRACE);
+    };
+    match raw.trim().parse::<u64>() {
+        Ok(0) => None,
+        Ok(secs) => Some(Duration::from_secs(secs)),
+        Err(_) => Some(SHUTDOWN_WATCHDOG_GRACE),
+    }
+}
+
+/// Guarantee the process exits once teardown has started.
+///
+/// Every step after this point is a best-effort flush, and several are
+/// unbounded: the maintenance join waits out an in-flight pass whose
+/// `spawn_blocking` deletion worker cannot be cancelled, the embedded
+/// zccache drain takes an untimed publication write barrier and joins its
+/// index writer, and dropping the multi-thread runtime waits for every
+/// outstanding blocking task. Any one of them wedging left a daemon alive
+/// forever holding the pid file, version claim, and endpoint — and the CLI
+/// deliberately never force-kills a daemon that acknowledged shutdown, so
+/// nothing else bounded it.
+///
+/// A detached OS thread, NOT a tokio task: it has to fire even when the
+/// runtime is stalled or its blocking pool is fully occupied, which is
+/// exactly the situation it exists for.
+fn arm_shutdown_watchdog() {
+    let Some(grace) = shutdown_watchdog_grace() else {
+        return;
+    };
+    std::thread::Builder::new()
+        .name("soldr-shutdown-watchdog".into())
+        .spawn(move || {
+            std::thread::sleep(grace);
+            tracing::error!(
+                grace_secs = grace.as_secs(),
+                "graceful shutdown did not complete within the watchdog grace; \
+                 exiting now. Cache state may not be fully flushed."
+            );
+            std::process::exit(0);
+        })
+        .ok();
 }
 
 fn existing_daemon_pid(paths: &SoldrPaths) -> Option<u32> {
@@ -1304,7 +1448,11 @@ async fn run_accept_loop(paths: SoldrPaths, state: Arc<State>) -> std::io::Resul
     for index in 0..pool_size {
         spawn_windows_pipe_instance(pipe_name.clone(), state.clone(), index == 0);
     }
-    std::future::pending::<()>().await;
+    // Park until shutdown rather than forever. The pool instances are
+    // detached and self-replenishing, so aborting this task cannot stop
+    // them — each instance observes the same signal and drops its own pipe
+    // handle. Returning here is what lets the caller's `.await` complete.
+    state.shutdown.wait().await;
     Ok(())
 }
 
@@ -1330,10 +1478,36 @@ async fn accept_windows_pipe_instance(
     first_pipe_instance: bool,
 ) -> std::io::Result<()> {
     use tokio::net::windows::named_pipe::ServerOptions;
+    // Never open a fresh instance once teardown has begun; that would
+    // re-arm the endpoint the shutdown path is trying to retire.
+    if state.shutdown.is_requested() {
+        return Ok(());
+    }
     let server = ServerOptions::new()
         .first_pipe_instance(first_pipe_instance)
         .create(&pipe_name)?;
-    if server.connect().await.is_ok() {
+
+    // Stop waiting for a client the moment shutdown is requested, and drop
+    // `server` on the way out so the pipe instance is released.
+    //
+    // Without this the pool stayed live for the whole graceful drain (tens
+    // of seconds). A wrapper connecting in that window reached a daemon
+    // whose compile service had already latched shut, so it got back an
+    // `Error` frame -> `ClientError::Protocol`, which
+    // `client_error_indicates_daemon_unavailable` deliberately classifies
+    // as NOT unavailable — denying the direct-rustc fallback and failing
+    // the build. Unix never had this hole: aborting its accept task drops
+    // the `UnixListener`, so the next connect fails with `Io` and degrades
+    // cleanly. Releasing the handle here restores that behavior.
+    let connected = tokio::select! {
+        result = server.connect() => result.is_ok(),
+        _ = state.shutdown.wait() => return Ok(()),
+    };
+
+    if state.shutdown.is_requested() {
+        return Ok(());
+    }
+    if connected {
         // Replenish before parsing the connected request, keeping the pool
         // admission capacity independent from compile execution throughput.
         spawn_windows_pipe_instance(pipe_name, state.clone(), false);

@@ -48,8 +48,28 @@ impl ShutdownSignal {
     }
 
     pub async fn wait(&self) {
-        while !self.is_requested() {
-            self.notify.notified().await;
+        loop {
+            // Register with the Notify BEFORE re-checking the flag.
+            //
+            // `notify_waiters()` stores no permit: a `Notified` future
+            // snapshots the waiter generation when it is *enabled*, so the
+            // naive `while !is_requested() { notified().await }` loses the
+            // wakeup for this interleaving and parks forever —
+            //
+            //   waiter:    is_requested() -> false
+            //   requester: store(true); notify_waiters()
+            //   waiter:    notified().await   <- missed it, never re-checks
+            //
+            // Enabling first means a `request()` landing anywhere after this
+            // point either sets the flag we are about to read, or wakes the
+            // future we already registered.
+            let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.is_requested() {
+                return;
+            }
+            notified.await;
         }
     }
 }
