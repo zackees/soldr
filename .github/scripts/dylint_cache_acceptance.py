@@ -56,7 +56,11 @@ snapshot_zccache_logs() {
   (
     cd "$cache_root"
     find . -type f \
-      \( -name 'compile_journal.jsonl*' -o -name 'last-session*.json*' \) \
+      \( -name 'compile_journal.jsonl*' \
+         -o -name 'last-session*.json*' \
+         -o -name 'last-session*.log*' \
+         -o -name 'daemon.log*' \
+         -o -name 'depgraph.bin' \) \
       -exec cp --parents -p '{}' "$snapshot_dir/" ';'
   )
 }
