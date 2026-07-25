@@ -18,6 +18,13 @@ const DEFAULT_TOOLCHAIN_COMMAND_TIMEOUT_SECS: u64 = 30 * 60;
 const KILLED_TOOLCHAIN_COMMAND_REAP_TIMEOUT_SECS: u64 = 5;
 const CARGO_PREPARE_MEMO_SCHEMA_VERSION: u32 = 1;
 const CARGO_PREPARE_MEMO_DIR: &str = "toolchain-prepare-v1";
+const TEST_CARGO_PREPARE_MEMO_TRACE_ENV_VAR: &str = "SOLDR_TEST_CARGO_PREPARE_MEMO_TRACE";
+
+fn trace_cargo_prepare_memo(message: impl std::fmt::Display) {
+    if std::env::var_os(TEST_CARGO_PREPARE_MEMO_TRACE_ENV_VAR).is_some() {
+        eprintln!("soldr-test: cargo-prepare-memo {message}");
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CargoPrepareMemoKey {
@@ -526,14 +533,30 @@ fn toolchain_identity(
 
 fn memoized_toolchain_dir(paths: &SoldrPaths, key: &CargoPrepareMemoKey) -> Option<PathBuf> {
     let toolchain_dirs = discover_toolchain_dirs(key, None);
+    trace_cargo_prepare_memo(format_args!(
+        "lookup channel={} rustup_home={} dirs={toolchain_dirs:?}",
+        key.channel,
+        key.rustup_home.display()
+    ));
     if toolchain_dirs.len() != 1 {
+        trace_cargo_prepare_memo("lookup miss: toolchain directory count is not one");
         return None;
     }
     let toolchain_dir = toolchain_dirs.into_iter().next()?;
-    let identity = toolchain_identity(key, &toolchain_dir)?;
-    cargo_prepare_memo_path(paths, key, identity)
-        .is_some_and(|path| path.is_file())
-        .then_some(toolchain_dir)
+    let Some(identity) = toolchain_identity(key, &toolchain_dir) else {
+        trace_cargo_prepare_memo("lookup miss: installed toolchain identity is incomplete");
+        return None;
+    };
+    let Some(path) = cargo_prepare_memo_path(paths, key, identity) else {
+        trace_cargo_prepare_memo("lookup miss: fingerprint serialization failed");
+        return None;
+    };
+    trace_cargo_prepare_memo(format_args!(
+        "lookup path={} is_file={}",
+        path.display(),
+        path.is_file()
+    ));
+    path.is_file().then_some(toolchain_dir)
 }
 
 fn installed_toolchain_name(output: &[u8], channel: &str) -> Option<String> {
@@ -624,13 +647,19 @@ pub(crate) fn ensure_cargo_toolchain(explicit_channel: Option<&str>) -> Result<(
     };
     let paths = SoldrPaths::new()?;
     let memo_key = cargo_prepare_memo_key(channel, explicit_channel, &manifest);
+    trace_cargo_prepare_memo(format_args!(
+        "key channel={channel} present={}",
+        memo_key.is_some()
+    ));
     if memo_key
         .as_ref()
         .and_then(|key| memoized_toolchain_dir(&paths, key))
         .is_some()
     {
+        trace_cargo_prepare_memo("lookup hit");
         return Ok(());
     }
+    trace_cargo_prepare_memo("lookup miss: preparing through rustup");
 
     let mut list = std::process::Command::new(rustup_binary());
     list.args(["toolchain", "list"]);

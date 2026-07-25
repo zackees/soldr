@@ -2021,6 +2021,7 @@ timed_test!(
                     .env("SOLDR_TEST_RUSTUP_BIN", rustup)
                     .env("SOLDR_TEST_CARGO_BIN", &cargo)
                     .env("SOLDR_TEST_RUSTC_BIN", &rustc)
+                    .env("SOLDR_TEST_CARGO_PREPARE_MEMO_TRACE", "1")
                     .env("PATH", isolated_test_path())
                     .env_remove("RUSTUP_TOOLCHAIN")
                     .output()
