@@ -1982,9 +1982,18 @@ timed_test!(
         let second_rustup = install_logging_fake_rustup(&rustup_log);
         let cargo = install_logging_fake_cargo(&cargo_log);
         let (_, rustc, _) = install_fake_toolchain(&cargo_log);
+        let host_triple = soldr_cli::core::TargetTriple::host()
+            .expect("detect test host triple")
+            .triple();
 
         let seed_toolchain = |home: &Path, channel: &str| {
-            let toolchain = home.join("toolchains").join(format!("{channel}-test-host"));
+            // Match rustup's real channel-alias layout. A synthetic
+            // `<channel>-test-host` directory can coexist with the real
+            // host-qualified alias under CI and correctly makes production
+            // memo lookup reject the otherwise ambiguous channel.
+            let toolchain = home
+                .join("toolchains")
+                .join(format!("{channel}-{host_triple}"));
             fs::create_dir_all(toolchain.join("bin")).expect("create fake toolchain bin");
             fs::create_dir_all(toolchain.join("lib").join("rustlib"))
                 .expect("create fake toolchain rustlib");
@@ -2045,12 +2054,36 @@ timed_test!(
             run(base, &first_rustup_home, &first_rustup, None),
             &rustup_log,
         );
+        let memo_dir = soldr_root.join("cache").join("toolchain-prepare-v1");
+        let memo_entries = || {
+            let mut entries = fs::read_dir(&memo_dir)
+                .into_iter()
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            entries.sort();
+            entries
+        };
+        let initial_memos = memo_entries();
         fs::write(&rustup_log, b"").expect("clear rustup log");
         let warm = run(base, &first_rustup_home, &first_rustup, None);
-        assert!(warm.status.success(), "warm invocation failed");
+        let warm_invocations = read_logged_rustup_invocations(&rustup_log);
         assert!(
-            read_logged_rustup_invocations(&rustup_log).is_empty(),
-            "unchanged warm invocation must use the memo"
+            warm.status.success(),
+            "warm invocation failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&warm.stdout),
+            String::from_utf8_lossy(&warm.stderr)
+        );
+        assert!(
+            warm_invocations.is_empty(),
+            "unchanged warm invocation must use the memo\n\
+             initial memos: {initial_memos:#?}\n\
+             warm memos: {:#?}\n\
+             warm rustup invocations: {warm_invocations:#?}\n\
+             warm stderr:\n{}",
+            memo_entries(),
+            String::from_utf8_lossy(&warm.stderr)
         );
 
         let variants = [

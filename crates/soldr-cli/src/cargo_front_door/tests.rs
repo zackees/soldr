@@ -2501,3 +2501,88 @@ crate::timed_test!(write_build_log_reflects_seeded_compile_session_events, {
     assert!(raw.contains("cpu_ms=\"600\""), "{raw}");
     assert!(raw.contains("crate_count=\"2\""), "{raw}");
 });
+
+crate::timed_test!(
+    compile_fallback_summary_is_concise_and_prints_full_log_path,
+    {
+        let path = PathBuf::from(r"C:\state\logs\compile-daemon-fallbacks.jsonl");
+        let summary = compile_fallback_summary_message(137, &path);
+        assert_eq!(summary.lines().count(), 1);
+        assert!(summary.contains("137 compiler invocation(s)"));
+        assert!(summary.contains("used direct compiler"));
+        assert!(summary.contains(&path.display().to_string()));
+    }
+);
+
+crate::timed_test!(stale_fallback_scrub_is_hardlink_safe_and_marker_gated, {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("target");
+    let fingerprint = target.join("debug/.fingerprint/demo-123");
+    std::fs::create_dir_all(&fingerprint).expect("create fingerprint directory");
+    let cache_blob = temp.path().join("cache-blob");
+    let output = fingerprint.join("output-lib-demo");
+    let notice = b"soldr: compile daemon unavailable after 30000ms \
+\xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); \
+reason=daemon unavailable\n";
+    let mut persisted = notice.to_vec();
+    persisted.extend_from_slice(b"warning: real compiler diagnostic\n");
+    std::fs::write(&cache_blob, &persisted).expect("write cache fixture");
+    std::fs::hard_link(&cache_blob, &output).expect("hardlink fingerprint output");
+    let mut shared_permissions = std::fs::metadata(&cache_blob).unwrap().permissions();
+    shared_permissions.set_readonly(true);
+    std::fs::set_permissions(&cache_blob, shared_permissions).expect("protect shared hardlink");
+
+    let unrelated = target.join("debug/not-a-fingerprint/output-lib-demo");
+    std::fs::create_dir_all(unrelated.parent().unwrap()).expect("create unrelated directory");
+    std::fs::write(&unrelated, &persisted).expect("write unrelated fixture");
+
+    let cargo_lock_path = target.join("debug/.cargo-lock");
+    let cargo_lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&cargo_lock_path)
+        .expect("open Cargo lock fixture");
+    fs2::FileExt::try_lock_exclusive(&cargo_lock).expect("hold Cargo lock fixture");
+    assert!(matches!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("defer active target"),
+        FallbackOutputScrub::DeferredForActiveBuild(path) if path == cargo_lock_path
+    ));
+    assert!(!target.join(FALLBACK_OUTPUT_SCRUB_MARKER).exists());
+    fs2::FileExt::unlock(&cargo_lock).expect("release Cargo lock fixture");
+
+    assert_eq!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("scrub idle target"),
+        FallbackOutputScrub::Complete(1)
+    );
+    assert_eq!(
+        std::fs::read(&output).expect("read scrubbed output"),
+        b"warning: real compiler diagnostic\n"
+    );
+    assert_eq!(
+        std::fs::read(&cache_blob).expect("read source cache blob"),
+        persisted,
+        "replacement must not mutate the hardlinked source"
+    );
+    assert!(
+        std::fs::metadata(&cache_blob)
+            .expect("cache blob metadata")
+            .permissions()
+            .readonly(),
+        "cache blob must remain protected"
+    );
+    assert_eq!(
+        std::fs::read(&unrelated).expect("read unrelated output"),
+        persisted
+    );
+    assert!(target.join(FALLBACK_OUTPUT_SCRUB_MARKER).is_file());
+
+    let later = fingerprint.join("output-lib-later");
+    std::fs::write(&later, notice).expect("simulate later stale output");
+    assert_eq!(
+        scrub_cached_fallback_diagnostics_once(&target).expect("marker-gated second pass"),
+        FallbackOutputScrub::AlreadyDone
+    );
+    assert_eq!(std::fs::read(&later).unwrap(), notice);
+});
