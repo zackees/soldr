@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -442,6 +443,9 @@ def main() -> int:
     source_root = (
         common.parent if common_dir.returncode == 0 and common.name == ".git" else ROOT
     )
+    perf_local = runpy.run_path(str(ROOT / "ci" / "perf_local.py"))
+    runner = perf_local["runner_for"](source_root)
+    runner_container = runner.container
     relative = ROOT.resolve().relative_to(source_root.resolve())
     workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
     bootstrap = subprocess.run(
@@ -475,7 +479,7 @@ def main() -> int:
         f"SOLDR_DYLINT_ACCEPTANCE_MODE={mode}",
         "-w",
         workdir,
-        "soldr-perf-local",
+        runner_container,
         "bash",
         "-s",
     ]
@@ -588,7 +592,7 @@ def main() -> int:
             [
                 "docker",
                 "cp",
-                "soldr-perf-local:/tmp/dylint-acceptance/diagnostics/.",
+                f"{runner_container}:/tmp/dylint-acceptance/diagnostics/.",
                 str(diagnostics),
             ],
             capture_output=True,
@@ -604,7 +608,7 @@ def main() -> int:
             [
                 "docker",
                 "exec",
-                "soldr-perf-local",
+                runner_container,
                 "rm",
                 "-rf",
                 "/tmp/dylint-acceptance",
