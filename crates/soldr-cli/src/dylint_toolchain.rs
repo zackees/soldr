@@ -169,12 +169,15 @@ fn plan_from_installed_explicit_nightly(
 }
 
 fn install_and_observe_explicit_nightly(channel: &str) -> Result<DylintToolchainPlan, SoldrError> {
-    let provisional = DylintToolchainPlan {
-        channel: channel.to_string(),
-        compiler_release: String::new(),
-        compiler_commit: String::new(),
-    };
-    ensure_installed(&provisional)?;
+    if resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(channel)).is_err() {
+        let code =
+            crate::toolchain::rustup_toolchain_install_with_profile(channel, Some("minimal"))?;
+        if code != 0 {
+            return Err(SoldrError::Other(format!(
+                "rustup failed to install {channel} (exit {code})"
+            )));
+        }
+    }
     plan_from_installed_explicit_nightly(channel)?.ok_or_else(|| {
         SoldrError::Other(format!(
             "installed explicit Dylint toolchain `{channel}` could not be resolved"
