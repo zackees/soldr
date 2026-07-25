@@ -66,6 +66,20 @@ snapshot_zccache_logs() {
   )
 }
 
+snapshot_soldr_daemon_logs() {
+  name="$1"
+  snapshot_dir="/tmp/dylint-acceptance/diagnostics/$name-soldr-daemon"
+  mkdir -p "$snapshot_dir"
+  for source in \
+    "$SOLDR_CACHE_DIR/daemon-spawn.log" \
+    "$SOLDR_CACHE_DIR/cache/soldr-daemon/lifecycle.jsonl" \
+    "$SOLDR_CACHE_DIR/cache/soldr-daemon/daemon.log" \
+    "$SOLDR_CACHE_DIR/cache/soldr-daemon/daemon.pid"; do
+    test -f "$source" || continue
+    cp -p "$source" "$snapshot_dir/$(basename "$source")"
+  done
+}
+
 run_case() {
   name="$1"; work="$2"; target="$3"
   emit_stats="${4:-1}"
@@ -76,7 +90,6 @@ run_case() {
     cd "$work"
     CARGO_TARGET_DIR="$target" \
       SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
-      SOLDR_DYLINT_DIAGNOSTIC_ENV_PATH="/tmp/dylint-acceptance/diagnostics/$name-dylint-env.jsonl" \
       "$SOLDR" cargo dylint --all 2>&1 | tee -a "$live_log"
   ) &
   command_pid="$!"
@@ -202,6 +215,7 @@ run_case() {
     wait "$watchdog_pid" 2>/dev/null || true
   fi
   snapshot_zccache_logs "$name"
+  snapshot_soldr_daemon_logs "$name"
   if [[ "$status" -ne 0 ]]; then
     echo "Dylint library target contents after failure:" >&2
     find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
