@@ -142,6 +142,25 @@ class DockerRunner:
     def _rm_rf(self, container_path: str) -> None:
         self._exec(["rm", "-rf", container_path])
 
+    def detect_soldr_home(self) -> str | None:
+        """Ask the in-container soldr for its actual state root.
+
+        Official builds use ~/.soldr, development builds ~/.soldr-dev, so
+        guessing is wrong half the time — and passing an explicit
+        `--soldr-home /root/...` from Git Bash on Windows gets mangled by
+        MSYS path conversion (`C:/Program Files/Git/root/...`). Asking the
+        binary sidesteps both problems.
+        """
+        result = self._exec(["soldr", "status"])
+        if result.returncode != 0:
+            return None
+        for line in result.stdout.splitlines():
+            if line.startswith("root dir:"):
+                root = line.split(":", 1)[1].strip()
+                if root.startswith("/"):
+                    return root
+        return None
+
     def clear_cold_state(self, soldr_home: str, driver_dir: str) -> None:
         self._rm_rf(self.target_dir)
         self._rm_rf(soldr_home)
@@ -303,6 +322,13 @@ def main(argv: list[str]) -> int:
                 return 1
             perf_local.ensure_runner(source_root, image_id)
             runner = DockerRunner(perf_local, source_root)
+            if args.soldr_home is None:
+                detected = runner.detect_soldr_home()
+                if detected:
+                    soldr_home = detected
+                    print(
+                        f"[setup] detected in-container soldr root: {soldr_home}", file=sys.stderr
+                    )
             if args.expect_fail:
                 return run_expect_fail(runner)
             return run_bench(runner, soldr_home, driver_dir, args.warm_clean_target)
