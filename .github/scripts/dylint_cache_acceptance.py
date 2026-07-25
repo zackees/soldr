@@ -32,6 +32,7 @@ WATCHDOG_POST_CAPTURE_SECS=300
 # timeout only as a last-resort backstop for a continuously noisy failure.
 export SOLDR_CARGO_WAIT_TIMEOUT_SECS=900
 export SOLDR_DAEMON_TOKIO_CONSOLE=1
+MODE="${SOLDR_DYLINT_ACCEPTANCE_MODE:-full}"
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
 git init -q /tmp/dylint-acceptance/a
@@ -281,32 +282,57 @@ dump_one_pid() {
     -p "$pid" 2>&1 || true
 }
 
+hash_libraries() {
+  name="$1"
+  target="$2"
+  find "$target/dylint/libraries" -type f \
+    \( -name '*.so' -o -name '*.dylib' -o -name '*.dll' \) \
+    -print0 2>/dev/null |
+    sort -z |
+    while IFS= read -r -d '' library; do
+      printf 'DYLINT_LIBRARY_HASH %s %s\n' \
+        "$name" "$(sha256sum "$library")"
+    done
+}
+
 # Keep target directories beneath their worktree roots. zccache deliberately
 # normalizes paths inside each root; arbitrary external target directories
 # are distinct user-selected paths and therefore are not cross-worktree keys.
 run_case cold /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
-run_case warm_same_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
-rm -rf /tmp/dylint-acceptance/a/target
-run_case warm_clean_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
-run_case sibling_worktree /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
-printf '\npub fn changed_source() -> usize { 7 }\n' >> /tmp/dylint-acceptance/b/src/lib.rs
-run_case changed_source /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
+hash_libraries cold /tmp/dylint-acceptance/a/target
+if [[ "$MODE" == "sibling-diagnostic" ]]; then
+  run_case sibling_worktree /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
+  hash_libraries sibling_worktree /tmp/dylint-acceptance/b/target
+else
+  run_case warm_same_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
+  rm -rf /tmp/dylint-acceptance/a/target
+  run_case warm_clean_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
+  hash_libraries warm_clean_target /tmp/dylint-acceptance/a/target
+  run_case sibling_worktree /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
+  hash_libraries sibling_worktree /tmp/dylint-acceptance/b/target
+  printf '\npub fn changed_source() -> usize { 7 }\n' >> /tmp/dylint-acceptance/b/src/lib.rs
+  run_case changed_source /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
 
-rm -rf /tmp/dylint-acceptance/target-diagnostic
-printf '\npub fn dylint_fixture_violation() {}\n' \
-  >> /tmp/dylint-acceptance/a/src/lib.rs
-for pass in cold replay; do
-  output="/tmp/dylint-acceptance/diagnostic-$pass.log"
-  (cd /tmp/dylint-acceptance/a && \
-    CARGO_TARGET_DIR=/tmp/dylint-acceptance/target-diagnostic \
-    "$SOLDR" cargo dylint --all 2>&1) | tee "$output"
-  grep -F "soldr Dylint fixture diagnostic" "$output" >/dev/null
   rm -rf /tmp/dylint-acceptance/target-diagnostic
-done
+  printf '\npub fn dylint_fixture_violation() {}\n' \
+    >> /tmp/dylint-acceptance/a/src/lib.rs
+  for pass in cold replay; do
+    output="/tmp/dylint-acceptance/diagnostic-$pass.log"
+    (cd /tmp/dylint-acceptance/a && \
+      CARGO_TARGET_DIR=/tmp/dylint-acceptance/target-diagnostic \
+      "$SOLDR" cargo dylint --all 2>&1) | tee "$output"
+    grep -F "soldr Dylint fixture diagnostic" "$output" >/dev/null
+    rm -rf /tmp/dylint-acceptance/target-diagnostic
+  done
+fi
 """
 
 
 def main() -> int:
+    mode = os.environ.get("SOLDR_DYLINT_ACCEPTANCE_MODE", "full")
+    if mode not in {"full", "sibling-diagnostic"}:
+        print(f"error: unsupported Dylint acceptance mode: {mode}", file=sys.stderr)
+        return 5
     common_dir = subprocess.run(
         ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
         cwd=ROOT,
@@ -343,6 +369,8 @@ def main() -> int:
         "docker",
         "exec",
         "-i",
+        "-e",
+        f"SOLDR_DYLINT_ACCEPTANCE_MODE={mode}",
         "-w",
         workdir,
         "soldr-perf-local",
@@ -381,13 +409,17 @@ def main() -> int:
                 <= row.keys()
             ):
                 rows.append(row)
-        expected = [
-            "cold",
-            "warm_same_target",
-            "warm_clean_target",
-            "sibling_worktree",
-            "changed_source",
-        ]
+        expected = (
+            ["cold", "sibling_worktree"]
+            if mode == "sibling-diagnostic"
+            else [
+                "cold",
+                "warm_same_target",
+                "warm_clean_target",
+                "sibling_worktree",
+                "changed_source",
+            ]
+        )
         if [row["name"] for row in rows] != expected:
             print(f"error: incomplete scenario output: {rows}", file=sys.stderr)
             return 2
@@ -403,13 +435,21 @@ def main() -> int:
                 "every scenario must have integer session stats",
             ),
             (by_name["cold"]["misses"] > 0, "cold run must report misses"),
-            (by_name["warm_clean_target"]["hits"] > 0, "clean-target rebuild must hit"),
             (by_name["sibling_worktree"]["hits"] > 0, "sibling worktree must hit"),
-            (
-                by_name["changed_source"]["misses"] > 0,
-                "changed source must miss changed units",
-            ),
         ]
+        if mode == "full":
+            checks.extend(
+                [
+                    (
+                        by_name["warm_clean_target"]["hits"] > 0,
+                        "clean-target rebuild must hit",
+                    ),
+                    (
+                        by_name["changed_source"]["misses"] > 0,
+                        "changed source must miss changed units",
+                    ),
+                ]
+            )
         for passed, message in checks:
             if not passed:
                 print(f"error: {message}: {rows}", file=sys.stderr)

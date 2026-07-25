@@ -2,6 +2,15 @@ name: Dylint Cache Acceptance
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Acceptance scope (diagnostic mode compares cold/sibling lint-library hashes)"
+        required: false
+        default: "full"
+        type: choice
+        options:
+          - "full"
+          - "sibling-diagnostic"
   pull_request:
     paths:
       - ".github/scripts/dylint_cache_acceptance.py"
@@ -32,6 +41,7 @@ jobs:
       - name: Run five-scenario Docker acceptance
         env:
           SOLDR_PERF_LOCAL_PTRACE: "1"
+          SOLDR_DYLINT_ACCEPTANCE_MODE: ${{ inputs.mode || 'full' }}
         run: python3 .github/scripts/dylint_cache_acceptance.py
 
       - name: Upload watchdog stacks and Tokio console recording
