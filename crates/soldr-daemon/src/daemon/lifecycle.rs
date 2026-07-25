@@ -829,6 +829,10 @@ pub(crate) fn acquire_spawn_lock(paths: &SoldrPaths) -> Option<std::fs::File> {
 /// All soldr-owned configuration must survive the spawn boundary, so the
 /// whole `SOLDR_*` namespace is overlaid onto the baseline.
 const FORWARDED_ENV_PREFIX: &str = "SOLDR_";
+/// zccache's opt-in, write-only diagnostic trace. The embedded backend runs
+/// inside soldr-daemon, so this one zccache variable must cross the scrubbed
+/// daemon-spawn boundary for a caller to collect the trace it requested.
+const ZCCACHE_INNER_TRACE_ENV: &str = "ZCCACHE_INNER_TRACE";
 
 fn forwarded_soldr_env() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_forwarded_env(std::env::vars_os())
@@ -845,9 +849,8 @@ fn filter_forwarded_env(
             // Env names compare case-insensitively on Windows; match the
             // FBUILD_* passthrough in FastLED/fbuild#1170 and accept any
             // casing of the prefix on every platform.
-            name.to_string_lossy()
-                .to_ascii_uppercase()
-                .starts_with(FORWARDED_ENV_PREFIX)
+            let name = name.to_string_lossy().to_ascii_uppercase();
+            name.starts_with(FORWARDED_ENV_PREFIX) || name == ZCCACHE_INNER_TRACE_ENV
         })
         .collect()
 }
@@ -1330,6 +1333,10 @@ mod daemon_spawn_image_tests {
                 OsString::from("TOKIO_CONSOLE_RECORD_PATH"),
                 OsString::from("/tmp/not-forwarded.tokio"),
             ),
+            (
+                OsString::from("zccache_inner_trace"),
+                OsString::from("/tmp/context-registration.jsonl"),
+            ),
         ];
         let forwarded = filter_forwarded_env(vars);
         assert_eq!(
@@ -1344,6 +1351,10 @@ mod daemon_spawn_image_tests {
                 (
                     OsString::from("SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH"),
                     OsString::from("/tmp/daemon.tokio"),
+                ),
+                (
+                    OsString::from("zccache_inner_trace"),
+                    OsString::from("/tmp/context-registration.jsonl"),
                 ),
             ]
         );
