@@ -29,3 +29,4 @@ def test_watchdog_collects_native_and_async_diagnostics() -> None:
     assert "SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH" in source
     assert "dylint-cook-diagnostics" in source
     assert "dylint-cook-diagnostics" in workflow
+    assert source.index('"docker",\n            "cp"') < source.index("if returncode:")

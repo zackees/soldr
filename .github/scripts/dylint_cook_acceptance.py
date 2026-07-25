@@ -207,17 +207,17 @@ def main() -> int:
             output_lines.append(line)
             print(line, end="", flush=True)
         returncode = process.wait()
+    subprocess.run(
+        [
+            "docker",
+            "cp",
+            "soldr-perf-local:/tmp/dylint-cook/diagnostics/.",
+            os.environ.get("RUNNER_TEMP", str(ROOT / "target"))
+            + "/dylint-cook-diagnostics",
+        ],
+        check=False,
+    )
     if returncode:
-        subprocess.run(
-            [
-                "docker",
-                "cp",
-                "soldr-perf-local:/tmp/dylint-cook/diagnostics/.",
-                os.environ.get("RUNNER_TEMP", str(ROOT / "target"))
-                + "/dylint-cook-diagnostics",
-            ],
-            check=False,
-        )
         return returncode
     rows: list[dict[str, object]] = []
     for line in output_lines:
