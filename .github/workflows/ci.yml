@@ -97,10 +97,20 @@ jobs:
       - name: Install Rust components
         run: rustup component add rustfmt clippy
 
-      # `-p soldr-cli` not `--all` — `cargo fmt --all` walks the
-      # `_vender/zccache` path-dep submodule. See soldr#1066.
+      # Explicit `-p` per workspace member, not `--all` — `cargo fmt --all`
+      # walks the `_vender/zccache` path-dep submodule. See soldr#1066.
+      # Keep this list in sync with `[workspace].members` in Cargo.toml;
+      # a crate missing here drifts unformatted forever (soldr-daemon and
+      # soldr-fetch both had, when only `-p soldr-cli` was checked).
       - name: Check formatting
-        run: soldr cargo fmt -p soldr-cli -- --check
+        run: >-
+          soldr cargo fmt
+          -p soldr-cli
+          -p soldr-core
+          -p soldr-cache
+          -p soldr-fetch
+          -p soldr-daemon
+          -- --check
 
       - name: Check npm package metadata
         run: node scripts/test-npm-package.js
