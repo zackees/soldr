@@ -44,7 +44,9 @@ run_case() {
     return 1
   fi
   end="$(date +%s%3N)"
-  "$SOLDR" cache flush --json >/dev/null
+  # The Cargo front door finalizes session stats before returning. Its
+  # command-lifetime daemon may already be stopped here, so an additional
+  # `cache flush` would turn the valid NotRunning state into a harness error.
   (cd "$work" && "$SOLDR" cache report --json) > "/tmp/dylint-acceptance/$name.json"
   jq -cn --arg name "$name" --argjson wall_ms "$((end-start))" \
     --slurpfile report "/tmp/dylint-acceptance/$name.json" \
