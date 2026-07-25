@@ -25,6 +25,7 @@ mkdir -p /tmp/dylint-acceptance/diagnostics
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
 WATCHDOG_IDLE_SECS=180
+WATCHDOG_ABSOLUTE_SECS=1800
 WATCHDOG_POLL_SECS=10
 WATCHDOG_INACTIVE_GRACE_SECS=60
 WATCHDOG_POST_CAPTURE_SECS=300
@@ -66,11 +67,13 @@ run_case() {
     read -r last_cpu last_io last_target last_pids \
       < <(process_activity_counters "$command_pid" "$target")
     idle_secs=0
+    elapsed_secs=0
     inactive_secs=0
     post_capture_secs=0
     captured=0
     while kill -0 "$command_pid" 2>/dev/null; do
       sleep "$WATCHDOG_POLL_SECS"
+      elapsed_secs="$((elapsed_secs + WATCHDOG_POLL_SECS))"
       current_progress="$(meaningful_output_size "$live_log")"
       read -r current_cpu current_io current_target current_pids \
         < <(process_activity_counters "$command_pid" "$target")
@@ -97,9 +100,9 @@ run_case() {
         inactive_secs=0
         post_capture_secs=0
         captured=0
-        continue
+      else
+        idle_secs="$((idle_secs + WATCHDOG_POLL_SECS))"
       fi
-      idle_secs="$((idle_secs + WATCHDOG_POLL_SECS))"
 
       if [[ "$captured" -eq 1 ]]; then
         # Activity protects a healthy, quiet compiler from immediate
@@ -117,13 +120,21 @@ run_case() {
         fi
         continue
       fi
-      [[ "$idle_secs" -ge "$WATCHDOG_IDLE_SECS" ]] || continue
+      absolute_deadline=0
+      if [[ "$elapsed_secs" -ge "$WATCHDOG_ABSOLUTE_SECS" ]]; then
+        absolute_deadline=1
+        trigger="exceeded the ${WATCHDOG_ABSOLUTE_SECS}s absolute case deadline"
+      elif [[ "$idle_secs" -ge "$WATCHDOG_IDLE_SECS" ]]; then
+        trigger="produced no meaningful output for ${WATCHDOG_IDLE_SECS}s"
+      else
+        continue
+      fi
 
       dump="/tmp/dylint-acceptance/diagnostics/$name-stacks.txt"
       fired="/tmp/dylint-acceptance/diagnostics/$name-watchdog-fired"
       : >"$fired"
       {
-        echo "WATCHDOG: $name produced no meaningful output for ${WATCHDOG_IDLE_SECS}s"
+        echo "WATCHDOG: $name $trigger"
         date -u
         echo "=== process tree ==="
         ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
@@ -151,6 +162,10 @@ run_case() {
         ' bash "${pids[@]}" || echo "WATCHDOG: native stack collection hit its 120s global budget"
       } >"$dump" 2>&1
       cat "$dump" >&2
+      if [[ "$absolute_deadline" -eq 1 ]]; then
+        terminate_scope "$command_pid"
+        break
+      fi
       captured=1
       inactive_secs=0
       post_capture_secs=0

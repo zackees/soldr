@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+
+def load_module():
+    path = (
+        Path(__file__).parents[1] / ".github" / "scripts" / "dylint_cache_acceptance.py"
+    )
+    spec = importlib.util.spec_from_file_location("dylint_cache_acceptance", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+dylint_acceptance = load_module()
+
+
+def test_absolute_watchdog_survives_noisy_semantic_progress() -> None:
+    script = dylint_acceptance.BASH
+    assert "WATCHDOG_ABSOLUTE_SECS=1800" in script
+    assert 'elapsed_secs="$((elapsed_secs + WATCHDOG_POLL_SECS))"' in script
+
+    progress_branch = script.split('if [[ "$semantic_progress" -eq 1 ]]', maxsplit=1)[
+        1
+    ].split('if [[ "$captured" -eq 1 ]]', maxsplit=1)[0]
+    assert "elapsed_secs=0" not in progress_branch
+    assert "continue" not in progress_branch
+
+    absolute_branch = script.split(
+        'if [[ "$elapsed_secs" -ge "$WATCHDOG_ABSOLUTE_SECS" ]]', maxsplit=1
+    )[1].split('elif [[ "$idle_secs"', maxsplit=1)[0]
+    assert "absolute_deadline=1" in absolute_branch
+
+    capture_tail = script.split('cat "$dump" >&2', maxsplit=1)[1]
+    assert 'if [[ "$absolute_deadline" -eq 1 ]]' in capture_tail
+    assert 'terminate_scope "$command_pid"' in capture_tail
