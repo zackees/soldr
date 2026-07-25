@@ -398,6 +398,16 @@ steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from 
 Linux GNU release asset or source-built from the pinned registry version on Windows
 and macOS.
 
+For Dylint builds, Soldr installs an absolute `soldr-dylint` compiler shim.
+Ordinary dependency and lint-library compilation follows
+`soldr-dylint -> rustc`; workspace analysis follows
+`soldr-dylint -> dylint-driver -> rustc`. The compiler cache keys the driver,
+loaded lint-library contents, and Dylint configuration. It caches individual
+compiler outputs and diagnostics, never a command-level lint verdict: the real
+Dylint pass executes on every invocation, so changed source is always analyzed.
+Cargo incremental state accelerates repeated work in the same target tree,
+while Soldr's object cache enables clean-target and sibling-worktree reuse.
+
 ### `soldr dylint cook`
 
 Prepare external dependencies for a real Dylint pass without mixing its
