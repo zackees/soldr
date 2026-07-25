@@ -65,6 +65,12 @@ run_case warm_same_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/targ
 rm -rf /tmp/dylint-acceptance/a/target
 run_case warm_clean_target /tmp/dylint-acceptance/a /tmp/dylint-acceptance/a/target
 run_case sibling_worktree /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
+echo "Sibling-worktree lint library identities:"
+find /tmp/dylint-acceptance/a/target/dylint/libraries \
+     /tmp/dylint-acceptance/b/target/dylint/libraries \
+     -type f -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum
+echo "Sibling-worktree zccache session log:"
+cat "$SOLDR_CACHE_DIR/zccache/logs/last-session.log" 2>/dev/null || true
 printf '\npub fn changed_source() -> usize { 7 }\n' >> /tmp/dylint-acceptance/b/src/lib.rs
 run_case changed_source /tmp/dylint-acceptance/b /tmp/dylint-acceptance/b/target
 

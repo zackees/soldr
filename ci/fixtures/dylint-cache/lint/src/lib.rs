@@ -16,7 +16,7 @@ impl<'tcx> LateLintPass<'tcx> for SoldrDylintFixture {
         if cx
             .tcx
             .def_path_str(item.owner_id.to_def_id())
-            .ends_with("::dylint_fixture_violation")
+            .ends_with("dylint_fixture_violation")
         {
             cx.tcx
                 .dcx()
