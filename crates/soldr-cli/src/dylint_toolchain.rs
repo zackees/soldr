@@ -98,26 +98,38 @@ pub(crate) async fn prepare(
     requested_channel: Option<&str>,
     workspace_root: &Path,
 ) -> Result<DylintToolchainPlan, SoldrError> {
-    let mut plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
+    let plan = resolve_plan(requested_channel, workspace_root).await?;
+    prepare_resolved(plan)
+}
+
+pub(crate) async fn resolve_plan(
+    requested_channel: Option<&str>,
+    workspace_root: &Path,
+) -> Result<DylintToolchainPlan, SoldrError> {
+    let plan = if let Some(channel) = non_empty_env(TOOLCHAIN_ENV_VAR) {
         plan_from_retained_environment(&channel)?
     } else if let Some(plan) = plan_from_configured_environment()? {
         plan
     } else {
         let requested = requested_toolchain_channel(requested_channel, workspace_root)?;
+        let bytes = crate::fetch::fetch_verified_catalogue_asset(
+            "zackees",
+            "soldr-toolchain",
+            "assets",
+            MAP_ASSET,
+        )
+        .await?;
         if let Some(channel) = requested.as_deref().filter(|value| is_dated_nightly(value)) {
-            plan_from_explicit_nightly(channel)?
+            select_explicit_from_map(&bytes, channel)?
         } else {
             let version = requested_rust_version(requested.as_deref())?;
-            let bytes = crate::fetch::fetch_verified_catalogue_asset(
-                "zackees",
-                "soldr-toolchain",
-                "assets",
-                MAP_ASSET,
-            )
-            .await?;
             select_from_map(&bytes, &version)?
         }
     };
+    Ok(plan)
+}
+
+fn prepare_resolved(mut plan: DylintToolchainPlan) -> Result<DylintToolchainPlan, SoldrError> {
     let prepared_identity = plan.cache_identity();
     if non_empty_env(PREPARED_IDENTITY_ENV_VAR).as_deref() != Some(prepared_identity.as_str()) {
         ensure_installed(&plan)?;
@@ -125,6 +137,18 @@ pub(crate) async fn prepare(
     }
     plan.channel = qualify_toolchain_name(&plan.channel)?;
     Ok(plan)
+}
+
+pub(crate) fn verify_if_installed(plan: &DylintToolchainPlan) -> Result<bool, SoldrError> {
+    if resolve_toolchain_binary_for_channel(concat!("rust", "c"), Some(&plan.channel)).is_err() {
+        return Ok(false);
+    }
+    verify_installed_identity(plan)?;
+    Ok(true)
+}
+
+pub(crate) fn verify_observed_identity(plan: &DylintToolchainPlan) -> Result<(), SoldrError> {
+    verify_installed_identity(plan)
 }
 
 fn qualify_toolchain_name(channel: &str) -> Result<String, SoldrError> {
@@ -239,28 +263,33 @@ fn is_dated_nightly(channel: &str) -> bool {
     valid_date_shape && (suffix.is_empty() || suffix.starts_with('-') && suffix.len() > 1)
 }
 
-fn plan_from_explicit_nightly(channel: &str) -> Result<DylintToolchainPlan, SoldrError> {
-    let provisional = DylintToolchainPlan {
-        channel: channel.to_string(),
-        compiler_release: String::new(),
-        compiler_commit: String::new(),
-    };
-    ensure_installed(&provisional)?;
-    let (compiler_release, compiler_commit) = observe_compiler(channel)?;
-    let plan = DylintToolchainPlan {
-        channel: channel.to_string(),
-        compiler_release,
-        compiler_commit,
-    };
-    validate_identity(
-        channel,
-        &NightlyIdentity {
-            rust_version: major_minor(&plan.compiler_release).unwrap_or_default(),
-            rustc_release: plan.compiler_release.clone(),
-            rustc_commit_hash: plan.compiler_commit.clone(),
-        },
-    )?;
-    Ok(plan)
+fn select_explicit_from_map(
+    bytes: &[u8],
+    requested_channel: &str,
+) -> Result<DylintToolchainPlan, SoldrError> {
+    let map: NightlyVersionMap = serde_json::from_slice(bytes)
+        .map_err(|error| SoldrError::Other(format!("failed to parse {MAP_ASSET}: {error}")))?;
+    if map.schema_version != 1 {
+        return Err(SoldrError::Other(format!(
+            "{MAP_ASSET} has unsupported schema_version {}",
+            map.schema_version
+        )));
+    }
+    let map_channel = requested_channel
+        .get(..18)
+        .filter(|channel| is_dated_nightly(channel))
+        .unwrap_or(requested_channel);
+    let identity = map.nightlies.get(map_channel).ok_or_else(|| {
+        SoldrError::Other(format!(
+            "{MAP_ASSET} has no identity for explicitly configured {requested_channel}"
+        ))
+    })?;
+    validate_identity(map_channel, identity)?;
+    Ok(DylintToolchainPlan {
+        channel: requested_channel.to_string(),
+        compiler_release: identity.rustc_release.clone(),
+        compiler_commit: identity.rustc_commit_hash.clone(),
+    })
 }
 
 fn select_from_map(bytes: &[u8], version: &str) -> Result<DylintToolchainPlan, SoldrError> {
@@ -514,6 +543,14 @@ mod tests {
         let error = select_from_map(&sample_map("nightly-2026-01-17"), "1.94")
             .expect_err("must reject a non-first selection");
         assert!(error.to_string().contains("newest-first contract"));
+    });
+
+    crate::timed_test!(explicit_nightly_uses_mapped_identity_without_installing, {
+        let plan =
+            select_explicit_from_map(&sample_map("nightly-2026-01-18"), "nightly-2026-01-18")
+                .expect("explicit map entry");
+        assert_eq!(plan.channel, "nightly-2026-01-18");
+        assert_eq!(plan.compiler_commit, COMMIT);
     });
 
     crate::timed_test!(extracts_major_minor_versions, {

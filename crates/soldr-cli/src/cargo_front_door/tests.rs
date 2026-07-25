@@ -915,6 +915,27 @@ crate::timed_test!(managed_dylint_always_uses_pinned_source_build, {
     }
 });
 
+crate::timed_test!(dylint_dependency_cook_marker_is_private_to_front_door, {
+    let args = vec![
+        "+nightly-2026-04-16".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+        "check".to_string(),
+        "--".to_string(),
+        DYLINT_DEPENDENCY_COOK_FLAG.to_string(),
+    ];
+    let (cleaned, found) = strip_dylint_dependency_cook_flag(&args);
+    assert!(found);
+    assert_eq!(
+        cleaned,
+        [
+            "+nightly-2026-04-16",
+            "check",
+            "--",
+            DYLINT_DEPENDENCY_COOK_FLAG
+        ]
+    );
+});
+
 #[test]
 fn cargo_args_are_not_cacheable_for_static_analysis_tools() {
     // The three static-analysis tools in the registry don't spawn

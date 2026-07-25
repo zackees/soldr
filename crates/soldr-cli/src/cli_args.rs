@@ -193,6 +193,7 @@ pub(crate) const SOLDR_BUILTIN_VERBS: &[&str] = &[
     // enum.
     "build",
     "cargo",
+    "dylint",
     "cook",
     "lint",
     // soldr#1059 — PATH-prepending escape hatch for cargo extensions.
@@ -262,6 +263,11 @@ pub(crate) enum Commands {
     },
     /// Run cargo through soldr (cached, pinned toolchain)
     Cargo {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
+    /// Prepare Dylint dependencies or run the Dylint extension
+    Dylint {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },

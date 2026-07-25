@@ -46,6 +46,7 @@ pub mod compile_dispatch;
 pub mod cook;
 pub mod daemon_entry;
 pub mod doctor;
+mod dylint_cook;
 pub mod dylint_toolchain;
 /// soldr#938 — `soldr env --target` subcommand implementation.
 pub mod env_cmd;

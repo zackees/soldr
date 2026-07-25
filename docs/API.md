@@ -398,6 +398,46 @@ steps stay on the regular Soldr cache lifecycle; `cargo-dylint` is fetched from 
 Linux GNU release asset or source-built from the pinned registry version on Windows
 and macOS.
 
+### `soldr dylint cook`
+
+Prepare external dependencies for a real Dylint pass without mixing its
+nightly artifacts into the repository's ordinary stable build tree:
+
+```bash
+soldr dylint cook --workspace --all-targets
+soldr dylint cook --plan-only --json
+```
+
+The command resolves one exact Dylint nightly from the verified
+soldr-toolchain catalogue (or an explicit `--toolchain nightly-YYYY-MM-DD`),
+then verifies the installed compiler's full release and commit identity. It
+reconstructs a dependency skeleton and runs a check-shaped pass through
+Soldr's normal compilation cache. `RUSTC_WORKSPACE_WRAPPER` and every
+`DYLINT_*` library variable are removed for this phase, so custom lint
+libraries are loaded only by the later real Dylint invocation.
+
+Outputs live under `target/dylint/target/<nightly>/`, matching Dylint 6's own
+workspace-check directory. The warm marker includes the observed compiler
+commit, manifests, lockfile, selected target/profile/features/packages,
+configuration, and wrapper identity. Workspace source contents are excluded,
+so editing only a local source file preserves the external-dependency layer.
+Conflicting nightly requirements from configured lint-library paths fail
+instead of selecting one heuristically.
+
+`--plan-only --json` does not install a missing toolchain. Its stable
+`schema_version: 1` result includes `compiler`, `target_directory`,
+`build_shape`, `cache_key`, and `outcome`. A plan-only result can report a
+verified hit only when the installed compiler identity, marker, and target
+payload all match. A normal invocation verifies the compiler again after any
+restore/install and reports `miss` after cooking or `skip` when the complete
+layer is already warm.
+
+Shape options are `--target`, `--release` / `--profile`, `--workspace`,
+repeatable `--package`, `--features`, `--all-features`,
+`--no-default-features`, `--all-targets`, `--tests`, `--benches`,
+`--examples`, repeatable `--config`, `--locked`, `--frozen`, and `--offline`.
+Ordinary `soldr cook` behavior is unchanged.
+
 ### `soldr cook`
 
 Content-addressable dependency pre-build (issue #359). `cook` is a shim

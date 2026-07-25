@@ -1052,6 +1052,7 @@ where
 pub(crate) const NO_GC_TARGET_FLAG: &str = "--no-gc-target";
 pub(crate) const NO_GC_TARGET_BEFORE_FLAG: &str = "--no-gc-target-before";
 pub(crate) const NO_GC_TARGET_AFTER_FLAG: &str = "--no-gc-target-after";
+pub(crate) const DYLINT_DEPENDENCY_COOK_FLAG: &str = "--soldr-dylint-dependency-cook";
 
 const INHERITED_SOLDR_WORKSPACE_ENV_VARS: &[&str] = &[
     crate::cache_lib::ZCCACHE_CACHE_DIR_ENV_VAR,
@@ -1164,6 +1165,23 @@ pub(crate) fn strip_no_gc_target_flags(args: &[String]) -> Vec<String> {
         }
     }
     cleaned
+}
+
+fn strip_dylint_dependency_cook_flag(args: &[String]) -> (Vec<String>, bool) {
+    let mut cleaned = Vec::with_capacity(args.len());
+    let mut found = false;
+    let mut past_separator = false;
+    for arg in args {
+        if arg == "--" {
+            past_separator = true;
+        }
+        if !past_separator && arg == DYLINT_DEPENDENCY_COOK_FLAG {
+            found = true;
+        } else {
+            cleaned.push(arg.clone());
+        }
+    }
+    (cleaned, found)
 }
 
 /// Resolve the Cargo `target/` directory used by front-door hooks.
@@ -1489,7 +1507,9 @@ pub(crate) async fn run_cargo_front_door(
     }
 
     // Retain the old target-GC flags as stripped compatibility no-ops.
-    let args_owned = strip_no_gc_target_flags(args);
+    let (args_without_dylint_cook_flag, dylint_dependency_cook) =
+        strip_dylint_dependency_cook_flag(args);
+    let args_owned = strip_no_gc_target_flags(&args_without_dylint_cook_flag);
     let (args_owned, explicit_toolchain) = subcommand::strip_cargo_toolchain_directive(&args_owned);
     let explicit_toolchain = explicit_toolchain.as_deref();
     let args: &[String] = &args_owned;
@@ -1666,6 +1686,15 @@ pub(crate) async fn run_cargo_front_door(
     }
     if let Some(plan) = &dylint_plan {
         plan.apply_to_command(&mut command);
+    }
+    if dylint_dependency_cook {
+        command.env_remove("RUSTC_WORKSPACE_WRAPPER");
+        for (name, _) in std::env::vars_os() {
+            let text = name.to_string_lossy();
+            if text.starts_with("DYLINT_") || text == "ZCCACHE_DYLINT_CACHE_INPUT_HASH" {
+                command.env_remove(name);
+            }
+        }
     }
 
     // Apply subcommand-derived env overrides (e.g. CC_<triple>=clang-cl

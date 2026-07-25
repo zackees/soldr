@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Run the Dylint dependency-cook acceptance and timing matrix in Linux."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+BASH = r"""
+set -euo pipefail
+export CARGO_HOME=/root/.cargo
+export CARGO_PROFILE_DEV_DEBUG=2
+export CARGO_PROFILE_DEV_STRIP=none
+export SOLDR_CACHE_DIR=/tmp/dylint-cook/cache
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS=0
+export SOLDR_COMPILE_REPLY_TIMEOUT_SECS=3600
+export SOLDR_DAEMON_TOKIO_CONSOLE=1
+SOLDR=/target/debug/soldr
+REPO="$(pwd)"
+WORK=/tmp/dylint-cook/work
+rm -rf /tmp/dylint-cook
+mkdir -p "$WORK"
+cp -a "$REPO/ci/fixtures/dylint-cache/." "$WORK/"
+cd "$WORK"
+"$SOLDR" "car""go" +1.94.1 generate-lockfile
+
+descendants() {
+  local parent="$1" child
+  while read -r child; do
+    test -n "$child" || continue
+    printf '%s\n' "$child"
+    descendants "$child"
+  done < <(pgrep -P "$parent" 2>/dev/null || true)
+}
+
+dump_stacks() {
+  local root="$1" output="$2" pid exe
+  {
+    printf '%s\n' "$root"
+    descendants "$root"
+    pgrep -f '/target/debug/soldr|soldr-daemon|cargo-dylint|dylint-driver|rustc|zccache' \
+      2>/dev/null || true
+  } | sort -n -u | while read -r pid; do
+    test -r "/proc/$pid/status" || continue
+    exe="$(readlink -f "/proc/$pid/exe" || true)"
+    echo "--- pid=$pid exe=$exe ---" >>"$output"
+    file "$exe" >>"$output" 2>&1 || true
+    readelf -S "$exe" 2>/dev/null |
+      grep -E '\.(debug_info|debug_line|symtab)' >>"$output" || true
+    timeout 15s gdb -q -n -batch \
+      -ex "set pagination off" \
+      -ex "set print thread-events off" \
+      -ex "info threads" \
+      -ex "thread apply all bt full 64" \
+      -p "$pid" >>"$output" 2>&1 || true
+  done
+}
+
+run_with_watchdog() {
+  local name="$1"; shift
+  local log="/tmp/dylint-cook/${name}.log"
+  SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-cook/${name}.tokio" \
+    "$@" >"$log" 2>&1 &
+  local pid="$!" elapsed=0
+  while kill -0 "$pid" 2>/dev/null; do
+    sleep 10
+    elapsed=$((elapsed + 10))
+    if ((elapsed >= 1800)); then
+      {
+        echo "WATCHDOG: $name exceeded the 1800s absolute deadline"
+        date -u
+        echo "=== process tree ==="
+        ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
+        echo "=== native stacks and symbol inventory ==="
+      } >"/tmp/dylint-cook/${name}-stacks.txt"
+      dump_stacks "$pid" "/tmp/dylint-cook/${name}-stacks.txt"
+      kill -TERM "$pid" $(descendants "$pid") 2>/dev/null || true
+      wait "$pid" || true
+      echo "watchdog timeout: $name" >&2
+      return 124
+    fi
+  done
+  wait "$pid"
+}
+
+run_case() {
+  local name="$1"
+  local started ended output outcome hits=0 misses=0
+  started="$(date +%s%3N)"
+  run_with_watchdog "$name" \
+    "$SOLDR" dylint cook --workspace --all-targets --json
+  ended="$(date +%s%3N)"
+  output="$(tail -n 1 "/tmp/dylint-cook/${name}.log")"
+  outcome="$(jq -r .outcome <<<"$output")"
+  if [[ "$outcome" != skip ]]; then
+    "$SOLDR" cache report --json >"/tmp/dylint-cook/${name}-report.json"
+    hits="$(jq -r '.last_session.stats.hits // .last_session.hits // 0' \
+      "/tmp/dylint-cook/${name}-report.json")"
+    misses="$(jq -r '.last_session.stats.misses // .last_session.misses // 0' \
+      "/tmp/dylint-cook/${name}-report.json")"
+  fi
+  jq -cn --arg name "$name" --arg outcome "$outcome" \
+    --argjson wall_ms "$((ended-started))" \
+    --argjson hits "$hits" --argjson misses "$misses" \
+    '{name:$name,outcome:$outcome,wall_ms:$wall_ms,hits:$hits,misses:$misses}'
+}
+
+test ! -e target/debug
+test ! -e target/release
+run_case cold
+test -d target/dylint/target
+test ! -e target/debug
+test ! -e target/release
+
+run_case warm_same_target
+
+tar -cf /tmp/dylint-cook/restored.tar target/dylint
+rm -rf target
+mkdir target
+tar -xf /tmp/dylint-cook/restored.tar
+run_case warm_restored_target
+
+rm -rf target
+run_case object_cache_only
+test ! -e target/debug
+test ! -e target/release
+
+printf '\npub fn dylint_fixture_violation() {}\n' >>src/lib.rs
+run_with_watchdog real_dylint "$SOLDR" "car""go" dylint --all
+grep -F "soldr Dylint fixture diagnostic" /tmp/dylint-cook/real_dylint.log
+"""
+
+
+def main() -> int:
+    common_result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    common = Path(common_result.stdout.strip()).resolve()
+    source_root = common.parent if common.name == ".git" else ROOT
+    relative = ROOT.resolve().relative_to(source_root.resolve())
+    workdir = "/repo" if relative == Path(".") else f"/repo/{relative.as_posix()}"
+    build = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "ci" / "perf_local.py"),
+            "car" + "go",
+            "--config",
+            'build.rustflags=["--cfg","tokio_unstable"]',
+            "build",
+            "-p",
+            "soldr-cli",
+            "--bin",
+            "soldr",
+            "--locked",
+            "--features",
+            "tokio-console",
+        ],
+        cwd=ROOT,
+        check=False,
+    )
+    if build.returncode:
+        return build.returncode
+    command = [
+        "docker",
+        "exec",
+        "-i",
+        "-w",
+        workdir,
+        "soldr-perf-local",
+        "bash",
+        "-s",
+    ]
+    output_lines: list[str] = []
+    with subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as process:
+        assert process.stdin is not None
+        assert process.stdout is not None
+        process.stdin.write(BASH)
+        process.stdin.close()
+        for line in process.stdout:
+            output_lines.append(line)
+            print(line, end="", flush=True)
+        returncode = process.wait()
+    if returncode:
+        subprocess.run(
+            [
+                "docker",
+                "cp",
+                "soldr-perf-local:/tmp/dylint-cook/.",
+                os.environ.get("RUNNER_TEMP", str(ROOT / "target"))
+                + "/dylint-cook-diagnostics",
+            ],
+            check=False,
+        )
+        return returncode
+    rows: list[dict[str, object]] = []
+    for line in output_lines:
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and "name" in value and "wall_ms" in value:
+            rows.append(value)
+    expected = [
+        "cold",
+        "warm_same_target",
+        "warm_restored_target",
+        "object_cache_only",
+    ]
+    if [row["name"] for row in rows] != expected:
+        print(f"incomplete Dylint cook rows: {rows}", file=sys.stderr)
+        return 2
+    outcomes = {row["name"]: row["outcome"] for row in rows}
+    if outcomes != {
+        "cold": "miss",
+        "warm_same_target": "skip",
+        "warm_restored_target": "skip",
+        "object_cache_only": "miss",
+    }:
+        print(f"unexpected outcomes: {rows}", file=sys.stderr)
+        return 3
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as output:
+            output.write("## Dylint dependency cook\n\n")
+            output.write("| Scenario | Outcome | Wall ms | Hits | Misses |\n")
+            output.write("|---|---|---:|---:|---:|\n")
+            for row in rows:
+                output.write(
+                    f"| {row['name']} | {row['outcome']} | {row['wall_ms']} | "
+                    f"{row['hits']} | {row['misses']} |\n"
+                )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
