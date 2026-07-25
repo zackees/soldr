@@ -10,13 +10,13 @@ use std::io::Write;
 use crate::{
     archive_cmd, binaries, blessed_build, bootstrap, build_from_source_cmd, cache, cache_lib,
     cargo_diagnostics, cargo_front_door, cargo_metadata_soldr, cargo_path_check, cli_args,
-    cli_dispatch, compile_dispatch, cook, core, daemon, defender, defender_probe, doctor, env_cmd,
-    exec_cmd, fetch, fuzzy_match, gc, install_shims, linker, lint_cmd, logs_cmd, msvc_host,
-    multicall, native_cc, optimize, optimize_detect, optimize_windows, prepare_cmd, pyo3_detect,
-    release_sidecar, rust_plan, save_load, self_relocate, shim_dir, shim_materialize,
-    startup_profile, target_alias, test_util, toolchain, toolchain_doctor, toolchain_ensure,
-    toolchain_link, trampoline, wrapper, wrapper_target, zccache, zccache_embedded,
-    zccache_lifecycle,
+    cli_dispatch, compile_dispatch, cook, core, daemon, defender, defender_probe, doctor,
+    dylint_cook, env_cmd, exec_cmd, fetch, fuzzy_match, gc, install_shims, linker, lint_cmd,
+    logs_cmd, msvc_host, multicall, native_cc, optimize, optimize_detect, optimize_windows,
+    prepare_cmd, pyo3_detect, release_sidecar, rust_plan, save_load, self_relocate, shim_dir,
+    shim_materialize, startup_profile, target_alias, test_util, toolchain, toolchain_doctor,
+    toolchain_ensure, toolchain_link, trampoline, wrapper, wrapper_target, zccache,
+    zccache_embedded, zccache_lifecycle,
 };
 
 pub(crate) use crate::cli_args::{
@@ -221,7 +221,22 @@ async fn run_with_args(prog: &str, args: &[String]) -> Result<i32, SoldrError> {
     // usage errors with its built-in exit(0) / exit(2), matching the original
     // invocation path's UX exactly.
     let cli = Cli::parse_from(argv);
-    run_cli(cli).await.map(|_| 0)
+    Box::pin(run_cli(cli)).await.map(|_| 0)
+}
+
+async fn run_dylint_command(
+    args: Vec<String>,
+    cache_enabled: bool,
+    trust_inherited_soldr_env: bool,
+) -> Result<i32, SoldrError> {
+    if args.first().map(String::as_str) == Some("cook") {
+        return dylint_cook::run(&args[1..], cache_enabled).await;
+    }
+    let mut forwarded = Vec::with_capacity(args.len() + 1);
+    forwarded.push("dylint".to_string());
+    forwarded.extend(args);
+    cargo_front_door::run_cargo_front_door(&forwarded, cache_enabled, trust_inherited_soldr_env)
+        .await
 }
 
 async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
@@ -351,6 +366,16 @@ async fn run_cli(cli: Cli) -> Result<(), SoldrError> {
                     cache_enabled,
                     trust_inherited_soldr_env,
                 )
+                .await?,
+            );
+        }
+        Commands::Dylint { args } => {
+            std::process::exit(
+                Box::pin(run_dylint_command(
+                    args,
+                    cache_enabled,
+                    trust_inherited_soldr_env,
+                ))
                 .await?,
             );
         }
