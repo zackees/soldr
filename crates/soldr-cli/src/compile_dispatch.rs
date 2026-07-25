@@ -31,7 +31,7 @@
 //! invocation cleanly.
 
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -356,27 +356,75 @@ pub fn should_fall_back_to_direct_rustc(failure: &DispatchError) -> bool {
     !daemon_required() && failure.is_daemon_unavailable()
 }
 
-/// One clear notice per process — NOT one per compile attempt within
-/// the process. (In wrapper mode each rustc invocation is its own
-/// short-lived soldr process, so cargo still sees at most one line per
-/// failed-daemon compile; long-lived callers like tests only log
-/// once.)
+/// Persist every fallback, but leave Cargo-front-door reporting to the parent
+/// build process. Each compiler unit is a separate wrapper process, so
+/// printing here for a managed build would produce hundreds of duplicate
+/// lines and Cargo would persist/replay them from `.fingerprint/output-*`.
 pub fn log_direct_exec_fallback_once(failure: &DispatchError) {
     static LOGGED: std::sync::Once = std::sync::Once::new();
     LOGGED.call_once(|| {
-        if let Ok(paths) = SoldrPaths::new() {
-            if let Err(error) = append_compile_daemon_fallback_event(&paths, failure) {
+        let managed_session = std::env::var(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some();
+        match SoldrPaths::new()
+            .map_err(std::io::Error::other)
+            .and_then(|paths| append_compile_daemon_fallback_event(&paths, failure))
+        {
+            Ok(path) if !managed_session => {
                 eprintln!(
-                    "soldr warning: failed to persist compile-daemon fallback evidence: {error}"
+                    "soldr: compiler cache unavailable; using direct compiler. Full details: {}",
+                    path.display()
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "soldr: compiler cache unavailable; using direct compiler. \
+                     Failed to write full details: {error}; reason={failure}"
                 );
             }
         }
-        eprintln!(
-            "soldr: compile daemon unavailable after {}ms — falling back to direct \
-             uncached rustc (soldr#1657); reason={failure}",
-            failure.budget_ms(),
-        );
     });
+}
+
+pub(crate) fn compile_daemon_fallback_log_path(paths: &SoldrPaths) -> PathBuf {
+    paths
+        .root
+        .join("logs")
+        .join("compile-daemon-fallbacks.jsonl")
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CompileFallbackCursor {
+    len: u64,
+    tail_anchor: Vec<u8>,
+}
+
+/// Capture a cheap append cursor for the fallback journal.
+///
+/// The tail anchor distinguishes a normal append from log
+/// truncation/replacement without hashing the whole (potentially large) file
+/// on every front-door invocation.
+pub(crate) fn compile_daemon_fallback_cursor(paths: &SoldrPaths) -> CompileFallbackCursor {
+    const ANCHOR_BYTES: u64 = 512;
+
+    let path = compile_daemon_fallback_log_path(paths);
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return CompileFallbackCursor::default();
+    };
+    let Ok(len) = file.metadata().map(|metadata| metadata.len()) else {
+        return CompileFallbackCursor::default();
+    };
+    let anchor_start = len.saturating_sub(ANCHOR_BYTES);
+    if file.seek(SeekFrom::Start(anchor_start)).is_err() {
+        return CompileFallbackCursor::default();
+    }
+    let mut tail_anchor = Vec::with_capacity((len - anchor_start) as usize);
+    if file.read_to_end(&mut tail_anchor).is_err() {
+        return CompileFallbackCursor::default();
+    }
+    CompileFallbackCursor { len, tail_anchor }
 }
 
 /// Append one durable build-integrity record when a wrapper bypasses the
@@ -386,10 +434,7 @@ fn append_compile_daemon_fallback_event(
     paths: &SoldrPaths,
     failure: &DispatchError,
 ) -> std::io::Result<PathBuf> {
-    let path = paths
-        .root
-        .join("logs")
-        .join("compile-daemon-fallbacks.jsonl");
+    let path = compile_daemon_fallback_log_path(paths);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -417,6 +462,59 @@ fn append_compile_daemon_fallback_event(
         .open(&path)?
         .write_all(&record)?;
     Ok(path)
+}
+
+/// Count fallback records appended for one Cargo-front-door build session.
+///
+/// Other builds may append concurrently, so the byte offset only limits the
+/// scan; `session_id` is the authoritative correlation key.
+pub(crate) fn compile_daemon_fallback_count_since(
+    paths: &SoldrPaths,
+    cursor: &CompileFallbackCursor,
+    session_id: u64,
+) -> std::io::Result<(usize, PathBuf)> {
+    let path = compile_daemon_fallback_log_path(paths);
+    let mut file = match std::fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok((0, path)),
+        Err(error) => return Err(error),
+    };
+    let len = file.metadata()?.len();
+    let anchor_start = cursor.len.saturating_sub(cursor.tail_anchor.len() as u64);
+    let anchor_matches = if len < cursor.len {
+        false
+    } else {
+        file.seek(SeekFrom::Start(anchor_start))?;
+        let mut current_anchor = vec![0; cursor.tail_anchor.len()];
+        file.read_exact(&mut current_anchor)?;
+        current_anchor == cursor.tail_anchor
+    };
+    let scan_start = if anchor_matches { cursor.len } else { 0 };
+    file.seek(SeekFrom::Start(scan_start))?;
+    let mut appended = String::new();
+    file.read_to_string(&mut appended)?;
+    let mut count = 0;
+    for (index, line) in appended.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let event: serde_json::Value = serde_json::from_str(line).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "malformed fallback record {} in {}: {error}",
+                    index + 1,
+                    path.display()
+                ),
+            )
+        })?;
+        if event["event"] == "compile_daemon_fallback"
+            && event["session_id"].as_u64() == Some(session_id)
+        {
+            count += 1;
+        }
+    }
+    Ok((count, path))
 }
 
 /// Direct uncached exec of the rustc-style argv (soldr#1300 fallback
@@ -1346,6 +1444,92 @@ mod tests {
                     .expect("valid correlated fallback JSONL");
             assert_eq!(correlated["session_id"], 42);
             drop(session_guard);
+        }
+    );
+
+    timed_test!(
+        compile_daemon_fallback_count_filters_concurrent_sessions,
+        Duration::from_secs(5),
+        {
+            let session_guard =
+                EnvVarGuard::acquire(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR);
+            let temp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+            let failure = DispatchError::BudgetExhausted {
+                budget: Duration::from_millis(250),
+                last_err: Some(client::ClientError::NotRunning),
+                sock: temp.path().join("sock"),
+                spawn_err: None,
+            };
+
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "7");
+            append_compile_daemon_fallback_event(&paths, &failure).expect("seed old event");
+            let cursor = compile_daemon_fallback_cursor(&paths);
+
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "42");
+            append_compile_daemon_fallback_event(&paths, &failure).expect("append session event");
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "99");
+            append_compile_daemon_fallback_event(&paths, &failure)
+                .expect("append concurrent event");
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "42");
+            append_compile_daemon_fallback_event(&paths, &failure)
+                .expect("append second session event");
+
+            let (count, path) = compile_daemon_fallback_count_since(&paths, &cursor, 42)
+                .expect("count session events");
+            assert_eq!(count, 2);
+            assert_eq!(path, compile_daemon_fallback_log_path(&paths));
+            drop(session_guard);
+        }
+    );
+
+    timed_test!(
+        compile_daemon_fallback_count_recovers_from_log_replacement,
+        Duration::from_secs(5),
+        {
+            let session_guard =
+                EnvVarGuard::acquire(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR);
+            let temp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+            let failure = DispatchError::BudgetExhausted {
+                budget: Duration::from_millis(250),
+                last_err: Some(client::ClientError::NotRunning),
+                sock: temp.path().join("sock"),
+                spawn_err: None,
+            };
+
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "7");
+            append_compile_daemon_fallback_event(&paths, &failure).expect("seed old event");
+            let cursor = compile_daemon_fallback_cursor(&paths);
+            std::fs::remove_file(compile_daemon_fallback_log_path(&paths))
+                .expect("rotate old fallback log");
+
+            session_guard.set(crate::cache_lib::SOLDR_BUILD_SESSION_ID_ENV_VAR, "42");
+            append_compile_daemon_fallback_event(&paths, &failure)
+                .expect("append event to replacement log");
+
+            let (count, _) = compile_daemon_fallback_count_since(&paths, &cursor, 42)
+                .expect("scan replacement from byte zero");
+            assert_eq!(count, 1);
+            drop(session_guard);
+        }
+    );
+
+    timed_test!(
+        compile_daemon_fallback_count_reports_malformed_appended_record,
+        Duration::from_secs(5),
+        {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let paths = SoldrPaths::with_root(temp.path().to_path_buf());
+            let cursor = compile_daemon_fallback_cursor(&paths);
+            let path = compile_daemon_fallback_log_path(&paths);
+            std::fs::create_dir_all(path.parent().unwrap()).expect("create log directory");
+            std::fs::write(&path, b"{not-json}\n").expect("write malformed record");
+
+            let error = compile_daemon_fallback_count_since(&paths, &cursor, 42)
+                .expect_err("malformed appended record must be visible");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(error.to_string().contains("malformed fallback record"));
         }
     );
 

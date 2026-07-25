@@ -257,10 +257,15 @@ impl SoldrZccacheService {
         let zresp = Box::pin(self.inner.compile(zreq))
             .await
             .map_err(|e| EmbeddedServiceError::Compile(e.to_string()))?;
+        let stderr = if zresp.cached {
+            strip_internal_soldr_fallback_notices(zresp.stderr)
+        } else {
+            zresp.stderr
+        };
         Ok(CompileResponseBody {
             exit_code: zresp.exit_code,
             stdout: zresp.stdout,
-            stderr: zresp.stderr,
+            stderr,
             cached: zresp.cached,
             cache_outcome: encode_cache_outcome(zresp.cache_outcome),
         })
@@ -573,6 +578,81 @@ fn encode_cache_outcome(outcome: CacheOutcome) -> i32 {
         CacheOutcome::Miss => 2,
         CacheOutcome::Error => 3,
     }
+}
+
+/// Soldr wrapper failures are operational diagnostics, not compiler output.
+/// Older cache entries can contain the once-per-wrapper fallback notice and
+/// Cargo persists any replayed stderr under `.fingerprint/output-*`, turning
+/// one transient outage into permanent warm-build spam. Drop only that exact
+/// internal line at the embedded-cache response boundary.
+pub fn strip_internal_soldr_fallback_notices(stderr: Vec<u8>) -> Vec<u8> {
+    const PREFIX: &[u8] = b"soldr: compile daemon unavailable after ";
+    const MIDDLE: &[u8] =
+        b"ms \xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); reason=";
+    fn is_internal_notice(line: &[u8]) -> bool {
+        let line = line.strip_suffix(b"\n").unwrap_or(line);
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(rest) = line.strip_prefix(PREFIX) else {
+            return false;
+        };
+        let Some(middle_at) = rest
+            .windows(MIDDLE.len())
+            .position(|window| window == MIDDLE)
+        else {
+            return false;
+        };
+        let (budget, suffix) = rest.split_at(middle_at);
+        !budget.is_empty()
+            && budget.iter().all(u8::is_ascii_digit)
+            && suffix
+                .strip_prefix(MIDDLE)
+                .is_some_and(|reason| !reason.is_empty())
+    }
+
+    if !stderr.split(|byte| *byte == b'\n').any(is_internal_notice) {
+        return stderr;
+    }
+
+    let mut filtered = Vec::with_capacity(stderr.len());
+    for line in stderr.split_inclusive(|byte| *byte == b'\n') {
+        if !is_internal_notice(line) {
+            filtered.extend_from_slice(line);
+        }
+    }
+    filtered
+}
+
+#[cfg(test)]
+mod fallback_output_tests {
+    use super::strip_internal_soldr_fallback_notices;
+
+    crate::timed_test!(
+        cached_internal_fallback_notice_is_removed_without_touching_diagnostics,
+        {
+            let input = b"warning: first\n\
+soldr: compile daemon unavailable after 30000ms \xe2\x80\x94 falling back to direct uncached rustc (soldr#1657); reason=daemon unavailable\n\
+error[E0001]: real compiler diagnostic\r\n\
+note: contains soldr: compile daemon unavailable after but is user text"
+                .to_vec();
+            let filtered = strip_internal_soldr_fallback_notices(input);
+            assert_eq!(
+                filtered,
+                b"warning: first\n\
+error[E0001]: real compiler diagnostic\r\n\
+note: contains soldr: compile daemon unavailable after but is user text"
+            );
+        }
+    );
+
+    crate::timed_test!(near_prefix_compiler_diagnostic_is_preserved, {
+        let input = b"soldr: compile daemon unavailable after lunch; this is user text\n".to_vec();
+        assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
+    });
+
+    crate::timed_test!(compiler_stderr_without_internal_notice_is_byte_identical, {
+        let input = b"\0non-utf8:\xff\r\nreal stderr without trailing newline".to_vec();
+        assert_eq!(strip_internal_soldr_fallback_notices(input.clone()), input);
+    });
 }
 
 /// Pull the rustc binary path out of the wrapper's argv. The wrapper

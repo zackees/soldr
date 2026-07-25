@@ -390,6 +390,35 @@ fn prepare_file(parent: &OpenDirectory, name: &OsStr) -> Result<PreparedFile, So
     })
 }
 
+/// Make one target file safe to replace without mutating a shared cache blob.
+///
+/// The fallback-output migration uses this before publishing filtered
+/// diagnostics. In particular, the Windows path needs the same
+/// `FileDispositionInfoEx` handling as the full no-cache preflight when the
+/// target entry is a protected read-only hardlink.
+pub(super) fn prepare_path_for_replacement(path: &Path) -> Result<(), SoldrError> {
+    let parent = path.parent().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "cannot prepare target file without a parent: {}",
+            path.display()
+        ))
+    })?;
+    let name = path.file_name().ok_or_else(|| {
+        SoldrError::Other(format!(
+            "cannot prepare target file without a name: {}",
+            path.display()
+        ))
+    })?;
+    let directory = open_target_root(parent)?.ok_or_else(|| {
+        SoldrError::Other(format!(
+            "target file parent disappeared while preparing {}",
+            path.display()
+        ))
+    })?;
+    let _ = prepare_file(&directory, name)?;
+    Ok(())
+}
+
 fn prepare_file_with_final_rename(
     parent: &OpenDirectory,
     name: &OsStr,

@@ -559,6 +559,118 @@ fn file_len(path: &Path) -> u64 {
         .unwrap_or(0)
 }
 
+fn compile_fallback_summary_message(count: usize, path: &Path) -> String {
+    format!(
+        "soldr: compiler cache unavailable for {count} compiler invocation(s); \
+         used direct compiler. Full details: {}",
+        path.display()
+    )
+}
+
+fn emit_compile_fallback_summary(
+    paths: &SoldrPaths,
+    cursor: &crate::compile_dispatch::CompileFallbackCursor,
+    session_id: u64,
+) {
+    match crate::compile_dispatch::compile_daemon_fallback_count_since(paths, cursor, session_id) {
+        Ok((0, _)) => {}
+        Ok((count, path)) => {
+            eprintln!("{}", compile_fallback_summary_message(count, &path));
+        }
+        Err(error) => {
+            eprintln!("soldr warning: failed to summarize compiler-cache fallbacks: {error}");
+        }
+    }
+}
+
+const FALLBACK_OUTPUT_SCRUB_MARKER: &str = ".soldr-fallback-output-scrub-v1";
+const FALLBACK_OUTPUT_SCRUB_LOCK: &str = ".soldr-fallback-output-scrub-v1.lock";
+
+#[derive(Debug, PartialEq, Eq)]
+enum FallbackOutputScrub {
+    AlreadyDone,
+    DeferredForActiveBuild(PathBuf),
+    Complete(usize),
+}
+
+/// Remove fallback notices persisted by older Soldr versions from Cargo's
+/// fingerprint diagnostics. The migration is target-local and marker-gated,
+/// so warm builds pay only one metadata lookup after the first successful
+/// scan. Replacing changed files via a temporary file deliberately breaks any
+/// hardlink instead of mutating a shared cache blob in place.
+fn scrub_cached_fallback_diagnostics_once(
+    target_dir: &Path,
+) -> Result<FallbackOutputScrub, SoldrError> {
+    std::fs::create_dir_all(target_dir)?;
+    let marker = target_dir.join(FALLBACK_OUTPUT_SCRUB_MARKER);
+    if marker.exists() {
+        return Ok(FallbackOutputScrub::AlreadyDone);
+    }
+
+    let lock_path = target_dir.join(FALLBACK_OUTPUT_SCRUB_LOCK);
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&lock_path)?;
+    fs2::FileExt::lock_exclusive(&lock)?;
+    if marker.exists() {
+        return Ok(FallbackOutputScrub::AlreadyDone);
+    }
+
+    // Retain Cargo's real lock handles through the complete scan and marker
+    // publication. If another build already owns this target, defer without a
+    // marker so a later invocation retries after that build has quiesced.
+    let _cargo_locks = match crate::cache_lib::cargo_lock::probe(target_dir)? {
+        crate::cache_lib::cargo_lock::CargoLockProbe::Idle(guard) => guard,
+        crate::cache_lib::cargo_lock::CargoLockProbe::Active(path) => {
+            return Ok(FallbackOutputScrub::DeferredForActiveBuild(path));
+        }
+    };
+
+    let mut scrubbed = 0;
+    for entry in jwalk::WalkDir::new(target_dir)
+        .follow_links(false)
+        .max_depth(6)
+        .skip_hidden(false)
+    {
+        let entry = entry.map_err(std::io::Error::other)?;
+        if !entry.file_type().is_file()
+            || !entry.file_name().to_string_lossy().starts_with("output-")
+        {
+            continue;
+        }
+        let path = entry.path();
+        if !path
+            .components()
+            .any(|component| component.as_os_str() == std::ffi::OsStr::new(".fingerprint"))
+        {
+            continue;
+        }
+
+        let original = std::fs::read(&path)?;
+        let filtered =
+            crate::zccache_embedded::strip_internal_soldr_fallback_notices(original.clone());
+        if filtered == original {
+            continue;
+        }
+
+        no_cache_detach::prepare_path_for_replacement(&path)?;
+        let parent = path.parent().unwrap_or(target_dir);
+        let permissions = std::fs::metadata(&path)?.permissions();
+        let mut replacement = tempfile::NamedTempFile::new_in(parent)?;
+        replacement.write_all(&filtered)?;
+        replacement.flush()?;
+        replacement.persist(&path).map_err(|error| error.error)?;
+        std::fs::set_permissions(&path, permissions)?;
+        scrubbed += 1;
+    }
+
+    std::fs::write(marker, [])?;
+    Ok(FallbackOutputScrub::Complete(scrubbed))
+}
+
 /// Wait for the embedded compile journal to contain the expected number
 /// of entries for this build.
 ///
@@ -1894,6 +2006,18 @@ pub(crate) async fn run_cargo_front_door(
     if build_like_cargo {
         let target_dir_for_memo: Option<std::path::PathBuf> = cache_plan.target_dir_for_hooks(args);
         if let Some(dir) = target_dir_for_memo.as_deref() {
+            match scrub_cached_fallback_diagnostics_once(dir) {
+                Ok(FallbackOutputScrub::AlreadyDone | FallbackOutputScrub::Complete(0)) => {}
+                Ok(FallbackOutputScrub::DeferredForActiveBuild(_)) => {}
+                Ok(FallbackOutputScrub::Complete(count)) => eprintln!(
+                    "soldr: removed {count} stale compiler-cache fallback notice file(s) from {}",
+                    dir.display()
+                ),
+                Err(error) => eprintln!(
+                    "soldr warning: failed to remove stale compiler-cache fallback notices from {}: {error}",
+                    dir.display()
+                ),
+            }
             apply_target_registry_memo(&mut command, dir, &paths);
         }
     }
@@ -1955,6 +2079,7 @@ pub(crate) async fn run_cargo_front_door(
         crate::cache::capture_build_baseline(&session.cache_dir, &session.session_id);
     }
     let compile_journal_start_len = file_len(&embedded_compile_journal_path(&paths));
+    let compile_fallback_cursor = crate::compile_dispatch::compile_daemon_fallback_cursor(&paths);
     let cargo_run_result: CargoRunResult = if capture_cargo_artifacts {
         let target_dir = cache_plan
             .target_dir_for_hooks(args)
@@ -2007,6 +2132,7 @@ pub(crate) async fn run_cargo_front_door(
             );
             crate::cache_lib::build_active::set(false);
             drop(build_activity_lease);
+            emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
             if let Err(finish_err) = finish_result {
                 eprintln!(
                     "soldr warning: failed to finish zccache session after aborted cargo run: {finish_err}"
@@ -2056,6 +2182,7 @@ pub(crate) async fn run_cargo_front_door(
         }
     };
     let captured_stderr_for_diagnosis = diagnostic_capture;
+    emit_compile_fallback_summary(&paths, &compile_fallback_cursor, session_id);
 
     // Phase 2: send BuildSessionEnd before the success/failure
     // branches do any further work. Best-effort — never affects the
