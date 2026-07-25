@@ -45,7 +45,6 @@ git -C /tmp/dylint-acceptance/a config user.email fixture@soldr.invalid
 git -C /tmp/dylint-acceptance/a config user.name "Soldr Fixture"
 git -C /tmp/dylint-acceptance/a add .
 git -C /tmp/dylint-acceptance/a commit -qm fixture
-(cd /tmp/dylint-acceptance/a && "$SOLDR" cargo dylint --version)
 git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 
 run_case() {
@@ -312,6 +311,8 @@ hash_libraries() {
     done
 }
 
+# The cold case intentionally owns first-time cargo-dylint and driver
+# preparation so the same watchdog covers tool bootstrap as well as linting.
 # Keep target directories beneath their worktree roots. zccache deliberately
 # normalizes paths inside each root; arbitrary external target directories
 # are distinct user-selected paths and therefore are not cross-worktree keys.

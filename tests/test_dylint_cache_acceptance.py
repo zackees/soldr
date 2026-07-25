@@ -37,3 +37,12 @@ def test_absolute_watchdog_survives_noisy_semantic_progress() -> None:
     capture_tail = script.split('cat "$dump" >&2', maxsplit=1)[1]
     assert 'if [[ "$absolute_deadline" -eq 1 ]]' in capture_tail
     assert 'terminate_scope "$command_pid"' in capture_tail
+
+
+def test_initial_dylint_bootstrap_is_inside_monitored_cold_case() -> None:
+    script = dylint_acceptance.BASH
+    assert "cargo dylint --version" not in script
+    assert (
+        "The cold case intentionally owns first-time cargo-dylint and driver"
+        in script
+    )
