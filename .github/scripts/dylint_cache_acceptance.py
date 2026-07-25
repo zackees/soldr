@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,10 +21,12 @@ export SOLDR_CACHE_DIR=/tmp/dylint-acceptance/cache
 export SOLDR_DAEMON_SPAWN_RETRY_BUDGET_MS=120000
 export SOLDR_FORCE_MANAGED_CARGO_SUBCOMMANDS=1
 rm -rf /tmp/dylint-acceptance
-mkdir -p /tmp/dylint-acceptance
-trap 'rm -rf /tmp/dylint-acceptance' EXIT
+mkdir -p /tmp/dylint-acceptance/diagnostics
 SOLDR=/target/debug/soldr
 REPO="$(pwd)"
+WATCHDOG_SECS=150
+export SOLDR_CARGO_WAIT_TIMEOUT_SECS=300
+export SOLDR_DAEMON_TOKIO_CONSOLE=1
 
 cp -a "$REPO/ci/fixtures/dylint-cache" /tmp/dylint-acceptance/a
 git init -q /tmp/dylint-acceptance/a
@@ -38,10 +42,51 @@ git -C /tmp/dylint-acceptance/a worktree add -q /tmp/dylint-acceptance/b HEAD
 run_case() {
   name="$1"; work="$2"; target="$3"
   start="$(date +%s%3N)"
-  if ! (cd "$work" && CARGO_TARGET_DIR="$target" "$SOLDR" cargo dylint --all); then
+  (
+    cd "$work"
+    CARGO_TARGET_DIR="$target" \
+      TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
+      "$SOLDR" cargo dylint --all
+  ) &
+  command_pid="$!"
+  (
+    sleep "$WATCHDOG_SECS"
+    if kill -0 "$command_pid" 2>/dev/null; then
+      dump="/tmp/dylint-acceptance/diagnostics/$name-stacks.txt"
+      {
+        echo "WATCHDOG: $name still running after ${WATCHDOG_SECS}s"
+        date -u
+        echo "=== process tree ==="
+        ps -eo pid,ppid,pgid,stat,etimes,wchan:32,args --forest
+        echo "=== native stacks ==="
+        ps -eo pid=,args= |
+          awk '/\/target\/debug\/soldr|cargo-dylint|dylint-driver|rustc|zccache/ {print $1}' |
+          sort -un |
+          while read -r pid; do
+            test -n "$pid" || continue
+            echo "--- pid=$pid exe=$(readlink -f "/proc/$pid/exe" 2>/dev/null || true) ---"
+            timeout 30s gdb -q -n -batch \
+              -ex "set pagination off" \
+              -ex "set print thread-events off" \
+              -ex "info threads" \
+              -ex "thread apply all bt full 64" \
+              -p "$pid" 2>&1 || true
+          done
+      } >"$dump" 2>&1
+      cat "$dump" >&2
+    fi
+  ) &
+  watchdog_pid="$!"
+  set +e
+  wait "$command_pid"
+  status="$?"
+  set -e
+  kill "$watchdog_pid" 2>/dev/null || true
+  wait "$watchdog_pid" 2>/dev/null || true
+  if [[ "$status" -ne 0 ]]; then
     echo "Dylint library target contents after failure:" >&2
     find "$target/dylint/libraries" -maxdepth 5 -type f -print 2>/dev/null | sort >&2 || true
-    return 1
+    return "$status"
   fi
   end="$(date +%s%3N)"
   # The Cargo front door finalizes session stats before returning. Its
@@ -99,12 +144,16 @@ def main() -> int:
             sys.executable,
             str(ROOT / "ci" / "perf_local.py"),
             "cargo",
+            "--config",
+            'build.rustflags=["--cfg","tokio_unstable"]',
             "build",
             "-p",
             "soldr-cli",
             "--bin",
             "soldr",
             "--locked",
+            "--features",
+            "tokio-console",
         ],
         cwd=ROOT,
         check=False,
@@ -121,6 +170,12 @@ def main() -> int:
         "bash",
         "-s",
     ]
+    diagnostics = (
+        Path(os.environ.get("RUNNER_TEMP", tempfile.gettempdir()))
+        / "soldr-dylint-diagnostics"
+    )
+    shutil.rmtree(diagnostics, ignore_errors=True)
+    diagnostics.mkdir(parents=True, exist_ok=True)
     try:
         result = subprocess.run(
             command, input=BASH, text=True, capture_output=True, check=False
@@ -195,6 +250,35 @@ def main() -> int:
     except OSError as error:
         print(f"error: failed to execute Docker acceptance: {error}", file=sys.stderr)
         return 4
+    finally:
+        copied = subprocess.run(
+            [
+                "docker",
+                "cp",
+                "soldr-perf-local:/tmp/dylint-acceptance/diagnostics/.",
+                str(diagnostics),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if copied.returncode != 0 and "No such container" not in copied.stderr:
+            print(
+                f"warning: failed to copy watchdog diagnostics: {copied.stderr.strip()}",
+                file=sys.stderr,
+            )
+        subprocess.run(
+            [
+                "docker",
+                "exec",
+                "soldr-perf-local",
+                "rm",
+                "-rf",
+                "/tmp/dylint-acceptance",
+            ],
+            capture_output=True,
+            check=False,
+        )
 
 
 if __name__ == "__main__":

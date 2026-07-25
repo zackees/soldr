@@ -31,10 +31,10 @@
 #       -e SOLDR_COOK_DOCKER_HARNESS=1 -w /work soldr-cook-dev \
 #       cargo test --workspace -- --include-ignored cook_index
 
-# Dylint 6.0.1's official GNU/Linux binaries require glibc 2.39. Debian
-# bookworm provides 2.36, while trixie provides 2.41. Keep the development
-# runner new enough to execute the verified upstream binary instead of
-# compiling cargo-dylint from source on every fresh volume.
+# Dylint 6.0.1's official GNU/Linux binary requires glibc 2.39 and embeds
+# its CI checkout path, so soldr rejects it as non-relocatable and builds
+# cargo-dylint from source. Trixie keeps the runner compatible with both
+# that upstream probe and the resulting host-local binary.
 FROM rust:1.94.1-trixie
 
 # Build tools needed by the soldr-cli workspace and the integration
@@ -50,6 +50,8 @@ RUN apt-get update \
        cmake \
        ninja-build \
        jq \
+       gdb \
+       procps \
        zstd \
     && rm -rf /var/lib/apt/lists/*
 

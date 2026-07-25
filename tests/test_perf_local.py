@@ -52,6 +52,24 @@ def test_create_command_uses_one_named_runner_and_persistent_volumes(tmp_path: P
     assert command[-3:] == ["tail", "-f", "/dev/null"]
 
 
+def test_create_command_enables_ptrace_only_when_requested(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv(perf_local.PTRACE_ENV, "1")
+    command = perf_local.create_command(tmp_path, "sha256:image")
+
+    assert "--cap-add=SYS_PTRACE" in command
+    assert ["--security-opt", "seccomp=unconfined"] == command[
+        command.index("--security-opt") : command.index("--security-opt") + 2
+    ]
+    assert f"{perf_local.LABEL_PREFIX}.ptrace=1" in command
+
+    monkeypatch.delenv(perf_local.PTRACE_ENV)
+    command = perf_local.create_command(tmp_path, "sha256:image")
+    assert "--cap-add=SYS_PTRACE" not in command
+    assert f"{perf_local.LABEL_PREFIX}.ptrace=0" in command
+
+
 def test_runner_match_requires_schema_image_and_source_root(tmp_path: Path) -> None:
     labels = perf_local.expected_labels(tmp_path, "sha256:new")
     info = {"Config": {"Labels": dict(labels)}}
