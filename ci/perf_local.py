@@ -48,11 +48,11 @@ VOLUME_PREFIX = "soldr-perf"
 RUNNER_SCHEMA = "2"
 LABEL_PREFIX = "io.soldr.perf-local"
 
-# The global names this script used before per-root isolation. These are NOT
-# dead: `bench/cook_in_docker.sh` mounts soldr-perf-target and
-# soldr-perf-cargo-home directly, and sibling checkouts still on the old
-# script drive all of them. Nothing here ever removes them — `--status` only
-# reports them so their disk is not mistaken for this runner's.
+# The global names used before per-root isolation. Both this script and
+# bench/cook_in_docker.sh have moved off them, but a sibling checkout that has
+# not yet picked up those changes still drives them, so nothing here ever
+# removes them — `--status` only reports them so their disk is not mistaken
+# for this runner's.
 SHARED_CONTAINER = "soldr-perf-local"
 SHARED_VOLUMES = ("soldr-perf-target", "soldr-perf-cargo-home", "soldr-perf-soldr-home")
 
@@ -407,8 +407,9 @@ def report_shared_resources() -> None:
     print("machine-wide resources (NOT owned by this root's runner):")
     for item in present:
         print(f"  {item}")
-    print("  Still in use by bench/cook_in_docker.sh and by sibling checkouts")
-    print("  running the pre-per-root script. Do not remove blindly.")
+    print("  Left over from before per-root isolation. A sibling checkout")
+    print("  still on the old scripts may be using them — check before")
+    print("  removing, then reclaim the disk.")
 
 
 if __name__ == "__main__":

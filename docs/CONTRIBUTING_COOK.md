@@ -41,24 +41,33 @@ bench/cook_in_docker.sh cargo test --workspace --test daemon_cook_index \
 run), then runs your command inside a container with:
 
 - The source tree mounted read-write at `/work`.
-- `~/.soldr/` provided by a fresh named volume `cook-soldr-home` at
-  `/root/.soldr` inside the container. The host's actual `~/.soldr/`
+- `~/.soldr/` provided by a fresh named volume `cook-soldr-home-<root>`
+  at `/root/.soldr` inside the container. The host's actual `~/.soldr/`
   is NEVER bind-mounted.
 - `/work/target` provided by the **persistent** named volume
-  `soldr-perf-target` (issue #593). Cargo's build state lives on
+  `soldr-perf-target-<root>` (issue #593). Cargo's build state lives on
   Linux-native ext4 inside Docker's VFS, not on the host bind mount,
   so cargo's mtime-based fingerprint check actually succeeds across
   container restarts.
 - `/root/.cargo` (`CARGO_HOME`) provided by the persistent named
-  volume `soldr-perf-cargo-home`. Registry index + downloaded crates
-  stay warm.
+  volume `soldr-perf-cargo-home-<root>`. Registry index + downloaded
+  crates stay warm.
 - `SOLDR_COOK_DOCKER_HARNESS=1` exported so the tests gated on the
   Docker marker run.
 
-The script `docker volume rm`s `cook-soldr-home` at the start of each
-run so the container always starts from an empty soldr state. The
-**warm** `soldr-perf-target` and `soldr-perf-cargo-home` volumes are
-NEVER wiped here — that's the entire point of issue #593's design.
+`<root>` is a `<leaf-name>-<hash>` suffix identifying the checkout, so
+sibling checkouts never share these volumes — see "Per-checkout
+isolation" below. Print the resolved names with:
+
+```bash
+SOLDR_COOK_PRINT_PLAN=1 bench/cook_in_docker.sh
+```
+
+The script `docker volume rm`s its own `cook-soldr-home-<root>` at the
+start of each run so the container always starts from an empty soldr
+state. The **warm** `soldr-perf-target-<root>` and
+`soldr-perf-cargo-home-<root>` volumes are NEVER wiped here — that's
+the entire point of issue #593's design.
 
 ## Why named volumes for `target/` and `CARGO_HOME`
 
@@ -81,10 +90,13 @@ is smaller, but named volumes still beat the bind mount slightly.
 
 ### Wiping the warm volumes
 
-If the cargo fingerprint state ever gets corrupted, wipe explicitly:
+If the cargo fingerprint state ever gets corrupted, wipe explicitly.
+The names are per-checkout, so ask the script for them rather than
+guessing:
 
 ```bash
-docker volume rm soldr-perf-target soldr-perf-cargo-home
+SOLDR_COOK_PRINT_PLAN=1 bench/cook_in_docker.sh
+docker volume rm soldr-perf-target-<root> soldr-perf-cargo-home-<root>
 ```
 
 The next run is a full cold build (~5–8 min) into the fresh volume;
@@ -135,16 +147,24 @@ checkout while the lock was per-root, so starting a run in `soldr2` would
 `docker rm -f` a build already running in `soldr`, and all of them fought
 over a single Cargo target across different branches.
 
-`--wipe` only removes the current root's volumes. Note that
-`bench/cook_in_docker.sh` still uses the machine-wide `soldr-perf-target`
-and `soldr-perf-cargo-home` volumes described above — `perf_local.py` no
-longer shares them, so the two harnesses keep separate build state.
+`bench/cook_in_docker.sh` derives its volume names the same way, for the
+same reason: its per-run `docker volume rm --force` of the harness volume
+used to destroy a sibling checkout's in-flight state. The two harnesses
+keep separate build state — they never shared a container, and no longer
+share a target volume either.
 
-`perf_local.py` uses its own `soldr-perf-soldr-home` volume for
+`--wipe` only removes the current root's volumes.
+
+`perf_local.py` uses its own `soldr-perf-soldr-home-<root>` volume for
 `~/.soldr/` (kept warm, never wiped) so the soldr daemon state and
 caches survive across runs. The cook-test harness uses the separate
-`cook-soldr-home` volume that gets wiped per run for test
+`cook-soldr-home-<root>` volume that gets wiped per run for test
 determinism.
+
+If a `soldr-perf-*` volume with NO root suffix still exists, it predates
+this split. A sibling checkout that has not picked up these changes may
+still be using it, so check before reclaiming its disk;
+`perf_local.py --status` lists any it finds.
 
 ## Acceptance gate (per PR in meta #579)
 
