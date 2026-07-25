@@ -71,6 +71,7 @@ run_case() {
     cd "$work"
     CARGO_TARGET_DIR="$target" \
       SOLDR_DAEMON_TOKIO_CONSOLE_RECORD_PATH="/tmp/dylint-acceptance/diagnostics/$name.tokio" \
+      SOLDR_DYLINT_DIAGNOSTIC_ENV_PATH="/tmp/dylint-acceptance/diagnostics/$name-dylint-env.jsonl" \
       "$SOLDR" cargo dylint --all 2>&1 | tee -a "$live_log"
   ) &
   command_pid="$!"

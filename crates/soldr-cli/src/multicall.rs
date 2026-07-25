@@ -8,6 +8,7 @@
 
 use std::env;
 use std::ffi::OsString;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -115,6 +116,7 @@ fn classify_argv0(argv0: &str) -> Option<ShimIdentity> {
 }
 
 fn run_soldr_dylint(raw_args: &[String]) -> i32 {
+    record_dylint_diagnostic_env();
     match crate::wrapper::run_rustc_wrapper(raw_args, crate::startup_profile::WrapperProfile::new())
     {
         Ok(code) => normalize_exit_code(code),
@@ -122,6 +124,39 @@ fn run_soldr_dylint(raw_args: &[String]) -> i32 {
             eprintln!("soldr-dylint: wrapper dispatch failed: {err}");
             101
         }
+    }
+}
+
+fn record_dylint_diagnostic_env() {
+    let Ok(path) = env::var("SOLDR_DYLINT_DIAGNOSTIC_ENV_PATH") else {
+        return;
+    };
+    if env::var_os("DYLINT_LIBS").is_none() {
+        return;
+    }
+    let mut vars = serde_json::Map::new();
+    for name in [
+        "DYLINT_LIBS",
+        "DYLINT_METADATA",
+        "DYLINT_NO_DEPS",
+        "RUSTUP_HOME",
+        "RUSTUP_TOOLCHAIN",
+        "CLIPPY_DISABLE_DOCS_LINKS",
+    ] {
+        if let Ok(value) = env::var(name) {
+            vars.insert(name.to_string(), serde_json::Value::String(value));
+        }
+    }
+    let record = serde_json::json!({
+        "cwd": env::current_dir().ok(),
+        "vars": vars,
+    });
+    if let Ok(mut output) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(output, "{record}");
     }
 }
 
